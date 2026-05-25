@@ -77,12 +77,12 @@ DataTable {
     background: transparent;
 }
 
-/* ── Cost tracker ── */
-#cost-panel {
-    height: 8;
+/* ── Metrics tracker ── */
+#metrics-panel {
+    height: 11;
 }
 
-#cost-widget {
+#metrics-widget {
     border: round $warning;
     padding: 0 1;
 }

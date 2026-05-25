@@ -43,7 +43,7 @@ class EvolutionApp(App, BaseUI):
     ]
 
     # Focusable panels for left/right/tab navigation
-    PANEL_IDS = ["#stream-log", "#history-log", "#leaderboard-table", "#cost-widget"]
+    PANEL_IDS = ["#stream-log", "#history-log", "#leaderboard-table", "#metrics-widget"]
 
     # Reactive state
     header_text: reactive[str] = reactive("🔥 Antigravity Glicko-2 Poker Evolution 🔥")
@@ -83,12 +83,12 @@ class EvolutionApp(App, BaseUI):
                 with Vertical(id="history-panel"):
                     yield RichLog(id="history-log", highlight=True, markup=True, auto_scroll=True, classes="panel")
 
-            # Right column: leaderboard + cost
+            # Right column: metrics + leaderboard
             with Vertical(id="right-col"):
+                with Vertical(id="metrics-panel"):
+                    yield Static("No metrics yet", id="metrics-widget", classes="panel")
                 with Vertical(id="leaderboard-panel"):
                     yield self._build_leaderboard()
-                with Vertical(id="cost-panel"):
-                    yield Static("No costs yet", id="cost-widget", classes="panel")
 
         # LLM Stream (full width bottom)
         with Vertical(id="stream-panel"):
@@ -268,6 +268,72 @@ class EvolutionApp(App, BaseUI):
     def set_header(self, msg):
         self.header_text = msg
 
+    def update_metrics(self, metrics):
+        """Update evolution metrics panel (generation stats + cost)."""
+        m = metrics
+        total_s = int(m.get("total_time_s", 0))
+        avg_s = m.get("avg_gen_time_s", 0)
+        avg_m, avg_s_rem = divmod(int(avg_s), 60)
+        sr = m.get("success_rate", 0)
+        trend = m.get("rating_trend", 0)
+        trend_icon = "▲" if trend > 0 else "▼" if trend < 0 else "▶"
+        trend_color = "bright_green" if trend > 0 else "red" if trend < 0 else "yellow"
+
+        # Build sparkline from rating history
+        sparkline = self._build_rating_sparkline()
+
+        lines = [
+            f"[bold bright_cyan]📊 Evolution Metrics[/]",
+            f"  Generation:    v{m.get('current_v', '?')} → v{m.get('next_v', '?')}",
+            f"  Total Time:    {total_s // 60}m {total_s % 60}s",
+            f"  Avg Time/Gen:  {avg_m}m {avg_s_rem}s",
+            f"  Success Rate:  {sr:.0%} ({m.get('total_success', 0)}/{m.get('total_gens', 0)})",
+            f"  Fail Streak:   {m.get('fail_count', 0)}",
+            f"  Rating Trend:  [{trend_color}]{trend_icon} {trend:+.0f}[/]",
+            f"  Cost Total:    ${self.grand_cost_total:.3f}",
+        ]
+        if sparkline:
+            lines.append(f"  {sparkline}")
+        try:
+            widget = self.query_one("#metrics-widget", Static)
+            widget.update(Text.from_markup("\n".join(lines)))
+        except Exception:
+            pass
+
+    def _build_rating_sparkline(self):
+        """Build a sparkline from rating_history.jsonl showing top bot rating trend."""
+        import json as _json
+        history_file = RESULTS_DIR / "rating_history.jsonl"
+        if not history_file.exists():
+            return ""
+        try:
+            snapshots = []
+            with open(history_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    snap = _json.loads(line)
+                    ratings = snap.get("ratings", {})
+                    if ratings:
+                        top_r = max(p.get("r", 1500) for p in ratings.values())
+                        snapshots.append(top_r)
+            if len(snapshots) < 2:
+                return ""
+            # Take last 20 snapshots
+            recent = snapshots[-20:]
+            mn, mx = min(recent), max(recent)
+            chars = "▁▂▃▄▅▆▇█"
+            if mx == mn:
+                return f"  Trend: {'█' * len(recent)} ({recent[-1]:.0f})"
+            spark = ""
+            for v in recent:
+                idx = int((v - mn) / (mx - mn) * (len(chars) - 1))
+                spark += chars[idx]
+            return f"  Trend: [bright_cyan]{spark}[/] ({recent[0]:.0f}→{recent[-1]:.0f})"
+        except Exception:
+            return ""
+
     def update_cost(self, role, cost_usd, usage):
         if cost_usd is not None:
             in_tok = usage.get("input_tokens", 0) if usage else 0
@@ -282,18 +348,8 @@ class EvolutionApp(App, BaseUI):
         self._refresh_cost_panel()
 
     def _refresh_cost_panel(self):
-        lines = []
-        for role, cost, in_tok, out_tok in self.cost_log:
-            r = role[:18]
-            lines.append(f"[bright_yellow]  {r:<18}[/] ${cost:.4f}  ({in_tok//1000}K→{out_tok//1000}K)")
-        lines.append(f"\n[bold bright_white]  {'Gen Total:':<18}[/] ${self.gen_cost_total:.4f}")
-        lines.append(f"[bold bright_green]  {'Grand Total:':<18}[/] ${self.grand_cost_total:.4f}")
-        try:
-            widget = self.query_one("#cost-widget", Static)
-            widget.update(Text.from_markup("\n".join(lines)))
-        except Exception:
-            pass
-        # Also update header cost display
+        """Update cost info — cost panel is now merged into metrics panel."""
+        # Just update header cost display; metrics panel shows grand total
         self.watch_header_text(self.header_text)
 
     # ──────────────────────────────────────────────

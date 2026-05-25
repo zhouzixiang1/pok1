@@ -66,6 +66,7 @@ class BaseUI:
     def update_daemon_status(self, stats, ratings): pass
     def set_header(self, msg): pass
     def update_cost(self, role, cost_usd, usage): pass
+    def update_metrics(self, metrics): pass
 
 
 class TextUI(BaseUI):
@@ -80,6 +81,14 @@ class TextUI(BaseUI):
     def update_cost(self, role, cost_usd, usage):
         if cost_usd is not None:
             print(f"[COST] {role}: ${cost_usd:.4f}")
+    def update_metrics(self, metrics):
+        m = metrics
+        total_s = m.get("total_time_s", 0)
+        avg_s = m.get("avg_gen_time_s", 0)
+        trend = m.get("rating_trend", 0)
+        print(f"[METRICS] Gen v{m.get('current_v','?')}→v{m.get('next_v','?')} | "
+              f"Time: {total_s//60}m{total_s%60}s | Avg: {int(avg_s)//60}m{int(avg_s)%60}s | "
+              f"Rate: {m.get('success_rate',0):.0%} | Trend: {trend:+.0f}")
 
 
 # ──────────────────────────────────────────────
@@ -125,8 +134,8 @@ def load_daemon_stats():
     return {"pairs": {}, "total_periods": 0}
 
 
-def wait_for_daemon_eval(bot_name, timeout=600, min_matches=20, max_rd=40):
-    """Wait for daemon to evaluate a new bot.
+async def wait_for_daemon_eval(bot_name, timeout=600, min_matches=20, max_rd=40):
+    """Wait for daemon to evaluate a new bot (async, non-blocking).
 
     Requires both sufficient matches AND low rating deviation for confidence.
     """
@@ -138,7 +147,7 @@ def wait_for_daemon_eval(bot_name, timeout=600, min_matches=20, max_rd=40):
         rd = ratings.get(bot_name, Glicko2Player()).rd
         if matches >= min_matches and rd <= max_rd:
             return True
-        time.sleep(5)
+        await asyncio.sleep(5)
     return False
 
 
@@ -204,7 +213,11 @@ def git_ensure_clean():
     _git("add", "-A")
     status = _git("status", "--porcelain")
     if status:
-        _git("commit", "-m", "checkpoint: pre-evolution housekeeping")
+        try:
+            _git("commit", "-m", "checkpoint: pre-evolution housekeeping")
+        except RuntimeError:
+            # Might fail if no git user configured; skip silently
+            pass
     return _git("rev-parse", "HEAD")
 
 
@@ -218,37 +231,20 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info=""):
     )
     _git("add", "-A")
     _git("commit", "-m", msg)
-    _git("tag", f"bot-v{version}", "-m", f"Bot v{version}: {strategy_tag}")
+    tag = f"bot-v{version}"
+    # Delete existing tag if any (interrupted run), then create fresh
+    _git("tag", "-d", tag, check=False)
+    _git("tag", tag, "-m", f"Bot v{version}: {strategy_tag}")
 
 
-def git_diff_for_review(version):
-    """Get diff of bot v{version} vs its parent commit."""
-    tag = f"bot-v{version - 1}" if version > 1 else None
-    if tag:
-        tags = _git("tag", "-l", tag, check=False)
-        if tags:
-            return _git("diff", tag, "--", f"bots/claude_v{version}/")
-    # Fallback: diff vs HEAD (last checkpoint)
-    return _git("diff", "HEAD", "--", f"bots/claude_v{version}/", check=False)
-
-
-def git_get_changed_files(version):
-    """List files that changed in v{version} vs parent."""
-    tag = f"bot-v{version - 1}" if version > 1 else None
-    if tag:
-        tags = _git("tag", "-l", tag, check=False)
-        if tags:
-            out = _git("diff", "--name-only", tag, "--", f"bots/claude_v{version}/")
-            return out.split("\n") if out else []
-    return []
 
 
 def git_get_parent(version):
-    """从 tag message 或 commit message 解析 parent。"""
+    """从 tag/commit message 解析 parent。"""
     tag = f"bot-v{version}"
     tags = _git("tag", "-l", tag, check=False)
     if tags:
-        msg = _git("tag", "-n99", tag)
+        msg = _git("for-each-ref", f"refs/tags/{tag}", "--format=%(contents)")
     else:
         log = _git("log", "--diff-filter=A", "--oneline", "-1", "--",
                     f"bots/claude_v{version}/", check=False)
@@ -322,6 +318,10 @@ def git_find_best_branch_source(active_bots, ratings, current_bot, min_gap=2):
         return best
 
     return None
+
+
+# ──────────────────────────────────────────────
+# LLM & Code Tools
 # ──────────────────────────────────────────────
 
 async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, is_text_ui):
@@ -484,6 +484,39 @@ def seed_initial_bots(ui):
 
 
 # ──────────────────────────────────────────────
+# Master Analysis
+# ──────────────────────────────────────────────
+
+async def _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui):
+    """Run Master analysis — can run concurrently with daemon evaluation."""
+    master_prompt = (PROMPTS_DIR / "master_prompt.md").read_text()
+    master_prompt = master_prompt.replace("{stagnation_info}", stagnation_info)
+    master_ctx = (
+        f"Current evolution: v{source_v} → v{next_v}\n"
+        f"Bot directory: bots/claude_v{source_v}/\n"
+        f"Ratings file: evolution_workspace/results/glicko_ratings.json\n"
+        f"Rating history: evolution_workspace/results/rating_history.jsonl\n"
+    )
+    master_log_file = get_logs_dir(next_v) / "master_io.txt"
+
+    for attempt in range(3):
+        ui.clear_io()
+        output, _, _ = await run_claude_query(
+            master_prompt + "\n" + master_ctx, [], ui,
+            f"MASTER (Try {attempt+1})", master_log_file, is_text_ui,
+        )
+        data = parse_json_output(output)
+        if data and "tasks" in data:
+            ui.log_history("Master analysis complete.", "success")
+            return data
+        ui.log_history("Master output malformed JSON. Retrying...", "warn")
+        await asyncio.sleep(2)
+
+    ui.log_history("Master failed to plan after 3 retries.", "error")
+    return None
+
+
+# ──────────────────────────────────────────────
 # Worker Execution
 # ──────────────────────────────────────────────
 
@@ -581,7 +614,9 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
         # Commit seeded bots to git
         git_ensure_clean()
         for i in range(1, 7):
-            _git("tag", f"bot-v{i}", "-m", f"Bot v{i}: seeded from reference bot{i}")
+            tag = f"bot-v{i}"
+            if not _git("tag", "-l", tag, check=False):
+                _git("tag", tag, "-m", f"Bot v{i}: seeded from reference bot{i}")
 
     current_v = 1
     while True:
@@ -635,11 +670,41 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
 
     git_ensure_clean()
 
-    max_generations = current_v + 50
     ref_context = get_reference_context()
     ratings = load_ratings()
 
-    while current_v < max_generations:
+    # ── Evolution metrics tracking ──
+    loop_start_time = time.time()
+    total_gens = 0
+    total_success = 0
+    fail_count = 0
+    gen_start_time = time.time()
+    initial_rating = None
+
+    while True:
+        # ── Consecutive failure rollback (60 min) ──
+        if fail_count >= 3:
+            ui.log_history(f"{fail_count} consecutive failures. Rolling back to 60min ago...", "warn")
+            cutoff = time.time() - 3600
+            tags_output = _git("tag", "-l", "bot-v*", check=False).strip()
+            tags = [t for t in tags_output.split("\n") if t.startswith("bot-v")]
+            rollback_tag = None
+            for tag in sorted(tags, key=lambda t: int(t.split("-v")[1])):
+                ts = _git("log", "-1", "--format=%ct", tag, check=False).strip()
+                if ts and float(ts) <= cutoff:
+                    rollback_tag = tag
+            if rollback_tag:
+                rollback_v = int(rollback_tag.split("-v")[1])
+                ui.log_history(f"Rolling back to {rollback_tag}", "warn")
+                current_v = rollback_v
+                next_cleanup = current_v + 1
+                cleanup_dir = get_bot_dir(next_cleanup)
+                while cleanup_dir.exists():
+                    shutil.rmtree(cleanup_dir)
+                    next_cleanup += 1
+                    cleanup_dir = get_bot_dir(next_cleanup)
+            fail_count = 0
+
         # Trim experience pool to prevent unbounded growth
         trim_experience_pool(max_entries=8)
 
@@ -664,32 +729,47 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
 
         next_v = current_v + 1
 
-        # Stagnation detection & branch selection
+        # Stagnation detection — build context for Master decision
         source_v = current_v
-        stag = git_get_stagnation_count(f"claude_v{current_v}", ratings)
-        if stag >= 2:
-            branch_source = git_find_best_branch_source(
-                active_bots, ratings, f"claude_v{current_v}"
+        stag_count = git_get_stagnation_count(f"claude_v{current_v}", ratings)
+        stagnation_info = "No stagnation detected. Continue from latest version."
+        if stag_count >= 2:
+            stagnation_info = (
+                f"⚠️ STAGNATION DETECTED: {stag_count} consecutive non-improving generations.\n"
+                f"Available bots to branch from:\n"
             )
-            if branch_source:
-                source_v = int(branch_source.split("_v")[1])
-                ui.log_history(
-                    f"⚠️ Stagnation ({stag} gens). Branching from {branch_source} instead of v{current_v}",
-                    "warn",
-                )
-                current_v = source_v
+            for b in active_bots:
+                p = ratings.get(b, Glicko2Player())
+                stagnation_info += f"  {b}: r={p.r:.1f} rd={p.rd:.1f}\n"
+            stagnation_info += "Consider setting `branch_from` in your output to restart from a different ancestor."
+            ui.log_history(
+                f"⚠️ Stagnation ({stag_count} gens). Deferring to Master for branch decision.",
+                "warn",
+            )
 
         ui.set_header(f"🔥 Antigravity Glicko-2 Evolution: v{source_v} ➡️ v{next_v} 🔥")
 
-        # 1. Wait for daemon evaluation or run inline
+        # 1. Wait for daemon evaluation or run inline — pipelined with Master analysis
         my_bot = f"claude_v{current_v}"
 
         if not no_daemon:
-            ui.set_status(f"Waiting for daemon to evaluate v{current_v}...", is_working=True)
-            ui.log_history(f"v{current_v} waiting for daemon evaluation...", "info")
-            wait_for_daemon_eval(my_bot)
+            ui.set_status(f"Pipelining daemon eval + Master analysis for v{current_v}...", is_working=True)
+            ui.log_history(f"v{current_v} pipelining daemon eval + Master analysis...", "info")
+
+            # Launch Master analysis concurrently — it reads files via tools, doesn't need final ratings
+            master_task = asyncio.create_task(
+                _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui)
+            )
+
+            # Wait for daemon evaluation (async, non-blocking)
+            eval_ok = await wait_for_daemon_eval(my_bot)
+            if not eval_ok:
+                ui.log_history(f"Daemon eval timeout for v{current_v}, using preliminary ratings.", "warn")
             ratings = load_ratings()
             ui.update_eval_table(ratings, active_bots)
+
+            # Await Master result (may already be done)
+            tasks_data = await master_task
         else:
             ui.set_status(f"v{current_v} inline evaluation...", is_working=True)
             ui.log_history(f"v{current_v} entering inline Glicko-2 evaluation...", "info")
@@ -724,57 +804,30 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
                 if my_results:
                     ratings[my_bot] = update_rating_period(ratings[my_bot], my_results)
 
-        # 2. Master Analysis
-        ui.set_status(f"Master Architect analyzing ecosystem...", is_working=True)
-        with open(PROMPTS_DIR / "master_prompt.md") as f:
-            master_prompt = f.read()
+            # Run Master after inline eval
+            tasks_data = await _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui)
 
-        my_p = ratings.get(my_bot, Glicko2Player())
-        master_ctx = f"Current bot {my_bot} Glicko-2 Rating: r={my_p.r:.1f}, rd={my_p.rd:.1f}\n\n"
+        # 2. Master result check — auto-retry on failure
+        if tasks_data is None:
+            ui.log_history("Master failed. Will retry next generation.", "error")
+            fail_count += 1
+            await asyncio.sleep(5)
+            continue
 
-        active_ratings = [(b, ratings.get(b, Glicko2Player())) for b in active_bots]
-        active_ratings.sort(key=lambda x: x[1].r, reverse=True)
-        master_ctx += "Global Leaderboard (Top 3):\n"
-        for i, (b, p) in enumerate(active_ratings[:3]):
-            master_ctx += f"Rank {i+1}: {b} (Rating: {p.r:.1f}, RD: {p.rd:.1f})\n"
-
-        # Rating trend — show recent generations
-        master_ctx += "\nRecent Rating Trend:\n"
-        for v in range(max(1, source_v - 3), source_v + 1):
-            bot = f"claude_v{v}"
-            if bot in ratings:
-                p = ratings[bot]
-                master_ctx += f"  {bot}: r={p.r:.1f} (RD: {p.rd:.1f})\n"
-
-        context_files = [str(EXPERIENCE_FILE)]
-        context_files += [str(get_bot_dir(current_v) / f) for f in os.listdir(get_bot_dir(current_v)) if f.endswith(".py")]
-
-        if active_ratings:
-            top_bot = active_ratings[0][0]
-            top_dir = BOTS_DIR / top_bot
-            for f in os.listdir(top_dir):
-                if f.endswith(".py"):
-                    context_files.append(str(top_dir / f))
-
-        master_log_file = get_logs_dir(next_v) / "master_io.txt"
-
-        tasks_data = None
-        for attempt in range(3):
-            ui.clear_io()
-            master_output, _, _ = await run_claude_query(master_prompt + "\n" + master_ctx, context_files, ui, f"MASTER (Try {attempt+1})", master_log_file, is_text_ui)
-            tasks_data = parse_json_output(master_output)
-            if tasks_data and "tasks" in tasks_data:
-                ui.log_history("Master analysis complete. Blueprint designed.", "success")
-                if "new_experience" in tasks_data:
-                    with open(EXPERIENCE_FILE, "a") as ef:
-                        ef.write(f"\n- **v{current_v} -> v{next_v}**: {tasks_data['new_experience']}")
-                break
-            else:
-                ui.log_history("Master output malformed JSON. Retrying...", "warn")
-                await asyncio.sleep(2)
-        else:
-            ui.log_history("Master failed to plan. Halting.", "error")
-            break
+        # Handle Master's branch_from decision
+        if tasks_data.get("branch_from"):
+            bf = tasks_data["branch_from"]
+            try:
+                branch_v = int(bf.split("_v")[1])
+                if branch_v != current_v:
+                    ui.log_history(
+                        f"Master chose to branch from {bf} instead of v{current_v}",
+                        "warn",
+                    )
+                    source_v = branch_v
+                    current_v = branch_v
+            except (ValueError, IndexError):
+                ui.log_history(f"Invalid branch_from value: {bf}", "warn")
 
         generation_approved = False
         reviewer_feedback = ""
@@ -793,14 +846,8 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             with open(PROMPTS_DIR / "worker_prompt.md") as f:
                 worker_template = f.read()
 
-            # Build worker context files (shared across all workers)
-            worker_context_files = [str(next_dir / f) for f in os.listdir(next_dir) if f.endswith(".py")]
-            if active_ratings:
-                top_bot = active_ratings[0][0]
-                top_dir = BOTS_DIR / top_bot
-                for f in os.listdir(top_dir):
-                    if f.endswith(".py"):
-                        worker_context_files.append(str(top_dir / f))
+            # Build worker context files — only experience pool; workers read bot files via Read tool
+            worker_context_files = [str(EXPERIENCE_FILE)]
 
             workers_succeeded = await _execute_workers(
                 tasks_data["tasks"], worker_template, next_dir, next_v,
@@ -838,40 +885,12 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
 
             reviewer_log_file = get_logs_dir(next_v) / "reviewer_io.txt"
             reviewer_prompt = reviewer_prompt.replace("{master_plan}", json.dumps(tasks_data, indent=2))
-
-            final_context_files = []
-
-            # 1. Write diff file for reviewer
-            worker_diff = git_diff_for_review(next_v)
-            if worker_diff:
-                diff_file = get_logs_dir(next_v) / "worker_diff.txt"
-                with open(diff_file, "w") as df:
-                    df.write(worker_diff)
-                final_context_files.append(str(diff_file))
-
-            # 2. Changed .py files (full content)
-            changed = git_get_changed_files(next_v)
-            for rel_path in changed:
-                if rel_path.endswith(".py"):
-                    full = PROJECT_ROOT / rel_path
-                    if full.exists() and str(full) not in final_context_files:
-                        final_context_files.append(str(full))
-
-            # 3. Unchanged file list for prompt injection
-            all_py = [f for f in os.listdir(next_dir) if f.endswith(".py")]
-            changed_names = {Path(p).name for p in changed if p.endswith(".py")}
-            unchanged_list = [f for f in all_py if f not in changed_names]
-
-            # Fallback: send all files if diff is empty
-            if not final_context_files:
-                final_context_files = [str(next_dir / f) for f in os.listdir(next_dir) if f.endswith(".py")]
-
-            reviewer_prompt = reviewer_prompt.replace("{unchanged_file_list}",
-                ", ".join(unchanged_list) if unchanged_list else "none")
+            reviewer_prompt = reviewer_prompt.replace("{version}", str(next_v))
+            reviewer_prompt = reviewer_prompt.replace("{parent_version}", str(source_v))
 
             for review_attempt in range(3):
                 ui.clear_io()
-                reviewer_output, _, _ = await run_claude_query(reviewer_prompt, final_context_files, ui, "LEAD CODE REVIEWER", reviewer_log_file, is_text_ui)
+                reviewer_output, _, _ = await run_claude_query(reviewer_prompt, [], ui, "LEAD CODE REVIEWER", reviewer_log_file, is_text_ui)
                 reviewer_data = parse_json_output(reviewer_output)
 
                 if reviewer_data and "approved" in reviewer_data:
@@ -883,12 +902,22 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             else:
                 generation_approved = True
 
-        if not generation_approved:
-            break
+        # Workers failed → auto-retry (not break)
+        if not workers_succeeded:
+            ui.log_history("Workers failed. Retrying from scratch.", "error")
+            fail_count += 1
+            continue
 
+        # Reviewer rejected → auto-retry
+        if not generation_approved:
+            ui.log_history(f"Generation v{next_v} not approved. Will retry.", "warn")
+            fail_count += 1
+            continue
+
+        # ── Generation approved! ──
         (next_dir / ".completed").touch()
 
-        # Git commit + tag (replaces record_birth)
+        # Git commit + tag
         source_bot = f"claude_v{source_v}"
         next_bot = f"claude_v{next_v}"
         strategy_tag = tasks_data.get("analysis", "")[:80] if tasks_data.get("analysis") else ""
@@ -899,9 +928,33 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
         )
 
         current_v = next_v
-        ui.log_history(f"Successfully evolved to v{current_v}! 🎉", "success")
+        fail_count = 0
+        total_gens += 1
+        total_success += 1
+
+        gen_elapsed = time.time() - gen_start_time
+        current_rating = ratings.get(f"claude_v{current_v}", Glicko2Player()).r
+        if initial_rating is None:
+            initial_rating = current_rating
+
+        ui.log_history(f"Successfully evolved to v{current_v}! ({gen_elapsed:.0f}s)", "success")
         if hasattr(ui, 'reset_gen_cost'):
             ui.reset_gen_cost()
+
+        # Update metrics
+        metrics = {
+            "current_v": current_v,
+            "next_v": current_v + 1,
+            "total_time_s": time.time() - loop_start_time,
+            "avg_gen_time_s": (time.time() - loop_start_time) / max(1, total_gens),
+            "success_rate": total_success / max(1, total_gens),
+            "total_gens": total_gens,
+            "total_success": total_success,
+            "fail_count": fail_count,
+            "rating_trend": current_rating - initial_rating,
+        }
+        ui.update_metrics(metrics)
+        gen_start_time = time.time()
 
     ui.set_status("Evolution Complete.", is_working=False)
     ui.log_history("Matrix simulation concluded.", "success")

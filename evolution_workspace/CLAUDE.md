@@ -112,12 +112,14 @@ evolution_workspace/
 - Every generation produces a structured git commit + annotated tag:
   - Commit message: `evolve: v{N} → v{M}\n\nparent: claude_v{N}\nstrategy: ...\nrating: r=... rd=...`
   - Tag: `bot-v{M}` with strategy summary
-- **Reviewer optimization**: Reviewer receives `git diff` + changed files + unchanged file list (instead of all files). Saves tokens and focuses review.
-- **Lineage**: `git_get_parent(v)` parses commit messages. `git_get_ancestors(v)` walks the chain. `git_get_stagnation_count()` compares ancestor ratings.
+- **LLM-managed git**: All LLM agents (Master/Worker/Reviewer) use Bash/Read tools to inspect git state directly:
+  - **Reviewer** runs `git diff bot-v{parent} -- bots/claude_v{version}/` to see changes. No context file injection needed.
+  - **Worker** runs `git diff bots/claude_v{version}/` to self-verify edits after coding.
+  - **Master** runs `git log`, `git show`, `git diff` to understand evolution history.
+- **Lineage**: `git_get_parent(v)` parses tag messages. `git_get_ancestors(v)` walks the chain. `git_get_stagnation_count()` compares ancestor ratings.
 - **Checkpoint**: `git_ensure_clean()` before each generation ensures clean state.
 - **Genesis bot** gets `git_commit_bot(1, 0, "genesis: ...")` on creation.
 - Seeded reference bots get tags `bot-v{1-6}` on first run.
-- **Diff for review**: `git_diff_for_review(v)` diffs against parent tag. `git_get_changed_files(v)` lists changed paths.
 - **Tracked in git**: bot code, experience pool, glicko ratings, daemon stats, rating history.
 - **Excluded**: LLM I/O logs (`results/v*/logs/`), `bots/graveyard/`, `__pycache__`.
 
@@ -177,8 +179,12 @@ evolution_core.py (async main_loop)
   ├── detects stagnation via git_get_stagnation_count() → branches if needed
   ├── seeds reference_bots/ → bots/claude_v{1-6}/ + git tags
   ├── calls run_claude_query() for Master/Worker/Reviewer via claude-agent-sdk
+  │   ├── Master: uses git log/diff for history analysis (prompt-guided)
+  │   ├── Workers: use git diff for self-verification after editing (prompt-guided)
+  │   └── Reviewer: uses git diff to inspect changes (prompt-guided, no context file injection)
   ├── executes workers in parallel (asyncio.gather, serial fallback)
   ├── runs quality gates (code size, decision tests)
+  ├── git_commit_bot() after approval (commit + tag)
   ├── starts elo_daemon.py subprocess (or --no-daemon for inline eval)
   ├── reads/writes results/glicko_ratings.json (file-locked)
   ├── logs to results/v{N}/logs/

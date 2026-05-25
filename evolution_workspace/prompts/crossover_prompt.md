@@ -22,6 +22,11 @@ Your goal is to produce the full Python code for the Child bot.
 {parent_b_code}
 
 # Action
-Please write the FULL Python code for the new Child bot directly into the directory `bots/claude_{version}/bot_{child_id}`.
-You may split the code into `main.py`, `preflop.py`, `postflop.py`, etc., just like the parents.
-DO NOT output conversational filler. Just think step by step, and then provide the file creations.
+1. **Read both parent bots' source code** using the Read tool:
+   - Parent A: `bots/claude_v{parent_a_version}/`
+   - Parent B: `bots/claude_v{parent_b_version}/`
+2. Design the crossover + mutation strategy based on their code.
+3. Write the FULL Python code for the new Child bot directly into `bots/claude_v{version}/`.
+   You may split the code into `main.py`, `preflop.py`, `postflop.py`, etc., just like the parents.
+
+DO NOT output conversational filler. Just think step by step, and then create the files.
