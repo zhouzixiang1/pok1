@@ -38,6 +38,13 @@ You MUST output your response containing exactly ONE JSON block formatted as fol
 ```json
 {
   "approved": true or false,
-  "feedback": "If approved=false, provide detailed instructions on what needs to be fixed. If true, this can be empty."
+  "feedback": "If approved=false, provide detailed instructions on what needs to be fixed. If true, this can be empty.",
+  "quality_score": 7,
+  "change_summary": "A 1-2 sentence summary of the key changes made in this generation.",
+  "risk_areas": ["List of potential risks or concerns about the changes, if any"]
 }
 ```
+
+- `quality_score` (1-10): Rate the overall quality of the changes. Consider correctness, adherence to plan, and code cleanliness.
+- `change_summary`: Required even when approved=true. This is used to update the experience pool for future generations.
+- `risk_areas`: Optional. List potential issues that could cause regression.

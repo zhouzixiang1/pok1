@@ -96,6 +96,14 @@ def save_ratings(ratings, period=None):
         with open(history_file, "a") as f:
             f.write(json.dumps(snapshot) + "\n")
 
+        # Trim history file to prevent unbounded growth
+        if history_file.exists():
+            with open(history_file, "r") as f:
+                lines = f.readlines()
+            if len(lines) > 200:
+                with open(history_file, "w") as f:
+                    f.writelines(lines[-100:])
+
 
 def load_stats():
     if not STATS_FILE.exists():

@@ -23,3 +23,14 @@ Please write the Python code to fulfill your objective. After editing:
    - Compile check: `python -m py_compile bots/claude_v{version}/main.py` (and other .py files you changed)
    - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v{version}/main.py`
    - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v{version}/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. If you find any violations, fix them and re-run the quality checks.

@@ -16,7 +16,6 @@ import fcntl
 import atexit
 import time
 import threading
-import random
 from pathlib import Path
 
 from claude_agent_sdk import (
@@ -138,13 +137,34 @@ async def wait_for_daemon_eval(bot_name, timeout=600, min_matches=20, max_rd=40)
     """Wait for daemon to evaluate a new bot (async, non-blocking).
 
     Requires both sufficient matches AND low rating deviation for confidence.
+    Uses mtime caching to avoid redundant disk reads.
     """
     start = time.time()
+    cached_stats = None
+    cached_ratings = None
+    stats_mtime = 0
+    ratings_mtime = 0
+
     while time.time() - start < timeout:
-        stats = load_daemon_stats()
-        matches = sum(v for k, v in stats.get("pairs", {}).items() if bot_name in k)
-        ratings = load_ratings()
-        rd = ratings.get(bot_name, Glicko2Player()).rd
+        # Only re-read files if they've been modified
+        if STATS_FILE.exists():
+            mt = os.path.getmtime(STATS_FILE)
+            if mt != stats_mtime:
+                stats_mtime = mt
+                cached_stats = load_daemon_stats()
+        if cached_stats is None:
+            cached_stats = {"pairs": {}, "total_periods": 0}
+
+        if RATINGS_FILE.exists():
+            mt = os.path.getmtime(RATINGS_FILE)
+            if mt != ratings_mtime:
+                ratings_mtime = mt
+                cached_ratings = load_ratings()
+        if cached_ratings is None:
+            cached_ratings = {}
+
+        matches = sum(v for k, v in cached_stats.get("pairs", {}).items() if bot_name in k)
+        rd = cached_ratings.get(bot_name, Glicko2Player()).rd
         if matches >= min_matches and rd <= max_rd:
             return True
         await asyncio.sleep(5)
@@ -221,11 +241,14 @@ def git_ensure_clean():
     return _git("rev-parse", "HEAD")
 
 
-def git_commit_bot(version, source_v, strategy_tag, rating_info=""):
+def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=None):
     """Commit a completed bot generation (bot code + ratings + experience pool)."""
+    parent_line = f"parent: claude_v{source_v}"
+    if parent2_v is not None:
+        parent_line += f"\nparent2: claude_v{parent2_v}"
     msg = (
         f"evolve: v{source_v} → v{version}\n\n"
-        f"parent: claude_v{source_v}\n"
+        f"{parent_line}\n"
         f"strategy: {strategy_tag}\n"
         f"{rating_info}"
     )
@@ -295,29 +318,6 @@ def git_get_stagnation_count(bot_name, ratings):
             break
     return count
 
-
-def git_find_best_branch_source(active_bots, ratings, current_bot, min_gap=2):
-    """Find the best bot to branch from when stagnation is detected."""
-    current_version = int(current_bot.split("_v")[1])
-    ancestors = set(git_get_ancestors(current_version))
-    ancestors.add(current_bot)
-
-    candidates = [b for b in active_bots if b not in ancestors]
-    if not candidates:
-        candidates = active_bots
-
-    candidates.sort(key=lambda b: ratings.get(b, Glicko2Player()).r, reverse=True)
-
-    best = candidates[0] if candidates else None
-    current_rating = ratings.get(current_bot, Glicko2Player()).r
-    best_rating = ratings.get(best, Glicko2Player()).r if best else 0
-
-    if best and best_rating > current_rating + min_gap * 5:
-        return best
-    if best and best != current_bot:
-        return best
-
-    return None
 
 
 # ──────────────────────────────────────────────
@@ -516,6 +516,153 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui
     return None
 
 
+async def _consolidate_experience_pool(ui, is_text_ui):
+    """Use LLM to deduplicate and consolidate the experience pool.
+
+    Reads the current experience_pool.md, asks LLM to merge redundant entries,
+    and writes back a consolidated version. Runs every 3 generations.
+    """
+    if not EXPERIENCE_FILE.exists():
+        return
+
+    content = EXPERIENCE_FILE.read_text()
+    if len(content.split("\n")) < 20:
+        return  # Too short to bother consolidating
+
+    consolidate_prompt = (
+        "You are an Experience Pool Consolidator. Your job is to clean up the experience pool file.\n\n"
+        "RULES:\n"
+        "1. Read the current experience_pool.md file.\n"
+        "2. Merge duplicate or near-duplicate lessons into single, concise entries.\n"
+        "3. Keep the most recent/relevant version of each lesson.\n"
+        "4. Remove entries that have been superseded by newer findings.\n"
+        "5. Preserve the markdown format and generation headers.\n"
+        "6. Keep the total file under 60 lines.\n"
+        "7. Output ONLY the consolidated markdown content — no explanation, no code fences.\n\n"
+        f"Edit the file in place: {EXPERIENCE_FILE}\n"
+    )
+    log_file = get_logs_dir(0) / "experience_consolidation_io.txt"
+
+    try:
+        ui.clear_io()
+        output, _, _ = await run_claude_query(
+            consolidate_prompt, [], ui,
+            "EXPERIENCE CONSOLIDATOR", log_file, is_text_ui,
+        )
+        if output and len(output.strip()) > 50:
+            ui.log_history("Experience pool consolidated.", "success")
+        else:
+            ui.log_history("Experience pool consolidation produced no output.", "warn")
+    except Exception as e:
+        ui.log_history(f"Experience pool consolidation failed: {e}", "warn")
+
+
+async def _generate_evolution_report(current_v, total_gens, ratings, ui, is_text_ui):
+    """Generate a brief evolution status report every 5 generations."""
+    sorted_bots = sorted(
+        [(b, ratings.get(b, Glicko2Player())) for b in ratings],
+        key=lambda x: x[1].r, reverse=True,
+    )[:5]
+
+    prompt = "Summarize the current poker bot evolution status in 3-4 bullet points.\n"
+    prompt += f"Total generations completed: {total_gens}, latest: v{current_v}\nTop 5:\n"
+    for b, p in sorted_bots:
+        prompt += f"  {b}: r={p.r:.0f} rd={p.rd:.0f}\n"
+    prompt += "Focus on: strategy trends, population health, and next priorities. Keep it concise."
+
+    log_file = get_logs_dir(current_v) / "evolution_report.txt"
+    output, _, _ = await run_claude_query(
+        prompt, [], ui, "EVOLUTION REPORTER", log_file, is_text_ui,
+    )
+    if output:
+        for line in output.strip().split("\n"):
+            if line.strip():
+                ui.log_history(line.strip(), "info")
+
+
+async def _analyze_stagnation(source_v, active_bots, ratings, ui, is_text_ui):
+    """Use LLM to analyze rating trends and determine if stagnation is real.
+
+    Returns a dict with: is_stagnant, confidence, recommendation, branch_from, reason.
+    Returns None on failure.
+    """
+    # Build compact context from rating history
+    history_file = RESULTS_DIR / "rating_history.jsonl"
+    history_ctx = ""
+    if history_file.exists():
+        with open(history_file) as f:
+            lines = f.readlines()
+        for line in lines[-10:]:
+            try:
+                snap = json.loads(line.strip())
+                top = max(p["r"] for p in snap["ratings"].values())
+                history_ctx += f"  Period {snap['period']}: top_r={top:.0f}\n"
+            except (json.JSONDecodeError, KeyError):
+                continue
+
+    sorted_bots = sorted(active_bots, key=lambda b: ratings.get(b, Glicko2Player()).r, reverse=True)[:5]
+
+    prompt = (
+        "You are a rating trend analyst for a poker bot evolution system.\n"
+        "Analyze whether the evolution is truly stagnating or if rating changes are just Glicko variance.\n\n"
+        f"Current bot: claude_v{source_v}\n"
+        f"Top 5 bots by rating:\n"
+    )
+    for b in sorted_bots:
+        p = ratings.get(b, Glicko2Player())
+        prompt += f"  {b}: r={p.r:.0f} rd={p.rd:.0f}\n"
+    prompt += f"\nRating history (last 10 periods):\n{history_ctx}\n"
+    prompt += (
+        "Is this real stagnation or Glicko variance? Answer in JSON only:\n"
+        '```json\n'
+        '{"is_stagnant": true/false, "confidence": "high/medium/low", '
+        '"recommendation": "continue|branch|crossover", '
+        '"branch_from": "claude_vN" or null, '
+        '"reason": "brief explanation"}\n'
+        '```'
+    )
+
+    log_file = get_logs_dir(source_v) / "stagnation_analysis.txt"
+    output, _, _ = await run_claude_query(
+        prompt, [], ui, "STAGNATION ANALYST", log_file, is_text_ui,
+    )
+    return parse_json_output(output)
+
+
+async def _run_crossover(parent_a_v, parent_b_v, target_v, ui, is_text_ui):
+    """Run crossover between two elite bots to create a new child bot."""
+    crossover_prompt = (PROMPTS_DIR / "crossover_prompt.md").read_text()
+    crossover_prompt = crossover_prompt.replace("{parent_a_version}", str(parent_a_v))
+    crossover_prompt = crossover_prompt.replace("{parent_b_version}", str(parent_b_v))
+    crossover_prompt = crossover_prompt.replace("{version}", str(target_v))
+
+    target_dir = get_bot_dir(target_v)
+    log_file = get_logs_dir(target_v) / "crossover_io.txt"
+
+    for attempt in range(3):
+        ui.clear_io()
+        ui.set_status(f"Crossover v{parent_a_v}×v{parent_b_v}→v{target_v} (Try {attempt+1})", is_working=True)
+        await run_claude_query(
+            crossover_prompt, [], ui,
+            f"CROSSOVER v{parent_a_v}×v{parent_b_v}→v{target_v}",
+            log_file, is_text_ui,
+        )
+
+        compile_errors = verify_code(target_dir)
+        if compile_errors:
+            ui.log_history("Crossover compile error, retrying...", "warn")
+            continue
+
+        smoke_errors = run_smoke_test(target_dir)
+        if smoke_errors:
+            ui.log_history("Crossover smoke test failed, retrying...", "warn")
+            continue
+
+        return True
+
+    return False
+
+
 # ──────────────────────────────────────────────
 # Worker Execution
 # ──────────────────────────────────────────────
@@ -561,7 +708,8 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
 
 
 async def _execute_workers(tasks, worker_template, next_dir, next_v,
-                            context_files, ui, is_text_ui, reviewer_feedback):
+                            context_files, ui, is_text_ui, reviewer_feedback,
+                            source_v=None):
     """Execute worker tasks. Tries parallel first, falls back to serial on failure."""
     if len(tasks) <= 1:
         # Single task — run directly
@@ -587,7 +735,8 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
 
     # Parallel had issues — fall back to serial with fresh copy
     ui.log_history("Parallel execution had issues, retrying serially...", "warn")
-    src_dir = get_bot_dir(next_v - 1) if next_v > 1 else get_bot_dir(1)
+    _source = source_v if source_v is not None else (next_v - 1 if next_v > 1 else 1)
+    src_dir = get_bot_dir(_source)
     if next_dir.exists():
         shutil.rmtree(next_dir)
     shutil.copytree(src_dir, next_dir)
@@ -633,37 +782,46 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
 
     if current_v == 1:
         ui.log_history("No bots found. Initializing Genesis Bot (v1)...", "info")
-        ui.set_status("Running Round 0 (Baseline Generation)...", is_working=True)
-        os.makedirs(get_bot_dir(1), exist_ok=True)
+        while True:
+            ui.set_status("Running Round 0 (Baseline Generation)...", is_working=True)
+            os.makedirs(get_bot_dir(1), exist_ok=True)
 
-        with open(PROMPTS_DIR / "initial_prompt.md") as f:
-            prompt = f.read()
-        instruction = prompt + "\n\nPlease write the full code for main.py, preflop.py, and postflop.py directly into bots/claude_v1/ directory."
+            with open(PROMPTS_DIR / "initial_prompt.md") as f:
+                prompt = f.read()
+            instruction = prompt + "\n\nPlease write the full code for main.py, preflop.py, and postflop.py directly into bots/claude_v1/ directory."
 
-        log_file = get_logs_dir(1) / "initial_generation_io.txt"
+            log_file = get_logs_dir(1) / "initial_generation_io.txt"
 
-        for attempt in range(3):
-            await run_claude_query(instruction, [], ui, f"GENESIS BOT (Try {attempt+1})", log_file, is_text_ui)
+            genesis_ok = False
+            for attempt in range(3):
+                await run_claude_query(instruction, [], ui, f"GENESIS BOT (Try {attempt+1})", log_file, is_text_ui)
 
-            compile_errors = verify_code(get_bot_dir(1))
-            if compile_errors:
-                ui.log_history("Genesis v1 failed syntax check.", "warn")
-                instruction += f"\n\nCRITICAL FIX: Fix syntax error:\n{compile_errors[0]}"
-                continue
+                compile_errors = verify_code(get_bot_dir(1))
+                if compile_errors:
+                    ui.log_history("Genesis v1 failed syntax check.", "warn")
+                    instruction += f"\n\nCRITICAL FIX: Fix syntax error:\n{compile_errors[0]}"
+                    continue
 
-            smoke_errors = run_smoke_test(get_bot_dir(1))
-            if smoke_errors:
-                ui.log_history("Genesis v1 failed smoke test.", "warn")
-                instruction += f"\n\nCRITICAL FIX: Fix runtime error:\n{smoke_errors[0]}"
-                continue
+                smoke_errors = run_smoke_test(get_bot_dir(1))
+                if smoke_errors:
+                    ui.log_history("Genesis v1 failed smoke test.", "warn")
+                    instruction += f"\n\nCRITICAL FIX: Fix runtime error:\n{smoke_errors[0]}"
+                    continue
 
-            (get_bot_dir(1) / ".completed").touch()
-            git_commit_bot(1, 0, "genesis: initial bot from scratch")
-            ui.log_history("Genesis v1 generated successfully.", "success")
-            break
-        else:
-            ui.log_history("Failed to generate Genesis bot. Exiting.", "error")
-            return
+                (get_bot_dir(1) / ".completed").touch()
+                git_commit_bot(1, 0, "genesis: initial bot from scratch")
+                ui.log_history("Genesis v1 generated successfully.", "success")
+                genesis_ok = True
+                break
+
+            if genesis_ok:
+                break
+
+            ui.log_history("Genesis bot failed 3 times. Retrying in 10s...", "warn")
+            await asyncio.sleep(10)
+            v1_dir = get_bot_dir(1)
+            if v1_dir.exists():
+                shutil.rmtree(v1_dir)
     else:
         current_v -= 1
         ui.log_history(f"Resumed successfully from v{current_v}", "success")
@@ -682,27 +840,11 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
     initial_rating = None
 
     while True:
-        # ── Consecutive failure rollback (60 min) ──
+        # ── Consecutive failure cooldown ──
         if fail_count >= 3:
-            ui.log_history(f"{fail_count} consecutive failures. Rolling back to 60min ago...", "warn")
-            cutoff = time.time() - 3600
-            tags_output = _git("tag", "-l", "bot-v*", check=False).strip()
-            tags = [t for t in tags_output.split("\n") if t.startswith("bot-v")]
-            rollback_tag = None
-            for tag in sorted(tags, key=lambda t: int(t.split("-v")[1])):
-                ts = _git("log", "-1", "--format=%ct", tag, check=False).strip()
-                if ts and float(ts) <= cutoff:
-                    rollback_tag = tag
-            if rollback_tag:
-                rollback_v = int(rollback_tag.split("-v")[1])
-                ui.log_history(f"Rolling back to {rollback_tag}", "warn")
-                current_v = rollback_v
-                next_cleanup = current_v + 1
-                cleanup_dir = get_bot_dir(next_cleanup)
-                while cleanup_dir.exists():
-                    shutil.rmtree(cleanup_dir)
-                    next_cleanup += 1
-                    cleanup_dir = get_bot_dir(next_cleanup)
+            ui.log_history(f"{fail_count} consecutive failures. Cooling down for 1 hour...", "warn")
+            await asyncio.sleep(3600)
+            # Reset counter but keep current_v — just retry from where we are
             fail_count = 0
 
         # Trim experience pool to prevent unbounded growth
@@ -729,23 +871,115 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
 
         next_v = current_v + 1
 
-        # Stagnation detection — build context for Master decision
+        # Stagnation detection — use LLM for intelligent analysis when stagnation suspected
         source_v = current_v
         stag_count = git_get_stagnation_count(f"claude_v{current_v}", ratings)
         stagnation_info = "No stagnation detected. Continue from latest version."
         if stag_count >= 2:
-            stagnation_info = (
-                f"⚠️ STAGNATION DETECTED: {stag_count} consecutive non-improving generations.\n"
-                f"Available bots to branch from:\n"
-            )
-            for b in active_bots:
-                p = ratings.get(b, Glicko2Player())
-                stagnation_info += f"  {b}: r={p.r:.1f} rd={p.rd:.1f}\n"
-            stagnation_info += "Consider setting `branch_from` in your output to restart from a different ancestor."
-            ui.log_history(
-                f"⚠️ Stagnation ({stag_count} gens). Deferring to Master for branch decision.",
-                "warn",
-            )
+            # Use LLM to analyze whether stagnation is real or Glicko noise
+            stag_result = await _analyze_stagnation(source_v, active_bots, ratings, ui, is_text_ui)
+            if stag_result and stag_result.get("is_stagnant"):
+                rec = stag_result.get("recommendation", "branch")
+                confidence = stag_result.get("confidence", "unknown")
+                reason = stag_result.get("reason", "No improvement trend detected")
+                stagnation_info = (
+                    f"⚠️ STAGNATION (confidence: {confidence}): {reason}\n"
+                    f"Recommendation: {rec}\n"
+                    f"Available bots:\n"
+                )
+                for b in active_bots:
+                    p = ratings.get(b, Glicko2Player())
+                    stagnation_info += f"  {b}: r={p.r:.1f} rd={p.rd:.1f}\n"
+
+                # If LLM recommends crossover, force stag_count to trigger crossover path
+                if rec == "crossover":
+                    stag_count = max(stag_count, 3)
+
+                # If LLM recommends a specific branch target, hint to Master
+                branch_hint = stag_result.get("branch_from")
+                if branch_hint:
+                    stagnation_info += f"Analyst suggests branching from: {branch_hint}\n"
+
+                ui.log_history(
+                    f"⚠️ Stagnation ({stag_count} gens, {confidence}). LLM recommends: {rec}",
+                    "warn",
+                )
+            elif stag_result and not stag_result.get("is_stagnant"):
+                # LLM says it's noise
+                stagnation_info = (
+                    f"Rating variation detected but likely Glicko noise. "
+                    f"({stag_result.get('reason', 'Variance within expected range')}) "
+                    "Continue from latest version."
+                )
+                ui.log_history(f"Stagnation check: LLM says Glicko noise. Continuing.", "info")
+            else:
+                # LLM analysis failed — fallback to hardcoded logic
+                stagnation_info = (
+                    f"⚠️ STAGNATION DETECTED: {stag_count} consecutive non-improving generations.\n"
+                    f"Available bots to branch from:\n"
+                )
+                for b in active_bots:
+                    p = ratings.get(b, Glicko2Player())
+                    stagnation_info += f"  {b}: r={p.r:.1f} rd={p.rd:.1f}\n"
+                stagnation_info += "Consider setting `branch_from` in your output to restart from a different ancestor."
+                ui.log_history(
+                    f"⚠️ Stagnation ({stag_count} gens). LLM analysis unavailable, using fallback.",
+                    "warn",
+                )
+
+        # Severe stagnation → try crossover between top-2 bots
+        if stag_count >= 3 and len(active_bots) >= 2:
+            top_bots = sorted(active_bots, key=lambda b: ratings.get(b, Glicko2Player()).r, reverse=True)[:2]
+            parent_a = int(top_bots[0].split("_v")[1])
+            parent_b = int(top_bots[1].split("_v")[1])
+            ui.log_history(f"🔥 Severe stagnation. Crossover: v{parent_a} × v{parent_b} → v{next_v}", "warn")
+
+            # Prepare target directory from parent A baseline
+            next_dir = get_bot_dir(next_v)
+            if next_dir.exists():
+                shutil.rmtree(next_dir)
+            shutil.copytree(get_bot_dir(parent_a), next_dir)
+
+            crossover_ok = await _run_crossover(parent_a, parent_b, next_v, ui, is_text_ui)
+            if crossover_ok:
+                # Run decision tests on crossover bot
+                decision_pass_rate = run_decision_tests(next_dir)
+                if decision_pass_rate >= 0.6:
+                    (next_dir / ".completed").touch()
+                    git_commit_bot(next_v, parent_a, f"crossover: v{parent_a}×v{parent_b}", parent2_v=parent_b)
+                    current_v = next_v
+                    fail_count = 0
+                    total_gens += 1
+                    total_success += 1
+
+                    # Update metrics (crossover skips normal pipeline metrics)
+                    gen_elapsed = time.time() - gen_start_time
+                    current_rating = ratings.get(f"claude_v{current_v}", Glicko2Player()).r
+                    if initial_rating is None:
+                        initial_rating = current_rating
+                    metrics = {
+                        "current_v": current_v,
+                        "next_v": current_v + 1,
+                        "total_time_s": time.time() - loop_start_time,
+                        "avg_gen_time_s": (time.time() - loop_start_time) / max(1, total_gens),
+                        "success_rate": total_success / max(1, total_gens),
+                        "total_gens": total_gens,
+                        "total_success": total_success,
+                        "fail_count": fail_count,
+                        "rating_trend": current_rating - initial_rating,
+                    }
+                    ui.update_metrics(metrics)
+                    ui.log_history(f"Crossover v{next_v} accepted! (decision tests: {decision_pass_rate:.0%}, {gen_elapsed:.0f}s)", "success")
+                    gen_start_time = time.time()
+                    continue
+                else:
+                    ui.log_history(f"Crossover v{next_v} failed decision tests ({decision_pass_rate:.0%}).", "warn")
+            else:
+                ui.log_history("Crossover failed. Falling back to normal evolution.", "warn")
+
+            # Clean up failed crossover directory
+            if next_dir.exists():
+                shutil.rmtree(next_dir)
 
         ui.set_header(f"🔥 Antigravity Glicko-2 Evolution: v{source_v} ➡️ v{next_v} 🔥")
 
@@ -846,12 +1080,13 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             with open(PROMPTS_DIR / "worker_prompt.md") as f:
                 worker_template = f.read()
 
-            # Build worker context files — only experience pool; workers read bot files via Read tool
-            worker_context_files = [str(EXPERIENCE_FILE)]
+            # Build worker context files — workers read bot files via Read tool
+            worker_context_files = []
 
             workers_succeeded = await _execute_workers(
                 tasks_data["tasks"], worker_template, next_dir, next_v,
                 worker_context_files, ui, is_text_ui, reviewer_feedback,
+                source_v=source_v,
             )
 
             if not workers_succeeded:
@@ -896,11 +1131,24 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
                 if reviewer_data and "approved" in reviewer_data:
                     if reviewer_data["approved"]:
                         generation_approved = True
+                        # Log quality score and change summary
+                        qs = reviewer_data.get("quality_score", 0)
+                        if qs:
+                            ui.log_history(f"Quality score: {qs}/10", "info")
+                        summary = reviewer_data.get("change_summary", "")
+                        if summary:
+                            with open(EXPERIENCE_FILE, "a") as ep:
+                                ep.write(f"\n- **v{source_v} -> v{next_v} review**: {summary}\n")
+                        risks = reviewer_data.get("risk_areas", [])
+                        if risks:
+                            ui.log_history(f"Risk areas: {'; '.join(risks)}", "warn")
                     else:
                         reviewer_feedback = reviewer_data.get("feedback", "")
                     break
             else:
-                generation_approved = True
+                # Reviewer failed to produce valid JSON 3 times — reject conservatively
+                generation_approved = False
+                reviewer_feedback = "Reviewer failed to produce valid output. Please review and retry."
 
         # Workers failed → auto-retry (not break)
         if not workers_succeeded:
@@ -940,6 +1188,16 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
         ui.log_history(f"Successfully evolved to v{current_v}! ({gen_elapsed:.0f}s)", "success")
         if hasattr(ui, 'reset_gen_cost'):
             ui.reset_gen_cost()
+
+        # Consolidate experience pool every 3 generations
+        if total_gens % 3 == 0:
+            ui.log_history("Consolidating experience pool...", "info")
+            await _consolidate_experience_pool(ui, is_text_ui)
+
+        # Generate evolution report every 5 generations
+        if total_gens % 5 == 0:
+            ui.log_history("Generating evolution report...", "info")
+            await _generate_evolution_report(current_v, total_gens, ratings, ui, is_text_ui)
 
         # Update metrics
         metrics = {

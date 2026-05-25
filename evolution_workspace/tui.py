@@ -62,6 +62,9 @@ class EvolutionApp(App, BaseUI):
         self.cost_log = deque(maxlen=20)
         self.gen_cost_total = 0.0
         self.grand_cost_total = 0.0
+        # Sparkline cache
+        self._sparkline_cache = ""
+        self._sparkline_mtime = 0
 
     # ──────────────────────────────────────────────
     # Layout
@@ -301,12 +304,23 @@ class EvolutionApp(App, BaseUI):
             pass
 
     def _build_rating_sparkline(self):
-        """Build a sparkline from rating_history.jsonl showing top bot rating trend."""
+        """Build a sparkline from rating_history.jsonl showing top bot rating trend.
+        Uses mtime cache to avoid re-reading unchanged files.
+        """
         import json as _json
+        import os as _os
         history_file = RESULTS_DIR / "rating_history.jsonl"
         if not history_file.exists():
             return ""
+
         try:
+            mt = _os.path.getmtime(history_file)
+            if mt != self._sparkline_mtime and self._sparkline_cache:
+                # File changed — will recompute below
+                pass
+            elif self._sparkline_cache:
+                return self._sparkline_cache
+
             snapshots = []
             with open(history_file) as f:
                 for line in f:
@@ -319,18 +333,24 @@ class EvolutionApp(App, BaseUI):
                         top_r = max(p.get("r", 1500) for p in ratings.values())
                         snapshots.append(top_r)
             if len(snapshots) < 2:
+                self._sparkline_cache = ""
+                self._sparkline_mtime = mt
                 return ""
             # Take last 20 snapshots
             recent = snapshots[-20:]
             mn, mx = min(recent), max(recent)
             chars = "▁▂▃▄▅▆▇█"
             if mx == mn:
-                return f"  Trend: {'█' * len(recent)} ({recent[-1]:.0f})"
-            spark = ""
-            for v in recent:
-                idx = int((v - mn) / (mx - mn) * (len(chars) - 1))
-                spark += chars[idx]
-            return f"  Trend: [bright_cyan]{spark}[/] ({recent[0]:.0f}→{recent[-1]:.0f})"
+                result = f"  Trend: {'█' * len(recent)} ({recent[-1]:.0f})"
+            else:
+                spark = ""
+                for v in recent:
+                    idx = int((v - mn) / (mx - mn) * (len(chars) - 1))
+                    spark += chars[idx]
+                result = f"  Trend: [bright_cyan]{spark}[/] ({recent[0]:.0f}→{recent[-1]:.0f})"
+            self._sparkline_cache = result
+            self._sparkline_mtime = mt
+            return result
         except Exception:
             return ""
 
