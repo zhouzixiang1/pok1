@@ -12,10 +12,13 @@ This workspace is a subdirectory of the parent poker project (`/Users/zhouzixian
 
 ```bash
 # From the project root (../)
-python evolution_workspace/evolution_manager.py                       # Rich TUI mode (requires `rich`)
+python evolution_workspace/evolution_manager.py                       # Textual TUI mode (default)
 python evolution_workspace/evolution_manager.py --no-tui              # Plain text mode
 python evolution_workspace/evolution_manager.py --no-daemon           # Inline eval (no background daemon)
 python evolution_workspace/evolution_manager.py --workers 8 --pairs 3 # Custom daemon settings
+
+# Or run the Textual TUI directly:
+python evolution_workspace/tui.py
 ```
 
 The manager is an infinite async loop: it finds the latest completed generation, evaluates it, delegates improvements to LLM workers, reviews the result, and advances to the next generation.
@@ -28,6 +31,9 @@ python evolution_workspace/fast_evaluator.py bots/claude_v1/main.py bots/bot1/ma
 
 # Smoke test a single bot (1 mirror game vs reference bot)
 python evolution_workspace/smoke_tester.py bots/claude_v1/main.py
+
+# Run decision scenario tests against a bot
+python evolution_workspace/decision_tester.py bots/claude_v11/main.py --verbose
 
 # Run background rating daemon standalone
 python evolution_workspace/elo_daemon.py --pairs 5 --workers 14 --verbose
@@ -42,37 +48,53 @@ python evolution_workspace/elo_daemon.py --once
 
 ```
 evolution_workspace/
-├── evolution_manager.py   — Main async loop, Rich TUI, Glicko-2 ratings, bot lifecycle, LLM orchestration
+├── evolution_manager.py   — Thin entry point: parses CLI args, launches TUI or text mode
+├── evolution_core.py      — Core business logic: main_loop, LLM orchestration, ratings, worker execution
+├── tui.py                 — Textual TUI: streaming display, arrow key navigation, multi-panel dashboard
+├── tui.tcss               — Textual CSS: dark theme styling
 ├── elo_daemon.py          — Background Glicko-2 rating daemon (ProcessPoolExecutor, continuous battles)
 ├── glicko2.py             — Glicko-2 rating math (Glicko2Player, update_rating_period, decay_rd)
+├── lineage.py             — Evolution tree: parent-child tracking, stagnation detection, branch selection
+├── experience_pool.py     — Experience pool auto-trimming (keeps last N generations)
+├── decision_tester.py     — Standard decision scenario tester (forbidden/expected action validation)
+├── test_scenarios.json    — Decision test scenarios (preflop/postflop/river spots)
 ├── fast_evaluator.py      — Evaluates one bot against multiple opponents → summary.json
-├── smoke_tester.py        — Runs 1 mirror game to catch runtime crashes (subprocess, exit code 0/1)
-├── experience_pool.md     — Accumulated strategic lessons across generations (auto-appended by Master)
+├── smoke_tester.py        — Runs 1 mirror game to catch runtime crashes
+├── experience_pool.md     — Accumulated strategic lessons across generations (auto-trimmed + auto-appended)
 ├── prompts/
 │   ├── initial_prompt.md  — Genesis agent: creates first bot (v1) from scratch
 │   ├── master_prompt.md   — Master Architect: analyzes results, outputs JSON plan with tasks
 │   ├── worker_prompt.md   — Worker agent: executes tasks (Direction A: logic / Direction B: hyperparams)
-│   ├── reviewer_prompt.md — Reviewer agent: validates worker output, enforces dual-track boundary
+│   ├── reviewer_prompt.md — Reviewer agent: validates worker output, enforces dual-track + file size
 │   └── crossover_prompt.md — Crossover agent: combines two elite bots + mutation
 ├── reference_bots/
 │   └── bot{1-6}/          — Fixed baseline bots (multi-file: main.py, strategy.py, state.py, simulation.py, etc.)
 └── results/
     ├── glicko_ratings.json    — Glicko-2 ratings for all active bots (file-locked)
     ├── elo_daemon_stats.json  — Daemon match counts per pair + total periods
+    ├── lineage.json           — Evolution tree (parent/child relationships + strategy tags)
+    ├── rating_history.jsonl   — Appended snapshot per daemon period for trend analysis
     ├── v{N}/logs/             — Per-generation LLM conversation logs
     └── round_{N}/             — Anchor runner results from manual evaluation rounds
 ```
 
 ### Multi-Agent LLM Pipeline (per generation)
 
-1. **Reaper** (if >30 bots): Sort by conservative rating (r - 2*rd), move weakest to `bots/graveyard/`.
-2. **Evaluation**: Daemon mode: wait for 10 matches via background daemon. Inline mode: run up to 10 opponents × 5 games each via `mirror_battle()`.
-3. **Master Architect** (`master_prompt.md`): Analyzes bot rating + leaderboard top 3 + experience pool + reference bots. Outputs JSON plan with tasks split into:
+1. **Experience Pool Trim** (`experience_pool.py`): Auto-trim to last 8 generation entries to prevent unbounded growth.
+2. **Stagnation Detection** (`lineage.py`): If ≥2 consecutive generations fail to improve, branch from the highest-rated bot instead.
+3. **Reaper** (if >30 bots): Sort by conservative rating (r - 2*rd), move weakest to `bots/graveyard/`.
+4. **Evaluation**: Daemon mode: wait for ≥20 matches **and** RD < 40 (confidence gate). Inline mode: run up to 10 opponents × 5 games each via `mirror_battle()`.
+5. **Master Architect** (`master_prompt.md`): Analyzes bot rating + leaderboard top 3 + experience pool + reference bots + recent rating trend. Outputs JSON plan with tasks split into:
    - **Direction A — Algorithmic Logic Architect**: Refactors/adds logic, fuses algorithms from reference bots.
    - **Direction B — Hyperparameter Tuner**: Only adjusts numeric constants/thresholds. Forbidden from changing control flow.
+   - Each task specifies `target_files` to avoid parallel worker conflicts.
    - Appends new strategic lessons to `experience_pool.md`.
-4. **Workers** (`worker_prompt.md`): Each executes one task from the Master's plan. Workers modify files in the next generation's directory. Up to 4 retries with compile/smoke test error injection.
-5. **Reviewer** (`reviewer_prompt.md`): Validates that workers followed the plan and the dual-track boundary (logic vs. hyperparameters). Can reject and force a retry with feedback. 3 retry attempts.
+6. **Workers** (`worker_prompt.md`): Execute in parallel via `asyncio.gather` (falls back to serial on failure). Each worker modifies files in the next generation's directory. Up to 4 retries with compile/smoke test error injection.
+7. **Quality Gates**: After workers complete:
+   - **Code size check**: Single-file ≤1000 lines limit. Rejects oversized files, instructs to split.
+   - **Decision tests**: Standard scenario tests (≥70% pass rate required). Rejects catastrophic blunders (folding AA preflop, etc.).
+8. **Reviewer** (`reviewer_prompt.md`): Validates that workers followed the plan and the dual-track boundary (logic vs. hyperparameters). Can reject and force a retry with feedback. 3 retry attempts.
+9. **Lineage Recording** (`lineage.py`): Records parent/child relationship and strategy tag for each new bot.
 
 ### LLM Invocation (claude-agent-sdk)
 
@@ -89,7 +111,8 @@ evolution_workspace/
 
 - Uses `glicko2.py` (local implementation). Each bot is a `Glicko2Player` with rating (r), rating deviation (rd), and volatility (sigma).
 - Initial values: r=1500, rd=350, sigma=0.06.
-- **Background daemon** (`elo_daemon.py`): Continuously runs mirror battles via `ProcessPoolExecutor`. Prioritizes under-evaluated pairs. Updates ratings after each period (batch of matches).
+- **Background daemon** (`elo_daemon.py`): Continuously runs mirror battles via `ProcessPoolExecutor`. Match selection prioritizes under-evaluated pairs (60%) and rating-diverse pairs (40%). Updates ratings after each period.
+- **Rating history** (`rating_history.jsonl`): Each daemon period appends a snapshot for trend analysis.
 - Conservative rating: `r - 2*rd` (used for Reaper ranking).
 - RD confidence display: <50 very confident (green), 50-100 confident (yellow), 100-200 uncertain (orange), >200 very uncertain (red).
 - File locking (`fcntl`) for concurrent access between manager and daemon.
@@ -99,9 +122,10 @@ evolution_workspace/
 - Bots live in `bots/claude_v{N}/` (relative to project root, not this workspace).
 - `.completed` marker file indicates a generation finished successfully.
 - Incomplete generations (no `.completed`) are rolled back on restart.
-- Initial bots (v1-v6) are seeded from `reference_bots/` on first run.
+- Initial bots (v1-v6) are seeded from `reference_bots/` on first run with lineage records.
 - When active bots exceed 30 (`MAX_ACTIVE_BOTS`), Reaper moves the lowest-rated bot to `bots/graveyard/`.
 - Genesis creation (`initial_prompt.md`): if no bots exist at all, creates v1 from scratch.
+- **Branching**: Stagnation detection can cause evolution to branch from a historical bot instead of the latest.
 
 ### Reference Bots
 
@@ -117,25 +141,30 @@ Six fixed baseline bots in `reference_bots/bot{1-6}/`. All share the same modula
 | bot5 | Anti-exploitation framework, Bot4 detection/counter, gift tracking |
 | bot6 | Slim implementation, core fundamentals, minimal complexity |
 
-### UI System (evolution_manager.py)
+### UI System
 
-- `BaseUI` (abstract): interface with methods for history, status, I/O stream, eval table, daemon status, cost tracking.
-- `TextUI`: minimal print-based implementation for `--no-tui` mode.
-- `EvolutionUI`: Rich terminal UI with multi-panel layout:
-  - Header (generation + total cost)
-  - Status spinner / Daemon monitor (PID, matches, periods)
-  - History log (20 messages with icons)
-  - Glicko-2 leaderboard with confidence bars
-  - Match feed (recent results)
-  - Cost tracker (per-agent costs, generation total, grand total)
-  - LLM stream (color-coded: prompt/claude/thinking/tool/error)
+- `BaseUI` (in `evolution_core.py`): abstract interface with methods for history, status, I/O stream, eval table, daemon status, cost tracking.
+- `TextUI` (in `evolution_core.py`): minimal print-based implementation for `--no-tui` mode.
+- `EvolutionApp` (in `tui.py`): Textual TUI with:
+  - **Multi-panel layout**: header bar, status, daemon monitor, history log, Glicko-2 leaderboard, cost tracker
+  - **Streaming LLM output**: color-coded with type prefixes (│ prompt, ▸ claude, … thinking, ⚙ tool, ✖ error)
+  - **Arrow key navigation**: ↑/↓ scroll RichLog panels (auto-scroll pauses on manual scroll), ←/→/Tab switch panel focus
+  - **Footer**: shows available keybindings
+  - **Dark theme** (`tui.tcss`): terminal-style stream panel with `$surface` background
 
 ## Data Flow
 
 ```
-evolution_manager.py (async main_loop)
-  ├── seeds reference_bots/ → bots/claude_v{1-6}/
+evolution_manager.py (thin entry point)
+  └── delegates to Textual TUI (tui.py) or TextUI (evolution_core.py)
+
+evolution_core.py (async main_loop)
+  ├── trims experience_pool.md (keeps last 8 entries)
+  ├── detects stagnation via lineage.py → branches if needed
+  ├── seeds reference_bots/ → bots/claude_v{1-6}/ + lineage records
   ├── calls run_claude_query() for Master/Worker/Reviewer via claude-agent-sdk
+  ├── executes workers in parallel (asyncio.gather, serial fallback)
+  ├── runs quality gates (code size, decision tests)
   ├── starts elo_daemon.py subprocess (or --no-daemon for inline eval)
   ├── reads/writes results/glicko_ratings.json (file-locked)
   ├── logs to results/v{N}/logs/
@@ -143,8 +172,10 @@ evolution_manager.py (async main_loop)
 
 elo_daemon.py (background process)
   ├── scans bots/ for completed claude_v* directories
-  ├── picks under-evaluated pairs → runs mirror_battle() in parallel
+  ├── picks matches via priority scoring (60% under-evaluated + 40% rating diversity)
+  ├── runs mirror_battle() in parallel via ProcessPoolExecutor
   ├── batch-updates Glicko-2 ratings via update_rating_period()
+  ├── appends snapshot to results/rating_history.jsonl
   └── saves to results/glicko_ratings.json + results/elo_daemon_stats.json
 ```
 
@@ -153,4 +184,4 @@ elo_daemon.py (background process)
 - Bot protocol: read JSON from stdin, output `{"response": <int>}` to stdout. Action encoding: `0`=call/check, `-1`=fold, `-2`=all-in, `>0`=raise amount.
 - Cards: integers 0-51. `number = card // 4 + 2` (2-14), `suit = card % 4`.
 - Each game: 50 hands, 20000 chips, SB=50, BB=100.
-- All Python 3. Bots/engine have no external dependencies. Manager requires `rich` and `claude-agent-sdk` packages.
+- All Python 3. Bots/engine have no external dependencies. Manager requires `rich`, `textual`, and `claude-agent-sdk` packages.

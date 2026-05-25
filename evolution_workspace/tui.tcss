@@ -94,8 +94,10 @@ DataTable {
 }
 
 #stream-log {
+    background: $surface;
     border: round $accent;
     padding: 0 1;
+    scrollbar-size: 1 1;
 }
 
 /* ── RichLog base ── */

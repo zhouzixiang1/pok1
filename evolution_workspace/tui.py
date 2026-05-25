@@ -34,7 +34,16 @@ class EvolutionApp(App, BaseUI):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("d", "toggle_dark", "Toggle Dark", show=False),
+        Binding("up", "scroll_up", "↑ Scroll", show=True),
+        Binding("down", "scroll_down", "↓ Scroll", show=True),
+        Binding("left", "focus_left", "← Panel", show=True),
+        Binding("right", "focus_right", "→ Panel", show=True),
+        Binding("tab", "next_panel", "Next Panel", show=False),
+        Binding("shift+tab", "prev_panel", "Prev Panel", show=False),
     ]
+
+    # Focusable panels for left/right/tab navigation
+    PANEL_IDS = ["#stream-log", "#history-log", "#leaderboard-table", "#cost-widget"]
 
     # Reactive state
     header_text: reactive[str] = reactive("🔥 Antigravity Glicko-2 Poker Evolution 🔥")
@@ -114,8 +123,17 @@ class EvolutionApp(App, BaseUI):
             )
             monitor.start()
 
+        # Auto-focus stream log so arrow keys work immediately
+        self.call_after_refresh(self._focus_stream)
+
         # Start evolution loop as async worker
         self.run_worker(self._run_evolution(), name="evolution", exclusive=True)
+
+    def _focus_stream(self):
+        try:
+            self.query_one("#stream-log").focus()
+        except Exception:
+            pass
 
     async def _run_evolution(self):
         try:
@@ -180,11 +198,19 @@ class EvolutionApp(App, BaseUI):
             "tool": "dim cyan",
             "error": "bold red",
         }
+        prefix_map = {
+            "prompt": "│ ",
+            "claude": "▸ ",
+            "thinking": "… ",
+            "tool": "⚙ ",
+            "error": "✖ ",
+        }
         color = color_map.get(stream_type, "white")
+        prefix = prefix_map.get(stream_type, "  ")
         try:
             log = self.query_one("#stream-log", RichLog)
             for line in msg.split("\n"):
-                log.write(f"[{color}]{line}[/]")
+                log.write(f"[{color}]{prefix}{line}[/]")
         except Exception:
             pass
 
@@ -274,6 +300,53 @@ class EvolutionApp(App, BaseUI):
     # Helpers
     # ──────────────────────────────────────────────
 
+    # ── Arrow key actions ──
+
+    def action_scroll_up(self):
+        widget = self.focused
+        if isinstance(widget, RichLog):
+            widget.auto_scroll = False
+            widget.scroll_relative(y=-3)
+
+    def action_scroll_down(self):
+        widget = self.focused
+        if isinstance(widget, RichLog):
+            widget.scroll_relative(y=3)
+            if widget.is_vertical_scroll_end:
+                widget.auto_scroll = True
+
+    def _panel_index(self):
+        for i, pid in enumerate(self.PANEL_IDS):
+            try:
+                if self.query_one(pid).has_focus:
+                    return i
+            except Exception:
+                pass
+        return 0
+
+    def _focus_panel(self, index):
+        pid = self.PANEL_IDS[index % len(self.PANEL_IDS)]
+        try:
+            self.query_one(pid).focus()
+        except Exception:
+            pass
+
+    def action_focus_left(self):
+        idx = self._panel_index()
+        self._focus_panel(idx - 1)
+
+    def action_focus_right(self):
+        idx = self._panel_index()
+        self._focus_panel(idx + 1)
+
+    def action_next_panel(self):
+        self.action_focus_right()
+
+    def action_prev_panel(self):
+        self.action_focus_left()
+
+    # ── General helpers ──
+
     @staticmethod
     def _confidence_bar(rd):
         pct = max(0, min(100, 100 - rd / 3.5))
@@ -288,3 +361,8 @@ class EvolutionApp(App, BaseUI):
         else:
             color = "red"
         return f"[{color}]{bar}[/{color}] {pct:.0f}%"
+
+
+if __name__ == "__main__":
+    app = EvolutionApp()
+    app.run()

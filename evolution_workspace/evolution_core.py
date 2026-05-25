@@ -282,7 +282,7 @@ def verify_code(directory):
     return errors
 
 
-def check_code_size(directory, max_lines_per_file=500):
+def check_code_size(directory, max_lines_per_file=1000):
     """Check single-file LOC limits (excluding backup files). Returns (total, oversized_files)."""
     oversized_files = []
     total = 0
@@ -318,7 +318,6 @@ def run_decision_tests(directory):
         return 0.0
     from decision_tester import run_decision_tests as _run
     return _run(main_path, verbose=False)
-    return []
 
 
 def get_reference_context():
@@ -556,8 +555,6 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             ui.log_history(f"v{current_v} entering inline Glicko-2 evaluation...", "info")
 
             opponents_to_play = [b for b in active_bots if b != my_bot]
-            if len(opponents_to_play) > 10:
-                opponents_to_play = random.sample(opponents_to_play, 10)
 
             if my_bot not in ratings:
                 ratings[my_bot] = Glicko2Player()
@@ -678,7 +675,7 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             if oversized_files:
                 details = ", ".join(f"{name}={lines}" for name, lines in oversized_files)
                 reviewer_feedback = (
-                    f"These files exceed 500 lines and must be split into modules: {details}. "
+                    f"These files exceed 1000 lines and must be split into modules: {details}. "
                     "Keep main.py as the entry point, extract logic into separate .py files."
                 )
                 ui.log_history(f"File size check failed: {details}", "warn")
