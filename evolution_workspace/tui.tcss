@@ -1,0 +1,104 @@
+/* Poker Evolution Dashboard — Dark Theme */
+
+Screen {
+    layout: vertical;
+    overflow: hidden;
+}
+
+/* ── Header bar ── */
+#header-bar {
+    dock: top;
+    height: 3;
+    border-bottom: heavy $accent;
+    padding: 0 2;
+    content-align: center middle;
+    color: $text;
+    text-style: bold;
+    background: $primary 15%;
+}
+
+/* ── Main area: 2-column ── */
+#main-area {
+    layout: horizontal;
+    height: 1fr;
+}
+
+#left-col {
+    width: 1fr;
+    layout: vertical;
+}
+
+#right-col {
+    width: 2fr;
+    layout: vertical;
+}
+
+/* ── Status ── */
+#status-panel {
+    height: 3;
+}
+
+#status-widget {
+    border: round $warning;
+    padding: 0 1;
+}
+
+/* ── Daemon ── */
+#daemon-panel {
+    height: 5;
+}
+
+#daemon-widget {
+    border: round $primary;
+    padding: 0 1;
+}
+
+/* ── History log ── */
+#history-panel {
+    height: 1fr;
+}
+
+#history-log {
+    border: round $secondary;
+    padding: 0 1;
+}
+
+/* ── Leaderboard ── */
+#leaderboard-panel {
+    height: 1fr;
+}
+
+#leaderboard-table {
+    border: round $primary;
+    height: 1fr;
+}
+
+DataTable {
+    background: transparent;
+}
+
+/* ── Cost tracker ── */
+#cost-panel {
+    height: 8;
+}
+
+#cost-widget {
+    border: round $warning;
+    padding: 0 1;
+}
+
+/* ── LLM Stream ── */
+#stream-panel {
+    dock: bottom;
+    height: 12;
+}
+
+#stream-log {
+    border: round $accent;
+    padding: 0 1;
+}
+
+/* ── RichLog base ── */
+RichLog {
+    scrollbar-size: 1 1;
+}

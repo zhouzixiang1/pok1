@@ -1,0 +1,272 @@
+[
+  {
+    "id": "preflop_aa_first_act",
+    "description": "SB with AA, first to act preflop — must raise, never fold",
+    "input": {
+      "my_id": 0, "dealer_id": 0, "num_players": 2,
+      "my_chips": 20000, "my_cards": [48, 50],
+      "public_cards": [],
+      "history": [],
+      "hand": 0, "max_hand": 50,
+      "total_win_chips": [0, 0], "total_win_games": [0, 0]
+    },
+    "forbidden_actions": ["fold"],
+    "comment": "AA is the strongest hand; folding is never correct"
+  },
+  {
+    "id": "preflop_kk_first_act",
+    "description": "SB with KK, first to act preflop — must raise or call, never fold",
+    "input": {
+      "my_id": 0, "dealer_id": 0, "num_players": 2,
+      "my_chips": 20000, "my_cards": [44, 46],
+      "public_cards": [],
+      "history": [],
+      "hand": 0, "max_hand": 50,
+      "total_win_chips": [0, 0], "total_win_games": [0, 0]
+    },
+    "forbidden_actions": ["fold"],
+    "comment": "KK is 2nd strongest; must not fold preflop"
+  },
+  {
+    "id": "preflop_qq_facing_raise",
+    "description": "BB with QQ, facing SB raise — must call or reraise, never fold",
+    "input": {
+      "my_id": 1, "dealer_id": 0, "num_players": 2,
+      "my_chips": 19900, "my_cards": [40, 42],
+      "public_cards": [],
+      "history": [
+        {"round": 0, "player_id": 0, "action": 250, "action_type": "raise", "bet_amount": 150, "round_bet": 250},
+        {"round": 0, "player_id": 1, "action": -1, "action_type": "fold"}
+      ],
+      "hand": 0, "max_hand": 50,
+      "total_win_chips": [0, 0], "total_win_games": [0, 0]
+    },
+    "forbidden_actions": ["fold"],
+    "comment": "QQ vs single raise in heads-up; folding is extremely weak"
+  },
+  {
+    "id": "preflop_72o_first_act",
+    "description": "SB with 7-2 offsuit, first to act — fold or small raise OK, no all-in",
+    "input": {
+      "my_id": 0, "dealer_id": 0, "num_players": 2,
+      "my_chips": 20000, "my_cards": [20, 31],
+      "public_cards": [],
+      "history": [],
+      "hand": 0, "max_hand": 50,
+      "total_win_chips": [0, 0], "total_win_games": [0, 0]
+    },
+    "forbidden_actions": ["allin"],
+    "comment": "7-2 offsuit is the worst hand; going all-in is terrible"
+  },
+  {
+    "id": "flop_top_set_safe_board",
+    "description": "Flop: we have AAA on A-2-5 rainbow — must bet/raise, never fold",
+    "input": {
+      "my_id": 0, "dealer_id": 0, "num_players": 2,
+      "my_chips": 19700, "my_cards": [48, 49],
+      "public_cards": [50, 4, 12],
+      "history": [
+        {"round": 0, "player_id": 0, "action": 250, "action_type": "raise", "bet_amount": 150, "round_bet": 250},
+        {"round": 0, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 250}
+      ],
+      "hand": 0, "max_hand": 50,
+      "total_win_chips": [0, 0], "total_win_games": [0, 0]
+    },
+    "forbidden_actions": ["fold"],
+    "comment": "Top set on dry board is near-nut; folding is absurd"
+  },
+  {
+    "id": "flop_middle_pair_facing_big_bet",
+    "description": "Flop: we have KQ on Q-7-2, facing pot-sized bet — call or fold OK, no all-in",
+    "input": {
+      "my_id": 1, "dealer_id": 0, "num_players": 2,
+      "my_chips": 19700, "my_cards": [44, 42],
+      "public_cards": [40, 20, 4],
+      "history": [
+        {"round": 0, "player_id": 0, "action": 250, "action_type": "raise", "bet_amount": 150, "round_bet": 250},
+        {"round": 0, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 250},
+        {"round": 1, "player_id": 0, "action": 700, "action_type": "raise", "bet_amount": 450, "round_bet": 700}
+      ],
+      "hand": 0, "max_hand": 50,
+      "total_win_chips": [0, 0], "total_win_games": [0, 0]
+    },
+    "forbidden_actions": ["allin"],
+    "comment": "Middle pair facing big bet; all-in is an overreaction"
+  },
+  {
+    "id": "river_nut_flush_facing_bet",
+    "description": "River: we have nut flush, opponent bets — must call or raise, never fold",
+    "input": {
+      "my_id": 1, "dealer_id": 0, "num_players": 2,
+      "my_chips": 18500, "my_cards": [0, 8],
+      "public_cards": [4, 12, 20, 32, 44],
+      "history": [
+        {"round": 0, "player_id": 0, "action": 250, "action_type": "raise", "bet_amount": 150, "round_bet": 250},
+        {"round": 0, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 250},
+        {"round": 1, "player_id": 0, "action": 400, "action_type": "raise", "bet_amount": 150, "round_bet": 400},
+        {"round": 1, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 400},
+        {"round": 2, "player_id": 0, "action": 0, "action_type": "check", "bet_amount": 0, "round_bet": 0},
+        {"round": 2, "player_id": 1, "action": 600, "action_type": "raise", "bet_amount": 600, "round_bet": 600},
+        {"round": 3, "player_id": 0, "action": 1500, "action_type": "raise", "bet_amount": 900, "round_bet": 1500}
+      ],
+      "hand": 0, "max_hand": 50,
+      "total_win_chips": [0, 0], "total_win_games": [0, 0]
+    },
+    "forbidden_actions": ["fold"],
+    "comment": "Nut flush on river; folding to any bet is catastrophic"
+  },
+  {
+    "id": "river_missed_draw_facing_big_bet",
+    "description": "River: missed straight draw, facing big bet — must fold",
+    "input": {
+      "my_id": 1, "dealer_id": 0, "num_players": 2,
+      "my_chips": 18000, "my_cards": [36, 41],
+      "public_cards": [16, 24, 48, 12, 8],
+      "history": [
+        {"round": 0, "player_id": 0, "action": 250, "action_type": "raise", "bet_amount": 150, "round_bet": 250},
+        {"round": 0, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 250},
+        {"round": 1, "player_id": 0, "action": 400, "action_type": "raise", "bet_amount": 150, "round_bet": 400},
+        {"round": 1, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 400},
+        {"round": 2, "player_id": 0, "action": 800, "action_type": "raise", "bet_amount": 400, "round_bet": 800},
+        {"round": 2, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 800},
+        {"round": 3, "player_id": 0, "action": 2000, "action_type": "raise", "bet_amount": 1200, "round_bet": 2000}
+      ],
+      "hand": 0, "max_hand": 50,
+      "total_win_chips": [0, 0], "total_win_games": [0, 0]
+    },
+    "forbidden_actions": [],
+    "expected_actions": ["fold"],
+    "comment": "Missed draw (10-9 on J-Q-A-3-K board with hearts, missed both straight and flush); calling big river bet is -EV"
+  },
+  {
+    "id": "flop_nut_straight_dry_board",
+    "description": "Flop: nut straight on dry board — must bet or raise, never fold",
+    "input": {
+      "my_id": 0, "dealer_id": 0, "num_players": 2,
+      "my_chips": 19700, "my_cards": [36, 41],
+      "public_cards": [24, 28, 32],
+      "history": [
+        {"round": 0, "player_id": 0, "action": 250, "action_type": "raise", "bet_amount": 150, "round_bet": 250},
+        {"round": 0, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 250}
+      ],
+      "hand": 0, "max_hand": 50,
+      "total_win_chips": [0, 0], "total_win_games": [0, 0]
+    },
+    "forbidden_actions": ["fold"],
+    "comment": "Nut straight (10-J with 9-8-7 on board); folding is never correct"
+  },
+  {
+    "id": "preflop_aks_facing_allin",
+    "description": "BB with AKs, facing all-in — must call, never fold",
+    "input": {
+      "my_id": 1, "dealer_id": 0, "num_players": 2,
+      "my_chips": 20000, "my_cards": [44, 48],
+      "public_cards": [],
+      "history": [
+        {"round": 0, "player_id": 0, "action": -2, "action_type": "allin", "bet_amount": 19900, "round_bet": 20000}
+      ],
+      "hand": 0, "max_hand": 50,
+      "total_win_chips": [0, 0], "total_win_games": [0, 0]
+    },
+    "forbidden_actions": ["fold"],
+    "comment": "AKs is a premium hand; must call all-in in heads-up"
+  },
+  {
+    "id": "turn_two_pair_facing_bet",
+    "description": "Turn: two pair (K-K-7-7), facing bet — must call or raise, never fold",
+    "input": {
+      "my_id": 0, "dealer_id": 0, "num_players": 2,
+      "my_chips": 19000, "my_cards": [44, 45],
+      "public_cards": [20, 21, 8, 36],
+      "history": [
+        {"round": 0, "player_id": 0, "action": 250, "action_type": "raise", "bet_amount": 150, "round_bet": 250},
+        {"round": 0, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 250},
+        {"round": 1, "player_id": 0, "action": 0, "action_type": "check", "bet_amount": 0, "round_bet": 0},
+        {"round": 1, "player_id": 1, "action": 300, "action_type": "raise", "bet_amount": 300, "round_bet": 300},
+        {"round": 1, "player_id": 0, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 300},
+        {"round": 2, "player_id": 1, "action": 600, "action_type": "raise", "bet_amount": 300, "round_bet": 600}
+      ],
+      "hand": 0, "max_hand": 50,
+      "total_win_chips": [0, 0], "total_win_games": [0, 0]
+    },
+    "forbidden_actions": ["fold"],
+    "comment": "Two pair (KK77) on turn; strong hand that should not fold"
+  },
+  {
+    "id": "river_full_house_facing_raise",
+    "description": "River: full house (QQQ-77), facing raise — must reraise or call, never fold",
+    "input": {
+      "my_id": 0, "dealer_id": 0, "num_players": 2,
+      "my_chips": 17500, "my_cards": [40, 42],
+      "public_cards": [41, 20, 21, 8, 36],
+      "history": [
+        {"round": 0, "player_id": 0, "action": 250, "action_type": "raise", "bet_amount": 150, "round_bet": 250},
+        {"round": 0, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 250},
+        {"round": 1, "player_id": 0, "action": 400, "action_type": "raise", "bet_amount": 150, "round_bet": 400},
+        {"round": 1, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 400},
+        {"round": 2, "player_id": 0, "action": 800, "action_type": "raise", "bet_amount": 400, "round_bet": 800},
+        {"round": 2, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 800},
+        {"round": 3, "player_id": 0, "action": 1500, "action_type": "raise", "bet_amount": 700, "round_bet": 1500},
+        {"round": 3, "player_id": 1, "action": 3000, "action_type": "raise", "bet_amount": 1500, "round_bet": 3000}
+      ],
+      "hand": 0, "max_hand": 50,
+      "total_win_chips": [0, 0], "total_win_games": [0, 0]
+    },
+    "forbidden_actions": ["fold"],
+    "comment": "Full house (Queens full of 7s); must not fold"
+  },
+  {
+    "id": "flop_air_facing_pot_bet",
+    "description": "Flop: complete air (high card only), facing pot-sized bet — fold is best",
+    "input": {
+      "my_id": 1, "dealer_id": 0, "num_players": 2,
+      "my_chips": 19700, "my_cards": [31, 34],
+      "public_cards": [48, 20, 8],
+      "history": [
+        {"round": 0, "player_id": 0, "action": 250, "action_type": "raise", "bet_amount": 150, "round_bet": 250},
+        {"round": 0, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 250},
+        {"round": 1, "player_id": 0, "action": 700, "action_type": "raise", "bet_amount": 450, "round_bet": 700}
+      ],
+      "hand": 0, "max_hand": 50,
+      "total_win_chips": [0, 0], "total_win_games": [0, 0]
+    },
+    "forbidden_actions": ["allin"],
+    "expected_actions": ["fold", "call"],
+    "comment": "9-6 offsuit on A-7-3 board vs pot bet; all-in is terrible, fold is correct"
+  },
+  {
+    "id": "preflop_jj_facing_3bet",
+    "description": "SB with JJ, facing 3bet — must call or 4bet, never fold",
+    "input": {
+      "my_id": 0, "dealer_id": 0, "num_players": 2,
+      "my_chips": 19750, "my_cards": [36, 38],
+      "public_cards": [],
+      "history": [
+        {"round": 0, "player_id": 0, "action": 250, "action_type": "raise", "bet_amount": 150, "round_bet": 250},
+        {"round": 0, "player_id": 1, "action": 700, "action_type": "raise", "bet_amount": 600, "round_bet": 700}
+      ],
+      "hand": 0, "max_hand": 50,
+      "total_win_chips": [0, 0], "total_win_games": [0, 0]
+    },
+    "forbidden_actions": ["fold"],
+    "comment": "JJ vs 3bet in heads-up; too strong to fold"
+  },
+  {
+    "id": "flop_flush_draw_facing_cbet",
+    "description": "Flop: nut flush draw, facing cbet — must call or raise, never fold",
+    "input": {
+      "my_id": 1, "dealer_id": 0, "num_players": 2,
+      "my_chips": 19700, "my_cards": [0, 4],
+      "public_cards": [12, 28, 44],
+      "history": [
+        {"round": 0, "player_id": 0, "action": 250, "action_type": "raise", "bet_amount": 150, "round_bet": 250},
+        {"round": 0, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 250},
+        {"round": 1, "player_id": 0, "action": 400, "action_type": "raise", "bet_amount": 150, "round_bet": 400}
+      ],
+      "hand": 0, "max_hand": 50,
+      "total_win_chips": [0, 0], "total_win_games": [0, 0]
+    },
+    "forbidden_actions": ["fold"],
+    "comment": "Nut flush draw with overcard; +EV to continue vs cbet"
+  }
+]

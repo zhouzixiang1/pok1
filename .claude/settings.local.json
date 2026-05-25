@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s -L --max-time 15 \"https://wiki.botzone.org.cn/index.php?title=Bot\")",
+      "Bash(python3:*)",
+      "Bash(python:*)",
+      "Bash(ls -la /Users/zhouzixiang/Documents/pok/battle.py* /Users/zhouzixiang/Documents/pok/battle.py.bak /Users/zhouzixiang/Documents/pok/battle.py.old)",
+      "mcp__web-search-prime__web_search_prime",
+      "mcp__web-reader__webReader",
+      "mcp__zread__get_repo_structure",
+      "mcp__zread__read_file",
+      "Bash(pip install:*)",
+      "Bash(pip show:*)",
+      "Bash(kill -9 97570)",
+      "Bash(pip3 install:*)",
+      "Bash(conda run:*)",
+      "Bash(kill 81529 81520 81518 81516)",
+      "Bash(gtimeout 90 python3 evolution_workspace/evolution_manager.py --no-tui --no-daemon)"
+    ]
+  }
+}
