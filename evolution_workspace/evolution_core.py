@@ -32,6 +32,7 @@ from claude_agent_sdk import (
 )
 
 WORKSPACE = Path("evolution_workspace")
+PROJECT_ROOT = WORKSPACE.parent
 PROMPTS_DIR = WORKSPACE / "prompts"
 RESULTS_DIR = WORKSPACE / "results"
 BOTS_DIR = Path("bots")
@@ -47,7 +48,6 @@ MAX_ACTIVE_BOTS = 30
 sys.path.insert(0, str(WORKSPACE.resolve()))
 from glicko2 import Glicko2Player, update_rating_period
 from experience_pool import trim_experience_pool
-from lineage import record_birth, get_stagnation_count, find_best_branch_source
 
 # Global daemon process handle
 daemon_proc = None
@@ -184,7 +184,144 @@ def daemon_monitor_thread(ui, stop_event):
 
 
 # ──────────────────────────────────────────────
-# LLM & Code Tools
+# Git Helpers
+# ──────────────────────────────────────────────
+
+def _git(*args, check=True):
+    """Run git command, return stdout."""
+    result = subprocess.run(
+        ["git"] + list(args),
+        cwd=str(PROJECT_ROOT),
+        capture_output=True, text=True
+    )
+    if check and result.returncode != 0:
+        raise RuntimeError(f"git {args[0]}: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def git_ensure_clean():
+    """Stage + commit all tracked files as checkpoint."""
+    _git("add", "-A")
+    status = _git("status", "--porcelain")
+    if status:
+        _git("commit", "-m", "checkpoint: pre-evolution housekeeping")
+    return _git("rev-parse", "HEAD")
+
+
+def git_commit_bot(version, source_v, strategy_tag, rating_info=""):
+    """Commit a completed bot generation (bot code + ratings + experience pool)."""
+    msg = (
+        f"evolve: v{source_v} → v{version}\n\n"
+        f"parent: claude_v{source_v}\n"
+        f"strategy: {strategy_tag}\n"
+        f"{rating_info}"
+    )
+    _git("add", "-A")
+    _git("commit", "-m", msg)
+    _git("tag", f"bot-v{version}", "-m", f"Bot v{version}: {strategy_tag}")
+
+
+def git_diff_for_review(version):
+    """Get diff of bot v{version} vs its parent commit."""
+    tag = f"bot-v{version - 1}" if version > 1 else None
+    if tag:
+        tags = _git("tag", "-l", tag, check=False)
+        if tags:
+            return _git("diff", tag, "--", f"bots/claude_v{version}/")
+    # Fallback: diff vs HEAD (last checkpoint)
+    return _git("diff", "HEAD", "--", f"bots/claude_v{version}/", check=False)
+
+
+def git_get_changed_files(version):
+    """List files that changed in v{version} vs parent."""
+    tag = f"bot-v{version - 1}" if version > 1 else None
+    if tag:
+        tags = _git("tag", "-l", tag, check=False)
+        if tags:
+            out = _git("diff", "--name-only", tag, "--", f"bots/claude_v{version}/")
+            return out.split("\n") if out else []
+    return []
+
+
+def git_get_parent(version):
+    """从 tag message 或 commit message 解析 parent。"""
+    tag = f"bot-v{version}"
+    tags = _git("tag", "-l", tag, check=False)
+    if tags:
+        msg = _git("tag", "-n99", tag)
+    else:
+        log = _git("log", "--diff-filter=A", "--oneline", "-1", "--",
+                    f"bots/claude_v{version}/", check=False)
+        if not log:
+            return None
+        commit_hash = log.split()[0]
+        msg = _git("show", "-s", "--format=%B", commit_hash, check=False)
+    for line in (msg or "").split("\n"):
+        if line.strip().startswith("parent:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+def git_get_ancestors(version):
+    """Walk parent chain via git."""
+    ancestors = []
+    current = version
+    seen = set()
+    while current and current not in seen:
+        seen.add(current)
+        parent_name = git_get_parent(current)
+        if parent_name:
+            parent_v = int(parent_name.split("_v")[1])
+            ancestors.append(parent_name)
+            current = parent_v
+        else:
+            break
+    return ancestors
+
+
+def git_get_stagnation_count(bot_name, ratings):
+    """Count consecutive non-improving ancestors."""
+    version = int(bot_name.split("_v")[1])
+    count = 0
+    current = version
+
+    while current:
+        parent_name = git_get_parent(current)
+        if not parent_name:
+            break
+        parent_v = int(parent_name.split("_v")[1])
+        current_rating = ratings.get(f"claude_v{current}", Glicko2Player()).r
+        parent_rating = ratings.get(parent_name, Glicko2Player()).r
+        if current_rating <= parent_rating:
+            count += 1
+            current = parent_v
+        else:
+            break
+    return count
+
+
+def git_find_best_branch_source(active_bots, ratings, current_bot, min_gap=2):
+    """Find the best bot to branch from when stagnation is detected."""
+    current_version = int(current_bot.split("_v")[1])
+    ancestors = set(git_get_ancestors(current_version))
+    ancestors.add(current_bot)
+
+    candidates = [b for b in active_bots if b not in ancestors]
+    if not candidates:
+        candidates = active_bots
+
+    candidates.sort(key=lambda b: ratings.get(b, Glicko2Player()).r, reverse=True)
+
+    best = candidates[0] if candidates else None
+    current_rating = ratings.get(current_bot, Glicko2Player()).r
+    best_rating = ratings.get(best, Glicko2Player()).r if best else 0
+
+    if best and best_rating > current_rating + min_gap * 5:
+        return best
+    if best and best != current_bot:
+        return best
+
+    return None
 # ──────────────────────────────────────────────
 
 async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, is_text_ui):
@@ -441,10 +578,10 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
 
     if seed_initial_bots(ui):
         ui.log_history("Bootstrap complete: v1 to v6 initialized.", "success")
-        # Seed lineage for initial bots
+        # Commit seeded bots to git
+        git_ensure_clean()
         for i in range(1, 7):
-            bot_name = f"claude_v{i}"
-            record_birth(bot_name, None, f"seeded from reference bot{i}")
+            _git("tag", f"bot-v{i}", "-m", f"Bot v{i}: seeded from reference bot{i}")
 
     current_v = 1
     while True:
@@ -486,6 +623,7 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
                 continue
 
             (get_bot_dir(1) / ".completed").touch()
+            git_commit_bot(1, 0, "genesis: initial bot from scratch")
             ui.log_history("Genesis v1 generated successfully.", "success")
             break
         else:
@@ -494,6 +632,8 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
     else:
         current_v -= 1
         ui.log_history(f"Resumed successfully from v{current_v}", "success")
+
+    git_ensure_clean()
 
     max_generations = current_v + 50
     ref_context = get_reference_context()
@@ -526,9 +666,9 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
 
         # Stagnation detection & branch selection
         source_v = current_v
-        stag = get_stagnation_count(f"claude_v{current_v}", ratings)
+        stag = git_get_stagnation_count(f"claude_v{current_v}", ratings)
         if stag >= 2:
-            branch_source = find_best_branch_source(
+            branch_source = git_find_best_branch_source(
                 active_bots, ratings, f"claude_v{current_v}"
             )
             if branch_source:
@@ -699,7 +839,35 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             reviewer_log_file = get_logs_dir(next_v) / "reviewer_io.txt"
             reviewer_prompt = reviewer_prompt.replace("{master_plan}", json.dumps(tasks_data, indent=2))
 
-            final_context_files = [str(next_dir / f) for f in os.listdir(next_dir) if f.endswith(".py")]
+            final_context_files = []
+
+            # 1. Write diff file for reviewer
+            worker_diff = git_diff_for_review(next_v)
+            if worker_diff:
+                diff_file = get_logs_dir(next_v) / "worker_diff.txt"
+                with open(diff_file, "w") as df:
+                    df.write(worker_diff)
+                final_context_files.append(str(diff_file))
+
+            # 2. Changed .py files (full content)
+            changed = git_get_changed_files(next_v)
+            for rel_path in changed:
+                if rel_path.endswith(".py"):
+                    full = PROJECT_ROOT / rel_path
+                    if full.exists() and str(full) not in final_context_files:
+                        final_context_files.append(str(full))
+
+            # 3. Unchanged file list for prompt injection
+            all_py = [f for f in os.listdir(next_dir) if f.endswith(".py")]
+            changed_names = {Path(p).name for p in changed if p.endswith(".py")}
+            unchanged_list = [f for f in all_py if f not in changed_names]
+
+            # Fallback: send all files if diff is empty
+            if not final_context_files:
+                final_context_files = [str(next_dir / f) for f in os.listdir(next_dir) if f.endswith(".py")]
+
+            reviewer_prompt = reviewer_prompt.replace("{unchanged_file_list}",
+                ", ".join(unchanged_list) if unchanged_list else "none")
 
             for review_attempt in range(3):
                 ui.clear_io()
@@ -720,11 +888,15 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
 
         (next_dir / ".completed").touch()
 
-        # Record lineage
+        # Git commit + tag (replaces record_birth)
         source_bot = f"claude_v{source_v}"
         next_bot = f"claude_v{next_v}"
         strategy_tag = tasks_data.get("analysis", "")[:80] if tasks_data.get("analysis") else ""
-        record_birth(next_bot, source_bot, strategy_tag)
+        my_p = ratings.get(my_bot, Glicko2Player())
+        git_commit_bot(
+            next_v, source_v, strategy_tag,
+            rating_info=f"rating: r={my_p.r:.1f} rd={my_p.rd:.1f}"
+        )
 
         current_v = next_v
         ui.log_history(f"Successfully evolved to v{current_v}! 🎉", "success")

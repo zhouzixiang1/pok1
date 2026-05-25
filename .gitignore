@@ -6,14 +6,12 @@ __pycache__/
 dist/
 build/
 
-# Bot battle results (large JSON logs)
+# Bot battle results (engine output)
 results/*.json
-evolution_workspace/results/*.jsonl
-evolution_workspace/results/v*/
-evolution_workspace/results/round_*/
 
-# LLM logs (sensitive, large)
+# Evolution results — only LLM logs and round outputs excluded
 evolution_workspace/results/**/logs/
+evolution_workspace/results/round_*/
 
 # Bot graveyard
 bots/graveyard/

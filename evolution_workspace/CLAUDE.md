@@ -54,7 +54,7 @@ evolution_workspace/
 ├── tui.tcss               — Textual CSS: dark theme styling
 ├── elo_daemon.py          — Background Glicko-2 rating daemon (ProcessPoolExecutor, continuous battles)
 ├── glicko2.py             — Glicko-2 rating math (Glicko2Player, update_rating_period, decay_rd)
-├── lineage.py             — Evolution tree: parent-child tracking, stagnation detection, branch selection
+├── lineage.py             — [DELETED] Replaced by git tags + `git_get_parent()` / `git_get_stagnation_count()` in evolution_core.py
 ├── experience_pool.py     — Experience pool auto-trimming (keeps last N generations)
 ├── decision_tester.py     — Standard decision scenario tester (forbidden/expected action validation)
 ├── test_scenarios.json    — Decision test scenarios (preflop/postflop/river spots)
@@ -72,7 +72,7 @@ evolution_workspace/
 └── results/
     ├── glicko_ratings.json    — Glicko-2 ratings for all active bots (file-locked)
     ├── elo_daemon_stats.json  — Daemon match counts per pair + total periods
-    ├── lineage.json           — Evolution tree (parent/child relationships + strategy tags)
+    ├── lineage.json           — [DEPRECATED] Replaced by git tags (bot-v{N}) and commit messages
     ├── rating_history.jsonl   — Appended snapshot per daemon period for trend analysis
     ├── v{N}/logs/             — Per-generation LLM conversation logs
     └── round_{N}/             — Anchor runner results from manual evaluation rounds
@@ -81,7 +81,7 @@ evolution_workspace/
 ### Multi-Agent LLM Pipeline (per generation)
 
 1. **Experience Pool Trim** (`experience_pool.py`): Auto-trim to last 8 generation entries to prevent unbounded growth.
-2. **Stagnation Detection** (`lineage.py`): If ≥2 consecutive generations fail to improve, branch from the highest-rated bot instead.
+2. **Stagnation Detection** (git-based, in `evolution_core.py`): If ≥2 consecutive generations fail to improve, branch from the highest-rated bot instead. Parent chain traced via `git_get_parent()` parsing commit messages.
 3. **Reaper** (if >30 bots): Sort by conservative rating (r - 2*rd), move weakest to `bots/graveyard/`.
 4. **Evaluation**: Daemon mode: wait for ≥20 matches **and** RD < 40 (confidence gate). Inline mode: run up to 10 opponents × 5 games each via `mirror_battle()`.
 5. **Master Architect** (`master_prompt.md`): Analyzes bot rating + leaderboard top 3 + experience pool + reference bots + recent rating trend. Outputs JSON plan with tasks split into:
@@ -94,7 +94,7 @@ evolution_workspace/
    - **Code size check**: Single-file ≤1000 lines limit. Rejects oversized files, instructs to split.
    - **Decision tests**: Standard scenario tests (≥70% pass rate required). Rejects catastrophic blunders (folding AA preflop, etc.).
 8. **Reviewer** (`reviewer_prompt.md`): Validates that workers followed the plan and the dual-track boundary (logic vs. hyperparameters). Can reject and force a retry with feedback. 3 retry attempts.
-9. **Lineage Recording** (`lineage.py`): Records parent/child relationship and strategy tag for each new bot.
+9. **Lineage Recording** (git): Each approved bot gets a structured commit (`evolve: v{N} → v{M}`) with parent/strategy in the message, plus an annotated tag `bot-v{M}`.
 
 ### LLM Invocation (claude-agent-sdk)
 
@@ -106,6 +106,20 @@ evolution_workspace/
 - Typed message handling: `TextBlock` (output), `ThinkingBlock` (shows `[thinking...]`), `ToolUseBlock` (shows `[tool: name]`).
 - Cost tracking: `ResultMessage.total_cost_usd` + `usage` captured per agent, displayed in TUI.
 - All LLM I/O is logged to `results/v{N}/logs/` (master_io.txt, worker_{id}_io.txt, reviewer_io.txt).
+
+### Git-Based Version Management
+
+- Every generation produces a structured git commit + annotated tag:
+  - Commit message: `evolve: v{N} → v{M}\n\nparent: claude_v{N}\nstrategy: ...\nrating: r=... rd=...`
+  - Tag: `bot-v{M}` with strategy summary
+- **Reviewer optimization**: Reviewer receives `git diff` + changed files + unchanged file list (instead of all files). Saves tokens and focuses review.
+- **Lineage**: `git_get_parent(v)` parses commit messages. `git_get_ancestors(v)` walks the chain. `git_get_stagnation_count()` compares ancestor ratings.
+- **Checkpoint**: `git_ensure_clean()` before each generation ensures clean state.
+- **Genesis bot** gets `git_commit_bot(1, 0, "genesis: ...")` on creation.
+- Seeded reference bots get tags `bot-v{1-6}` on first run.
+- **Diff for review**: `git_diff_for_review(v)` diffs against parent tag. `git_get_changed_files(v)` lists changed paths.
+- **Tracked in git**: bot code, experience pool, glicko ratings, daemon stats, rating history.
+- **Excluded**: LLM I/O logs (`results/v*/logs/`), `bots/graveyard/`, `__pycache__`.
 
 ### Glicko-2 Rating System
 
@@ -122,7 +136,7 @@ evolution_workspace/
 - Bots live in `bots/claude_v{N}/` (relative to project root, not this workspace).
 - `.completed` marker file indicates a generation finished successfully.
 - Incomplete generations (no `.completed`) are rolled back on restart.
-- Initial bots (v1-v6) are seeded from `reference_bots/` on first run with lineage records.
+- Initial bots (v1-v6) are seeded from `reference_bots/` on first run with git tags `bot-v{1-6}`.
 - When active bots exceed 30 (`MAX_ACTIVE_BOTS`), Reaper moves the lowest-rated bot to `bots/graveyard/`.
 - Genesis creation (`initial_prompt.md`): if no bots exist at all, creates v1 from scratch.
 - **Branching**: Stagnation detection can cause evolution to branch from a historical bot instead of the latest.
@@ -160,8 +174,8 @@ evolution_manager.py (thin entry point)
 
 evolution_core.py (async main_loop)
   ├── trims experience_pool.md (keeps last 8 entries)
-  ├── detects stagnation via lineage.py → branches if needed
-  ├── seeds reference_bots/ → bots/claude_v{1-6}/ + lineage records
+  ├── detects stagnation via git_get_stagnation_count() → branches if needed
+  ├── seeds reference_bots/ → bots/claude_v{1-6}/ + git tags
   ├── calls run_claude_query() for Master/Worker/Reviewer via claude-agent-sdk
   ├── executes workers in parallel (asyncio.gather, serial fallback)
   ├── runs quality gates (code size, decision tests)

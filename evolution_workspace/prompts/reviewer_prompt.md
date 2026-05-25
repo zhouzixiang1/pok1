@@ -9,7 +9,10 @@ Your job is to act as the final quality gate before this codebase is approved fo
 1. The Master's Original Plan/Tasks:
 {master_plan}
 
-2. The updated codebase files are attached to this prompt.
+2. A git diff showing what the workers changed vs the parent version is attached.
+   Focus your review on the diff, but consider overall code coherence.
+3. The full changed files are also attached for context.
+4. Unchanged files in the bot directory: {unchanged_file_list}
 
 # Rules
 1. Analyze the codebase to ensure it fulfills the Master's instructions without introducing obvious logical flaws, contradictions, or losing core poker strategy components.
