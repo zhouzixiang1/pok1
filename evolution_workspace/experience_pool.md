@@ -14,16 +14,15 @@ Lessons from previous iterations. Read before planning next generation.
 9. **Wholesale copy fails** (v16=1349). Over-engineering fails (v17=1450, 7753 lines). Incremental port wins.
 10. **allow_low_frequency_blocker_bluff needs bluff_freq_bonus param** for anti-bot4 integration.
 11. **choose_raise needs anti_bot4_bonus + allow_river_overbet params.** Max_ratio 2.2 on river with nut hands extracts maximum value.
+12. **EQR air values must match bot5: 0.72 IP / 0.62 OOP** (v6 has 0.68/0.56). Under-realized bluff equity loses value.
+13. **Opponent model priors: vpip=0.58, pfr=0.28** (bot5). v6 uses 0.52/0.24 — shifts entire range evaluation.
+14. **Confidence divisor: 35** (bot5) vs 30 (v6). Faster trust in opponent model is better.
+15. **gift_balance / exploit_lambda / cbet / drift are dead weight.** bot5 doesn't have them. Remove.
+16. **Chen preflop table is essential.** Formula-based estimate_preflop_strength is inaccurate. Precomputed 169-hand table in constants.py.
+17. **Simulation counts matter: {0:900, 3:1200, 4:1500}** with extras {0:300, 3:350, 4:300}. v6 runs too few sims.
+18. **check_probe_resistance_margin + must_continue_vs_raise belong in postflop.py** (bot5 structure). Keep imports clean.
 
-### v6→v7 Execution
-- **Source**: claude_v6 (r=1429.6, rd=43.2). 150pts behind leaders. Comprehensive bot5 port.
-- **3 workers**: (A1) strategy+opponent logic, (A2) postflop functions, (B) hyperparams+data.
-- **All bot5 diffs applied simultaneously**: remove bb_vs_raise/sb_vs_reraise, fix thin_cap, add river overbet, add anti-bot4, Chen table, higher sims, fix EQR, remove gift/cbet/drift, fix anti-lock values.
-
-### v6→v7 Analysis (Pre-Execution)
-
-12. **v6 is 150pts behind bot5** due to 8 systemic gaps: (a) no Chen table, (b) no anti-bot4, (c) bb_vs_raise/sb_vs_reraise hardcoded logic, (d) broken thin_cap 0.46+0.08w formula, (e) no river overbet, (f) low simulation counts, (g) broken EQR 0.68/0.56 air values, (h) gift_balance/exploit_lambda dead weight.
-13. **Opponent model prior mismatch matters**: v6 vpip prior=0.52/pfr prior=0.24 vs bot5 0.58/0.28. Shifts entire opponent range evaluation.
-14. **v6 has cbet/drift tracking that bot5 (rank 1) doesn't have.** Experience pool lesson 7 confirms these add no value. Remove them.
-15. **allow_low_frequency_blocker_bluff must accept bluff_freq_bonus param** for anti-bot4 integration. v6 signature missing this.
-16. **All 8 gaps must be fixed simultaneously** (lesson 5). Partial fixes compound regressions.
+### v6→v7 Execution Plan
+- **Source**: claude_v6 (r=1420, rd=43.3). ~150pts behind leaders (v3=1571, v11=1540).
+- **Strategy**: Port ALL 8+ bot5 gaps simultaneously (lessons 5, 12-18).
+- **3 workers**: (A1) constants+state+opponent+postflop structural, (A2) strategy logic rewrite, (B) sim counts.
