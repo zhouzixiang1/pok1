@@ -254,8 +254,11 @@ async def list_generations():
     if not RESULTS_DIR.exists():
         return []
     versions = []
-    for p in sorted(RESULTS_DIR.iterdir()):
-        if p.is_dir() and p.name.startswith("v") and (p / "logs").is_dir():
+    dirs = sorted(
+        (p for p in RESULTS_DIR.iterdir() if p.is_dir() and p.name.startswith("v") and (p / "logs").is_dir()),
+        key=lambda p: int(re.search(r'\d+', p.name).group()) if re.search(r'\d+', p.name) else 0,
+    )
+    for p in dirs:
             files = sorted(f.name for f in (p / "logs").iterdir() if f.is_file())
             versions.append({"version": p.name, "files": files})
     return versions

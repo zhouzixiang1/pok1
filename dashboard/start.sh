@@ -52,10 +52,9 @@ if $BUILD; then
         exec python -m uvicorn dashboard.backend.app:app --host 0.0.0.0 --port 8000
     else
         echo "Starting production dashboard + evolution manager on http://localhost:8000"
-        cd "$PROJECT_ROOT"
-        python -m uvicorn dashboard.backend.app:app --host 0.0.0.0 --port 8000 &
+        (cd "$PROJECT_ROOT" && python -m uvicorn dashboard.backend.app:app --host 0.0.0.0 --port 8000) &
         PIDS+=($!)
-        python evolution_workspace/evolution_manager.py --no-tui &
+        (cd "$PROJECT_ROOT" && python evolution_workspace/evolution_manager.py --no-tui) &
         PIDS+=($!)
         wait
     fi
@@ -69,19 +68,17 @@ else
     fi
     echo ""
 
-    # Backend (must run from project root for module resolution)
-    cd "$PROJECT_ROOT"
-    python -m uvicorn dashboard.backend.app:app --port 8000 --reload &
+    # Backend (subshell ensures correct cwd)
+    (cd "$PROJECT_ROOT" && python -m uvicorn dashboard.backend.app:app --port 8000 --reload) &
     PIDS+=($!)
 
     # Frontend
-    cd "$SCRIPT_DIR/frontend" && npx vite --host &
+    (cd "$SCRIPT_DIR/frontend" && npx vite --host) &
     PIDS+=($!)
 
     # Evolution manager
     if ! $NO_EVOLVE; then
-        cd "$PROJECT_ROOT"
-        python evolution_workspace/evolution_manager.py --no-tui &
+        (cd "$PROJECT_ROOT" && python evolution_workspace/evolution_manager.py --no-tui) &
         PIDS+=($!)
     fi
 
