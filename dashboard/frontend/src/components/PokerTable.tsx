@@ -74,9 +74,9 @@ export default function PokerTable({ frame, bot0Name, bot1Name }: PokerTableProp
     const cx = W / 2;
 
     // Player names & chips
-    drawPlayerInfo(ctx, cx, y0 - 10, bot0Name.replace("claude_", "v"), frame.player_chips[0],
+    drawPlayerInfo(ctx, cx, y0 - 10, bot0Name.replace("claude_", ""), frame.player_chips[0],
       frame.matchdata.total_win_chips[0], frame.round_idx === 0 && !frame.final_result);
-    drawPlayerInfo(ctx, cx, y1 + 10, bot1Name.replace("claude_", "v"), frame.player_chips[1],
+    drawPlayerInfo(ctx, cx, y1 + 10, bot1Name.replace("claude_", ""), frame.player_chips[1],
       frame.matchdata.total_win_chips[1], frame.round_idx === 1 && !frame.final_result);
 
     // Player cards (top)

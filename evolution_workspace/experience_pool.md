@@ -16,10 +16,10 @@ Lessons from previous iterations. Read before planning next generation.
 11. **choose_raise needs anti_bot4_bonus + allow_river_overbet params.** Max_ratio 2.2 on river with nut hands extracts maximum value.
 
 ### v6→v7 Plan (current)
-- **Source**: claude_v6 (r=1482, 6149 lines, 7-file modular structure).
-- **Reference**: bot5 (proven anti-exploitation framework, Rank 1).
-- **Target gap**: ~100pts behind v2 (1589) and v14 (1552).
-- **Strategy**: Port ALL 9 bot5 proven features to v6 in one generation. 3 workers (2 logic + 1 tuning).
+- **Source**: claude_v6 (r=1483, 6149 lines, 7-file modular structure).
+- **Reference**: bot5 (proven anti-exploitation framework, Rank 1 on botzone).
+- **Target gap**: ~108pts behind v2 (1591).
+- **Strategy**: Port ALL 9 bot5 proven features to v6 in one generation. 2 workers (1 logic + 1 tuning).
 - **9 specific changes**:
   1. REMOVE bb_vs_raise/sb_vs_reraise blocks → return None (strategy.py L554-597)
   2. FIX thin_cap: 0.30/0.38 without to_call==0 guard (strategy.py choose_raise)

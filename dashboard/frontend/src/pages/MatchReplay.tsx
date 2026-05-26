@@ -110,7 +110,7 @@ export default function MatchReplay() {
                   }`}
                 >
                   <div className="font-medium text-gray-800 dark:text-gray-200">
-                    {m.bot0.replace("claude_", "v")} vs {m.bot1.replace("claude_", "v")}
+                    {m.bot0.replace("claude_", "")} vs {m.bot1.replace("claude_", "")}
                   </div>
                   <div className="mt-1 flex items-center justify-between text-gray-500">
                     <span className={m.bot0_wins > m.bot1_wins ? "text-green-500 font-medium" : ""}>
@@ -152,7 +152,7 @@ export default function MatchReplay() {
                 >
                   {selectedMatch.games.map((g, i) => (
                     <option key={i} value={i}>
-                      Hand {i + 1} — {g.winner === 0 ? selectedMatch.bot0.replace("claude_", "v") : g.winner === 1 ? selectedMatch.bot1.replace("claude_", "v") : "Draw"} ({g.bot0_chips > 0 ? "+" : ""}{g.bot0_chips})
+                      Hand {i + 1} — {g.winner === 0 ? selectedMatch.bot0.replace("claude_", "") : g.winner === 1 ? selectedMatch.bot1.replace("claude_", "") : "Draw"} ({g.bot0_chips > 0 ? "+" : ""}{g.bot0_chips})
                     </option>
                   ))}
                 </select>

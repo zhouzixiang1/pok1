@@ -376,8 +376,8 @@ async def recent_matches(limit: int = Query(50, le=200)):
 @app.get("/api/matches/replay/{match_id}")
 async def match_replay(match_id: str):
     """Full replay data for a specific match."""
-    path = REPLAY_DIR / match_id
-    if not path.is_file():
+    path = (REPLAY_DIR / match_id).resolve()
+    if not path.is_relative_to(REPLAY_DIR.resolve()) or not path.is_file():
         return {"error": "Match not found"}
     return _read_locked(path)
 
