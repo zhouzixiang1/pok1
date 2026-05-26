@@ -26,6 +26,8 @@ EXPERIENCE_FILE = PROJECT_ROOT / "evolution_workspace" / "experience_pool.md"
 RATINGS_FILE = RESULTS_DIR / "glicko_ratings.json"
 STATS_FILE = RESULTS_DIR / "elo_daemon_stats.json"
 HISTORY_FILE = RESULTS_DIR / "rating_history.jsonl"
+REPLAY_DIR = RESULTS_DIR / "match_replay"
+MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 
 # ── Evolution integration ──
 EVOLUTION_DIR = PROJECT_ROOT / "evolution_workspace"
