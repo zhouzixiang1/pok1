@@ -23,9 +23,19 @@ Lessons from previous iterations. Read before planning next generation.
 18. **check_probe_resistance_margin + must_continue_vs_raise belong in postflop.py** (bot5 structure). Keep imports clean.
 
 ### v6→v7 Analysis
-- **Source**: claude_v6 (r=1420, rank 15/16). ~137pts behind leaders.
-- **Root cause**: 13+ gaps vs reference bot5. Wrong preflop eval (formula vs Chen), missing anti-bot4, missing river overbet, wrong EQR/thin_cap, too few sims, wrong priors.
+- **Source**: claude_v6 (r=1420, rank 15/16). ~167pts behind leader (v2=1587). Flat for 30+ periods.
+- **Root cause**: 13+ gaps vs reference bot5 confirmed via diff analysis:
+  1. No Chen preflop table (formula-based estimate_preflop_strength is inaccurate)
+  2. Missing anti-bot4 detection (detect_bot4_profile, get_anti_bot4_adjustments)
+  3. Missing river overbet (choose_overbet_river with 1.5-2.2x pot for nut hands)
+  4. Wrong EQR air values (0.68/0.56 vs bot5's 0.72/0.62)
+  5. Wrong thin_cap (0.46+0.08w formula vs bot5's 0.30/0.38 fixed)
+  6. Too few simulations (400/800/900 vs bot5's 900/1200/1500)
+  7. Wrong opponent priors (vpip=0.52, pfr=0.24 vs bot5's 0.58/0.28)
+  8. Wrong confidence divisor (30 vs bot5's 35)
+  9. Dead weight in opponent model (cbet tracking, drift detection, gift_balance, exploit_lambda)
+  10. Missing anti-bot4 integration in strategy (raise_size_bonus, bluff_freq_bonus, call_threshold_delta, trap_defense_delta)
+  11. Wrong anti-lock thresholds (chase 0.85 vs 0.90, threshold -0.070 vs -0.075, sizing 0.16 vs 0.18, bluff 0.11 vs 0.13)
+  12. choose_raise missing anti_bot4_bonus and allow_river_overbet params
+  13. Missing choose_overbet_river function entirely
 - **Strategy**: 3 workers, strict file ownership. Fix ALL gaps simultaneously.
-- **Worker A1**: constants.py+state.py+opponent.py+postflop.py (Chen table, bot4 detection, remove dead weight, fix bluff params, move helper functions).
-- **Worker A2**: strategy.py (overbet functions, fix choose_raise, fix EQR/thin_cap, remove harmful preflop spots, integrate bot4 adjustments).
-- **Worker B**: tournament.py (anti-lock thresholds to match bot5: chase 0.90, threshold -0.075, sizing 0.18, bluff 0.13).
