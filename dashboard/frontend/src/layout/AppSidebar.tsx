@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { Link, useLocation } from "react-router";
-import { HorizontaLDots, GridIcon, PieChartIcon, TableIcon, PageIcon, BoltIcon } from "../icons";
+import { HorizontaLDots, GridIcon, PieChartIcon, TableIcon, PageIcon, BoltIcon, ChatIcon } from "../icons";
 import { useSidebar } from "../context/SidebarContext";
 
 type NavItem = {
@@ -20,6 +20,11 @@ const navItems: NavItem[] = [
     icon: <BoltIcon />,
     name: "Evolution Monitor",
     path: "/evolution",
+  },
+  {
+    icon: <ChatIcon />,
+    name: "Match Replay",
+    path: "/matches",
   },
   {
     icon: <PieChartIcon />,

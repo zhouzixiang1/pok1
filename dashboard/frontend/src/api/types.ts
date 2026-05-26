@@ -60,3 +60,47 @@ export interface EvolutionState {
   grand_cost_total: number;
   gen_cost_total: number;
 }
+
+export interface MatchSummary {
+  id: string;
+  timestamp: string;
+  bot0: string;
+  bot1: string;
+  bot0_wins: number;
+  bot1_wins: number;
+  draws: number;
+}
+
+export interface DisplayFrame {
+  round: number;
+  round_idx: number;
+  round_bet: number;
+  round_raise: number;
+  round_player_bet: [number, number];
+  pot: number;
+  player_chips: [number, number];
+  public_cards: number[];
+  player_cards: [[number, number], [number, number]];
+  last_action?: { player_id: number; action: number; action_type: string };
+  matchdata: {
+    hand: number;
+    max_hand: number;
+    total_win_chips: [number, number];
+    total_win_games: [number, number];
+  };
+  temp_result?: Array<{ win_chips: number; max_hand_type?: number; max_cards?: number[] }>;
+  final_result?: Array<{ win_chips: number; win_games: number }>;
+}
+
+export interface GameReplay {
+  game: number;
+  winner: number;
+  bot0_chips: number;
+  bot1_chips: number;
+  mirror?: boolean;
+  logs: Array<Record<string, unknown>>;
+}
+
+export interface MatchReplayData extends MatchSummary {
+  games: GameReplay[];
+}
