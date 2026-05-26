@@ -21,8 +21,9 @@ Lessons from previous iterations. Read before planning next generation.
 16. **bb_vs_raise/sb_vs_reraise fixed thresholds ALWAYS harmful** (v8,v11,v15). Let simulation decide.
 17. **When changing preflop eval, recalibrate ALL downstream thresholds.** Chen vs formula mismatch caused v13 regression.
 
-### v6→v7 Diagnosis
-- **Source**: claude_v6 (r=1408, worst claude bot, ~163pts behind v8=1571)
-- **Strategy**: Three-worker targeted port of bot5's proven features. W1=infrastructure (Chen table, CARD_RANKS/SUITS, anti-bot4, fix priors/sim-counts, remove CBet dead weight). W2=strategy logic (river overbet, anti-bot4 integration, remove gift_balance/gto dead weight, fix thin_cap/EQR/blocker_bluff, remove fixed preflop thresholds). W3=hyperparams (anti-lock tuning, threshold_delta fix).
-- **Key insight**: v6 is fundamentally weak due to 4 structural gaps (no Chen table, no anti-bot4, no river overbet, wrong sim counts) + wrong parameters everywhere. The combination causes systematic losses against all competent opponents.
-- **Risk**: Each gap alone costs ~30-50 pts. Together they compound to ~160 pts. Must fix ALL simultaneously.
+### v6→v7 Plan (3-Worker Targeted Port from bot5)
+- **Source**: claude_v6 (r=1408, worst claude bot, ~112pts behind v16=1530 best)
+- **W1 (Infrastructure)**: constants.py + card_utils.py + state.py + opponent.py — Chen table, CARD_RANKS/SUITS, fix sim counts, fix priors, remove CBet dead weight, add anti-bot4 detection.
+- **W2 (Strategy Logic)**: postflop.py + strategy.py — river overbet, anti-bot4 integration, fix EQR/thin_cap/blocker_bluff, remove gift_balance/gto/cbet dead weight, remove fixed preflop thresholds, update choose_raise params.
+- **W3 (Hyperparams)**: tournament.py — anti-lock tuning (chase=0.90, threshold=-0.075, sizing=0.18, bluff=0.13), threshold_delta symmetry (0.055/0.055).
+- **Risk**: v6 has 6+ compounding structural gaps vs bot5. Each costs ~20-40 pts. Must fix ALL simultaneously per lesson 15.
