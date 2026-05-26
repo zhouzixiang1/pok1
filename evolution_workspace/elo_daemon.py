@@ -152,12 +152,12 @@ def run_single_match(args):
     """Run a mirror_battle in a subprocess. Called by ProcessPoolExecutor."""
     bot_a_name, bot_b_name, bot_a_path, bot_b_path, n_pairs = args
     try:
-        match_wins, draws, n_played, _ = mirror_battle(
-            bot_a_path, bot_b_path, n_games=n_pairs, verbose=False, save_log=False
+        match_wins, draws, n_played, all_logs = mirror_battle(
+            bot_a_path, bot_b_path, n_games=n_pairs, verbose=False, save_log=True
         )
-        return (bot_a_name, bot_b_name, match_wins[0], match_wins[1], draws, n_played, None)
+        return (bot_a_name, bot_b_name, match_wins[0], match_wins[1], draws, n_played, None, all_logs)
     except Exception as e:
-        return (bot_a_name, bot_b_name, 0, 0, 0, 0, str(e))
+        return (bot_a_name, bot_b_name, 0, 0, 0, 0, str(e), [])
 
 
 def run_rating_period(active_bots, ratings, stats, n_pairs, n_workers, verbose=False):
