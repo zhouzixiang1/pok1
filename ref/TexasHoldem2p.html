@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Texas Hold'em 2player</title>
+    <script src="/javascripts/jquery-3.1.1.min.js"></script>
+    <script src="player_api.js"></script>
+    <script src="FightTheLandlord2/poker.min.js"></script>
+  </head>
+  <body>
+    <div id="container">
+      <canvas id="gameCanvas" width="900" height="600"></canvas>
+      <div id="button-container" hidden="hidden">
+        <div class="botton-box">
+          <a
+            id="fold-button"
+            class="button big unselectable fold"
+            onclick="buttonClicked('fold')"
+            >弃牌<span>Fold</span></a
+          >
+        </div>
+        <div class="botton-box">
+          <a
+            id="allin-button"
+            class="button big unselectable allin"
+            onclick="buttonClicked('allin')"
+            >全押<span>AllIn</span></a
+          >
+        </div>
+        <div class="botton-box">
+          <a
+            id="call-button"
+            class="button big unselectable call"
+            onclick="buttonClicked('call')"
+            >跟注/过牌<span>Call/Check</span></a
+          >
+        </div>
+        <div class="botton-box">
+          <a
+            id="raise-button"
+            class="button big unselectable raise"
+            onclick="buttonClicked('raise')"
+            >加注<span>Raise</span></a
+          >
+          <div id="raise-box" style="display: inline-block">
+            <b id="raise-info" class="unselectable">加注筹码数</b><br />
+            <input
+              id="raise-value"
+              type="number"
+              value="200"
+              min="200"
+              max="10000"
+              step="1"
+              onblur="this.value = Math.min(Math.max(this.value, this.min), this.max)"
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+  <style>
+    body {
+      font-family: "Microsoft YaHei", SimHei, "Courier New", Arial !important;
+      background: radial-gradient(ellipse farthest-corner, white, gray);
+      height: 600px;
+      overflow: hidden;
+      margin: 0;
+    }
+    #container {
+      padding-left: 0;
+      padding-right: 0;
+      padding-right: 0;
+      margin-left: auto;
+      margin-right: auto;
+      display: block;
+      width: 1000px;
+    }
+    #button-container {
+      position: relative;
+      top: 0;
+      left: 0;
+      width: 750px;
+      margin-top: -110px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    #raise-value {
+      width: 4em;
+      font-size: 20px;
+      font-weight: bold;
+      border-radius: 8px;
+      border: 0px solid;
+    }
+    .botton-box {
+      display: inline-block;
+      position: relative;
+      margin: 0;
+      padding: 0;
+    }
+    .button {
+      display: inline-block;
+      position: relative;
+      margin: 10px;
+      padding: 0 15px;
+      text-align: center;
+      text-decoration: none;
+      font: bold 12px/25px Arial, sans-serif;
+
+      text-shadow: 1px 1px 1px rgba(255, 255, 255, 0.22);
+
+      -webkit-border-radius: 30px;
+      -moz-border-radius: 30px;
+      border-radius: 30px;
+
+      -webkit-box-shadow: 1px 1px 1px rgba(0, 0, 0, 0.29),
+        inset 1px 1px 1px rgba(255, 255, 255, 0.44);
+      -moz-box-shadow: 1px 1px 1px rgba(0, 0, 0, 0.29),
+        inset 1px 1px 1px rgba(255, 255, 255, 0.44);
+      box-shadow: 1px 1px 1px rgba(0, 0, 0, 0.29),
+        inset 1px 1px 1px rgba(255, 255, 255, 0.44);
+
+      -webkit-transition: all 0.15s ease;
+      -moz-transition: all 0.15s ease;
+      -o-transition: all 0.15s ease;
+      -ms-transition: all 0.15s ease;
+      transition: all 0.15s ease;
+    }
+    .button:hover:not([disabled]) {
+      -webkit-box-shadow: 1px 1px 1px rgba(0, 0, 0, 0.29),
+        inset 0px 0px 2px rgba(0, 0, 0, 0.5);
+      -moz-box-shadow: 1px 1px 1px rgba(0, 0, 0, 0.29),
+        inset 0px 0px 2px rgba(0, 0, 0, 0.5);
+      box-shadow: 1px 1px 1px rgba(0, 0, 0, 0.29),
+        inset 0px 0px 2px rgba(0, 0, 0, 0.5);
+    }
+    .button:active:not([disabled]) {
+      -webkit-box-shadow: inset 0px 0px 3px rgba(0, 0, 0, 0.8);
+      -moz-box-shadow: inset 0px 0px 3px rgba(0, 0, 0, 0.8);
+      box-shadow: inset 0px 0px 3px rgba(0, 0, 0, 0.8);
+    }
+    .button:disabled,
+    .button[disabled] {
+      background: #818181 !important;
+      color: #666666 !important;
+    }
+    .big {
+      padding: 0 40px;
+      padding-top: 10px;
+      height: 45px;
+      text-transform: uppercase;
+      font: bold 20px/22px Arial, sans-serif;
+    }
+    .big span {
+      display: block;
+      text-transform: none;
+      font: italic normal 12px/18px Georgia, sans-serif;
+      text-shadow: 1px 1px 1px rgba(255, 255, 255, 0.12);
+    }
+    .unselectable {
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      -khtml-user-select: none;
+      -moz-user-select: none;
+      -ms-user-select: none;
+      user-select: none;
+      caret-color: transparent;
+    }
+    .fold {
+      color: #515151;
+      background: #d3d3d3;
+      background: -moz-linear-gradient(top, #d3d3d3 0%, #8a8a8a 100%);
+      background: -webkit-gradient(
+        linear,
+        left top,
+        left bottom,
+        color-stop(0%, #d3d3d3),
+        color-stop(100%, #8a8a8a)
+      );
+      background: -webkit-linear-gradient(top, #d3d3d3 0%, #8a8a8a 100%);
+      background: -o-linear-gradient(top, #d3d3d3 0%, #8a8a8a 100%);
+      background: -ms-linear-gradient(top, #d3d3d3 0%, #8a8a8a 100%);
+      background: linear-gradient(top, #d3d3d3 0%, #8a8a8a 100%);
+    }
+    .allin {
+      color: #570606;
+      background: #cd4e4e;
+      background: -moz-linear-gradient(top, #cd4e4e 0%, #894040 100%);
+      background: -webkit-gradient(
+        linear,
+        left top,
+        left bottom,
+        color-stop(0%, #cd4e4e),
+        color-stop(100%, #894040)
+      );
+      background: -webkit-linear-gradient(top, #cd4e4e 0%, #894040 100%);
+      background: -o-linear-gradient(top, #cd4e4e 0%, #894040 100%);
+      background: -ms-linear-gradient(top, #cd4e4e 0%, #894040 100%);
+      background: linear-gradient(top, #cd4e4e 0%, #894040 100%);
+    }
+    .call {
+      color: #19667d;
+      background: #70c9e3;
+      background: -moz-linear-gradient(top, #70c9e3 0%, #4d899b 100%);
+      background: -webkit-gradient(
+        linear,
+        left top,
+        left bottom,
+        color-stop(0%, #70c9e3),
+        color-stop(100%, #4d899b)
+      );
+      background: -webkit-linear-gradient(top, #70c9e3 0%, #4d899b 100%);
+      background: -o-linear-gradient(top, #70c9e3 0%, #4d899b 100%);
+      background: -ms-linear-gradient(top, #70c9e3 0%, #4d899b 100%);
+      background: linear-gradient(top, #70c9e3 0%, #4d899b 100%);
+    }
+    .raise {
+      color: #7d6419;
+      background: #e3d270;
+      background: -moz-linear-gradient(top, #e3d270 0%, #978b4b 100%);
+      background: -webkit-gradient(
+        linear,
+        left top,
+        left bottom,
+        color-stop(0%, #e3d270),
+        color-stop(100%, #978b4b)
+      );
+      background: -webkit-linear-gradient(top, #e3d270 0%, #978b4b 100%);
+      background: -o-linear-gradient(top, #e3d270 0%, #978b4b 100%);
+      background: -ms-linear-gradient(top, #e3d270 0%, #978b4b 100%);
+      background: linear-gradient(top, #e3d270 0%, #978b4b 100%);
+    }
+  </style>
+  <script>
+    var gameCanvas = document.getElementById("gameCanvas");
+    var ctx = gameCanvas.getContext("2d");
+    var playerInfos = null;
+    const H = gameCanvas.height,
+      W = gameCanvas.width;
+    const R = 190; // 牌桌半径
+    const L = 230; // 牌桌两个圆心的距离
+    const CARD_SIZE = 100; // 牌的大小
+    const PHASE = ["PreFlop", "Flop", "Turn", "River", "Showdown"];
+    const HAND_TYPE = [
+      "...",
+      "高牌 (High Card)",
+      "一对 (One Pair)",
+      "两对 (Two Pairs)",
+      "三条 (Three of a Kind)",
+      "顺子 (Straight)",
+      "同花 (Flush)",
+      "葫芦 (Full House)",
+      "四条 (Four of a Kind)",
+      "同花顺 (Straight Flush)",
+    ];
+
+    function drawBackground() {
+      ctx.clearRect(0, 0, W, H);
+      ctx.beginPath();
+      ctx.ellipse(W / 2 - L, H / 2, R, R, 0, Math.PI / 2, (Math.PI * 3) / 2);
+      ctx.ellipse(W / 2 + L, H / 2, R, R, 0, -Math.PI / 2, Math.PI / 2);
+      ctx.closePath();
+      ctx.fillStyle = "green";
+      ctx.fill();
+    }
+
+    function drawCards(x, y, cards, transitions) {
+      let d = (CARD_SIZE * 3.3) / 4;
+      let x0 = x - (d / 2) * (cards.length - 1) - (CARD_SIZE * 3) / 8;
+      if (!(transitions == null) && !Array.isArray(transitions))
+        transitions = Array(cards.length).fill(transitions);
+      for (let i = 0; i < cards.length; i++) {
+        ctx.save();
+        ctx.translate(x0 + i * d, y - CARD_SIZE / 2);
+        if (transitions && transitions[i] < 1) {
+          ctx.translate(d * (0.5 - Math.abs(transitions[i] - 0.5)), 0);
+          ctx.scale(2 * Math.abs(transitions[i] - 0.5), 1);
+        }
+        if (cards[i] == -1 || (transitions && transitions[i] < 0.5)) {
+          ctx.drawPokerBack(0, 0, CARD_SIZE);
+        } else {
+          let suit = ["h", "d", "s", "c"][cards[i] % 4];
+          let point = [
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10",
+            "J",
+            "Q",
+            "K",
+            "A",
+          ][Math.floor(cards[i] / 4)];
+          ctx.drawPokerCard(0, 0, CARD_SIZE, suit, point);
+        }
+        ctx.restore();
+      }
+    }
+
+    function drawPlayer(x, y, info, chips, totalWinChips, isMyTurn) {
+      ctx.drawImage(info.img, x - 25, y - 45, 50, 50);
+      ctx.textAlign = "center";
+      ctx.fillStyle = "white";
+      ctx.font = "13px Microsoft YaHei";
+      if (isMyTurn) ctx.fillText("👉", x - 40, y - 12.5);
+      ctx.fillText(info.name, x, y + 20, L * 0.6);
+      ctx.font = "bold 13px Microsoft YaHei";
+      ctx.fillText("累积赢得: " + totalWinChips, x, y + 35);
+      ctx.fillText("本轮剩余: " + chips, x, y + 50);
+    }
+
+    function drawAction(x, y, round_bet, action, t) {
+      ctx.textAlign = "center";
+      if (action) {
+        ty = Math.pow(t, 4);
+        ctx.font = "bold 22px Microsoft YaHei";
+        ctx.fillStyle = "rgba(255, 238, 88, " + (1 - ty) + ")";
+        ctx.shadowColor = "black";
+        ctx.shadowBlur = 10;
+        ytrans = -20 - 10 * ty;
+        switch (action.action_type) {
+          case "check":
+            ctx.fillText("过牌 Check", x, y + ytrans);
+            break;
+          case "call":
+            ctx.fillText("跟注 Call", x, y + ytrans);
+            break;
+          case "raise":
+            ctx.fillText("加注 Raise " + action.action, x, y + ytrans);
+            break;
+          case "allin":
+            ctx.fillText("全押 AllIn", x, y + ytrans);
+            break;
+          case "fold":
+            ctx.fillText("弃牌 Fold", x, y + ytrans);
+            break;
+        }
+        ctx.shadowBlur = 0;
+      }
+
+      if (round_bet == -1) {
+        ctx.font = "bolder 18px Microsoft YaHei";
+        ctx.fillStyle = "#BDBDBD";
+        ctx.fillText("已弃牌", x, y + 20);
+      } else if (round_bet == -2) {
+        ctx.font = "bolder 18px Microsoft YaHei";
+        ctx.fillStyle = "#F44336";
+        ctx.fillText("已全压", x, y + 20);
+      } else {
+        ctx.font = "bold 16px Microsoft YaHei";
+        ctx.fillStyle = "white";
+        ctx.fillText("本轮已下注: " + round_bet, x, y + 20);
+      }
+    }
+
+    function drawPlayerResult(x, y, result, pubCards, t) {
+      ctx.fillStyle = "rgba(0, 0, 0, " + 0.5 * t + ")";
+      ctx.fillRect(x - 135, y - 35, 270, 70);
+
+      ctx.textAlign = "center";
+      ctx.font = "bold 25px Microsoft YaHei";
+      ctx.fillStyle = "rgba(255, 238, 88, " + t + ")";
+      if (result.win_games == null && result.err)
+        ctx.fillText("🚫非法操作", x, y);
+      else if (result.win_chips > 0)
+        ctx.fillText("😆赢得筹码: " + Math.floor(result.win_chips), x, y);
+      else if (result.win_chips < 0)
+        ctx.fillText("😭输掉筹码: " + -Math.floor(result.win_chips), x, y);
+      else ctx.fillText("😐不赚不亏", x, y);
+
+      ctx.font = "bold 15px Microsoft YaHei";
+      ctx.fillStyle = "rgba(255, 255, 255, " + t + ")";
+      if (!(result.win_games == null))
+        ctx.fillText("累计赢得局数: " + result.win_games, x, y + 25);
+      else if (result.err)
+        ctx.fillText("本轮弃牌, 错误: " + result.err, x, y + 25);
+      else if (!pubCards.includes(-1))
+        ctx.fillText("本轮手牌: " + HAND_TYPE[result.max_hand_type], x, y + 25);
+      else if (result.win_chips < 0) ctx.fillText("本轮弃牌", x, y + 25);
+    }
+
+    function drawGameResult(x, y, text, t) {
+      ctx.fillStyle = "rgba(0, 0, 0, " + 0.5 * t + ")";
+      ctx.fillRect(x - 135, y - 35, 270, 70);
+
+      ctx.textAlign = "center";
+      ctx.font = "bold 25px Microsoft YaHei";
+      ctx.fillStyle = "rgba(255, 238, 88, " + t + ")";
+      ctx.fillText(text, x, y + 5);
+    }
+
+    function drawData(data, t) {
+      const Y0 = H / 2 - R * 0.67;
+      const Y1 = H / 2 + R * 0.67;
+      const X = (s) => W / 2 + L * s;
+      const RT = 0.85;
+      if (data.temp_result && data.temp_result.length == 0)
+        data.temp_result = null;
+      let playerCards = data.player_cards;
+      let pubCards = [...data.public_cards];
+      let prevPubCards = data.prev_public_cards
+        ? [...data.prev_public_cards]
+        : [];
+      let roundPlayerBet = data.round_player_bet;
+      let round = data.round;
+      let pot = data.pot;
+      if (data.temp_result && !data.final_result && t < RT) {
+        playerCards = data.prev_player_cards;
+        pubCards = [...data.last_public_cards];
+        roundPlayerBet = data.prev_round_player_bet;
+        round = data.prev_round;
+        pot = data.prev_pot;
+      }
+      for (let i = pubCards.length; i < 5; i++) pubCards.push(-1);
+      for (let i = prevPubCards.length; i < 5; i++) prevPubCards.push(-1);
+      transitions = [];
+      for (let i = 0; i < 5; i++) {
+        if (pubCards[i] == prevPubCards[i]) transitions.push(1);
+        else transitions.push(Math.min((t * 1.5) / RT, 1));
+      }
+
+      drawBackground();
+      ctx.font = "bold 16px Microsoft YaHei";
+      ctx.fillStyle = "white";
+      ctx.fillText(
+        "当前局数: " +
+          (data.matchdata.hand + 1) +
+          " / " +
+          data.matchdata.max_hand,
+        X(-1.4),
+        H / 2 - 35
+      );
+      ctx.fillText("当前轮: " + PHASE[data.round], X(-1.4), H / 2);
+      ctx.fillText("底池筹码: " + pot, X(-1.4), H / 2 + 35);
+      drawPlayer(
+        X(-0.75),
+        Y0,
+        playerInfos[0],
+        data.player_chips[0],
+        data.matchdata.total_win_chips[0],
+        !data.temp_result && data.round_idx == 0
+      );
+      drawPlayer(
+        X(-0.75),
+        Y1,
+        playerInfos[1],
+        data.player_chips[1],
+        data.matchdata.total_win_chips[1],
+        !data.temp_result && data.round_idx == 1
+      );
+      let tCards =
+        data.final_result || (data.temp_result && t < RT)
+          ? Math.min((t * 2) / RT, 1)
+          : 0;
+      drawCards(
+        X(0),
+        Y0,
+        playerCards[0],
+        data.isLive && data.playerId != 0 ? tCards : 1
+      );
+      drawCards(
+        X(0),
+        Y1,
+        playerCards[1],
+        data.isLive && data.playerId != 1 ? tCards : 1
+      );
+      drawCards(X(0), H / 2, pubCards, transitions);
+      let tSAction =
+        data.isLive && !data.temp_result ? 0.6 : data.temp_result ? 1 / RT : 1;
+      drawAction(
+        X(0.75),
+        Y0,
+        roundPlayerBet[0],
+        data.last_action && data.last_action.player_id == 0
+          ? data.last_action
+          : null,
+        Math.min(t * tSAction, 1)
+      );
+      drawAction(
+        X(0.75),
+        Y1,
+        roundPlayerBet[1],
+        data.last_action && data.last_action.player_id == 1
+          ? data.last_action
+          : null,
+        Math.min(t * tSAction, 1)
+      );
+      if (data.final_result && t > RT) {
+        let tr = (t - RT) / (1 - RT);
+        if (data.error) data.final_result[data.round_idx].err = data.error;
+        drawPlayerResult(X(0), Y0, data.final_result[0], pubCards, tr);
+        drawPlayerResult(X(0), Y1, data.final_result[1], pubCards, tr);
+        let text = "比赛结束, 共计" + data.matchdata.max_hand + "局";
+        drawGameResult(X(0), H / 2, text, tr);
+      } else if (data.temp_result && t < RT) {
+        let tr = 1 - Math.pow(Math.abs((2 * t) / RT - 1), 5);
+        if (data.error) data.temp_result[data.prev_round_idx].err = data.error;
+        drawPlayerResult(X(0), Y0, data.temp_result[0], pubCards, tr);
+        drawPlayerResult(X(0), Y1, data.temp_result[1], pubCards, tr);
+      } else if (data.temp_result && t > RT) {
+        let tr = 1 - Math.pow((2 / (1 - RT)) * Math.abs(t - (RT + 1) / 2), 2);
+        let text = "开始第" + (data.matchdata.hand + 1) + "手牌";
+        drawGameResult(X(0), H / 2, text, tr);
+      }
+    }
+
+    var lastdata = null;
+    var animdata = { t: 0 };
+    function displayHandler(display) {
+      let data = JSON.parse(JSON.stringify(display)); // deep copy
+      let tl = new infoProvider.v2.TimelineMax();
+      if (lastdata) {
+        data.prev_player_cards = JSON.parse(
+          JSON.stringify(lastdata.player_cards)
+        ); // deep copy
+        data.prev_public_cards = JSON.parse(
+          JSON.stringify(lastdata.public_cards)
+        ); // deep copy
+        data.prev_round_player_bet = JSON.parse(
+          JSON.stringify(lastdata.round_player_bet)
+        ); // deep copy
+        data.prev_round = lastdata.round;
+        data.prev_round_idx = lastdata.round_idx;
+        data.prev_pot = lastdata.pot;
+      }
+      data.playerId = infoProvider.getPlayerID();
+      data.isLive = infoProvider.isLive();
+      let t =
+        lastdata && data.matchdata.hand > lastdata.matchdata.hand ? 3.5 : 1;
+      tl.to(animdata, t, {
+        t: 1,
+        onUpdate: () => drawData(data, animdata.t),
+      });
+      tl.set(animdata, { t: 0 });
+      tl.addLabel("insertPoint", t);
+      lastdata = data;
+      return tl;
+    }
+
+    function requestHandler(request) {
+      if (lastdata.round_bet == -2) {
+        $("#call-button").attr("disabled", "disabled");
+        $("#raise-button").attr("disabled", "disabled");
+        $("#raise-box").hide();
+      } else {
+        let c = lastdata.round_bet - lastdata.round_player_bet[request.my_id];
+        if (c < request.my_chips) $("#call-button").removeAttr("disabled");
+        else $("#call-button").attr("disabled", "disabled");
+
+        let minRaise = 2 * lastdata.round_raise;
+        $("#raise-value").attr({ min: minRaise, max: request.my_chips - 1 });
+        $("#raise-value").val(minRaise);
+        if (minRaise < request.my_chips) {
+          $("#raise-button").removeAttr("disabled");
+          $("#raise-box").show();
+        } else {
+          $("#raise-button").attr("disabled", "disabled");
+          $("#raise-box").hide();
+        }
+      }
+      $("#button-container").show();
+    }
+
+    function buttonClicked(type) {
+      if ($("#" + type + "-button").attr("disabled")) return;
+      $("#button-container").hide();
+      let bet = 0;
+      if (type == "fold") bet = -1;
+      else if (type == "allin") bet = -2;
+      else if (type == "call") bet = 0;
+      else if (type == "raise") bet = +$("#raise-value").val();
+      infoProvider.notifyPlayerMove(bet);
+    }
+
+    $(document).ready(function () {
+      playerInfos = infoProvider.getPlayerNames();
+      for (let i = 0; i < playerInfos.length; i++) {
+        playerInfos[i].img = new Image();
+        playerInfos[i].img.src = playerInfos[i].imgid;
+      }
+      infoProvider.v2.setDisplayCallback(displayHandler);
+      infoProvider.v2.setRequestCallback(requestHandler);
+      infoProvider.v2.setMinSize(W, H);
+      infoProvider.v2.notifyInitComplete();
+    });
+  </script>
+</html>

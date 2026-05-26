@@ -15,17 +15,19 @@ Lessons from previous iterations. Read before planning next generation.
 10. **allow_low_frequency_blocker_bluff needs bluff_freq_bonus param** for anti-bot4 integration. Without it, bluff frequency can't adapt to detected opponent type.
 11. **choose_raise needs anti_bot4_bonus + allow_river_overbet params.** Max_ratio 2.2 on river with nut hands extracts maximum value.
 
-### Generation v6 → v7 Strategy (current)
-- **Source**: claude_v6 (r=1480, rd=42.8). Clean 7-file modular structure.
-- **Reference**: bot5 (top reference bot, proven anti-exploitation framework).
-- **Key diffs (v6 vs bot5)**:
-  1. v6 has bb_vs_raise/sb_vs_reraise (lines 554-597) → REMOVE, return None
-  2. v6 lacks choose_overbet_river → PORT from bot5
-  3. v6 thin_cap uses wrong formula + to_call==0 guard → FIX to 0.30/0.38
-  4. v6 lacks detect_bot4_profile/get_anti_bot4_adjustments → PORT to opponent.py
-  5. v6 allow_low_frequency_blocker_bluff lacks bluff_freq_bonus → ADD param
-  6. v6 choose_raise lacks anti_bot4_bonus/allow_river_overbet → ADD params + max_ratio=2.2
-  7. v6 bad_river_bluff_candidate/thin_static_showdown_control lack anti_bot4 bypass → ADD
-  8. v6 threshold formulas lack anti_bot4 bluff_freq_bonus term → ADD
-- **Approach**: Port complete subsystems (anti-bot4 + river overbet) as units into v6's clean structure.
-- **Tournament hyperparams**: v6 chase=0.85, threshold=-0.070, sizing=0.16, bluff=0.11 vs bot5's 0.90, -0.075, 0.18, 0.13.
+### v6→v7 Status (current)
+- **Source**: claude_v6 (r=1500, clean 7-file modular structure, 6149 lines).
+- **Reference**: bot5 (proven anti-exploitation framework).
+- **v6 rating trend**: Stable 1443→1500 over last 20 periods. Not stagnating but ~75pts behind v2 (1575).
+- **All 8 diffs from experience pool entry #7 remain unaddressed** — these are the v6→v7 tasks.
+
+### Key v6→v7 Changes Required
+1. REMOVE bb_vs_raise/sb_vs_reraise blocks (lines 554-597) → return None
+2. FIX thin_cap: 0.30/0.38 without to_call==0 guard
+3. PORT detect_bot4_profile + get_anti_bot4_adjustments to opponent.py
+4. ADD bluff_freq_bonus param to allow_low_frequency_blocker_bluff (postflop.py)
+5. ADD anti_bot4_bonus + allow_river_overbet params to choose_raise, max_ratio=2.2
+6. PORT choose_overbet_river to strategy.py
+7. ADD anti_bot4 bypasses to bad_river_bluff_candidate + thin_static_showdown_control
+8. ADD bluff_freq_bonus to river_bluff/probe_fold/semi_bluff thresholds
+9. TUNE tournament anti-lock params toward bot5 values (chase 0.85→0.90, bluff 0.11→0.13)
