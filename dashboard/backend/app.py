@@ -353,6 +353,35 @@ async def get_log(version: str, filename: str, tail: int = Query(0)):
     return {"version": version, "filename": filename, "content": content}
 
 
+# ── Match Replay ──
+
+@app.get("/api/matches/recent")
+async def recent_matches(limit: int = Query(50, le=200)):
+    """Recent match list from match_history.jsonl."""
+    if not MATCH_HISTORY_FILE.exists():
+        return []
+    entries = []
+    with open(MATCH_HISTORY_FILE, "r") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    entries.reverse()
+    return entries[:limit]
+
+
+@app.get("/api/matches/replay/{match_id}")
+async def match_replay(match_id: str):
+    """Full replay data for a specific match."""
+    path = REPLAY_DIR / match_id
+    if not path.is_file():
+        return {"error": "Match not found"}
+    return _read_locked(path)
+
+
 # ── Daemon Status ──
 
 @app.get("/api/daemon/status")
