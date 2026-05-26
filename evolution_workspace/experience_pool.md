@@ -15,15 +15,7 @@ Lessons from previous iterations. Read before planning next generation.
 10. **allow_low_frequency_blocker_bluff needs bluff_freq_bonus param** for anti-bot4 integration.
 11. **choose_raise needs anti_bot4_bonus + allow_river_overbet params.** Max_ratio 2.2 on river with nut hands extracts maximum value.
 
-### v6→v7 Plan (current)
-- **Source**: claude_v6 (r=1429.6, rd=43.2). 2nd-worst, ~150pts behind v2/v5. Completely flatlined across 120+ rating periods.
-- **Strategy**: Comprehensive incremental port of ALL bot5 proven features simultaneously (lesson 5). 3 workers: strategy refactor + opponent/postflop + hyperparams.
-- **Key changes**: (a) Remove bb_vs_raise/sb_vs_reraise → return None (lesson 1), (b) Fix thin_cap to 0.30/0.38 (lesson 2), (c) Add river overbet (lesson 3), (d) Add anti-bot4 detection + integration (lessons 8,10,11), (e) Chen preflop table + precomputed lookups, (f) Higher sim counts (900/1200/1500), (g) Fix EQR values to bot5 levels, (h) Remove gift tracking/cbet adjustments/drift detection (lessons 6,7), (i) Fix anti-lock pressure values.
-
-### Key Differences: v6 vs bot5 (comprehensive)
-- **strategy.py**: v6 has hardcoded preflop logic (bb_vs_raise, sb_vs_reraise) — bot5 returns None. v6 missing choose_overbet_river, choose_overbet_bluff_river. v6 thin_cap wrong formula. v6 choose_raise missing anti_bot4_bonus/allow_river_overbet. v6 has gift tracking (not in bot5). v6 EQR values lower (0.68/0.56 vs 0.72/0.62) with tighter clamps. v6 has cbet adjustments (not in bot5). v6 has preflop_trash_hand guard on anti_lock (bot5 doesn't).
-- **opponent.py**: v6 has cbet tracking + drift detection (bot5 doesn't). v6 priors differ (vpip 0.52, pfr 0.24 vs bot5 0.58/0.28). v6 confidence divisor 30 vs bot5 35. v6 missing detect_bot4_profile, get_anti_bot4_adjustments.
-- **postflop.py**: v6 allow_low_frequency_blocker_bluff missing bluff_freq_bonus param. v6 check_probe_resistance_margin and must_continue_vs_raise are in strategy.py (bot5 has them in postflop.py).
-- **constants.py**: v6 sim counts too low (400/800/900 vs 900/1200/1500). v6 missing PREFLOP_STRENGTH_TABLE, CARD_RANKS, CARD_SUITS.
-- **state.py**: v6 uses formula-based estimate_preflop_strength. bot5 uses Chen lookup table.
-- **tournament.py**: v6 anti-lock pressure values lower (chase 0.85 vs 0.90, threshold -0.070 vs -0.075, sizing 0.16 vs 0.18, bluff 0.11 vs 0.13).
+### v6→v7 Execution
+- **Source**: claude_v6 (r=1429.6, rd=43.2). 150pts behind leaders. Comprehensive bot5 port.
+- **3 workers**: (A1) strategy+opponent logic, (A2) postflop functions, (B) hyperparams+data.
+- **All bot5 diffs applied simultaneously**: remove bb_vs_raise/sb_vs_reraise, fix thin_cap, add river overbet, add anti-bot4, Chen table, higher sims, fix EQR, remove gift/cbet/drift, fix anti-lock values.
