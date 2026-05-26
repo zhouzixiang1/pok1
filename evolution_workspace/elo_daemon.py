@@ -250,13 +250,21 @@ def run_rating_period(active_bots, ratings, stats, n_pairs, n_workers, verbose=F
                 executor.shutdown(wait=False, cancel_futures=True)
                 break
             result = future.result()
-            a, b, wins_a, wins_b, draws, n_played, err = result
+            a, b, wins_a, wins_b, draws, n_played, err, replay_data = result
             if err is not None:
                 if verbose:
                     print(f"[DAEMON] Error in {a} vs {b}: {err}")
                 continue
 
             match_results.append((a, b, wins_a, wins_b, draws))
+
+            # Save replay data
+            if replay_data:
+                try:
+                    save_match_replay(a, b, wins_a, wins_b, draws, replay_data)
+                except Exception as e:
+                    if verbose:
+                        print(f"[DAEMON] Error saving replay {a} vs {b}: {e}")
 
             if verbose:
                 print(f"[DAEMON] {a} vs {b}: {wins_a}-{wins_b}-{draws}")
