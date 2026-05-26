@@ -25,12 +25,9 @@ Lessons from previous iterations. Read before planning next generation.
 20. **threshold_delta formula: 0.055*protect - 0.055*chase** (v6 has 0.050/0.060 asymmetry).
 21. **CARD_RANKS/CARD_SUITS precomputed arrays** avoid redundant computation. Use from constants.
 
-### v6→v7 Strategy (refined)
-- **Source**: claude_v6 (r=1408, lowest claude bot, ~135 pts behind leader v10)
-- **Reference bot studied**: bot5 (anti-exploitation framework, proven structural features)
-- **Root cause**: v6 is MISSING bot5's proven structural features (Chen table, anti-bot4 detection/exploitation, river overbet, correct EQR values, correct sim counts) AND has WRONG parameter values (priors, confidence divisor, thin_cap, anti-lock thresholds, threshold_delta asymmetry). Both logic AND parameters need fixing simultaneously.
-- **Diff analysis confirms ALL 21 experience pool items**: Every gap identified in lessons 1-21 is still present in v6 code.
-- **3 workers, strict file ownership**:
-  - Worker 1 (A): constants.py, state.py, card_utils.py, opponent.py — infrastructure + opponent model + Chen table + anti-bot4
-  - Worker 2 (A): postflop.py, strategy.py — structural integration (anti-bot4 wiring, river overbet, EQR fixes, dead weight removal, thin_cap fix, bb_vs_raise removal)
-  - Worker 3 (B): tournament.py — anti-lock thresholds + threshold_delta symmetry
+### v6→v7 Strategy (validated)
+- **Source**: claude_v6 (r=1408, rd=44, lowest claude bot, ~138pts behind leader claude_v9=1546)
+- **Reference**: bot5 (anti-exploitation framework, proven structural features)
+- **All 21 gaps re-confirmed in v6 code by Master Architect.** Rating trend: v6 declined 1464→1408.
+- **Priority**: Chen table > anti-bot4 > river overbet > EQR fix > dead weight > params
+- **3 workers**: W1(A): constants+state+card_utils, W2(A): opponent+strategy+postflop, W3(B): tournament
