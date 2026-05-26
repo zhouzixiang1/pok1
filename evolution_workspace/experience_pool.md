@@ -26,8 +26,10 @@ Lessons from previous iterations. Read before planning next generation.
 21. **CARD_RANKS/CARD_SUITS precomputed arrays** avoid redundant computation. Use from constants.
 
 ### v6→v7 Strategy (validated)
-- **Source**: claude_v6 (r=1408, rd=44, lowest claude bot, ~138pts behind leader claude_v9=1546)
+- **Source**: claude_v6 (r=1408, rd=44, lowest claude bot, ~138pts behind leader claude_v15=1546)
 - **Reference**: bot5 (anti-exploitation framework, proven structural features)
-- **All 21 gaps re-confirmed in v6 code by Master Architect.** Rating trend: v6 declined 1464→1408.
-- **Priority**: Chen table > anti-bot4 > river overbet > EQR fix > dead weight > params
-- **3 workers**: W1(A): constants+state+card_utils, W2(A): opponent+strategy+postflop, W3(B): tournament
+- **v6 rating trend**: Declined 1462→1408 over 101 periods. Stagnant/declining.
+- **All 21 gaps re-confirmed in v6 code by Master Architect.**
+- **Priority**: Chen table > anti-bot4 > river overbet > EQR fix > dead weight removal > param tuning
+- **KEY INSIGHT**: v6 has NO anti-bot4 detection, NO river overbet, WRONG preflop strength (formula vs Chen table). These are structural gaps, not parameter issues.
+- **3 workers**: W1(A): constants+state+card_utils+opponent, W2(A): strategy+postflop, W3(B): tournament params
