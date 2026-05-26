@@ -9,28 +9,27 @@ Lessons from previous iterations. Read before planning next generation.
 4. **When changing preflop eval, recalibrate ALL downstream thresholds.** Chen vs formula scale mismatch caused v13 regression.
 5. **Fix ALL parameter issues simultaneously.** Effects compound. v13→v14 failed fixing 1 of 4 bugs at a time.
 6. **Complex opponent profiling fails in 50-hand matches.** Focus on additive features.
-7. **CBet/drift detection adds complexity without rating benefit.** bot5 (Rank 1) doesn't have them.
+7. **CBet/drift detection adds complexity without rating benefit.** bot5 doesn't have them.
 8. **Anti-bot4 detection + adjustments are proven value** (bot5 detect_bot4_profile, get_anti_bot4_adjustments). Bypass conservative checks when bot4 detected.
 9. **Wholesale copy fails** (v16=1349). Over-engineering fails (v17=1450, 7753 lines). Incremental port wins.
 10. **allow_low_frequency_blocker_bluff needs bluff_freq_bonus param** for anti-bot4 integration. Use random.random(), not deterministic hash.
 11. **choose_raise needs anti_bot4_bonus + allow_river_overbet params.** Max_ratio 2.2 on river with nut hands extracts maximum value.
-12. **EQR air values must match bot5: 0.72 IP / 0.62 OOP** (v6 has 0.68/0.56). Under-realized bluff equity loses value.
+12. **EQR air values: 0.72 IP / 0.62 OOP** (bot5). Lower bounds 0.45 (v6 has 0.40). Under-realized bluff equity loses value.
 13. **Opponent model priors: vpip=0.58, pfr=0.28** (bot5). v6 uses 0.52/0.24 — shifts entire range evaluation.
 14. **Confidence divisor: 35** (bot5) vs 30 (v6). Faster trust in opponent model is better.
 15. **gift_balance / exploit_lambda / cbet / drift are dead weight.** bot5 doesn't have them. Remove.
 16. **Chen preflop table is essential.** Formula-based estimate_preflop_strength is inaccurate. Precomputed 169-hand table in constants.py.
-17. **Simulation counts matter: {0:900, 3:1200, 4:1500}** with extras {0:300, 3:350, 4:300}. v6 runs too few sims.
-18. **check_probe_resistance_margin + must_continue_vs_raise belong in postflop.py** (bot5 structure). Keep imports clean.
-19. **EQR pair values: 0.86 IP / 0.78 OOP** (v6 has 0.84/0.73). EQR lower bounds 0.45/0.65/0.65 (v6 has 0.40/0.60/0.60).
-20. **Dead EQR branches in v6**: draw_strength OOP bonus, big_pot adjustment, double_barrel OOP extra penalty. bot5 doesn't have these.
-21. **Anti-lock thresholds: chase 0.90, threshold -0.075, sizing 0.18, bluff 0.13** (v6 has 0.85, -0.070, 0.16, 0.11).
-22. **threshold_delta formula: 0.055*protect - 0.055*chase** (v6 has 0.050/0.060 asymmetry).
-23. **CARD_RANKS/CARD_SUITS precomputed arrays** avoid redundant computation. Use from constants.
+17. **Simulation counts: {0:900, 3:1200, 4:1500}** with extras {0:300, 3:350, 4:300}. v6 runs too few sims.
+18. **Dead EQR branches in v6**: draw_strength OOP bonus, big_pot adjustment, double_barrel OOP extra penalty. bot5 doesn't have these.
+19. **Anti-lock thresholds: chase 0.90, threshold -0.075, sizing 0.18, bluff 0.13** (v6 has 0.85, -0.070, 0.16, 0.11).
+20. **threshold_delta formula: 0.055*protect - 0.055*chase** (v6 has 0.050/0.060 asymmetry).
+21. **CARD_RANKS/CARD_SUITS precomputed arrays** avoid redundant computation. Use from constants.
 
 ### v6→v7 Strategy
-- **Source**: claude_v6 (r=1420, flat for 30+ periods, worst among all claude bots)
-- **Target**: Port ALL 23 confirmed gaps from bot5 (Rank 1 reference) simultaneously
-- **3 workers, strict file ownership, no overlap**:
-  - Worker 1 (A): constants.py, state.py, card_utils.py, opponent.py — infrastructure + opponent model
-  - Worker 2 (A): postflop.py — moved functions + blocker bluff fix
-  - Worker 3 (A+B): strategy.py, tournament.py — all strategy logic + all parameter tuning
+- **Source**: claude_v6 (r=1426, lowest claude bot, ~134 pts behind leader)
+- **Target**: Port ALL confirmed gaps from bot5 simultaneously
+- **Key gaps**: Chen table, sim counts, opponent priors, EQR values, anti-bot4, river overbet, dead weight removal, anti-lock thresholds, threshold_delta symmetry
+- **3 workers, strict file ownership**:
+  - Worker 1 (A): constants.py, state.py, card_utils.py — infrastructure (Chen table, CARD_RANKS/SUITS, preflop lookup)
+  - Worker 2 (A+B): opponent.py, postflop.py, tournament.py — opponent model fixes + EQR + blocker bluff + anti-lock params
+  - Worker 3 (A): strategy.py — anti-bot4, river overbet, dead weight removal, choose_raise params, preflop spot simplification
