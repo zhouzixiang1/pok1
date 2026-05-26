@@ -61,56 +61,68 @@ export function useEvolutionSSE(
   const connect = () => {
     if (!enabled) return () => {};
 
-    const source = new EventSource(`${BASE}/evolution/stream`);
+    let currentSource: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const eventTypes: EvolutionEventType[] = [
-      "history", "status", "io", "clear_io",
-      "eval_table", "daemon", "header", "cost", "metrics",
-    ];
+    const doConnect = () => {
+      currentSource = new EventSource(`${BASE}/evolution/stream`);
 
-    eventTypes.forEach((eventType) => {
-      source.addEventListener(eventType, (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data);
-          switch (eventType) {
-            case "history":
-              handlers.onHistory?.(data.msg, data.status);
-              break;
-            case "status":
-              handlers.onStatus?.(data.msg, data.is_working);
-              break;
-            case "io":
-              handlers.onIO?.({ text: data.msg, streamType: data.stream_type, ts: data.ts });
-              break;
-            case "clear_io":
-              handlers.onClearIO?.();
-              break;
-            case "eval_table":
-              handlers.onEvalTable?.(data.rows);
-              break;
-            case "daemon":
-              handlers.onDaemon?.(data);
-              break;
-            case "header":
-              handlers.onHeader?.(data.msg);
-              break;
-            case "cost":
-              handlers.onCost?.(data);
-              break;
-            case "metrics":
-              handlers.onMetrics?.(data);
-              break;
-          }
-        } catch { /* ignore parse errors */ }
+      const eventTypes: EvolutionEventType[] = [
+        "history", "status", "io", "clear_io",
+        "eval_table", "daemon", "header", "cost", "metrics",
+      ];
+
+      eventTypes.forEach((eventType) => {
+        currentSource!.addEventListener(eventType, (e: MessageEvent) => {
+          try {
+            const data = JSON.parse(e.data);
+            switch (eventType) {
+              case "history":
+                handlers.onHistory?.(data.msg, data.status);
+                break;
+              case "status":
+                handlers.onStatus?.(data.msg, data.is_working);
+                break;
+              case "io":
+                handlers.onIO?.({ text: data.msg, streamType: data.stream_type, ts: data.ts });
+                break;
+              case "clear_io":
+                handlers.onClearIO?.();
+                break;
+              case "eval_table":
+                handlers.onEvalTable?.(data.rows);
+                break;
+              case "daemon":
+                handlers.onDaemon?.(data);
+                break;
+              case "header":
+                handlers.onHeader?.(data.msg);
+                break;
+              case "cost":
+                handlers.onCost?.(data);
+                break;
+              case "metrics":
+                handlers.onMetrics?.(data);
+                break;
+            }
+          } catch { /* ignore parse errors */ }
+        });
       });
-    });
 
-    source.onerror = () => {
-      source.close();
-      setTimeout(connect, 5000);
+      currentSource.onerror = () => {
+        currentSource?.close();
+        currentSource = null;
+        reconnectTimer = setTimeout(doConnect, 5000);
+      };
     };
 
-    return () => source.close();
+    doConnect();
+
+    return () => {
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      currentSource?.close();
+      currentSource = null;
+    };
   };
 
   return connect;

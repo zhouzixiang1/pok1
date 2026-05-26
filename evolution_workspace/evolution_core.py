@@ -176,6 +176,15 @@ async def wait_for_daemon_eval(bot_name, timeout=600, min_matches=20, max_rd=40)
 # Daemon Management
 # ──────────────────────────────────────────────
 
+def _drain_stdout(proc):
+    """Drain daemon stdout to prevent pipe buffer deadlock."""
+    try:
+        for line in proc.stdout:
+            print(f"[DAEMON] {line.rstrip()}")
+    except Exception:
+        pass
+
+
 def start_daemon(workers=14, pairs=5):
     """Start elo_daemon.py as a background subprocess."""
     global daemon_proc
@@ -185,6 +194,8 @@ def start_daemon(workers=14, pairs=5):
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, bufsize=1
     )
+    # Drain daemon stdout to prevent pipe buffer deadlock
+    threading.Thread(target=_drain_stdout, args=(daemon_proc,), daemon=True).start()
     atexit.register(stop_daemon)
     return daemon_proc
 
