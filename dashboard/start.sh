@@ -1,9 +1,9 @@
 #!/bin/bash
-# Start the Evolution Dashboard (with optional Evolution Manager)
+# Start the Evolution Dashboard (with optional Evolution loop)
 #
 # Usage:
-#   ./start.sh                  # dev: dashboard + evolution manager
-#   ./start.sh --build          # prod: dashboard + evolution manager
+#   ./start.sh                  # dev: dashboard + evolution
+#   ./start.sh --build          # prod: dashboard + evolution
 #   ./start.sh --no-evolve      # dev: dashboard only
 #   ./start.sh --build --no-evolve  # prod: dashboard only
 
@@ -38,6 +38,11 @@ cleanup() {
 }
 trap cleanup SIGINT SIGTERM
 
+# Export evolution control via environment variable
+if $NO_EVOLVE; then
+    export EVOLUTION_DISABLED=1
+fi
+
 if $BUILD; then
     # ── Production mode ──
     echo "Building frontend for production..."
@@ -47,40 +52,31 @@ if $BUILD; then
 
     echo ""
     if $NO_EVOLVE; then
-        echo "Starting production dashboard on http://localhost:8000"
-        cd "$PROJECT_ROOT"
-        exec python -m uvicorn dashboard.backend.app:app --host 0.0.0.0 --port 8000
+        echo "Starting production dashboard on http://localhost:8000 (no evolution)"
     else
-        echo "Starting production dashboard + evolution manager on http://localhost:8000"
-        (cd "$PROJECT_ROOT" && python -m uvicorn dashboard.backend.app:app --host 0.0.0.0 --port 8000) &
-        PIDS+=($!)
-        (cd "$PROJECT_ROOT" && python evolution_workspace/evolution_manager.py --no-tui) &
-        PIDS+=($!)
-        wait
+        echo "Starting production dashboard + evolution on http://localhost:8000"
     fi
+    cd "$PROJECT_ROOT"
+    exec python -m uvicorn dashboard.backend.app:app --host 0.0.0.0 --port 8000
 else
     # ── Development mode ──
     echo "Starting development servers..."
-    echo "  Dashboard backend:  http://localhost:8000"
-    echo "  Dashboard frontend: http://localhost:5173"
+    echo "  Backend + Evolution: http://localhost:8000"
+    echo "  Frontend dev:        http://localhost:5173"
     if ! $NO_EVOLVE; then
-        echo "  Evolution manager:  running (--no-tui)"
+        echo "  Evolution:           enabled (integrated)"
+    else
+        echo "  Evolution:           disabled"
     fi
     echo ""
 
-    # Backend (subshell ensures correct cwd)
+    # Backend with integrated evolution (env var controls whether evolution runs)
     (cd "$PROJECT_ROOT" && python -m uvicorn dashboard.backend.app:app --port 8000 --reload) &
     PIDS+=($!)
 
-    # Frontend
+    # Frontend dev server
     (cd "$SCRIPT_DIR/frontend" && npx vite --host) &
     PIDS+=($!)
-
-    # Evolution manager
-    if ! $NO_EVOLVE; then
-        (cd "$PROJECT_ROOT" && python evolution_workspace/evolution_manager.py --no-tui) &
-        PIDS+=($!)
-    fi
 
     wait
 fi

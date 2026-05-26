@@ -1,13 +1,16 @@
-"""FastAPI backend for Evolution Dashboard."""
+"""FastAPI backend for Evolution Dashboard — with integrated evolution loop."""
 
 import asyncio
 import json
 import os
 import re
+import sys
 import time
+import threading
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import fcntl
 from fastapi import FastAPI, Query
@@ -24,7 +27,77 @@ RATINGS_FILE = RESULTS_DIR / "glicko_ratings.json"
 STATS_FILE = RESULTS_DIR / "elo_daemon_stats.json"
 HISTORY_FILE = RESULTS_DIR / "rating_history.jsonl"
 
-app = FastAPI(title="Evolution Dashboard API", version="1.0")
+# ── Evolution integration ──
+EVOLUTION_DIR = PROJECT_ROOT / "evolution_workspace"
+BACKEND_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(BACKEND_DIR))
+sys.path.insert(0, str(EVOLUTION_DIR.resolve()))
+
+from web_ui import EventBroadcaster, WebUI
+
+# Global broadcaster + UI (shared across lifespan and endpoints)
+broadcaster = EventBroadcaster(buffer_size=500)
+web_ui = WebUI(broadcaster)
+
+_evolution_task: Optional[asyncio.Task] = None
+_daemon_monitor_stop: Optional[threading.Event] = None
+_evolution_disabled = os.environ.get("EVOLUTION_DISABLED", "0") == "1"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start evolution as a background asyncio task, clean up on shutdown."""
+    global _evolution_task, _daemon_monitor_stop
+
+    if not _evolution_disabled:
+        from evolution_core import (
+            main_loop, start_daemon, stop_daemon,
+            daemon_monitor_thread, PROMPTS_DIR, RESULTS_DIR as EVO_RESULTS_DIR,
+        )
+        os.makedirs(PROMPTS_DIR, exist_ok=True)
+        os.makedirs(EVO_RESULTS_DIR, exist_ok=True)
+
+        # Start daemon subprocess
+        start_daemon(
+            workers=int(os.environ.get("DAEMON_WORKERS", "14")),
+            pairs=int(os.environ.get("DAEMON_PAIRS", "5")),
+        )
+
+        # Daemon monitor thread
+        _daemon_monitor_stop = threading.Event()
+        monitor = threading.Thread(
+            target=daemon_monitor_thread,
+            args=(web_ui, _daemon_monitor_stop),
+            daemon=True,
+        )
+        monitor.start()
+
+        # Launch evolution main_loop as background task
+        _evolution_task = asyncio.create_task(
+            main_loop(web_ui, is_text_ui=False, no_daemon=False)
+        )
+        web_ui.log_history("Evolution started (integrated mode)", "success")
+
+    yield  # Application runs
+
+    # ── Shutdown ──
+    if _evolution_task and not _evolution_task.done():
+        _evolution_task.cancel()
+        try:
+            await asyncio.wait_for(_evolution_task, timeout=10)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+
+    if _daemon_monitor_stop:
+        _daemon_monitor_stop.set()
+
+    if not _evolution_disabled:
+        from evolution_core import stop_daemon
+        stop_daemon()
+        web_ui.log_history("Evolution stopped.", "info")
+
+
+app = FastAPI(title="Evolution Dashboard API", version="1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -288,6 +361,35 @@ async def daemon_status():
         status = "active" if age < 60 else ("recent" if age < 600 else "idle")
         return {"status": status, "last_update_age_seconds": round(age, 0)}
     return {"status": "unknown", "last_update_age_seconds": -1}
+
+
+# ── Evolution SSE Stream ──
+
+@app.get("/api/evolution/stream")
+async def evolution_stream():
+    """SSE endpoint for real-time evolution events."""
+    cid, queue = broadcaster.add_client()
+
+    async def generate():
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=30)
+                    yield event
+                except asyncio.TimeoutError:
+                    yield {"event": "ping", "data": "{}"}
+        except asyncio.CancelledError:
+            pass
+        finally:
+            broadcaster.remove_client(cid)
+
+    return EventSourceResponse(generate())
+
+
+@app.get("/api/evolution/state")
+async def evolution_state():
+    """Current state snapshot for initial load."""
+    return web_ui.get_state()
 
 
 # ── Static files (production) ──
