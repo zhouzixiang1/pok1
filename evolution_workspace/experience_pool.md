@@ -1,7 +1,7 @@
 # Evolution Experience Pool
 Lessons from previous iterations. Read before planning next generation.
 
-### Core Lessons (Consolidated v8-v17, v6→v7, v7→v8)
+### Core Lessons (Consolidated v8-v17, v6→v7)
 
 1. **Chen preflop table essential — worth ~130pts alone.** 169-hand lookup from bot5 replaces crude formula.
 2. **Anti-bot4 detection + adjustments = proven edge.** detect_bot4_profile + get_anti_bot4_adjustments from bot5. Exploits bot4's overfolding on dynamic/paired boards, river checks.
@@ -21,7 +21,8 @@ Lessons from previous iterations. Read before planning next generation.
 16. **bb_vs_raise/sb_vs_reraise fixed thresholds ALWAYS harmful** (v8,v11,v15). Let simulation decide.
 17. **When changing preflop eval, recalibrate ALL downstream thresholds.** Chen vs formula mismatch caused v13 regression.
 
-### v6→v7→v8 Diagnosis
-- **Source**: claude_v6 (r=1408, worst claude bot, ~134pts behind v16=1542)
-- **v7 strategy**: Incremental port of bot5 features. W1=infrastructure (Chen table, CARD_RANKS/SUITS, anti-bot4, fix priors/sim-counts, remove dead weight). W2=strategy (river overbet, anti-bot4 integration, remove gift_balance/cbet dead weight, fix thin_cap/EQR/blocker_bluff). W3=hyperparams (anti-lock tuning, threshold_delta fix).
-- **Key insight**: v6 is fundamentally weak due to 3 structural gaps (no Chen table, no anti-bot4, no river overbet) + wrong parameters everywhere. The combination causes systematic losses against all competent opponents.
+### v6→v7 Diagnosis
+- **Source**: claude_v6 (r=1408, worst claude bot, ~163pts behind v8=1571)
+- **Strategy**: Three-worker targeted port of bot5's proven features. W1=infrastructure (Chen table, CARD_RANKS/SUITS, anti-bot4, fix priors/sim-counts, remove CBet dead weight). W2=strategy logic (river overbet, anti-bot4 integration, remove gift_balance/gto dead weight, fix thin_cap/EQR/blocker_bluff, remove fixed preflop thresholds). W3=hyperparams (anti-lock tuning, threshold_delta fix).
+- **Key insight**: v6 is fundamentally weak due to 4 structural gaps (no Chen table, no anti-bot4, no river overbet, wrong sim counts) + wrong parameters everywhere. The combination causes systematic losses against all competent opponents.
+- **Risk**: Each gap alone costs ~30-50 pts. Together they compound to ~160 pts. Must fix ALL simultaneously.
