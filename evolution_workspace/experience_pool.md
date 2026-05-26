@@ -15,11 +15,9 @@ Lessons from previous iterations. Read before planning next generation.
 10. **allow_low_frequency_blocker_bluff needs bluff_freq_bonus param** for anti-bot4 integration.
 11. **choose_raise needs anti_bot4_bonus + allow_river_overbet params.** Max_ratio 2.2 on river with nut hands extracts maximum value.
 
-
-### v6→v7 Analysis (current)
-- **Source**: claude_v6 (r=1462, rd=44.1). BOTTOM of all claude bots. ~120pts behind v2 (1580). Declining trend.
+### v6→v7 Plan (current)
+- **Source**: claude_v6 (r=1458, rd=43.9). BOTTOM of all claude bots. 140pts behind v2 (1598). Declining trend (1508→1458 over 15 periods).
 - **Reference**: bot5 (anti-exploitation framework, Rank 1).
-- **5 critical gaps confirmed**: (1) bb_vs_raise/sb_vs_reraise hardcoded (lines 554-600) instead of returning None like bot5, (2) thin_cap uses wrong formula 0.46+0.08*w with to_call==0 guard instead of 0.30/0.38, (3) No river overbet for nut hands, (4) No anti-bot4 detection framework, (5) allow_low_frequency_blocker_bluff missing bluff_freq_bonus param.
-- **Anti-lock params**: v6 chase=0.85/bluff=0.11 vs bot5 0.90/0.13. threshold_delta cap -0.070 vs -0.075. sizing_delta 0.16 vs 0.18.
-- **Strategy**: Fix ALL 5 gaps simultaneously. Port detect_bot4_profile + get_anti_bot4_adjustments from bot5/opponent.py. Remove hardcoded bb_vs_raise/sb_vs_reraise blocks. Fix thin_cap. Add choose_overbet_river + integration. Update anti-lock params.
-- **Key integration points**: anti_bot4 adjustments affect strong/medium thresholds (line 684-686 bot5), bluff thresholds (line 1078-1080), choose_raise params (anti_bot4_bonus, allow_river_overbet), and bad_river_bluff_candidate/thin_static_showdown_control guards.
+- **5 critical gaps**: (1) bb_vs_raise/sb_vs_reraise hardcoded instead of None, (2) thin_cap wrong formula 0.46+0.08*w+to_call==0 guard, (3) No river overbet, (4) No anti-bot4 framework, (5) blocker_bluff missing bluff_freq_bonus.
+- **Anti-lock params gap**: v6 chase=0.85/bluff=0.11 vs bot5 0.90/0.13. threshold_delta cap -0.070 vs -0.075. sizing_delta 0.16 vs 0.18.
+- **Integration points**: anti_bot4 adjustments → strong/medium thresholds, bluff thresholds, choose_raise (anti_bot4_bonus, allow_river_overbet, max_ratio=2.2), bad_river_bluff_candidate/thin_static_showdown_control guards with `bluff_freq_bonus < 0.05`.
