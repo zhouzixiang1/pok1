@@ -32,6 +32,7 @@ from claude_agent_sdk import (
 
 WORKSPACE = Path("evolution_workspace")
 PROJECT_ROOT = WORKSPACE.parent
+_COPY_IGNORE = shutil.ignore_patterns('__pycache__', '*.pyc')
 PROMPTS_DIR = WORKSPACE / "prompts"
 RESULTS_DIR = WORKSPACE / "results"
 BOTS_DIR = Path("bots")
@@ -239,6 +240,11 @@ def git_ensure_clean():
             # Might fail if no git user configured; skip silently
             pass
     return _git("rev-parse", "HEAD")
+
+
+def git_has_tag(version):
+    """Check if a bot-v{version} tag exists (authoritative completion proof)."""
+    return bool(_git("tag", "-l", f"bot-v{version}", check=False).strip())
 
 
 def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=None):
@@ -513,7 +519,7 @@ def seed_initial_bots(ui):
         source_dir = REFERENCE_DIR / f"bot{i}"
         if not target_dir.exists() and source_dir.exists():
             ui.log_history(f"Seeding claude_v{i} from reference bot{i}...", "info")
-            shutil.copytree(source_dir, target_dir)
+            shutil.copytree(source_dir, target_dir, ignore=_COPY_IGNORE)
             (target_dir / ".completed").touch()
             seeded = True
     return seeded
@@ -775,7 +781,8 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
     src_dir = get_bot_dir(_source)
     if next_dir.exists():
         shutil.rmtree(next_dir)
-    shutil.copytree(src_dir, next_dir)
+    shutil.copytree(src_dir, next_dir, ignore=_COPY_IGNORE)
+    (next_dir / ".completed").unlink(missing_ok=True)
 
     for i, task in enumerate(tasks):
         ok = await _run_single_worker(
@@ -808,7 +815,15 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
         target_dir = get_bot_dir(current_v)
         if target_dir.exists():
             if (target_dir / ".completed").exists():
-                current_v += 1
+                # Dual validation: .completed + git tag (seeded bots v1-v6 may lack tags)
+                if current_v <= 6 or git_has_tag(current_v):
+                    current_v += 1
+                else:
+                    # .completed exists but no git tag → false positive from copytree
+                    ui.log_history(
+                        f"v{current_v} has .completed but no git tag. Rolling back.", "warn")
+                    shutil.rmtree(target_dir)
+                    break
             else:
                 ui.log_history(f"Incomplete v{current_v} detected. Rolling back.", "warn")
                 shutil.rmtree(target_dir)
@@ -907,6 +922,17 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
 
         next_v = current_v + 1
 
+        # Git tag collision guard: if bot-v{next_v} tag already exists (e.g. from a
+        # previous interrupted run that committed but didn't advance current_v),
+        # skip forward to the next available version.
+        if git_has_tag(next_v):
+            old_next = next_v
+            while git_has_tag(next_v):
+                next_v += 1
+            ui.log_history(
+                f"Tag bot-v{old_next} already exists. Advancing next_v to {next_v}.", "warn")
+            current_v = next_v - 1
+
         # Stagnation detection — use LLM for intelligent analysis when stagnation suspected
         source_v = current_v
         stag_count = git_get_stagnation_count(f"claude_v{current_v}", ratings)
@@ -974,7 +1000,8 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             next_dir = get_bot_dir(next_v)
             if next_dir.exists():
                 shutil.rmtree(next_dir)
-            shutil.copytree(get_bot_dir(parent_a), next_dir)
+            shutil.copytree(get_bot_dir(parent_a), next_dir, ignore=_COPY_IGNORE)
+            (next_dir / ".completed").unlink(missing_ok=True)
 
             crossover_ok = await _run_crossover(parent_a, parent_b, next_v, ui, is_text_ui)
             if crossover_ok:
@@ -1013,9 +1040,12 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             else:
                 ui.log_history("Crossover failed. Falling back to normal evolution.", "warn")
 
-            # Clean up failed crossover directory
+            # Clean up failed crossover directory and logs
             if next_dir.exists():
                 shutil.rmtree(next_dir)
+            logs_dir = get_logs_dir(next_v)
+            if logs_dir.exists():
+                shutil.rmtree(logs_dir)
 
         ui.set_header(f"🔥 Antigravity Glicko-2 Evolution: v{source_v} ➡️ v{next_v} 🔥")
 
@@ -1085,17 +1115,27 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             continue
 
         # Handle Master's branch_from decision
+        # Only change source_v (which bot to copy from), NOT current_v (version counter).
+        # This keeps next_v monotonically increasing and prevents version collisions.
         if tasks_data.get("branch_from"):
             bf = tasks_data["branch_from"]
             try:
                 branch_v = int(bf.split("_v")[1])
-                if branch_v != current_v:
+                target_dir = get_bot_dir(branch_v)
+                # Validate target exists and is genuinely completed (git tag verification)
+                if not target_dir.exists():
+                    ui.log_history(f"branch_from target {bf} not found. Ignoring.", "warn")
+                elif not (target_dir / ".completed").exists():
+                    ui.log_history(f"branch_from target {bf} not completed. Ignoring.", "warn")
+                elif branch_v > 6 and not git_has_tag(branch_v):
                     ui.log_history(
-                        f"Master chose to branch from {bf} instead of v{current_v}",
+                        f"branch_from target {bf} has .completed but no git tag. Ignoring.", "warn")
+                elif branch_v != source_v:
+                    ui.log_history(
+                        f"Master chose to branch from {bf} instead of v{source_v}",
                         "warn",
                     )
                     source_v = branch_v
-                    current_v = branch_v
             except (ValueError, IndexError):
                 ui.log_history(f"Invalid branch_from value: {bf}", "warn")
 
@@ -1111,7 +1151,8 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             next_dir = get_bot_dir(next_v)
             if next_dir.exists():
                 shutil.rmtree(next_dir)
-            shutil.copytree(get_bot_dir(current_v), next_dir)
+            shutil.copytree(get_bot_dir(source_v), next_dir, ignore=_COPY_IGNORE)
+            (next_dir / ".completed").unlink(missing_ok=True)
 
             with open(PROMPTS_DIR / "worker_prompt.md") as f:
                 worker_template = f.read()
@@ -1126,7 +1167,7 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             )
 
             if not workers_succeeded:
-                break
+                continue  # Retry with fresh copy within generation_attempt loop
 
             # Single-file size constraint — ensure readability
             total_lines, oversized_files = check_code_size(next_dir)
