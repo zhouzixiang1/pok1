@@ -293,6 +293,9 @@ def run_rating_period(active_bots, ratings, stats, n_pairs, n_workers, verbose=F
 
     stats["total_periods"] = stats.get("total_periods", 0) + 1
 
+    # Cleanup old replay files
+    cleanup_old_replays()
+
     if verbose:
         # Print current leaderboard
         sorted_bots = sorted(active_bots, key=lambda b: ratings[b].r, reverse=True)
