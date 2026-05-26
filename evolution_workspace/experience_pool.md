@@ -22,7 +22,10 @@ Lessons from previous iterations. Read before planning next generation.
 17. **Simulation counts matter: {0:900, 3:1200, 4:1500}** with extras {0:300, 3:350, 4:300}. v6 runs too few sims.
 18. **check_probe_resistance_margin + must_continue_vs_raise belong in postflop.py** (bot5 structure). Keep imports clean.
 
-### v6→v7 Execution Plan
-- **Source**: claude_v6 (r=1420, rd=43.3). ~150pts behind leaders (v3=1571, v11=1540).
-- **Strategy**: Port ALL 8+ bot5 gaps simultaneously (lessons 5, 12-18).
-- **3 workers**: (A1) constants+state+opponent+postflop structural, (A2) strategy logic rewrite, (B) sim counts.
+### v6→v7 Analysis
+- **Source**: claude_v6 (r=1420, rank 15/16). ~137pts behind leaders.
+- **Root cause**: 13+ gaps vs reference bot5. Wrong preflop eval (formula vs Chen), missing anti-bot4, missing river overbet, wrong EQR/thin_cap, too few sims, wrong priors.
+- **Strategy**: 3 workers, strict file ownership. Fix ALL gaps simultaneously.
+- **Worker A1**: constants.py+state.py+opponent.py+postflop.py (Chen table, bot4 detection, remove dead weight, fix bluff params, move helper functions).
+- **Worker A2**: strategy.py (overbet functions, fix choose_raise, fix EQR/thin_cap, remove harmful preflop spots, integrate bot4 adjustments).
+- **Worker B**: tournament.py (anti-lock thresholds to match bot5: chase 0.90, threshold -0.075, sizing 0.18, bluff 0.13).
