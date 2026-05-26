@@ -381,7 +381,43 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
 
     ui.update_cost(role_name, cost_usd, usage)
 
-    return "\n".join(full_text), cost_usd, usage
+    output = "\n".join(full_text)
+
+    # Auto-retry on API rate limit (529) with exponential backoff
+    if "529" in output or "该模型当前访问量过大" in output or "rate limit" in output.lower():
+        for backoff in [30, 60, 120]:
+            ui.log_history(f"API rate limited (529). Retrying in {backoff}s...", "warn")
+            await asyncio.sleep(backoff)
+            full_text.clear()
+            try:
+                async for message in claude_query(prompt=full_prompt, options=options):
+                    if isinstance(message, AssistantMessage):
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                text = block.text
+                                full_text.append(text)
+                                with open(log_file_path, "a") as lf:
+                                    lf.write(text + "\n")
+                                if not is_text_ui:
+                                    ui.log_io(text, "claude")
+                                else:
+                                    print(text)
+                            elif isinstance(block, ThinkingBlock):
+                                ui.log_io("[thinking...]", "thinking")
+                            elif isinstance(block, ToolUseBlock):
+                                ui.log_io(f"[tool: {block.name}]", "tool")
+                    elif isinstance(message, ResultMessage):
+                        cost_usd = message.total_cost_usd
+                        usage = message.usage
+            except (CLINotFoundError, ProcessError) as e:
+                ui.log_io(f"[ERROR] {e}", "error")
+
+            ui.update_cost(role_name, cost_usd, usage)
+            output = "\n".join(full_text)
+            if "529" not in output and "该模型当前访问量过大" not in output:
+                break
+
+    return output, cost_usd, usage
 
 
 def parse_json_output(output):

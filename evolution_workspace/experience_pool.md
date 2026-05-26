@@ -2,73 +2,19 @@
 This file contains lessons learned from previous iterations of the poker bot. 
 The Master Bot Architect must read this before planning the next generation to avoid repeating past mistakes.
 
-### History of Strategies
+### Consolidated Lessons (v8–v14)
 
-#### Generation claude_v6 → claude_v7 (2026-05-25)
-- **Performance**: claude_v6 is Rank 1 (ELO 1533.2) but loses badly to claude_v2 (0.2 win rate). Dominates v1/v4/v5 (0.8-1.0) and beats v3 (0.8).
-- **Root Cause of v2 Loss**: claude_v6 is missing 5 key algorithmic features that claude_v2 has:
-  1. **No bb_vs_raise / sb_vs_reraise preflop spots**: v6 has ZERO dedicated 3bet/4bet logic. When v2 raises preflop, v6 falls through to generic logic, calling too loosely or folding poorly. This is the #1 exploit.
-  2. **Overly conservative thin value sizing**: v6 caps thin value bets at ratio 0.30, while v2 uses 0.46+. This leaves significant money on the table with thin value hands.
-  3. **Optimistic realized equity**: v6 overestimates equity OOP and facing double barrels (air EQR 0.62 OOP vs v2's 0.56; marginal pair 0.78 vs 0.73). This leads to too many hero calls.
-  4. **No CBet tracking**: v2 tracks cbet_rate and fold_to_cbet in opponent model, enabling better flop play. v6 has none of this.
-  5. **No concept drift detection**: v2 detects when opponent changes strategy mid-match. v6 uses all-time averages blindly.
-- **Lesson**: Preflop spot coverage is critical. Missing dedicated 3bet/4bet logic creates a massive exploit against aggressive preflop opponents like v2.
-- **Lesson**: Realized equity discount factors need to be more aggressive OOP and in big pots to avoid burning chips on marginal calls.
-- **Lesson**: The thin_cap parameter in choose_raise was WAY too low at 0.30, causing systematic underbetting of thin value hands.
+1. **bb_vs_raise/sb_vs_reraise with fixed thresholds is ALWAYS harmful** (documented v8, v11, v15, ignored 4+ times). bot5 returns None for these spots, letting the general simulation-based path decide. This is PROVEN superior.
+2. **thin_cap must be 0.30 (rounds ≤2) / 0.38 (round 3)** from bot5 (proven). The 0.46+0.08w formula has persisted 8+ generations. Also remove the `to_call==0` guard.
+3. **River overbet (1.5–2.2x pot) for nut hands on dry rivers** is a proven edge. bot5 has `choose_overbet_river()`. Without it, the bot leaves significant value on the table.
+4. **When changing preflop evaluation, ALL downstream thresholds must be recalibrated.** Chen table vs formula scale mismatch caused major regression in v13.
+5. **Fix ALL parameter issues simultaneously.** Effects compound. v13→v14 failed because only 1 of 4 bugs was fixed at a time.
+6. **Complex opponent profiling fails in 50-hand matches.** Confidence rarely reaches activation thresholds. Focus on additive features and parameter fixes.
+7. **CBet tracking/drift detection add complexity without rating benefit.** bot5 (Rank 1 reference) doesn't have them.
 
-- **v6 -> v7**: 1) Preflop 3bet/4bet logic is essential — without it, aggressive opponents like v2 exploit the hole for massive win rate advantage. 2) thin_cap=0.30 in choose_raise was far too conservative, causing systematic thin value underbetting — v2 uses 0.46+. 3) Realized equity must be more aggressively discounted OOP, facing double barrels, and in big pots. 4) CBet tracking and drift detection in opponent modeling are important for adapting mid-match. 5) Safe exploitation frameworks (interpolating between GTO baseline and exploit) prevent over-adjusting to noise in early hands.
-- **v7 -> v8**: ### Generation claude_v7 → claude_v8 (2026-05-25)
-- **Performance**: claude_v7 is Rank 3 (Elo 1508.1). Loses badly to v2 and v3 (both 0.2 win rate). Dominates v4/v6 but only 0.6 vs v1, 0.4 vs v5.
-- **Root Cause of v2/v3 Loss**: Despite porting 5 features from v2, the remaining gap is the preflop hand evaluation. v2 uses a 169-hand Chen-formula lookup table that accurately values suited connectors, one-gappers, and offsuit broadways. v7's crude linear formula (high/16 + low/28 + bonuses) systematically undervalues suited hands and overvalues disconnected offsuit cards. This corrupts every preflop decision downstream.
-- **Lesson**: Preflop hand strength estimation accuracy is foundational. A 10% error in preflop_strength propagates to open thresholds, 3bet decisions, call ranges, and trash hand detection. The Chen lookup table approach is far superior to the simple formula.
-- **Lesson**: min_raise calculation matters for preflop aggression. v2's approach (round_raise = max(round_raise, 2*add)) produces larger minimum 3bet sizes that are harder for opponents to defend against. v7's approach (judge_round_raise = max(judge_round_raise, add)) allows smaller raises that give opponents better pot odds.
-- **Lesson**: Reducing preflop simulations from 500 to 400 was a net negative. The extra preflop accuracy matters more than postflop accuracy because preflop decisions set up the entire hand.
-- **Lesson**: v7's confidence divisor of 30.0 vs v2's 35.0 means v7 trusts its opponent model too early (after ~15 actions vs ~20), leading to premature exploitation adjustments against unknown opponents.
-- **v8 -> v9**: ### Generation claude_v8 → claude_v9 (2026-05-25)
-- **Performance**: claude_v8 is Rank 3 (Elo 1521.1). Fixed v2/v3 problem (now 0.8 vs both) but NEW critical loss to v4 (0.2 win rate) and v6 (0.4).
-- **Root Cause of v4 Loss**: v8's dedicated bb_vs_raise/sb_vs_reraise logic uses FIXED preflop_strength thresholds (0.72 for 3bet, 0.42 for call) that IGNORE opponent tendencies and simulation-based win_rate. v4 has NO dedicated logic for these spots and falls through to the general simulation-based decision path, which is MORE ACCURATE because it considers opponent range. v8 replaced a good general system with a bad specialized one.
-- **Lesson**: Dedicated preflop spot logic MUST use the same simulation-based win_rate as the general path, not simple heuristic thresholds. A specialized system is only worth adding if it makes BETTER decisions than the general fallback. Otherwise, letting it fall through is superior.
-- **Lesson**: v8's thin_cap of 0.46+0.08*wetness (when to_call==0) allows oversized thin value bets (~59% pot on river). v4 uses 0.30/0.38 and dominates. Thin value bet sizing should be conservative — thin means marginal, and marginal hands should bet small to avoid value-owning yourself.
-- **Lesson**: The Chen lookup table HELPED vs v2/v3 (exploit preflop evaluation) but is NEUTRAL vs v4 (exploits decision logic, not evaluation). Different opponents exploit different layers of the bot.
-- **v9 -> v10**: ### Generation claude_v9 → claude_v10 (2026-05-25)
-- **Performance**: claude_v9 is Rank 4 (Glicko 1528.6). Code analysis reveals v8 and v9 are STRATEGICALLY IDENTICAL — same choose_preflop_spot_action, same realized_postflop_equity, same choose_raise thin_cap, same cbet_rate tracking. Rating gap is Glicko variance.
-- **Root Cause of Gap**: v9 has NO new capabilities vs v8. In a mirror match, identical bots draw 50/50. To break the symmetry, v10 must add NEW algorithmic modules that v8 lacks.
-- **Lesson**: A dedicated CBet module is the single highest-impact addition. Currently ~40% of postflop spots fall through to generic logic when the bot is the preflop raiser first to act. Structured CBet decisions (bluff on dry boards vs check-back on wet boards) would immediately create an edge.
-- **Lesson**: SB opening range at 0.49 threshold is too tight for heads-up. Top players open 80%+ from SB. Wider SB opening exploits BB overfolding and builds bigger pots with position disadvantage.
-- **Lesson**: The exploitation framework (gift_balance/safe_exploitation_lambda) is a novel but weak signal. Direct statistical exploitation using fold_to_raise, fold_to_cbet, and postflop_aggr would be more reliable.
-- **Lesson**: Turn barrel decisions are currently generic. Adding scare card detection (cards that complete draws or increase board wetness) and structured give-up logic for weak hands on blanks would improve turn play significantly.
-- **Lesson**: River bluff-catching should account for blocker effects. Cards in our hand that block opponent value combos make better bluff-catchers. This is an underexploited edge in the current code.
-- **v10 -> v11**: ### Generation claude_v10 → claude_v11 (2026-05-25)
-- **Performance**: claude_v10 is Rank 1 (Glicko 1582.6, RD 26.5). Margin over v8 is 15.5 points, over v4 is 20.5 points.
-- **Structural Gap #1 - CBet Module**: ~40% of postflop decisions are CBet spots (preflop raiser, first to act on flop). Currently NO structured CBet logic exists — the bot falls through to generic initiative path. A CBet module should: (a) CBet bluff frequently on dry boards with air, exploiting opponent fold_to_cbet, (b) check back marginal hands on wet/dynamic boards, (c) size CBets smaller on dry boards (~1/3 pot) and larger on wet boards (~2/3 pot), (d) use opponent fold_to_cbet stat for exploitation.
-- **Structural Gap #2 - Turn Barrel**: After flop CBet gets called, turn decisions are generic. Need: (a) scare card detection (cards that complete draws or change board texture), (b) double barrel value with hands that remain strong, (c) give up air on blank turns, (d) barrel scare cards as bluffs.
-- **Structural Gap #3 - SB Opening Width**: SB open threshold at 0.49 opens only ~55% of hands. Heads-up theory says open 75-85%. Widening to 0.40-0.42 exploits BB overfolding.
-- **Structural Gap #4 - River Blocker-Catch**: Blocker logic only used for bluffing, never for calling. Holding cards that block opponent value combos should increase bluff-catch frequency.
-- **Lesson**: The exploitation framework (gift_balance/safe_exploitation_lambda) is functional but conservative. It correctly interpolates between GTO baseline and exploit mode. Keep it.
-- **Lesson**: The realized_postflop_equity function in strategy.py now includes big_pot and double_barrel discounts, which is an improvement over the backup version. Keep these.
-- **Lesson**: The opponent model's cbet_rate and fold_to_cbet tracking in opponent.py is excellent infrastructure. Now it MUST be used for our own CBet decisions, not just opponent profiling.
-- **v11 -> v12**: ### Generation claude_v11 → claude_v12 (2026-05-25)
-- **Performance**: claude_v11 is Rank 4 (Glicko 1554.5, RD 25.8). WORSE than v10 (1560.3) by ~6 points and significantly behind v4 (1577.3) by ~23 points.
-- **Root Cause of Regression from v10**: v11 added dedicated bb_vs_raise/sb_vs_reraise preflop logic that uses fixed preflop_strength thresholds (0.72/0.42/0.85) INSTEAD of simulation-based win_rate. This is the EXACT same mistake that cost v8 against v4 (documented in v8→v9 experience). The simulation-based general path is MORE ACCURATE because it considers opponent range, position, pot odds, and match context.
-- **Lesson (REINFORCED)**: Dedicated preflop spot logic MUST use the same simulation-based win_rate as the general path. A specialized system using fixed thresholds is WORSE than falling through to the general simulation-based path. This is now the THIRD time this lesson has appeared (v8, v9, v11).
-- **Lesson**: The thin_cap parameter in choose_raise (0.46+0.08*wetness when to_call==0) is too high. v4's 0.30/0.38 values produce better results. Thin value hands should bet SMALL to avoid value-owning. The sweet spot appears to be around 0.36+0.05*wetness.
-- **Lesson**: Opponent model priors matter significantly. v11's vpip=0.52/pfr=0.24 assumes tight opponents, leading to overestimation of opponent hand strength and excessive folding. v4's vpip=0.58/pfr=0.28 is more balanced for the typical opponent pool.
-- **Lesson**: The safe_exploitation_lambda framework adds complexity with unclear benefit. The gift_balance signal is noisy and can push decisions in wrong directions. Consider removing it.
-- **Lesson**: The CBet module was identified as the #1 structural gap since v10 but was NEVER IMPLEMENTED in v11. This is ~40% of postflop decisions when bot is preflop raiser. Without structured CBet logic, the bot is leaving significant edge on the table.
-- **Lesson**: Positive changes in v11 to PRESERVE: Chen lookup table, cbet_rate/fold_to_cbet tracking, drift detection, double_barrel/big_pot discounts in realized_postflop_equity, flop cbet_rate call margin adjustments.
-- **v12 -> v13**: ### Generation claude_v12 → claude_v13 (2026-05-25)
-- **Performance**: claude_v12 is at Glicko 1518.9, 65 points behind Rank 1 (claude_v6 at 1584.5). This is a 64-point regression from v10 (1582.6).
-- **Root Cause of Regression from v10**: v10 used the simple preflop formula and was Rank 1. v11 added the Chen lookup table WITHOUT recalibrating preflop thresholds. The Chen table gives systematically lower values for most hands (e.g., A2o: formula=0.75, Chen=0.32). Since all thresholds (open=0.49, call=0.42, iso=0.57) were tuned for the formula's inflated scale, the Chen table makes the bot MUCH TIGHTER. In heads-up, tightness is a critical weakness.
-- **Lesson**: When changing the preflop hand evaluation system, ALL downstream thresholds must be recalibrated. A more accurate evaluation system can produce WORSE results if the decision thresholds are mismatched. The Chen table IS more accurate but needs lower thresholds.
-- **Lesson**: The confidence divisor (35 vs 30) matters significantly in heads-up. Faster adaptation (divisor 30) provides a measurable edge over 50-hand matches. v6's 30 is proven better.
-- **Lesson**: The CBet module has been identified as the #1 structural gap since v10 (3 generations ago) and was never implemented. This is ~40% of postflop decisions when the bot is the preflop raiser. The opponent model already tracks cbet_rate and fold_to_cbet — this infrastructure is unused for the bot's own CBet decisions.
-- **Lesson**: thin_cap = 0.46 + 0.08*wetness has been documented as too high since v8→v9 (4 generations). It has NEVER been lowered. Each generation notes it but no worker fixes it. This generation MUST fix it.
-- **Lesson**: VPIP/PFR priors of 0.52/0.24 make the bot assume tight opponents, leading to overestimation of opponent hand strength and excessive folding. Raising to 0.58/0.28 (matching v4) would be more balanced.
-- **Positive features in v12 to PRESERVE**: Chen lookup table (more accurate), cbet_rate/fold_to_cbet tracking, drift detection, double_barrel/big_pot discounts in realized_postflop_equity, flop cbet_rate call margin adjustments, dedicated bb_vs_raise/sb_vs_reraise spots with simulation-aware logic.
-- **v13 -> v14**: ### Generation claude_v13 → claude_v14 (2026-05-25)
-- **Performance**: claude_v13 at Glicko 1512.9, 67 points behind Rank 1 claude_v11 (1579.6). Code analysis confirms v13 is STRATEGICALLY IDENTICAL to v11. Rating gap is Glicko pool variance.
-- **Root Cause of Stagnation**: Four parameter bugs + one structural gap identified across 4+ generations but NEVER fixed: (1) thin_cap 0.46+0.08w too high since v8→v9, (2) VPIP prior 0.52 too tight since v12→v13, (3) SB open threshold 0.49 too tight with Chen table since v10→v11, (4) confidence divisor 35 vs proven 30 since v11→v12, (5) CBet module never implemented since v10→v11.
-- **Lesson**: The CBet module is the highest-impact structural gap. The opponent model tracks fold_to_cbet but the bot never uses it for its own CBet decisions. This is ~40% of postflop spots when the bot raised preflop.
-- **Lesson**: When multiple parameter issues are documented across generations, they must ALL be fixed simultaneously in one generation. Fixing one at a time doesn't move the needle because the effects compound.
-- **Lesson**: The turn barrel decision after CBet gets called is currently generic. Adding scare card detection and structured give-up logic for weak hands on blanks would improve turn play.
-- **Lesson**: Blocker logic is only used for bluffing, never for calling. Holding cards that block opponent value combos should reduce the call margin, making bluff-catching more frequent. This is an underexploited edge.
+### Generation v15 → v16 (2026-05-26)
+
+- **Key Finding**: v10 = v11 = v15 = v16 (code-identical, MD5 79d511f). Rating differences (v11=1578, v15=1511) are pure Glicko variance. v16 was reset to v15 code before this evolution.
+- **Reference Study**: Analyzed full diff between v15 and bot5 (432 lines in strategy.py). bot5 has: river overbet, fixed thin_cap 0.30/0.38, no bb_vs_raise/sb_vs_reraise, anti-bot4 detection (detect_bot4_profile/get_anti_bot4_adjustments), higher sim counts (900/1200/1500), VPIP prior 0.58/PFR prior 0.28, draw_potential function, check_probe_resistance_margin and must_continue_vs_raise in postflop.py.
+- **Strategy**: Port ALL proven features from bot5 wholesale. Previous incremental attempts failed because changes were partial and missed dependencies. The full bot5 strategy.py (1160 lines) replaces v15's (1245 lines).
+- **File Ownership**: Worker 1 handles strategy.py (copy from bot5 + verify imports). Worker 2 handles opponent.py + postflop.py (port new functions from bot5). Worker 3 handles constants.py (sim counts).
