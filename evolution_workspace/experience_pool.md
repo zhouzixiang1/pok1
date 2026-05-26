@@ -26,10 +26,11 @@ Lessons from previous iterations. Read before planning next generation.
 21. **CARD_RANKS/CARD_SUITS precomputed arrays** avoid redundant computation. Use from constants.
 
 ### v6→v7 Strategy
-- **Source**: claude_v6 (r=1426, lowest claude bot, ~134 pts behind leader)
-- **Target**: Port ALL confirmed gaps from bot5 simultaneously
-- **Key gaps**: Chen table, sim counts, opponent priors, EQR values, anti-bot4, river overbet, dead weight removal, anti-lock thresholds, threshold_delta symmetry
+- **Source**: claude_v6 (r=1417, lowest claude bot, ~150 pts behind leaders)
+- **Reference bot studied**: bot5 (anti-exploitation framework, highest-complexity reference)
+- **Root cause analysis**: v6 lacks bot5's proven structural features (Chen table, anti-bot4, river overbet) AND has wrong parameter values across 5 files. Both logic and parameters need fixing simultaneously.
+- **Key gaps confirmed by diff analysis**: Chen table, sim counts, opponent priors/confidence, EQR values/dead branches, anti-bot4 detection/integration, river overbet, dead weight (gift/cbet/drift/exploit_lambda), anti-lock thresholds, threshold_delta symmetry, blocker bluff random.random+bonus, thin_cap formula, choose_raise max_ratio, bb_vs_raise/sb_vs_reraise removal
 - **3 workers, strict file ownership**:
-  - Worker 1 (A): constants.py, state.py, card_utils.py — infrastructure (Chen table, CARD_RANKS/SUITS, preflop lookup)
-  - Worker 2 (A+B): opponent.py, postflop.py, tournament.py — opponent model fixes + EQR + blocker bluff + anti-lock params
-  - Worker 3 (A): strategy.py — anti-bot4, river overbet, dead weight removal, choose_raise params, preflop spot simplification
+  - Worker 1 (A): constants.py, state.py, card_utils.py, opponent.py — infrastructure + opponent model
+  - Worker 2 (A): postflop.py, strategy.py — structural integration (anti-bot4, river overbet, EQR, dead weight removal, preflop simplification)
+  - Worker 3 (B): tournament.py — anti-lock thresholds + threshold_delta symmetry
