@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useEvolutionSSE, fetchEvolutionState } from "../api/evolution";
-import type { IOLine, EvolutionState } from "../api/evolution";
+import type { IOLine } from "../api/evolution";
+import { api } from "../api/client";
+import type { BotRating } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
 
 const STREAM_COLORS: Record<string, string> = {
@@ -31,7 +33,7 @@ export default function EvolutionMonitor() {
   const [header, setHeader] = useState("Evolution Framework");
   const [cost, setCost] = useState({ grand: 0, gen: 0 });
   const [metrics, setMetrics] = useState<Record<string, number>>({});
-  const [leaderboard, setLeaderboard] = useState<EvolutionState["ratings"]>([]);
+  const [leaderboard, setLeaderboard] = useState<BotRating[]>([]);
   const [autoScroll, setAutoScroll] = useState(true);
 
   const ioRef = useRef<HTMLDivElement>(null);
@@ -45,7 +47,6 @@ export default function EvolutionMonitor() {
         return next.length > MAX_LINES ? next.slice(-MAX_LINES) : next;
       }),
     onClearIO: () => setIoLines([]),
-    onEvalTable: (rows) => setLeaderboard(rows),
     onHeader: (msg) => setHeader(msg),
     onCost: (data) => setCost({ grand: data.grand_total, gen: data.gen_total }),
     onMetrics: (m) => setMetrics(m),
@@ -53,8 +54,12 @@ export default function EvolutionMonitor() {
 
   useEffect(() => {
     fetchEvolutionState().catch(() => {});
+    // Fetch real leaderboard from file-based endpoint, refresh every 10s
+    const refreshLeaderboard = () => api.ratings().then(setLeaderboard).catch(() => {});
+    refreshLeaderboard();
+    const interval = setInterval(refreshLeaderboard, 10000);
     const disconnect = connect();
-    return disconnect;
+    return () => { clearInterval(interval); disconnect(); };
   }, []);
 
   useEffect(() => {
@@ -184,7 +189,7 @@ export default function EvolutionMonitor() {
                 {leaderboard.slice(0, 10).map((bot) => (
                   <div key={bot.name} className="flex justify-between text-xs">
                     <span className="text-gray-600 dark:text-gray-400">
-                      #{bot.rank} {bot.name.replace("claude_", "v")}
+                      #{bot.rank} {bot.name.replace("claude_", "")}
                     </span>
                     <span className="font-mono text-gray-800 dark:text-gray-200">
                       {bot.rating}
