@@ -15,10 +15,11 @@ Lessons from previous iterations. Read before planning next generation.
 10. **allow_low_frequency_blocker_bluff needs bluff_freq_bonus param** for anti-bot4 integration.
 11. **choose_raise needs anti_bot4_bonus + allow_river_overbet params.** Max_ratio 2.2 on river with nut hands extracts maximum value.
 
+
 ### v6→v7 Analysis (current)
-- **Source**: claude_v6 (r=1467, rd=44.3). Trend: declining 1520→1465 over 10 periods. ~145pts behind v2 (1592). BOTTOM of all claude bots.
+- **Source**: claude_v6 (r=1462, rd=44.1). BOTTOM of all claude bots. ~120pts behind v2 (1580). Declining trend.
 - **Reference**: bot5 (anti-exploitation framework, Rank 1).
-- **5 critical gaps vs bot5**: (1) No anti-bot4 detection/adjustments, (2) bb_vs_raise/sb_vs_reraise hardcoded instead of returning None, (3) thin_cap uses wrong formula 0.46+0.08w+to_call==0 guard instead of 0.30/0.38, (4) No river overbet for nut hands, (5) No anti_bot4 bypasses in conservative guards.
-- **CORRECTION**: threshold_delta already correct in v6 (0.050/0.060 vs bot5 0.055/0.055). Experience pool had it backwards. NO change needed.
-- **Anti-lock params need updating**: v6 has chase=0.85/bluff=0.11, bot5 has 0.90/0.13. Also threshold_delta cap -0.075 vs -0.070, sizing_delta 0.18 vs 0.16.
-- **Strategy**: Port anti-bot4 framework from bot5. Remove hardcoded preflop spots. Fix thin_cap. Add river overbet. This addresses ALL 5 gaps simultaneously.
+- **5 critical gaps confirmed**: (1) bb_vs_raise/sb_vs_reraise hardcoded (lines 554-600) instead of returning None like bot5, (2) thin_cap uses wrong formula 0.46+0.08*w with to_call==0 guard instead of 0.30/0.38, (3) No river overbet for nut hands, (4) No anti-bot4 detection framework, (5) allow_low_frequency_blocker_bluff missing bluff_freq_bonus param.
+- **Anti-lock params**: v6 chase=0.85/bluff=0.11 vs bot5 0.90/0.13. threshold_delta cap -0.070 vs -0.075. sizing_delta 0.16 vs 0.18.
+- **Strategy**: Fix ALL 5 gaps simultaneously. Port detect_bot4_profile + get_anti_bot4_adjustments from bot5/opponent.py. Remove hardcoded bb_vs_raise/sb_vs_reraise blocks. Fix thin_cap. Add choose_overbet_river + integration. Update anti-lock params.
+- **Key integration points**: anti_bot4 adjustments affect strong/medium thresholds (line 684-686 bot5), bluff thresholds (line 1078-1080), choose_raise params (anti_bot4_bonus, allow_river_overbet), and bad_river_bluff_candidate/thin_static_showdown_control guards.
