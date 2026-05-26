@@ -148,6 +148,51 @@ def pick_matches(active_bots, stats, ratings, n_picks=14):
     return pairs[:n_picks]
 
 
+def save_match_replay(a, b, wins_a, wins_b, draws, replay_data):
+    """Save a match replay JSON and append summary to match_history.jsonl."""
+    os.makedirs(REPLAY_DIR, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    fname = f"{timestamp}_{a}_vs_{b}.json"
+    match_data = {
+        "id": fname,
+        "timestamp": timestamp,
+        "bot0": a,
+        "bot1": b,
+        "bot0_wins": wins_a,
+        "bot1_wins": wins_b,
+        "draws": draws,
+        "games": replay_data,
+    }
+    with open(REPLAY_DIR / fname, "w", encoding="utf-8") as f:
+        json.dump(match_data, f, ensure_ascii=False)
+
+    # Append summary to permanent JSONL
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    summary = {
+        "id": fname,
+        "timestamp": timestamp,
+        "bot0": a,
+        "bot1": b,
+        "bot0_wins": wins_a,
+        "bot1_wins": wins_b,
+        "draws": draws,
+    }
+    with open(MATCH_HISTORY_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(summary, ensure_ascii=False) + "\n")
+
+    return fname
+
+
+def cleanup_old_replays():
+    """Keep only the most recent MAX_REPLAY_FILES replay files."""
+    if not REPLAY_DIR.exists():
+        return
+    files = sorted(REPLAY_DIR.iterdir(), key=lambda f: f.name)
+    if len(files) > MAX_REPLAY_FILES:
+        for old_file in files[: len(files) - MAX_REPLAY_FILES]:
+            old_file.unlink()
+
+
 def run_single_match(args):
     """Run a mirror_battle in a subprocess. Called by ProcessPoolExecutor."""
     bot_a_name, bot_b_name, bot_a_path, bot_b_path, n_pairs = args
