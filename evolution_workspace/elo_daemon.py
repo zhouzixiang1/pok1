@@ -34,6 +34,9 @@ BOTS_DIR = PROJECT_ROOT / "bots"
 RESULTS_DIR = WORKSPACE / "results"
 RATINGS_FILE = RESULTS_DIR / "glicko_ratings.json"
 STATS_FILE = RESULTS_DIR / "elo_daemon_stats.json"
+REPLAY_DIR = RESULTS_DIR / "match_replay"
+MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
+MAX_REPLAY_FILES = 200
 
 MIN_PERIOD_GAMES = 10  # Min matches per bot before rating period closes
 
