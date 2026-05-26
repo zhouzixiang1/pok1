@@ -19,3 +19,11 @@ Lessons from previous iterations. Read before planning next generation.
 - **Source**: claude_v6 (r=1429.6, rd=43.2). 150pts behind leaders. Comprehensive bot5 port.
 - **3 workers**: (A1) strategy+opponent logic, (A2) postflop functions, (B) hyperparams+data.
 - **All bot5 diffs applied simultaneously**: remove bb_vs_raise/sb_vs_reraise, fix thin_cap, add river overbet, add anti-bot4, Chen table, higher sims, fix EQR, remove gift/cbet/drift, fix anti-lock values.
+
+### v6→v7 Analysis (Pre-Execution)
+
+12. **v6 is 150pts behind bot5** due to 8 systemic gaps: (a) no Chen table, (b) no anti-bot4, (c) bb_vs_raise/sb_vs_reraise hardcoded logic, (d) broken thin_cap 0.46+0.08w formula, (e) no river overbet, (f) low simulation counts, (g) broken EQR 0.68/0.56 air values, (h) gift_balance/exploit_lambda dead weight.
+13. **Opponent model prior mismatch matters**: v6 vpip prior=0.52/pfr prior=0.24 vs bot5 0.58/0.28. Shifts entire opponent range evaluation.
+14. **v6 has cbet/drift tracking that bot5 (rank 1) doesn't have.** Experience pool lesson 7 confirms these add no value. Remove them.
+15. **allow_low_frequency_blocker_bluff must accept bluff_freq_bonus param** for anti-bot4 integration. v6 signature missing this.
+16. **All 8 gaps must be fixed simultaneously** (lesson 5). Partial fixes compound regressions.
