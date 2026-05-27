@@ -42,6 +42,19 @@ Lessons from previous iterations. Read before planning next generation.
 ### Priority Order for v7
 1. constants.py + card_utils.py + state.py (Chen table + precomputed arrays + sim counts) — FOUNDATIONAL
 2. opponent.py (remove dead weight, fix priors, add anti-bot4) — OPPONENT MODEL
-3. postflop.py (fix blocker bluff, add missing functions) — EVALUATION
+3. postflop.py (fix blocker bluff randomness, add bluff_freq_bonus param) — EVALUATION
 4. strategy.py (remove dead weight, add overbet, fix choose_raise, fix EQR, integrate anti-bot4) — STRATEGY
 5. tournament.py (fix anti-lock params, symmetric threshold_delta) — HYPERPARAMS
+
+### v7 Analysis (Master Architect)
+- v6 is the WORST bot in the population (1408.1 Glicko), 162 points below top bot v11 (1569.9).
+- Every gap documented above was verified by reading both v6 and bot5 source code.
+- v6's preflop evaluation uses a crude formula instead of the 169-hand Chen lookup table (proven ~130pts gain).
+- Simulation counts are drastically too low (400/800/900 vs 900/1200/1500), causing massive accuracy loss.
+- Opponent model has wrong priors (vpip=0.52/0.24 vs 0.58/0.28) and dead weight inflating computation.
+- Missing anti-bot4 detection means no exploitation of the most common opponent profile.
+- choose_raise thin_cap is formula-based (0.46+0.08*wetness) instead of fixed (0.30/0.38).
+- No river overbet capability means leaving value on the table with nut hands.
+- EQR air values are too low (0.68/0.56 vs 0.72/0.62) and big_pot parameter adds noise.
+- Anti-lock params are too conservative (0.85 vs 0.90 chase, etc.).
+- **Strategy**: Fix ALL gaps simultaneously across all files. Each gap alone loses ~20-40 points; together they compound to -160.
