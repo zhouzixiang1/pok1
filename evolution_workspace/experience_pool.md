@@ -21,12 +21,16 @@ Lessons from previous iterations. Read before planning next generation.
 
 ### v6→v7: Comprehensive Bot5 Port (Study #2 — Full Code Diff)
 
-16. **v6 rating 1446, ~110pts behind top (v2=1557).** Consistently weakest active bot. All 15 lessons apply.
+16. **v6 rating ~1495, ~77pts behind top (v2=1573).** Consistently weakest active bot. All 15 lessons apply.
 17. **All 15 gaps confirmed via full file-by-file diff of v6 vs bot5.** No new algorithmic features in v6 beyond bot5.
 18. **v6 anti-lock flow checks preflop_trash_hand — bot5 does NOT.** Blocks aggression with trash in anti-lock mode. Remove guard.
-19. **v6 realized_postflop_equity has extra not_has_position double_barrel penalty (-0.05) + big_pot param.** bot5 removed both. Fix EQR values: 0.72/0.62 air, 0.86/0.78 pair, bounds 0.45-0.85/0.65-0.92.
-20. **v6 choose_preflop_spot_action has hardcoded bb_vs_raise and sb_vs_reraise blocks.** bot5 returns None. Lesson #10 confirmed in code.
-21. **Worker strategy: W1=logic (card_utils, state, opponent, postflop, strategy), W2=data+params (constants, tournament).** No file conflicts.
-22. **Key risk: recalibration after Chen table port.** ALL preflop thresholds downstream must work with new strength scale. Lesson #11.
+19. **v6 realized_postflop_equity has extra OOP double_barrel penalty + big_pot param + OOP draw block.** bot5 removed all three. Fix EQR values: 0.72/0.62 air, 0.86/0.78 pair, bounds 0.45-0.85/0.65-0.92.
+20. **v6 choose_preflop_spot_action has hardcoded bb_vs_raise and sb_vs_reraise blocks.** bot5 returns None. Lesson #10 confirmed.
+21. **Three-worker split with clean file ownership:** W1={state,opponent}, W2={strategy,postflop}, W3={constants,tournament}.
+22. **Key risk: recalibration after Chen table port.** ALL preflop thresholds downstream must work with new strength scale.
 23. **bot5 choose_raise has anti_bot4_bonus and allow_river_overbet params.** v6 lacks both. Port structure + integration.
-24. **bot5 bad_river_bluff_candidate adds bot4 bluff_freq_bonus exception.** v6 doesn't have anti-bot4 so this check is too conservative.
+24. **bot5 bad_river_bluff_candidate adds bot4 bluff_freq_bonus exception.** v6 lacks anti-bot4 so check is too conservative.
+25. **Chen table port is the single highest-impact change.** It changes preflop_strength scale, affecting ALL downstream thresholds.
+26. **v6 opponent.py has 4 categories of dead weight:** cbet_rate/fold_to_cbet, drift detection, hand flag arrays, wrong priors.
+27. **v6 strategy.py has 3 categories of dead weight:** gift_balance/exploit_lambda/gto_strong, cbet_rate checks, pot param in EQR.
+28. **bot5 anti-lock preflop: no round_idx guard.** v6 has `if round_idx > 0 or preflop_3bet_candidate` — bot5 always attempts anti-lock attack.
