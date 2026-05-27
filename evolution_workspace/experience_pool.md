@@ -37,3 +37,13 @@ Lessons from previous iterations. Read before planning next generation.
 ### v7 Strategy: Full Targeted Port from bot5
 
 28. **Priority order: Chen table → anti-bot4 → river overbet → remove dead weight → fix EQR/params.** Each independently validated by bot5. Apply ALL simultaneously for compounding effect.
+
+### Current State (v6→v7, Period 819)
+
+29. **v6 rating 1409 (rd=43), stuck for 819 periods.** Lowest of all claude bots. ~155pts behind top (v5=1563, v17=1548, v3=1545). v6 is effectively a broken baseline bot.
+30. **Rating history confirms v6 has NEVER changed** — stuck at 1408.06 from periods 696-809, then drifted to 1409.49 by period 819. Daemon only recently started using v6 (periods 810+). The bot was never actually competitive.
+31. **All 27 gaps from experience pool are STILL PRESENT in v6.** None have been ported. v6 is essentially bot6 (the simplest reference bot) with no Chen table, no anti-bot4, no river overbet, wrong sim counts, dead weight everywhere.
+32. **Key insight: v6 uses crude estimate_preflop_strength formula instead of PREFLOP_STRENGTH_TABLE.** This single change affects every preflop decision. Must port the 169-entry Chen lookup table first.
+33. **v6 has harmful fixed preflop branches (bb_vs_raise, sb_vs_reraise) that bot5 removed.** These cause systematic misplays in common spots.
+34. **Anti-bot4 system is completely absent from v6.** bot5 detects bot4 via stats and applies adjustments (bluff_freq_bonus, raise_size_bonus, call_threshold_delta, trap_defense_delta). v6 has zero counter-strategy.
+35. **River overbet (choose_overbet_river) missing entirely from v6.** bot5 fires 1.5-2.2x pot with nuts on river for value extraction. This is a proven +EV play.
