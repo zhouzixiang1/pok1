@@ -22,13 +22,14 @@ Lessons from previous iterations. Read before planning next generation.
 17. **When changing preflop eval, recalibrate ALL downstream thresholds.** Chen vs formula mismatch caused v13 regression.
 18. **realized_postflop_equity: bot5 removes big_pot param entirely, no draw OOP extra branch.** Pair EQR: 0.86/0.78. Top pair weak kicker EQR: 0.92/0.86. No double_barrel OOP extra subtractions.
 19. **postflop_call_margin: bot5 removes cbet_rate adjustments entirely.** v6 has cbet_rate>0.65 / cbet_rate<0.40 logic — dead weight.
+20. **check_probe_resistance_margin and must_continue_vs_raise belong in postflop.py**, not strategy.py. bot5 defines them there.
 
 ### v6→v7 Execution Plan
 
-v6 is the WORST bot (1408.1 Glicko), -148pts below top claude bot v5 (1555.9). v6 has been stuck at this rating across 10+ periods. Every gap was verified by reading both v6 and bot5 source code line-by-line. The strategy is simultaneous incremental targeted port of ALL verified bot5 improvements across all 6 files.
+v6 is the WORST bot (1408.1 Glicko, stuck across 10+ periods), -149pts below top bot v5 (1557.4). Every gap was verified by reading both v6 and bot5 source code line-by-line. The strategy is simultaneous incremental targeted port of ALL verified bot5 improvements across all 6 files.
 
-**Worker 1 (Foundation + Opponent Model):** constants.py + card_utils.py + state.py + opponent.py — Chen table, precomputed arrays, sim counts, opponent cleanup, anti-bot4 detection.
+**Worker 1 (Foundation + Opponent Model):** constants.py + state.py + opponent.py + postflop.py — Chen table, precomputed arrays, sim counts, opponent cleanup (remove cbet/drift dead weight, fix priors), anti-bot4 detection, blocker bluff fix, move check_probe/must_continue to postflop.py.
 
-**Worker 2 (Strategy + Evaluation + Tournament):** postflop.py + strategy.py + tournament.py — blocker bluff fix, dead weight removal, EQR fix, choose_raise fix, overbet, anti-bot4 integration, preflop threshold removal, anti-lock params.
+**Worker 2 (Strategy + Tournament):** strategy.py + tournament.py — Remove dead weight (gift_balance, exploit_lambda, gto blending, cbet_rate adjustments, fixed preflop bb_vs_raise/sb_vs_raise). Add overbet functions. Integrate anti-bot4 throughout. Fix realized_postflop_equity (remove big_pot, remove draw OOP branch, fix EQR). Fix choose_raise (remove to_call==0 guard, add params, fix thin_cap). Fix tournament anti-lock params + threshold_delta symmetry.
 
 Both workers must complete all changes. Partial fixes compound negatively (lesson #15).
