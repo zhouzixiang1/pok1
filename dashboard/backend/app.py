@@ -193,14 +193,17 @@ async def get_rating_detail(bot_name: str):
 @app.get("/api/ratings/stream")
 async def ratings_stream():
     async def generate():
-        while True:
-            data = _cached_read("ratings", RATINGS_FILE)
-            if data:
-                rows = []
-                for name, d in data.items():
-                    rows.append({"name": name, "rating": round(d["r"], 1), "rd": round(d["rd"], 1)})
-                yield {"event": "ratings", "data": json.dumps(rows)}
-            await asyncio.sleep(2)
+        try:
+            while True:
+                data = _cached_read("ratings", RATINGS_FILE)
+                if data:
+                    rows = []
+                    for name, d in data.items():
+                        rows.append({"name": name, "rating": round(d["r"], 1), "rd": round(d["rd"], 1)})
+                    yield {"event": "ratings", "data": json.dumps(rows)}
+                await asyncio.sleep(2)
+        except asyncio.CancelledError:
+            pass
     return EventSourceResponse(generate())
 
 
@@ -362,6 +365,7 @@ async def recent_matches(limit: int = Query(50, le=200)):
         return []
     entries = []
     with open(MATCH_HISTORY_FILE, "r") as f:
+        fcntl.flock(f, fcntl.LOCK_SH)
         for line in f:
             line = line.strip()
             if line:
@@ -369,6 +373,7 @@ async def recent_matches(limit: int = Query(50, le=200)):
                     entries.append(json.loads(line))
                 except json.JSONDecodeError:
                     pass
+        fcntl.flock(f, fcntl.LOCK_UN)
     entries.reverse()
     return entries[:limit]
 

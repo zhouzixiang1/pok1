@@ -58,6 +58,8 @@ def main():
 
         try:
             asyncio.run(main_loop(ui, is_text_ui=True, no_daemon=args.no_daemon))
+        except KeyboardInterrupt:
+            print("\n[INTERRUPTED] Shutting down...")
         finally:
             if daemon_monitor_stop:
                 daemon_monitor_stop.set()

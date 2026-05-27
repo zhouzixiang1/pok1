@@ -97,6 +97,11 @@ def update_rating_period(player, results):
         v_inv += g_j * g_j * e_j * (1.0 - e_j)
         delta_sum += g_j * (scores[j] - e_j)
 
+    if v_inv <= 0.0:
+        # Degenerate case: all opponents at extreme rating difference
+        phi_star = math.sqrt(phi * phi + player.sigma * player.sigma)
+        return Glicko2Player(player.r, phi_star * SCALE, player.sigma)
+
     v = 1.0 / v_inv
     delta = delta_sum * v
 
@@ -125,8 +130,13 @@ def update_rating_period(player, results):
     fA = f(A)
     fB = f(B)
 
-    while abs(B - A) > EPSILON:
-        C = A + (A - B) * fA / (fB - fA)
+    for _ in range(1000):
+        if abs(B - A) <= EPSILON:
+            break
+        denom = fB - fA
+        if denom == 0.0:
+            break
+        C = A + (A - B) * fA / denom
         fC = f(C)
         if fC * fB <= 0:
             A = B

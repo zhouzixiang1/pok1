@@ -47,6 +47,11 @@ def handle_signal(signum, frame):
     global running
     print(f"\n[DAEMON] Received signal {signum}, shutting down gracefully...")
     running = False
+    # Kill all child processes (ProcessPoolExecutor workers + battle subprocesses)
+    try:
+        os.killpg(os.getpgid(os.getpid()), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
 
 
 def get_active_bots():
@@ -88,7 +93,7 @@ def save_ratings(ratings, period=None):
         json.dump(data, f, indent=2)
         fcntl.flock(f, fcntl.LOCK_UN)
 
-    # Append snapshot to history log
+    # Append snapshot to history log (atomic under LOCK_EX)
     if period is not None:
         history_file = RESULTS_DIR / "rating_history.jsonl"
         snapshot = {
@@ -96,29 +101,36 @@ def save_ratings(ratings, period=None):
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "ratings": {name: {"r": p.r, "rd": p.rd} for name, p in ratings.items()},
         }
-        with open(history_file, "a") as f:
+        with open(history_file, "a+") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
             f.write(json.dumps(snapshot) + "\n")
-
-        # Trim history file to prevent unbounded growth
-        if history_file.exists():
-            with open(history_file, "r") as f:
-                lines = f.readlines()
+            f.flush()
+            # Trim history file to prevent unbounded growth (within same lock)
+            f.seek(0)
+            lines = f.readlines()
             if len(lines) > 200:
-                with open(history_file, "w") as f:
-                    f.writelines(lines[-100:])
+                f.seek(0)
+                f.truncate()
+                f.writelines(lines[-100:])
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def load_stats():
     if not STATS_FILE.exists():
         return {"pairs": {}, "total_periods": 0}
     with open(STATS_FILE, "r") as f:
-        return json.load(f)
+        fcntl.flock(f, fcntl.LOCK_SH)
+        data = json.load(f)
+        fcntl.flock(f, fcntl.LOCK_UN)
+    return data
 
 
 def save_stats(stats):
     os.makedirs(RESULTS_DIR, exist_ok=True)
     with open(STATS_FILE, "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
         json.dump(stats, f, indent=2)
+        fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def pair_key(a, b):
@@ -163,22 +175,38 @@ def save_match_replay(a, b, wins_a, wins_b, draws, replay_data):
         "draws": draws,
         "games": replay_data,
     }
-    with open(REPLAY_DIR / fname, "w", encoding="utf-8") as f:
-        json.dump(match_data, f, ensure_ascii=False)
 
-    # Append summary to permanent JSONL
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    summary = {
-        "id": fname,
-        "timestamp": timestamp,
-        "bot0": a,
-        "bot1": b,
-        "bot0_wins": wins_a,
-        "bot1_wins": wins_b,
-        "draws": draws,
-    }
-    with open(MATCH_HISTORY_FILE, "a", encoding="utf-8") as f:
-        f.write(json.dumps(summary, ensure_ascii=False) + "\n")
+    # Step 1: Write replay JSON
+    replay_path = REPLAY_DIR / fname
+    try:
+        with open(replay_path, "w", encoding="utf-8") as f:
+            json.dump(match_data, f, ensure_ascii=False)
+    except OSError:
+        raise
+
+    # Step 2: Append summary to permanent JSONL (with lock)
+    try:
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+        summary = {
+            "id": fname,
+            "timestamp": timestamp,
+            "bot0": a,
+            "bot1": b,
+            "bot0_wins": wins_a,
+            "bot1_wins": wins_b,
+            "draws": draws,
+        }
+        with open(MATCH_HISTORY_FILE, "a", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.write(json.dumps(summary, ensure_ascii=False) + "\n")
+            fcntl.flock(f, fcntl.LOCK_UN)
+    except Exception:
+        # JSONL append failed — remove orphaned replay file
+        try:
+            replay_path.unlink()
+        except OSError:
+            pass
+        raise
 
     return fname
 
@@ -248,7 +276,7 @@ def run_rating_period(active_bots, ratings, stats, n_pairs, n_workers, verbose=F
         for future in as_completed(futures):
             if not running:
                 executor.shutdown(wait=False, cancel_futures=True)
-                break
+                return ratings, stats  # Early return, don't wait for executor
             result = future.result()
             a, b, wins_a, wins_b, draws, n_played, err, replay_data = result
             if err is not None:

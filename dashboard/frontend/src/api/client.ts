@@ -1,4 +1,4 @@
-import type { BotRating, MatchStats, MatchMatrix, HistoryEntry, GenerationLog, LogContent } from "./types";
+import type { BotRating, MatchStats, MatchMatrix, HistoryEntry, GenerationLog, LogContent, MatchSummary, MatchReplayData } from "./types";
 
 const BASE = "/api";
 
@@ -24,6 +24,8 @@ export const api = {
     fetchJSON<LogContent>(`${BASE}/logs/generations/${version}/${filename}?tail=${tail}`),
   experience: () => fetch(`${BASE}/experience`).then((r) => r.text()),
   daemonStatus: () => fetchJSON<{ status: string; last_update_age_seconds: number }>(`${BASE}/daemon/status`),
+  recentMatches: (limit = 100) => fetchJSON<MatchSummary[]>(`${BASE}/matches/recent?limit=${limit}`),
+  matchReplay: (id: string) => fetchJSON<MatchReplayData>(`${BASE}/matches/replay/${id}`),
 };
 
 export function useRatingsSSE(onData: (ratings: { name: string; rating: number; rd: number }[]) => void) {

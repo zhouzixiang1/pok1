@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import type { MatchSummary, MatchReplayData, DisplayFrame, GameReplay } from "../api/types";
+import { api } from "../api/client";
 import PokerTable from "../components/PokerTable";
 import PageMeta from "../components/common/PageMeta";
 
@@ -30,15 +31,11 @@ export default function MatchReplay() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    fetch("/api/matches/recent?limit=100")
-      .then((r) => r.json())
-      .then(setMatches)
-      .catch(() => {});
+    api.recentMatches(100).then(setMatches).catch(() => {});
   }, []);
 
   const loadMatch = useCallback(async (id: string) => {
-    const res = await fetch(`/api/matches/replay/${id}`);
-    const data: MatchReplayData = await res.json();
+    const data = await api.matchReplay(id);
     setSelectedMatch(data);
     setCurrentHand(0);
     setCurrentStep(0);
@@ -63,6 +60,7 @@ export default function MatchReplay() {
     if (isPlaying) {
       timerRef.current = setInterval(() => {
         setCurrentStep((prev) => {
+          if (frames.length === 0) return prev;
           if (prev >= frames.length - 1) {
             // Auto advance to next hand
             if (selectedMatch && currentHand < selectedMatch.games.length - 1) {

@@ -11,6 +11,7 @@ import json
 import shutil
 import subprocess
 import re
+import signal
 import asyncio
 import fcntl
 import atexit
@@ -51,6 +52,8 @@ from experience_pool import trim_experience_pool
 
 # Global daemon process handle
 daemon_proc = None
+_daemon_lock = threading.Lock()
+_atexit_registered = False
 
 
 # ──────────────────────────────────────────────
@@ -117,20 +120,24 @@ def get_active_bots():
 
 def load_ratings():
     """Load Glicko-2 ratings with shared lock."""
-    if RATINGS_FILE.exists():
+    try:
         with open(RATINGS_FILE, "r") as f:
             fcntl.flock(f, fcntl.LOCK_SH)
             data = json.load(f)
             fcntl.flock(f, fcntl.LOCK_UN)
         return {name: Glicko2Player.from_dict(d) for name, d in data.items()}
-    return {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
 
 
 def load_daemon_stats():
     """Load daemon stats."""
     if STATS_FILE.exists():
         with open(STATS_FILE, "r") as f:
-            return json.load(f)
+            fcntl.flock(f, fcntl.LOCK_SH)
+            data = json.load(f)
+            fcntl.flock(f, fcntl.LOCK_UN)
+        return data
     return {"pairs": {}, "total_periods": 0}
 
 
@@ -179,36 +186,65 @@ async def wait_for_daemon_eval(bot_name, timeout=600, min_matches=20, max_rd=40)
 def _drain_stdout(proc):
     """Drain daemon stdout to prevent pipe buffer deadlock."""
     try:
-        for line in proc.stdout:
+        while True:
+            line = proc.stdout.readline()
+            if not line:
+                break
             print(f"[DAEMON] {line.rstrip()}")
-    except Exception:
-        pass
+    except (ValueError, OSError):
+        pass  # Pipe closed
 
 
 def start_daemon(workers=14, pairs=5):
-    """Start elo_daemon.py as a background subprocess."""
-    global daemon_proc
-    daemon_script = str(WORKSPACE / "elo_daemon.py")
-    cmd = [sys.executable, daemon_script, "--workers", str(workers), "--pairs", str(pairs)]
-    daemon_proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1
-    )
+    """Start elo_daemon.py as a background subprocess in its own process group."""
+    global daemon_proc, _atexit_registered
+    with _daemon_lock:
+        if daemon_proc and daemon_proc.poll() is None:
+            return daemon_proc  # Already running
+        daemon_script = str(WORKSPACE / "elo_daemon.py")
+        cmd = [sys.executable, daemon_script, "--workers", str(workers), "--pairs", str(pairs)]
+        daemon_proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+            start_new_session=True,  # Independent process group for clean killpg
+        )
     # Drain daemon stdout to prevent pipe buffer deadlock
     threading.Thread(target=_drain_stdout, args=(daemon_proc,), daemon=True).start()
-    atexit.register(stop_daemon)
+    if not _atexit_registered:
+        atexit.register(stop_daemon)
+        _atexit_registered = True
     return daemon_proc
 
 
 def stop_daemon():
-    """Stop the daemon subprocess."""
+    """Stop the daemon subprocess and its entire process group."""
     global daemon_proc
-    if daemon_proc and daemon_proc.poll() is None:
-        daemon_proc.terminate()
-        try:
-            daemon_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            daemon_proc.kill()
+    with _daemon_lock:
+        if daemon_proc is None:
+            return
+        if daemon_proc.poll() is None:
+            try:
+                pgid = os.getpgid(daemon_proc.pid)
+            except (ProcessLookupError, PermissionError):
+                pgid = None
+            try:
+                if pgid is not None:
+                    os.killpg(pgid, signal.SIGTERM)
+                else:
+                    daemon_proc.terminate()
+            except (ProcessLookupError, PermissionError):
+                daemon_proc.terminate()
+            try:
+                daemon_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    if pgid is not None:
+                        os.killpg(pgid, signal.SIGKILL)
+                    else:
+                        daemon_proc.kill()
+                except (ProcessLookupError, PermissionError):
+                    daemon_proc.kill()
+                daemon_proc.wait(timeout=3)
         daemon_proc = None
 
 
@@ -219,8 +255,8 @@ def daemon_monitor_thread(ui, stop_event):
             stats = load_daemon_stats()
             ratings = load_ratings()
             ui.update_daemon_status(stats, ratings)
-        except Exception:
-            pass
+        except Exception as e:
+            ui.log_history(f"Daemon monitor error: {e}", "error")
         stop_event.wait(3)
 
 
@@ -373,8 +409,10 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
     cost_usd = None
     usage = None
 
+    query_gen = None
     try:
-        async for message in claude_query(prompt=full_prompt, options=options):
+        query_gen = claude_query(prompt=full_prompt, options=options)
+        async for message in query_gen:
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, TextBlock):
@@ -395,6 +433,11 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
                 usage = message.usage
     except (CLINotFoundError, ProcessError) as e:
         ui.log_io(f"[ERROR] {e}", "error")
+    except asyncio.CancelledError:
+        ui.log_io(f"\n[{role_name} CANCELLED]", "error")
+        if query_gen is not None:
+            await query_gen.aclose()
+        raise
 
     ui.update_cost(role_name, cost_usd, usage)
 
@@ -406,8 +449,10 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
             ui.log_history(f"API rate limited (529). Retrying in {backoff}s...", "warn")
             await asyncio.sleep(backoff)
             full_text.clear()
+            retry_gen = None
             try:
-                async for message in claude_query(prompt=full_prompt, options=options):
+                retry_gen = claude_query(prompt=full_prompt, options=options)
+                async for message in retry_gen:
                     if isinstance(message, AssistantMessage):
                         for block in message.content:
                             if isinstance(block, TextBlock):
@@ -428,6 +473,10 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
                         usage = message.usage
             except (CLINotFoundError, ProcessError) as e:
                 ui.log_io(f"[ERROR] {e}", "error")
+            except asyncio.CancelledError:
+                if retry_gen is not None:
+                    await retry_gen.aclose()
+                raise
 
             ui.update_cost(role_name, cost_usd, usage)
             output = "\n".join(full_text)
@@ -578,8 +627,11 @@ async def _consolidate_experience_pool(ui, is_text_ui):
     if not EXPERIENCE_FILE.exists():
         return
 
-    content = EXPERIENCE_FILE.read_text()
-    if len(content.split("\n")) < 20:
+    with open(EXPERIENCE_FILE, "r") as ef:
+        fcntl.flock(ef, fcntl.LOCK_SH)
+        content = ef.read()
+        fcntl.flock(ef, fcntl.LOCK_UN)
+    if not content or len(content.split("\n")) < 20:
         return  # Too short to bother consolidating
 
     consolidate_prompt = (
@@ -1226,7 +1278,9 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
                         summary = reviewer_data.get("change_summary", "")
                         if summary:
                             with open(EXPERIENCE_FILE, "a") as ep:
+                                fcntl.flock(ep, fcntl.LOCK_EX)
                                 ep.write(f"\n- **v{source_v} -> v{next_v} review**: {summary}\n")
+                                fcntl.flock(ep, fcntl.LOCK_UN)
                         risks = reviewer_data.get("risk_areas", [])
                         if risks:
                             ui.log_history(f"Risk areas: {'; '.join(risks)}", "warn")

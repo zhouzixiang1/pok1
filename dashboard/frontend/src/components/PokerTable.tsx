@@ -61,11 +61,11 @@ export default function PokerTable({ frame, bot0Name, bot1Name }: PokerTableProp
     ctx.lineWidth = 6;
     ctx.stroke();
 
-    if (!frame) {
+    if (!frame || !frame.matchdata || !frame.player_chips || !frame.player_cards || !frame.public_cards) {
       ctx.fillStyle = "rgba(255,255,255,0.5)";
       ctx.font = "18px sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText("Select a match to view replay", W / 2, H / 2);
+      ctx.fillText(frame ? "Incomplete replay data" : "Select a match to view replay", W / 2, H / 2);
       return;
     }
 
