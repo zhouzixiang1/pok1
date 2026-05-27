@@ -26,10 +26,10 @@ Lessons from previous iterations. Read before planning next generation.
 
 ### v6→v7 Execution Plan
 
-v6 is the WORST bot (1408.1 Glicko, stuck across 10+ periods), -149pts below top bot v5 (1557.4). Every gap was verified by reading both v6 and bot5 source code line-by-line. The strategy is simultaneous incremental targeted port of ALL verified bot5 improvements across all 6 files.
+v6 is the WORST bot (1408.1 Glicko, stuck across 180+ periods), -158pts below top bot v5 (1566.0). Every gap was verified by reading both v6 and bot5 source code line-by-line. The strategy is simultaneous incremental targeted port of ALL verified bot5 improvements across all 6 files.
 
-**Worker 1 (Foundation + Opponent Model):** constants.py + state.py + opponent.py + postflop.py — Chen table, precomputed arrays, sim counts, opponent cleanup (remove cbet/drift dead weight, fix priors), anti-bot4 detection, blocker bluff fix, move check_probe/must_continue to postflop.py.
+**Worker 1 (Foundation + Strategy Logic):** constants.py + state.py + opponent.py + postflop.py + strategy.py — Chen table, precomputed arrays, sim counts, opponent anti-bot4, postflop function moves, blocker bluff fix, remove dead weight (gift_balance, exploit_lambda, gto blending, cbet_rate, bb_vs_raise fixed thresholds), fix realized_postflop_equity, fix choose_raise, add overbet functions, add anti-bot4 integration.
 
-**Worker 2 (Strategy + Tournament):** strategy.py + tournament.py — Remove dead weight (gift_balance, exploit_lambda, gto blending, cbet_rate adjustments, fixed preflop bb_vs_raise/sb_vs_raise). Add overbet functions. Integrate anti-bot4 throughout. Fix realized_postflop_equity (remove big_pot, remove draw OOP branch, fix EQR). Fix choose_raise (remove to_call==0 guard, add params, fix thin_cap). Fix tournament anti-lock params + threshold_delta symmetry.
+**Worker 2 (Tournament Hyperparameters):** tournament.py — Anti-lock params (chase=0.90, threshold=-0.075, sizing=0.18, bluff=0.13), threshold_delta symmetry (0.055/0.055).
 
 Both workers must complete all changes. Partial fixes compound negatively (lesson #15).
