@@ -46,39 +46,53 @@ _daemon_monitor_stop: Optional[threading.Event] = None
 _evolution_disabled = os.environ.get("EVOLUTION_DISABLED", "0") == "1"
 
 
+_use_orchestrator = os.environ.get("USE_ORCHESTRATOR", "0") == "1"
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start evolution as a background asyncio task, clean up on shutdown."""
     global _evolution_task, _daemon_monitor_stop
 
     if not _evolution_disabled:
-        from evolution_core import (
-            main_loop, start_daemon, stop_daemon,
-            daemon_monitor_thread, PROMPTS_DIR, RESULTS_DIR as EVO_RESULTS_DIR,
-        )
-        os.makedirs(PROMPTS_DIR, exist_ok=True)
-        os.makedirs(EVO_RESULTS_DIR, exist_ok=True)
+        if _use_orchestrator:
+            # ── Orchestrator mode (LLM-driven) ──
+            from orchestrator.orchestrator import orchestrator_loop
+            os.makedirs(PROJECT_ROOT / "evolution_workspace" / "prompts", exist_ok=True)
+            os.makedirs(PROJECT_ROOT / "evolution_workspace" / "results", exist_ok=True)
 
-        # Start daemon subprocess
-        start_daemon(
-            workers=int(os.environ.get("DAEMON_WORKERS", "14")),
-            pairs=int(os.environ.get("DAEMON_PAIRS", "5")),
-        )
+            _evolution_task = asyncio.create_task(
+                orchestrator_loop(web_ui, no_daemon=False)
+            )
+            web_ui.log_history("🔥 Orchestrator started (LLM-driven mode)", "success")
+        else:
+            # ── Classic mode (hardcoded main_loop) ──
+            from evolution_core import (
+                main_loop, start_daemon, stop_daemon,
+                daemon_monitor_thread, PROMPTS_DIR, RESULTS_DIR as EVO_RESULTS_DIR,
+            )
+            os.makedirs(PROMPTS_DIR, exist_ok=True)
+            os.makedirs(EVO_RESULTS_DIR, exist_ok=True)
 
-        # Daemon monitor thread
-        _daemon_monitor_stop = threading.Event()
-        monitor = threading.Thread(
-            target=daemon_monitor_thread,
-            args=(web_ui, _daemon_monitor_stop),
-            daemon=True,
-        )
-        monitor.start()
+            # Start daemon subprocess
+            start_daemon(
+                workers=int(os.environ.get("DAEMON_WORKERS", "14")),
+                pairs=int(os.environ.get("DAEMON_PAIRS", "5")),
+            )
 
-        # Launch evolution main_loop as background task
-        _evolution_task = asyncio.create_task(
-            main_loop(web_ui, is_text_ui=False, no_daemon=False)
-        )
-        web_ui.log_history("Evolution started (integrated mode)", "success")
+            # Daemon monitor thread
+            _daemon_monitor_stop = threading.Event()
+            monitor = threading.Thread(
+                target=daemon_monitor_thread,
+                args=(web_ui, _daemon_monitor_stop),
+                daemon=True,
+            )
+            monitor.start()
+
+            # Launch evolution main_loop as background task
+            _evolution_task = asyncio.create_task(
+                main_loop(web_ui, is_text_ui=False, no_daemon=False)
+            )
+            web_ui.log_history("Evolution started (integrated mode)", "success")
 
     yield  # Application runs
 

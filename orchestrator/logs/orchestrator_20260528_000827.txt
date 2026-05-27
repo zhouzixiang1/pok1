@@ -1,0 +1,143 @@
+[ORCHESTRATOR PROMPT]
+# Role
+You are the **Evolution Orchestrator** — the AI brain that controls a Texas Hold'em poker bot evolution system. You have complete autonomy to decide what actions to take and in what order. You are NOT following a rigid script — you observe, think, and act.
+
+# Your Tools
+You have two categories of tools:
+
+## Category 1: Evolution MCP Tools
+These are specialized tools for the evolution pipeline. Call them directly — you don't need Bash for these.
+
+- **get_status** — Check current state: latest bot version, top ratings, active bots count, daemon status. **Call this first** to understand where things stand.
+- **get_bot_info(version)** — Detailed info about a specific bot: rating, parent, files, code size.
+- **get_match_history(version, n)** — Recent match results for a bot.
+- **run_match_analysis(source_v)** — Analyze recent losses using LLM. Returns weaknesses and recommendations.
+- **run_master(source_v, next_v, stagnation_info, match_analysis)** — Run Master Architect to plan improvements. Returns a task plan with worker assignments.
+- **execute_workers(tasks, next_v, source_v, reviewer_feedback)** — Execute code modification tasks. Each task has role, target_files, and worker_prompt.
+- **run_quality_gates(version)** — Run compile check, smoke test, decision tests, file size check. Returns pass/fail for each.
+- **run_review(version, source_v, plan)** — Run Lead Code Reviewer. Returns approved/rejected with quality score.
+- **run_crossover(parent_a, parent_b, target_v)** — Combine two elite bots into a new child bot.
+- **prepare_next_gen(source_v, next_v)** — Copy source bot directory to prepare for modifications.
+- **commit_bot(version, source_v, strategy)** — Git commit and tag the new bot.
+- **reap_weakest** — Cull weakest bot if pool exceeds 30.
+- **trim_experience** — Trim experience pool to recent entries.
+- **consolidate_experience** — LLM-based deduplication of experience pool.
+- **analyze_stagnation(source_v, active_bots)** — Analyze if evolution is stagnating.
+
+## Category 2: Built-in Tools
+- **Read** — Read any local file (ratings, experience pool, bot source code, logs).
+- **Bash** — Run shell commands (git log, git diff, etc.).
+- **Edit** — Edit files if needed.
+
+# Evolution Lifecycle (Reference — Adapt as Needed)
+
+A typical generation follows this pattern, but you can modify it:
+
+1. **Check status** → `get_status()`
+2. **Housekeeping** → `reap_weakest()` if needed, `trim_experience()`
+3. **Evaluate** → Check if current bot has enough match data (daemon runs in background)
+4. **Analyze losses** → `run_match_analysis(source_v)` to understand weaknesses
+5. **Plan improvements** → `run_master(source_v, next_v, ...)`
+6. **Prepare** → `prepare_next_gen(source_v, next_v)`
+7. **Implement** → `execute_workers(tasks, next_v, source_v)`
+8. **Quality check** → `run_quality_gates(next_v)`
+9. **Review** → `run_review(next_v, source_v, plan)`
+10. **Commit** → `commit_bot(next_v, source_v, strategy)`
+11. **Repeat** → Go back to step 1 for the next generation
+
+# Decision Principles
+
+## When to Deviate from the Standard Flow
+- **If workers fail**: You can retry with different feedback, or skip to crossover
+- **If quality gates fail**: You can decide whether it's worth fixing or should start over
+- **If reviewer rejects**: Inject the feedback and retry, or abort the generation
+- **If stagnation detected**: Try `run_crossover()` with top 2 bots, or branch from a different ancestor
+- **If Master produces bad plans**: You can call it again with different context, or take direct action
+
+## Key Decision Points
+1. **Should I run match analysis?** → Yes, if there are recent losses. It provides valuable context for Master.
+2. **Should I retry failed workers?** → Max 2 retries. After that, consider crossover or different source bot.
+3. **When to use crossover?** → After 2-3 consecutive generation failures, or when stagnation is confirmed.
+4. **When to branch from different ancestor?** → When the current lineage shows no improvement trend.
+
+## Safety Rules
+- NEVER commit a bot that fails quality gates (compile + smoke + decision tests)
+- NEVER skip the code review step — it catches critical bugs
+- If 3 consecutive generations fail, pause and analyze the situation with `get_status()` and `get_match_history()`
+- Always call `get_status()` at the start of each generation to get fresh data
+
+# Output Style
+- Be concise in your reasoning
+- After each tool call, briefly note the result
+- At the end of each generation, summarize what was done and the outcome
+- If you encounter an unexpected situation, explain your reasoning before acting
+
+# Context
+Current generation: v6
+Next generation will be: v7
+Active bots: 16
+Timestamp: 2026-05-28 00:08:27
+MODE: Continuous evolution. After completing one generation, immediately start the next.
+
+
+[ORCHESTRATOR OUTPUT]
+I'll start by checking the current status and loading the tools I need.
+[tool: ToolSearch]
+
+[tool: mcp__evolution__get_status]
+Status received. 16 active bots, top rated is claude_v2 at 1552.3. Notably, v6 (current) isn't in the top 10. Let me load more tools and gather intelligence on v6's performance.
+[tool: ToolSearch]
+
+[tool: mcp__evolution__get_bot_info]
+
+[tool: mcp__evolution__get_match_history]
+
+[tool: mcp__evolution__analyze_stagnation]
+**Key findings:**
+- **v6 is weak** (rating 1450.1, ranked ~11th) — it beats v1 consistently but can't compete with top bots
+- **Stagnation confirmed**: The top rating hasn't moved meaningfully in 10+ periods
+- **Recommendation**: Branch from **claude_v2** (top rated at 1552.3) instead of continuing the v6 lineage
+
+I'll pivot strategy — branch from v2 to create v7. Let me get v2's info and run loss analysis on it.
+[tool: mcp__evolution__get_bot_info]
+
+[tool: mcp__evolution__get_match_history]
+Good data. v2 dominates v1 consistently but notably **lost 0-5 to v4** — that's a critical weakness signal. Most matches are against weak opponents though, so analysis may be limited. Let me proceed with housekeeping and match analysis.
+[tool: ToolSearch]
+
+[tool: mcp__evolution__run_match_analysis]
+
+[tool: mcp__evolution__reap_weakest]
+
+[tool: mcp__evolution__trim_experience]
+**Excellent analysis on v2:**
+- **Fatal flaw**: Overcommits with second-best hands — gets stacked for -15k to -20k repeatedly
+- **Poor damage control**: 6/10 losses exceed 5000 chips
+- **Exploitable by aggression**: Folds equity away in some spots, pays off in others
+- **Key fix**: Add showdown-value tier system with hard fold thresholds, opponent commitment signal detection, and stack-loss caps
+
+Pool stays at 16 (no reap needed). Experience trimmed. Now let me load master and prepare tools, then plan v7.
+[tool: ToolSearch]
+Now let me run the Master Architect to plan v7 improvements, branching from v2:
+[tool: mcp__evolution__run_master]
+Master produced a comprehensive 3-worker plan:
+- **Worker 1** (medium): Clean opponent.py + fix state.py
+- **Worker 2** (hard): Fix postflop.py + rewire strategy.py (the big one)
+- **Worker 3** (easy): Tune simulation constants
+
+Let me prepare the next generation directory and execute workers.
+[tool: mcp__evolution__prepare_next_gen]
+Good, v7 directory prepared from v2. Now executing all 3 workers in parallel:
+[tool: mcp__evolution__execute_workers]
+Need to include reviewer_feedback. Since this is the first attempt, I'll pass empty:
+[tool: mcp__evolution__execute_workers]
+All 3 workers completed successfully. Worker 2 (strategy.py rewire) was the heaviest at $4.19. Now let me run quality gates to verify the bot is functional:
+[tool: mcp__evolution__run_quality_gates]
+Quality gates results:
+- ✅ **Compile**: Pass
+- ✅ **Smoke test**: Pass  
+- ✅ **Decision tests**: 93% pass rate
+- ⚠️ **Size**: strategy.py (1158) and postflop.py (1015) flagged as oversized
+
+The functional tests all pass. Size warning is noted but total lines actually decreased from 3319→3220 vs v2. Let me proceed to code review — the reviewer can assess the size concern.
+[tool: mcp__evolution__run_review]

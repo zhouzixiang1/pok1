@@ -37,6 +37,9 @@ from evolution_workspace.evolution_core import (
     git_get_parent,
     git_commit_bot,
     git_ensure_clean,
+    start_daemon,
+    stop_daemon,
+    wait_for_daemon_eval,
     _run_master_analysis,
     _execute_workers,
     _run_crossover,
@@ -46,15 +49,33 @@ from evolution_workspace.evolution_core import (
     summarize_replay_for_analysis,
     parse_json_output,
 )
-from evolution_workspace.glicko2 import Glicko2Player
+from evolution_workspace.glicko2 import Glicko2Player, update_rating_period
 
 
 # ──────────────────────────────────────────────
-# Logging UI Adapter
+# UI Injection — Dashboard Integration
+# ──────────────────────────────────────────────
+
+_injected_ui = None
+
+
+def inject_ui(ui):
+    """Inject a real WebUI instance so tool events broadcast to Dashboard via SSE."""
+    global _injected_ui
+    _injected_ui = ui
+
+
+def _get_ui():
+    """Get UI instance: injected WebUI (Dashboard mode) or silent ToolUI (CLI mode)."""
+    return _injected_ui if _injected_ui else ToolUI()
+
+
+# ──────────────────────────────────────────────
+# Logging UI Adapter (CLI fallback)
 # ──────────────────────────────────────────────
 
 class ToolUI(BaseUI):
-    """UI adapter that captures output for tool results."""
+    """Silent UI adapter for CLI mode — captures output for tool results only."""
 
     def __init__(self):
         self.messages = []
@@ -67,7 +88,7 @@ class ToolUI(BaseUI):
         self.messages.append(f"[status] {msg}")
 
     def log_io(self, msg, stream_type="default"):
-        pass  # Skip streaming IO in tool context
+        pass
 
     def clear_io(self):
         pass
@@ -89,7 +110,7 @@ class ToolUI(BaseUI):
         pass
 
     def get_output(self):
-        return "\n".join(self.messages[-20:])  # Last 20 messages
+        return "\n".join(self.messages[-20:])
 
 
 def _ratings_summary(ratings, n=10):
@@ -223,7 +244,7 @@ class RunMatchAnalysisInput(TypedDict):
 @tool("run_match_analysis", "Analyze recent losses from replay data for a bot version. Returns weaknesses, patterns, and recommendations.", {"source_v": int})
 async def run_match_analysis(args):
     source_v = args["source_v"]
-    ui = ToolUI()
+    ui = _get_ui()
     output = await _analyze_recent_matches(source_v, ui, is_text_ui=False)
     result = {
         "analysis": output,
@@ -246,7 +267,7 @@ async def run_master(args):
     stagnation_info = args.get("stagnation_info", "No stagnation detected. Continue from latest version.")
     match_analysis = args.get("match_analysis", "")
 
-    ui = ToolUI()
+    ui = _get_ui()
     data = await _run_master_analysis(
         source_v, next_v, stagnation_info, ui, is_text_ui=False, match_analysis=match_analysis
     )
@@ -276,7 +297,7 @@ async def execute_workers(args):
     prompts_dir = PROJECT_ROOT / "evolution_workspace" / "prompts"
     worker_template = (prompts_dir / "worker_prompt.md").read_text()
 
-    ui = ToolUI()
+    ui = _get_ui()
     success = await _execute_workers(
         tasks, worker_template, next_dir, next_v,
         [], ui, is_text_ui=False, reviewer_feedback=reviewer_feedback,
@@ -343,7 +364,7 @@ async def run_review(args):
     log_file = get_logs_dir(v) / "reviewer_io.txt"
 
     from evolution_workspace.evolution_core import run_claude_query
-    ui = ToolUI()
+    ui = _get_ui()
     output, _, _ = await run_claude_query(
         reviewer_prompt, [], ui, "LEAD CODE REVIEWER", log_file, is_text_ui=False
     )
@@ -388,7 +409,7 @@ async def run_crossover(args):
     shutil.copytree(get_bot_dir(parent_a), target_dir, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     (target_dir / ".completed").unlink(missing_ok=True)
 
-    ui = ToolUI()
+    ui = _get_ui()
     success = await _run_crossover(parent_a, parent_b, target_v, ui, is_text_ui=False)
 
     result = {"success": success, "logs": ui.get_output()}
@@ -443,6 +464,130 @@ async def commit_bot(args):
     return {"content": [{"type": "text", "text": json.dumps({"committed": True, "version": v, "source_v": source_v})}]}
 
 
+class StartDaemonInput(TypedDict):
+    workers: Annotated[int, "Number of parallel battle workers"]
+    pairs: Annotated[int, "Number of match pairs per rating period"]
+
+
+@tool("start_daemon", "Start the background ELO daemon that continuously runs mirror battles and updates ratings.", {"workers": int, "pairs": int})
+async def start_eval_daemon(args):
+    workers = args.get("workers", 14)
+    pairs = args.get("pairs", 5)
+    proc = start_daemon(workers=workers, pairs=pairs)
+    running = proc.poll() is None
+    return {"content": [{"type": "text", "text": json.dumps({
+        "daemon_started": running,
+        "pid": proc.pid,
+        "workers": workers,
+        "pairs": pairs,
+    })}]}
+
+
+class StopDaemonInput(TypedDict):
+    pass
+
+
+@tool("stop_daemon", "Stop the background ELO daemon.", {})
+async def stop_eval_daemon(args):
+    stop_daemon()
+    return {"content": [{"type": "text", "text": json.dumps({"daemon_stopped": True})}]}
+
+
+class WaitForEvalInput(TypedDict):
+    version: Annotated[int, "Bot version to wait for evaluation"]
+    timeout: Annotated[int, "Timeout in seconds (default 600)"]
+    min_matches: Annotated[int, "Minimum matches required (default 20)"]
+    max_rd: Annotated[int, "Maximum rating deviation for confidence (default 40)"]
+
+
+@tool("wait_for_eval", "Wait for the daemon to evaluate a bot (enough matches + low RD). Returns whether eval completed.", {"version": int, "timeout": int, "min_matches": int, "max_rd": int})
+async def wait_for_eval(args):
+    v = args["version"]
+    timeout = args.get("timeout", 600)
+    min_matches = args.get("min_matches", 20)
+    max_rd = args.get("max_rd", 40)
+    bot_name = f"claude_v{v}"
+
+    success = await wait_for_daemon_eval(bot_name, timeout=timeout, min_matches=min_matches, max_rd=max_rd)
+    ratings = load_ratings()
+    p = ratings.get(bot_name)
+
+    result = {
+        "version": v,
+        "eval_completed": success,
+        "current_rating": {"r": round(p.r, 1), "rd": round(p.rd, 1)} if p else None,
+    }
+    return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
+
+
+class RunInlineEvalInput(TypedDict):
+    version: Annotated[int, "Bot version to evaluate"]
+    n_games: Annotated[int, "Number of games per opponent (default 5)"]
+
+
+@tool("run_inline_eval", "Run inline evaluation: battle the bot against all active opponents and update Glicko-2 ratings. Use when daemon is not running.", {"version": int, "n_games": int})
+async def run_inline_eval(args):
+    v = args["version"]
+    n_games = args.get("n_games", 5)
+    bot_name = f"claude_v{v}"
+    bot_dir = get_bot_dir(v)
+
+    if not (bot_dir / "main.py").exists():
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"Bot v{v} main.py not found"})}]}
+
+    # Import battle engine
+    sys.path.insert(0, str((PROJECT_ROOT / "engine").resolve()))
+    from battle import mirror_battle
+
+    ratings = load_ratings()
+    active_bots = get_active_bots()
+    opponents = [b for b in active_bots if b != bot_name]
+
+    if bot_name not in ratings:
+        ratings[bot_name] = Glicko2Player()
+
+    results_summary = []
+    all_results = []
+
+    for opp in opponents:
+        if opp not in ratings:
+            ratings[opp] = Glicko2Player()
+        match_wins, draws, n_played, _ = mirror_battle(
+            str(PROJECT_ROOT / "bots" / bot_name / "main.py"),
+            str(PROJECT_ROOT / "bots" / opp / "main.py"),
+            n_games=n_games, verbose=False, save_log=False
+        )
+        w_a, w_b = match_wins[0], match_wins[1]
+        results_summary.append({"opponent": opp, "wins": w_a, "losses": w_b, "draws": draws})
+        for _ in range(w_a):
+            all_results.append((ratings[opp], 1.0))
+        for _ in range(w_b):
+            all_results.append((ratings[opp], 0.0))
+        for _ in range(draws):
+            all_results.append((ratings[opp], 0.5))
+
+    if all_results:
+        ratings[bot_name] = update_rating_period(ratings[bot_name], all_results)
+
+    # Save updated ratings
+    from evolution_workspace.evolution_core import RATINGS_FILE
+    import fcntl
+    data = {name: p.to_dict() for name, p in ratings.items()}
+    with open(RATINGS_FILE, "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        json.dump(data, f, indent=2)
+        fcntl.flock(f, fcntl.LOCK_UN)
+
+    result = {
+        "version": v,
+        "opponents_played": len(opponents),
+        "games_per_opponent": n_games,
+        "results": results_summary,
+        "updated_rating": {"r": round(ratings[bot_name].r, 1), "rd": round(ratings[bot_name].rd, 1)},
+    }
+    return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
+
+
 class ReapWeakestInput(TypedDict):
     pass
 
@@ -486,7 +631,7 @@ class ConsolidateExperienceInput(TypedDict):
 
 @tool("consolidate_experience", "Use LLM to consolidate and deduplicate the experience pool.", {})
 async def consolidate_experience(args):
-    ui = ToolUI()
+    ui = _get_ui()
     await _consolidate_experience_pool(ui, is_text_ui=False)
     return {"content": [{"type": "text", "text": json.dumps({"consolidated": True, "logs": ui.get_output()})}]}
 
@@ -502,7 +647,7 @@ async def analyze_stagnation(args):
     active_bots_names = args.get("active_bots", [])
 
     ratings = load_ratings()
-    ui = ToolUI()
+    ui = _get_ui()
     result = await _analyze_stagnation(source_v, active_bots_names, ratings, ui, is_text_ui=False)
 
     return {"content": [{"type": "text", "text": json.dumps({
@@ -527,6 +672,10 @@ all_tools = [
     run_crossover,
     prepare_next_gen,
     commit_bot,
+    start_eval_daemon,
+    stop_eval_daemon,
+    wait_for_eval,
+    run_inline_eval,
     reap_weakest,
     trim_experience,
     consolidate_experience,
