@@ -31,9 +31,9 @@ Lessons from previous iterations. Read before planning next generation.
 - strategy.py: missing anti-bot4, river overbet, thin_cap wrong, max_ratio capped, gto/gift dead weight, bb_vs_raise fixed thresholds, cbet_rate dead weight, EQR wrong
 - postflop.py: deterministic hash blocker bluff vs random.random()
 - tournament.py: anti-lock params wrong, threshold_delta asymmetric
-- **Plan**: 3 workers parallel, all gaps fixed simultaneously (lesson 15)
 
-### v7→v8 Evolution Plan
-- Worker 1: constants.py + card_utils.py + state.py (Chen table, precomputed arrays, sim counts)
-- Worker 2: opponent.py + postflop.py + strategy.py (anti-bot4, river overbet, dead weight removal, EQR fix, choose_raise fix)
-- Worker 3: tournament.py (anti-lock params, symmetric threshold_delta)
+### v6→v7 Evolution Plan
+- Worker 1 (Logic): constants.py + card_utils.py + state.py (Chen table, precomputed arrays, sim counts)
+- Worker 2 (Logic): opponent.py + postflop.py (anti-bot4, dead weight removal, random.random blocker bluff, correct priors)
+- Worker 3 (Logic): strategy.py (anti-bot4 integration, river overbet, choose_raise fix, EQR fix, dead weight removal)
+- Worker 4 (Hyperparams): tournament.py (anti-lock params, symmetric threshold_delta)
