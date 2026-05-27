@@ -42,6 +42,7 @@ REFERENCE_DIR = WORKSPACE / "reference_bots"
 GRAVEYARD_DIR = BOTS_DIR / "graveyard"
 RATINGS_FILE = RESULTS_DIR / "glicko_ratings.json"
 STATS_FILE = RESULTS_DIR / "elo_daemon_stats.json"
+WORKER_FAILURES_FILE = RESULTS_DIR / "worker_failures.jsonl"
 
 MAX_ACTIVE_BOTS = 30
 
@@ -377,7 +378,7 @@ def git_get_stagnation_count(bot_name, ratings):
 # LLM & Code Tools
 # ──────────────────────────────────────────────
 
-async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, is_text_ui):
+async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, is_text_ui, model="sonnet"):
     """Run a Claude query via the Agent SDK with cost tracking and typed streaming."""
     full_prompt = prompt
     if context_files:
@@ -400,7 +401,7 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         print(f"\n[{role_name} STARTED]")
 
     options = ClaudeAgentOptions(
-        model="sonnet",
+        model=model,
         permission_mode="bypassPermissions",
         cwd=str(Path(__file__).parent.parent),  # project root
     )
@@ -589,10 +590,11 @@ def seed_initial_bots(ui):
 # Master Analysis
 # ──────────────────────────────────────────────
 
-async def _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui):
+async def _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui, match_analysis=""):
     """Run Master analysis — can run concurrently with daemon evaluation."""
     master_prompt = (PROMPTS_DIR / "master_prompt.md").read_text()
     master_prompt = master_prompt.replace("{stagnation_info}", stagnation_info)
+    master_prompt = master_prompt.replace("{match_analysis}", match_analysis)
     master_ctx = (
         f"Current evolution: v{source_v} → v{next_v}\n"
         f"Bot directory: bots/claude_v{source_v}/\n"
@@ -734,6 +736,212 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui, is_text_ui):
     return parse_json_output(output)
 
 
+def summarize_replay_for_analysis(replay_data, bot_name):
+    """Extract structured statistics from replay JSON for LLM analysis.
+
+    Compresses ~253 game logs into a compact ~500 token summary covering
+    win rates, chip distribution, fold frequency, and key action patterns.
+    """
+    bot_idx = None
+    opp_idx = None
+    if replay_data.get("bot0") == bot_name:
+        bot_idx, opp_idx = 0, 1
+    elif replay_data.get("bot1") == bot_name:
+        bot_idx, opp_idx = 1, 0
+    if bot_idx is None:
+        return ""
+
+    games = replay_data.get("games", [])
+    total_games = len(games)
+    if total_games == 0:
+        return ""
+
+    wins = sum(1 for g in games if g.get("winner") == bot_idx)
+    chip_deltas = [g.get(f"bot{bot_idx}_chips", 0.0) for g in games]
+
+    lines = []
+    lines.append(f"Match: {replay_data['bot0']} vs {replay_data['bot1']}, "
+                 f"Result: {wins}W/{total_games - wins}L out of {total_games} games")
+    lines.append(f"Chip delta: avg={sum(chip_deltas)/len(chip_deltas):.0f}, "
+                 f"best={max(chip_deltas):.0f}, worst={min(chip_deltas):.0f}")
+
+    # Per-game action analysis
+    fold_count = 0
+    raise_count = 0
+    call_count = 0
+    allin_count = 0
+    big_pot_losses = []  # games where bot lost big pots
+
+    for g in games:
+        game_chip = g.get(f"bot{bot_idx}_chips", 0.0)
+        logs = g.get("logs", [])
+
+        for log in logs:
+            out = log.get("output")
+            if not out or not isinstance(out, dict):
+                continue
+
+            # Count actions from request content (bot's own actions)
+            content = out.get("content", {})
+            if isinstance(content, dict):
+                player_data = content.get(str(bot_idx), {})
+                if isinstance(player_data, dict):
+                    history = player_data.get("history", [])
+                    # Last entry in history is the most recent action
+                    # But this is request data, action comes from response
+                    continue
+
+            # Count from display data
+            display = out.get("display")
+            if display and isinstance(display, dict):
+                action = display.get("last_action")
+                if action and isinstance(action, dict):
+                    pid = action.get("player_id")
+                    if pid == bot_idx:
+                        act_val = action.get("action", 0)
+                        if act_val == -1:
+                            fold_count += 1
+                        elif act_val == -2:
+                            allin_count += 1
+                        elif act_val > 0:
+                            raise_count += 1
+                        else:
+                            call_count += 1
+
+        if game_chip < -5000:
+            big_pot_losses.append((g.get("game", "?"), game_chip))
+
+    total_actions = fold_count + raise_count + call_count + allin_count
+    if total_actions > 0:
+        lines.append(f"Actions: fold={fold_count}({fold_count*100//total_actions}%), "
+                     f"call={call_count}({call_count*100//total_actions}%), "
+                     f"raise={raise_count}({raise_count*100//total_actions}%), "
+                     f"allin={allin_count}({allin_count*100//total_actions}%)")
+
+    if big_pot_losses:
+        lines.append(f"Big losses (>-5000): {len(big_pot_losses)} games")
+        for gid, delta in big_pot_losses[:3]:
+            lines.append(f"  Game {gid}: {delta:.0f} chips")
+
+    return "\n".join(lines)
+
+
+REPLAY_DIR = RESULTS_DIR / "match_replay"
+MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
+
+
+def _record_worker_failure(gen, worker_id, role, error):
+    """Append a worker failure record to the JSONL file."""
+    entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error}
+    with open(WORKER_FAILURES_FILE, "a", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def _load_recent_failures(n=3):
+    """Load the n most recent worker failure records."""
+    if not WORKER_FAILURES_FILE.exists():
+        return []
+    entries = []
+    with open(WORKER_FAILURES_FILE, "r", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_SH)
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+        fcntl.flock(f, fcntl.LOCK_UN)
+    return entries[-n:]
+
+
+async def _analyze_recent_matches(source_v, ui, is_text_ui, max_matches=5):
+    """Use LLM to analyze recent replay data for the current bot.
+
+    Returns a match analysis string to inject into Master's context, or ""
+    if no replay data is available.
+    """
+    bot_name = f"claude_v{source_v}"
+
+    # Find recent losses from match_history.jsonl
+    if not MATCH_HISTORY_FILE.exists():
+        return ""
+
+    recent_losses = []
+    with open(MATCH_HISTORY_FILE, "r") as f:
+        fcntl.flock(f, fcntl.LOCK_SH)
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            # Check if this bot lost
+            if entry.get("bot0") == bot_name and entry.get("bot1_wins", 0) > entry.get("bot0_wins", 0):
+                recent_losses.append(entry)
+            elif entry.get("bot1") == bot_name and entry.get("bot0_wins", 0) > entry.get("bot1_wins", 0):
+                recent_losses.append(entry)
+        fcntl.flock(f, fcntl.LOCK_UN)
+
+    if not recent_losses:
+        return ""
+
+    # Take most recent losses
+    recent_losses = recent_losses[-max_matches:]
+
+    # Build summaries from replay files
+    summaries = []
+    for entry in recent_losses:
+        replay_path = REPLAY_DIR / entry["id"]
+        if not replay_path.exists():
+            continue
+        try:
+            with open(replay_path, "r") as rf:
+                replay_data = json.load(rf)
+            summary = summarize_replay_for_analysis(replay_data, bot_name)
+            if summary:
+                summaries.append(summary)
+        except (json.JSONDecodeError, OSError):
+            continue
+
+    if not summaries:
+        return ""
+
+    # Call LLM for analysis
+    match_analyst_prompt = (
+        "You are a Poker Hand Analyst specializing in Texas Hold'em bot strategy.\n"
+        "Analyze the following match replay summaries for weaknesses and patterns.\n\n"
+    )
+    match_analyst_prompt += "## Recent Loss Summaries\n\n"
+    for s in summaries:
+        match_analyst_prompt += s + "\n\n"
+    match_analyst_prompt += (
+        "Based on the data above, identify:\n"
+        "1. Key weaknesses (e.g., folding too much, not raising enough, poor all-in timing)\n"
+        "2. Any detectable patterns (e.g., weak out-of-position, poor against aggressive opponents)\n"
+        "3. A concrete recommendation for improvement\n\n"
+        "Output ONLY a JSON block:\n"
+        "```json\n"
+        '{"weaknesses": ["..."], "patterns": "...", "recommendation": "..."}\n'
+        "```\n"
+        "Keep it concise — 2-3 weaknesses, 1 pattern, 1 recommendation."
+    )
+
+    log_file = get_logs_dir(source_v) / "match_analyst_io.txt"
+    try:
+        output, _, _ = await run_claude_query(
+            match_analyst_prompt, [], ui,
+            "MATCH ANALYST", log_file, is_text_ui,
+        )
+        return output or ""
+    except Exception:
+        return ""
+
+
 async def _run_crossover(parent_a_v, parent_b_v, target_v, ui, is_text_ui):
     """Run crossover between two elite bots to create a new child bot."""
     crossover_prompt = (PROMPTS_DIR / "crossover_prompt.md").read_text()
@@ -782,8 +990,18 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
     if reviewer_feedback:
         base_worker_prompt = f"CRITICAL REVISION NEEDED:\n{reviewer_feedback}\n\nORIGINAL:\n{base_worker_prompt}"
 
+    # Inject recent worker failure memory
+    recent_failures = _load_recent_failures(3)
+    if recent_failures:
+        failure_lines = ["# Recent Worker Failures (avoid repeating these mistakes):"]
+        for f in recent_failures:
+            failure_lines.append(f"- Gen {f['gen']} Worker {f['worker_id']} ({f['role']}): {f['error'][:150]}")
+        base_worker_prompt += "\n\n" + "\n".join(failure_lines)
+
     worker_log_file = get_logs_dir(next_v) / f"worker_{w_id}_io.txt"
 
+    compile_errors = []
+    smoke_errors = []
     for attempt in range(4):
         ui.clear_io()
         ui.set_status(f"[{role}] coding for v{next_v}...", is_working=True)
@@ -809,6 +1027,9 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
 
         return True
 
+    # Worker failed all retries — record failure
+    last_error = compile_errors[0] if compile_errors else (smoke_errors[0] if smoke_errors else "unknown")
+    _record_worker_failure(next_v, w_id, role, last_error)
     return False
 
 
@@ -1119,9 +1340,12 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             ui.set_status(f"Pipelining daemon eval + Master analysis for v{current_v}...", is_working=True)
             ui.log_history(f"v{current_v} pipelining daemon eval + Master analysis...", "info")
 
+            # Run match analysis (pipelined with daemon eval)
+            match_analysis = await _analyze_recent_matches(source_v, ui, is_text_ui)
+
             # Launch Master analysis concurrently — it reads files via tools, doesn't need final ratings
             master_task = asyncio.create_task(
-                _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui)
+                _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui, match_analysis)
             )
 
             # Wait for daemon evaluation (async, non-blocking)
@@ -1167,8 +1391,9 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
                 if my_results:
                     ratings[my_bot] = update_rating_period(ratings[my_bot], my_results)
 
-            # Run Master after inline eval
-            tasks_data = await _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui)
+            # Run match analysis then Master after inline eval
+            match_analysis = await _analyze_recent_matches(source_v, ui, is_text_ui)
+            tasks_data = await _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui, match_analysis)
 
         # 2. Master result check — auto-retry on failure
         if tasks_data is None:

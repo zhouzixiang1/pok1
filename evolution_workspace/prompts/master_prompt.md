@@ -35,6 +35,12 @@ Your goal is to:
 # Stagnation Decision
 {stagnation_info}
 If stagnation is detected, you can:
+
+# Recent Match Analysis
+{match_analysis}
+This is an automated analysis of the bot's recent losses. Use these insights to focus your improvement strategy on the identified weaknesses. If this section is empty, no replay analysis was available.
+
+If stagnation is detected, you can:
 1. Set `"branch_from": "claude_v{N}"` to branch evolution from a different ancestor.
 2. Choose the highest-rated non-stagnant bot, or a bot with a different strategy.
 3. If no `branch_from` is set, evolution continues from the latest version.

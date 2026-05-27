@@ -387,6 +387,38 @@ async def match_replay(match_id: str):
     return _read_locked(path)
 
 
+@app.get("/api/matches/commentary/{match_id}")
+async def match_commentary(match_id: str):
+    """Generate per-game commentary for a match replay."""
+    path = (REPLAY_DIR / match_id).resolve()
+    if not path.is_relative_to(REPLAY_DIR.resolve()) or not path.is_file():
+        return {"error": "Match not found"}
+
+    # Check cache
+    COMMENTARY_DIR = RESULTS_DIR / "commentary"
+    cache_path = (COMMENTARY_DIR / match_id).resolve()
+    if cache_path.is_file() and cache_path.is_relative_to(COMMENTARY_DIR.resolve()):
+        try:
+            with open(cache_path, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    replay = _read_locked(path)
+    from commentary import generate_match_commentary
+    commentary = generate_match_commentary(replay)
+
+    # Cache result
+    try:
+        COMMENTARY_DIR.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump(commentary, f)
+    except OSError:
+        pass
+
+    return commentary
+
+
 # ── Daemon Status ──
 
 @app.get("/api/daemon/status")

@@ -26,6 +26,7 @@ export const api = {
   daemonStatus: () => fetchJSON<{ status: string; last_update_age_seconds: number }>(`${BASE}/daemon/status`),
   recentMatches: (limit = 100) => fetchJSON<MatchSummary[]>(`${BASE}/matches/recent?limit=${limit}`),
   matchReplay: (id: string) => fetchJSON<MatchReplayData>(`${BASE}/matches/replay/${id}`),
+  matchCommentary: (id: string) => fetchJSON<Record<string, string>>(`${BASE}/matches/commentary/${id}`),
 };
 
 export function useRatingsSSE(onData: (ratings: { name: string; rating: number; rd: number }[]) => void) {

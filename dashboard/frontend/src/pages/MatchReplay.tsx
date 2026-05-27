@@ -28,6 +28,7 @@ export default function MatchReplay() {
   const [frames, setFrames] = useState<DisplayFrame[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
   const [speed, setSpeed] = useState(800);
+  const [commentary, setCommentary] = useState<Record<string, string>>({});
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -40,11 +41,14 @@ export default function MatchReplay() {
     setCurrentHand(0);
     setCurrentStep(0);
     setIsPlaying(false);
+    setCommentary({});
     if (data.games && data.games.length > 0) {
       setFrames(extractFrames(data.games[0]));
     } else {
       setFrames([]);
     }
+    // Fetch commentary
+    api.matchCommentary(id).then(setCommentary).catch(() => {});
   }, []);
 
   const changeHand = useCallback((idx: number) => {
@@ -136,6 +140,13 @@ export default function MatchReplay() {
               bot1Name={selectedMatch?.bot1 || "Bot 1"}
             />
           </div>
+
+          {/* Commentary */}
+          {selectedMatch && commentary[String(currentHand)] && (
+            <div className="mb-4 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700 dark:border-gray-800 dark:bg-white/[0.03] dark:text-gray-300">
+              {commentary[String(currentHand)]}
+            </div>
+          )}
 
           {/* Controls */}
           {selectedMatch && (
