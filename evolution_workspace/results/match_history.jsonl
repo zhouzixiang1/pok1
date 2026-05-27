@@ -3986,3 +3986,17 @@
 {"id": "20260527_185753_764459_claude_v1_vs_claude_v5.json", "timestamp": "20260527_185753_764459", "bot0": "claude_v1", "bot1": "claude_v5", "bot0_wins": 0, "bot1_wins": 5, "draws": 0}
 {"id": "20260527_185858_958630_claude_v1_vs_claude_v6.json", "timestamp": "20260527_185858_958630", "bot0": "claude_v1", "bot1": "claude_v6", "bot0_wins": 0, "bot1_wins": 5, "draws": 0}
 {"id": "20260527_185917_766138_claude_v1_vs_claude_v4.json", "timestamp": "20260527_185917_766138", "bot0": "claude_v1", "bot1": "claude_v4", "bot0_wins": 1, "bot1_wins": 4, "draws": 0}
+{"id": "20260527_190137_593895_claude_v1_vs_claude_v2.json", "timestamp": "20260527_190137_593895", "bot0": "claude_v1", "bot1": "claude_v2", "bot0_wins": 0, "bot1_wins": 5, "draws": 0}
+{"id": "20260527_190144_448838_claude_v1_vs_claude_v6.json", "timestamp": "20260527_190144_448838", "bot0": "claude_v1", "bot1": "claude_v6", "bot0_wins": 2, "bot1_wins": 3, "draws": 0}
+{"id": "20260527_190148_144818_claude_v1_vs_claude_v11.json", "timestamp": "20260527_190148_144818", "bot0": "claude_v1", "bot1": "claude_v11", "bot0_wins": 2, "bot1_wins": 3, "draws": 0}
+{"id": "20260527_190201_550068_claude_v1_vs_claude_v4.json", "timestamp": "20260527_190201_550068", "bot0": "claude_v1", "bot1": "claude_v4", "bot0_wins": 1, "bot1_wins": 4, "draws": 0}
+{"id": "20260527_190210_952199_claude_v1_vs_claude_v3.json", "timestamp": "20260527_190210_952199", "bot0": "claude_v1", "bot1": "claude_v3", "bot0_wins": 2, "bot1_wins": 3, "draws": 0}
+{"id": "20260527_190212_614880_claude_v1_vs_claude_v14.json", "timestamp": "20260527_190212_614880", "bot0": "claude_v1", "bot1": "claude_v14", "bot0_wins": 2, "bot1_wins": 3, "draws": 0}
+{"id": "20260527_190216_980838_claude_v1_vs_claude_v9.json", "timestamp": "20260527_190216_980838", "bot0": "claude_v1", "bot1": "claude_v9", "bot0_wins": 1, "bot1_wins": 4, "draws": 0}
+{"id": "20260527_190222_615294_claude_v1_vs_claude_v15.json", "timestamp": "20260527_190222_615294", "bot0": "claude_v1", "bot1": "claude_v15", "bot0_wins": 1, "bot1_wins": 4, "draws": 0}
+{"id": "20260527_190223_565154_claude_v1_vs_claude_v16.json", "timestamp": "20260527_190223_565154", "bot0": "claude_v1", "bot1": "claude_v16", "bot0_wins": 1, "bot1_wins": 4, "draws": 0}
+{"id": "20260527_190228_758246_claude_v1_vs_claude_v8.json", "timestamp": "20260527_190228_758246", "bot0": "claude_v1", "bot1": "claude_v8", "bot0_wins": 1, "bot1_wins": 4, "draws": 0}
+{"id": "20260527_190230_439067_claude_v1_vs_claude_v17.json", "timestamp": "20260527_190230_439067", "bot0": "claude_v1", "bot1": "claude_v17", "bot0_wins": 1, "bot1_wins": 4, "draws": 0}
+{"id": "20260527_190231_629415_claude_v1_vs_claude_v12.json", "timestamp": "20260527_190231_629415", "bot0": "claude_v1", "bot1": "claude_v12", "bot0_wins": 1, "bot1_wins": 4, "draws": 0}
+{"id": "20260527_190232_972074_claude_v1_vs_claude_v13.json", "timestamp": "20260527_190232_972074", "bot0": "claude_v1", "bot1": "claude_v13", "bot0_wins": 1, "bot1_wins": 4, "draws": 0}
+{"id": "20260527_190253_706747_claude_v1_vs_claude_v5.json", "timestamp": "20260527_190253_706747", "bot0": "claude_v1", "bot1": "claude_v5", "bot0_wins": 0, "bot1_wins": 5, "draws": 0}
