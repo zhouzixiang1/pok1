@@ -26,9 +26,14 @@ Lessons from previous iterations. Read before planning next generation.
 
 ### v6→v7 Verified Gaps (Confirmed by Full Diff)
 
-21. **v6 rating frozen at 1408.06 for ALL 111+ periods.** Dead last. 145pts below top (v2=1553). All gaps below confirmed by line-by-line diff with bot5.
+21. **v6 rating frozen near bottom for ALL 111+ periods.** ~149pts below top (v5=1566). All gaps below confirmed by line-by-line diff with bot5.
 22. **bot5 choose_preflop_spot_action returns None for bb_vs_raise/sb_vs_reraise** — lets simulation handle them. v6 has fixed-threshold branches that are ALWAYS harmful.
 23. **bot5 removes preflop_trash_hand guard from anti_lock preflop** — anti-lock fires regardless. v6 skips anti-lock for trash hands.
 24. **bot5 adds anti-bot4 wiring throughout get_action**: detect after board_texture computed, pass bluff_freq_bonus to blocker bluffs, pass raise_size_bonus to choose_raise, apply call_threshold_delta and trap_defense_delta to showdown thresholds, lower bluff thresholds by bluff_freq_bonus.
 25. **bot5 river overbet fires BEFORE main decision tree** for nuts with to_call==0 on river. Separate choose_overbet_bluff_river for air (disabled for safety but wired).
 26. **bot5 bluff/thin-value gates include anti_bot4 check**: `anti_bot4["bluff_freq_bonus"] < 0.05` bypasses thin_static_showdown_control.
+
+### v6→v7 Strategy: Targeted Port of bot5 Proven Features
+
+27. **Three-file surgical approach**: constants.py (params), opponent.py+state.py (Chen+bot4), strategy+postflop+tournament (wiring). Avoid monolithic rewrite.
+28. **Priority order: Chen table → anti-bot4 → river overbet → remove dead weight → fix EQR/thresholds.** Each independently validated by bot5.
