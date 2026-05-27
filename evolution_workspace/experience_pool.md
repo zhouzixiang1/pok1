@@ -19,18 +19,18 @@ Lessons from previous iterations. Read before planning next generation.
 14. **choose_raise: thin_cap = 0.30 (round≤2) / 0.38 (round==3).** max_ratio conditional 2.2 for river overbet nut hands.
 15. **cbet_rate checks in call margin logic are harmful noise.** bot5 removed them. Remove from v6.
 
-### v6→v7: Comprehensive Bot5 Port (Study #2 — Full Code Diff)
+### v6→v7: Comprehensive Bot5 Port (Study #3 — Confirmed All Gaps)
 
-16. **v6 rating ~1495, ~77pts behind top (v2=1573).** Consistently weakest active bot. All 15 lessons apply.
-17. **All 15 gaps confirmed via full file-by-file diff of v6 vs bot5.** No new algorithmic features in v6 beyond bot5.
-18. **v6 anti-lock flow checks preflop_trash_hand — bot5 does NOT.** Blocks aggression with trash in anti-lock mode. Remove guard.
-19. **v6 realized_postflop_equity has extra OOP double_barrel penalty + big_pot param + OOP draw block.** bot5 removed all three. Fix EQR values: 0.72/0.62 air, 0.86/0.78 pair, bounds 0.45-0.85/0.65-0.92.
-20. **v6 choose_preflop_spot_action has hardcoded bb_vs_raise and sb_vs_reraise blocks.** bot5 returns None. Lesson #10 confirmed.
-21. **Three-worker split with clean file ownership:** W1={state,opponent}, W2={strategy,postflop}, W3={constants,tournament}.
-22. **Key risk: recalibration after Chen table port.** ALL preflop thresholds downstream must work with new strength scale.
-23. **bot5 choose_raise has anti_bot4_bonus and allow_river_overbet params.** v6 lacks both. Port structure + integration.
-24. **bot5 bad_river_bluff_candidate adds bot4 bluff_freq_bonus exception.** v6 lacks anti-bot4 so check is too conservative.
-25. **Chen table port is the single highest-impact change.** It changes preflop_strength scale, affecting ALL downstream thresholds.
-26. **v6 opponent.py has 4 categories of dead weight:** cbet_rate/fold_to_cbet, drift detection, hand flag arrays, wrong priors.
-27. **v6 strategy.py has 3 categories of dead weight:** gift_balance/exploit_lambda/gto_strong, cbet_rate checks, pot param in EQR.
-28. **bot5 anti-lock preflop: no round_idx guard.** v6 has `if round_idx > 0 or preflop_3bet_candidate` — bot5 always attempts anti-lock attack.
+16. **v6 rating ~1468, ~104pts behind v2 (1572).** 2nd-worst active bot. All 15 lessons apply.
+17. **v6 state.py uses crude formula for estimate_preflop_strength.** Must port Chen table from bot5 (PREFLOP_STRENGTH_TABLE in constants.py).
+18. **v6 anti-lock flow checks preflop_trash_hand — bot5 does NOT.** v6 line 658: `if not preflop_trash_hand:` blocks aggression. bot5 always attempts anti-lock attack.
+19. **v6 realized_postflop_equity has 3 extra penalties: OOP double_barrel (-0.05), big_pot param (-0.03), OOP draw block (entire section).** bot5 removed ALL three. Fix EQR: air 0.72/0.62 bounds [0.45,0.85]; pair 0.86/0.78 bounds [0.65,0.92].
+20. **v6 choose_preflop_spot_action has hardcoded bb_vs_raise (line 560-585) and sb_vs_reraise (line 587-598) blocks.** bot5 returns None. Lesson #10 confirmed.
+21. **v6 choose_raise lacks anti_bot4_bonus and allow_river_overbet params.** thin_cap wrong: 0.46+0.08*wetness vs bot5's 0.30/0.38. max_ratio hardcoded 1.45 vs bot5's conditional 2.2.
+22. **v6 opponent.py has 4 categories dead weight:** cbet_rate/fold_to_cbet tracking, drift detection, hand flag arrays, wrong priors (0.52/0.24 vs 0.58/0.28, divisor 30 vs 35).
+23. **v6 strategy.py has dead weight:** gift_balance/exploit_lambda/gto_strong blending, cbet_rate checks in call margin, `pot` param in realized_postflop_equity.
+24. **bot5 anti-lock preflop: no preflop_trash_hand guard.** v6 line ~658 has `if not preflop_trash_hand:` — blocks anti-lock aggression with trash.
+25. **v6 allow_low_frequency_blocker_bluff uses deterministic hash.** bot5 uses random.random() + bluff_freq_bonus param.
+26. **v6 has NO detect_bot4_profile or get_anti_bot4_adjustments.** Must port from bot5/opponent.py.
+27. **v6 has NO choose_overbet_river or choose_overbet_bluff_river.** Must port from bot5/strategy.py.
+28. **v6 has NO check_probe_resistance_margin or must_continue_vs_raise in postflop.py.** These are only in strategy.py (local copies). Must verify bot5's versions match or port.
