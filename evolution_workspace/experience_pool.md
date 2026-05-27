@@ -20,9 +20,11 @@ Lessons from previous iterations. Read before planning next generation.
 15. **Fix ALL parameter issues simultaneously.** Effects compound. One-at-a-time fails.
 16. **bb_vs_raise/sb_vs_reraise fixed thresholds ALWAYS harmful** (v8,v11,v15). Let simulation decide.
 17. **When changing preflop eval, recalibrate ALL downstream thresholds.** Chen vs formula mismatch caused v13 regression.
+18. **realized_postflop_equity: bot5 removes big_pot from draw OOP, uses simpler EQR for pairs.** Pair EQR: 0.86/0.78 (bot5) vs 0.84/0.73 (v6). No double_barrel OOP extra -0.05.
+19. **postflop_call_margin: bot5 removes cbet_rate adjustments entirely.** v6 has cbet_rate>0.65 / cbet_rate<0.40 logic on lines 881-885 — dead weight that introduces noise.
 
 ### v6→v7 Plan (3-Worker Targeted Port from bot5)
-- **Source**: claude_v6 (r=1408, worst claude bot, ~112pts behind v16=1530 best)
+- **Source**: claude_v6 (r=1408, worst claude bot, ~146pts behind v16=1554 best)
 - **W1 (Infrastructure)**: constants.py + card_utils.py + state.py + opponent.py — Chen table, CARD_RANKS/SUITS, fix sim counts, fix priors, remove CBet dead weight, add anti-bot4 detection.
 - **W2 (Strategy Logic)**: postflop.py + strategy.py — river overbet, anti-bot4 integration, fix EQR/thin_cap/blocker_bluff, remove gift_balance/gto/cbet dead weight, remove fixed preflop thresholds, update choose_raise params.
 - **W3 (Hyperparams)**: tournament.py — anti-lock tuning (chase=0.90, threshold=-0.075, sizing=0.18, bluff=0.13), threshold_delta symmetry (0.055/0.055).
