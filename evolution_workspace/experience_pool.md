@@ -19,9 +19,12 @@ Lessons from previous iterations. Read before planning next generation.
 14. **choose_raise: thin_cap = 0.30 (round≤2) / 0.38 (round==3).** max_ratio conditional 2.2 for river overbet nut hands.
 15. **cbet_rate checks in call margin logic are harmful noise.** bot5 removed them. Remove from v6.
 
-### v6→v7 Strategy: Full Targeted Port from bot5 (3 Workers)
+### v6→v7: Comprehensive Port from v5 (Study #1 — v5 reference bot)
 
-16. **v6 rating 1424.80, ~142pts behind top (v5=1567).** Stuck for 120+ periods. All 27+ gaps confirmed.
-17. **Worker split: W1=constants+state+opponent+postflop, W2=strategy, W3=tournament (hyperparams only).**
-18. **Priority: Chen table > simulation counts > anti-bot4 > river overbet > remove dead weight > fix EQR.**
-19. **key insight: preflop_trash_hand guard in anti-lock preflop must be removed (bot5 removed it).**
+16. **v6 rating 1428, ~135pts behind top (v5=1563).** Weakest active bot. 130 periods stagnation.
+17. **Root cause: v6 lacks ALL of items 1-15 above.** v13 has Chen table (1537) but still lacks overbet/anti-bot4.
+18. **Critical gap confirmed: preflop_trash_hand guard in anti-lock flow blocks aggression.** v5 removed it entirely.
+19. **v6 realized_postflop_equity has extra big_pot param and wrong EQR values.** Must match v5 exactly.
+20. **v6 choose_preflop_spot_action has hardcoded bb_vs_raise/sb_vs_reraise logic.** v5 returns None (simulation decides). Experience pool lesson #10 confirmed in code.
+21. **Worker strategy: W1=constants+state+opponent+postflop (Chen table, sim counts, anti-bot4, EQR, blocker_bluff fix), W2=strategy core (overbet river, dead weight removal, preflop simplification, choose_raise params).** Two-worker focused approach.
+22. **Key risk: recalibration.** After porting Chen table, ALL preflop thresholds in strategy.py must be recalibrated simultaneously. Lesson #11.
