@@ -26,11 +26,15 @@ Lessons from previous iterations. Read before planning next generation.
 
 ### v6→v7 Execution Plan (3-Worker Split)
 
-v6 is the WORST bot (1408 Glicko, stuck since creation). -133pts below top bots. Every gap verified by reading both v6 and bot5 source code line-by-line. Strategy: simultaneous incremental targeted port of ALL verified bot5 improvements, split into 3 focused workers.
+v6 is the WORST bot (1408 Glicko, rating NEVER CHANGED across 110 periods — not playing matches). -126pts below top bots. All gaps verified by line-by-line comparison with bot5 source code.
 
-**Worker 1 (Preflop + Opponent Model):** state.py + opponent.py — Rewrite estimate_preflop_strength to use PREFLOP_STRENGTH_TABLE (Chen lookup), fix priors (vpip=0.58, pfr=0.28, div=35), add detect_bot4_profile + get_anti_bot4_adjustments, remove dead weight (CBet tracking, drift detection, fold_to_cbet).
+21. **v6 rating literally frozen at 1408.06 for ALL 110 history periods.** The daemon may be skipping it (lowest-rated gets fewest matches?). Regardless, the code gaps are clear.
+22. **bot5 choose_preflop_spot_action omits bb_vs_raise and sb_vs_reraise branches entirely** — returns None for these spots, letting simulation-driven logic handle them. v6 has fixed-threshold branches that are ALWAYS harmful (lesson #16).
+23. **bot5 removes preflop_trash_hand calculation from get_action** — only uses it in choose_preflop_spot_action. v6 computes it separately in get_action (dead weight, minor perf).
 
-**Worker 2 (Strategy + Postflop):** strategy.py + postflop.py — Fix allow_low_frequency_blocker_bluff (random.random+bluff_freq_bonus), add choose_overbet_river, fix choose_raise (anti_bot4_bonus + allow_river_overbet + thin_cap 0.30/0.38 + max_ratio 2.2), fix realized_postflop_equity (remove pot param, EQR 0.72/0.62 air 0.86/0.78 pair lb 0.45/0.65), remove dead weight (gift_balance/track_opponent_gift, safe_exploitation_lambda, gto_strong blending, cbet_rate adjustments, bb_vs_raise/sb_vs_raise fixed thresholds), move check_probe_resistance_margin + must_continue_vs_raise to postflop.py, wire anti-bot4 throughout get_action.
+**Worker 1 (Preflop + Opponent Model):** state.py + opponent.py — Rewrite estimate_preflop_strength to use PREFLOP_STRENGTH_TABLE (Chen lookup), fix priors (vpip=0.58, pfr=0.28, div=35), add detect_bot4_profile + get_anti_bot4_adjustments, remove dead weight (CBet tracking, drift detection, fold_to_cbet, hand_vpip_flags/pfr_flags/aggr tracking arrays).
+
+**Worker 2 (Strategy + Postflop):** strategy.py + postflop.py — Fix allow_low_frequency_blocker_bluff (random.random+bluff_freq_bonus), add choose_overbet_river + choose_overbet_bluff_river, fix choose_raise (add anti_bot4_bonus + allow_river_overbet params, thin_cap 0.30/0.38, max_ratio 2.2), fix realized_postflop_equity (remove pot param, EQR 0.72/0.62 air 0.86/0.78 pair lb 0.45/0.65), remove dead weight (gift_balance/track_opponent_gift, safe_exploitation_lambda, gto_strong blending, cbet_rate adjustments in postflop_call_margin, bb_vs_raise/sb_vs_reraise fixed thresholds in choose_preflop_spot_action), move check_probe_resistance_margin + must_continue_vs_raise to postflop.py, wire anti-bot4 throughout get_action (detect_bot4_profile, get_anti_bot4_adjustments, pass anti_bot4_bonus to choose_raise, bluff_freq_bonus to blocker bluffs, thin_static_showdown_control anti-bot4 bypass, river overbet logic).
 
 **Worker 3 (Constants + Tournament Params):** constants.py + tournament.py — Add PREFLOP_STRENGTH_TABLE, CARD_RANKS, CARD_SUITS to constants.py. Fix sim counts ({0:900,3:1200,4:1500}, extras {0:300,3:350,4:300}). Anti-lock: chase=0.90, threshold=-0.075, sizing=0.18, bluff=0.13. threshold_delta symmetry: 0.055/0.055.
 
