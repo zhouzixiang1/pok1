@@ -1,0 +1,131 @@
+
+[WORKER 1 (postflop_draw_specialist) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **postflop_draw_specialist**.
+You must directly edit the source files in `bots/claude_v14/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v14/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+""
+
+ORIGINAL:
+Add backdoor draw detection to the draw_profile function in postflop.py. On the flop (3 public cards), detect: 1) Backdoor flush draws (2 hole cards of same suit, 1 card of that suit on board) — add 0.04 quality. 2) Backdoor straight draws (hole cards that with one card on board form a connected sequence needing 2 more) — add 0.02 quality. Also add backdoor_draw boolean field to the draw info dict. Additionally, improve combo draw quality bonus from max(flush+straight+0.04) to max(flush+straight+0.06) to better reflect fold equity + equity.
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v14/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v14/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v14/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v14/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+Now let me read the `postflop.py` file to understand the current `draw_profile` function:
+Let me read the specific `draw_profile` function:
+Now let me also read the `card_utils.py` to understand the utility functions available:
+Good. Now I have a clear understanding of the code. Let me also check if there's a `straight_draw_value` function that might be relevant:
+Now I have a clear picture. Let me implement the changes:
+
+1. Add `backdoor_draw` field to `empty_draw_profile()`
+2. Add backdoor flush draw detection in `draw_profile()` (flop only)
+3. Add backdoor straight draw detection in `draw_profile()` (flop only)
+4. Improve combo draw quality bonus from 0.04 to 0.06
+Now let me make the edits:
+Now let me verify the changes were applied correctly:
+I see a logic issue in the backdoor straight draw condition. The line `not info["straight_draw"] != "none"` is a double negative that evaluates to `info["straight_draw"] == "none"` which is correct, but it's confusing. Let me also reconsider: the backdoor straight draw should only add quality when there's no existing strong straight draw. The condition is actually correct but let me clean it up for clarity. Also, I realize the backdoor straight detection logic could be tighter - let me refine it.
+The condition `not info["straight_draw"] != "none"` is confusing but evaluates to `info["straight_draw"] == "none"` which is correct — we only add backdoor straight quality when there's no existing straight draw. However, I think the backdoor straight should add its quality regardless (it's additive equity), and the condition should just prevent double-counting for strong straight draws. Let me fix the confusing condition and also make the logic cleaner:
+Now let me run the quality checks:
+All quality checks pass. Now let me do the final review:
+I see that there are other changes from other workers that were applied before mine (changes to `opponent.py`, `state.py`, `strategy.py`, and deletion of `.completed`). These are not my changes. Let me verify that **only my changes** to `postflop.py` are correct:
+I notice there's one change in the diff that I didn't intentionally make: the gutshot margin change in `draw_call_margin` (line 707 → 759: `0.020` → `0.025`). Let me check if this was already in the file before my edits:
+So the original had `0.020` but the current file has `0.025`. This was changed by another worker before me (not by my script). Let me check more carefully:
+Wait, that's at line 761. Let me check the git diff more carefully:
+The gutshot margin change (0.020 → 0.025) is showing in the diff. But my patch script didn't touch that value. Let me check if this was a pre-existing modification from another worker that was already in the working tree before I started:
+So the committed version has `0.020` and the current file has `0.025`. Since I'm an Algorithmic Logic Architect and this is a numeric constant change, I should revert it — it wasn't part of my assigned task. Let me check if it was another worker that made this change before me:
+Wait — the stash shows the original has `0.020` at line 707 but the current file has `0.025` there. But notice: after git stash (which restores the committed version), line 707 has `0.020`. Then stash pop restores my changes. So the `0.020 → 0.025` change IS part of the diff from the committed version. 
+
+But wait — in the stash output, the committed version of `postflop.py` already has no `strategy.py` changes shown. Let me look again at what git stash popped. The stash showed `modified: bots/claude_v14/postflop.py` which means the working tree already had changes to postflop.py before I started! The other workers had already modified it.
+
+Let me check what the pre-existing working tree version had (i.e., before my patch):
+I notice the stash is popping but the diff still shows `strategy.py` changes. Looking at the stash output more carefully, after the stash pop the `strategy.py` file is NOT listed in modified files — but in my earlier `git diff` it was. That means `strategy.py` was modified by another worker and already has those changes.
+
+The key question is: did my patch script accidentally change the gutshot margin from `0.020` to `0.025`? Let me re-examine my patch script. Looking back at the script, I only made 3 specific string replacements:
+1. Added `"backdoor_draw": False,` after `"combo_draw": False,`  
+2. Replaced the combo section with backdoor detection + 0.06 change
+3. Added `quality += backdoor_quality` before the flop overcards line
+
+None of these would touch the `draw_call_margin` function. The `0.020 → 0.025` change must have been made by another worker before me. This is expected — the instructions said "Other Worker Agents may have recently modified the codebase before you."
+
+So the change is not mine. Let me verify the file is correct now:
+All checks pass. Let me do the final self-review:
+
+## Summary of My Changes to `bots/claude_v14/postflop.py`
+
+### 1. Added `backdoor_draw` field to `empty_draw_profile()` (line 512)
+- New boolean field `"backdoor_draw": False` added between `"combo_draw"` and `"overcards"` fields.
+
+### 2. Added backdoor draw detection in `draw_profile()` (lines 608-655)
+- **Backdoor flush draw** (flop only, `len(public_cards) == 3`): Detects when 2 hole cards are the same suit and 1 board card matches that suit (total of 3 towards a flush, needing both turn and river to complete). Adds `0.04` quality.
+- **Backdoor straight draw** (flop only): Detects when hole cards + board cards span enough ranks in a 5-wide window that 2 more runouts could complete a straight. Only activates when no primary straight draw exists. Adds `0.02` quality.
+- Both types set `info["backdoor_draw"] = True`.
+- `backdoor_quality` is added to the overall draw quality.
+
+### 3. Improved combo draw quality bonus (line 658)
+- Changed from `flush_quality + straight_quality + 0.04` to `flush_quality + straight_quality + 0.06`.
+- Better reflects combined fold equity + raw equity of combo draws.
+
+### Role Boundary Check ✅
+- I'm an **Algorithmic Logic Architect** — I added new functions/logic (backdoor detection), new data fields (`backdoor_draw`), and changed one constant (`0.04 → 0.06`) that was structurally required by the new combo draw improvement. No well-tuned constants were changed without structural reason.
+
+### Target File Check ✅
+- Only modified `bots/claude_v14/postflop.py`. Other changes in the diff are from prior workers.
+
+### Protocol Check ✅
+- The bot still outputs `{"response": <int>}` via stdout. No changes to main.py's protocol handling.

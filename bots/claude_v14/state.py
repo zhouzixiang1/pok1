@@ -55,7 +55,20 @@ def is_preflop_3bet_candidate(my_cards):
     profile = preflop_hand_profile(my_cards)
     if profile["pair"]:
         return True
-    return profile["high"] == 14 and profile["low"] >= 12
+    h, l = profile["high"], profile["low"]
+    s = profile["suited"]
+    # Premium unpaired: AK+
+    if h == 14 and l >= 12:
+        return True
+    # Suited broadway premiums: AQs, AJs, KQs, QJs
+    if s:
+        if h == 14 and l >= 11:       # ATs+ (covers AQs, AJs)
+            return True
+        if h == 13 and l == 12:       # KQs
+            return True
+        if h == 12 and l == 11:       # QJs
+            return True
+    return False
 
 
 def is_preflop_trash_hand(my_cards, preflop_strength=None):

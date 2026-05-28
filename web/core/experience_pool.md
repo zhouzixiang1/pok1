@@ -38,3 +38,12 @@ Lessons from previous iterations. Read before planning next generation.
 27. **Blocker bluff uses deterministic token in v14 vs random.random() in bot5.** Token approach is reproducible but less "noisy". Both work but random is closer to GTO-randomized strategy.
 28. **OOP draw EQR path (0.85/0.75 on flop/turn) is a v14 addition.** Adds double_barrel and big_pot penalties. Likely good but may over-discount.
 29. **cbet_rate tracking in v14 opponent model** is useful for postflop facing-aggression decisions. Keep this.
+
+### v13→v14 Analysis: What v13 Has Right & What It's Missing
+
+30. **v13 is top-rated at 1647.5 ELO.** Lower EQR (0.68/0.56), drift detection, cbet tracking, and deterministic blocker bluff tokens all contribute.
+31. **River overbet is PARTIAL in v13.** Only "strong" tier at 1.3-1.7x pot. v7 has dedicated NUT-hand overbet at 1.5-2.2x pot (choose_overbet_river). Lesson #3 confirms this is proven. Must add NUT overbet.
+32. **Anti-bot4 detection MISSING from v13.** v7 has detect_bot4_profile + get_anti_bot4_adjustments (bluff_freq_bonus, sizing bonus, trap defense). Lesson #2 confirms it's proven edge. Port from v7.
+33. **thin_cap base (0.46) is likely too generous.** Lesson #26 flagged this as regression. Old cap was 0.30. Recommend 0.40 as compromise.
+34. **VPIP/PFR priors (0.52/0.24) are very conservative.** Lesson #5 says 0.58/0.28 is proven. Try 0.55/0.26 as compromise.
+35. **Gutshot turn margin 0.025 vs v7's 0.020.** Marginal — slightly more aggressive calling with gutshots on turn. May be too loose.

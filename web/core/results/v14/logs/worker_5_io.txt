@@ -1,0 +1,178 @@
+
+[WORKER 5 (river_specialist) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **river_specialist**.
+You must directly edit the source files in `bots/claude_v14/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v14/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+""
+
+ORIGINAL:
+In strategy.py, expand the river_dry_overbet condition (around line 937): (1) Also allow 'thin' tier hands to overbet when made_strength >= 0.55 (top pair good kicker+) on very dry boards (wetness <= 0.15), not just 'strong'. (2) Add river thin value bet improvement: When round_idx==3, to_call==0, value_profile tier is 'thin', board_texture wetness <= 0.30, not dynamic, and made_strength >= 0.50, and opponent_model fold_to_raise > 0.50, bet for thin value at 40-50% pot. This is in the main bet/no-bet decision (around line 911 where win_rate >= medium triggers raise). Make sure thin value hands are not blocked by the bad_river_bluff_candidate check.
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v14/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v14/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v14/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v14/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+Let me start by reading the relevant sections of the strategy.py file.
+Good, the files are in the parent directory. Let me read the strategy.py file, focusing on the river-related sections.
+Now let me see the broader context - where the function starts and what leads to the "bad_river_bluff_candidate" check:
+Now let me look at the full function signature to understand the parameters:
+Now let me look at what comes after line 840 (the bad_river_bluff_candidate return 0) to understand the flow better, and also look at the area around line 911 more carefully:
+Now let me understand the full picture. I see that:
+
+1. `bad_river_bluff_candidate` at line 832 returns 0 (check) — this blocks river betting for hands with `made_strength >= 0.18` and `< 0.40` that aren't strong/nut or blocker-eligible.
+
+2. The Master wants to add **thin value betting** for river situations where tier is 'thin' on dry boards — but these thin hands could be blocked by the `bad_river_bluff_candidate` check.
+
+Let me check what `made_strength` values thin tier hands typically have:
+Now I have a clear understanding. Let me now implement the two changes:
+
+1. **Expand `river_dry_overbet`**: Allow 'thin' tier hands to overbet when `made_strength >= 0.55` on very dry boards (wetness <= 0.15).
+
+2. **Add river thin value bet**: When round_idx==3, to_call==0, value_profile tier is 'thin', board wetness <= 0.30, not dynamic, made_strength >= 0.50, opponent_model fold_to_raise > 0.50, bet 40-50% pot.
+
+3. **Ensure thin value hands are NOT blocked by `bad_river_bluff_candidate`**: The `bad_river_bluff_candidate` blocks hands with `made_strength >= 0.18 and < 0.40`. Thin value hands with `made_strength >= 0.50` won't be blocked by this check, BUT the `thin_static_showdown_control` check at line 854 would block them. I need to make sure the new thin value bet path is checked BEFORE `thin_static_showdown_control` returns 0, or that thin value bet hands are excluded from that check.
+
+Let me read the thin_static_showdown_control section more carefully:
+The `thin_static_showdown_control` returns 0 for ALL thin-tier hands on turn+river when board is not dynamic. This would block the new thin value bet. I need to add the thin value bet logic BEFORE this check, or modify the check to allow thin value betting opportunities.
+
+Let me look at the choose_raise function to understand how sizing works:
+Now I have enough context. Let me plan the edits:
+
+1. **Add river thin value bet** BEFORE the `thin_static_showdown_control` check (around line 845). This way thin value hands get to bet before being blocked.
+
+2. **Modify `bad_river_bluff_candidate`** to exclude thin tier hands that qualify for thin value betting (though actually, with made_strength >= 0.50, they already wouldn't be caught by `bad_river_bluff_candidate` since it checks `made_strength < 0.40`).
+
+3. **Expand `river_dry_overbet`** to also allow 'thin' tier hands.
+
+Let me implement:
+Now let me also check what `clamp` is:
+Good. Now let me also check the full river_dry_overbet section again precisely:
+Now let me look at the conditional `if win_rate >= medium or semi_bluff or blocker_bluff or small_probe or check_probe or made_strength >= 0.62 or (value_profile and value_profile["tier"] in ("strong", "nut")):` to understand how thin value betting can reach the `choose_raise` path. Thin hands with `made_strength >= 0.50` but `< 0.62` and not in the "strong"/"nut" tiers would NOT currently enter the raise path. So I need to add thin value betting BEFORE this big conditional, or add 'thin' to the condition.
+
+Let me look at lines around 910:
+Now I have the complete picture. Here's my plan:
+
+### Edit 1: Add river thin value bet BEFORE `thin_static_showdown_control` (line 845)
+I'll add a new check that, on the river with to_call==0, thin tier, dry board, decent made_strength, and opponent folds enough, places a thin value bet at 40-50% pot. This needs to be placed BEFORE the `thin_static_showdown_control` return 0, so thin value hands get to bet instead of just checking.
+
+### Edit 2: Expand `river_dry_overbet` (line 938)
+Modify the condition to also allow 'thin' tier hands when `made_strength >= 0.55` and `wetness <= 0.15`.
+
+Let me now implement these edits:
+Now let me make the edits. I'll use a Python script to do precise line-based editing:
+Now Edit 2: Expand `river_dry_overbet` to also allow 'thin' tier hands on very dry boards.
+Now let me verify the changes:
+I see there are many unintended changes in this diff - functions were moved, constants were changed, etc. These are NOT my changes - they must have been made by the other Worker Agent. Let me check git status:
+I see - the other Worker Agent has already made significant changes (refactored functions into sizing.py, changed imports, etc.). My changes are on top of those. Let me look at what the current file looks like with only my intended changes - the other Worker's changes were already present when I read the file. Let me verify by checking only the sections I intended to modify:
+The other Worker moved functions to sizing.py and changed imports. These are NOT my changes. Since I'm an Algorithmic Logic Architect, I need to focus only on my changes and not revert the other Worker's changes. Let me isolate just my additions:
+Let me look at the state of the file I started with vs what the committed version was. The other Worker must have made their changes before me. Let me check the sizing.py:
+OK, the other Worker created sizing.py with the moved functions. That's fine - those aren't my changes. My changes are specifically:
+1. The `river_thin_value` block (inserted before `thin_static_showdown_control`)  
+2. The `river_thin_overbet_eligible` and expanded `river_dry_overbet` block (replacing the original river_dry_overbet)
+
+Let me also check if the `cbet_rate` threshold changes are mine or the other Worker's:
+Those cbet_rate changes are NOT mine - they were made by the other Worker (Hyperparameter Tuner). Let me verify the current file looks correct for my changes by examining the specific sections:
+Good, the river_thin_value block is correctly placed BEFORE thin_static_showdown_control. Now let me check the river_dry_overbet section:
+Hmm, let me find the actual river_dry_overbet section:
+Let me find the exact line numbers for the end of the function:
+Both my changes are correctly in place. Now let me run the quality checks:
+All quality checks pass. Now let me do the final self-review:
+Wait, the diff is completely different from what I saw earlier! It seems the other Worker Agent made changes to the file in the meantime, and my edits may have been overwritten or the file was modified concurrently. Let me check the current state more carefully:
+My changes are gone! The other Worker must have been editing the file concurrently and their version overwrote mine. Let me check what happened:
+The other Worker rewrote the file. My edits were lost. I need to reapply my changes to the current version of the file. Let me look at the current river_dry_overbet section:
+Now let me find the end of the file where the main raise decision and river overbet logic is:
+The other Worker removed the original `river_dry_overbet` block! The current file has no river overbet logic at all. I need to reapply both my changes now to the current file version:
+
+1. Add river thin value bet BEFORE `thin_static_showdown_control` (before line 1190)
+2. Add river dry overbet (including the thin tier expansion) AFTER `if raise_amount is not None:` (replacing line 1280's simple `return raise_amount`)
+Now let me verify the changes are correct:
+All checks pass. Now let me verify the two sections look correct:
+Both sections look correct. Now let me do the final self-review by checking the full git diff:
+I can see there are three sets of changes in the diff:
+
+1. **Donk-bet logic + `from sizing import choose_donk_bet`** — These are from the OTHER Worker Agent, not me. They added donk-bet logic and the import.
+
+2. **River thin value bet** (lines 1187-1213) — This is MY change.
+
+3. **River dry overbet with thin tier expansion** (lines 1302-1333) — This is MY change.
+
+Let me verify my changes didn't touch any other files:
+The changes to `.completed`, `opponent.py`, `postflop.py`, and `state.py` are from the other Worker Agent. I only modified `strategy.py`.
+
+Let me do the final self-review checks:
+
+**1. Role Boundary Check** ✅ — I am an Algorithmic Logic Architect. I added new code blocks (river_thin_value condition + handling, river_thin_overbet_eligible + expanded river_dry_overbet condition). These are all new algorithmic logic, which is within my allowed scope. I did NOT change any well-tuned constants (like `thin_cap`, `open thresholds`, `VPIP/PFR priors`) that weren't structurally required.
+
+**2. Target File Check** ✅ — I only modified `bots/claude_v14/strategy.py`. The other file changes are from the other Worker.
+
+**3. Protocol Check** ✅ — The bot still outputs `{"response": <int>}` via stdout. My changes use `return thin_value_target` and `return overbet_target` which return integers that get wrapped in the response JSON by the main action function.
+
+Let me run the quality checks one final time to make sure everything is clean:
+All quality checks pass. Here's a summary of my changes:
+
+## Changes Made to `bots/claude_v14/strategy.py`
+
+### 1. River Thin Value Bet (new block before `thin_static_showdown_control`)
+- **Condition**: `round_idx == 3`, `to_call == 0`, value_profile tier is `'thin'`, board wetness ≤ 0.30, not dynamic, `made_strength >= 0.50`, opponent `fold_to_raise > 0.50`, `nutted_risk <= 0.08`, pot ≥ 200, no anti-lock pressure
+- **Action**: Bets 40–50% pot (scaled by how far `made_strength` exceeds 0.50), clamped to `[min_raise, my_chips-1]`
+- **Key design**: Placed BEFORE `thin_static_showdown_control` so thin value hands get to bet instead of being forced to check. Thin hands with `made_strength >= 0.50` are NOT blocked by `bad_river_bluff_candidate` (which requires `made_strength < 0.40`).
+
+### 2. Expanded River Dry Overbet (replaced simple `return raise_amount`)
+- **`river_thin_overbet_eligible`**: New helper condition for thin-tier hands with `made_strength >= 0.55` on very dry boards (`wetness <= 0.15`)
+- **`river_dry_overbet`**: Now uses a disjunction — original `strong` tier path (wetness ≤ 0.20, nutted_risk ≤ 0.03) **OR** `river_thin_overbet_eligible` with `nutted_risk <= 0.03`
+- **Action**: Overbet at 1.3–1.7x pot (same sizing formula as before), only if larger than the computed `raise_amount`

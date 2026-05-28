@@ -5,7 +5,6 @@ from constants import HAND_CLASS_SCORE
 from card_utils import clamp, card_suit, card_number, evaluate_best
 from state import get_hand_index
 
-
 def made_hand_metric(hole_cards, public_cards):
     if len(public_cards) < 3:
         return 0.0
@@ -15,7 +14,6 @@ def made_hand_metric(hole_cards, public_cards):
     for idx, rank in enumerate(score[1:4]):
         detail += rank / (16.0 * (2 ** idx))
     return clamp(metric + detail * 0.008, 0.0, 0.995)
-
 
 def pair_board_profile(hole_cards, public_cards):
     info = {
@@ -79,7 +77,6 @@ def pair_board_profile(hole_cards, public_cards):
 
     return info
 
-
 def pair_domination_margin(pair_profile, spot_info, round_idx):
     if pair_profile is None or pair_profile["made_class"] != 1:
         return 0.0
@@ -111,7 +108,6 @@ def pair_domination_margin(pair_profile, spot_info, round_idx):
 
     return clamp(margin, 0.0, 0.10)
 
-
 def marginal_pair_under_pressure(pair_profile, board_texture):
     if pair_profile is None or pair_profile["made_class"] != 1:
         return False
@@ -124,7 +120,6 @@ def marginal_pair_under_pressure(pair_profile, board_texture):
     if pair_type == "top_pair" and board_texture is not None:
         return board_texture["high_card"] >= 14 and pair_profile["kicker_rank"] <= 11
     return False
-
 
 def board_texture_profile(public_cards):
     info = {
@@ -188,7 +183,6 @@ def board_texture_profile(public_cards):
         or info["wetness"] >= 0.45
     )
     return info
-
 
 def paired_board_outcome_profile(hole_cards, public_cards):
     info = {
@@ -306,14 +300,12 @@ def paired_board_outcome_profile(hole_cards, public_cards):
 
     return info
 
-
 def bet_size_bucket(last_raise_pot_ratio):
     if last_raise_pot_ratio <= 0.30:
         return "small"
     if last_raise_pot_ratio <= 0.75:
         return "medium"
     return "large"
-
 
 def value_hand_tier(hole_cards, public_cards, pair_profile=None, board_texture=None, paired_board_profile=None):
     info = {
@@ -404,7 +396,6 @@ def value_hand_tier(hole_cards, public_cards, pair_profile=None, board_texture=N
     info["size_bonus"] = clamp(size_bonus, -0.04, 0.24)
     return info
 
-
 def value_bet_plan(value_profile, board_texture, paired_board_profile, pair_profile, nutted_risk, round_idx, pot):
     plan = {
         "size_delta": 0.0,
@@ -478,7 +469,6 @@ def value_bet_plan(value_profile, board_texture, paired_board_profile, pair_prof
     plan["size_delta"] = clamp(plan["size_delta"], -0.18, 0.16)
     return plan
 
-
 def straight_draw_value(cards):
     ranks = {card_number(card) for card in cards}
     expanded = set(ranks)
@@ -496,7 +486,6 @@ def straight_draw_value(cards):
             best = max(best, 0.09)
     return best
 
-
 def empty_draw_profile():
     return {
         "quality": 0.0,
@@ -509,12 +498,12 @@ def empty_draw_profile():
         "better_flush_draw_ranks": 0,
         "straight_draw": "none",
         "combo_draw": False,
+        "backdoor_draw": False,
         "overcards": 0,
         "semi_bluff": False,
         "fold_threshold_delta": 0.0,
         "size_bonus": 0.0,
     }
-
 
 def draw_profile(hole_cards, public_cards, board_texture=None):
     info = empty_draw_profile()
@@ -605,10 +594,45 @@ def draw_profile(hole_cards, public_cards, board_texture=None):
     elif has_gutshot:
         info["straight_draw"] = "gutshot"
 
+    # --- Backdoor draw detection (flop only) ---
+    backdoor_quality = 0.0
+    if len(public_cards) == 3:
+        # Backdoor flush draw: 2 hole cards of same suit + 1 card of that suit on board
+        for suit in range(4):
+            if sum(1 for c in hole_cards if card_suit(c) == suit) >= 2 and sum(1 for c in public_cards if card_suit(c) == suit) == 1:
+                backdoor_quality += 0.04
+                info["backdoor_draw"] = True
+                break
+
+        # Backdoor straight draw: hole cards + board cards span 3+ ranks in a 5-wide window needing 2 more
+        hole_r = sorted(set(hole_ranks))
+        board_r = sorted(set(card_number(c) for c in public_cards))
+        all_ranks = set(hole_ranks) | set(board_r)
+        found_bd_straight = False
+        for i in range(len(hole_r)):
+            for j in range(i + 1, len(hole_r)):
+                r1, r2 = hole_r[i], hole_r[j]
+                gap = abs(r1 - r2)
+                if gap > 3:
+                    continue
+                for start in range(1, 11):
+                    window = set(range(start, start + 5))
+                    if len({r1, r2} & window) >= 2 and len(set(board_r) & window) >= 1:
+                        missing = window - (all_ranks & window)
+                        if len(missing) == 2 or (len(missing) == 3 and gap <= 1):
+                            found_bd_straight = True
+                            break
+                if found_bd_straight:
+                    break
+        if found_bd_straight and info["straight_draw"] == "none":
+            backdoor_quality += 0.02
+            info["backdoor_draw"] = True
+
     info["combo_draw"] = info["flush_draw"] and info["straight_draw"] != "none"
     quality = max(flush_quality, straight_quality)
     if info["flush_draw"] and info["straight_draw"] != "none":
-        quality = max(quality, flush_quality + straight_quality + 0.04)
+        quality = max(quality, flush_quality + straight_quality + 0.06)
+    quality += backdoor_quality
     if len(public_cards) == 3:
         quality += 0.025 * info["overcards"]
     elif info["overcards"] >= 2:
@@ -656,10 +680,8 @@ def draw_profile(hole_cards, public_cards, board_texture=None):
     )
     return info
 
-
 def draw_potential(hole_cards, public_cards):
     return draw_profile(hole_cards, public_cards)["quality"]
-
 
 def draw_call_margin(draw_info, board_texture, round_idx, spot_info):
     if draw_info is None or draw_info["type"] == "none":
@@ -704,7 +726,7 @@ def draw_call_margin(draw_info, board_texture, round_idx, spot_info):
 
     if round_idx == 2:
         if draw_type == "gutshot":
-            margin += 0.020
+            margin += 0.025
         elif draw_type == "flush_draw":
             if draw_info.get("near_nut_flush_draw", False) and size_bucket != "large" and (board_texture is None or not board_texture["paired"]):
                 margin += 0.000
@@ -727,7 +749,6 @@ def draw_call_margin(draw_info, board_texture, round_idx, spot_info):
                 margin += 0.018
 
     return clamp(margin, -0.04, 0.08)
-
 
 def made_flush_profile(hole_cards, public_cards, board_texture=None):
     info = {
@@ -800,7 +821,6 @@ def made_flush_profile(hole_cards, public_cards, board_texture=None):
     )
     return info
 
-
 def blocker_bluff_profile(hole_cards, public_cards, pair_profile=None, board_texture=None):
     info = {
         "eligible": False,
@@ -864,7 +884,6 @@ def blocker_bluff_profile(hole_cards, public_cards, pair_profile=None, board_tex
     info["eligible"] = blocker_score >= 0.14
     return info
 
-
 def allow_low_frequency_blocker_bluff(req, hole_cards, public_cards, blocker_profile, round_idx):
     if not blocker_profile["eligible"]:
         return False
@@ -873,7 +892,6 @@ def allow_low_frequency_blocker_bluff(req, hole_cards, public_cards, blocker_pro
     token = (sum(hole_cards) * 7 + sum(public_cards) * 11 + hand_idx * 13 + round_idx * 17) % 100
     threshold = int(clamp(blocker_profile["score"] * 35.0, 5.0, 18.0))
     return token < threshold
-
 
 def nutted_risk_profile(hole_cards, public_cards, pair_profile=None, board_texture=None, value_profile=None, paired_board_profile=None):
     info = {

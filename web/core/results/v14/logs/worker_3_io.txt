@@ -1,0 +1,122 @@
+
+[WORKER 3 (donk_bet_specialist) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **donk_bet_specialist**.
+You must directly edit the source files in `bots/claude_v14/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v14/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+""
+
+ORIGINAL:
+Add donk-bet logic to strategy.py. In the no-call (to_call==0) section around line 735+, before the existing checks, add a donk-bet opportunity: When round_idx > 0, to_call == 0, NOT has_position (we are OOP), board_texture is not None, and the opponent's last action was a check in a prior round or the opponent was the preflop aggressor but checked the flop. Donk-bet when: (1) we have a strong or nut hand on a dynamic board for value, or (2) we have a weak made hand (top pair+ with weak kicker or better) on a static board against a passive opponent (postflop_aggr < 0.35 or postflop_check_rate > 0.50). Use a small sizing (25-35% pot). Add a choose_donk_bet function in sizing.py that returns a sizing target.
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v14/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v14/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v14/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v14/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+Let me use Bash to read the files instead.
+I'm in the `web/` directory. Let me navigate to the project root.
+Now let me read the full strategy.py file, focusing on the no-call section around line 735+:
+Now let me also understand the broader function context. Let me see the function that contains these lines:
+Now let me understand the full function structure:
+Now I need to understand the spot_info to know what's available about opponent actions. Let me check `opponent.py`:
+Now I have a good understanding. Let me also look at how `postflop_aggr` and `postflop_check_rate` are available in the opponent model:
+Good. Now let me understand the structure. The no-call section starts at line 735. I need to add donk-bet logic before the existing checks at line 735+. Let me also check what `value_hand_tier` returns so I understand "strong" and "nut":
+Now I have a comprehensive understanding. Let me also check what `board_texture_profile` returns:
+Now I have everything I need. Let me also check `pair_board_profile` for the "weak_kicker" and "top_pair" types:
+Now I have a full picture. Let me now implement the changes:
+
+1. **`sizing.py`**: Add a `choose_donk_bet` function
+2. **`strategy.py`**: Add donk-bet logic in the no-call section before line 735
+
+Let me start with sizing.py:
+Now I have a full picture of the code. Let me implement both changes:
+
+**1. Add `choose_donk_bet` function to `sizing.py`**
+**2. Add donk-bet logic to `strategy.py` in the no-call section (before line 735)**
+
+Let me also check what `clamp` is imported from:
+Good. Now let me implement the changes. First, add `choose_donk_bet` to `sizing.py`:
+Now add the donk-bet logic to `strategy.py`. I need to:
+1. Import `choose_donk_bet` from sizing
+2. Add the donk-bet check block in the no-call section before line 735
+Now let me verify the changes:
+Something went wrong! The diff shows that the `strategy.py` file had the `choose_anti_lock_pressure_action`, `choose_raise`, etc. functions defined inline in it, and when I added the import from `sizing`, it replaced the original inline import with the `from sizing import` block, but the original functions are still in the file, now conflicting. Let me look at the original file more carefully:
+Interesting! The original file does NOT have a `from sizing import` line. It seems the functions `choose_anti_lock_pressure_action`, `choose_raise`, etc. were originally defined directly in `strategy.py` but have since been moved to `sizing.py`. The system reminder earlier showed the modified version with the `from sizing import` block, meaning a previous worker already moved them. But the git stash reverted to the version where those functions are still inline in strategy.py.
+
+Let me check the current state:
+OK so `sizing.py` is a new untracked file that was created by a previous worker. Let me look at its current state and the current state of strategy.py:
+So `strategy.py` doesn't have a `from sizing import` yet. The `choose_raise`, `choose_anti_lock_pressure_action`, etc. are still defined inline within strategy.py. But there's also a new `sizing.py` that was created by another worker. Let me check what's currently in sizing.py:
+I see! The previous worker already added `choose_donk_bet` to `sizing.py`. That's fine — it's my code from the stash pop. Now the issue is that `strategy.py` still has these functions inline (not imported from sizing). But looking at the strategy.py more carefully, the inline functions (`choose_anti_lock_pressure_action`, `choose_raise`, `track_opponent_gift`, `safe_exploitation_lambda`, `choose_preflop_spot_action`) are the same as what's in sizing.py. The previous worker extracted them to sizing.py but apparently strategy.py hasn't been updated to import from sizing yet.
+
+Wait — looking at the original output from the very first read, the file DID have `from sizing import`. But after `git checkout -- strategy.py`, it reverted to the committed version which doesn't have the import. The sizing.py file was added by another worker and exists as an untracked file. 
+
+Let me check whether strategy.py in the current state references these functions locally or from sizing:
+OK, so strategy.py still has the functions inline. The previous worker created `sizing.py` as a new file with copies of these functions, but didn't update strategy.py to import from it. Since the committed strategy.py uses inline definitions, I should keep working with that pattern — add the donk-bet logic directly in strategy.py, and define `choose_donk_bet` in sizing.py (which is already done). Then I need to import it in strategy.py.
+
+But actually, since `sizing.py` already exists as an untracked file and has all these functions including `choose_donk_bet`, and strategy.py has the same functions inline, I should:
+
+1. Add `from sizing import choose_donk_bet` to strategy.py (just the new function, not the existing ones)
+2. Add the donk-bet logic in the no-call section
+
+Let me do this properly:
+Now let me verify the changes look correct:
+The diff looks clean. Now let me verify the sizing.py diff:
+`sizing.py` is a new untracked file created by a previous worker. My `choose_donk_bet` function is at the end of it. Let me verify:
+Good. Now let me run the quality checks:
+All compile checks pass. Now let me run the smoke test:
+All quality checks pass. Now let me do the final self-review:
+Let me also verify no other files were touched:

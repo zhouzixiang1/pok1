@@ -1,0 +1,125 @@
+
+[WORKER 4 (exploitation_specialist) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **exploitation_specialist**.
+You must directly edit the source files in `bots/claude_v14/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v14/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+""
+
+ORIGINAL:
+In sizing.py, modify safe_exploitation_lambda: When confidence >= 0.40, add a baseline exploitation factor of 0.15 even without gift_balance. This lets the bot exploit confident reads sooner. Change the formula to: if confidence < 0.25, return 0; return clamp(confidence * (0.15 + min(0.7, max(0, gift_balance) / 2.0)), 0.0, 0.85). Also in opponent.py, improve drift detection: lower the hand threshold from 12 to 8 hands, and also detect postflop aggression drift independently of VPIP drift.
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v14/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v14/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v14/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v14/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+Let me start by reading the files I need to modify.
+Let me use Bash to read the files instead.
+Now let me read the files I need to modify:
+Now I have a clear picture of both files. Let me make the two changes:
+
+### Change 1: `sizing.py` - Modify `safe_exploitation_lambda`
+
+Current (lines 226-229):
+```python
+def safe_exploitation_lambda(gift_balance, confidence):
+    if confidence < 0.25:
+        return 0.0
+    return clamp(confidence * min(1.0, max(0, gift_balance) / 2.0), 0.0, 0.85)
+```
+
+New formula: `if confidence < 0.25, return 0; return clamp(confidence * (0.15 + min(0.7, max(0, gift_balance) / 2.0)), 0.0, 0.85)`
+
+### Change 2: `opponent.py` - Improve drift detection
+
+Current (line 151): threshold is `12` hands, need to lower to `8`.
+Also need to detect postflop aggression drift independently of VPIP drift.
+
+Let me make both edits:
+Now for `opponent.py` — I need to:
+1. Lower the hand threshold from 12 to 8
+2. Add independent postflop aggression drift detection
+Now let me verify the changes and run quality checks:
+I can see there are changes from other workers in `postflop.py`, `state.py`, and `strategy.py`. I should only be modifying `sizing.py` and `opponent.py`. My two changes look correct:
+
+1. **sizing.py**: `safe_exploitation_lambda` now uses `confidence * (0.15 + min(0.7, max(0, gift_balance) / 2.0))` — adds a baseline 0.15 exploitation factor even without gift_balance, and caps the gift component at 0.7.
+2. **opponent.py**: Hand threshold lowered from 12 to 8, and postflop aggression drift detected independently.
+
+Now let me run the quality checks:
+All checks pass. Let me do the final self-review by checking the diff of only my target files:
+The sizing.py diff is empty because it was already changed by a linter/other process to match my edit. Let me verify the current state of `safe_exploitation_lambda` in sizing.py:
+Both changes are correctly applied. Here's a summary of what I did:
+
+## Changes Made
+
+### 1. `sizing.py` — `safe_exploitation_lambda` (line 229)
+**Before:** `return clamp(confidence * min(1.0, max(0, gift_balance) / 2.0), 0.0, 0.85)`
+**After:** `return clamp(confidence * (0.15 + min(0.7, max(0, gift_balance) / 2.0)), 0.0, 0.85)`
+
+This adds a baseline exploitation factor of 0.15 even when `gift_balance` is 0, allowing the bot to exploit confident reads sooner. The gift_balance component is capped at 0.7 (instead of 1.0), keeping the maximum total multiplier at 0.85 (same upper clamp).
+
+### 2. `opponent.py` — Drift detection (lines 151-169)
+**Changes:**
+- **Lowered hand threshold** from `12` to `8` — drift can now be detected earlier in a match
+- **Independent postflop aggression drift**: Computes both recent and all-time postflop aggression rates using `smooth_rate`, then checks if the absolute difference exceeds `0.18`. This triggers drift independently of VPIP/PFR drift.
+- **Selective model updates**: Only updates `vpip`/`pfr` if VPIP/PFR drift is detected, and only updates `postflop_aggr` if aggression drift is detected — rather than always updating all three when any drift condition is met.
+
+## Quality Checks
+- ✅ Compile check passed for `sizing.py`, `opponent.py`, and `main.py`
+- ✅ Smoke test passed
+- ✅ Only modified `sizing.py` and `opponent.py` (target files)
+- ✅ Protocol preserved: bot outputs `{"response": <int>}` via stdout
