@@ -17,6 +17,7 @@ import fcntl
 import atexit
 import time
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from claude_agent_sdk import (
@@ -45,6 +46,50 @@ STATS_FILE = RESULTS_DIR / "elo_daemon_stats.json"
 WORKER_FAILURES_FILE = RESULTS_DIR / "worker_failures.jsonl"
 
 MAX_ACTIVE_BOTS = 30
+
+# Evaluation & quality thresholds
+DAEMON_EVAL_TIMEOUT = 600
+MIN_MATCHES_FOR_EVAL = 20
+MAX_RD_FOR_EVAL = 40
+MAX_LINES_PER_FILE = 1000
+MIN_DECISION_PASS_RATE = 0.7
+MIN_CROSSOVER_DECISION_RATE = 0.6
+MAX_WORKER_RETRIES = 4
+MAX_MASTER_RETRIES = 3
+MAX_REVIEWER_RETRIES = 3
+MAX_CROSSOVER_RETRIES = 3
+MAX_GENESIS_RETRIES = 3
+COOLDOWN_THRESHOLD = 3
+COOLDOWN_SECONDS = 3600
+CONSOLIDATE_EVERY_N_GENS = 3
+REPORT_EVERY_N_GENS = 5
+
+# Prompt size limits
+MAX_PROMPT_CHARS = 100000
+
+
+@contextmanager
+def locked_file(path, mode='r', lock_type=None):
+    """Context manager for file operations with fcntl locking."""
+    if lock_type is None:
+        lock_type = fcntl.LOCK_EX if ('w' in mode or 'a' in mode or '+' in mode) else fcntl.LOCK_SH
+    with open(path, mode) as f:
+        fcntl.flock(f, lock_type)
+        try:
+            yield f
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def substitute_template(template, replacements):
+    """Replace {key} placeholders in a template string. Warns on unreplaced placeholders."""
+    result = template
+    for key, value in replacements.items():
+        result = result.replace(f"{{{key}}}", str(value))
+    remaining = set(re.findall(r'\{([a-z_]+)\}', result))
+    if remaining:
+        print(f"[WARN] Unreplaced template placeholders: {remaining}")
+    return result
 
 # Add workspace to sys.path for glicko2 import
 sys.path.insert(0, str(WORKSPACE.resolve()))
@@ -122,10 +167,8 @@ def get_active_bots():
 def load_ratings():
     """Load Glicko-2 ratings with shared lock."""
     try:
-        with open(RATINGS_FILE, "r") as f:
-            fcntl.flock(f, fcntl.LOCK_SH)
+        with locked_file(RATINGS_FILE, "r") as f:
             data = json.load(f)
-            fcntl.flock(f, fcntl.LOCK_UN)
         return {name: Glicko2Player.from_dict(d) for name, d in data.items()}
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
@@ -134,15 +177,13 @@ def load_ratings():
 def load_daemon_stats():
     """Load daemon stats."""
     if STATS_FILE.exists():
-        with open(STATS_FILE, "r") as f:
-            fcntl.flock(f, fcntl.LOCK_SH)
+        with locked_file(STATS_FILE, "r") as f:
             data = json.load(f)
-            fcntl.flock(f, fcntl.LOCK_UN)
         return data
     return {"pairs": {}, "total_periods": 0}
 
 
-async def wait_for_daemon_eval(bot_name, timeout=600, min_matches=20, max_rd=40):
+async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_matches=MIN_MATCHES_FOR_EVAL, max_rd=MAX_RD_FOR_EVAL):
     """Wait for daemon to evaluate a new bot (async, non-blocking).
 
     Requires both sufficient matches AND low rating deviation for confidence.
@@ -388,6 +429,10 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
                 with open(cf, 'r') as f:
                     full_prompt += f"\n--- {cf} ---\n{f.read()}\n"
 
+    if len(full_prompt) > MAX_PROMPT_CHARS:
+        ui.log_history(f"Prompt too long ({len(full_prompt)} chars), truncating context...", "warn")
+        full_prompt = full_prompt[:MAX_PROMPT_CHARS - 100] + "\n\n[... CONTEXT TRUNCATED ...]"
+
     ui.log_io(f"\n[{role_name} PROMPT]", "prompt")
     ui.log_io(prompt[:200] + "...\n[Context Attached]", "prompt")
     ui.log_io("\n[WAITING FOR CLAUDE...]\n", "prompt")
@@ -522,7 +567,7 @@ def verify_code(directory):
     return errors
 
 
-def check_code_size(directory, max_lines_per_file=1000):
+def check_code_size(directory, max_lines_per_file=MAX_LINES_PER_FILE):
     """Check single-file LOC limits (excluding backup files). Returns (total, oversized_files)."""
     oversized_files = []
     total = 0
@@ -593,8 +638,10 @@ def seed_initial_bots(ui):
 async def _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui, match_analysis=""):
     """Run Master analysis — can run concurrently with daemon evaluation."""
     master_prompt = (PROMPTS_DIR / "master_prompt.md").read_text()
-    master_prompt = master_prompt.replace("{stagnation_info}", stagnation_info)
-    master_prompt = master_prompt.replace("{match_analysis}", match_analysis)
+    master_prompt = substitute_template(master_prompt, {
+        "stagnation_info": stagnation_info,
+        "match_analysis": match_analysis,
+    })
     master_ctx = (
         f"Current evolution: v{source_v} → v{next_v}\n"
         f"Bot directory: bots/claude_v{source_v}/\n"
@@ -603,7 +650,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui
     )
     master_log_file = get_logs_dir(next_v) / "master_io.txt"
 
-    for attempt in range(3):
+    for attempt in range(MAX_MASTER_RETRIES):
         ui.clear_io()
         output, _, _ = await run_claude_query(
             master_prompt + "\n" + master_ctx, [], ui,
@@ -616,7 +663,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui
         ui.log_history("Master output malformed JSON. Retrying...", "warn")
         await asyncio.sleep(2)
 
-    ui.log_history("Master failed to plan after 3 retries.", "error")
+    ui.log_history(f"Master failed to plan after {MAX_MASTER_RETRIES} retries.", "error")
     return None
 
 
@@ -629,10 +676,8 @@ async def _consolidate_experience_pool(ui, is_text_ui):
     if not EXPERIENCE_FILE.exists():
         return
 
-    with open(EXPERIENCE_FILE, "r") as ef:
-        fcntl.flock(ef, fcntl.LOCK_SH)
+    with locked_file(EXPERIENCE_FILE, "r") as ef:
         content = ef.read()
-        fcntl.flock(ef, fcntl.LOCK_UN)
     if not content or len(content.split("\n")) < 20:
         return  # Too short to bother consolidating
 
@@ -833,10 +878,8 @@ MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 def _record_worker_failure(gen, worker_id, role, error):
     """Append a worker failure record to the JSONL file."""
     entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error}
-    with open(WORKER_FAILURES_FILE, "a", encoding="utf-8") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+    with locked_file(WORKER_FAILURES_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def _load_recent_failures(n=3):
@@ -844,8 +887,7 @@ def _load_recent_failures(n=3):
     if not WORKER_FAILURES_FILE.exists():
         return []
     entries = []
-    with open(WORKER_FAILURES_FILE, "r", encoding="utf-8") as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
+    with locked_file(WORKER_FAILURES_FILE, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -853,7 +895,6 @@ def _load_recent_failures(n=3):
                     entries.append(json.loads(line))
                 except json.JSONDecodeError:
                     pass
-        fcntl.flock(f, fcntl.LOCK_UN)
     return entries[-n:]
 
 
@@ -870,8 +911,7 @@ async def _analyze_recent_matches(source_v, ui, is_text_ui, max_matches=5):
         return ""
 
     recent_losses = []
-    with open(MATCH_HISTORY_FILE, "r") as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
+    with locked_file(MATCH_HISTORY_FILE, "r") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -885,7 +925,6 @@ async def _analyze_recent_matches(source_v, ui, is_text_ui, max_matches=5):
                 recent_losses.append(entry)
             elif entry.get("bot1") == bot_name and entry.get("bot0_wins", 0) > entry.get("bot1_wins", 0):
                 recent_losses.append(entry)
-        fcntl.flock(f, fcntl.LOCK_UN)
 
     if not recent_losses:
         return ""
@@ -945,14 +984,16 @@ async def _analyze_recent_matches(source_v, ui, is_text_ui, max_matches=5):
 async def _run_crossover(parent_a_v, parent_b_v, target_v, ui, is_text_ui):
     """Run crossover between two elite bots to create a new child bot."""
     crossover_prompt = (PROMPTS_DIR / "crossover_prompt.md").read_text()
-    crossover_prompt = crossover_prompt.replace("{parent_a_version}", str(parent_a_v))
-    crossover_prompt = crossover_prompt.replace("{parent_b_version}", str(parent_b_v))
-    crossover_prompt = crossover_prompt.replace("{version}", str(target_v))
+    crossover_prompt = substitute_template(crossover_prompt, {
+        "parent_a_version": str(parent_a_v),
+        "parent_b_version": str(parent_b_v),
+        "version": str(target_v),
+    })
 
     target_dir = get_bot_dir(target_v)
     log_file = get_logs_dir(target_v) / "crossover_io.txt"
 
-    for attempt in range(3):
+    for attempt in range(MAX_CROSSOVER_RETRIES):
         ui.clear_io()
         ui.set_status(f"Crossover v{parent_a_v}×v{parent_b_v}→v{target_v} (Try {attempt+1})", is_working=True)
         await run_claude_query(
@@ -1002,13 +1043,15 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
 
     compile_errors = []
     smoke_errors = []
-    for attempt in range(4):
+    for attempt in range(MAX_WORKER_RETRIES):
         ui.clear_io()
         ui.set_status(f"[{role}] coding for v{next_v}...", is_working=True)
 
-        worker_prompt = worker_template.replace("{role}", role).replace(
-            "{worker_prompt}", base_worker_prompt
-        ).replace("{version}", str(next_v))
+        worker_prompt = substitute_template(worker_template, {
+            "role": role,
+            "worker_prompt": base_worker_prompt,
+            "version": str(next_v),
+        })
 
         await run_claude_query(
             worker_prompt, context_files, ui,
@@ -1128,7 +1171,7 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             log_file = get_logs_dir(1) / "initial_generation_io.txt"
 
             genesis_ok = False
-            for attempt in range(3):
+            for attempt in range(MAX_GENESIS_RETRIES):
                 await run_claude_query(instruction, [], ui, f"GENESIS BOT (Try {attempt+1})", log_file, is_text_ui)
 
                 compile_errors = verify_code(get_bot_dir(1))
@@ -1176,9 +1219,9 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
 
     while True:
         # ── Consecutive failure cooldown ──
-        if fail_count >= 3:
+        if fail_count >= COOLDOWN_THRESHOLD:
             ui.log_history(f"{fail_count} consecutive failures. Cooling down for 1 hour...", "warn")
-            await asyncio.sleep(3600)
+            await asyncio.sleep(COOLDOWN_SECONDS)
             # Reset counter but keep current_v — just retry from where we are
             fail_count = 0
 
@@ -1291,7 +1334,7 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             if crossover_ok:
                 # Run decision tests on crossover bot
                 decision_pass_rate = run_decision_tests(next_dir)
-                if decision_pass_rate >= 0.6:
+                if decision_pass_rate >= MIN_CROSSOVER_DECISION_RATE:
                     (next_dir / ".completed").touch()
                     git_commit_bot(next_v, parent_a, f"crossover: v{parent_a}×v{parent_b}", parent2_v=parent_b)
                     current_v = next_v
@@ -1471,7 +1514,7 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             # Decision scenario tests — reject catastrophic blunders
             decision_pass_rate = run_decision_tests(next_dir)
             ui.log_history(f"Decision tests: {decision_pass_rate:.0%} pass rate", "info")
-            if decision_pass_rate < 0.7:
+            if decision_pass_rate < MIN_DECISION_PASS_RATE:
                 reviewer_feedback = (
                     f"Bot failed decision tests ({decision_pass_rate:.0%} pass rate). "
                     "Review fundamental strategy: don't fold premium hands, don't bluff with missed draws facing big bets."
@@ -1484,11 +1527,13 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
                 reviewer_prompt = f.read()
 
             reviewer_log_file = get_logs_dir(next_v) / "reviewer_io.txt"
-            reviewer_prompt = reviewer_prompt.replace("{master_plan}", json.dumps(tasks_data, indent=2))
-            reviewer_prompt = reviewer_prompt.replace("{version}", str(next_v))
-            reviewer_prompt = reviewer_prompt.replace("{parent_version}", str(source_v))
+            reviewer_prompt = substitute_template(reviewer_prompt, {
+                "master_plan": json.dumps(tasks_data, indent=2),
+                "version": str(next_v),
+                "parent_version": str(source_v),
+            })
 
-            for review_attempt in range(3):
+            for review_attempt in range(MAX_REVIEWER_RETRIES):
                 ui.clear_io()
                 reviewer_output, _, _ = await run_claude_query(reviewer_prompt, [], ui, "LEAD CODE REVIEWER", reviewer_log_file, is_text_ui)
                 reviewer_data = parse_json_output(reviewer_output)
@@ -1502,10 +1547,8 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
                             ui.log_history(f"Quality score: {qs}/10", "info")
                         summary = reviewer_data.get("change_summary", "")
                         if summary:
-                            with open(EXPERIENCE_FILE, "a") as ep:
-                                fcntl.flock(ep, fcntl.LOCK_EX)
+                            with locked_file(EXPERIENCE_FILE, "a") as ep:
                                 ep.write(f"\n- **v{source_v} -> v{next_v} review**: {summary}\n")
-                                fcntl.flock(ep, fcntl.LOCK_UN)
                         risks = reviewer_data.get("risk_areas", [])
                         if risks:
                             ui.log_history(f"Risk areas: {'; '.join(risks)}", "warn")
@@ -1557,12 +1600,12 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             ui.reset_gen_cost()
 
         # Consolidate experience pool every 3 generations
-        if total_gens % 3 == 0:
+        if total_gens % CONSOLIDATE_EVERY_N_GENS == 0:
             ui.log_history("Consolidating experience pool...", "info")
             await _consolidate_experience_pool(ui, is_text_ui)
 
         # Generate evolution report every 5 generations
-        if total_gens % 5 == 0:
+        if total_gens % REPORT_EVERY_N_GENS == 0:
             ui.log_history("Generating evolution report...", "info")
             await _generate_evolution_report(current_v, total_gens, ratings, ui, is_text_ui)
 

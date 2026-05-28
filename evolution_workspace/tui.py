@@ -6,6 +6,7 @@ Implements the BaseUI interface from evolution_core.
 """
 
 import threading
+import traceback
 from collections import deque
 from pathlib import Path
 
@@ -65,6 +66,12 @@ class EvolutionApp(App, BaseUI):
         # Sparkline cache
         self._sparkline_cache = ""
         self._sparkline_mtime = 0
+        # UI error log
+        self._ui_error_log = deque(maxlen=50)
+
+    def _log_ui_error(self, context, exc):
+        """Log UI errors to internal buffer for debugging."""
+        self._ui_error_log.append(f"{context}: {exc}")
 
     # ──────────────────────────────────────────────
     # Layout
@@ -135,8 +142,8 @@ class EvolutionApp(App, BaseUI):
     def _focus_stream(self):
         try:
             self.query_one("#stream-log").focus()
-        except Exception:
-            pass
+        except Exception as e:
+            self._log_ui_error("_focus_stream", e)
 
     async def _run_evolution(self):
         try:
@@ -159,8 +166,8 @@ class EvolutionApp(App, BaseUI):
             widget = self.query_one("#header-bar", Static)
             cost_str = f"  💰 ${self.grand_cost_total:.3f}" if self.grand_cost_total > 0 else ""
             widget.update(new_text + cost_str)
-        except Exception:
-            pass
+        except Exception as e:
+            self._log_ui_error("watch_header_text", e)
 
     def watch_status_msg(self, new_msg: str) -> None:
         try:
@@ -169,8 +176,8 @@ class EvolutionApp(App, BaseUI):
                 widget.update(f"● {new_msg}")
             else:
                 widget.update(f"✅ {new_msg}")
-        except Exception:
-            pass
+        except Exception as e:
+            self._log_ui_error("watch_status_msg", e)
 
     def watch_is_working(self, working: bool) -> None:
         # Re-trigger status display
@@ -186,8 +193,8 @@ class EvolutionApp(App, BaseUI):
         try:
             log = self.query_one("#history-log", RichLog)
             log.write(f"[{color}]{icon} {msg}[/]")
-        except Exception:
-            pass
+        except Exception as e:
+            self._log_ui_error("log_history", e)
 
     def set_status(self, msg, is_working=False):
         self.status_msg = msg
@@ -214,15 +221,15 @@ class EvolutionApp(App, BaseUI):
             log = self.query_one("#stream-log", RichLog)
             for line in msg.split("\n"):
                 log.write(f"[{color}]{prefix}{line}[/]")
-        except Exception:
-            pass
+        except Exception as e:
+            self._log_ui_error("log_io", e)
 
     def clear_io(self):
         try:
             log = self.query_one("#stream-log", RichLog)
             log.clear()
-        except Exception:
-            pass
+        except Exception as e:
+            self._log_ui_error("clear_io", e)
 
     def update_eval_table(self, ratings, active_bots):
         try:
@@ -242,8 +249,8 @@ class EvolutionApp(App, BaseUI):
                     f"±{p.rd:.0f}",
                     conf,
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            self._log_ui_error("update_eval_table", e)
 
     def update_daemon_status(self, stats, ratings):
         from evolution_core import daemon_proc
@@ -265,8 +272,8 @@ class EvolutionApp(App, BaseUI):
         try:
             widget = self.query_one("#daemon-widget", Static)
             widget.update(Text.from_markup("\n".join(lines)))
-        except Exception:
-            pass
+        except Exception as e:
+            self._log_ui_error("update_daemon_status", e)
 
     def set_header(self, msg):
         self.header_text = msg
@@ -300,8 +307,8 @@ class EvolutionApp(App, BaseUI):
         try:
             widget = self.query_one("#metrics-widget", Static)
             widget.update(Text.from_markup("\n".join(lines)))
-        except Exception:
-            pass
+        except Exception as e:
+            self._log_ui_error("update_metrics", e)
 
     def _build_rating_sparkline(self):
         """Build a sparkline from rating_history.jsonl showing top bot rating trend.

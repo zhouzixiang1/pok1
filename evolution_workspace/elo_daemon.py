@@ -16,6 +16,7 @@ import signal
 import random
 import argparse
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
@@ -40,7 +41,28 @@ MAX_REPLAY_FILES = 200
 
 MIN_PERIOD_GAMES = 10  # Min matches per bot before rating period closes
 
+# Match selection priority weights
+UNDER_EVAL_WEIGHT = 0.6
+DIVERSITY_WEIGHT = 0.4
+UNDER_EVAL_BASELINE = 50
+RATING_GAP_SCALE = 200
+MAX_HISTORY_LINES = 200
+HISTORY_KEEP_LINES = 100
+
 running = True
+
+
+@contextmanager
+def locked_file(path, mode='r', lock_type=None):
+    """Context manager for file operations with fcntl locking."""
+    if lock_type is None:
+        lock_type = fcntl.LOCK_EX if ('w' in mode or 'a' in mode or '+' in mode) else fcntl.LOCK_SH
+    with open(path, mode) as f:
+        fcntl.flock(f, lock_type)
+        try:
+            yield f
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def handle_signal(signum, frame):
@@ -73,10 +95,8 @@ def load_ratings():
     """Load Glicko-2 ratings with shared lock."""
     if not RATINGS_FILE.exists():
         return {}
-    with open(RATINGS_FILE, "r") as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
+    with locked_file(RATINGS_FILE, "r") as f:
         data = json.load(f)
-        fcntl.flock(f, fcntl.LOCK_UN)
     return {name: Glicko2Player.from_dict(d) for name, d in data.items()}
 
 
@@ -88,10 +108,8 @@ def save_ratings(ratings, period=None):
         d = p.to_dict()
         d["last_period"] = datetime.now().isoformat(timespec="seconds")
         data[name] = d
-    with open(RATINGS_FILE, "w") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+    with locked_file(RATINGS_FILE, "w") as f:
         json.dump(data, f, indent=2)
-        fcntl.flock(f, fcntl.LOCK_UN)
 
     # Append snapshot to history log (atomic under LOCK_EX)
     if period is not None:
@@ -101,36 +119,30 @@ def save_ratings(ratings, period=None):
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "ratings": {name: {"r": p.r, "rd": p.rd} for name, p in ratings.items()},
         }
-        with open(history_file, "a+") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
+        with locked_file(history_file, "a+") as f:
             f.write(json.dumps(snapshot) + "\n")
             f.flush()
-            # Trim history file to prevent unbounded growth (within same lock)
+            # Trim history file to prevent unbounded growth
             f.seek(0)
             lines = f.readlines()
-            if len(lines) > 200:
+            if len(lines) > MAX_HISTORY_LINES:
                 f.seek(0)
                 f.truncate()
-                f.writelines(lines[-100:])
-            fcntl.flock(f, fcntl.LOCK_UN)
+                f.writelines(lines[-HISTORY_KEEP_LINES:])
 
 
 def load_stats():
     if not STATS_FILE.exists():
         return {"pairs": {}, "total_periods": 0}
-    with open(STATS_FILE, "r") as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
+    with locked_file(STATS_FILE, "r") as f:
         data = json.load(f)
-        fcntl.flock(f, fcntl.LOCK_UN)
     return data
 
 
 def save_stats(stats):
     os.makedirs(RESULTS_DIR, exist_ok=True)
-    with open(STATS_FILE, "w") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+    with locked_file(STATS_FILE, "w") as f:
         json.dump(stats, f, indent=2)
-        fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def pair_key(a, b):
@@ -150,11 +162,11 @@ def pick_matches(active_bots, stats, ratings, n_picks=14):
         rating_gap = abs(ratings.get(a, Glicko2Player()).r - ratings.get(b, Glicko2Player()).r)
 
         # Under-evaluation score: high when few games played
-        under_eval = max(0, 50 - count) / 50  # 0-1
+        under_eval = max(0, UNDER_EVAL_BASELINE - count) / UNDER_EVAL_BASELINE  # 0-1
         # Diversity score: high when rating gap is large (different strategies)
-        diversity = min(rating_gap / 200, 1.0)  # 0-1
+        diversity = min(rating_gap / RATING_GAP_SCALE, 1.0)  # 0-1
 
-        return 0.6 * under_eval + 0.4 * diversity
+        return UNDER_EVAL_WEIGHT * under_eval + DIVERSITY_WEIGHT * diversity
 
     pairs.sort(key=lambda p: priority(p[0], p[1]), reverse=True)
     return pairs[:n_picks]
@@ -196,10 +208,8 @@ def save_match_replay(a, b, wins_a, wins_b, draws, replay_data):
             "bot1_wins": wins_b,
             "draws": draws,
         }
-        with open(MATCH_HISTORY_FILE, "a", encoding="utf-8") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
+        with locked_file(MATCH_HISTORY_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(summary, ensure_ascii=False) + "\n")
-            fcntl.flock(f, fcntl.LOCK_UN)
     except Exception:
         # JSONL append failed — remove orphaned replay file
         try:

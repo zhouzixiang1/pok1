@@ -1,0 +1,200 @@
+"""Rating endpoints — Glicko-2 ratings and history."""
+
+import fcntl
+import json
+import time
+from pathlib import Path
+from typing import Any
+
+from fastapi import APIRouter, Query
+from fastapi.responses import PlainTextResponse
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+RESULTS_DIR = PROJECT_ROOT / "web" / "core" / "results"
+EXPERIENCE_FILE = PROJECT_ROOT / "web" / "core" / "experience_pool.md"
+RATINGS_FILE = RESULTS_DIR / "glicko_ratings.json"
+STATS_FILE = RESULTS_DIR / "elo_daemon_stats.json"
+HISTORY_FILE = RESULTS_DIR / "rating_history.jsonl"
+
+router = APIRouter(prefix="/api", tags=["ratings"])
+
+_cache: dict[str, tuple[float, Any]] = {}
+_CACHE_TTL = 2.0
+
+
+def _read_locked(path: Path) -> Any:
+    with open(path, "r") as f:
+        fcntl.flock(f, fcntl.LOCK_SH)
+        data = json.load(f)
+        fcntl.flock(f, fcntl.LOCK_UN)
+    return data
+
+
+def _cached_read(key: str, path: Path) -> Any:
+    now = time.time()
+    if key in _cache:
+        mtime, data = _cache[key]
+        if now - mtime < _CACHE_TTL:
+            return data
+    if not path.exists():
+        return None
+    data = _read_locked(path)
+    _cache[key] = (now, data)
+    return data
+
+
+def _confidence(rd: float) -> str:
+    if rd < 50:
+        return "very_confident"
+    if rd < 100:
+        return "confident"
+    if rd < 200:
+        return "uncertain"
+    return "very_uncertain"
+
+
+@router.get("/ratings")
+async def get_ratings():
+    data = _cached_read("ratings", RATINGS_FILE)
+    if not data:
+        return []
+    rows = []
+    for name, d in data.items():
+        r, rd = d["r"], d["rd"]
+        rows.append({
+            "name": name,
+            "rating": round(r, 1),
+            "rd": round(rd, 1),
+            "sigma": round(d.get("sigma", 0.06), 4),
+            "conservative_rating": round(r - 2 * rd, 1),
+            "confidence": _confidence(rd),
+            "last_period": d.get("last_period", ""),
+        })
+    rows.sort(key=lambda x: x["conservative_rating"], reverse=True)
+    for i, row in enumerate(rows):
+        row["rank"] = i + 1
+    return rows
+
+
+@router.get("/ratings/{bot_name}")
+async def get_rating_detail(bot_name: str):
+    data = _cached_read("ratings", RATINGS_FILE)
+    if not data or bot_name not in data:
+        return {"error": "Bot not found"}
+    d = data[bot_name]
+    r, rd = d["r"], d["rd"]
+    return {
+        "name": bot_name,
+        "rating": round(r, 1),
+        "rd": round(rd, 1),
+        "sigma": round(d.get("sigma", 0.06), 4),
+        "conservative_rating": round(r - 2 * rd, 1),
+        "confidence": _confidence(rd),
+        "last_period": d.get("last_period", ""),
+    }
+
+
+@router.get("/ratings/stream")
+async def ratings_stream():
+    import asyncio
+    from sse_starlette.sse import EventSourceResponse
+
+    async def generate():
+        try:
+            while True:
+                data = _cached_read("ratings", RATINGS_FILE)
+                if data:
+                    rows = []
+                    for name, d in data.items():
+                        rows.append({"name": name, "rating": round(d["r"], 1), "rd": round(d["rd"], 1)})
+                    yield {"event": "ratings", "data": json.dumps(rows)}
+                await asyncio.sleep(2)
+        except asyncio.CancelledError:
+            pass
+
+    return EventSourceResponse(generate())
+
+
+def _load_history() -> list[dict]:
+    if not HISTORY_FILE.exists():
+        return []
+    entries = []
+    with open(HISTORY_FILE, "r") as f:
+        fcntl.flock(f, fcntl.LOCK_SH)
+        for line in f:
+            line = line.strip()
+            if line:
+                entries.append(json.loads(line))
+        fcntl.flock(f, fcntl.LOCK_UN)
+    return entries
+
+
+def _downsample(entries: list[dict], resolution: str) -> list[dict]:
+    if resolution == "full" or len(entries) <= 100:
+        return entries
+    step = max(1, len(entries) // (200 if resolution == "medium" else 50))
+    sampled = entries[::step]
+    if entries[-1] not in sampled:
+        sampled.append(entries[-1])
+    return sampled
+
+
+@router.get("/history")
+async def history(
+    bots: str = Query("", description="Comma-separated bot names"),
+    resolution: str = Query("medium", description="full, medium, or low"),
+):
+    entries = _load_history()
+    entries = _downsample(entries, resolution)
+    bot_filter = set(b.strip() for b in bots.split(",") if b.strip()) if bots else None
+
+    result = []
+    for entry in entries:
+        ratings = entry.get("ratings", {})
+        if bot_filter:
+            ratings = {k: v for k, v in ratings.items() if k in bot_filter}
+        result.append({
+            "period": entry.get("period", 0),
+            "timestamp": entry.get("timestamp", ""),
+            "ratings": ratings,
+        })
+    return result
+
+
+@router.get("/history/summary")
+async def history_summary():
+    entries = _load_history()
+    if not entries:
+        return {}
+    all_bots = set()
+    for e in entries:
+        all_bots.update(e.get("ratings", {}).keys())
+    summary = {}
+    for bot in sorted(all_bots):
+        ratings = [e["ratings"][bot]["r"] for e in entries if bot in e.get("ratings", {})]
+        if ratings:
+            summary[bot] = {
+                "peak_rating": round(max(ratings), 1),
+                "current_rating": round(ratings[-1], 1),
+                "trend": round(ratings[-1] - ratings[0], 1) if len(ratings) > 1 else 0,
+                "periods": len(ratings),
+            }
+    return summary
+
+
+@router.get("/experience", response_class=PlainTextResponse)
+async def experience():
+    if not EXPERIENCE_FILE.exists():
+        return ""
+    return EXPERIENCE_FILE.read_text()
+
+
+@router.get("/daemon/status")
+async def daemon_status():
+    import os
+    if RATINGS_FILE.exists():
+        mtime = os.path.getmtime(RATINGS_FILE)
+        age = time.time() - mtime
+        status = "active" if age < 60 else ("recent" if age < 600 else "idle")
+        return {"status": status, "last_update_age_seconds": round(age, 0)}
+    return {"status": "unknown", "last_update_age_seconds": -1}
