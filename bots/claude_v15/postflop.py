@@ -704,7 +704,7 @@ def draw_call_margin(draw_info, board_texture, round_idx, spot_info):
 
     if round_idx == 2:
         if draw_type == "gutshot":
-            margin += 0.020
+            margin += 0.025
         elif draw_type == "flush_draw":
             if draw_info.get("near_nut_flush_draw", False) and size_bucket != "large" and (board_texture is None or not board_texture["paired"]):
                 margin += 0.000

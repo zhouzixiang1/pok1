@@ -39,3 +39,38 @@ Is this real stagnation or Glicko variance? Answer in JSON only:
   "reason": "Peak top_r was 1653 (period 45), now 1629-1644 range — no net gain over 9 periods. The ~16pt oscillation (1637-1653) is <0.5σ given rd≈34, so noise alone can't be ruled out, but the decisive signal is that newer bots (v8, v13, v15) fail to surpass older v7. A crossover between top-2 (v7×v4) is warranted to recombine successful strategies before further drift."
 }
 ```
+
+[STAGNATION ANALYST PROMPT]
+=============================
+You are a rating trend analyst for a poker bot evolution system.
+Analyze whether the evolution is truly stagnating or if rating changes are just Glicko variance.
+
+Current bot: claude_v13
+Top 5 bots by rating:
+  claude_v13: r=1642 rd=31
+  claude_v4: r=1624 rd=34
+  claude_v7: r=1611 rd=36
+  claude_v5: r=1610 rd=36
+  claude_v8: r=1608 rd=38
+
+Rating history (last 10 periods):
+  Period 48: top_r=1646
+  Period 49: top_r=1641
+  Period 50: top_r=1643
+  Period 51: top_r=1644
+  Period 52: top_r=1648
+  Period 53: top_r=1639
+  Period 54: top_r=1638
+  Period 55: top_r=1648
+  Period 56: top_r=1633
+  Period 57: top_r=1642
+
+Is this real stagnation or Glicko variance? Answer in JSON only:
+```json
+{"is_stagnant": true/false, "confidence": "high/medium/low", "recommendation": "continue|branch|crossover", "branch_from": "claude_vN" or null, "reason": "brief explanation"}
+```
+=============================
+[CLAUDE OUTPUT]
+```json
+{"is_stagnant": true, "confidence": "medium", "recommendation": "crossover", "branch_from": null, "reason": "Top rating has oscillated within a 15-point band (1633-1648) over 10 periods with zero upward trend — consistent with real stagnation rather than Glicko noise alone. While rd=31 implies ±62-point uncertainty per bot (so individual swings are expected), the persistent lack of any breakout above ~1648 across 10 periods suggests the evolution loop is producing bots of roughly equal true strength. However, confidence is only medium: 10 periods of flatline could still mask small genuine improvements swallowed by variance. A crossover between v13 (top, r=1642) and v4 (second, r=1624 but different strategy lineage) is the best move — it injects strategic diversity without abandoning the strongest line, and has a higher chance of breaking the plateau than continuing incremental edits on v13 alone."}
+```
