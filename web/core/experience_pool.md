@@ -8,7 +8,7 @@ Lessons from previous iterations. Read before planning next generation.
 3. **River overbet (1.5-2.2x pot) for nut hands on dry rivers** = proven value extraction. v4 lacks it. Must add.
 4. **Simulation counts: 700 flop sims is fine.** v2 rated #1 with {0:500}. More sims ≠ better play if thresholds are wrong.
 5. **Priors: vpip=0.58, pfr=0.28, confidence divisor=35.** v4 uses these. Proven correct.
-6. **EQR calibration: v4 air 0.72/0.62 is optimal.** v14 lowered to 0.68/0.56 + extra penalties causing over-folding. DO NOT over-discount.
+6. **EQR calibration: v4 air 0.72/0.62 is optimal.** v14 lowered to 0.68/0.56 + extra penalties causing over-folding. DO NOT over-discount. **v17 still uses 0.68/0.56 — MUST FIX.**
 7. **Blocker bluff: random.random() or deterministic hash both work.** Not a major differentiator.
 8. **exploit_lambda (gift_balance blending) is HARMFUL.** It corrupts GTO base thresholds. DO NOT use.
 9. **Anti-lock: chase=0.90, threshold=-0.075, sizing=0.18, bluff=0.13.** Proven values.
@@ -16,19 +16,21 @@ Lessons from previous iterations. Read before planning next generation.
 11. **When changing preflop eval, recalibrate ALL downstream thresholds.**
 12. **Wholesale copy fails. Incremental targeted port wins.**
 13. **Fix ALL parameter issues simultaneously.** Effects compound.
-14. **thin_cap: 0.30 (round<=2) / 0.38 (round==3).** v4's flat values work best.
+14. **thin_cap: wetness-aware formula (0.46+0.08*wet+0.05*round) superior to flat thresholds.** v17 uses flat 0.30/0.38 — should upgrade.
 
-### v9–v15 Era: Field Compression & v11 Champion
+### v9–v15 Era: Field Compression & Key Feature Gaps
 
-15. **Field compressed to ~35pts (1597-1632).** Small edges matter enormously. Only port proven features.
-16. **v11 is current champion at 1632.** Has river exact equity, classify_opponent_style, big_pot_safety_guard, river overbet bluff, CBet bluff exploitation.
-17. **CBet tracking IS useful.** v15 has it with tighter thresholds (0.60/0.35 vs v11's 0.65/0.40). v15's tighter values may be better.
-18. **v15 EQR regression: air 0.68/0.56, OOP draw 0.85/0.75, pair 0.84/0.73** all lower than v11's proven values (0.72/0.62, 0.88/0.78, 0.86/0.78). Over-folding is the #1 issue.
-19. **v15 shove_buffer cap 0.14 vs v11's 0.11** makes v15 more conservative in all-in spots.
-20. **River exact equity override (0 sims when 5 public cards) is a proven v11 feature.** Better river call/fold/bluff decisions. v15 lacks this entirely.
-21. **River overbet bluff (choose_overbet_bluff_river) is a net-positive v11 feature.** Uses blocker analysis for bluff overbets on dry rivers. v15 lacks this.
-22. **classify_opponent_style (nit/maniac/station/fold-heavy) provides +2-3 pts of adaptation.** v15 lacks opponent style classification entirely.
-23. **allow_low_frequency_blocker_bluff should accept bluff_freq_bonus param** — enables more bluffing vs exploitable opponents. v15 regressed by dropping this.
-24. **Big pot call margin (pot>5000 guard) prevents over-folding in large pots.** v15 lacks this inline check.
-25. **v15's river overbet expansion to strong-tier is promising** (1.3-1.7x pot) but unproven. Keep it but ensure it doesn't conflict with nut overbet.
-26. **File size: strategy.py at 996 lines is near 1000-line limit.** Any additions must be paired with removals or move to existing files.
+15. **Field compressed to ~25pts.** Small edges matter enormously. Only port proven features.
+16. **CBet tracking IS useful.** v15 has tighter thresholds (0.60/0.35 vs v11's 0.65/0.40). v17 uses 0.65/0.40 — tighten to 0.60/0.35.
+17. **River exact equity (0 sims when 5 public cards) is a proven feature.** v17 HAS this — keep it.
+18. **classify_opponent_style (nit/maniac/station/fold-heavy) provides +2-3 pts of adaptation.** v17 LACKS this entirely. PRIORITY ADD.
+19. **Big pot call margin (pot>5000 guard) prevents over-folding in large pots.** v17 lacks explicit guard.
+20. **River overbet for strong-tier hands** (straights, sets, high flushes) on dry rivers at 1.3-1.7x pot. v17 doesn't have this. Potential +3-5 pts.
+21. **File size: strategy.py at 1245 lines is near 1000-line soft limit.** Any additions must be paired with removals.
+
+### v17 Architecture & Dead Code
+
+22. **v17 has 6 dead code files NOT imported anywhere:** draws.py(261), bluffs.py(186), postflop_decision.py(269), preflop.py(133), main_backup.py(2941), odds.py(317) = 4107 lines dead. Active code: 3646 lines across 15 files. Dead files don't affect runtime but confuse future workers — DELETE them.
+23. **v17 peaked at 1642.7, dropped to 1621.4.** v9 stable at 1625.9. Gap closing. Parameter fixes + missing features can reclaim lead.
+24. **EQR draw OOP values:** v17 uses 0.85/0.75 (flop/turn). Experience shows 0.88/0.78 gives better realization. Adjust.
+25. **Parameter changes compound synergistically.** EQR + CBet + thin_cap + opponent style all together outperform any single change.
