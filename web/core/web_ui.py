@@ -78,6 +78,7 @@ class WebUI(BaseUI):
         self._broadcaster = broadcaster
         self.grand_cost_total = 0.0
         self.gen_cost_total = 0.0
+        self._messages = []
         self._state: dict[str, Any] = {
             "status": "Initializing...",
             "is_working": False,
@@ -95,6 +96,7 @@ class WebUI(BaseUI):
     def log_history(self, msg, status="info"):
         icon = {"info": "[INFO]", "warn": "[WARN]", "error": "[ERR]",
                 "success": "[OK]"}.get(status, "[INFO]")
+        self._messages.append(f"[{status}] {msg}")
         print(f"{icon} {msg}")
         self._emit("history", {"msg": msg, "status": status})
 
@@ -184,3 +186,6 @@ class WebUI(BaseUI):
             "grand_cost_total": round(self.grand_cost_total, 4),
             "gen_cost_total": round(self.gen_cost_total, 4),
         }
+
+    def get_output(self):
+        return "\n".join(self._messages[-20:])

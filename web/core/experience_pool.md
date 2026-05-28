@@ -3,47 +3,36 @@ Lessons from previous iterations. Read before planning next generation.
 
 ### Core Lessons (v1–v8 consolidated)
 
-1. **Chen preflop table worth ~130pts.** 169-hand lookup replaces crude formula.
-2. **Anti-bot4 detection + adjustments = proven edge.** detect_bot4_profile from bot5.
-3. **River overbet (1.5-2.2x pot) for nut hands on dry rivers** = proven value extraction.
-4. **Simulation counts matter less than threshold calibration.** v2 rated #1 with {0:500} vs bot5's {0:900}.
-5. **Priors: vpip=0.58, pfr=0.28, confidence divisor=35.**
-6. **EQR calibration is THE differentiator.** v2=1552 with LOWER EQR (air 0.68/0.56). Lower=tighter folding=fewer catastrophic losses.
-7. **Blocker bluff: random.random() + bluff_freq_bonus param**, not deterministic hash.
-8. **Dead weight removed:** cbet_rate, fold_to_cbet, drift detection, gift_balance, exploit_lambda.
-9. **Anti-lock: chase=0.90, threshold=-0.075, sizing=0.18, bluff=0.13.**
-10. **bb_vs_raise/sb_vs_raise: Let simulation decide.** Fixed thresholds are harmful.
+1. **Chen preflop table: v4 (#1 at 1623) succeeds WITHOUT it using formula.** Table may introduce calibration noise. Formula is sufficient.
+2. **Anti-bot4 detection with LOOSE criteria is catastrophic.** v14 collapsed 100pts (1608→1509). abs(vpip-0.55)<0.15 matches ~80% of pool, causing excessive bluff/fold deltas vs all opponents. Only port with VERY tight thresholds (±0.08).
+3. **River overbet (1.5-2.2x pot) for nut hands on dry rivers** = proven value extraction. v4 lacks it. Must add.
+4. **Simulation counts: 700 flop sims is fine.** v2 rated #1 with {0:500}. More sims ≠ better play if thresholds are wrong.
+5. **Priors: vpip=0.58, pfr=0.28, confidence divisor=35.** v4 uses these. Proven correct.
+6. **EQR calibration: v4 air 0.72/0.62 is optimal.** v14 lowered to 0.68/0.56 + extra penalties (OOP double-barrel -0.05, big_pot -0.03, lower floor 0.40) causing over-folding. DO NOT over-discount.
+7. **Blocker bluff: random.random() or deterministic hash both work.** Not a major differentiator.
+8. **exploit_lambda (gift_balance blending) is HARMFUL.** v14 has it, v4 (#1) doesn't. It corrupts GTO base thresholds with noisy gift_balance signal. DO NOT port.
+9. **Anti-lock: chase=0.90, threshold=-0.075, sizing=0.18, bluff=0.13.** Proven values.
+10. **bb_vs_raise/sb_vs_raise: Let simulation decide.** v14's hardcoded 3bet bluff spots with token hashing are net negative. v4 delegates to simulation. Correct approach.
 11. **When changing preflop eval, recalibrate ALL downstream thresholds.**
 12. **Wholesale copy fails. Incremental targeted port wins.**
 13. **Fix ALL parameter issues simultaneously.** Effects compound.
-14. **choose_raise thin_cap: 0.30 (round<=2) / 0.38 (round==3).** max_ratio: 2.2 for river overbet, else 1.45.
+14. **thin_cap: 0.30 (round<=2) / 0.38 (round==3).** v4's flat values. v14's wetness formula (0.46+0.08w) lets through 0.46 ratio thin bets on dry boards — regression.
 
-### v8 Specifics
+### v9–v14 Era: Field Compression & v14 Collapse
 
-15. **jam_buffer cap at 0.11 for thin/marginal.** Thin bonus 0.02 (was 0.04). Buffer accumulation caused catastrophic all-ins with win_rate as low as 0.45.
-16. **choose_overbet_bluff_river is an unused weapon.** Blocker-based river bluffs on dry boards, fold_to_raise > 0.50.
-17. **min_raise_action fix essential.** Use state.get("min_raise_action", state["round_raise"]).
-18. **v2 has OOP double-barrel EQR penalty (-0.05) and big_pot air discount (-0.03).** Port for conservatism.
-19. **must_continue_vs_raise extends to strong combo draws.** draw_strength >= 0.20 with favorable pot odds.
-20. **big_pot_safety_guard prevents thin/marginal barreling in huge pots.** pot > 7000, turn/river, no draw.
+15. **Field compressed to 1590–1623 range (~30pts).** Small edges matter enormously. Only port proven features.
+16. **v14 = v4 base + anti-bot4 + exploit_lambda + lower EQR + wet thin_cap + preflop 3bet bluff + CBet tracking + drift detection + river overbet.** Of these, ONLY CBet tracking and river overbet are net positive. Everything else hurt.
+17. **CBet tracking IS useful** (lesson #29 from v14 era). v4 lacks it. Port with v4's priors.
+18. **Drift detection (12-hand window) is neutral-to-slightly-positive.** Doesn't hurt but hasn't proven decisive. Safe to port.
+19. **v4 is the cleanest, highest-rated base at 1623.** Always branch from the #1 bot when current version is catastrophically worse.
+20. **OOP draw EQR 0.85/0.75 + extra penalties is over-conservative.** v4's draw EQR is simpler (no dedicated OOP draw path) and works better.
+21. **River strong dry overbet (1.3-1.5x pot) is promising but unproven at scale.** v14 had it but its overall collapse makes it hard to evaluate. Port cautiously.
+22. **Catastrophic failures come from systemic corruption of base thresholds, not individual feature bugs.** v14's anti-bot4 + exploit_lambda BOTH modify strong/medium/bluff thresholds, compounding errors.
 
-### v9–v14 Era: Consolidation & Field Compression
+### v15 Strategy: Branch from v7, Port CBet Tracking
 
-21. **Field has compressed to 1600–1640 range.** v14 leads at 1642, but only ~2-3 pts over v10/v7. Small edges matter enormously.
-22. **v14 ≈ bot5 base - anti-bot4 - river overbet + exploit_lambda + draw EQR.** Removed two proven edges (lessons #2, #3) and replaced with unproven exploit system.
-23. **River overbet for nuts (1.5-2.2x pot) is MISSING from v14.** bot5 has it. Lesson #3 confirms it's proven. Must restore.
-24. **Anti-bot4 detection MISSING from v14.** bot5 detects opponent stat signatures and adjusts bluff_freq, sizing, trap defense. Must restore.
-25. **exploit_lambda (gift_balance based) is novel but risky.** It blends GTO/exploitative thresholds. If gift_balance is noisy, it corrupts the base thresholds. Keep but cap more aggressively.
-26. **thin_cap changed from flat (0.30/0.38) to wetness formula (0.46+0.08w).** The new formula is MORE GENEROUS for thin value bets. On dry boards this lets through 0.46 ratio thin bets that the old 0.30 cap would block. Likely a regression.
-27. **Blocker bluff uses deterministic token in v14 vs random.random() in bot5.** Token approach is reproducible but less "noisy". Both work but random is closer to GTO-randomized strategy.
-28. **OOP draw EQR path (0.85/0.75 on flop/turn) is a v14 addition.** Adds double_barrel and big_pot penalties. Likely good but may over-discount.
-29. **cbet_rate tracking in v14 opponent model** is useful for postflop facing-aggression decisions. Keep this.
-
-### v13→v14 Analysis: What v13 Has Right & What It's Missing
-
-30. **v13 is top-rated at 1647.5 ELO.** Lower EQR (0.68/0.56), drift detection, cbet tracking, and deterministic blocker bluff tokens all contribute.
-31. **River overbet is PARTIAL in v13.** Only "strong" tier at 1.3-1.7x pot. v7 has dedicated NUT-hand overbet at 1.5-2.2x pot (choose_overbet_river). Lesson #3 confirms this is proven. Must add NUT overbet.
-32. **Anti-bot4 detection MISSING from v13.** v7 has detect_bot4_profile + get_anti_bot4_adjustments (bluff_freq_bonus, sizing bonus, trap defense). Lesson #2 confirms it's proven edge. Port from v7.
-33. **thin_cap base (0.46) is likely too generous.** Lesson #26 flagged this as regression. Old cap was 0.30. Recommend 0.40 as compromise.
-34. **VPIP/PFR priors (0.52/0.24) are very conservative.** Lesson #5 says 0.58/0.28 is proven. Try 0.55/0.26 as compromise.
-35. **Gutshot turn margin 0.025 vs v7's 0.020.** Marginal — slightly more aggressive calling with gutshots on turn. May be too loose.
+23. **v7 = v4 base + anti-bot4 + river overbet + check_probe_resistance + must_continue_vs_raise.** v7 is current #1 at 1615. The anti-bot4 detection works in v7 because it LACKS exploit_lambda, lower EQR, and preflop bluff spots that compound errors.
+24. **CBet tracking is v14's only proven positive feature that v7 lacks.** Adjusts call margin ±0.025 based on opponent cbet_rate vs baseline 0.55/0.35. Safe to port.
+25. **v7's preflop delegation (no bb_vs_raise/sb_vs_reraise spots) is CORRECT.** Lesson #10 reinforced: simulation decides preflop facing raises. v14's hardcoded token-hash bluff spots are net negative.
+26. **Anti-bot4 VPIP center matters:** v7 uses 0.58 (matches priors from lesson #5), v14 used 0.55 (3pts off priors). Align detection with priors.
+27. **Field is ~30pts compressed (1590-1623).** Small edges matter enormously. Port 1 feature at a time, verify each incrementally.
