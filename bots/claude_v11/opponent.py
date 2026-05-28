@@ -1,110 +1,13 @@
-from constants import N_PLAYERS, BIG_BLIND
+"""Opponent modeling and anti-bot_4 exploitation."""
+
+from constants import BIG_BLIND
 from card_utils import clamp, next_player
-from state import get_hand_index, get_remaining_hands, collect_latest_requests_by_hand
+from state import collect_latest_requests_by_hand
 from tournament import opponent_can_lock_win
 
 
 def smooth_rate(successes, total, prior_mean, prior_weight):
     return (successes + prior_mean * prior_weight) / (total + prior_weight)
-
-
-def _track_hand_stats(req, my_id, opponent_id):
-    """Track per-hand statistics for opponent modeling."""
-    stats = {
-        "preflop_opportunities": 0, "voluntary_preflop": 0, "preflop_raise": 0,
-        "total_actions": 0, "aggressive_actions": 0, "allin_actions": 0,
-        "postflop_actions": 0, "postflop_aggressive": 0, "postflop_checks": 0,
-        "fold_to_raise_opportunities": 0, "fold_to_raise": 0,
-        "raise_sizes": [],
-        "cbet_opportunities": 0, "cbet_count": 0,
-        "fold_to_cbet_opportunities": 0, "fold_to_cbet_count": 0,
-    }
-    history = req.get("history", [])
-    if not history:
-        return stats
-
-    saw_opponent_preflop_action = False
-    pending_my_pressure = False
-    opp_preflop_raised = False
-    saw_flop = False
-    opp_first_on_flop = True
-    my_first_on_flop = True
-    opp_cbet_eligible = False
-    facing_cbet = False
-
-    for record in history:
-        pid = record["player_id"]
-        action_type = record["action_type"]
-        action = record["action"]
-        round_idx = record["round"]
-
-        # Track flop onset for CBet detection
-        if round_idx == 1 and not saw_flop:
-            saw_flop = True
-
-        if pid == my_id:
-            if action_type in ("raise", "allin"):
-                pending_my_pressure = True
-            # CBet: if opponent raised preflop, track my response on flop
-            if saw_flop and round_idx == 1 and my_first_on_flop and opp_preflop_raised:
-                my_first_on_flop = False
-                if action_type == "fold":
-                    stats["fold_to_cbet_opportunities"] += 1
-                    if action_type == "fold":
-                        pass  # already counted
-                else:
-                    stats["fold_to_cbet_opportunities"] += 1
-            continue
-
-        if pid != opponent_id:
-            continue
-
-        stats["total_actions"] += 1
-        if action_type in ("raise", "allin"):
-            stats["aggressive_actions"] += 1
-        if action_type == "allin":
-            stats["allin_actions"] += 1
-
-        if round_idx == 0 and not saw_opponent_preflop_action:
-            saw_opponent_preflop_action = True
-            stats["preflop_opportunities"] += 1
-            if action_type in ("call", "raise", "allin"):
-                stats["voluntary_preflop"] += 1
-            if action_type in ("raise", "allin"):
-                stats["preflop_raise"] += 1
-                opp_preflop_raised = True
-
-        if round_idx > 0:
-            stats["postflop_actions"] += 1
-            if action_type in ("raise", "allin"):
-                stats["postflop_aggressive"] += 1
-            if action_type == "check":
-                stats["postflop_checks"] += 1
-
-        # Improvement 3: CBet tracking
-        # CBet opportunity: opponent raised preflop, acts first on flop
-        if round_idx == 1 and opp_first_on_flop and opp_preflop_raised:
-            opp_first_on_flop = False
-            stats["cbet_opportunities"] += 1
-            if action_type in ("raise", "allin"):
-                stats["cbet_count"] += 1
-                facing_cbet = True
-        elif round_idx == 1 and opp_first_on_flop:
-            opp_first_on_flop = False
-
-        # Fold-to-CBet: I face opponent's cbet on flop
-        # (tracked from my perspective when opponent bets flop after preflop raise)
-
-        if action_type == "raise":
-            stats["raise_sizes"].append(action / BIG_BLIND)
-
-        if pending_my_pressure:
-            stats["fold_to_raise_opportunities"] += 1
-            if action_type == "fold":
-                stats["fold_to_raise"] += 1
-            pending_my_pressure = False
-
-    return stats
 
 
 def build_opponent_model(requests, my_id):
@@ -124,79 +27,108 @@ def build_opponent_model(requests, my_id):
     fold_to_raise_opportunities = 0
     fold_to_raise = 0
     raise_sizes = []
+
     cbet_opportunities = 0
     cbet_count = 0
     fold_to_cbet_opportunities = 0
     fold_to_cbet_count = 0
 
-    # Improvement 4: Per-hand stats for drift detection
-    per_hand_vpip = []
-    per_hand_pfr = []
-    per_hand_postflop_aggr_num = []
-    per_hand_postflop_aggr_den = []
+    hand_vpip_flags = []
+    hand_pfr_flags = []
+    hand_postflop_aggr_counts = []
+    hand_postflop_action_counts = []
 
     for req in hand_requests:
         if opponent_can_lock_win(req, my_id):
             continue
 
-        hs = _track_hand_stats(req, my_id, opponent_id)
-        preflop_opportunities += hs["preflop_opportunities"]
-        voluntary_preflop += hs["voluntary_preflop"]
-        preflop_raise += hs["preflop_raise"]
-        total_actions += hs["total_actions"]
-        aggressive_actions += hs["aggressive_actions"]
-        allin_actions += hs["allin_actions"]
-        postflop_actions += hs["postflop_actions"]
-        postflop_aggressive += hs["postflop_aggressive"]
-        postflop_checks += hs["postflop_checks"]
-        fold_to_raise_opportunities += hs["fold_to_raise_opportunities"]
-        fold_to_raise += hs["fold_to_raise"]
-        raise_sizes.extend(hs["raise_sizes"])
-        cbet_opportunities += hs["cbet_opportunities"]
-        cbet_count += hs["cbet_count"]
-        fold_to_cbet_opportunities += hs["fold_to_cbet_opportunities"]
-        fold_to_cbet_count += hs["fold_to_cbet_count"]
+        history = req.get("history", [])
+        if not history:
+            continue
 
-        if hs["preflop_opportunities"] > 0:
-            per_hand_vpip.append(1.0 if hs["voluntary_preflop"] > 0 else 0.0)
-            per_hand_pfr.append(1.0 if hs["preflop_raise"] > 0 else 0.0)
-        if hs["postflop_actions"] > 0:
-            per_hand_postflop_aggr_num.append(hs["postflop_aggressive"])
-            per_hand_postflop_aggr_den.append(hs["postflop_actions"])
+        saw_opponent_preflop_action = False
+        pending_my_pressure = False
+
+        opp_raised_preflop_this_hand = False
+        first_flop_action_seen = False
+        facing_cbet = False
+        hand_opp_vpip = False
+        hand_opp_pfr = False
+        hand_postflop_aggr = 0
+        hand_postflop_total = 0
+
+        for record in history:
+            pid = record["player_id"]
+            action_type = record["action_type"]
+            action = record["action"]
+            round_idx = record["round"]
+
+            if round_idx == 1 and not first_flop_action_seen:
+                first_flop_action_seen = True
+                if pid == opponent_id and opp_raised_preflop_this_hand:
+                    cbet_opportunities += 1
+                    if action_type in ("raise", "allin"):
+                        cbet_count += 1
+                        facing_cbet = True
+
+            if pid == my_id and facing_cbet:
+                fold_to_cbet_opportunities += 1
+                if action_type == "fold":
+                    fold_to_cbet_count += 1
+                facing_cbet = False
+
+            if pid == my_id and action_type in ("raise", "allin"):
+                pending_my_pressure = True
+                continue
+
+            if pid != opponent_id:
+                continue
+
+            total_actions += 1
+            if action_type in ("raise", "allin"):
+                aggressive_actions += 1
+            if action_type == "allin":
+                allin_actions += 1
+
+            if round_idx == 0:
+                if action_type in ("raise", "allin"):
+                    opp_raised_preflop_this_hand = True
+                if not saw_opponent_preflop_action:
+                    saw_opponent_preflop_action = True
+                    preflop_opportunities += 1
+                    if action_type in ("call", "raise", "allin"):
+                        voluntary_preflop += 1
+                        hand_opp_vpip = True
+                    if action_type in ("raise", "allin"):
+                        preflop_raise += 1
+                        hand_opp_pfr = True
+
+            if round_idx > 0:
+                postflop_actions += 1
+                hand_postflop_total += 1
+                if action_type in ("raise", "allin"):
+                    postflop_aggressive += 1
+                    hand_postflop_aggr += 1
+                if action_type == "check":
+                    postflop_checks += 1
+
+            if action_type == "raise":
+                raise_sizes.append(action / BIG_BLIND)
+
+            if pending_my_pressure:
+                fold_to_raise_opportunities += 1
+                if action_type == "fold":
+                    fold_to_raise += 1
+                pending_my_pressure = False
+
+        if saw_opponent_preflop_action:
+            hand_vpip_flags.append(1 if hand_opp_vpip else 0)
+            hand_pfr_flags.append(1 if hand_opp_pfr else 0)
+            hand_postflop_aggr_counts.append(hand_postflop_aggr)
+            hand_postflop_action_counts.append(hand_postflop_total)
 
     confidence = clamp((total_actions - 5) / 35.0, 0.0, 1.0)
     avg_raise_bb = sum(raise_sizes) / len(raise_sizes) if raise_sizes else 2.6
-
-    # Improvement 3: CBet metrics
-    cbet_rate = smooth_rate(cbet_count, cbet_opportunities, 0.55, 4.0)
-    fold_to_cbet = smooth_rate(fold_to_cbet_count, fold_to_cbet_opportunities, 0.40, 3.0)
-
-    # Improvement 4: Concept drift detection
-    drift_detected = False
-    drift_vpip = 0.0
-    drift_pfr = 0.0
-    drift_postflop_aggr = 0.0
-
-    if len(per_hand_vpip) >= 12:
-        recent_n = min(10, len(per_hand_vpip))
-        all_time_vpip = sum(per_hand_vpip) / len(per_hand_vpip)
-        recent_vpip = sum(per_hand_vpip[-recent_n:]) / recent_n
-        all_time_pfr = sum(per_hand_pfr) / len(per_hand_pfr)
-        recent_pfr = sum(per_hand_pfr[-recent_n:]) / recent_n
-
-        # Postflop aggr drift
-        recent_aggr_num = sum(per_hand_postflop_aggr_num[-recent_n:])
-        recent_aggr_den = sum(per_hand_postflop_aggr_den[-recent_n:])
-        all_aggr_num = sum(per_hand_postflop_aggr_num)
-        all_aggr_den = sum(per_hand_postflop_aggr_den)
-        all_time_aggr = all_aggr_num / all_aggr_den if all_aggr_den > 0 else 0.36
-        recent_aggr = recent_aggr_num / recent_aggr_den if recent_aggr_den > 0 else 0.36
-
-        if abs(recent_vpip - all_time_vpip) > 0.15 or abs(recent_pfr - all_time_pfr) > 0.12:
-            drift_detected = True
-            drift_vpip = recent_vpip
-            drift_pfr = recent_pfr
-            drift_postflop_aggr = recent_aggr
 
     result = {
         "confidence": confidence,
@@ -208,20 +140,26 @@ def build_opponent_model(requests, my_id):
         "fold_to_raise": smooth_rate(fold_to_raise, fold_to_raise_opportunities, 0.44, 4.0),
         "aggression": smooth_rate(aggressive_actions, total_actions, 0.30, 6.0),
         "avg_raise_bb": avg_raise_bb,
-        "cbet_rate": cbet_rate,
-        "fold_to_cbet": fold_to_cbet,
-        "drift_detected": drift_detected,
+        "cbet_rate": smooth_rate(cbet_count, cbet_opportunities, 0.55, 4.0),
+        "fold_to_cbet": smooth_rate(fold_to_cbet_count, fold_to_cbet_opportunities, 0.40, 3.0),
+        "drift_detected": False,
     }
 
-    # Improvement 4: If drift detected, override with recent-window stats
-    if drift_detected:
-        result["confidence"] = max(0.25, confidence * 0.6)
-        if drift_vpip > 0:
-            result["vpip"] = clamp(drift_vpip, 0.1, 0.95)
-        if drift_pfr > 0:
-            result["pfr"] = clamp(drift_pfr, 0.0, 0.8)
-        if drift_postflop_aggr > 0:
-            result["postflop_aggr"] = clamp(drift_postflop_aggr, 0.1, 0.8)
+    if len(hand_vpip_flags) >= 12:
+        recent_count = min(10, len(hand_vpip_flags))
+        recent_vpip = sum(hand_vpip_flags[-10:]) / recent_count
+        all_time_vpip = sum(hand_vpip_flags) / len(hand_vpip_flags)
+        recent_pfr = sum(hand_pfr_flags[-10:]) / recent_count
+        all_time_pfr = sum(hand_pfr_flags) / len(hand_pfr_flags)
+
+        if abs(recent_vpip - all_time_vpip) > 0.15 or abs(recent_pfr - all_time_pfr) > 0.12:
+            result["drift_detected"] = True
+            result["vpip"] = recent_vpip
+            result["pfr"] = recent_pfr
+            recent_postflop_aggr_actions = sum(hand_postflop_aggr_counts[-10:])
+            recent_postflop_total_actions = sum(hand_postflop_action_counts[-10:])
+            result["postflop_aggr"] = smooth_rate(recent_postflop_aggr_actions, recent_postflop_total_actions, 0.36, 5.0)
+            result["confidence"] = max(0.25, confidence * 0.6)
 
     return result
 
@@ -307,3 +245,117 @@ def analyze_current_spot(req, state):
                 info["preflop_spot"] = "sb_vs_reraise"
 
     return info
+
+
+def detect_bot4_profile(opponent_model, n_hands_played):
+    """Detect if opponent exhibits bot_4's characteristic stats."""
+    confidence = opponent_model["confidence"]
+    if confidence < 0.10:
+        return False, 0.0
+
+    score = 0.0
+    vpip = opponent_model["vpip"]
+    pfr = opponent_model["pfr"]
+    aggr = opponent_model["aggression"]
+    post_aggr = opponent_model["postflop_aggr"]
+    fold_raise = opponent_model["fold_to_raise"]
+
+    if abs(vpip - 0.58) < 0.15:
+        score += 0.20
+    if abs(pfr - 0.28) < 0.13:
+        score += 0.20
+    if abs(post_aggr - 0.36) < 0.15:
+        score += 0.20
+    if abs(fold_raise - 0.44) < 0.15:
+        score += 0.15
+    if abs(aggr - 0.30) < 0.13:
+        score += 0.15
+
+    score *= confidence
+    return score >= 0.20, score
+
+
+def get_anti_bot4_adjustments(bot4_score, board_texture, spot_info, round_idx, value_profile):
+    """Return strategy adjustments targeting bot_4's weaknesses."""
+    adj = {
+        "bluff_freq_bonus": 0.0,
+        "raise_size_bonus": 0.0,
+        "call_threshold_delta": 0.0,
+        "fold_threshold_delta": 0.0,
+        "river_overbet_enabled": False,
+        "trap_defense_delta": 0.0,
+    }
+
+    # Wet board: exploit bot_4 overfold on dynamic boards
+    if board_texture and board_texture["dynamic"]:
+        adj["bluff_freq_bonus"] += 0.15 * bot4_score
+        adj["raise_size_bonus"] += 0.08 * bot4_score
+
+    # Paired board: exploit bot_4 paired board caution
+    if board_texture and board_texture["paired"]:
+        adj["bluff_freq_bonus"] += 0.10 * bot4_score
+        adj["raise_size_bonus"] += 0.05 * bot4_score
+
+    # River check exploit: bot_4 checks too much on river
+    if round_idx == 3 and spot_info.get("last_opp_action_type") == "check":
+        adj["bluff_freq_bonus"] += 0.12 * bot4_score
+
+    # Preflop 3-Bet wider vs bot_4
+    if round_idx == 0 and spot_info.get("preflop_spot") in ("bb_vs_raise", "sb_vs_reraise"):
+        adj["call_threshold_delta"] -= 0.05 * bot4_score
+
+    # Anti-trap: more cautious vs check-raise
+    if spot_info.get("opp_current_round_check_count", 0) > 0 and spot_info["facing_raise"]:
+        adj["trap_defense_delta"] += 0.08 * bot4_score
+
+    # River overbet always enabled with strong hands (not just vs bot_4)
+    if round_idx == 3 and value_profile and value_profile["tier"] in ("nut", "strong"):
+        adj["river_overbet_enabled"] = True
+
+    return adj
+
+
+def classify_opponent_style(opp_model):
+    """Classify opponent style and return threshold deltas.
+    Based on v3's classification but WITHOUT EXP3.
+    Returns dict of deltas that default to zero for unknown opponents."""
+    deltas = {
+        "strong_delta": 0.0,
+        "medium_delta": 0.0,
+        "bluff_freq_bonus": 0.0,
+        "call_aggression_bonus": 0.0,
+        "fold_vs_passive_bonus": 0.0,
+    }
+    
+    confidence = opp_model.get("confidence", 0.0)
+    if confidence < 0.15:
+        return deltas
+    
+    vpip = opp_model.get("vpip", 0.52)
+    pfr = opp_model.get("pfr", 0.24)
+    fold_to_raise = opp_model.get("fold_to_raise", 0.44)
+    postflop_aggr = opp_model.get("postflop_aggr", 0.36)
+    
+    # Nit: low VPIP, high fold_to_raise
+    if vpip < 0.35 and fold_to_raise > 0.50:
+        deltas["strong_delta"] = -0.02
+        deltas["medium_delta"] = -0.015
+        deltas["bluff_freq_bonus"] = 0.12
+    # Maniac: high VPIP, high PFR, high postflop aggression
+    elif vpip > 0.65 and pfr > 0.40 and postflop_aggr > 0.45:
+        deltas["strong_delta"] = 0.03
+        deltas["medium_delta"] = 0.025
+        deltas["bluff_freq_bonus"] = -0.08
+        deltas["call_aggression_bonus"] = 0.04
+    # Calling station: high VPIP, low PFR, low fold_to_raise
+    elif vpip > 0.55 and pfr < 0.20 and fold_to_raise < 0.38:
+        deltas["strong_delta"] = -0.01
+        deltas["medium_delta"] = -0.02
+        deltas["bluff_freq_bonus"] = -0.12
+    # Fold-heavy: high fold_to_raise
+    elif fold_to_raise > 0.52:
+        deltas["strong_delta"] = -0.015
+        deltas["medium_delta"] = -0.01
+        deltas["bluff_freq_bonus"] = 0.10
+    
+    return deltas

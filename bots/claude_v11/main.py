@@ -1,9 +1,12 @@
 """
-Bot 11 - v10 base + 3 targeted additive improvements:
-1) Lower marginal pair EQR (0.82/0.70 from 0.84/0.73) - tighter marginal folding
-2) jam/shove buffer cap at 0.11 for thin/marginal hands - prevent catastrophic all-ins
-3) River overbet bluff with strong blockers on dry boards - extract fold equity
-(v10 changes inherited: air EQR, thin_cap, river overbet, min_raise fix, river equity, big_pot_guard, combo draws)
+Bot 2 - Bot23-based with 7 directed improvements:
+1) Interface fix + decide_action (3 input formats)
+2) Preflop 169-hand lookup table
+3) CBet / Fold-to-CBet tracking
+4) Opponent concept drift detection
+5) Improved equity realization
+6) 3Bet/4Bet dedicated logic
+7) Safe exploitation framework
 """
 import json
 import sys
@@ -25,7 +28,8 @@ def sanitize_action(action, state, my_chips):
     if action > 0:
         if action >= my_chips:
             return -2
-        if action < state["round_raise"] or action <= state["to_call"]:
+        min_raise_action = state.get("min_raise_action", state["round_raise"])
+        if action < min_raise_action or action <= state["to_call"]:
             return 0 if state["to_call"] == 0 else -1
 
     if action == 0 and state["to_call"] > 0:

@@ -167,7 +167,7 @@ def reconstruct_state(req):
 
     current_round = 0
     round_bet = BIG_BLIND
-    round_raise = 2 * BIG_BLIND
+    judge_round_raise = BIG_BLIND
     round_contrib = [0] * N_PLAYERS
     round_contrib[sb] = SMALL_BLIND
     round_contrib[bb] = BIG_BLIND
@@ -183,7 +183,7 @@ def reconstruct_state(req):
         if record_round != current_round:
             current_round = record_round
             round_bet = 0
-            round_raise = BIG_BLIND
+            judge_round_raise = BIG_BLIND
             round_contrib = [0] * N_PLAYERS
 
         if action_type == "fold":
@@ -214,14 +214,14 @@ def reconstruct_state(req):
             committed[pid] += add
             round_contrib[pid] += add
             round_bet = max(round_bet, round_contrib[pid])
-            round_raise = max(round_raise, 2 * add)
+            judge_round_raise = max(judge_round_raise, add)
 
     public_cards = len(req["public_cards"])
     round_idx = 0 if public_cards == 0 else 1 if public_cards == 3 else 2 if public_cards == 4 else 3
 
     if current_round != round_idx:
         round_bet = 0
-        round_raise = BIG_BLIND
+        judge_round_raise = BIG_BLIND
         round_contrib = [0] * N_PLAYERS
 
     player_bets = [0] * N_PLAYERS
@@ -237,6 +237,7 @@ def reconstruct_state(req):
     opponent_allin = allin[opponent_id] and alive[opponent_id]
     my_round_bet = 0 if player_bets[my_id] < 0 else player_bets[my_id]
     to_call = max(0, round_bet - my_round_bet)
+    min_raise_action = max(0, 2 * judge_round_raise - my_round_bet)
     allin_call_amount = max(
         0,
         min(committed[opponent_id], committed[my_id] + stacks[my_id]) - committed[my_id],
@@ -245,7 +246,9 @@ def reconstruct_state(req):
     return {
         "round": round_idx,
         "round_bet": round_bet,
-        "round_raise": round_raise,
+        "round_raise": judge_round_raise,
+        "judge_round_raise": judge_round_raise,
+        "min_raise_action": min_raise_action,
         "round_contrib": round_contrib,
         "player_bets": player_bets,
         "stacks": stacks,
