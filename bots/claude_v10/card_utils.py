@@ -1,6 +1,3 @@
-"""
-Card utility functions.
-"""
 import itertools
 
 from constants import N_PLAYERS
