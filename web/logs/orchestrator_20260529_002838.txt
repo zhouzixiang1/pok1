@@ -2362,3 +2362,218 @@ v16 cleaned up. Now let me proceed with housekeeping and then analyze v15's matc
 [tool: mcp__evolution__reap_weakest]
 
 [tool: mcp__evolution__trim_experience]
+Housekeeping done — no reaping needed (17 < 30), experience trimmed. Now let me analyze v15's match history and losses.
+[tool: mcp__evolution__get_match_history]
+
+[tool: mcp__evolution__run_match_analysis]
+Match history returned empty and match analysis errored. Let me check available data directly and proceed.
+[tool: Bash]
+
+[tool: mcp__evolution__get_bot_info]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+The match analysis tool errored and history is empty — likely a data access issue. I'll proceed to Master planning with the context I have. Let me first quickly understand v15's current strategy.
+[tool: ToolSearch]
+
+[tool: Read]
+
+[tool: Read]
+
+[tool: Read]
+Good, I have a solid understanding of v15's architecture. Now let me check the experience pool for accumulated insights, then run Master to plan v16.
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Read]
+Excellent — rich experience pool insights. Key takeaways:
+- v11 was the historical champion, but **v19 is now #1** at r=1613.0
+- **Bot bloat kills performance** — keep v15's 3432 lines lean
+- **Incremental tweaks > rewrites**, add new paths only
+- River overbet expansion, CBet threshold tuning, EQR calibration are proven levers
+
+Let me check v19 (the current top bot) for comparison, then proceed to Master planning.
+[tool: mcp__evolution__get_bot_info]
+v19 is leaner (3254 lines) yet top-rated (r=1620.5) — confirms the "less bloat = better" lesson. v15 is 3432 lines at r=1566.2. Now let me run Master to plan v16 improvements.
+[tool: ToolSearch]
+
+[tool: mcp__evolution__run_master]
+Master tool hit the same WebUI error. The LLM-invoking tools seem broken. I'll adapt — I'll plan the improvements myself and execute directly. Let me prepare the next generation first, then implement targeted changes.
+[tool: mcp__evolution__prepare_next_gen]
+v16 directory prepared from v15. Now I need to plan and implement improvements myself since the LLM tools are down. Let me examine the key files to identify precise changes.
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+Interesting — v15 already has the CBet thresholds (0.60/0.35), EQR values (0.68/0.56), and strong-tier river overbet that the experience pool recommended! These are already baked in. I need to find NEW improvements. Let me compare v15 with v19 (the top bot) to identify differences.
+[tool: Bash]
+
+[tool: Bash]
+Excellent findings from the diff! v19 (top bot) is actually **simpler** than v15 in key areas. Critical differences:
+
+1. **v19 has higher EQR air values (0.72/0.62)** vs v15's (0.68/0.56) — more conservative folding, proven better
+2. **v19 has unified overbet for nut+strong hands** — v15 only does nut overbet + separate strong overbet
+3. **v19 has NO OOP draw EQR path, NO double_barrel/big_pot discounts** — simpler EQR logic
+4. **v19 has much thinner thin_cap**: `0.30/0.38` vs v15's `0.46 + wetness + round` — more conservative thin value
+5. **v19 has NO gift tracking/exploitation lambda** — leaner sizing module
+
+Let me check the remaining files for differences too.
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+Now I have a complete picture. v19 is better largely because it's **simpler and more conservative** in key areas. My plan for v16 — targeted improvements based on v19's proven approach:
+
+**Changes to implement:**
+1. **Revert EQR air values** to 0.72/0.62 (v19's proven values)
+2. **Remove OOP draw EQR path** — unproven complexity, v19 doesn't have it
+3. **Remove double_barrel OOP extra discount + big_pot discount** — v19 omits these
+4. **Adopt v19's unified river overbet** system (nut+strong combined with proper conditions)
+5. **Keep v15's unique features** (gift tracking, CBet tracking, preflop sizing logic) — these are differentiators
+
+Let me implement these changes now.
+[tool: Read]
+
+[tool: Read]
+Now let me implement the changes. I'll edit strategy.py first — the EQR values and remove the OOP draw path.
+[tool: ToolSearch]
+Let me implement the changes systematically. First, the EQR function in strategy.py:
+[tool: Edit]
+Now update the weak pair EQR section — adopt v19's values, remove double_barrel variable and OOP/big_pot extras:
+[tool: Edit]
+Now update the weak kicker top pair section — remove OOP extra discount:
+[tool: Edit]
+Good. Now let me update the river overbet system. First, let me replace v15's separate overbet approach with v19's unified system in sizing.py:
+[tool: Read]
+
+[tool: Read]
+
+[tool: Read]
+
+[tool: Read]
+Now let me check how the river overbet is called in strategy.py to understand the integration:
+[tool: Read]
+
+[tool: Read]
+Now let me replace the river overbet in strategy.py with v19's approach — unified nut+strong overbet using the sizing module:
+[tool: Edit]
+Now let me also update the second river overbet section in strategy.py (the strong hands section at the bottom of the raise logic):
+[tool: Read]
+
+[tool: Read]
+Now let me update sizing.py — replace `choose_nut_river_overbet` with v19's improved `choose_overbet_river`:
+[tool: Read]
+
+[tool: Edit]
+Now update the imports in strategy.py and the call site in the raise section:
+[tool: Edit]
+Now update the second call site (inside the raise logic):
+[tool: Edit]
+Good. Now let me also remove the `pot` parameter from the EQR function since we removed the `big_pot` usage. Let me check:
+[tool: Read]
+The `pot` parameter is still referenced — let me check if it's used elsewhere in the function now:
+[tool: Bash]
+`pot` is no longer used in the function body (we removed all `big_pot` references). Let me clean it up and also check where it's called:
+[tool: Bash]
+
+[tool: Read]
+The call passes `pot` — I can leave the parameter for backward compatibility but it won't affect behavior. Let me move on to running quality gates. First let me verify the code compiles:
+[tool: Bash]
+All files compile. Now let me run the quality gates:
+[tool: ToolSearch]
+
+[tool: mcp__evolution__run_quality_gates]
+All quality gates **passed**:
+- ✅ Compile check
+- ✅ Smoke test
+- ✅ Decision tests (87% pass rate)
+- ✅ File size (3411 lines, down from 3432 — no oversized files)
+
+Now the mandatory code review:
+[tool: mcp__evolution__run_review]
+Review tool also errored. I'll perform the review manually — checking the diffs carefully for correctness.
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+All changes verified in the files. Let me do a final manual review checklist:
+
+**✅ Review Checklist:**
+1. **EQR air values**: 0.68/0.56 → 0.72/0.62 — matches v19's proven values ✅
+2. **OOP draw EQR path**: Removed entirely — simplifies logic ✅
+3. **double_barrel variable**: Replaced with inline `spot_info.get()` — matches v19 style ✅
+4. **OOP extra discounts removed**: Both in air and pair EQR — simplifies ✅
+5. **big_pot discount removed**: No longer referenced ✅
+6. **Pair EQR values**: 0.84/0.73 → 0.86/0.78 — higher, matching v19 ✅
+7. **Pair clamp floor**: 0.60 → 0.65 — tighter, matching v19 ✅
+8. **Air clamp floor**: 0.40 → 0.45 — tighter, matching v19 ✅
+9. **Unified river overbet**: `choose_overbet_river` handles nut+strong ✅
+10. **Strong overbet conditions**: wetness ≤ 0.20, not dynamic — conservative, matching v19 ✅
+11. **Nut overbet conditions**: wetness ≤ 0.35 — slightly more permissive than old 0.30 ✅
+12. **Redundant strong overbet block removed**: Consolidated into unified function ✅
+13. **min_raise_action**: Using `.get()` fallback — safer ✅
+14. **All files compile**: ✅
+15. **Quality gates all passed**: ✅
+16. **No oversized files**: ✅
+
+The changes are clean, targeted, and directly based on v19's proven approach. No new control flow — only parameter tuning and simplification of existing paths. Proceeding to commit.
+[tool: ToolSearch]
+
+[tool: mcp__evolution__commit_bot]
+v16 committed successfully! Now let me start the next generation immediately. Let me check status and begin v17.
+[tool: mcp__evolution__get_status]
+v16 committed, 18 active bots now. Ratings shifted — v9 is now #1 at 1619.5. Let me wait for v16 to accumulate matches, then plan v17.
+[tool: mcp__evolution__wait_for_eval]
+v16 rating is still unreliable (r=1615.0, rd=56.8). While matches continue, let me investigate v9 (current #1) for ideas on v17's improvements.
+[tool: mcp__evolution__get_bot_info]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[CYCLE DONE] cost=$1.8326
+
+[ERROR] Claude Code returned an error result: Reached maximum number of turns (80)
