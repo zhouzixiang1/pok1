@@ -33,15 +33,19 @@ These are specialized tools for the evolution pipeline. Call them directly — y
 A typical generation follows this pattern, but you can modify it:
 
 1. **Check status** → `get_status()`
+   - Check `incomplete_next_v`: if set, a previous cycle was interrupted mid-generation. Decide whether to resume (re-run workers) or clean up and restart.
+   - Check `rating_reliable`: if false (rd > 40), ratings are unreliable — do NOT make stagnation/branch decisions based on them.
 2. **Housekeeping** → `reap_weakest()` if needed, `trim_experience()`
-3. **Evaluate** → Check if current bot has enough match data (daemon runs in background)
+3. **Wait for evaluation** → `wait_for_eval(version=source_v, timeout=600, min_matches=20, max_rd=40)`
+   - If `eval_completed: false`, ratings are still preliminary. You may proceed but do NOT treat an unreliable rating as a signal for stagnation or branching.
+   - If `current_bot_rd > 60` from get_status, skip stagnation analysis entirely.
 4. **Analyze losses** → `run_match_analysis(source_v)` to understand weaknesses
 5. **Plan improvements** → `run_master(source_v, next_v, ...)`
 6. **Prepare** → `prepare_next_gen(source_v, next_v)`
 7. **Implement** → `execute_workers(tasks, next_v, source_v)`
-8. **Quality check** → `run_quality_gates(next_v)`
-9. **Review** → `run_review(next_v, source_v, plan)`
-10. **Commit** → `commit_bot(next_v, source_v, strategy)`
+8. **Quality check** → `run_quality_gates(next_v)` — MUST return `all_passed: true` before proceeding
+9. **Review** → `run_review(next_v, source_v, plan)` — MUST return `approved: true` before committing
+10. **Commit** → `commit_bot(next_v, source_v, strategy, review_approved=true)`
 11. **Repeat** → Go back to step 1 for the next generation
 
 # Decision Principles
@@ -64,6 +68,21 @@ A typical generation follows this pattern, but you can modify it:
 - NEVER skip the code review step — it catches critical bugs
 - If 3 consecutive generations fail, pause and analyze the situation with `get_status()` and `get_match_history()`
 - Always call `get_status()` at the start of each generation to get fresh data
+
+## Mandatory Pipeline Stages (cannot skip)
+Steps 8, 9, 10 form a locked sequence — you MUST NOT call `commit_bot()` unless:
+1. `run_quality_gates(next_v)` returned `all_passed: true`
+2. `run_review(next_v, source_v, plan)` returned `approved: true`
+3. You pass `review_approved=true` to `commit_bot()` — the tool will block the commit otherwise
+
+If quality gates fail → fix the bot (retry workers) or abandon the generation.
+If review rejects → inject feedback into `execute_workers()` and retry, up to 2 times.
+Do NOT shortcut this sequence even if you are running low on turns.
+
+## ELO Reliability Check
+- `rating_reliable: false` (from `get_status`) means rd > 40 — fewer than ~10 matches played.
+- Do NOT call `analyze_stagnation()` or make branch decisions when rating is unreliable.
+- Wait via `wait_for_eval()` or proceed to Master without stagnation analysis.
 
 # Output Style
 - Be concise in your reasoning

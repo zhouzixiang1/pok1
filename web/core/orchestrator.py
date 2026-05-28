@@ -57,7 +57,11 @@ def _find_current_v():
 
 def _build_context(one_gen=False, dry_run=False):
     """Build context string injected into the orchestrator prompt."""
-    from evolution_core import get_active_bots, load_ratings, git_ensure_clean
+    from evolution_core import (
+        get_active_bots, load_ratings, git_ensure_clean,
+        get_bot_dir, git_has_tag, _load_recent_failures, _git,
+    )
+    from glicko2 import Glicko2Player
 
     git_ensure_clean()
     active_bots = get_active_bots()
@@ -70,6 +74,39 @@ def _build_context(one_gen=False, dry_run=False):
         f"Active bots: {len(active_bots)}",
         f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}",
     ]
+
+    # Current bot rating reliability
+    cur_p = ratings.get(f"claude_v{current_v}")
+    if cur_p:
+        reliable = "RELIABLE" if cur_p.rd <= 40 else "UNRELIABLE (high RD — wait for more matches)"
+        lines.append(f"Current bot claude_v{current_v}: r={cur_p.r:.1f}, rd={cur_p.rd:.1f} [{reliable}]")
+
+    # Incomplete bot detection — previous cycle may have been interrupted
+    next_dir = get_bot_dir(current_v + 1)
+    if next_dir.exists() and not (next_dir / ".completed").exists():
+        lines.append(
+            f"WARNING: claude_v{current_v + 1} directory exists but is NOT completed "
+            f"(previous cycle was interrupted). Decide: resume workers or clean up and restart."
+        )
+
+    # Recent completed generations (from git tags)
+    try:
+        tag_output = _git("tag", "-l", "bot-v*", "--sort=-version:refname", check=False)
+        recent_tags = [t.strip() for t in tag_output.splitlines() if t.strip()][:5]
+        if recent_tags:
+            lines.append(f"Recent completed gens: {', '.join(recent_tags)}")
+    except Exception:
+        pass
+
+    # Recent worker failures
+    try:
+        recent_failures = _load_recent_failures(3)
+        if recent_failures:
+            lines.append("Recent worker failures (last 3):")
+            for f in recent_failures:
+                lines.append(f"  - Gen {f['gen']} Worker {f['worker_id']} ({f['role']}): {f['error'][:120]}")
+    except Exception:
+        pass
 
     if one_gen:
         lines.append("MODE: Run exactly ONE generation, then stop.")

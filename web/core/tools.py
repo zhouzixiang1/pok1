@@ -153,12 +153,29 @@ async def get_status(args):
     ratings = load_ratings()
     daemon_stats = load_daemon_stats()
 
+    # Incomplete next-gen bot detection (in-progress from previous cycle)
+    next_dir = get_bot_dir(current_v + 1)
+    incomplete_next_v = (current_v + 1) if (next_dir.exists() and not (next_dir / ".completed").exists()) else None
+
+    # Current bot rating reliability (rd <= 40 means enough matches)
+    cur_p = ratings.get(f"claude_v{current_v}")
+    current_bot_rd = round(cur_p.rd, 1) if cur_p else None
+    rating_reliable = bool(cur_p and cur_p.rd <= 40)
+
+    # Recent worker failures for context
+    from evolution_core import _load_recent_failures
+    recent_failures = _load_recent_failures(3)
+
     result = {
         "current_v": current_v,
         "next_v": current_v + 1,
         "active_bots_count": len(active_bots),
         "top_ratings": _ratings_summary(ratings),
         "daemon_periods": daemon_stats.get("total_periods", 0),
+        "incomplete_next_v": incomplete_next_v,
+        "current_bot_rd": current_bot_rd,
+        "rating_reliable": rating_reliable,
+        "recent_worker_failures": recent_failures,
     }
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
 
@@ -443,15 +460,40 @@ class CommitBotInput(TypedDict):
     version: Annotated[int, "Bot version to commit"]
     source_v: Annotated[int, "Parent version"]
     strategy: Annotated[str, "Strategy description"]
+    review_approved: Annotated[bool, "Must be true — confirms run_review() returned approved:true"]
 
 
-@tool("commit_bot", "Commit a bot generation with git commit and tag.", {"version": int, "source_v": int, "strategy": str})
+@tool("commit_bot", "Commit a bot generation with git commit and tag. review_approved must be true (set after run_review returns approved:true).", {"version": int, "source_v": int, "strategy": str, "review_approved": bool})
 async def commit_bot(args):
     v = args["version"]
     source_v = args["source_v"]
     strategy = args["strategy"]
+    review_approved = args.get("review_approved", False)
 
     bot_dir = get_bot_dir(v)
+
+    # Guard: compile check
+    compile_errors = verify_code(bot_dir)
+    if compile_errors:
+        return {"content": [{"type": "text", "text": json.dumps({
+            "error": "COMMIT BLOCKED: compile errors present. Run run_quality_gates() first and fix errors.",
+            "compile_errors": compile_errors[:3],
+        })}]}
+
+    # Guard: decision tests
+    decision_rate = run_decision_tests(bot_dir)
+    if decision_rate < 0.7:
+        return {"content": [{"type": "text", "text": json.dumps({
+            "error": f"COMMIT BLOCKED: decision test pass rate {decision_rate:.0%} < 70%. Fix catastrophic blunders first.",
+            "decision_pass_rate": round(decision_rate, 2),
+        })}]}
+
+    # Guard: reviewer approval required
+    if not review_approved:
+        return {"content": [{"type": "text", "text": json.dumps({
+            "error": "COMMIT BLOCKED: review_approved=false. Call run_review() first; only pass review_approved=true if it returns approved:true.",
+        })}]}
+
     (bot_dir / ".completed").touch()
 
     ratings = load_ratings()

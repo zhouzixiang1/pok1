@@ -317,8 +317,35 @@ def _git(*args, check=True):
     return result.stdout.strip()
 
 
+EVOLUTION_BRANCH = "main"
+
+
+def _git_ensure_main_branch():
+    """Return to the canonical evolution branch (main) if an LLM drifted off it.
+
+    LLM agents have Bash tool access and can accidentally run `git checkout -b`
+    during their sessions. This guard detects and silently corrects the drift
+    before any commit lands on the wrong branch.
+    """
+    current = _git("rev-parse", "--abbrev-ref", "HEAD", check=False).strip()
+    if current == EVOLUTION_BRANCH:
+        return
+    if current == "HEAD":
+        # Detached HEAD — reset to main
+        print(f"[git] WARNING: detached HEAD detected, resetting to {EVOLUTION_BRANCH}")
+        _git("checkout", EVOLUTION_BRANCH, check=False)
+        return
+    print(f"[git] WARNING: on branch '{current}', expected '{EVOLUTION_BRANCH}'. "
+          f"Switching back before commit.")
+    # Stash any uncommitted changes, switch to main, pop stash
+    _git("stash", check=False)
+    _git("checkout", EVOLUTION_BRANCH, check=False)
+    _git("stash", "pop", check=False)
+
+
 def git_ensure_clean():
-    """Stage + commit all tracked files as checkpoint."""
+    """Stage + commit all tracked files as checkpoint on the evolution branch."""
+    _git_ensure_main_branch()
     _git("add", "-A")
     status = _git("status", "--porcelain")
     if status:
@@ -336,7 +363,12 @@ def git_has_tag(version):
 
 
 def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=None):
-    """Commit a completed bot generation (bot code + ratings + experience pool)."""
+    """Commit a completed bot generation (bot code + ratings + experience pool).
+
+    Always commits on EVOLUTION_BRANCH (main). Calls _git_ensure_main_branch()
+    first so that LLM-created side-branches never pollute the evolution history.
+    """
+    _git_ensure_main_branch()
     parent_line = f"parent: claude_v{source_v}"
     if parent2_v is not None:
         parent_line += f"\nparent2: claude_v{parent2_v}"
@@ -671,6 +703,10 @@ async def _consolidate_experience_pool(ui, is_text_ui):
 
     Reads the current experience_pool.md, asks LLM to merge redundant entries,
     and writes back a consolidated version. Runs every 3 generations.
+
+    Strategy: ask LLM to output the consolidated text directly (not edit in-place),
+    then write it back here as a guaranteed fallback. The LLM's text output is the
+    source of truth — no dependency on the agent using Edit tool.
     """
     if not EXPERIENCE_FILE.exists():
         return
@@ -683,14 +719,16 @@ async def _consolidate_experience_pool(ui, is_text_ui):
     consolidate_prompt = (
         "You are an Experience Pool Consolidator. Your job is to clean up the experience pool file.\n\n"
         "RULES:\n"
-        "1. Read the current experience_pool.md file.\n"
+        "1. Read the current experience pool content provided below.\n"
         "2. Merge duplicate or near-duplicate lessons into single, concise entries.\n"
         "3. Keep the most recent/relevant version of each lesson.\n"
         "4. Remove entries that have been superseded by newer findings.\n"
-        "5. Preserve the markdown format and generation headers.\n"
-        "6. Keep the total file under 60 lines.\n"
-        "7. Output ONLY the consolidated markdown content — no explanation, no code fences.\n\n"
-        f"Edit the file in place: {EXPERIENCE_FILE}\n"
+        "5. Preserve the markdown format.\n"
+        "6. Keep the total output under 60 lines.\n"
+        "7. Output ONLY the consolidated markdown content — no explanation, no code fences, no extra text.\n\n"
+        "## Current experience_pool.md content:\n\n"
+        f"{content}\n\n"
+        "## Output the consolidated version now (plain markdown, no fences):"
     )
     log_file = get_logs_dir(0) / "experience_consolidation_io.txt"
 
@@ -700,10 +738,20 @@ async def _consolidate_experience_pool(ui, is_text_ui):
             consolidate_prompt, [], ui,
             "EXPERIENCE CONSOLIDATOR", log_file, is_text_ui,
         )
-        if output and len(output.strip()) > 50:
-            ui.log_history("Experience pool consolidated.", "success")
+        consolidated = output.strip() if output else ""
+        # Strip accidental code fences if LLM added them
+        if consolidated.startswith("```"):
+            lines = consolidated.split("\n")
+            consolidated = "\n".join(
+                l for l in lines if not l.strip().startswith("```")
+            ).strip()
+
+        if consolidated and len(consolidated) > 50:
+            with locked_file(EXPERIENCE_FILE, "w") as ef:
+                ef.write(consolidated + "\n")
+            ui.log_history("Experience pool consolidated and written back.", "success")
         else:
-            ui.log_history("Experience pool consolidation produced no output.", "warn")
+            ui.log_history("Experience pool consolidation produced no output — skipping write.", "warn")
     except Exception as e:
         ui.log_history(f"Experience pool consolidation failed: {e}", "warn")
 
@@ -897,19 +945,23 @@ def _load_recent_failures(n=3):
     return entries[-n:]
 
 
-async def _analyze_recent_matches(source_v, ui, is_text_ui, max_matches=5):
+async def _analyze_recent_matches(source_v, ui, is_text_ui, max_matches=8):
     """Use LLM to analyze recent replay data for the current bot.
+
+    Collects both recent losses and close wins (margin < 3 games) to give
+    the Master a balanced view of weaknesses and what's working.
 
     Returns a match analysis string to inject into Master's context, or ""
     if no replay data is available.
     """
     bot_name = f"claude_v{source_v}"
 
-    # Find recent losses from match_history.jsonl
     if not MATCH_HISTORY_FILE.exists():
         return ""
 
     recent_losses = []
+    close_wins = []
+
     with locked_file(MATCH_HISTORY_FILE, "r") as f:
         for line in f:
             line = line.strip()
@@ -919,32 +971,46 @@ async def _analyze_recent_matches(source_v, ui, is_text_ui, max_matches=5):
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            # Check if this bot lost
-            if entry.get("bot0") == bot_name and entry.get("bot1_wins", 0) > entry.get("bot0_wins", 0):
-                recent_losses.append(entry)
-            elif entry.get("bot1") == bot_name and entry.get("bot0_wins", 0) > entry.get("bot1_wins", 0):
-                recent_losses.append(entry)
 
-    if not recent_losses:
+            b0, b1 = entry.get("bot0"), entry.get("bot1")
+            w0, w1 = entry.get("bot0_wins", 0), entry.get("bot1_wins", 0)
+
+            if b0 == bot_name:
+                bot_wins, opp_wins = w0, w1
+            elif b1 == bot_name:
+                bot_wins, opp_wins = w1, w0
+            else:
+                continue
+
+            if opp_wins > bot_wins:
+                recent_losses.append(entry)
+            elif bot_wins > opp_wins and (bot_wins - opp_wins) <= 2:
+                # Close win (margin ≤ 2 games) — reveals near-miss vulnerabilities
+                close_wins.append(entry)
+
+    if not recent_losses and not close_wins:
         return ""
 
-    # Take most recent losses
     recent_losses = recent_losses[-max_matches:]
+    close_wins = close_wins[-(max_matches // 2):]
 
-    # Build summaries from replay files
-    summaries = []
-    for entry in recent_losses:
-        replay_path = REPLAY_DIR / entry["id"]
-        if not replay_path.exists():
-            continue
-        try:
-            with open(replay_path, "r") as rf:
-                replay_data = json.load(rf)
-            summary = summarize_replay_for_analysis(replay_data, bot_name)
-            if summary:
-                summaries.append(summary)
-        except (json.JSONDecodeError, OSError):
-            continue
+    def _load_summaries(entries, label):
+        result = []
+        for entry in entries:
+            replay_path = REPLAY_DIR / entry["id"]
+            if not replay_path.exists():
+                continue
+            try:
+                with open(replay_path, "r") as rf:
+                    replay_data = json.load(rf)
+                summary = summarize_replay_for_analysis(replay_data, bot_name)
+                if summary:
+                    result.append(f"[{label}] {summary}")
+            except (json.JSONDecodeError, OSError):
+                continue
+        return result
+
+    summaries = _load_summaries(recent_losses, "LOSS") + _load_summaries(close_wins, "CLOSE WIN")
 
     if not summaries:
         return ""
@@ -952,19 +1018,20 @@ async def _analyze_recent_matches(source_v, ui, is_text_ui, max_matches=5):
     # Call LLM for analysis
     match_analyst_prompt = (
         "You are a Poker Hand Analyst specializing in Texas Hold'em bot strategy.\n"
-        "Analyze the following match replay summaries for weaknesses and patterns.\n\n"
+        "Analyze the following match replay summaries (losses and close wins) for weaknesses and patterns.\n\n"
     )
-    match_analyst_prompt += "## Recent Loss Summaries\n\n"
+    match_analyst_prompt += "## Recent Match Summaries (LOSS = bot lost, CLOSE WIN = bot won by ≤2 games)\n\n"
     for s in summaries:
         match_analyst_prompt += s + "\n\n"
     match_analyst_prompt += (
         "Based on the data above, identify:\n"
         "1. Key weaknesses (e.g., folding too much, not raising enough, poor all-in timing)\n"
         "2. Any detectable patterns (e.g., weak out-of-position, poor against aggressive opponents)\n"
-        "3. A concrete recommendation for improvement\n\n"
+        "3. What seems to be working (from close wins, if any)\n"
+        "4. A concrete recommendation for improvement\n\n"
         "Output ONLY a JSON block:\n"
         "```json\n"
-        '{"weaknesses": ["..."], "patterns": "...", "recommendation": "..."}\n'
+        '{"weaknesses": ["..."], "patterns": "...", "working": "...", "recommendation": "..."}\n'
         "```\n"
         "Keep it concise — 2-3 weaknesses, 1 pattern, 1 recommendation."
     )

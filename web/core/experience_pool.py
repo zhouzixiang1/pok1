@@ -5,18 +5,22 @@ Provides functions to trim and maintain the experience_pool.md file,
 preventing unbounded growth and stale advice.
 """
 
-import re
 import fcntl
 from pathlib import Path
 
 EXPERIENCE_FILE = Path(__file__).resolve().parent / "experience_pool.md"
 
 
-def trim_experience_pool(max_entries=8):
-    """Keep only the most recent N generation entries in experience_pool.md.
+MAX_EXPERIENCE_LINES = 120
+KEEP_EXPERIENCE_LINES = 100
 
-    Splits the file by generation headers (e.g. '- **v6 -> v7**:'),
-    keeps the last `max_entries` blocks, and rewrites the file.
+
+def trim_experience_pool(max_entries=8):  # max_entries kept for call-site compatibility
+    """Keep experience_pool.md under MAX_EXPERIENCE_LINES by dropping oldest lines.
+
+    The old regex-based approach only matched '- **vX -> vY**:' entry headers,
+    which didn't match LLM-consolidated content using '###' section headers.
+    This line-count approach works regardless of format.
     """
     if not EXPERIENCE_FILE.exists():
         return
@@ -25,27 +29,12 @@ def trim_experience_pool(max_entries=8):
         fcntl.flock(f, fcntl.LOCK_EX)
         try:
             content = f.read()
-
-            # Split by generation headers like "- **v{X} -> v{Y}**:" format
-            pattern = r'(- \*\*v\d+ -> v\d+\*\*:)'
-            parts = re.split(pattern, content)
-
-            if len(parts) <= 1:
+            lines = content.split("\n")
+            if len(lines) <= MAX_EXPERIENCE_LINES:
                 return
-
-            # parts[0] = header + intro text
-            # parts[1], parts[2] = header, body for first entry
-            # parts[3], parts[4] = header, body for second entry, etc.
-            header = parts[0]
-            pairs = [(parts[i], parts[i + 1]) for i in range(1, len(parts) - 1, 2)]
-
-            if len(pairs) <= max_entries:
-                return  # Already within limit
-
-            kept = pairs[-max_entries:]
-            result = header + ''.join(h + b for h, b in kept)
+            kept = "\n".join(lines[-KEEP_EXPERIENCE_LINES:])
             f.seek(0)
             f.truncate()
-            f.write(result)
+            f.write(kept)
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)

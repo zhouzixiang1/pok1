@@ -105,10 +105,14 @@ Workers modify bot code → Reviewer validates → Git commit + tag
 - Worker role boundaries are enforced by both prompts and reviewer: Logic Architects cannot tune constants, Hyperparameter Tuners cannot add functions
 - Max 1000 lines per `.py` file — reviewer rejects oversized files
 - Decision test pass rate must be ≥70% (prevents catastrophic regressions)
-- Experience pool trimmed to 8 entries, LLM-consolidated every 3 generations
+- Experience pool trimmed when >120 lines (keeps last 100), LLM-consolidated every 3 generations
 - API rate limit (529) handled with automatic retry + exponential backoff (30s, 60s, 120s)
 - Worker failures recorded to `results/worker_failures.jsonl` and injected into future worker prompts
 - `claude_agent_sdk` is the LLM interface — not the Anthropic SDK directly
+- `commit_bot()` has hard guards: compile errors, decision tests <70%, or `review_approved=false` all block the commit
+- Orchestrator prompt context includes: current bot rd reliability, incomplete-gen warning, recent git tags, recent worker failures
+- `_consolidate_experience_pool` writes LLM output back to file directly (no dependency on agent using Edit tool)
+- `_analyze_recent_matches` collects both losses AND close wins (margin ≤2) for balanced Master context
 
 ## Dependencies
 
