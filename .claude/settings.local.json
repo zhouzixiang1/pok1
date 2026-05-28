@@ -16,7 +16,10 @@
       "Bash(conda run:*)",
       "Bash(kill 81529 81520 81518 81516)",
       "Bash(gtimeout 90 python3 evolution_workspace/evolution_manager.py --no-tui --no-daemon)",
-      "Bash(wc -l evolution_workspace/*.py evolution_workspace/*.tcss)"
+      "Bash(wc -l evolution_workspace/*.py evolution_workspace/*.tcss)",
+      "Bash(kill 93033)",
+      "Bash(awk '{print $2}')",
+      "Bash(xargs kill)"
     ]
   }
 }

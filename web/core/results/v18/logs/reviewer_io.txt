@@ -1,0 +1,148 @@
+
+[LEAD CODE REVIEWER PROMPT]
+=============================
+# Role
+You are the strict Lead Code Reviewer (Critic) for a Texas Hold'em poker bot team.
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files.
+- **Use the Bash tool** to run git diff and other commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Task
+Worker Agents have modified the bot codebase based on the Master Architect's instructions.
+Your job is the final quality gate before production (the next evolution iteration).
+
+# Context
+1. **Master's Original Plan/Tasks:**
+[
+  "1. NEW: choose_strong_overbet_river() in betting.py \u2014 River overbet for strong-tier hands on very dry boards (wetness<=0.18, unpaired). Sizing 1.15-1.60x pot. Called from strategy.py after nut overbet.",
+  "2. NEW: River weak-pair tight fold guard in strategy.py \u2014 On river facing medium/large bet with bottom_pair/underpair/board_pair, no draw, non-nut hand \u2192 fold. Prevents hero calls with dominated pairs.",
+  "3. NEW: flop_check_through_probe in strategy.py \u2014 Turn probe bet when opponent checked back flop, we have medium made hand (0.28-0.55), board is moderately dry. Uses probe_mode sizing (25-33% pot)."
+]
+
+2. **Bot directory**: `bots/claude_v18/`
+3. **Parent version tag**: `bot-v11`
+
+# How to Review
+You have full access to git and file reading tools. Use them:
+
+1. **See all changes**: Run `git diff bot-v11 -- bots/claude_v18/`
+   This shows exactly what the workers changed vs the parent bot.
+2. **See change summary**: Run `git diff --stat bot-v11 -- bots/claude_v18/`
+3. **Read specific files**: Use the Read tool on any file in `bots/claude_v18/`
+4. **List all files**: Run `ls bots/claude_v18/` to see the full file list
+
+Focus your review on the diff, but read full files when you need more context.
+
+# Rules
+1. Verify the changes fulfill the Master's instructions without logical flaws or contradictions.
+2. ENFORCE THE DUAL-TRACK BOUNDARY:
+   - If a "Hyperparameter Tuner" was assigned, verify they ONLY changed constants/thresholds. If they injected complex new logic, REJECT.
+   - If an "Algorithmic Logic Architect" was assigned, verify their logic is sound.
+3. Ensure the code compiles conceptually and adheres to the `{"response": int}` JSON output format constraint.
+4. Output exactly ONE JSON block containing your decision. If you reject the code, you must provide a detailed "feedback" string explaining what the Developer Agents need to fix.
+5. FILE SIZE CONSTRAINT: No single .py file should exceed 1000 lines. If any file is too large, REJECT and instruct workers to split it into focused modules. Keep main.py as the slim entry point.
+
+# Correctness Criteria (MANDATORY CHECK)
+Before approving, verify the bot does NOT do any of the following:
+- Fold premium hands (AA, KK, QQ, AKs) preflop without extreme pressure
+- Call all-in with obviously dominated hands on the river
+- Return invalid JSON (must output `{"response": <int>}`)
+- Use `input()` or `print()` instead of stdin/stdout for game communication
+- Import unavailable modules (only stdlib + numpy if present)
+- Have obvious infinite loops or unbounded recursion
+
+# Output Format
+You MUST output your response containing exactly ONE JSON block formatted as follows:
+
+```json
+{
+  "approved": true or false,
+  "feedback": "If approved=false, provide detailed instructions on what needs to be fixed. If true, this can be empty.",
+  "quality_score": 7,
+  "change_summary": "A 1-2 sentence summary of the key changes made in this generation.",
+  "risk_areas": ["List of potential risks or concerns about the changes, if any"]
+}
+```
+
+# Quality Score Rubric
+- **9-10**: Clean, well-structured changes that clearly improve strategy. No risks. Code is concise and follows project conventions.
+- **7-8**: Good changes that address the plan. Minor concerns (e.g., slightly verbose code, a heuristic that might not generalize). Approve.
+- **5-6**: Changes work but are mediocre — copy-pasted code, brute-force approaches where elegant solutions exist, or unclear strategy. Approve with caution.
+- **3-4**: Changes introduce regression risk, violate role boundaries, or show fundamental misunderstanding of poker strategy. REJECT.
+- **1-2**: Broken code, catastrophic strategic errors (folding AA preflop), or complete failure to follow instructions. REJECT.
+
+- `change_summary`: Required even when approved=true. This is used to update the experience pool for future generations.
+- `risk_areas`: Optional. List potential issues that could cause regression.
+
+=============================
+[CLAUDE OUTPUT]
+Let me start the review by examining the changes.
+The directory is untracked. Let me compare against the parent bot (claude_v11) directly.
+Good, I can see the diffs. Now let me read the full files for deeper context on the changed areas.
+**strategy.py is 1096 lines — exceeds the 1000-line limit.** But let me continue the full review to provide complete feedback.
+Now let me verify some important context — what the existing `choose_overbet_river` function looks like for comparison, and the bet_size_bucket function used in the fold guard.
+Let me check where bet_size_bucket is defined — it's imported from somewhere.
+Now let me verify the compile check and also check for potential issues with `opp_postflop_check_count` and `opp_postflop_bet_count` in spot_info:
+Let me check a few more things for correctness verification:
+Let me verify one more thing about the spot_info access pattern used in the fold guard:
+Good — `anti_lock_can_continue` is imported from `tournament.py`. Now let me verify the JSON output format and ensure there's no use of `input()` or `print()`:
+Now let me check if the main.py entry point is clean and returns valid JSON:
+Now I have all the information I need for a comprehensive review. Let me summarize my findings:
+
+## Review Summary
+
+### Files Changed (vs claude_v11):
+- **betting.py**: +32 lines (new `choose_strong_overbet_river` function + import)
+- **strategy.py**: +38 lines (river fold guard + flop check-through probe + integration points)
+
+### File Size Check:
+- strategy.py: **1096 lines** — **EXCEEDS the 1000-line hard limit**
+
+### Detailed Analysis of Each Change:
+
+**1. `choose_strong_overbet_river()` (betting.py:270-298)** ✅ Sound
+- Correctly targets "strong" (not "nut") tier hands on very dry boards (wetness ≤ 0.18)
+- Excludes paired boards (avoids full house/quads traps)
+- Sizing 1.15-1.60x pot is reasonable; OOP gets -0.10 adjustment
+- Win rate floor 0.68, min pot 600 — appropriate thresholds
+- Proper all-in fallback and min_raise validation
+- Called from strategy.py only when `to_call == 0` and `tier == "strong"` — correct for a lead overbet
+
+**2. River weak-pair tight fold guard (strategy.py:756-763)** ✅ Sound
+- Targets `made_class == 1` (one pair) with weak types: bottom_pair/underpair/board_pair
+- Only folds to medium/large bets, requires `draw_strength < 0.12`
+- Excludes strong/nut value tiers — won't fold strong hands
+- Properly guarded by `anti_lock_call_continue` and `strong_made_continue`
+
+**3. Flop check-through turn probe (strategy.py:1042-1057)** ✅ Sound
+- `opp_postflop_bet_count == 0 AND opp_postflop_check_count >= 1` correctly identifies "opponent checked back flop"
+- `not check_probe_signal` prevents overlap with existing probe logic
+- Strength range 0.28-0.55, wetness ≤ 0.40, draw < 0.14 — appropriate medium-hand probe parameters
+- Properly integrated into raise decision and `probe_mode` sizing
+
+**Correctness checks:**
+- Compiles clean ✅
+- No `input()`/`print()` in strategy/betting ✅
+- Valid JSON output format maintained ✅
+- No unavailable imports ✅
+- No infinite loops or unbounded recursion ✅
+- No folding of premium hands preflop ✅
+
+**BLOCKING ISSUE:** strategy.py is **1096 lines**, exceeding the 1000-line hard limit specified in the project rules.
+
+```json
+{
+  "approved": false,
+  "feedback": "BLOCKING: strategy.py is 1096 lines, exceeding the 1000-line hard limit. All three changes are strategically sound and well-implemented, but the file must be reduced below 1000 lines before commit. Workers should either: (a) extract one or more logical blocks from strategy.py into a new focused module (e.g., move probe/overbet logic into a dedicated probe_betting.py, or extract fold-guard helpers), or (b) refactor redundant/verbose patterns to reduce line count. The three new features themselves add only ~38 net lines, so the file was already near the limit — the solution is to extract existing code, not remove the new additions. No other issues found with the logic.",
+  "quality_score": 7,
+  "change_summary": "Added three features: (1) river overbet for strong-tier hands on very dry unpaired boards (1.15-1.60x pot), (2) tight fold guard for weak pairs (bottom/under/board pair) facing medium/large river bets with no draw, (3) turn probe bet after opponent checked back flop with medium made hands on dry boards.",
+  "risk_areas": [
+    "strategy.py exceeds 1000-line limit (1096 lines) — must split/refactor before commit",
+    "Strong overbet sizing ratio of 1.05 OOP floor may be too aggressive if opponent rarely folds to overbets — monitor win rate in practice",
+    "Flop check-through probe relies on opp_postflop_check_count/bet_count which have low confidence early in a match (confidence floor 0.15 is quite low)"
+  ]
+}
+```
