@@ -20,7 +20,7 @@ from tournament import (
     apply_anti_lock_pressure,
     anti_lock_can_continue,
 )
-from opponent import build_opponent_model, analyze_current_spot, detect_bot4_profile, get_anti_bot4_adjustments, classify_opponent_style
+from opponent import build_opponent_model, analyze_current_spot, detect_bot4_profile, get_anti_bot4_adjustments
 from postflop import (
     made_hand_metric,
     pair_board_profile,
@@ -46,7 +46,7 @@ from sizing import (
     track_opponent_gift,
     safe_exploitation_lambda,
     choose_preflop_spot_action,
-    choose_nut_river_overbet,
+    choose_overbet_river,
 )
 
 def opponent_pressure_adjustment(opponent_model, spot_info, round_idx):
@@ -219,64 +219,41 @@ def realized_postflop_equity(
     if round_idx <= 0:
         return win_rate
 
-    double_barrel = spot_info.get("opp_postflop_bet_count", 0) >= 2
-    big_pot = pot > 3000
     eqr = 1.0
 
     if air_hand:
-        eqr = 0.68 if has_position else 0.56
+        eqr = 0.72 if has_position else 0.62
 
-        if double_barrel:
+        if spot_info.get("opp_postflop_bet_count", 0) >= 2:
             eqr -= 0.10
-            if not has_position:
-                eqr -= 0.05
         if round_idx == 2:
             eqr -= 0.05
         elif round_idx == 3:
             eqr -= 0.12
-        if big_pot:
-            eqr -= 0.03
 
-        eqr = clamp(eqr, 0.40, 0.85)
-        return win_rate * eqr
-
-    if draw_strength >= 0.08 and made_strength < 0.18 and not has_position:
-        eqr = 0.85 if round_idx == 1 else 0.75
-
-        if double_barrel:
-            eqr -= 0.05
-        if big_pot:
-            eqr -= 0.03
-
-        eqr = clamp(eqr, 0.60, 0.92)
+        eqr = clamp(eqr, 0.45, 0.85)
         return win_rate * eqr
 
     if pair_profile is not None and pair_profile["made_class"] == 1:
         pair_type = pair_profile["pair_type"]
 
         if pair_type in ("middle_pair", "bottom_pair", "underpair", "board_pair"):
-            eqr = 0.84 if has_position else 0.73
+            eqr = 0.86 if has_position else 0.78
 
             if pair_profile["weak_kicker"]:
                 eqr -= 0.05
-            if double_barrel:
+            if spot_info.get("opp_postflop_bet_count", 0) >= 2:
                 eqr -= 0.06
-                if not has_position:
-                    eqr -= 0.05
             if round_idx == 3:
                 eqr -= 0.06
-            if big_pot:
-                eqr -= 0.03
 
-            eqr = clamp(eqr, 0.60, 0.92)
+            eqr = clamp(eqr, 0.65, 0.92)
             return win_rate * eqr
 
         if pair_type == "top_pair" and pair_profile["weak_kicker"]:
             eqr = 0.92 if has_position else 0.86
-            if double_barrel:
+            if spot_info.get("opp_postflop_bet_count", 0) >= 2:
                 eqr -= 0.04
-                if not has_position:
-                    eqr -= 0.03
             eqr = clamp(eqr, 0.75, 0.95)
             return win_rate * eqr
 
@@ -391,19 +368,30 @@ def get_action(req, requests):
             "river_overbet_enabled": False, "trap_defense_delta": 0.0,
         }
 
-    # Opponent style classification (ported from v11 champion)
-    style_deltas = classify_opponent_style(opponent_model)
-
-    # River overbet with nut hands (always enabled for nut-tier)
-    if round_idx == 3 and to_call == 0 and len(public_cards) >= 3 and value_profile is not None and value_profile["tier"] == "nut" and not anti_lock_pressure:
-        overbet_ratio = 1.50 + 0.50 * max(0, win_rate - 0.70)
-        if board_texture is not None and board_texture["wetness"] <= 0.30:
-            overbet_ratio += 0.15
-        overbet_target = int(pot * overbet_ratio)
-        overbet_target = max(overbet_target, state["min_raise_action"])
-        overbet_target = min(overbet_target, my_chips - 1)
-        if overbet_target > to_call and overbet_target < my_chips:
-            return overbet_target
+    # River overbet: nut and strong hands on dry boards
+    if round_idx == 3 and to_call == 0 and len(public_cards) >= 3 and value_profile is not None and value_profile["tier"] in ("nut", "strong") and not anti_lock_pressure:
+        tier = value_profile["tier"]
+        wetness = board_texture["wetness"] if board_texture else 0.0
+        if tier == "nut":
+            if wetness <= 0.35:
+                overbet_ratio = 1.50 + 0.35 * max(0, win_rate - 0.70)
+                if not spot_info.get("has_position", False):
+                    overbet_ratio = max(1.30, overbet_ratio - 0.15)
+                overbet_ratio = min(overbet_ratio, 2.20)
+                overbet_target = int(pot * overbet_ratio)
+                overbet_target = max(overbet_target, state.get("min_raise_action", state["round_raise"]))
+                overbet_target = min(overbet_target, my_chips - 1)
+                if overbet_target > to_call and overbet_target < my_chips:
+                    return overbet_target
+        else:
+            if board_texture is not None and wetness <= 0.20 and not board_texture.get("dynamic", False):
+                overbet_ratio = 1.30 + 0.20 * max(0, win_rate - 0.60)
+                overbet_ratio = min(overbet_ratio, 1.50)
+                overbet_target = int(pot * overbet_ratio)
+                overbet_target = max(overbet_target, state.get("min_raise_action", state["round_raise"]))
+                overbet_target = min(overbet_target, my_chips - 1)
+                if overbet_target > to_call and overbet_target < my_chips:
+                    return overbet_target
     repeated_raise_trap = (
         round_idx > 0
         and spot_info["facing_postflop_aggression"]
@@ -479,10 +467,6 @@ def get_action(req, requests):
     strong -= anti_bot4["call_threshold_delta"]
     medium -= anti_bot4["call_threshold_delta"] * 0.8
     strong += anti_bot4["trap_defense_delta"]
-
-    # Apply opponent style deltas (ported from v11)
-    strong += style_deltas["strong_delta"]
-    medium += style_deltas["medium_delta"]
 
     if exploit_lambda > 0.0:
         strong = (1 - exploit_lambda) * gto_strong + exploit_lambda * strong
@@ -891,9 +875,9 @@ def get_action(req, requests):
     if thin_static_showdown_control:
         return 0
 
-    river_bluff_threshold = 0.62 - 0.28 * match_profile["bluff_delta"] - anti_bot4["bluff_freq_bonus"] - style_deltas["bluff_freq_bonus"]
-    probe_fold_threshold = 0.56 - 0.32 * match_profile["bluff_delta"] - anti_bot4["bluff_freq_bonus"] - style_deltas["bluff_freq_bonus"]
-    semi_bluff_threshold = 0.58 - 0.28 * match_profile["bluff_delta"] - anti_bot4["bluff_freq_bonus"] - style_deltas["bluff_freq_bonus"]
+    river_bluff_threshold = 0.62 - 0.28 * match_profile["bluff_delta"] - anti_bot4["bluff_freq_bonus"]
+    probe_fold_threshold = 0.56 - 0.32 * match_profile["bluff_delta"] - anti_bot4["bluff_freq_bonus"]
+    semi_bluff_threshold = 0.58 - 0.28 * match_profile["bluff_delta"] - anti_bot4["bluff_freq_bonus"]
     draw_bet_threshold = clamp(semi_bluff_threshold - draw_info["fold_threshold_delta"], 0.46, 0.70)
     check_probe_signal = (
         spot_info["last_opp_action_type"] == "check"
@@ -971,33 +955,13 @@ def get_action(req, requests):
             anti_bot4_bonus=anti_bot4["raise_size_bonus"],
         )
         if raise_amount is not None:
-            # River overbet: nut hands on dry boards — 1.5-2.2x pot (highest priority)
+            # River overbet: nut+strong hands — use unified function
             if round_idx == 3 and not anti_lock_pressure:
-                nut_overbet = choose_nut_river_overbet(
-                    state["min_raise_action"], my_chips, to_call, pot, win_rate,
+                overbet = choose_overbet_river(
+                    state.get("min_raise_action", state["round_raise"]), my_chips, to_call, pot, win_rate,
                     value_profile, board_texture, spot_info,
                 )
-                if nut_overbet is not None and nut_overbet > raise_amount:
-                    return nut_overbet
-            # River overbet: strong hands on dry boards — 1.3-1.7x pot
-            river_dry_overbet = (
-                round_idx == 3
-                and to_call == 0
-                and value_profile is not None
-                and value_profile["tier"] == "strong"
-                and board_texture is not None
-                and board_texture["wetness"] <= 0.25
-                and not board_texture["dynamic"]
-                and nutted_risk["risk"] <= 0.03
-                and pot >= 400
-                and not anti_lock_pressure
-            )
-            if river_dry_overbet:
-                overbet_ratio = 1.30 + 0.40 * max(0, win_rate - 0.58)
-                overbet_target = int(pot * overbet_ratio)
-                overbet_target = max(overbet_target, state["min_raise_action"])
-                overbet_target = min(overbet_target, my_chips - 1)
-                if overbet_target > raise_amount and overbet_target > to_call and overbet_target < my_chips:
-                    return overbet_target
+                if overbet is not None and overbet > raise_amount:
+                    return overbet
             return raise_amount
     return 0

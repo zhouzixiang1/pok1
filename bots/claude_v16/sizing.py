@@ -330,22 +330,30 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
     return None
 
 
-def choose_nut_river_overbet(min_raise, my_chips, to_call, pot, win_rate, value_profile, board_texture, spot_info):
-    """River overbet for nut-tier hands on dry boards: 1.5-2.2x pot."""
-    if value_profile is None or value_profile["tier"] != "nut":
-        return None
-    if board_texture is not None and board_texture["wetness"] > 0.30:
+def choose_overbet_river(min_raise, my_chips, to_call, pot, win_rate, value_profile, board_texture, spot_info):
+    """River overbet: 1.5-2.2x pot with nut hands; 1.3-1.5x pot with strong on dry boards."""
+    if value_profile is None or value_profile["tier"] not in ("nut", "strong"):
         return None
     if pot < 400:
         return None
-    if to_call > 0:
-        return None
+
+    tier = value_profile["tier"]
+    wetness = board_texture["wetness"] if board_texture else 0.0
+
+    if tier == "nut":
+        if wetness > 0.35:
+            return None
+        ratio = 1.5 + 0.3 * max(0.0, win_rate - 0.70)
+        if not spot_info.get("has_position", False):
+            ratio = max(1.3, ratio - 0.2)
+        ratio = min(ratio, 2.2)
+    else:
+        if board_texture is not None and (wetness > 0.20 or board_texture.get("dynamic", False)):
+            return None
+        ratio = 1.30 + 0.20 * max(0.0, win_rate - 0.60)
+        ratio = min(ratio, 1.50)
 
     pot_after_call = pot + to_call
-    ratio = 1.50 + 0.35 * max(0.0, win_rate - 0.70)
-    if not spot_info.get("has_position", False):
-        ratio = max(1.30, ratio - 0.15)
-    ratio = min(ratio, 2.20)
     amount = int(to_call + pot_after_call * ratio)
 
     if amount >= my_chips:
