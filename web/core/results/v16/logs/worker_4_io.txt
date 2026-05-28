@@ -1,0 +1,157 @@
+
+[WORKER 4 (Betting Strategy Specialist) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Betting Strategy Specialist**.
+You must directly edit the source files in `bots/claude_v16/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v16/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+First pass implementation, no reviewer feedback yet.
+
+ORIGINAL:
+Add a delayed flop c-bet strategy for when we're in position and opponent checks. Make these changes:
+
+1. **In strategy.py, add a delayed c-bet check** after the main `to_call > 0` block (around line 756), in the `to_call == 0` section. Add this before the existing `weak_pair_river` checks:
+
+```python
+delayed_flop_cbet = (
+    round_idx == 1
+    and to_call == 0
+    and spot_info['has_position']
+    and spot_info['last_opp_action_type'] == 'check'
+    and not anti_lock_pressure
+    and board_texture is not None
+    and board_texture['wetness'] <= 0.45
+    and made_strength < 0.55
+    and not (value_profile and value_profile['tier'] in ('strong', 'nut'))
+    and opponent_model['confidence'] >= 0.15
+    and opponent_model.get('postflop_check_rate', 0.42) < 0.65
+)
+```
+
+2. **Add the delayed c-bet to the raise decision**: In the main `if win_rate >= medium or ...` block around line 941, add `delayed_flop_cbet` as another OR condition.
+
+3. **In sizing.py, handle delayed c-bet sizing**: In choose_raise, add a parameter `delayed_cbet=False`. When delayed_cbet is True:
+```python
+if delayed_cbet:
+    cbet_ratio = 0.28 + 0.05 * wetness
+    ratio = min(ratio, cbet_ratio)
+```
+This makes delayed c-bets small (about 28-33% pot), which is optimal for both getting folds from air and value from weak calls.
+
+4. **Pass the delayed_cbet flag**: In the choose_raise call around line 942-965, add `delayed_cbet=delayed_flop_cbet`.
+
+Make sure all existing logic still works. The delayed c-bet should only trigger in the specific scenario: we're in position, opponent checked to us on the flop, board is not too wet, and we don't have a strong hand (we'd bet those anyway).
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v16/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v16/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v16/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v16/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading the relevant source files to understand the current code structure.
+Let me use Bash to read the files directly.
+Good, Bash is loaded. Let me read the files now.
+Good. Let me read both files now.
+Now let me read the full strategy.py output that was saved:
+Let me read specific sections of strategy.py:
+Now let me read the key sections of strategy.py:
+Let me see the broader context to understand the `to_call > 0` vs `to_call == 0` branching:
+Let me get exact line numbers for all the key locations:
+Good. Now let me also check the `anti_lock_pressure` variable availability and `calling_station` variable:
+Good. Now I have all the context I need. Let me implement the changes:
+
+**Change 1**: In strategy.py, add the `delayed_flop_cbet` variable after line 1064 (after `return 0` closing the `to_call > 0` block, before `weak_pair_river`).
+
+**Change 2**: In strategy.py, add `delayed_flop_cbet` to the `if win_rate >= medium or ...` condition at line 1245.
+
+**Change 3**: In strategy.py, pass `delayed_cbet=delayed_flop_cbet` in the `choose_raise` call.
+
+**Change 4**: In sizing.py, add `delayed_cbet=False` parameter and the sizing logic.
+Now I'll make the edits. Let me start with strategy.py - inserting the `delayed_flop_cbet` variable after line 1066 (blank line after `return 0`) and before line 1067 (`weak_pair_river`):
+Now let me use a Python script to make precise edits:
+Now verify the insertion:
+The insertion looks correct. Now let me update the main raise condition to include `delayed_flop_cbet`:
+Now add `delayed_cbet=delayed_flop_cbet` to the `choose_raise` call in the `to_call == 0` section:
+Let me verify:
+The formatting got messed up. Let me fix it:
+Good. Now let me edit sizing.py to add the `delayed_cbet` parameter:
+Now I need to:
+1. Add `delayed_cbet=False` parameter to the function signature
+2. Add the delayed cbet sizing logic in the function body
+Good, the parameter is added. Now I need to add the delayed cbet sizing logic. Let me find where to insert it in the function body:
+I'll add the delayed cbet sizing logic after the `thin_cap` block and before `low_ratio`:
+Now verify the changes:
+Now let me run the quality checks. First, compile check:
+All compile checks pass. Now let me run the smoke test:
+Smoke test passes. Now let me do the final review by checking the git diff:
+I see there are changes from other workers too. Let me verify my specific changes are correct and only in strategy.py and sizing.py:
+Let me do the self-review. My specific changes are only in strategy.py and sizing.py. Let me verify they match the Master's instructions exactly:
+All changes are exactly as specified by the Master Architect. Let me do a final verification:
+
+**Self-Review Checklist:**
+
+1. ✅ **Role Boundary Check**: I am an "Algorithmic Logic Architect" - I added a new variable definition, added an OR condition to existing logic, added a parameter to a function, and added sizing logic. No well-tuned constants were changed unless structurally required.
+
+2. ✅ **Target File Check**: I only modified `bots/claude_v16/strategy.py` and `bots/claude_v16/sizing.py`. Other changes in the diff are from other workers.
+
+3. ✅ **Protocol Check**: The bot still outputs `{"response": <int>}` via stdout. The `choose_raise` function returns an integer amount or None, and the `get_action` function returns 0 (check) if delayed cbet raise amount is None.
+
+4. ✅ **Compile check**: All 3 files compile successfully.
+5. ✅ **Smoke test**: Passed successfully.
+
+**Summary of changes:**
+
+- **strategy.py**: Added `delayed_flop_cbet` boolean that triggers when we're in position on the flop, opponent checked to us, board is not too wet (≤0.45), we don't have a strong/nut hand, and opponent has sufficient confidence but doesn't check too much (<0.65). Added this as an OR condition in the main raise decision. Passed `delayed_cbet=delayed_flop_cbet` to `choose_raise`.
+
+- **sizing.py**: Added `delayed_cbet=False` parameter to `choose_raise`. When `delayed_cbet` is True, caps the raise ratio at `0.28 + 0.05 * wetness` (~28-33% pot), which is optimal for small delayed c-bets.

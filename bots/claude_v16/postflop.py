@@ -513,6 +513,8 @@ def empty_draw_profile():
         "semi_bluff": False,
         "fold_threshold_delta": 0.0,
         "size_bonus": 0.0,
+        "backdoor_flush_draw": False,
+        "backdoor_straight_draw": False,
     }
 
 
@@ -646,6 +648,29 @@ def draw_profile(hole_cards, public_cards, board_texture=None):
         info["fold_threshold_delta"] = -0.03
         info["size_bonus"] = -0.02
 
+    # --- Backdoor draw recognition (flop only) ---
+    if len(public_cards) == 3:
+        if not info["flush_draw"]:
+            for suit in range(4):
+                h_suit = [c for c in hole_cards if card_suit(c) == suit]
+                b_suit = [c for c in public_cards if card_suit(c) == suit]
+                if len(h_suit) == 2 and len(b_suit) == 1:
+                    quality += 0.03 if max(card_number(c) for c in h_suit) >= 12 else 0.02
+                    info["backdoor_flush_draw"] = True
+                    break
+        if info["straight_draw"] == "none":
+            all_ranks = set(card_number(c) for c in cards)
+            for start in range(1, 11):
+                window = set(range(start, start + 5))
+                present = all_ranks & window
+                if len(present) != 3:
+                    continue
+                sp = sorted(present)
+                if max(sp[i+1] - sp[i] for i in range(len(sp) - 1)) > 2:
+                    continue
+                quality += 0.01
+                info["backdoor_straight_draw"] = True
+                break
     info["quality"] = clamp(quality, 0.0, 0.35)
     info["semi_bluff"] = (
         info["combo_draw"]
@@ -704,7 +729,7 @@ def draw_call_margin(draw_info, board_texture, round_idx, spot_info):
 
     if round_idx == 2:
         if draw_type == "gutshot":
-            margin += 0.020
+            margin += 0.025
         elif draw_type == "flush_draw":
             if draw_info.get("near_nut_flush_draw", False) and size_bucket != "large" and (board_texture is None or not board_texture["paired"]):
                 margin += 0.000

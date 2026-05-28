@@ -1,0 +1,148 @@
+
+[WORKER 2 (Strategy Enhancement Specialist) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Strategy Enhancement Specialist**.
+You must directly edit the source files in `bots/claude_v16/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v16/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+First pass implementation, no reviewer feedback yet.
+
+ORIGINAL:
+Improve river thin value betting by adding opponent calling tendency detection. Make these changes to strategy.py:
+
+1. **Add calling station detection** in get_action(), after the opponent_model is built (around line 296):
+```python
+calling_station = (
+    opponent_model['confidence'] >= 0.30
+    and opponent_model.get('postflop_call_rate', 0.45) >= 0.55
+    and opponent_model.get('postflop_aggr', 0.40) <= 0.35
+)
+```
+
+2. **Lower river thin value check-back threshold**: Around line 874-885 (the thin_static_showdown_control block), when calling_station is True, SKIP the thin_static_showdown_control check. This means we bet thin value hands like top pair medium kicker against calling stations.
+
+3. **Lower medium threshold on river vs calling stations**: Around line 435-437, when round_idx == 3 and calling_station is True, subtract 0.03 from the 'medium' threshold. This makes the bot more willing to raise/bet with medium-strength hands.
+
+4. **Improve bad_river_bluff_candidate**: Around line 769-777, when calling_station is True, expand the check to also skip bluffs when made_strength >= 0.15 (instead of 0.18), since calling stations don't fold to bluffs.
+
+These changes should make the bot extract more value against passive opponents who call too much, while still checking back marginal hands against aggressive opponents. Do NOT change any existing function signatures or imports.
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v16/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v16/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v16/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v16/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+Let me start by reading the current source files to understand the codebase structure.
+Good, the files exist. Let me read `strategy.py` to understand its structure and find the locations mentioned in the Master's instructions.
+Now I have a thorough understanding of the file. Let me also read the opponent model building to understand what fields are available:
+The field `postflop_call_rate` doesn't exist yet. Let me check what fields are available in the opponent model:
+I see that the opponent model has `postflop_aggr` and `postflop_check_rate`, but not `postflop_call_rate`. I need to compute calling station detection using available fields. The Master's instruction references `postflop_call_rate` but it doesn't exist - I should use what's available. Let me check if there's a "call" tracking:
+Good, I have a complete understanding of the codebase. Now I understand the structure. The opponent model doesn't have `postflop_call_rate`, but I can compute a calling station flag using the available fields:
+- High `postflop_check_rate` (≥ 0.55) indicates passive play
+- Low `postflop_aggr` (≤ 0.35) indicates not aggressive
+- High confidence (≥ 0.30)
+
+A calling station tends to call a lot rather than raise or fold. Since the model tracks checks and aggressive actions but not explicit calls, I'll use the available metrics. A passive opponent who checks a lot and doesn't raise much is effectively a calling station - they call when facing bets and check otherwise.
+
+Let me implement the Master's 4 changes:
+Now change 2: Lower medium threshold on river vs calling stations (around line 435-437):
+Now change 3: Improve `bad_river_bluff_candidate` - when calling_station is True, expand the check to also skip bluffs when made_strength >= 0.15 (instead of 0.18):
+Now change 4: Skip the `thin_static_showdown_control` check when calling_station is True. Let me find the exact block:
+All 4 changes are made. Let me verify with a git diff:
+I see the diff includes many changes from other workers. Let me check if there are modifications outside of my target file:
+There are changes in other files too (opponent.py, postflop.py). These were made by other workers. Let me verify my 4 specific changes are correct by looking at the final state:
+That's strange. Let me read the file directly to verify my edits are present:
+My changes are not in the file! It seems the file was modified by another worker while I was editing, or the edit tool reported success but didn't actually write. Let me check the current state and re-read the file around line 295:
+The file seems to have been reverted. The file I see now is the original (from git HEAD). Let me look for the `get_action` function:
+Good, the file is now at a different state. Let me re-read the relevant sections:
+Now let me make all 4 changes again. First, change 1 - calling station detection:
+Now change 2 - medium threshold on river vs calling stations. Let me find the exact location:
+Now change 3 - improve `bad_river_bluff_candidate`. Let me find it:
+Now change 4 - skip `thin_static_showdown_control` when calling_station is True:
+All 4 changes are made. Now let me verify them:
+All 4 changes are in place. Let me verify with git diff now to see only MY changes:
+The diff shows my 4 changes plus some changes from another worker (the `realized_postflop_equity` changes with `board_texture` parameter and top_pair block). The other worker's changes were already present before I started editing. My 4 specific changes are:
+
+1. ✅ **Lines 627-631**: Calling station detection after `build_opponent_model`
+2. ✅ **Lines 750-751**: Lower medium threshold on river vs calling stations (`medium -= 0.03`)
+3. ✅ **Lines 1079-1083**: `_river_bluff_strength_floor = 0.15` when calling station
+4. ✅ **Line 1186**: `and not calling_station` in `thin_static_showdown_control`
+
+Now let me run the quality checks:
+All files compile. Now let me run the smoke test:
+It seems the file was modified by another process (likely a linter or another worker) while I was editing. The smoke test still passed. Let me verify my changes are still present:
+All 4 changes are present. Let me run the compile check again since the file was modified:
+Let me run the smoke test one more time to be safe:
+Let me do the final self-review by looking at my specific changes:
+I see that other workers have also made changes (the `board_texture` parameter in `realized_postflop_equity`, the top_pair block, and the `delayed_flop_cbet` additions). These are not my changes. My specific changes are:
+
+1. ✅ **`calling_station` detection** (lines 627-631) - new variable
+2. ✅ **`medium -= 0.03` on river when calling_station** (lines 750-751)
+3. ✅ **`_river_bluff_strength_floor` variable and usage** (lines 1092-1096) - changes threshold from 0.18 to 0.15 against calling stations
+4. ✅ **`and not calling_station`** in `thin_static_showdown_control` (line 1199)
+
+**Role Boundary Check**: I am an Algorithmic Logic Architect. My changes add new control flow variables and conditions (`calling_station`, `_river_bluff_strength_floor`) which is allowed. I did not modify well-tuned constants unrelated to my task. The only numeric change is the `0.03` subtraction from `medium` and the `0.15` threshold - both are structurally required by the new calling station detection algorithm.
+
+**Target File Check**: I only modified `bots/claude_v16/strategy.py`. Let me verify:
+The changes to `opponent.py`, `postflop.py`, and `.completed` are from other workers, not me. My changes are only in `strategy.py` as required.
+
+**Protocol Check**: The bot still uses `get_action()` which returns integer actions: 0=call/check, -1=fold, -2=all-in, >0=raise amount. No protocol changes were made.
+
+All quality checks pass:
+- ✅ Compile check: OK
+- ✅ Smoke test: OK  
+- ✅ Role boundary: Only added algorithmic logic (calling station detection variable, conditional threshold adjustment, condition additions to existing checks)
+- ✅ Target file: Only `strategy.py` modified by me
+- ✅ Protocol: No changes to I/O protocol
