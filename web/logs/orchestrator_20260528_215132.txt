@@ -1551,3 +1551,175 @@ API Error: 400 [1210][API 调用参数有误，请检查文档。][2026052822401
 [CYCLE DONE] cost=$0.0124
 
 [ERROR] Claude Code returned an error result: success
+
+============================================================
+[ORCHESTRATOR CYCLE] 2026-05-28 22:40:18
+============================================================
+[PROMPT]
+# Role
+You are the **Evolution Orchestrator** — the AI brain that controls a Texas Hold'em poker bot evolution system. You have complete autonomy to decide what actions to take and in what order. You are NOT following a rigid script — you observe, think, and act.
+
+# Your Tools
+You have two categories of tools:
+
+## Category 1: Evolution MCP Tools
+These are specialized tools for the evolution pipeline. Call them directly — you don't need Bash for these.
+
+- **get_status** — Check current state: latest bot version, top ratings, active bots count, daemon status. **Call this first** to understand where things stand.
+- **get_bot_info(version)** — Detailed info about a specific bot: rating, parent, files, code size.
+- **get_match_history(version, n)** — Recent match results for a bot.
+- **run_match_analysis(source_v)** — Analyze recent losses using LLM. Returns weaknesses and recommendations.
+- **run_master(source_v, next_v, stagnation_info, match_analysis)** — Run Master Architect to plan improvements. Returns a task plan with worker assignments.
+- **execute_workers(tasks, next_v, source_v, reviewer_feedback)** — Execute code modification tasks. Each task has role, target_files, and worker_prompt.
+- **run_quality_gates(version)** — Run compile check, smoke test, decision tests, file size check. Returns pass/fail for each.
+- **run_review(version, source_v, plan)** — Run Lead Code Reviewer. Returns approved/rejected with quality score.
+- **run_crossover(parent_a, parent_b, target_v)** — Combine two elite bots into a new child bot.
+- **prepare_next_gen(source_v, next_v)** — Copy source bot directory to prepare for modifications.
+- **commit_bot(version, source_v, strategy)** — Git commit and tag the new bot.
+- **reap_weakest** — Cull weakest bot if pool exceeds 30.
+- **trim_experience** — Trim experience pool to recent entries.
+- **consolidate_experience** — LLM-based deduplication of experience pool.
+- **analyze_stagnation(source_v, active_bots)** — Analyze if evolution is stagnating.
+
+## Category 2: Built-in Tools
+- **Read** — Read any local file (ratings, experience pool, bot source code, logs).
+- **Bash** — Run shell commands (git log, git diff, etc.).
+- **Edit** — Edit files if needed.
+
+# Evolution Lifecycle (Reference — Adapt as Needed)
+
+A typical generation follows this pattern, but you can modify it:
+
+1. **Check status** → `get_status()`
+2. **Housekeeping** → `reap_weakest()` if needed, `trim_experience()`
+3. **Evaluate** → Check if current bot has enough match data (daemon runs in background)
+4. **Analyze losses** → `run_match_analysis(source_v)` to understand weaknesses
+5. **Plan improvements** → `run_master(source_v, next_v, ...)`
+6. **Prepare** → `prepare_next_gen(source_v, next_v)`
+7. **Implement** → `execute_workers(tasks, next_v, source_v)`
+8. **Quality check** → `run_quality_gates(next_v)`
+9. **Review** → `run_review(next_v, source_v, plan)`
+10. **Commit** → `commit_bot(next_v, source_v, strategy)`
+11. **Repeat** → Go back to step 1 for the next generation
+
+# Decision Principles
+
+## When to Deviate from the Standard Flow
+- **If workers fail**: You can retry with different feedback, or skip to crossover
+- **If quality gates fail**: You can decide whether it's worth fixing or should start over
+- **If reviewer rejects**: Inject the feedback and retry, or abort the generation
+- **If stagnation detected**: Try `run_crossover()` with top 2 bots, or branch from a different ancestor
+- **If Master produces bad plans**: You can call it again with different context, or take direct action
+
+## Key Decision Points
+1. **Should I run match analysis?** → Yes, if there are recent losses. It provides valuable context for Master.
+2. **Should I retry failed workers?** → Max 2 retries. After that, consider crossover or different source bot.
+3. **When to use crossover?** → After 2-3 consecutive generation failures, or when stagnation is confirmed.
+4. **When to branch from different ancestor?** → When the current lineage shows no improvement trend.
+
+## Safety Rules
+- NEVER commit a bot that fails quality gates (compile + smoke + decision tests)
+- NEVER skip the code review step — it catches critical bugs
+- If 3 consecutive generations fail, pause and analyze the situation with `get_status()` and `get_match_history()`
+- Always call `get_status()` at the start of each generation to get fresh data
+
+# Output Style
+- Be concise in your reasoning
+- After each tool call, briefly note the result
+- At the end of each generation, summarize what was done and the outcome
+- If you encounter an unexpected situation, explain your reasoning before acting
+
+# Context
+Current generation: v11
+Next generation will be: v12
+Active bots: 16
+Timestamp: 2026-05-28 22:40:18
+MODE: Continuous evolution. After completing one generation, immediately start the next.
+
+
+[OUTPUT]
+I'll start by loading the evolution tools and checking the current status.
+[tool: ToolSearch]
+Good, tools are loaded. Let me start by checking the current status.
+[tool: mcp__evolution__get_status]
+**Status Summary:** v11 is current, next is v12. 16 active bots. Top bot is v14 at 1641.6. Notably, v11 isn't in the top 10 — let me investigate.
+
+Let me get info on v11 and check for stagnation, plus do some housekeeping.
+[tool: mcp__evolution__get_bot_info]
+
+[tool: mcp__evolution__get_match_history]
+
+[tool: mcp__evolution__analyze_stagnation]
+**Key findings:**
+- v11 has **no rating** and **no match history** — it hasn't been evaluated yet
+- 16 active bots with v14 (1641.6) at the top
+- Since v11 is unrated, I should evolve from the top performer
+
+Let me check the top bot (v14) for match data, and do housekeeping.
+[tool: mcp__evolution__get_bot_info]
+
+[tool: mcp__evolution__get_match_history]
+
+[tool: mcp__evolution__reap_weakest]
+
+[tool: mcp__evolution__trim_experience]
+**Housekeeping done.** Pool at 16, experience trimmed. No culling needed.
+
+**Situation:** v14 is top-rated (1641.6, 3249 lines) but returns empty match history. v11 (current gen counter) has no rating. I'll evolve from **v14** (the strongest) as source, creating v12 as the next generation. Let me run match analysis and then plan improvements.
+[tool: mcp__evolution__run_match_analysis]
+Match analysis hit a system error. I'll proceed without it — providing the Master with what we know. Let me plan improvements from v14.
+[tool: mcp__evolution__run_master]
+Both match analysis and master are hitting a WebUI error. Let me try the simpler operational tools to see what works.
+[tool: mcp__evolution__prepare_next_gen]
+**v12 prepared** from v14. Now since the LLM-based tools (match_analysis, master) are failing, I'll take direct control — read the bot source, plan improvements myself, and execute workers.
+
+Let me read the key files to understand what to improve.
+[tool: ToolSearch]
+
+[tool: Read]
+
+[tool: Read]
+
+[tool: Read]
+Let me find the actual bot directories.
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+Good — v12 has been prepared from v14 (identical files). Now let me read the core files to plan improvements.
+[tool: Read]
+
+[tool: Read]
+
+[tool: Read]
+
+[tool: Read]
+
+[tool: Read]
+
+[tool: Read]
+Let me continue reading the core decision logic.
+[tool: Read]
+
+[tool: Read]
+
+[tool: Read]
+Let me read the rest of strategy.py to see the main `get_action` function and the state/tournament modules.
+[tool: Read]
+
+[tool: Read]
+
+[tool: Read]
+
+[tool: Read]
+
+[tool: Read]
+
+[tool: Read]
+
+[tool: Read]
+Now I have a thorough understanding of the bot. Let me design improvements and execute them. The LLM-based tools (master, match_analysis) have WebUI errors, so I'll create the plan directly and try execute_workers.
+[tool: mcp__evolution__execute_workers]
+
+[tool: mcp__evolution__execute_workers]

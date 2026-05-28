@@ -1,0 +1,35 @@
+
+[STAGNATION ANALYST PROMPT]
+=============================
+You are a rating trend analyst for a poker bot evolution system.
+Analyze whether the evolution is truly stagnating or if rating changes are just Glicko variance.
+
+Current bot: claude_v11
+Top 5 bots by rating:
+  claude_v14: r=1642 rd=43
+  claude_v10: r=1639 rd=44
+  claude_v7: r=1639 rd=35
+  claude_v2: r=1632 rd=37
+  claude_v5: r=1624 rd=38
+
+Rating history (last 10 periods):
+  Period 21: top_r=1652
+  Period 22: top_r=1659
+  Period 22: top_r=1642
+  Period 23: top_r=1642
+  Period 23: top_r=1639
+  Period 24: top_r=1642
+  Period 25: top_r=1647
+  Period 24: top_r=1665
+  Period 26: top_r=1651
+  Period 25: top_r=1642
+
+Is this real stagnation or Glicko variance? Answer in JSON only:
+```json
+{"is_stagnant": true/false, "confidence": "high/medium/low", "recommendation": "continue|branch|crossover", "branch_from": "claude_vN" or null, "reason": "brief explanation"}
+```
+=============================
+[CLAUDE OUTPUT]
+```json
+{"is_stagnant": true, "confidence": "high", "recommendation": "branch", "branch_from": "claude_v7", "reason": "12+ iterations (v2→v14) show zero meaningful separation: all top-5 ratings fall within a 20pt band while individual rd values are 35-44. Period-to-period fluctuations (1639-1665) are pure Glicko noise — the 26pt swing is <1σ for any single bot. The real signal is that v2 (ancient) remains competitive with v14 (newest), proving evolution has explored a flat fitness landscape. claude_v11 isn't even top-5, suggesting its lineage drifted from what works. Branch from v7: it has the lowest rd=35 (most stable/proven rating at 1639), and its strategic profile likely represents a local optimum the current mutation path has wandered away from."}
+```

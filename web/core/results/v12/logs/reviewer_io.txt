@@ -1,0 +1,114 @@
+
+[LEAD CODE REVIEWER PROMPT]
+=============================
+# Role
+You are the strict Lead Code Reviewer (Critic) for a Texas Hold'em poker bot team.
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files.
+- **Use the Bash tool** to run git diff and other commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Task
+Worker Agents have modified the bot codebase based on the Master Architect's instructions.
+Your job is the final quality gate before production (the next evolution iteration).
+
+# Context
+1. **Master's Original Plan/Tasks:**
+[
+  "Enhanced postflop call margins (opponent check-after-aggression, scare cards)",
+  "River thin value profile with board-aware sizing",
+  "Turn barrel profile for turn double-barrel decisions",
+  "River bluff EV analysis for blocker bluffs",
+  "Simulation optimization (early termination, caching, range narrowing)",
+  "Preflop 3-bet bluff calibration vs tight raisers/high cbettors",
+  "Donk betting on favorable OOP boards (new strategic line)",
+  "SPR-aware commitment thresholds and sizing scaling",
+  "Board texture enhancements (draw_heavy, texture_class, high_card_pair)",
+  "Turn check-raise exploit for strong/nut hands"
+]
+
+2. **Bot directory**: `bots/claude_v12/`
+3. **Parent version tag**: `bot-v14`
+
+# How to Review
+You have full access to git and file reading tools. Use them:
+
+1. **See all changes**: Run `git diff bot-v14 -- bots/claude_v12/`
+   This shows exactly what the workers changed vs the parent bot.
+2. **See change summary**: Run `git diff --stat bot-v14 -- bots/claude_v12/`
+3. **Read specific files**: Use the Read tool on any file in `bots/claude_v12/`
+4. **List all files**: Run `ls bots/claude_v12/` to see the full file list
+
+Focus your review on the diff, but read full files when you need more context.
+
+# Rules
+1. Verify the changes fulfill the Master's instructions without logical flaws or contradictions.
+2. ENFORCE THE DUAL-TRACK BOUNDARY:
+   - If a "Hyperparameter Tuner" was assigned, verify they ONLY changed constants/thresholds. If they injected complex new logic, REJECT.
+   - If an "Algorithmic Logic Architect" was assigned, verify their logic is sound.
+3. Ensure the code compiles conceptually and adheres to the `{"response": int}` JSON output format constraint.
+4. Output exactly ONE JSON block containing your decision. If you reject the code, you must provide a detailed "feedback" string explaining what the Developer Agents need to fix.
+5. FILE SIZE CONSTRAINT: No single .py file should exceed 1000 lines. If any file is too large, REJECT and instruct workers to split it into focused modules. Keep main.py as the slim entry point.
+
+# Correctness Criteria (MANDATORY CHECK)
+Before approving, verify the bot does NOT do any of the following:
+- Fold premium hands (AA, KK, QQ, AKs) preflop without extreme pressure
+- Call all-in with obviously dominated hands on the river
+- Return invalid JSON (must output `{"response": <int>}`)
+- Use `input()` or `print()` instead of stdin/stdout for game communication
+- Import unavailable modules (only stdlib + numpy if present)
+- Have obvious infinite loops or unbounded recursion
+
+# Output Format
+You MUST output your response containing exactly ONE JSON block formatted as follows:
+
+```json
+{
+  "approved": true or false,
+  "feedback": "If approved=false, provide detailed instructions on what needs to be fixed. If true, this can be empty.",
+  "quality_score": 7,
+  "change_summary": "A 1-2 sentence summary of the key changes made in this generation.",
+  "risk_areas": ["List of potential risks or concerns about the changes, if any"]
+}
+```
+
+# Quality Score Rubric
+- **9-10**: Clean, well-structured changes that clearly improve strategy. No risks. Code is concise and follows project conventions.
+- **7-8**: Good changes that address the plan. Minor concerns (e.g., slightly verbose code, a heuristic that might not generalize). Approve.
+- **5-6**: Changes work but are mediocre — copy-pasted code, brute-force approaches where elegant solutions exist, or unclear strategy. Approve with caution.
+- **3-4**: Changes introduce regression risk, violate role boundaries, or show fundamental misunderstanding of poker strategy. REJECT.
+- **1-2**: Broken code, catastrophic strategic errors (folding AA preflop), or complete failure to follow instructions. REJECT.
+
+- `change_summary`: Required even when approved=true. This is used to update the experience pool for future generations.
+- `risk_areas`: Optional. List potential issues that could cause regression.
+
+=============================
+[CLAUDE OUTPUT]
+Now let me read all the modified files to understand the changes in detail.
+Let me read the full strategy.py diff:
+Now let me read the full current files to check line counts and verify correctness:
+Let me check the critical correctness criteria more carefully:
+Good, imports work from the bot's own directory. Now let me verify some critical strategic correctness:
+Now let me verify the correctness of the `state.py` change more carefully and check a few other things:
+All premium hands (AA, KK, QQ) correctly 3-bet. Trash (72o) correctly folds. Let me now do the final comprehensive assessment:
+All imports are local modules or stdlib — no external dependencies. Let me verify the cumulative cache approach doesn't have issues:
+I have now completed a thorough review. Here is my assessment:
+
+```json
+{
+  "approved": false,
+  "feedback": "REJECTED: File size constraint violation. Two critical files exceed the 1000-line hard limit:\n\n1. `strategy.py` is 1327 lines (327 over limit) — caused by merging the deleted `betting.py` (356 lines) into it without modular splitting.\n2. `postflop.py` is 1263 lines (263 over limit) — grew from new functions added without modular splitting.\n\nREQUIRED FIXES:\n\nA) Split `strategy.py` into focused modules:\n   - Extract `choose_raise`, `choose_preflop_spot_action`, `must_continue_vs_raise`, and `check_probe_resistance_margin` into a new `betting.py` (they were in the old one anyway)\n   - Keep `get_action` and threshold computation in `strategy.py`\n   - Target: both files under 800 lines\n\nB) Split `postflop.py` into focused modules:\n   - Extract the new functions (`river_thin_value_profile`, `turn_barrel_profile`, `river_bluff_ev`, `donk_bet_profile`, `spr_profile`) into a new `profiles.py` or `advanced.py` module\n   - Keep core evaluation functions (`made_hand_metric`, `draw_profile`, `board_texture_profile`, `blocker_bluff_profile`, `nutted_risk_profile`) in `postflop.py`\n   - Target: both files under 900 lines\n\nC) Clean up `main_backup.py` (2941 lines) — either delete it or move it to a graveyard directory. It inflates the module size.\n\nADDITIONAL CONCERNS to address during the split:\n\n1. River exact equity override was entirely removed (old lines 856-898 in strategy.py). This used `exact_wr` on the river for precise fold/call/raise decisions. Consider reinstating a river-exact path.\n\n2. `big_pot_safety_guard` was removed without replacement. The old logic prevented barreling marginal hands in huge pots (pot > 5000, made_strength < 0.40, draw_strength < 0.15). Re-add this guard or integrate equivalent logic.\n\n3. cbet exploitation logic (`fold_to_cbet` adjustments) was removed. The old code adjusted bluff thresholds based on opponent fold_to_cbet tendencies on the flop. Consider restoring it in the split module.\n\n4. Simulation counts were reduced ~40% (e.g., preflop from 900→500, flop from 1200→800). Combined with the 40% EQR reduction and early termination, overall decision quality in marginal spots may degrade. Verify via ladder testing.\n\n5. The `classify_opponent_style` function was removed, losing nit/maniac/calling-station/fold-heavy opponent classification. The general opponent model still tracks stats, but the explicit threshold deltas for different styles are gone.",
+  "quality_score": 6,
+  "change_summary": "Merged betting.py into strategy.py and added 10 new strategic features per plan: river thin value betting, turn barrel decisions, river bluff EV analysis, donk betting, SPR-aware commitment, board texture enhancements (draw_heavy/texture_class/high_card_pair), turn check-raise exploit, preflop 3-bet bluff calibration, enhanced postflop call margins, and simulation optimizations (early termination, caching, range narrowing). Removed anti-bot4 detection, opponent style classification, river exact equity override, big_pot_safety_guard, and cbet exploitation logic. Reduced simulation counts ~40%.",
+  "risk_areas": [
+    "strategy.py (1327 lines) and postflop.py (1263 lines) exceed the 1000-line hard limit — must be split before approval",
+    "River exact equity override removed — river decisions now use simulation equity even with 5 board cards, potentially reducing river accuracy",
+    "big_pot_safety_guard removed without replacement — risk of over-betting marginal hands in large pots",
+    "Simulation counts reduced ~40% combined with early termination may reduce decision quality in close marginal spots",
+    "Opponent-specific exploitation (anti-bot4, style classification, cbet exploitation) entirely removed — reduces adaptability to known opponent archetypes",
+    "EQR values lowered significantly (air OOP 0.62→0.56, weak pairs OOP 0.78→0.73) — more conservative equity realization could cause over-folding"
+  ]
+}
+```

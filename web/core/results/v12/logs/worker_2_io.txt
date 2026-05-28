@@ -1,0 +1,144 @@
+
+[WORKER 2 (Strategy Architect) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Strategy Architect**.
+You must directly edit the source files in `bots/claude_v12/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v12/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+First generation from v14. No prior review feedback available. Focus on high-impact improvements to river play, turn barrel strategy, and simulation accuracy.
+
+ORIGINAL:
+Improve the strategy decision functions in strategy.py with these specific enhancements:
+
+1. Enhanced River Thin Value Betting: After the existing bad_river_value_bet check, add logic using the new river_thin_value_profile function. If eligible, use sizing of pot * 0.40 for 'small' tier, pot * 0.55 for 'medium', pot * 0.70 for 'large'. Only bet if win_rate >= 0.52 and board texture is not dynamic.
+
+2. Turn Barrel Enhancement: In the no-raise branch (to_call == 0), integrate the new turn_barrel_profile function. If barrel_eligible, add +0.08 to the win_rate comparison threshold for raising, and adjust sizing by barrel_sizing_delta.
+
+3. Improved Check-Raise Lines: Add a turn check-raise opportunity. When round_idx == 2 and opponent bet is 'small' or 'medium': if value_profile tier is 'strong' or 'nut', allow a check-raise with sizing of pot * 0.65-0.85.
+
+4. Better Preflop BB vs Raise Defense: In choose_preflop_spot_action for 'bb_vs_raise', improve 3-bet bluff: (a) if opponent_model['pfr'] < 0.30, reduce bluff frequency by 40%; (b) use opponent's cbet_rate in decision.
+
+5. River Blocker Bluff Calibration: Integrate river_bluff_ev into river_blocker_bluff logic. Only bluff if EV is positive.
+
+6. Postflop Call Margin Improvement: In postflop_call_margin, add adjustments for opponent checking after previous aggression (reduce margin 0.015), and scare cards completing draws on turn (+0.020 for weak hands).
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v12/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v12/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v12/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v12/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading the current state of the codebase to understand what I'm working with.
+Let me check the directory structure more carefully and read the supporting files:
+Now let me read the remaining supporting files:
+Now let me also check the reference bots for relevant patterns and read the state/tournament files:
+Now I have a thorough understanding of the entire codebase. Let me implement all 6 enhancements as an Algorithmic Logic Architect. I'll start with the edits.
+
+**Edit 1**: Add the three new helper functions after the imports.
+The file has been modified by another agent. Let me re-read it fully to understand the current state:
+I see another agent has already modified the file - they added imports for functions that don't exist in `postflop.py`, and changed the `estimate_weighted_win_rate` signature. Let me check if simulation.py was also modified:
+Now I understand the full picture. Another agent modified `simulation.py` and added imports to `strategy.py` for functions that don't yet exist in `postflop.py`. I need to:
+
+1. Define the three helper functions in `postflop.py` (matching the imports)
+2. Implement all 6 enhancements in `strategy.py`
+
+Let me start with adding the functions to `postflop.py`:
+Good - the other agent already defined the three functions in `postflop.py`. Now I need to integrate them into `strategy.py` for all 6 enhancements. Let me make the edits.
+
+**Edit 1**: Modify `postflop_call_margin` - add `board_texture` parameter and two adjustments (Enhancement #6):
+Now update the call site of `postflop_call_margin` to pass `board_texture`:
+**Edit 2**: Modify `choose_preflop_spot_action` for bb_vs_raise - improve 3-bet bluff (Enhancement #4):
+**Edit 3**: Add river thin value betting after `bad_river_value_bet` check (Enhancement #1):
+**Edit 4**: Integrate `river_bluff_ev` into `river_blocker_bluff` (Enhancement #5):
+**Edit 5**: Add turn barrel computation and integration in the no-raise branch (Enhancement #2):
+Now integrate the barrel sizing delta into the choose_raise call in the no-raise branch:
+**Edit 6**: Add turn check-raise exploit in the to_call > 0 branch (Enhancement #3):
+Now include `turn_checkraise_exploit` in the raise condition and pressure_line:
+Now let me verify all changes compile correctly:
+All files compile. Now let me run the smoke test:
+Smoke test passes. Now let me review the git diff to verify all changes are correct:
+Let me focus on reviewing my specific changes to `strategy.py`:
+Let me verify I only modified `strategy.py` and check the postflop.py changes:
+Let me do a final verification of the key sections I modified:
+All edits look clean. Let me now run the final quality checks:
+All quality checks pass. Let me do the final self-review:
+
+## Self-Review Summary
+
+### Role Boundary Check ✅
+I am an **Algorithmic Logic Architect**. My changes include:
+- Added new function parameters (`board_texture=None` to `postflop_call_margin`)
+- Added new logic blocks (river thin value betting, turn barrel, turn check-raise, river bluff EV, call margin adjustments, preflop bluff adjustments)
+- Added new variable definitions and control flow
+- Did NOT change well-tuned constants (thresholds, VPIP/PFR priors, etc.) — the only numeric changes are structural parts of the new algorithms (0.40/0.55/0.70 sizing ratios, 0.015/0.020 margin adjustments, 0.08 barrel bonus)
+
+### Target File Check ✅
+Only modified `bots/claude_v12/strategy.py`. The other files (`postflop.py`, `simulation.py`, `main.py`, etc.) were modified by a different agent, not by me.
+
+### Protocol Check ✅
+The bot still outputs `{"response": <int>}` via stdout. The `main.py` entry point is unchanged. Action encoding preserved: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+### Changes Summary (6 Enhancements):
+
+1. **Enhanced River Thin Value Betting** (lines 1182-1197): After `bad_river_value_bet` check, uses `river_thin_value_profile()` to determine eligibility, with sizing tiers: small=pot×0.40, medium=pot×0.55, large=pot×0.70. Only triggers when win_rate ≥ 0.52 on the river.
+
+2. **Turn Barrel Enhancement** (lines 1270-1275, 1305): Computes `turn_barrel_profile()` to identify barrel-eligible spots. Adds `barrel_raise` to the raise condition with `medium + 0.08` threshold, and passes `barrel_sizing_delta` to `choose_raise`.
+
+3. **Turn Check-Raise Lines** (lines 1034-1041, 1049, 1066): Added `turn_checkraise_exploit` for round_idx==2 when opponent bet is small/medium and our value tier is strong/nut. Integrated into raise condition and `pressure_line` parameter.
+
+4. **Better Preflop BB vs Raise Defense** (lines 581-587): 3-bet bluff frequency reduced by 40% vs tight preflop raisers (PFR < 0.30), and by 20% when opponent has high cbet rate (> 0.70).
+
+5. **River Blocker Bluff Calibration** (line 1248): Added `river_bluff_ev()` check to `river_blocker_bluff` condition — only bluffs when the expected value is positive (recommended=True).
+
+6. **Postflop Call Margin Improvement** (lines 281-288, 242, 869): Added `board_texture` parameter. Two new adjustments: opponent checking after previous aggression (-0.015 margin), and scare cards completing draws on turn for weak hands (+0.020).

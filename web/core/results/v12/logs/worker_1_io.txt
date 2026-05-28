@@ -1,0 +1,144 @@
+
+[WORKER 1 (Senior Poker AI Engineer) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Senior Poker AI Engineer**.
+You must directly edit the source files in `bots/claude_v12/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v12/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+First generation from v14. No prior review feedback available. Focus on high-impact improvements to river play, turn barrel strategy, and simulation accuracy.
+
+ORIGINAL:
+Enhance the board_texture_profile function and add new river/turn analysis functions. Specifically:
+
+1. In board_texture_profile: Add a 'draw_heavy' boolean field (True if flush_pressure >= 0.75 OR straight_pressure >= 0.65). Add a 'high_card_pair' boolean field (True if top 2 board ranks are equal). Add a 'texture_class' field that categorizes boards as 'dry' (wetness < 0.20), 'semi-wet' (0.20 <= wetness < 0.45), or 'wet' (wetness >= 0.45).
+
+2. Add a new function 'river_thin_value_profile(hole_cards, public_cards, pair_profile, board_texture, value_profile, nutted_risk)' that returns a dict with keys: 'eligible' (bool), 'sizing_tier' ('small'/'medium'/'large'), 'confidence' (float 0-1). Logic: eligible=True if value_profile tier is 'thin' or made_strength is between 0.40-0.58 AND board_texture is not dynamic AND nutted_risk < 0.05 AND pair_profile pair_type is 'top_pair' (with kicker >= 10) or 'overpair'. sizing_tier = 'small' if wetness < 0.20, 'medium' if wetness 0.20-0.35, 'large' otherwise. confidence based on kicker strength.
+
+3. Add a function 'turn_barrel_profile(hole_cards, public_cards, value_profile, board_texture, draw_info, spot_info, round_idx)' returning dict with 'barrel_eligible' (bool), 'barrel_sizing_delta' (float). Logic: barrel_eligible=True if round_idx==2, value_profile tier in ('strong','nut') OR (draw_info semi_bluff and quality >= 0.18), board_texture wetness < 0.55. barrel_sizing_delta: +0.05 for strong/nut, -0.03 for semi_bluff.
+
+4. Enhance draw_profile to also return 'nut_draw' boolean (True if flush draw with hole card rank >= 12 of that suit, or straight draw where any completing card makes the nut straight) and 'outs_estimate' (approximate number of outs for the draw).
+
+5. Add function 'river_bluff_ev(hole_cards, public_cards, blocker_profile, pot, opponent_model)' that estimates bluff EV: bluff_size = pot * 0.55, fold_prob = opponent_model['fold_to_raise'] (clamped 0.15-0.75), blockers = count of cards that block opponent's strong hands. Return {'ev': float, 'recommended': bool}. recommended=True if ev > 0.
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v12/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v12/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v12/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v12/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading the existing code in `bots/claude_v12/` to understand the current structure, then implement the required enhancements.
+Good, now let me read all the relevant files in `bots/claude_v12/`:
+Now let me read the remaining files:
+Now let me also read the remaining files:
+Now I have a complete understanding of the codebase. Let me implement all the required changes. I'll make the edits to `postflop.py` (the primary target file for these enhancements):
+
+### Task 1: Enhance `board_texture_profile` with `draw_heavy`, `high_card_pair`, and `texture_class`
+### 任务4：增强 `draw_profile` 以返回 `nut_draw` 和 `outs_estimate`
+Now I need to add `nut_draw` and `outs_estimate` computation to the `draw_profile` function. Let me read the current state of draw_profile to identify the exact edit points:
+Now I'll add the `nut_draw` and `outs_estimate` computation before the final return in `draw_profile`. I need to track the straight draw's missing cards to determine nut straight draw:
+That flush_outs calculation got messy. Let me fix it properly:
+Now I need to add the straight draw tracking for nut_draw and outs. Let me update the straight draw section to track missing cards and nut straight draw status:
+Now I need to add the `outs_estimate` and `nut_draw` final computation before the return. Let me find the exact spot:
+Now add `nut_draw` and `outs_estimate` computation before the return:
+### Task 2: Add `river_thin_value_profile` function
+
+Now I'll add the new functions at the end of `postflop.py`:
+Now I'll add the three new functions at the end of the file:
+Now I need to update `strategy.py` to import the new functions from `postflop.py`:
+Now let me run the quality checks:
+All compile checks pass. Now let me run the smoke test:
+All checks pass. Now let me run the git diff to review all changes:
+The diff is very large. It seems there are deleted files (`betting.py`) and other pre-existing changes. Let me check what was already different before my changes:
+There are many pre-existing changes from other workers. Let me focus on verifying just my changes to `postflop.py` and `strategy.py`:
+I notice that some existing functions that were in the original committed version (like `check_probe_resistance_margin`) got removed in the diff. Let me check if this is from a prior worker's changes, not mine:
+Good - `check_probe_resistance_margin` is defined in `strategy.py`, not `postflop.py`. The diff shows it was removed from the committed version of `postflop.py` (where it was originally) and is now in `strategy.py` instead. This was a prior worker's change. My changes are clean and focused.
+
+Let me now check the strategy.py diff to make sure my import additions are the only changes:
+The diff to strategy.py includes many prior worker changes (reorganization of imports, moving functions from betting.py, etc.). My specific additions are just the three new imports: `river_thin_value_profile`, `turn_barrel_profile`, `river_bluff_ev`.
+
+Let me now verify that no files outside `bots/claude_v12/` were changed by me:
+Good. The changes outside `bots/claude_v12/` are in `web/` directory (results/stats files), which are not my changes. All my changes are within `bots/claude_v12/`.
+
+Let me do one final verification - run the smoke test again and a quick functional test to make sure the bot still works correctly:
+Let me also verify the protocol output is correct:
+Output is `{"response": 0}` (call/check) - correct JSON protocol.
+
+Let me also quickly test that the new functions work correctly with a simple unit test:
+All functions work correctly. Let me now do the final self-review:
+
+## Self-Review Summary
+
+### Role Boundary Check (Algorithmic Logic Architect)
+✅ **All changes are algorithmic/logic additions, not constant tuning.**
+
+My changes:
+1. **`board_texture_profile`**: Added 3 new computed fields (`draw_heavy`, `high_card_pair`, `texture_class`) - these are derived from existing computations, no constants changed.
+2. **`river_thin_value_profile`**: New function with logical conditions as specified.
+3. **`turn_barrel_profile`**: New function with logical conditions as specified.
+4. **`draw_profile`**: Added `nut_draw` and `outs_estimate` fields - new computation logic, no constant changes.
+5. **`river_bluff_ev`**: New function with EV estimation logic.
+6. **`strategy.py`**: Added 3 new imports only.
+
+I did NOT change any well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors, etc.).
+
+### Target File Check
+✅ **Only modified files in `bots/claude_v12/`**: `postflop.py` and `strategy.py`.
+
+### Protocol Check
+✅ **Bot outputs `{"response": <int>}` via stdout.** Verified with direct invocation.
+
+### Quality Checks
+✅ **Compile check**: All 3 `.py` files compile successfully.
+✅ **Smoke test**: Passes successfully.
+✅ **Functional test**: All new functions produce correct outputs.

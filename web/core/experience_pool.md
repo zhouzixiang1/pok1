@@ -27,11 +27,14 @@ Lessons from previous iterations. Read before planning next generation.
 19. **must_continue_vs_raise extends to strong combo draws.** draw_strength >= 0.20 with favorable pot odds.
 20. **big_pot_safety_guard prevents thin/marginal barreling in huge pots.** pot > 7000, turn/river, no draw.
 
-### v8→v9: Crossover with v3 Features
+### v9–v14 Era: Consolidation & Field Compression
 
-21. **v2 still #1 (1552) after 164 periods.** v8 at 1498 despite more features — base calibration matters most.
-22. **v3 EXP3 costs ~20pts but STYLE PARAMS are valuable.** classify_opponent_style() + direct threshold deltas. Skip the bandit.
-23. **River Refinement is a clean win.** exact equity on river (0 sims), force raise exact_wr>0.85, fold exact_wr<0.15.
-24. **Crossover rule: ADD new decision paths only, never modify existing v8 logic.** Style deltas default to zero for unknown opponents.
-25. **5 opponent types: nit (low VPIP, high fold), maniac (high VPIP/PFR/aggr), calling station (high VPIP, low PFR), fold-heavy (high fold_to_raise), balanced/unknown.**
-26. **Air EQR: lower IP 0.68→0.65, OOP 0.56→0.53.** Marginal pair: IP 0.84→0.82, OOP 0.73→0.70.
+21. **Field has compressed to 1600–1640 range.** v14 leads at 1642, but only ~2-3 pts over v10/v7. Small edges matter enormously.
+22. **v14 ≈ bot5 base - anti-bot4 - river overbet + exploit_lambda + draw EQR.** Removed two proven edges (lessons #2, #3) and replaced with unproven exploit system.
+23. **River overbet for nuts (1.5-2.2x pot) is MISSING from v14.** bot5 has it. Lesson #3 confirms it's proven. Must restore.
+24. **Anti-bot4 detection MISSING from v14.** bot5 detects opponent stat signatures and adjusts bluff_freq, sizing, trap defense. Must restore.
+25. **exploit_lambda (gift_balance based) is novel but risky.** It blends GTO/exploitative thresholds. If gift_balance is noisy, it corrupts the base thresholds. Keep but cap more aggressively.
+26. **thin_cap changed from flat (0.30/0.38) to wetness formula (0.46+0.08w).** The new formula is MORE GENEROUS for thin value bets. On dry boards this lets through 0.46 ratio thin bets that the old 0.30 cap would block. Likely a regression.
+27. **Blocker bluff uses deterministic token in v14 vs random.random() in bot5.** Token approach is reproducible but less "noisy". Both work but random is closer to GTO-randomized strategy.
+28. **OOP draw EQR path (0.85/0.75 on flop/turn) is a v14 addition.** Adds double_barrel and big_pot penalties. Likely good but may over-discount.
+29. **cbet_rate tracking in v14 opponent model** is useful for postflop facing-aggression decisions. Keep this.
