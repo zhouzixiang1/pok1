@@ -1,46 +1,37 @@
 # Evolution Experience Pool
 Lessons from previous iterations. Read before planning next generation.
 
-### Core Lessons (v1–v8 consolidated)
+### Core Lessons (v1–v10 consolidated)
 
 1. **Chen preflop table worth ~130pts.** 169-hand lookup replaces crude formula.
-2. **Anti-bot4 detection + adjustments = proven edge.** detect_bot4_profile from bot5.
+2. **Anti-bot4 detection = modest edge vs bot4, neutral vs field.** Not a major differentiator.
 3. **River overbet (1.5-2.2x pot) for nut hands on dry rivers** = proven value extraction.
-4. **Simulation counts matter less than threshold calibration.** v2 rated #1 with {0:500} vs bot5's {0:900}.
-5. **Priors: vpip=0.58, pfr=0.28, confidence divisor=35.**
-6. **EQR calibration is THE differentiator.** v2=1552 with LOWER EQR (air 0.68/0.56). Lower=tighter folding=fewer catastrophic losses.
-7. **Blocker bluff: random.random() + bluff_freq_bonus param**, not deterministic hash.
-8. **Dead weight removed:** cbet_rate, fold_to_cbet, drift detection, gift_balance, exploit_lambda.
+4. **Simulation counts: lower is fine with good calibration.** v2 #1 with {0:500}. v13 #1 with same.
+5. **Priors: v13 uses vpip=0.52, pfr=0.24 (better than 0.58/0.28).** Lower priors = less aggressive early exploitation.
+6. **EQR values NOT universally lower-is-better.** v13 (#1, 1646) uses air IP=0.68/OOP=0.56, pair IP=0.84/OOP=0.73. Context matters.
+7. **Blocker bluff: deterministic token-based randomization (v13) works better than random.random().** Reproducible.
+8. ~~Dead weight removed~~ **REVISED:** v13 proves cbet_rate, drift detection, gift_balance, exploit_lambda ARE valuable. Lesson 8 was wrong for v8's context.
 9. **Anti-lock: chase=0.90, threshold=-0.075, sizing=0.18, bluff=0.13.**
-10. **bb_vs_raise/sb_vs_raise: Let simulation decide.** Fixed thresholds are harmful.
+10. ~~bb_vs_raise: Let simulation decide~~ **REVISED:** v13 has explicit bb_vs_raise 3bet bluff + sb_vs_reraise 4bet logic and is #1. Complete preflop logic matters.
 11. **When changing preflop eval, recalibrate ALL downstream thresholds.**
-12. **Wholesale copy fails. Incremental targeted port wins.**
+12. **Wholesale copy fails. Incremental targeted port wins.** CONFIRMED by v10 breakthrough.
 13. **Fix ALL parameter issues simultaneously.** Effects compound.
-14. **choose_raise thin_cap: 0.30 (round<=2) / 0.38 (round==3).** max_ratio: 2.2 for river overbet, else 1.45.
+14. **choose_raise thin_cap: v13 uses wetness-aware formula (0.46+0.08*wet+0.05*round)** — superior to v9's flat 0.30/0.38.
 
-### v8 Specifics
+### Structural Advantages (v13 analysis — #1 at 1646)
 
-15. **jam_buffer cap at 0.11 for thin/marginal.** Thin bonus 0.02 (was 0.04). Buffer accumulation caused catastrophic all-ins with win_rate as low as 0.45.
-16. **choose_overbet_bluff_river is an unused weapon.** Blocker-based river bluffs on dry boards, fold_to_raise > 0.50.
-17. **min_raise_action fix essential.** Use state.get("min_raise_action", state["round_raise"]).
-18. **v2 has OOP double-barrel EQR penalty (-0.05) and big_pot air discount (-0.03).** Port for conservatism.
-19. **must_continue_vs_raise extends to strong combo draws.** draw_strength >= 0.20 with favorable pot odds.
-20. **big_pot_safety_guard prevents thin/marginal barreling in huge pots.** pot > 7000, turn/river, no draw.
+15. **Complete preflop logic is critical.** bb_vs_raise (3bet bluff) and sb_vs_reraise (4bet) add significant EV vs bots that fold too much preflop.
+16. **gift_balance + exploit_lambda modulates GTO/exploit blend.** Track opponent losses, exploit harder when ahead.
+17. **Concept drift detection adjusts model when opponent shifts behavior.** Uses recent-10 data when drift detected.
+18. **CBet rate adjustments:** cbet>0.65 → call_margin-=0.02, cbet<0.40 → call_margin+=0.02. Exploits cbet patterns.
+19. **OOP draw EQR discount path:** draw_str>=0.08 + made<0.18 + OOP → EQR 0.85(flop)/0.75(turn+). Prevents overvaluing OOP draws.
+20. **must_continue_vs_raise should protect strong combo draws.** draw_strength>=0.20, pot_odds<=0.38. From v9.
+21. **big_pot_safety_guard prevents catastrophic barreling.** pot>7000, turn/river, thin/marginal, no draw.
+22. **River exact equity override (0 sims):** raise if wr>0.85, fold if wr<0.15-pot_odds_margin. Pure win.
+23. **min_raise_action .get() fallback is essential.** state.get("min_raise_action", state["round_raise"]).
 
-### v8→v9: Crossover with v3 Features
+### Strategy Principles
 
-21. **v2 still #1 (1552) after 164 periods.** v8 at 1498 despite more features — base calibration matters most.
-22. **v3 EXP3 costs ~20pts but STYLE PARAMS are valuable.** classify_opponent_style() + direct threshold deltas. Skip the bandit.
-23. **River Refinement is a clean win.** exact equity on river (0 sims), force raise exact_wr>0.85, fold exact_wr<0.15.
-24. **Crossover rule: ADD new decision paths only, never modify existing v8 logic.** Style deltas default to zero for unknown opponents.
-25. **5 opponent types: nit (low VPIP, high fold), maniac (high VPIP/PFR/aggr), calling station (high VPIP, low PFR), fold-heavy (high fold_to_raise), balanced/unknown.**
-26. **Air EQR: lower IP 0.68→0.65, OOP 0.56→0.53.** Marginal pair: IP 0.84→0.82, OOP 0.73→0.70.
-
-### v2→v10: Targeted Incremental Improvements (BREAKTHROUGH)
-
-27. **v10 beats v2 31-19 (62%) in 50 games!** First bot to convincingly defeat the long-standing #1 (v2, 1552 Glicko for 860 periods).
-28. **v10 also beats bot5 13-7 (65%).** Improvement is general, not just anti-v2.
-29. **Key insight: 7 small additive changes to v2 base outperformed all complex rewrites (v3-v9).** Lesson 12 confirmed dramatically.
-30. **Changes: (1) air EQR 0.65/0.53, (2) thin_cap 0.30/0.38, (3) river overbet max_ratio 2.2, (4) min_raise_action fix, (5) river exact equity force raise>0.85/fold<0.15, (6) big_pot_safety_guard pot>7000, (7) must_continue for strong combo draws.**
-31. **Each change was independently justified by experience pool lessons.** No speculative changes. Every modification mapped to a prior lesson.
-32. **Starting from the #1 bot and making targeted tweaks is superior to starting from weaker bots with ambitious rewrites.** Base calibration + small corrections > feature proliferation.
+24. **Starting from #1 bot + targeted tweaks > complex rewrites.** v10 confirmed this. Now branching from v13.
+25. **ADD new decision paths only, never modify existing calibrated logic.** Style deltas default to zero for unknown opponents.
+26. **Anti-bot4 and style classification: uncertain value vs field.** v13 leads without them. Port only proven features.
