@@ -35,3 +35,12 @@ Lessons from previous iterations. Read before planning next generation.
 24. **Crossover rule: ADD new decision paths only, never modify existing v8 logic.** Style deltas default to zero for unknown opponents.
 25. **5 opponent types: nit (low VPIP, high fold), maniac (high VPIP/PFR/aggr), calling station (high VPIP, low PFR), fold-heavy (high fold_to_raise), balanced/unknown.**
 26. **Air EQR: lower IP 0.68→0.65, OOP 0.56→0.53.** Marginal pair: IP 0.84→0.82, OOP 0.73→0.70.
+
+### v2→v10: Targeted Incremental Improvements (BREAKTHROUGH)
+
+27. **v10 beats v2 31-19 (62%) in 50 games!** First bot to convincingly defeat the long-standing #1 (v2, 1552 Glicko for 860 periods).
+28. **v10 also beats bot5 13-7 (65%).** Improvement is general, not just anti-v2.
+29. **Key insight: 7 small additive changes to v2 base outperformed all complex rewrites (v3-v9).** Lesson 12 confirmed dramatically.
+30. **Changes: (1) air EQR 0.65/0.53, (2) thin_cap 0.30/0.38, (3) river overbet max_ratio 2.2, (4) min_raise_action fix, (5) river exact equity force raise>0.85/fold<0.15, (6) big_pot_safety_guard pot>7000, (7) must_continue for strong combo draws.**
+31. **Each change was independently justified by experience pool lessons.** No speculative changes. Every modification mapped to a prior lesson.
+32. **Starting from the #1 bot and making targeted tweaks is superior to starting from weaker bots with ambitious rewrites.** Base calibration + small corrections > feature proliferation.
