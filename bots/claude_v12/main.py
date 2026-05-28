@@ -1,12 +1,12 @@
 """
-Bot 10 - v2 base + 7 targeted additive improvements:
-1) Lower air EQR (0.65/0.53 from 0.68/0.56) - tighter air folding
-2) thin_cap calibration (0.30 round<=2 / 0.38 round==3) - prevent thin overbet
-3) max_ratio 2.2 for river overbet - unlock nut value extraction
-4) min_raise_action fix - use state.get("min_raise_action", state["round_raise"])
-5) River exact equity threshold (force raise >0.85, fold <0.15)
-6) big_pot_safety_guard - prevent catastrophic thin barrel in huge pots
-7) must_continue_vs_raise for strong combo draws - protect draw equity
+Bot 2 - Bot23-based with 7 directed improvements:
+1) Interface fix + decide_action (3 input formats)
+2) Preflop 169-hand lookup table
+3) CBet / Fold-to-CBet tracking
+4) Opponent concept drift detection
+5) Improved equity realization
+6) 3Bet/4Bet dedicated logic
+7) Safe exploitation framework
 """
 import json
 import sys
@@ -28,7 +28,8 @@ def sanitize_action(action, state, my_chips):
     if action > 0:
         if action >= my_chips:
             return -2
-        if action < state["round_raise"] or action <= state["to_call"]:
+        min_raise_action = state.get("min_raise_action", state["round_raise"])
+        if action < min_raise_action or action <= state["to_call"]:
             return 0 if state["to_call"] == 0 else -1
 
     if action == 0 and state["to_call"] > 0:

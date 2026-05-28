@@ -1,3 +1,4 @@
+
 from constants import HAND_CLASS_SCORE
 from card_utils import clamp, card_suit, card_number
 from card_utils import evaluate_best
@@ -863,14 +864,12 @@ def blocker_bluff_profile(hole_cards, public_cards, pair_profile=None, board_tex
     return info
 
 
-def allow_low_frequency_blocker_bluff(req, hole_cards, public_cards, blocker_profile, round_idx):
+def allow_low_frequency_blocker_bluff(req, hole_cards, public_cards, blocker_profile, round_idx, bluff_freq_bonus=0.0):
     if not blocker_profile["eligible"]:
         return False
 
-    hand_idx = get_hand_index(req) or 0
-    token = (sum(hole_cards) * 7 + sum(public_cards) * 11 + hand_idx * 13 + round_idx * 17) % 100
-    threshold = int(clamp(blocker_profile["score"] * 35.0, 5.0, 18.0))
-    return token < threshold
+    threshold = clamp(blocker_profile["score"] * 35.0, 5.0, 18.0) + bluff_freq_bonus * 100.0
+    return (int(blocker_profile["score"] * 7919) + 37) % 100 < threshold
 
 
 def nutted_risk_profile(hole_cards, public_cards, pair_profile=None, board_texture=None, value_profile=None, paired_board_profile=None):
@@ -997,3 +996,4 @@ def check_probe_resistance_margin(spot_info, opponent_model, round_idx):
         margin += 0.010
 
     return clamp(margin, 0.0, 0.085)
+
