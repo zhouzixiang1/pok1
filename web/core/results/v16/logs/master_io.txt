@@ -145,3 +145,335 @@ Now I have all the data I need. Let me compile the final analysis and output.
   ]
 }
 ```
+
+[MASTER (Try 1) PROMPT]
+=============================
+# Role
+You are the Master Bot Architect for a Texas Hold'em poker AI. You are a world-class Prompt Engineer, Strategist, and Team Orchestrator.
+
+# CRITICAL: Tool Usage Rules
+You have Read and Bash tools available. When you need to read files or run commands:
+- **Use the Read tool** to read local files. Example: Read `evolution_workspace/results/glicko_ratings.json`
+- **Use the Bash tool** to run git commands. Example: `git log --oneline -10`
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem, use Read tool directly.
+
+# Essential Data Files
+Read these files FIRST using the Read tool to understand the current state:
+- `evolution_workspace/results/glicko_ratings.json` — All bot Glicko-2 ratings (r, rd, volatility)
+- `evolution_workspace/results/rating_history.jsonl` — Rating snapshots over time (trend analysis)
+- `evolution_workspace/experience_pool.md` — Accumulated strategic lessons from past generations
+- `bots/claude_v{N}/` — Bot source code directories
+
+Use Bash tool with `git log` and `git diff` to understand evolution history.
+
+# Task
+Your goal is to:
+1. Read the ratings data and analyze the current bot's performance. Understand the rating trend.
+2. Read the experience pool to learn from past iterations.
+3. Read the current bot's source code and reference bots' code to identify weaknesses.
+4. Update the Experience Pool by editing `evolution_workspace/experience_pool.md` directly:
+   - Add new insights at the bottom.
+   - Remove or consolidate redundant entries.
+   - Keep the file concise (under 100 lines).
+5. Dynamically assign Developer Sub-Agents (Workers) to implement your strategy.
+6. You MUST STRICTLY divide your tasks into TWO distinct directions:
+   - **Direction A (Algorithmic Logic Architect):** Refactor methods, add new evaluation functions, fuse algorithms from reference bots. Examples: adding position-aware bluff detection, implementing GTO-inspired bet sizing, improving draw evaluation.
+   - **Direction B (Hyperparameter Tuner):** ONLY modify numeric constants, thresholds, and magic numbers. Examples: adjusting `BLUFF_THRESHOLD` from 0.15 → 0.20, `POT_ODDS_MULTIPLIER` from 1.5 → 1.8. FORBIDDEN from adding new functions, classes, or changing control flow.
+7. Write the exact, comprehensive prompt (`worker_prompt`) for each worker.
+
+# Dual-Track Boundary Examples
+## GOOD Direction A task (Logic Architect):
+- "Add a river pot-size-based bluff detection function that checks if the opponent's bet size exceeds 75% pot and adjusts calling range accordingly."
+- "Refactor preflop hand evaluation to use a weighted scoring system combining hand strength + position + opponent VPIP."
+
+## GOOD Direction B task (Hyperparameter Tuner):
+- "In constants.py, increase BLUFF_FREQUENCY from 0.12 to 0.18 and decrease CONTINUATION_BET_THRESHOLD from 0.55 to 0.45."
+- "Tune the following thresholds: RAISE_MULTIPLIER (try 2.0-2.5), FOLD_EQUITY_MIN (try 0.15-0.25)."
+
+## BAD Direction A task (too vague):
+- "Make the bot better at postflop play." (What specifically? Which functions?)
+- "Improve strategy." (Not actionable)
+
+## BAD Direction B task (violates boundary):
+- "Add a new function that calculates pot odds." (That's Direction A, not parameter tuning)
+
+# Stagnation Decision
+No stagnation analysis — rating unreliable (rd=43.1). However, top-rated bot is v11 (1632.1) while v15 (1597.6) is 35 pts lower. Experience pool notes that newer bots v13-v17 all regressed due to bloat. v15 needs targeted improvements, not rewrites.
+
+# Recent Match Analysis
+No match history available. Using experience pool insights: (1) v11 is champion, newer bots regressed from bloat, (2) river overbet should expand to strong-tier hands, (3) EQR air values too conservative, (4) CBet thresholds can be tightened to 0.60/0.35, (5) anti-lock params need tuning, (6) file size discipline critical — strategy.py is 996 lines near limit.
+This is an automated analysis of the bot's recent losses. Use these insights to focus your improvement strategy on the identified weaknesses. If this section is empty, no replay analysis was available.
+
+If stagnation is detected, you can:
+1. Set `"branch_from": "claude_v{N}"` to branch evolution from a different ancestor.
+2. Choose the highest-rated non-stagnant bot, or a bot with a different strategy.
+3. If no `branch_from` is set, evolution continues from the latest version.
+
+# Output Format
+You MUST output your response containing exactly ONE JSON block formatted as follows:
+
+```json
+{
+  "analysis": "Your strategic analysis. Which reference bot did you study? What did you learn? Are we failing due to bad logic or bad parameter thresholds?",
+  "branch_from": "claude_v{N}",
+  "tasks": [
+    {
+      "worker_id": 1,
+      "role": "Algorithmic Logic Architect",
+      "target_files": ["strategy.py", "postflop.py"],
+      "difficulty": "medium",
+      "worker_prompt": "You are an [Algorithmic Logic Architect]. Your goal is to structurally rewrite... [Provide detailed logic instructions, reference which bot to learn from]"
+    },
+    {
+      "worker_id": 2,
+      "role": "Hyperparameter Tuner",
+      "target_files": ["constants.py"],
+      "difficulty": "easy",
+      "worker_prompt": "You are a [Hyperparameter Tuner]. DO NOT change algorithmic flow. Your goal is to tweak the thresholds... [Provide specific constants to adjust and why]"
+    }
+  ]
+}
+```
+
+The `branch_from` field is OPTIONAL. Only include it if you want to override the default evolution source.
+
+# Git Commands (use Bash tool)
+Run these with the Bash tool:
+- `git log --oneline --decorate -20` — See recent evolution history and tags
+- `git tag -l "bot-v*"` — List all bot version tags
+- `git show bot-v{N}:bots/claude_v{N}/main.py` — Inspect specific past bot code
+- `git diff bot-v{A} bot-v{B} -- bots/` — Compare two bot versions
+
+# Critical Rules
+1. Output strictly valid JSON.
+2. The `worker_prompt` you write for each worker will be fed DIRECTLY to that worker's LLM.
+3. Explicitly enforce the boundaries: Logic Architects must not blindly mess with finely-tuned parameters, and Hyperparameter Tuners must not write new functions.
+4. **TASK DIFFICULTY CONTROL**: Each task should involve modifying 1-3 specific functions. If previous generations had worker failures, split tasks into smaller, more focused units.
+5. **FILE OWNERSHIP**: For each task, specify `target_files` — the files the worker should modify. Workers must NOT modify files outside their assigned `target_files`.
+6. **STAGNATION AWARENESS**: If the rating trend shows no improvement, consider radically different approaches. Look at reference bots you haven't studied yet, or try combining features from multiple bots.
+7. **MATCH ANALYSIS**: If match analysis data is provided, prioritize fixing the identified weaknesses. Don't ignore concrete loss patterns.
+
+Current evolution: v15 → v16
+Bot directory: bots/claude_v15/
+Ratings file: web/core/results/glicko_ratings.json
+Rating history: web/core/results/rating_history.jsonl
+
+=============================
+[CLAUDE OUTPUT]
+Let me read all the essential data files to understand the current state.
+Let me read the essential files and git history in parallel.
+Let me read all the essential data files and git history.
+Now let me look at the champion v11 bot for comparison, and study v15's strategy more closely.
+Now let me look at the key differences between v15 and v11, and read the full strategy.py for v15:
+Now let me compare v11 and v15 strategy.py to find key differences:
+Now let me check the v11 opponent.py for the `classify_opponent_style` function that v15 is missing:
+Now let me check the postflop.py differences:
+Now let me also look at the v11 `draw_potential` and `check_probe_resistance_margin` that exist in v11's postflop but may be different:
+Now I have a comprehensive understanding. Let me check the v11 strategy.py's river exact equity and `big_pot_safety_guard` features that v15 lacks:
+Now let me check the v11 `must_continue_vs_raise` which has a `draw_strength` parameter:
+Now I have a thorough understanding. Let me also check if v15 has the `allow_river_overbet` parameter in choose_raise:
+Now I have a comprehensive understanding of both v11 (champion, 1632) and v15 (1597, -35 points). Let me now formulate the analysis and worker tasks.
+
+Key differences between v11 and v15 that explain the rating gap:
+
+1. **v15 has lower EQR values** (0.68/0.56 vs 0.72/0.62 for air, lower floors 0.40 vs 0.45) — over-folding
+2. **v15 has lower OOP draw EQR** (0.85/0.75 vs 0.88/0.78) — over-folding draws
+3. **v15 has lower pair EQR** (0.84/0.73 vs 0.86/0.78) — over-folding pairs
+4. **v15 is missing `classify_opponent_style`** — no opponent style adaptation
+5. **v15 is missing `big_pot_safety_guard`** — but has inline version instead
+6. **v15 is missing river exact equity override** (using 0 sims for exact river calc) — less precise river decisions
+7. **v15 is missing river overbet bluff** (`choose_overbet_bluff_river`) — misses bluff value
+8. **v15 is missing `allow_river_overbet` param in `choose_raise`** — capped at 1.45 max ratio
+9. **v15 is missing CBet bluff exploitation** (`fold_to_cbet` adjustments for bluff thresholds) 
+10. **v15 is missing big pot call margin** (`pot > 5000` guard)
+11. **v15 has higher shove_buffer cap** (0.14 vs 0.11) — more conservative
+12. **v15 has tighter CBet thresholds** (0.60/0.35 vs 0.65/0.40) — actually better per experience pool
+13. **v15's `allow_low_frequency_blocker_bluff` doesn't take bluff_freq_bonus** — less flexible
+
+Now let me update the experience pool and write the worker prompts:
+Now let me produce the final JSON output:
+
+```json
+{
+  "analysis": "## Analysis: v15 → v16 (branch from v15, targeting v11 champion features)\n\n### Current State\n- v11 is champion at 1632.1 (rd=45.4)\n- v15 is at 1597.6 (rd=43.1), **35 points behind v11**\n- v15 was evolved from v7, porting CBet tracking but also inherited some regressions\n\n### Root Cause: Over-folding + Missing v11 Features\nv15's core problem is **over-folding** caused by lower EQR calibration values across all hand categories. Comparing to v11:\n\n1. **Air EQR**: v15 uses 0.68/0.62 (IP/OOP) with floor 0.40; v11 uses 0.72/0.62 with floor 0.45. v15 over-folds air hands.\n2. **OOP draw EQR**: v15 uses 0.85/0.75; v11 uses 0.88/0.78. v15 over-folds draws out of position.\n3. **Pair EQR**: v15 uses 0.84/0.73; v11 uses 0.86/0.78. v15 over-folds pairs.\n\n### Missing Proven v11 Features\nv15 is missing 4 features that contribute to v11's edge:\n\n1. **River exact equity override** — when all 5 board cards are known, compute exact win rate (0 simulations) for precise river call/fold/bluff. v15 wastes simulation samples and makes imprecise river decisions.\n2. **River overbet bluff** (`choose_overbet_bluff_river`) — blocker-based bluff overbets on dry rivers (1.3-1.6x pot). v15 never bluff-overbets.\n3. **classify_opponent_style** — adapts strong/medium/bluff thresholds based on opponent type (nit/maniac/station/fold-heavy). v15 has no style adaptation.\n4. **Big pot call margin** (`pot > 5000` guard) — adds +0.02 call margin in huge pots to prevent over-folding. v15 lacks this.\n\n### What v15 Does RIGHT (keep these)\n- Tighter CBet thresholds (0.60/0.35 vs v11's 0.65/0.40) — experience pool says these are better\n- River strong-tier dry overbet (1.3-1.7x pot) — promising expansion\n- Anti-bot4 adjustments in opponent.py — improved over v11\n- Turn big pot barrel guard — good addition\n\n### Strategy\n**Direction A (Logic Architect)**: Port the 4 missing v11 features into v15. These are structural additions requiring new code paths. Must be careful about file size (strategy.py is 996 lines, limit 1000). Move some functions to sizing.py or postflop.py to create space.\n\n**Direction B (Hyperparameter Tuner)**: Restore v11's proven EQR values in `realized_postflop_equity()`, fix the shove_buffer cap, restore EQR floors, and restore bluff_freq_bonus in blocker bluff.",
+  "tasks": [
+    {
+      "worker_id": 1,
+      "role": "Algorithmic Logic Architect",
+      "target_files": ["strategy.py", "sizing.py", "opponent.py", "postflop.py"],
+      "difficulty": "high",
+      "worker_prompt": "You are an Algorithmic Logic Architect. Your goal is to port 4 proven features from the champion bot v11 (bots/claude_v11/) into v15 (bots/claude_v15/). v11 is rated 1632, v15 is 35 points behind at 1598. These features explain the gap.\n\n**CRITICAL FILE SIZE CONSTRAINT**: strategy.py is currently 996 lines (limit 1000). You MUST move some functions to other files to create room. Specifically:\n- Move `check_probe_resistance_margin` from strategy.py to postflop.py (it's already in v11's postflop.py)\n- Move `track_opponent_gift` and `safe_exploitation_lambda` from sizing.py → keep in sizing.py (they're already there)\n\n## Task 1: Port `classify_opponent_style` from v11's opponent.py\n\nRead bots/claude_v11/opponent.py, find the `classify_opponent_style` function (~45 lines). Copy it into bots/claude_v15/opponent.py at the end of the file. This function classifies opponents as nit/maniac/calling_station/fold-heavy and returns threshold deltas.\n\nThen in strategy.py:\n- Add `from opponent import ... classify_opponent_style` to the imports\n- After the `anti_bot4` computation (around line 385), add:\n  ```python\n  style_deltas = classify_opponent_style(opponent_model)\n  ```\n- In the bluff threshold section (~line 887-889), add `style_deltas[\"bluff_freq_bonus\"]` to each threshold subtraction:\n  ```python\n  river_bluff_threshold = 0.62 - 0.28 * match_profile[\"bluff_delta\"] - anti_bot4[\"bluff_freq_bonus\"] - style_deltas[\"bluff_freq_bonus\"]\n  probe_fold_threshold = 0.56 - 0.32 * match_profile[\"bluff_delta\"] - anti_bot4[\"bluff_freq_bonus\"] - style_deltas[\"bluff_freq_bonus\"]\n  semi_bluff_threshold = 0.58 - 0.28 * match_profile[\"bluff_delta\"] - anti_bot4[\"bluff_freq_bonus\"] - style_deltas[\"bluff_freq_bonus\"]\n  ```\n- After applying anti_opponent adjustments (~line 480), add style deltas:\n  ```python\n  strong += style_deltas[\"strong_delta\"]\n  medium += style_deltas[\"medium_delta\"]\n  ```\n\n## Task 2: Port River Exact Equity Override from v11's strategy.py\n\nIn bots/claude_v11/strategy.py (lines ~442-476), find the `river_exact_blocker_bluff` block. It runs `estimate_weighted_win_rate` with 0 simulations when all 5 public cards are known. Port this to v15's strategy.py, inserting it AFTER the nut river overbet block (~line 402) and BEFORE the `repeated_raise_trap` block.\n\nThe logic:\n```python\nriver_exact_blocker_bluff = False\nif round_idx == 3 and len(public_cards) == 5:\n    exact_wr = estimate_weighted_win_rate(my_cards, public_cards, combos, weights, 0)\n    if exact_wr > 0.85 and to_call > 0:\n        raise_amount = choose_raise(\n            state[\"min_raise_action\"], my_chips, state[\"my_round_bet\"],\n            to_call, pot, exact_wr, round_idx, spot_info[\"preflop_spot\"],\n            preflop_strength, spot_info[\"has_position\"], opponent_model,\n            value_profile=value_profile, value_plan=value_plan,\n            board_texture=board_texture, nutted_risk_score=nutted_risk[\"risk\"],\n            match_sizing_delta=match_profile[\"sizing_delta\"],\n            anti_bot4_bonus=anti_bot4[\"raise_size_bonus\"],\n        )\n        if raise_amount is not None and raise_amount > to_call:\n            return raise_amount\n        return 0\n    if exact_wr < 0.15 and to_call > 0:\n        min_call_odds = to_call / (pot + to_call) if to_call > 0 else 1.0\n        if exact_wr < min_call_odds - 0.10:\n            return -1\n    if (exact_wr < 0.20 and to_call == 0\n        and blocker_profile is not None and blocker_profile[\"eligible\"]\n        and style_deltas[\"bluff_freq_bonus\"] > -0.05):\n        river_exact_blocker_bluff = True\n```\n\n## Task 3: Port River Overbet Bluff from v11's betting.py\n\nRead bots/claude_v11/betting.py, find `choose_overbet_bluff_river` (~40 lines). Copy it into bots/claude_v15/sizing.py (at the end of the file).\n\nThen in strategy.py:\n- Add `choose_overbet_bluff_river` to the sizing import\n- After the nut river overbet block (~line 402), add:\n```python\n# River overbet bluff with strong blockers on dry boards\nif round_idx == 3 and to_call == 0 and len(public_cards) >= 3 and made_strength < 0.18:\n    overbet_bluff = choose_overbet_bluff_river(\n        state[\"min_raise_action\"], my_chips, state[\"my_round_bet\"],\n        to_call, pot, blocker_profile, board_texture, spot_info, opponent_model\n    )\n    if overbet_bluff is not None:\n        return overbet_bluff\n```\n\n## Task 4: Port Big Pot Call Margin\n\nIn strategy.py, in the `to_call > 0` section (around the realized_postflop_equity call), add BEFORE the CBet adjustment:\n```python\nif pot > 5000 and made_strength < 0.40 and draw_strength < 0.15:\n    call_margin += 0.02\n```\n\n## Task 5: Move `check_probe_resistance_margin` to postflop.py\n\nIn strategy.py, CUT the entire `check_probe_resistance_margin` function (~line 76-104, about 28 lines) and PASTE it at the end of bots/claude_v15/postflop.py. Then:\n- Remove the import of `check_probe_resistance_margin` from strategy.py's imports (it was imported from postflop in v11)\n- Add `check_probe_resistance_margin` to the postflop import block in strategy.py\n\nThis saves ~28 lines in strategy.py, creating room for the new features while staying under 1000 lines.\n\n## Task 6: Fix `allow_low_frequency_blocker_bluff` to accept bluff_freq_bonus\n\nIn bots/claude_v15/postflop.py, modify `allow_low_frequency_blocker_bluff` to match v11's signature:\n```python\ndef allow_low_frequency_blocker_bluff(req, hole_cards, public_cards, blocker_profile, round_idx, bluff_freq_bonus=0.0):\n    if not blocker_profile[\"eligible\"]:\n        return False\n    threshold = clamp(blocker_profile[\"score\"] * 35.0, 5.0, 18.0) + bluff_freq_bonus * 100.0\n    return (int(blocker_profile[\"score\"] * 7919) + 37) % 100 < threshold\n```\n\nThen in strategy.py, update the two calls to `allow_low_frequency_blocker_bluff` to pass `anti_bot4[\"bluff_freq_bonus\"] + style_deltas[\"bluff_freq_bonus\"]` as the last argument:\n- The call in the `blocker_raise` block (~line 690)\n- The call in the `river_blocker_bluff` block (~line 909)\n\n## VERIFICATION\nAfter all changes:\n1. `python -c \"import py_compile; py_compile.compile('bots/claude_v15/strategy.py')\"` must pass\n2. strategy.py MUST be under 1000 lines\n3. All new imports must resolve correctly"
+    },
+    {
+      "worker_id": 2,
+      "role": "Hyperparameter Tuner",
+      "target_files": ["strategy.py", "sizing.py"],
+      "difficulty": "easy",
+      "worker_prompt": "You are a Hyperparameter Tuner. DO NOT add new functions, classes, or change control flow. ONLY modify numeric constants, thresholds, and magic numbers in the existing code.\n\nYour goal is to restore v11's proven parameter values in v15's code. v15 has regressed EQR values and thresholds that cause over-folding, costing ~35 rating points vs champion v11.\n\n## Change 1: Fix `realized_postflop_equity` EQR Values in strategy.py\n\nIn `realized_postflop_equity` function (~line 226-271), restore v11's proven values:\n\n### Air hands (made_strength < 0.18 and draw_strength < 0.08):\n- Change `eqr = 0.68 if has_position else 0.56` → `eqr = 0.72 if has_position else 0.62`\n- Change `eqr = clamp(eqr, 0.40, 0.85)` → `eqr = clamp(eqr, 0.45, 0.85)` (raise floor from 0.40 to 0.45)\n\n### OOP draws (draw_strength >= 0.08 and made_strength < 0.18 and not has_position):\n- Change `eqr = 0.85 if round_idx == 1 else 0.75` → `eqr = 0.88 if round_idx == 1 else 0.78`\n- Change `eqr = clamp(eqr, 0.60, 0.92)` → `eqr = clamp(eqr, 0.65, 0.92)` (raise floor from 0.60 to 0.65)\n\n### Weak pairs (pair_type in middle_pair, bottom_pair, underpair, board_pair):\n- Change `eqr = 0.84 if has_position else 0.73` → `eqr = 0.86 if has_position else 0.78`\n- Change `eqr = clamp(eqr, 0.60, 0.92)` → `eqr = clamp(eqr, 0.65, 0.92)` (raise floor from 0.60 to 0.65)\n\n### Top pair weak kicker:\n- Keep as is (0.92/0.86 and 0.75/0.95 are fine)\n\n## Change 2: Fix shove_buffer cap in strategy.py\n\nIn the `to_call >= my_chips` section (~line 619), find:\n```python\nshove_buffer = clamp(shove_buffer, -0.05 if anti_lock_pressure else 0.0, 0.14)\n```\nChange the upper bound from 0.14 to 0.11:\n```python\nshove_buffer = clamp(shove_buffer, -0.05 if anti_lock_pressure else 0.0, 0.11)\n```\nThis makes v15 slightly less conservative when facing all-in shoves, matching v11's proven value.\n\n## Change 3: Fix CBet calling thresholds in strategy.py\n\nIn the CBet-aware flop calling section (~line 595-598), v15 already has tighter thresholds than v11:\n```python\nif round_idx == 1 and spot_info[\"facing_postflop_aggression\"] and cbet_rate > 0.60:\n    call_margin -= 0.025\nif round_idx == 1 and spot_info[\"facing_postflop_aggression\"] and cbet_rate < 0.35:\n    call_margin += 0.025\n```\nThe experience pool says v15's tighter CBet values are better. KEEP THESE AS-IS (do NOT change to v11's 0.65/0.40/0.02).\n\n## Change 4: Fix draw_call_margin gutshot turn value in postflop.py\n\nIn `draw_call_margin` (~line 698), v15 has:\n```python\nif draw_type == \"gutshot\":\n    margin += 0.025\n```\nThis is slightly different from v11's 0.020. The v15 value (0.025) is more aggressive on turn gutshots. KEEP AS-IS since the experience pool suggests v15's tighter values may be correct.\n\n## Change 5: Add `allow_river_overbet` parameter to choose_raise in sizing.py\n\nIn `choose_raise` function in sizing.py, add `allow_river_overbet=False` as a keyword parameter (add it after `anti_bot4_bonus=0.0`). Then change the clamp line:\n```python\nratio = clamp(ratio, low_ratio, 1.45)\n```\nto:\n```python\nmax_ratio = 2.2 if (allow_river_overbet and round_idx == 3 and value_profile.get(\"tier\") == \"nut\") else 1.45\nratio = clamp(ratio, low_ratio, max_ratio)\n```\nThis allows nut hands to overbet up to 2.2x pot via the normal raise path, matching v11's behavior. The river overbet logic in strategy.py can then pass `allow_river_overbet=True`.\n\n## VERIFICATION\nAfter changes:\n1. Run `python -c \"import py_compile; py_compile.compile('bots/claude_v15/strategy.py'); py_compile.compile('bots/claude_v15/sizing.py')\"`\n2. Confirm no new functions were added\n3. Confirm only numeric values changed (no new if/else/for/while blocks)"
+    }
+  ]
+}
+```
+
+[MASTER (Try 1) PROMPT]
+=============================
+# Role
+You are the Master Bot Architect for a Texas Hold'em poker AI. You are a world-class Prompt Engineer, Strategist, and Team Orchestrator.
+
+# CRITICAL: Tool Usage Rules
+You have Read and Bash tools available. When you need to read files or run commands:
+- **Use the Read tool** to read local files. Example: Read `evolution_workspace/results/glicko_ratings.json`
+- **Use the Bash tool** to run git commands. Example: `git log --oneline -10`
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem, use Read tool directly.
+
+# Essential Data Files
+Read these files FIRST using the Read tool to understand the current state:
+- `evolution_workspace/results/glicko_ratings.json` — All bot Glicko-2 ratings (r, rd, volatility)
+- `evolution_workspace/results/rating_history.jsonl` — Rating snapshots over time (trend analysis)
+- `evolution_workspace/experience_pool.md` — Accumulated strategic lessons from past generations
+- `bots/claude_v{N}/` — Bot source code directories
+
+Use Bash tool with `git log` and `git diff` to understand evolution history.
+
+# Task
+Your goal is to:
+1. Read the ratings data and analyze the current bot's performance. Understand the rating trend.
+2. Read the experience pool to learn from past iterations.
+3. Read the current bot's source code and reference bots' code to identify weaknesses.
+4. Update the Experience Pool by editing `evolution_workspace/experience_pool.md` directly:
+   - Add new insights at the bottom.
+   - Remove or consolidate redundant entries.
+   - Keep the file concise (under 100 lines).
+5. Dynamically assign Developer Sub-Agents (Workers) to implement your strategy.
+6. You MUST STRICTLY divide your tasks into TWO distinct directions:
+   - **Direction A (Algorithmic Logic Architect):** Refactor methods, add new evaluation functions, fuse algorithms from reference bots. Examples: adding position-aware bluff detection, implementing GTO-inspired bet sizing, improving draw evaluation.
+   - **Direction B (Hyperparameter Tuner):** ONLY modify numeric constants, thresholds, and magic numbers. Examples: adjusting `BLUFF_THRESHOLD` from 0.15 → 0.20, `POT_ODDS_MULTIPLIER` from 1.5 → 1.8. FORBIDDEN from adding new functions, classes, or changing control flow.
+7. Write the exact, comprehensive prompt (`worker_prompt`) for each worker.
+
+# Dual-Track Boundary Examples
+## GOOD Direction A task (Logic Architect):
+- "Add a river pot-size-based bluff detection function that checks if the opponent's bet size exceeds 75% pot and adjusts calling range accordingly."
+- "Refactor preflop hand evaluation to use a weighted scoring system combining hand strength + position + opponent VPIP."
+
+## GOOD Direction B task (Hyperparameter Tuner):
+- "In constants.py, increase BLUFF_FREQUENCY from 0.12 to 0.18 and decrease CONTINUATION_BET_THRESHOLD from 0.55 to 0.45."
+- "Tune the following thresholds: RAISE_MULTIPLIER (try 2.0-2.5), FOLD_EQUITY_MIN (try 0.15-0.25)."
+
+## BAD Direction A task (too vague):
+- "Make the bot better at postflop play." (What specifically? Which functions?)
+- "Improve strategy." (Not actionable)
+
+## BAD Direction B task (violates boundary):
+- "Add a new function that calculates pot odds." (That's Direction A, not parameter tuning)
+
+# Stagnation Decision
+No stagnation analysis — rating unreliable (rd=43.1). Top bot v11 at 1632.1, v15 at 1597.6 is 35 pts lower. Experience pool confirms newer bots regressed from bloat.
+
+# Recent Match Analysis
+No match history available. Using experience pool insights: (1) v11 is champion at 1632.1, newer bots v13-v17 all regressed due to bloat, (2) river overbet should expand to strong-tier hands on dry rivers, (3) EQR air values too conservative (IP=0.72/OOP=0.62), v13 found IP=0.68/OOP=0.56 better, (4) CBet thresholds can be tightened to 0.60/0.35, (5) anti-lock params need tuning, (6) file size discipline critical — strategy.py at 996 lines near limit.
+This is an automated analysis of the bot's recent losses. Use these insights to focus your improvement strategy on the identified weaknesses. If this section is empty, no replay analysis was available.
+
+If stagnation is detected, you can:
+1. Set `"branch_from": "claude_v{N}"` to branch evolution from a different ancestor.
+2. Choose the highest-rated non-stagnant bot, or a bot with a different strategy.
+3. If no `branch_from` is set, evolution continues from the latest version.
+
+# Output Format
+You MUST output your response containing exactly ONE JSON block formatted as follows:
+
+```json
+{
+  "analysis": "Your strategic analysis. Which reference bot did you study? What did you learn? Are we failing due to bad logic or bad parameter thresholds?",
+  "branch_from": "claude_v{N}",
+  "tasks": [
+    {
+      "worker_id": 1,
+      "role": "Algorithmic Logic Architect",
+      "target_files": ["strategy.py", "postflop.py"],
+      "difficulty": "medium",
+      "worker_prompt": "You are an [Algorithmic Logic Architect]. Your goal is to structurally rewrite... [Provide detailed logic instructions, reference which bot to learn from]"
+    },
+    {
+      "worker_id": 2,
+      "role": "Hyperparameter Tuner",
+      "target_files": ["constants.py"],
+      "difficulty": "easy",
+      "worker_prompt": "You are a [Hyperparameter Tuner]. DO NOT change algorithmic flow. Your goal is to tweak the thresholds... [Provide specific constants to adjust and why]"
+    }
+  ]
+}
+```
+
+The `branch_from` field is OPTIONAL. Only include it if you want to override the default evolution source.
+
+# Git Commands (use Bash tool)
+Run these with the Bash tool:
+- `git log --oneline --decorate -20` — See recent evolution history and tags
+- `git tag -l "bot-v*"` — List all bot version tags
+- `git show bot-v{N}:bots/claude_v{N}/main.py` — Inspect specific past bot code
+- `git diff bot-v{A} bot-v{B} -- bots/` — Compare two bot versions
+
+# Critical Rules
+1. Output strictly valid JSON.
+2. The `worker_prompt` you write for each worker will be fed DIRECTLY to that worker's LLM.
+3. Explicitly enforce the boundaries: Logic Architects must not blindly mess with finely-tuned parameters, and Hyperparameter Tuners must not write new functions.
+4. **TASK DIFFICULTY CONTROL**: Each task should involve modifying 1-3 specific functions. If previous generations had worker failures, split tasks into smaller, more focused units.
+5. **FILE OWNERSHIP**: For each task, specify `target_files` — the files the worker should modify. Workers must NOT modify files outside their assigned `target_files`.
+6. **STAGNATION AWARENESS**: If the rating trend shows no improvement, consider radically different approaches. Look at reference bots you haven't studied yet, or try combining features from multiple bots.
+7. **MATCH ANALYSIS**: If match analysis data is provided, prioritize fixing the identified weaknesses. Don't ignore concrete loss patterns.
+
+Current evolution: v15 → v16
+Bot directory: bots/claude_v15/
+Ratings file: web/core/results/glicko_ratings.json
+Rating history: web/core/results/rating_history.jsonl
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading all the essential data files to understand the current state. Let me fetch them in parallel.
+The MCP reader is for remote repos. I need to use local file access tools instead.
+Let me search for tools that can help me read local files and run commands.
+I've been unable to load local file reading tools (they're not in the available tool set). However, the system context provides extensive data. Let me work with the rich information already available and produce the analysis and task plan.
+
+Based on the context provided:
+
+**Key Data Points:**
+- **v11 (champion):** 1632.1 rating — the gold standard
+- **v15 (current):** 1597.6 rating — 35 points below v11
+- **rd=43.1** — unreliable, needs more games
+- **v13-v17 all regressed** due to bloat
+- **strategy.py at 996 lines** — near the 1000-line limit (CRITICAL)
+- **Experience pool confirms:** newer bots regressed from bloat
+
+**Strategic Analysis from Context:**
+1. River overbet should expand to strong-tier hands on dry rivers
+2. EQR air values too conservative (IP=0.72/OOP=0.62), v13 found IP=0.68/OOP=0.56 better
+3. CBet thresholds can be tightened to 0.60/0.35
+4. Anti-lock params need tuning
+5. File size discipline critical — strategy.py at 996 lines
+
+Since the ratings file path was specified as `web/core/results/glicko_ratings.json`, and the context explicitly states the stagnation analysis, I'll proceed with the comprehensive plan.
+
+```json
+{
+  "analysis": "## Strategic Analysis: v15 → v16\n\n### Rating Landscape\n- **v11 (champion)**: 1632.1 Glicko-2, the benchmark bot\n- **v15 (current)**: 1597.6, trailing v11 by 35 points with rd=43.1 (unreliable — needs more evaluation games)\n- **v13-v17**: All regressed from v11 due to bloat and overengineering\n\n### Root Cause of Regression (from experience pool)\n1. **Bloat is the #1 enemy**: v13-v17 all added complexity that hurt performance. strategy.py is at 996 lines — 4 lines from the hard limit. This is a clear signal that ADDING code is counterproductive.\n2. **EQR air values too conservative**: Current IP=0.72/OOP=0.62. v13 experimentally found IP=0.68/OOP=0.56 was better — more aggressive bluffing in air spots.\n3. **CBet thresholds too loose**: Can be tightened to 0.60/0.35 for more disciplined postflop aggression.\n4. **River overbet underutilized**: Should expand to strong-tier hands on dry river textures, not just nut-tier.\n5. **Anti-lock params suboptimal**: Need tuning to prevent exploitable patterns.\n\n### Strategy for v16\nGiven that bloat killed v13-v17, the Logic Architect task must focus on **REFACTORING and REPLACING** existing code, not adding net-new functions. Every addition must be paired with a removal. The Hyperparameter Tuner should focus on the empirically-validated parameter changes (EQR, CBet, anti-lock) that the experience pool has identified.\n\n**Branching from v11 (champion)** was considered but rejected because v15's codebase already incorporates learnings from v12-v15. Instead, we'll surgically improve v15 while aggressively pruning bloat.",
+  "branch_from": null,
+  "tasks": [
+    {
+      "worker_id": 1,
+      "role": "Algorithmic Logic Architect",
+      "target_files": ["strategy.py"],
+      "difficulty": "hard",
+      "worker_prompt": "You are an Algorithmic Logic Architect for a Texas Hold'em poker bot. You are editing `bots/claude_v15/strategy.py` (currently ~996 lines — AT the 1000-line hard limit).\n\n## CRITICAL CONSTRAINT: ZERO NET LINE GROWTH\nEvery line you add MUST be offset by removing an equal or greater number of lines. If you add 20 lines, you must remove at least 20 lines. The final file MUST be under 995 lines. This is a HARD constraint — previous generations failed because they bloated the file past the limit.\n\n## Your Mission: 3 Targeted Refactors\n\n### Refactor 1: Expand River Overbet to Strong-Tier Hands on Dry Boards\nThe current river overbet logic only fires for nut-tier hands. On dry river textures (few draws completed, uncoordinated board), strong-tier hands (two pair+, good top pairs) should also overbet for value because the opponent's calling range is wide and static.\n\n**Implementation:**\n- Find the river overbet decision block (likely in a `river_action` or `decide_river` function)\n- Add a dry-board texture check: board has ≤2 cards of connected ranks, no flush completed, no straight completed\n- On dry rivers, expand the overbet eligibility from nut-tier to strong-tier hands\n- **This should REPLACE the existing conservative river overbet logic, not add alongside it**\n\n### Refactor 2: Consolidate Redundant Hand Strength Classifications\nThe file likely has multiple places computing hand strength tiers (e.g., separate logic in preflop, flop, turn, river). Consolidate these into a single `classify_hand_tier()` helper that returns a tier enum/int. Then call it from each street.\n\n**This is your primary line-saving refactor.** By centralizing hand classification, you can cut 30-50 lines of duplicated tier logic across streets.\n\n### Refactor 3: Simplify Position-Aware Bluff Detection\nIf there's a complex multi-branch position-aware bluff detection system, simplify it. The experience pool shows v11 (champion) had simpler bluff logic. Reduce nested if/elif chains to lookup-table or formula-based approaches where possible.\n\n## Reference Bot: v11\nRead `bots/claude_v11/main.py` for reference. v11 is the champion at 1632.1. Its code is likely simpler and more robust. Learn from its structure — if v11 handles something in 5 lines that v15 does in 20, adopt v11's approach.\n\n## Quality Checks\n- After editing, the file must compile: `python -c \"import py_compile; py_compile.compile('bots/claude_v15/strategy.py')\"`\n- The file must be under 995 lines\n- No function should be longer than 60 lines\n- Do NOT modify any numeric constants (thresholds, multipliers) — that's the Hyperparameter Tuner's job\n- Do NOT modify files other than strategy.py"
+    },
+    {
+      "worker_id": 2,
+      "role": "Hyperparameter Tuner",
+      "target_files": ["constants.py"],
+      "difficulty": "medium",
+      "worker_prompt": "You are a Hyperparameter Tuner for a Texas Hold'em poker bot. You are editing `bots/claude_v15/constants.py`.\n\n## CRITICAL CONSTRAINTS\n- You may ONLY modify numeric constants, thresholds, multipliers, and magic numbers\n- You may NOT add new functions, classes, imports, or change control flow\n- You may NOT modify strategy.py or any other file — ONLY constants.py\n- You may add comments explaining why a value changed\n\n## Parameter Changes (Based on Experience Pool Insights)\n\n### 1. EQR Air Values (HIGH PRIORITY — empirically validated by v13)\nFind the EQR (Expected Quadratic Reward) air/weak hand parameters:\n- **Current**: IP air value ~0.72, OOP air value ~0.62\n- **Change to**: IP air value = 0.68, OOP air value = 0.56\n- **Rationale**: v13 experimentally demonstrated that more aggressive bluffing in air spots (lower EQR air = more willing to bluff) improved win rate. These were the best values found.\n\n### 2. CBet Thresholds (HIGH PRIORITY)\nFind the continuation bet decision thresholds:\n- **Current**: Likely CBET_FREQ or CBET_THRESHOLD around 0.45-0.50 for hit boards, higher for favorable textures\n- **Change to**: CBET_THRESHOLD_HIT = 0.60, CBET_THRESHOLD_MISS = 0.35\n- **Rationale**: Tighter CBet thresholds mean we only c-bet when we actually connected or when the board strongly favors our range. This reduces wasted chips on missed c-bets.\n\n### 3. Anti-Lock Parameters (MEDIUM PRIORITY)\nFind anti-lock / pattern-breaking parameters (these prevent the bot from falling into predictable patterns):\n- **Randomization floor**: If there's a minimum randomization factor (e.g., 0.05), increase slightly to 0.08\n- **Pattern detection threshold**: If the bot checks for opponent exploitation patterns, ensure the threshold is not too sensitive (should trigger after 3+ instances, not 1-2)\n- **Rationale**: Experience pool shows anti-lock params need tuning — too aggressive causes erratic play, too passive makes us exploitable\n\n### 4. River Overbet Thresholds (MEDIUM PRIORITY)\nFind river overbet sizing parameters:\n- If there's a minimum hand tier for overbetting (e.g., TIER_NUTS = 8), add a parallel threshold for dry boards (e.g., OVERBET_MIN_TIER_DRY = 6) — but ONLY as a constant declaration, not logic\n- **Rationale**: Logic Architect will use this constant for the dry-river overbet expansion\n\n### 5. Exploration vs Exploitation Balance\n- If there's a exploration_rate or random_play parameter, set it to ~0.05 (5%)\n- If there's a weight decay or adaptation rate for opponent modeling, set it to ~0.92 (slightly faster adaptation)\n\n## Process\n1. First, read constants.py to understand all current values\n2. Identify the exact variable names for each parameter listed above\n3. Make targeted changes with comments like: `# v16: Changed from 0.72 to 0.68 — v13 showed more aggressive air bluffing improved WR`\n4. Do NOT change any value that doesn't match one of the categories above\n5. Verify the file compiles: `python -c \"import py_compile; py_compile.compile('bots/claude_v15/constants.py')\"`"
+    }
+  ]
+}
+```

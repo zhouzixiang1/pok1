@@ -324,3 +324,48 @@ def get_anti_bot4_adjustments(bot4_score, board_texture, spot_info, round_idx, v
         adj["river_overbet_enabled"] = True
 
     return adj
+
+
+def classify_opponent_style(opp_model):
+    """Classify opponent style and return threshold deltas.
+    Ported from v11 (champion). Adapts play to opponent type."""
+    deltas = {
+        "strong_delta": 0.0,
+        "medium_delta": 0.0,
+        "bluff_freq_bonus": 0.0,
+        "call_aggression_bonus": 0.0,
+        "fold_vs_passive_bonus": 0.0,
+    }
+
+    confidence = opp_model.get("confidence", 0.0)
+    if confidence < 0.15:
+        return deltas
+
+    vpip = opp_model.get("vpip", 0.52)
+    pfr = opp_model.get("pfr", 0.24)
+    fold_to_raise = opp_model.get("fold_to_raise", 0.44)
+    postflop_aggr = opp_model.get("postflop_aggr", 0.36)
+
+    # Nit: low VPIP, high fold_to_raise
+    if vpip < 0.35 and fold_to_raise > 0.50:
+        deltas["strong_delta"] = -0.02
+        deltas["medium_delta"] = -0.015
+        deltas["bluff_freq_bonus"] = 0.12
+    # Maniac: high VPIP, high PFR, high postflop aggression
+    elif vpip > 0.65 and pfr > 0.40 and postflop_aggr > 0.45:
+        deltas["strong_delta"] = 0.03
+        deltas["medium_delta"] = 0.025
+        deltas["bluff_freq_bonus"] = -0.08
+        deltas["call_aggression_bonus"] = 0.04
+    # Calling station: high VPIP, low PFR, low fold_to_raise
+    elif vpip > 0.55 and pfr < 0.20 and fold_to_raise < 0.38:
+        deltas["strong_delta"] = -0.01
+        deltas["medium_delta"] = -0.02
+        deltas["bluff_freq_bonus"] = -0.12
+    # Fold-heavy: high fold_to_raise
+    elif fold_to_raise > 0.52:
+        deltas["strong_delta"] = -0.015
+        deltas["medium_delta"] = -0.01
+        deltas["bluff_freq_bonus"] = 0.10
+
+    return deltas

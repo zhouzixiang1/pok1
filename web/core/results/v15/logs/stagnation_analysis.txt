@@ -33,3 +33,38 @@ Is this real stagnation or Glicko variance? Answer in JSON only:
 ```json
 {"is_stagnant": true, "confidence": "medium", "recommendation": "crossover", "branch_from": null, "reason": "Ratings oscillate within 22-point range (1626-1648) over 8+ periods — well within 1 rd (~33), so fluctuations are consistent with Glicko noise. However, the sustained inability to break above the ~1640 ceiling across multiple bot versions constitutes real stagnation at a local optimum. Top 5 bots span only 19 points (1620-1639), indicating the evolution has converged. Crossover between top-2 (claude_v15 and claude_v4) offers the best chance to escape the plateau by recombining independently evolved strategies."}
 ```
+
+[STAGNATION ANALYST PROMPT]
+=============================
+You are a rating trend analyst for a poker bot evolution system.
+Analyze whether the evolution is truly stagnating or if rating changes are just Glicko variance.
+
+Current bot: claude_v15
+Top 5 bots by rating:
+  claude_v9: r=1613 rd=40
+  claude_v19: r=1605 rd=44
+  claude_v3: r=1601 rd=46
+  claude_v17: r=1589 rd=45
+  claude_v8: r=1585 rd=42
+
+Rating history (last 10 periods):
+  Period 118: top_r=1614
+  Period 119: top_r=1614
+  Period 120: top_r=1617
+  Period 121: top_r=1626
+  Period 122: top_r=1623
+  Period 123: top_r=1632
+  Period 124: top_r=1614
+  Period 125: top_r=1618
+  Period 126: top_r=1614
+  Period 127: top_r=1613
+
+Is this real stagnation or Glicko variance? Answer in JSON only:
+```json
+{"is_stagnant": true/false, "confidence": "high/medium/low", "recommendation": "continue|branch|crossover", "branch_from": "claude_vN" or null, "reason": "brief explanation"}
+```
+=============================
+[CLAUDE OUTPUT]
+```json
+{"is_stagnant": true, "confidence": "medium", "recommendation": "crossover", "branch_from": null, "reason": "Rating range over 10 periods is 1613–1632 (19 pts), well within ±rd (~80–90 pts at rd 40–45), so the oscillation is Glicko noise. But the flatness IS real stagnation: the top bot remains claude_v9 despite 10+ newer versions being created. No genuine strength improvement is hidden by variance — the system has been running in place. Crossover between v9 (r=1613) and v19 (r=1605, high upside within rd=44) maximizes chance of a breakthrough over continuing linear evolution from v15."}
+```

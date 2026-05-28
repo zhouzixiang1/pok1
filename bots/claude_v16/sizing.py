@@ -111,7 +111,6 @@ def choose_raise(
     nutted_risk_score=0.0,
     match_sizing_delta=0.0,
     anti_bot4_bonus=0.0,
-    delayed_cbet=False,
 ):
     if my_chips <= max(min_raise, to_call) + 1:
         return None
@@ -189,11 +188,6 @@ def choose_raise(
     if thin_cap is not None:
         low_ratio = min(low_ratio, thin_cap)
     ratio = clamp(ratio, low_ratio, 1.45)
-
-    # Delayed c-bet: small sizing (28-33% pot)
-    if delayed_cbet:
-        cbet_ratio = 0.28 + 0.05 * wetness
-        ratio = min(ratio, cbet_ratio)
 
     amount = int(to_call + pot_after_call * ratio)
 
