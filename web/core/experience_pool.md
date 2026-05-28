@@ -34,3 +34,11 @@ Lessons from previous iterations. Read before planning next generation.
 23. **v17 peaked at 1642.7, dropped to 1621.4.** v9 stable at 1625.9. Gap closing. Parameter fixes + missing features can reclaim lead.
 24. **EQR draw OOP values:** v17 uses 0.85/0.75 (flop/turn). Experience shows 0.88/0.78 gives better realization. Adjust.
 25. **Parameter changes compound synergistically.** EQR + CBet + thin_cap + opponent style all together outperform any single change.
+
+### v17→v17+ Generation: Porting v9 Proven Features
+
+26. **v9 (1643 ELO, top bot) has classify_opponent_style and choose_overbet_bluff_river — v16 lacks both.** These are the two biggest missing features. classify_opponent_style provides +2-3 pts of adaptation. River overbet bluff adds a distinct weapon vs value overbet.
+27. **v16 priors (vpip=0.52, pfr=0.24) deviate from v9's proven values (0.58, 0.28).** bot4 detection center also off (0.55/0.26 vs 0.58/0.28). Must fix — cascades through every decision.
+28. **v16 has good features v9 LACKS: CBet tracking, drift detection, wetness-aware thin_cap, dual-tier river overbet.** Don't remove these — they're advantages. Best strategy is v16 base + targeted v9 port.
+29. **allow_low_frequency_blocker_bluff needs bluff_freq_bonus parameter.** v9 accepts it, v16 doesn't. Without it, anti-bot4 bluff bonus doesn't propagate to blocker bluff decisions.
+30. **style_deltas["bluff_freq_bonus"] must be applied to all bluff thresholds.** v9 subtracts it from river_bluff_threshold, probe_fold_threshold, semi_bluff_threshold. v16 doesn't apply any style-based bluff adjustment.

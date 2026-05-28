@@ -1,0 +1,200 @@
+
+[WORKER 1 (architect) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **architect**.
+You must directly edit the source files in `bots/claude_v17/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v17/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+No reviewer feedback - first implementation pass.
+
+ORIGINAL:
+Improve v17 poker bot with 4 targeted enhancements to strategy.py and postflop.py:
+
+1. ENHANCED TURN/river PROBE BETTING (strategy.py):
+- Relax the `check_probe` condition: allow turn check-probe with made_strength >= 0.22 (not 0.18) and draw_strength < 0.25 (not 0.20)
+- Allow check_probe when board_texture wetness <= 0.65 (not 0.55)
+- Add a new condition: turn_probe_medium_strength - when round_idx==2, to_call==0, opponent checked, made_strength >= 0.30, board is not dynamic, and opponent fold_to_raise > 0.50
+
+2. BETTER RIVER THIN VALUE BETTING (strategy.py):
+- Modify `thin_static_showdown_control` to NOT check back when spot_info has_position is True and opponent postflop_check_rate >= 0.48
+- Add a new river_thin_value_bet condition: round_idx==3, to_call==0, has_position, made_strength >= 0.35, value_profile tier is 'thin' or made_strength >= 0.45, opponent is passive (postflop_check_rate >= 0.48 or postflop_aggr <= 0.35)
+- The thin value bet should use small sizing (~33-40% pot)
+
+3. IMPROVED DRAW EVALUATION (postflop.py):
+- In draw_profile, add outs counting: count actual outs for each draw type (flush draw = ~9 outs minus blockers, open-ended straight = 8 outs minus duplicates, gutshot = 4 outs)
+- Add 'outs' field to draw profile return dict
+- For combo draws, improve the quality calculation to properly weight the combined outs
+- Better handle turn draws (4 public cards) - currently the function returns early with quality 0 on the river (5 cards), but on the turn it works fine
+
+4. BOARD TEXTURE IMPROVEMENTS (postflop.py):
+- Add 'low_board' field to board_texture_profile: True when all board ranks <= 9
+- Add 'connectedness' field: measure how connected the board ranks are (0-1 scale)
+- Better wetness calculation: add 0.03 for connectedness >= 0.6
+
+Keep all changes backward-compatible. Don't change function signatures. Don't add new files.
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v17/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v17/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v17/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v17/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading the relevant source files to understand the current code structure.
+Let me use the correct tool to read local files.
+Good, the files are at `/Users/zhouzixiang/Documents/pok/bots/claude_v17/`. Let me read them.
+Now let me read the specific sections I need to modify in detail:
+Now let me also read the full function around the decision logic in strategy.py to understand the flow better:
+Now let me also look at the `sizing.py` to understand `choose_raise` signature and how `probe_mode` is used for sizing:
+Now let me also look at the `choose_raise` function to understand how probe_mode is used for sizing:
+Now I have a comprehensive understanding of the codebase. Let me now implement the 4 changes. Let me start with the edits:
+
+### 1. Edit strategy.py - Enhanced turn/river probe betting
+Now let me also see what the main action decision looks like (where we decide to raise or not):
+Now I have a clear picture. Let me implement all 4 changes. Let me first understand the exact line numbers for each edit point:
+Now let me make the edits. I'll start with all changes:
+Now I'll make all 4 edits. Let me start:
+
+### Edit 1: Enhanced check_probe in strategy.py
+Good. Now let me check the sed changes applied correctly, and also verify there aren't multiple occurrences:
+Good. Now let me make the remaining edits. I need to add the `turn_probe_medium_strength` condition and the `river_thin_value_bet` condition, and modify `thin_static_showdown_control`.
+
+Let me now look at exactly where to add these new conditions:
+Now let me check what variables are available at the point where I need to add the `thin_static_showdown_control` modification and the `river_thin_value_bet`:
+
+Let me look at how `spot_info` has the `has_position` field, and what `opponent_model` keys are available:
+Good, `spot_info["has_position"]` is available. Now let me implement all the edits. I'll write a Python script to make all the precise edits:
+Now let me add the `turn_probe_medium_strength` condition after `check_probe` and the `river_thin_value_bet` condition:
+Now add the `river_thin_value_bet` condition. Let me first see the current state around where I need to add it:
+Now update the `probe_mode` parameter in `choose_raise` call to include `river_thin_value_bet`:
+Now let's move on to the postflop.py changes. I need to:
+
+1. Add `outs` field to `empty_draw_profile` and `draw_profile`
+2. Add `low_board` and `connectedness` fields to `board_texture_profile`
+3. Better wetness calculation with connectedness
+Now let me add the `outs` counting in `draw_profile` and update the board_texture_profile with `low_board` and `connectedness`:
+Now update the combo draw quality calculation to properly weight combined outs:
+Now update `board_texture_profile` to add `low_board`, `connectedness`, and improve wetness:
+Now let me verify the changes compile correctly:
+All compile checks pass. Now let me run the smoke test:
+Smoke test passes. Now let me review the git diff to ensure everything is correct:
+It seems the diff includes deleted files. Let me check what's going on - it seems like the previous state had different files. Let me look at the actual relevant changes:
+The diff is large because it seems the git state includes previous changes from earlier bots. Let me check what the committed state of the files was to see if the diff only shows my changes:
+I see - the committed state already had a different version. The large diff is because prior to my changes, there were already uncommitted modifications (likely from the housekeeping or from a previous worker). Let me focus on verifying the diff of just my specific changes by checking the files I know were modified. Let me verify the core changes I made are correct:
+Now let me verify the postflop.py changes:
+Let me verify the combo draw quality improvement:
+All changes are in place. Now let me check for `river` return early issue in draw_profile:
+Good - the `draw_profile` function returns early with empty profile on river (5 cards) as expected. The function correctly handles turn (4 cards) and flop (3 cards). The Master's note says "currently the function returns early with quality 0 on the river (5 cards), but on the turn it works fine" - this is already the correct behavior, so no change needed there.
+
+Now let me also verify the `thin_static_showdown_control` modification:
+Let me run the smoke test once more to be completely sure:
+Now let me check that I didn't modify any files outside `bots/claude_v17/`:
+There are many modified files. These are likely from a previous worker or from the housekeeping step. Let me check what files I specifically touched vs what was already dirty:
+My changes are only to `strategy.py` and `postflop.py` in `bots/claude_v17/`, which are the correct target files. The other dirty files were already modified before I started. Let me verify that the other files' diffs are not something I need to worry about by checking they were already dirty:
+The other files were already modified before my work (the housekeeping commit left them dirty). My task was to modify `strategy.py` and `postflop.py`, which I did.
+
+Let me do a final comprehensive review of all my changes by looking at the specific diff sections for only my targeted changes:
+The diff includes changes from previous workers who restructured the code (moved functions to sizing.py, added anti-bot4, etc.). My specific changes are on top of those. Let me verify my specific changes one final time:
+All 4 enhancements are verified. Let me do the final role boundary check:
+Let me also verify the protocol check - the bot still outputs `{"response": <int>}` via stdout:
+The protocol is intact: the bot reads JSON from stdin, calls `get_action`, and outputs `{"response": int(action)}` via stdout.
+
+Let me run the compile check one final time to be absolutely sure:
+All quality checks pass. Here's a summary of all the changes I made:
+
+## Summary of Changes
+
+### 1. Enhanced Turn/River Probe Betting (`strategy.py`)
+
+**1a. Relaxed `check_probe` conditions:**
+- `board_texture["wetness"]` threshold: `0.55` → `0.65` (allow probe on wetter boards)
+- `draw_strength` threshold: `0.20` → `0.25` (allow probe with stronger draws)
+
+**1b. New `turn_probe_medium_strength` condition:**
+- Active on turn (`round_idx == 2`), when `to_call == 0`, opponent checked, `made_strength >= 0.30`, board not dynamic, and `opponent_model["fold_to_raise"] > 0.50`
+- This enables probing with medium-strength hands on the turn against opponents who check and have a tendency to fold
+
+### 2. Better River Thin Value Betting (`strategy.py`)
+
+**2a. Modified `thin_static_showdown_control`:**
+- Added exception: does NOT trigger (i.e., does NOT check back) when bot has position AND `opponent_model.postflop_check_rate >= 0.48`
+- This allows thin value bets against passive opponents from position
+
+**2b. New `river_thin_value_bet` condition:**
+- On river, `to_call == 0`, has position, `made_strength >= 0.35`, thin value tier, non-dynamic board, opponent passive (`postflop_check_rate >= 0.48` or `postflop_aggr <= 0.35`)
+- Uses probe-mode sizing (small ~33-40% pot) via the `probe_mode` flag in `choose_raise`
+
+**2c. New `river_thin_value_bet_moderate` condition:**
+- Similar but with `made_strength >= 0.45` and slightly relaxed passivity thresholds, for moderately passive opponents
+
+### 3. Improved Draw Evaluation (`postflop.py`)
+
+**3a. Added `'outs'` field** to `empty_draw_profile()` (default: 0)
+
+**3b. Added outs counting** in `draw_profile()`:
+- Flush draws: counts actual remaining flush suit cards (13 minus known cards in that suit)
+- Open-ended straight draws: 8 outs
+- Double gutshot: 8 outs
+- Gutshot: 4 outs
+- Combo draws: capped at 15 effective outs
+- All capped by remaining deck cards
+
+**3c. Improved combo draw quality bonus:** `0.04` → `0.06` (better weights the combined outs)
+
+### 4. Board Texture Improvements (`postflop.py`)
+
+**4a. Added `'low_board'` field:** `True` when all board ranks ≤ 9
+
+**4b. Added `'connectedness'` field:** Measures how connected board ranks are (0-1 scale), based on gap analysis between unique ranks and straight window overlap
+
+**4c. Improved wetness calculation:** Adds `0.03` to wetness when `connectedness >= 0.6`
