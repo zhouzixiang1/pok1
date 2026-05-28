@@ -1,6 +1,4 @@
-"""
-Bot 6 constants.
-"""
+"""Bot 5 constants and precomputed lookup tables."""
 
 N_PLAYERS = 2
 INITIAL_CHIPS = 20000
@@ -11,20 +9,23 @@ LOCK_WIN_MARGIN = 1500
 
 HAND_CLASS_SCORE = [0.08, 0.22, 0.40, 0.58, 0.69, 0.76, 0.84, 0.93, 0.98]
 SIMULATIONS_BY_PUBLIC_COUNT = {
-    0: 500,
-    3: 800,
-    4: 900,
+    0: 900,
+    3: 1200,
+    4: 1500,
     5: 0,
 }
 EXTRA_SIMULATIONS_BY_PUBLIC_COUNT = {
-    0: 200,
-    3: 220,
-    4: 180,
+    0: 300,
+    3: 350,
+    4: 300,
 }
 
-# Preflop 169-hand lookup table
+# Precomputed card number and suit for all 52 cards
+CARD_RANKS = [c // 4 + 2 for c in range(52)]
+CARD_SUITS = [c % 4 for c in range(52)]
+
+# Preflop 169-hand Chen formula lookup table
 # Key: (high_rank, low_rank, suited) -> normalized strength [0,1]
-# Values derived from Chen formula + empirical equity data
 PREFLOP_STRENGTH_TABLE = {}
 _chen_base = {
     (14,14):1.00,(13,13):0.95,(12,12):0.90,(11,11):0.86,(10,10):0.82,

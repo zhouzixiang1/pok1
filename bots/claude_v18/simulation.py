@@ -1,6 +1,5 @@
-"""
-Opponent range building and equity estimation via simulation.
-"""
+"""Monte Carlo simulation and river exact enumeration for equity estimation."""
+
 import bisect
 import itertools
 import random

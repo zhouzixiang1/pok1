@@ -162,3 +162,150 @@ Good. Now let me produce the final JSON output:
   ]
 }
 ```
+
+[MASTER (Try 1) PROMPT]
+=============================
+# Role
+You are the Master Bot Architect for a Texas Hold'em poker AI. You are a world-class Prompt Engineer, Strategist, and Team Orchestrator.
+
+# CRITICAL: Tool Usage Rules
+You have Read and Bash tools available. When you need to read files or run commands:
+- **Use the Read tool** to read local files. Example: Read `evolution_workspace/results/glicko_ratings.json`
+- **Use the Bash tool** to run git commands. Example: `git log --oneline -10`
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem, use Read tool directly.
+
+# Essential Data Files
+Read these files FIRST using the Read tool to understand the current state:
+- `evolution_workspace/results/glicko_ratings.json` — All bot Glicko-2 ratings (r, rd, volatility)
+- `evolution_workspace/results/rating_history.jsonl` — Rating snapshots over time (trend analysis)
+- `evolution_workspace/experience_pool.md` — Accumulated strategic lessons from past generations
+- `bots/claude_v{N}/` — Bot source code directories
+
+Use Bash tool with `git log` and `git diff` to understand evolution history.
+
+# Task
+Your goal is to:
+1. Read the ratings data and analyze the current bot's performance. Understand the rating trend.
+2. Read the experience pool to learn from past iterations.
+3. Read the current bot's source code and reference bots' code to identify weaknesses.
+4. Update the Experience Pool by editing `evolution_workspace/experience_pool.md` directly:
+   - Add new insights at the bottom.
+   - Remove or consolidate redundant entries.
+   - Keep the file concise (under 100 lines).
+5. Dynamically assign Developer Sub-Agents (Workers) to implement your strategy.
+6. You MUST STRICTLY divide your tasks into TWO distinct directions:
+   - **Direction A (Algorithmic Logic Architect):** Refactor methods, add new evaluation functions, fuse algorithms from reference bots. Examples: adding position-aware bluff detection, implementing GTO-inspired bet sizing, improving draw evaluation.
+   - **Direction B (Hyperparameter Tuner):** ONLY modify numeric constants, thresholds, and magic numbers. Examples: adjusting `BLUFF_THRESHOLD` from 0.15 → 0.20, `POT_ODDS_MULTIPLIER` from 1.5 → 1.8. FORBIDDEN from adding new functions, classes, or changing control flow.
+7. Write the exact, comprehensive prompt (`worker_prompt`) for each worker.
+
+# Dual-Track Boundary Examples
+## GOOD Direction A task (Logic Architect):
+- "Add a river pot-size-based bluff detection function that checks if the opponent's bet size exceeds 75% pot and adjusts calling range accordingly."
+- "Refactor preflop hand evaluation to use a weighted scoring system combining hand strength + position + opponent VPIP."
+
+## GOOD Direction B task (Hyperparameter Tuner):
+- "In constants.py, increase BLUFF_FREQUENCY from 0.12 to 0.18 and decrease CONTINUATION_BET_THRESHOLD from 0.55 to 0.45."
+- "Tune the following thresholds: RAISE_MULTIPLIER (try 2.0-2.5), FOLD_EQUITY_MIN (try 0.15-0.25)."
+
+## BAD Direction A task (too vague):
+- "Make the bot better at postflop play." (What specifically? Which functions?)
+- "Improve strategy." (Not actionable)
+
+## BAD Direction B task (violates boundary):
+- "Add a new function that calculates pot odds." (That's Direction A, not parameter tuning)
+
+# Stagnation Decision
+No stagnation detected. v5 is the top-rated bot (1624.5, rd=37.6). The rating gap between v5 and the next best (v11 at 1612.0) is 12.5 points. Ratings are reliable. We want to push v5's strengths further and close any weaknesses that allow losses to the chasing pack (v11 at 1612, v9 at 1611.9, v17 at 1603.4).
+
+# Recent Match Analysis
+Match analysis tool returned an error. However, based on bot structure: v5 is a 3195-line bot with key files including strategy.py (1160 lines) and postflop.py (1025 lines). Known areas for improvement in Texas Hold'em bots typically include: preflop range refinement, postflop bet sizing optimization, better bluff frequencies, improved opponent modeling, and tournament pressure handling. The top competitors (v11 with betting.py, v21 with extensive file structure) suggest that modular betting strategy and draw analysis could be areas where v5 can improve.
+This is an automated analysis of the bot's recent losses. Use these insights to focus your improvement strategy on the identified weaknesses. If this section is empty, no replay analysis was available.
+
+If stagnation is detected, you can:
+1. Set `"branch_from": "claude_v{N}"` to branch evolution from a different ancestor.
+2. Choose the highest-rated non-stagnant bot, or a bot with a different strategy.
+3. If no `branch_from` is set, evolution continues from the latest version.
+
+# Output Format
+You MUST output your response containing exactly ONE JSON block formatted as follows:
+
+```json
+{
+  "analysis": "Your strategic analysis. Which reference bot did you study? What did you learn? Are we failing due to bad logic or bad parameter thresholds?",
+  "branch_from": "claude_v{N}",
+  "tasks": [
+    {
+      "worker_id": 1,
+      "role": "Algorithmic Logic Architect",
+      "target_files": ["strategy.py", "postflop.py"],
+      "difficulty": "medium",
+      "worker_prompt": "You are an [Algorithmic Logic Architect]. Your goal is to structurally rewrite... [Provide detailed logic instructions, reference which bot to learn from]"
+    },
+    {
+      "worker_id": 2,
+      "role": "Hyperparameter Tuner",
+      "target_files": ["constants.py"],
+      "difficulty": "easy",
+      "worker_prompt": "You are a [Hyperparameter Tuner]. DO NOT change algorithmic flow. Your goal is to tweak the thresholds... [Provide specific constants to adjust and why]"
+    }
+  ]
+}
+```
+
+The `branch_from` field is OPTIONAL. Only include it if you want to override the default evolution source.
+
+# Git Commands (use Bash tool)
+Run these with the Bash tool:
+- `git log --oneline --decorate -20` — See recent evolution history and tags
+- `git tag -l "bot-v*"` — List all bot version tags
+- `git show bot-v{N}:bots/claude_v{N}/main.py` — Inspect specific past bot code
+- `git diff bot-v{A} bot-v{B} -- bots/` — Compare two bot versions
+
+# Critical Rules
+1. Output strictly valid JSON.
+2. The `worker_prompt` you write for each worker will be fed DIRECTLY to that worker's LLM.
+3. Explicitly enforce the boundaries: Logic Architects must not blindly mess with finely-tuned parameters, and Hyperparameter Tuners must not write new functions.
+4. **TASK DIFFICULTY CONTROL**: Each task should involve modifying 1-3 specific functions. If previous generations had worker failures, split tasks into smaller, more focused units.
+5. **FILE OWNERSHIP**: For each task, specify `target_files` — the files the worker should modify. Workers must NOT modify files outside their assigned `target_files`.
+6. **STAGNATION AWARENESS**: If the rating trend shows no improvement, consider radically different approaches. Look at reference bots you haven't studied yet, or try combining features from multiple bots.
+7. **MATCH ANALYSIS**: If match analysis data is provided, prioritize fixing the identified weaknesses. Don't ignore concrete loss patterns.
+
+Current evolution: v5 → v18
+Bot directory: bots/claude_v5/
+Ratings file: web/core/results/glicko_ratings.json
+Rating history: web/core/results/rating_history.jsonl
+
+=============================
+[CLAUDE OUTPUT]
+Let me start by reading the essential data files to understand the current state of the evolution.
+Now let me look at the top competitors, especially v9 and v11, to understand what they do differently:
+Now let me look at the full strategy.py to understand v5's decision flow and compare with v9's key differences:
+Let me now examine the critical differences in the postflop.py and the full strategy.py decision flow:
+Now let me check what v5's bluff thresholds look like (whether style_deltas are applied):
+Now let me check the rating trend over time:
+Now let me also check the main.py to understand the bot's entry point:
+Now I have a comprehensive understanding. Let me update the experience pool and produce the final JSON output:
+Now let me produce the final JSON output:
+
+```json
+{
+  "analysis": "## Strategic Analysis: v5 → v18\n\n### Rating Situation\nv5 has dropped from peak 1664.9 to 1610.9 (-54 pts). v9 is now essentially tied at 1611.9. The field has compressed and adapted to v5's tendencies. The gap between v5 and v9 is purely in decision logic features — they share the same simulation engine and card evaluation.\n\n### What v9 Has That v5 Lacks (Studied v9's Full Code)\nI did a line-by-line diff of v5 vs v9 across all shared files. The key competitive advantages v9 holds:\n\n1. **classify_opponent_style()** (opponent.py): Classifies opponents as nit/maniac/station/fold-heavy and returns threshold deltas (strong_delta, medium_delta, bluff_freq_bonus). v5 has ZERO opponent-style adaptation. This alone provides +2-3 pts.\n\n2. **choose_overbet_bluff_river()** (v9's betting.py): v5 has a stub that always returns None. v9's real implementation makes 1.3-1.6x pot overbet bluffs with strong blockers on dry unpaired boards when opponent can fold. This is a completely free weapon v5 is leaving on the table.\n\n3. **big_pot_safety_guard()** (v9's betting.py): Prevents catastrophic stack-offs with thin/medium value in big pots (>7000). v5 has no such guard, meaning it can bleed chips in large pots with marginal hands.\n\n4. **River exact equity override** (strategy.py): When 5 public cards are available, v9 uses exact enumeration (0 simulations) to make precise raise/fold/blocker-bluff decisions. v5 relies on Monte Carlo even at river, introducing noise.\n\n5. **Lower EQR values with position/pot adjustments** (strategy.py): v9 uses 0.65/0.53 (air IP/OOP) vs v5's 0.72/0.62. v9 also applies -0.05 OOP penalty and -0.03 pot>3000 penalty. v5 over-realizes weak hands.\n\n6. **style_deltas propagation** (strategy.py): v9 subtracts bluff_freq_bonus from ALL three bluff thresholds (river_bluff, probe_fold, semi_bluff) and adds strong_delta/medium_delta to decision thresholds. v5 doesn't apply style-based adjustments anywhere.\n\n7. **Deterministic hash** (postflop.py): v9 uses `(int(score*7919)+37)%100` instead of `random.random()`, reducing variance in blocker bluff frequency.\n\n### Diagnosis: Logic Gaps, Not Parameter Issues\nThe root cause of v5's decline is missing STRUCTURAL features, not wrong parameter tuning. The experience pool confirms: v5's EQR values are actually too HIGH (over-realizes weak hands), and it completely lacks opponent-style adaptation. Both are logic gaps. The fix is to port v9's proven structural features into v5's codebase.\n\n### Worker Strategy\n- **Worker A** handles ALL structural additions: classify_opponent_style, overbet bluff activation, big_pot_safety_guard, river exact equity, EQR adjustments (lower values + new conditionals), style_deltas integration, deterministic hash. This is the heavy lift.\n- **Worker B** extracts betting functions to a new betting.py (modularization), adds river refinement constants, and handles the EQR numeric calibration. This reduces strategy.py below 1000 lines while Worker A adds features.",
+  "tasks": [
+    {
+      "worker_id": 1,
+      "role": "Algorithmic Logic Architect",
+      "target_files": ["strategy.py", "opponent.py", "postflop.py"],
+      "difficulty": "high",
+      "worker_prompt": "You are an Algorithmic Logic Architect. Your goal is to port proven features from v9 (rated 1611.9, essentially tied with v5 at 1610.9) into v5's codebase. v5 has declined 54 pts from its peak and needs these structural upgrades to remain competitive.\n\nYou are modifying files in bots/claude_v5/. The bot uses a modular architecture: main.py → strategy.py (decision engine) + opponent.py (opponent modeling) + postflop.py (hand analysis) + simulation.py + state.py + tournament.py + constants.py + card_utils.py.\n\n## TASK 1: Add classify_opponent_style to opponent.py\n\nPort this function EXACTLY from v9's opponent.py. Add it at the END of opponent.py (before the last line if needed):\n\n```python\ndef classify_opponent_style(opp_model):\n    \"\"\"Classify opponent style and return threshold deltas.\"\"\"\n    deltas = {\n        \"strong_delta\": 0.0,\n        \"medium_delta\": 0.0,\n        \"bluff_freq_bonus\": 0.0,\n        \"call_aggression_bonus\": 0.0,\n        \"fold_vs_passive_bonus\": 0.0,\n    }\n    confidence = opp_model.get(\"confidence\", 0.0)\n    if confidence < 0.15:\n        return deltas\n    vpip = opp_model.get(\"vpip\", 0.52)\n    pfr = opp_model.get(\"pfr\", 0.24)\n    fold_to_raise = opp_model.get(\"fold_to_raise\", 0.44)\n    postflop_aggr = opp_model.get(\"postflop_aggr\", 0.36)\n    if vpip < 0.35 and fold_to_raise > 0.50:\n        deltas[\"strong_delta\"] = -0.02\n        deltas[\"medium_delta\"] = -0.015\n        deltas[\"bluff_freq_bonus\"] = 0.12\n    elif vpip > 0.65 and pfr > 0.40 and postflop_aggr > 0.45:\n        deltas[\"strong_delta\"] = 0.03\n        deltas[\"medium_delta\"] = 0.025\n        deltas[\"bluff_freq_bonus\"] = -0.08\n        deltas[\"call_aggression_bonus\"] = 0.04\n    elif vpip > 0.55 and pfr < 0.20 and fold_to_raise < 0.38:\n        deltas[\"strong_delta\"] = -0.01\n        deltas[\"medium_delta\"] = -0.02\n        deltas[\"bluff_freq_bonus\"] = -0.12\n    elif fold_to_raise > 0.52:\n        deltas[\"strong_delta\"] = -0.015\n        deltas[\"medium_delta\"] = -0.01\n        deltas[\"bluff_freq_bonus\"] = 0.10\n    return deltas\n```\n\n## TASK 2: Replace choose_overbet_bluff_river stub in strategy.py\n\nFind the stub function `choose_overbet_bluff_river` (currently returns None) and REPLACE it with v9's real implementation:\n\n```python\ndef choose_overbet_bluff_river(\n    min_raise, my_chips, my_round_bet, to_call, pot,\n    blocker_profile, board_texture, spot_info, opponent_model\n):\n    \"\"\"River overbet bluff with strong blockers on dry boards.\"\"\"\n    if to_call != 0:\n        return None\n    if blocker_profile is None or not blocker_profile.get(\"eligible\", False):\n        return None\n    if blocker_profile[\"score\"] < 0.35:\n        return None\n    if board_texture is not None and board_texture[\"wetness\"] >= 0.25:\n        return None\n    if board_texture is not None and board_texture.get(\"paired\", False):\n        return None\n    if pot < 400:\n        return None\n    if opponent_model.get(\"fold_to_raise\", 0) <= 0.48:\n        return None\n    ratio = 1.3 + 0.2 * blocker_profile[\"score\"]\n    if not spot_info.get(\"has_position\", False):\n        ratio -= 0.15\n    ratio = min(ratio, 1.6)\n    amount = int(to_call + (pot + to_call) * ratio)\n    if amount >= my_chips:\n        return -2\n    amount = min(amount, my_chips - 1)\n    if amount < min_raise:\n        return None\n    return amount\n```\n\n## TASK 3: Add big_pot_safety_guard to strategy.py\n\nAdd this function BEFORE the `get_action` function in strategy.py:\n\n```python\ndef big_pot_safety_guard(pot, my_chips, value_profile, made_strength, round_idx, to_call, draw_strength):\n    \"\"\"Prevent catastrophic stack-offs with thin value in big pots.\"\"\"\n    if round_idx < 2:\n        return False\n    if to_call > 0:\n        return False\n    if value_profile is None:\n        return False\n    tier = value_profile.get(\"tier\", \"none\")\n    if tier in (\"nut\", \"strong\"):\n        return False\n    if made_strength >= 0.65:\n        return False\n    if pot < 7000:\n        return False\n    if tier == \"thin\" and draw_strength < 0.15:\n        return True\n    if 0.30 <= made_strength <= 0.50 and pot >= 10000 and draw_strength < 0.15:\n        return True\n    return False\n```\n\n## TASK 4: Integrate classify_opponent_style in get_action()\n\nIn strategy.py's `get_action()` function, find the line after `anti_bot4` is computed (around where `if board_texture is not None:` starts the anti_bot4 block). Add RIGHT AFTER computing anti_bot4:\n\n```python\n    # Opponent style classification\n    style_deltas = classify_opponent_style(opponent_model)\n```\n\nAlso add the import at the top of strategy.py:\n```python\nfrom opponent import build_opponent_model, analyze_current_spot, detect_bot4_profile, get_anti_bot4_adjustments, classify_opponent_style\n```\n\n## TASK 5: Apply style_deltas to bluff thresholds\n\nFind the three bluff threshold lines in strategy.py:\n```python\n    river_bluff_threshold = 0.62 - 0.28 * match_profile[\"bluff_delta\"] - anti_bot4[\"bluff_freq_bonus\"]\n    probe_fold_threshold = 0.56 - 0.32 * match_profile[\"bluff_delta\"] - anti_bot4[\"bluff_freq_bonus\"]\n    semi_bluff_threshold = 0.58 - 0.28 * match_profile[\"bluff_delta\"] - anti_bot4[\"bluff_freq_bonus\"]\n```\n\nChange them to ALSO subtract style_deltas:\n```python\n    river_bluff_threshold = 0.62 - 0.28 * match_profile[\"bluff_delta\"] - anti_bot4[\"bluff_freq_bonus\"] - style_deltas[\"bluff_freq_bonus\"]\n    probe_fold_threshold = 0.56 - 0.32 * match_profile[\"bluff_delta\"] - anti_bot4[\"bluff_freq_bonus\"] - style_deltas[\"bluff_freq_bonus\"]\n    semi_bluff_threshold = 0.58 - 0.28 * match_profile[\"bluff_delta\"] - anti_bot4[\"bluff_freq_bonus\"] - style_deltas[\"bluff_freq_bonus\"]\n```\n\n## TASK 6: Apply style_deltas to strong/medium decision thresholds\n\nFind the section where `strong` and `medium` thresholds are computed. After the lines applying anti_bot4 adjustments, add:\n```python\n    # Apply opponent style deltas\n    strong += style_deltas[\"strong_delta\"]\n    medium += style_deltas[\"medium_delta\"]\n```\n\n## TASK 7: Add big_pot_safety_guard call in decision flow\n\nFind the section in get_action() where to_call == 0 and bluff/value decisions are made (around the `thin_static_showdown_control` check). AFTER the `thin_static_showdown_control` block, add:\n```python\n    # Safety guard: don't barrel marginal hands in huge pots\n    if big_pot_safety_guard(pot, my_chips, value_profile, made_strength, round_idx, 0, draw_strength):\n        return 0\n```\n\n## TASK 8: Add river exact equity override\n\nIn get_action(), AFTER the river overbet bluff block (which calls choose_overbet_bluff_river) and BEFORE the `repeated_raise_trap` definition, add:\n\n```python\n    # River Refinement: exact equity override\n    river_exact_blocker_bluff = False\n    if round_idx == 3 and len(public_cards) == 5:\n        exact_wr = estimate_weighted_win_rate(my_cards, public_cards, combos, weights, 0)\n        if exact_wr > 0.85 and to_call > 0:\n            raise_amount = choose_raise(\n                state.get(\"min_raise_action\", state[\"round_raise\"]),\n                my_chips,\n                state[\"my_round_bet\"],\n                to_call,\n                pot,\n                exact_wr,\n                round_idx,\n                spot_info[\"preflop_spot\"],\n                preflop_strength,\n                spot_info[\"has_position\"],\n                opponent_model,\n                value_profile=value_profile,\n                value_plan=value_plan,\n                board_texture=board_texture,\n                nutted_risk_score=nutted_risk[\"risk\"],\n                match_sizing_delta=match_profile[\"sizing_delta\"],\n                anti_bot4_bonus=anti_bot4[\"raise_size_bonus\"],\n                allow_river_overbet=anti_bot4[\"river_overbet_enabled\"],\n            )\n            if raise_amount is not None and raise_amount > to_call:\n                return raise_amount\n            return 0\n        if exact_wr < 0.15 and to_call > 0:\n            min_call_odds = to_call / (pot + to_call) if to_call > 0 else 1.0\n            if exact_wr < min_call_odds - 0.10:\n                return -1\n        if (exact_wr < 0.20 and to_call == 0\n            and blocker_profile is not None and blocker_profile[\"eligible\"]\n            and style_deltas[\"bluff_freq_bonus\"] > -0.05):\n            river_exact_blocker_bluff = True\n```\n\n## TASK 9: Lower EQR values and add conditional adjustments\n\nIn the `effective_equity_required` function (around line 220 in strategy.py):\n\n### Air hand EQR:\nChange: `eqr = 0.72 if has_position else 0.62`\nTo: `eqr = 0.65 if has_position else 0.53`\n\nAfter the existing `if spot_info.get(\"opp_postflop_bet_count\", 0) >= 2:` block, add inside that block:\n```python\n            if not has_position:\n                eqr -= 0.05\n```\n\nAfter the round_idx penalties (round_idx == 2 / round_idx == 3), add:\n```python\n        if pot > 3000:\n            eqr -= 0.03\n```\n\nChange air clamp: `eqr = clamp(eqr, 0.45, 0.85)` → `eqr = clamp(eqr, 0.40, 0.85)`\n\nIMPORTANT: Add `pot=0` parameter to effective_equity_required function signature.\n\n### Draw/weak pair EQR:\nChange: `eqr = 0.86 if has_position else 0.78`\nTo: `eqr = 0.82 if has_position else 0.70`\n\nAfter the `if spot_info.get(\"opp_postflop_bet_count\", 0) >= 2:` block inside this section, add:\n```python\n                if not has_position:\n                    eqr -= 0.05\n```\n\nAfter the round_idx == 3 penalty, add:\n```python\n            if pot > 3000:\n                eqr -= 0.03\n```\n\nChange draw clamp: `eqr = clamp(eqr, 0.65, 0.92)` → `eqr = clamp(eqr, 0.60, 0.92)`\n\n## TASK 10: Fix state dict access robustness\n\nThroughout strategy.py's get_action function, change ALL occurrences of:\n- `state[\"min_raise_action\"]` → `state.get(\"min_raise_action\", state[\"round_raise\"])`\n\nThis includes in choose_raise calls, choose_anti_lock_pressure_action calls, and choose_overbet_river calls.\n\n## TASK 11: Change random to deterministic hash in postflop.py\n\nIn postflop.py's `allow_low_frequency_blocker_bluff` function, change:\n```python\n    return random.random() * 100 < threshold\n```\nTo:\n```python\n    return (int(blocker_profile[\"score\"] * 7919) + 37) % 100 < threshold\n```\n\nAlso remove `import random` from the top of postflop.py if it's no longer used anywhere else in the file.\n\n## CRITICAL RULES\n- Do NOT modify simulation.py, state.py, tournament.py, card_utils.py, constants.py, or main.py.\n- Do NOT change any numeric constants beyond what's specified above (EQR values and clamps).\n- Do NOT add new files. All changes go in existing files.\n- Test that the code compiles: `python3 -c 'import sys; sys.path.insert(0,\"bots/claude_v5\"); import strategy'`\n- Verify the effective_equity_required function accepts `pot` parameter and passes it correctly.\n- Make sure the import of classify_opponent_style is added to strategy.py's import block."
+    },
+    {
+      "worker_id": 2,
+      "role": "Hyperparameter Tuner",
+      "target_files": ["constants.py", "strategy.py"],
+      "difficulty": "easy",
+      "worker_prompt": "You are a Hyperparameter Tuner. Your ONLY job is to modify numeric constants, thresholds, and magic numbers. You are FORBIDDEN from:\n- Adding new functions or classes\n- Changing control flow (adding/removing if-blocks, loops, etc.)\n- Changing any algorithmic logic\n\nYou are modifying files in bots/claude_v5/.\n\n## TASK 1: Add river refinement constants to constants.py\n\nAdd these three constants at the END of constants.py (after the PREFLOP_STRENGTH_TABLE block):\n\n```python\n\n# River refinement thresholds\nRIVER_EXACT_RAISE_THRESHOLD = 0.85\nRIVER_EXACT_FOLD_THRESHOLD = 0.15\nRIVER_EXACT_FOLD_POT_ODDS_MARGIN = 0.10\n```\n\n## TASK 2: Lower EQR air hand values in strategy.py\n\nIn strategy.py, find the `effective_equity_required` function. Locate the air hand EQR assignment line:\n```python\n        eqr = 0.72 if has_position else 0.62\n```\n\nChange the numeric values:\n- 0.72 → 0.65 (in-position air EQR)\n- 0.62 → 0.53 (out-of-position air EQR)\n\nResult:\n```python\n        eqr = 0.65 if has_position else 0.53\n```\n\n## TASK 3: Lower EQR air clamp minimum in strategy.py\n\nIn the same function, find:\n```python\n        eqr = clamp(eqr, 0.45, 0.85)\n```\n\nChange the lower bound:\n- 0.45 → 0.40\n\nResult:\n```python\n        eqr = clamp(eqr, 0.40, 0.85)\n```\n\n## TASK 4: Lower EQR draw/weak pair values in strategy.py\n\nIn the same function, find:\n```python\n            eqr = 0.86 if has_position else 0.78\n```\n\nChange:\n- 0.86 → 0.82 (in-position draw EQR)\n- 0.78 → 0.70 (out-of-position draw EQR)\n\nResult:\n```python\n            eqr = 0.82 if has_position else 0.70\n```\n\n## TASK 5: Lower EQR draw clamp minimum in strategy.py\n\nFind:\n```python\n            eqr = clamp(eqr, 0.65, 0.92)\n```\n\nChange:\n- 0.65 → 0.60\n\nResult:\n```python\n            eqr = clamp(eqr, 0.60, 0.92)\n```\n\n## VERIFICATION\nAfter all changes, verify the code compiles:\n```bash\npython3 -c 'import sys; sys.path.insert(0,\"bots/claude_v5\"); import strategy; import constants'\n```\n\n## CRITICAL RULES\n- You may ONLY change the specific numeric values listed above.\n- Do NOT add any if-blocks, functions, or import statements.\n- Do NOT modify any other numeric values in any file.\n- Do NOT touch postflop.py, opponent.py, simulation.py, state.py, tournament.py, card_utils.py, or main.py.\n- The changes are: 5 numeric value changes in strategy.py + 3 constant additions in constants.py. NOTHING ELSE."
+    }
+  ]
+}
+```

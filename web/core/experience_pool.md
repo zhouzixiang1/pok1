@@ -8,37 +8,29 @@ Lessons from previous iterations. Read before planning next generation.
 3. **River overbet (1.5-2.2x pot) for nut hands on dry rivers** = proven value extraction. v4 lacks it. Must add.
 4. **Simulation counts: 700 flop sims is fine.** v2 rated #1 with {0:500}. More sims ≠ better play if thresholds are wrong.
 5. **Priors: vpip=0.58, pfr=0.28, confidence divisor=35.** v4 uses these. Proven correct.
-6. **EQR calibration: v4 air 0.72/0.62 is optimal.** v14 lowered to 0.68/0.56 + extra penalties causing over-folding. DO NOT over-discount. **v17 still uses 0.68/0.56 — MUST FIX.**
-7. **Blocker bluff: random.random() or deterministic hash both work.** Not a major differentiator.
-8. **exploit_lambda (gift_balance blending) is HARMFUL.** It corrupts GTO base thresholds. DO NOT use.
-9. **Anti-lock: chase=0.90, threshold=-0.075, sizing=0.18, bluff=0.13.** Proven values.
-10. **bb_vs_raise/sb_vs_raise: Let simulation decide.** Hardcoded 3bet bluff spots are net negative.
-11. **When changing preflop eval, recalibrate ALL downstream thresholds.**
-12. **Wholesale copy fails. Incremental targeted port wins.**
-13. **Fix ALL parameter issues simultaneously.** Effects compound.
-14. **thin_cap: wetness-aware formula (0.46+0.08*wet+0.05*round) superior to flat thresholds.** v17 uses flat 0.30/0.38 — should upgrade.
+6. **Anti-lock: chase=0.90, threshold=-0.075, sizing=0.18, bluff=0.13.** Proven values.
+7. **bb_vs_raise/sb_vs_raise: Let simulation decide.** Hardcoded 3bet bluff spots are net negative.
+8. **When changing preflop eval, recalibrate ALL downstream thresholds.**
+9. **Wholesale copy fails. Incremental targeted port wins.**
+10. **Fix ALL parameter issues simultaneously.** Effects compound.
+11. **exploit_lambda (gift_balance blending) is HARMFUL.** It corrupts GTO base thresholds. DO NOT use.
+12. **Parameter changes compound synergistically.** EQR + CBet + thin_cap + opponent style all together outperform any single change.
 
-### v9–v15 Era: Field Compression & Key Feature Gaps
+### v9–v17 Era: Key Feature Gaps
 
-15. **Field compressed to ~25pts.** Small edges matter enormously. Only port proven features.
-16. **CBet tracking IS useful.** v15 has tighter thresholds (0.60/0.35 vs v11's 0.65/0.40). v17 uses 0.65/0.40 — tighten to 0.60/0.35.
-17. **River exact equity (0 sims when 5 public cards) is a proven feature.** v17 HAS this — keep it.
-18. **classify_opponent_style (nit/maniac/station/fold-heavy) provides +2-3 pts of adaptation.** v17 LACKS this entirely. PRIORITY ADD.
-19. **Big pot call margin (pot>5000 guard) prevents over-folding in large pots.** v17 lacks explicit guard.
-20. **River overbet for strong-tier hands** (straights, sets, high flushes) on dry rivers at 1.3-1.7x pot. v17 doesn't have this. Potential +3-5 pts.
-21. **File size: strategy.py at 1245 lines is near 1000-line soft limit.** Any additions must be paired with removals.
+13. **classify_opponent_style (nit/maniac/station/fold-heavy) provides +2-3 pts of adaptation.** v5 LACKS this. PRIORITY ADD.
+14. **River overbet bluff with strong blockers** on dry boards is a distinct weapon. v5 has it DISABLED (stub returns None).
+15. **big_pot_safety_guard prevents catastrophic stack-offs** with thin value in big pots (>7000). v5 LACKS this entirely.
+16. **River exact equity override:** when 5 public cards, use exact enumeration (0 sims) for precise raise/fold decisions. v5 LACKS this. v9 has it and gains crucial edge at showdown.
+17. **EQR calibration: v9's lower values OUTPERFORM v5's.** v9 air: 0.65/0.53 vs v5's 0.72/0.62. v9 draw: 0.82/0.70 vs v5's 0.86/0.78. v9 also applies pot>3000 (-0.03) and OOP (-0.05) penalties. v5's higher EQR causes over-realization of weak hands.
+18. **style_deltas must propagate to ALL bluff thresholds.** v9 subtracts bluff_freq_bonus from river_bluff, probe_fold, semi_bluff thresholds. v5 doesn't apply style-based adjustments anywhere in bluff logic.
+19. **style_deltas must adjust strong/medium decision thresholds.** v9 adds strong_delta/medium_delta to the raise/call decision thresholds. v5 misses this adaptation layer.
+20. **Deterministic hash for blocker bluff frequency** reduces variance vs random.random(). v9: `(int(score*7919)+37)%100 < threshold`. v5 still uses `random.random()`.
+21. **state.get("min_raise_action", state["round_raise"])** is more robust than direct dict access. v9 uses this throughout; v5 has some direct accesses that could cause KeyError edge cases.
 
-### v17 Architecture & Dead Code
+### v5 Rating Trend & Strategy
 
-22. **v17 has 6 dead code files NOT imported anywhere:** draws.py(261), bluffs.py(186), postflop_decision.py(269), preflop.py(133), main_backup.py(2941), odds.py(317) = 4107 lines dead. Active code: 3646 lines across 15 files. Dead files don't affect runtime but confuse future workers — DELETE them.
-23. **v17 peaked at 1642.7, dropped to 1621.4.** v9 stable at 1625.9. Gap closing. Parameter fixes + missing features can reclaim lead.
-24. **EQR draw OOP values:** v17 uses 0.85/0.75 (flop/turn). Experience shows 0.88/0.78 gives better realization. Adjust.
-25. **Parameter changes compound synergistically.** EQR + CBet + thin_cap + opponent style all together outperform any single change.
-
-### v17→v17+ Generation: Porting v9 Proven Features
-
-26. **v9 (1643 ELO, top bot) has classify_opponent_style and choose_overbet_bluff_river — v16 lacks both.** These are the two biggest missing features. classify_opponent_style provides +2-3 pts of adaptation. River overbet bluff adds a distinct weapon vs value overbet.
-27. **v16 priors (vpip=0.52, pfr=0.24) deviate from v9's proven values (0.58, 0.28).** bot4 detection center also off (0.55/0.26 vs 0.58/0.28). Must fix — cascades through every decision.
-28. **v16 has good features v9 LACKS: CBet tracking, drift detection, wetness-aware thin_cap, dual-tier river overbet.** Don't remove these — they're advantages. Best strategy is v16 base + targeted v9 port.
-29. **allow_low_frequency_blocker_bluff needs bluff_freq_bonus parameter.** v9 accepts it, v16 doesn't. Without it, anti-bot4 bluff bonus doesn't propagate to blocker bluff decisions.
-30. **style_deltas["bluff_freq_bonus"] must be applied to all bluff thresholds.** v9 subtracts it from river_bluff_threshold, probe_fold_threshold, semi_bluff_threshold. v16 doesn't apply any style-based bluff adjustment.
+22. **v5 peaked at 1664.9 (period 166), dropped to 1610.9 (period 176).** -54 pts decline. Field adapted to v5's tendencies. v9 now tied at 1611.9. Must port v9's proven features to stay competitive.
+23. **v5's structural advantages over v9:** same simulation engine, same card eval. Gap is purely in decision logic features (classify_opponent, overbet bluff, big pot guard, river exact, EQR tuning, style deltas).
+24. **File size: strategy.py at 1160 lines is over 1000-line soft limit.** Adding new features requires either extraction to betting.py or condensing existing code.
+25. **v9 moved choose_raise/choose_preflop_spot_action/choose_overbet_river to betting.py.** This modularization reduces strategy.py from 1160 to ~991 lines. v5 should do the same to make room for new features.

@@ -1,12 +1,14 @@
-"""
-Postflop hand evaluation: made hands, draws, board texture, blocker bluffs, nutted risk.
-"""
+"""Postflop analysis: hand metrics, board texture, draws, value tiers, bluffs."""
+
+import random
+
 from constants import HAND_CLASS_SCORE
-from card_utils import clamp, card_suit, card_number, evaluate_best
-from state import get_hand_index
+from card_utils import clamp, card_suit, card_number
+from state import estimate_preflop_strength
 
 
 def made_hand_metric(hole_cards, public_cards):
+    from card_utils import evaluate_best
     if len(public_cards) < 3:
         return 0.0
     score = evaluate_best(hole_cards + public_cards)
@@ -18,6 +20,7 @@ def made_hand_metric(hole_cards, public_cards):
 
 
 def pair_board_profile(hole_cards, public_cards):
+    from card_utils import evaluate_best
     info = {
         "made_class": -1,
         "pair_rank": None,
@@ -134,8 +137,10 @@ def board_texture_profile(public_cards):
         "paired": False,
         "high_card": 0,
         "dynamic": False,
-        "low_board": False,
-        "connectedness": 0.0,
+        "flush_completed": False,
+        "straight_completed": False,
+        "draw_completed_on_turn": False,
+        "draw_completed_on_river": False,
     }
 
     if len(public_cards) < 3:
@@ -146,25 +151,19 @@ def board_texture_profile(public_cards):
     info["high_card"] = max(board_ranks)
     info["paired"] = len(set(board_ranks)) < len(board_ranks)
 
-    # Low board and connectedness
-    info["low_board"] = all(rank <= 9 for rank in board_ranks)
-    unique_ranks = sorted(set(board_ranks))
-    if len(unique_ranks) >= 2:
-        gaps = sum(max(0, unique_ranks[i] - unique_ranks[i-1] - 1) for i in range(1, len(unique_ranks)))
-        span = unique_ranks[-1] - unique_ranks[0]
-        connectivity = 1.0 - (gaps / max(span, 1)) if span > 0 else 1.0
-        n_conn = max(len(set(unique_ranks) & set(range(s, s+5))) for s in range(1, 11))
-        if n_conn >= 4: connectivity = max(connectivity, 0.85)
-        elif n_conn == 3: connectivity = max(connectivity, 0.55)
-        info["connectedness"] = clamp(connectivity, 0.0, 1.0)
-
     suit_counts = {}
     for suit in board_suits:
         suit_counts[suit] = suit_counts.get(suit, 0) + 1
     max_suit = max(suit_counts.values())
-    if max_suit >= 4: info["flush_pressure"] = 1.0
-    elif max_suit == 3: info["flush_pressure"] = 0.75
-    elif max_suit == 2 and len(public_cards) >= 4: info["flush_pressure"] = 0.35
+
+    if max_suit >= 4:
+        info["flush_pressure"] = 1.0
+    elif max_suit == 3:
+        info["flush_pressure"] = 0.75
+    elif max_suit == 2 and len(public_cards) >= 4:
+        info["flush_pressure"] = 0.35
+
+    info["flush_completed"] = max_suit >= 5
 
     ranks = set(board_ranks)
     expanded = set(ranks)
@@ -179,6 +178,8 @@ def board_texture_profile(public_cards):
             best_straight_pressure = max(best_straight_pressure, 0.65)
         elif present == 2 and max(window & expanded, default=start) - min(window & expanded, default=start) <= 3:
             best_straight_pressure = max(best_straight_pressure, 0.28)
+        if expanded >= window:
+            info["straight_completed"] = True
 
     info["straight_pressure"] = best_straight_pressure
 
@@ -190,9 +191,24 @@ def board_texture_profile(public_cards):
         wetness += 0.04
     if info["paired"]:
         wetness -= 0.06
-    # Connectedness bonus to wetness
-    if info["connectedness"] >= 0.6:
-        wetness += 0.03
+
+    # Detect draw completion on turn/river
+    if len(public_cards) >= 4:
+        turn_suit = card_suit(public_cards[3])
+        flop_suit_counts = {}
+        for s in [card_suit(c) for c in public_cards[:3]]:
+            flop_suit_counts[s] = flop_suit_counts.get(s, 0) + 1
+        max_flop_suit = max(flop_suit_counts.values()) if flop_suit_counts else 0
+        if max_flop_suit == 2 and turn_suit in flop_suit_counts and flop_suit_counts[turn_suit] == 2:
+            info["draw_completed_on_turn"] = True
+        if len(public_cards) == 5:
+            turn_ranks = set(card_number(c) for c in public_cards[:4])
+            river_rank = card_number(public_cards[4])
+            for start in range(1, 11):
+                window = set(range(start, start + 5))
+                if len(turn_ranks & window) == 4 and river_rank in (window - turn_ranks):
+                    info["draw_completed_on_river"] = True
+                    break
 
     info["wetness"] = clamp(wetness, 0.0, 1.0)
     info["dynamic"] = (
@@ -204,6 +220,7 @@ def board_texture_profile(public_cards):
 
 
 def paired_board_outcome_profile(hole_cards, public_cards):
+    from card_utils import evaluate_best
     info = {
         "board_paired": False,
         "board_pair_rank": 0,
@@ -329,6 +346,7 @@ def bet_size_bucket(last_raise_pot_ratio):
 
 
 def value_hand_tier(hole_cards, public_cards, pair_profile=None, board_texture=None, paired_board_profile=None):
+    from card_utils import evaluate_best
     info = {
         "tier": "none",
         "is_value": False,
@@ -514,7 +532,6 @@ def empty_draw_profile():
     return {
         "quality": 0.0,
         "type": "none",
-        "outs": 0,
         "flush_draw": False,
         "nut_flush_draw": False,
         "near_nut_flush_draw": False,
@@ -531,6 +548,7 @@ def empty_draw_profile():
 
 
 def draw_profile(hole_cards, public_cards, board_texture=None):
+    from card_utils import evaluate_best
     info = empty_draw_profile()
     if len(public_cards) < 3 or len(public_cards) >= 5:
         return info
@@ -554,16 +572,21 @@ def draw_profile(hole_cards, public_cards, board_texture=None):
     for suit, count in suit_counts.items():
         if count != 4:
             continue
-        hole_flush_ranks = sorted((card_number(c) for c in hole_cards if card_suit(c) == suit), reverse=True)
+        hole_flush_ranks = sorted(
+            (card_number(card) for card in hole_cards if card_suit(card) == suit),
+            reverse=True,
+        )
         if not hole_flush_ranks:
             continue
-        board_flush_ranks = [card_number(c) for c in public_cards if card_suit(c) == suit]
+
+        board_flush_ranks = [card_number(card) for card in public_cards if card_suit(card) == suit]
         high_flush_rank = max(hole_flush_ranks)
         seen_flush_ranks = set(hole_flush_ranks + board_flush_ranks)
-        better_flush_ranks = len([r for r in range(high_flush_rank + 1, 15) if r not in seen_flush_ranks])
+        better_flush_ranks = len([rank for rank in range(high_flush_rank + 1, 15) if rank not in seen_flush_ranks])
         nut_draw = better_flush_ranks == 0
         info["flush_draw"] = True
         info["nut_flush_draw"] = info["nut_flush_draw"] or nut_draw
+
         candidate = 0.21 if nut_draw else 0.16
         if not nut_draw and high_flush_rank >= 12 and better_flush_ranks <= 1:
             candidate = max(candidate, 0.185)
@@ -598,8 +621,7 @@ def draw_profile(hole_cards, public_cards, board_texture=None):
         if len(present) != 4 or not (hole_expanded & present):
             continue
         missing = next(iter(window - present))
-        is_oe = missing in (start, start + 4)
-        if is_oe:
+        if missing in (start, start + 4):
             has_open_ended = True
             straight_quality = max(straight_quality, 0.17)
         else:
@@ -616,27 +638,9 @@ def draw_profile(hole_cards, public_cards, board_texture=None):
         info["straight_draw"] = "gutshot"
 
     info["combo_draw"] = info["flush_draw"] and info["straight_draw"] != "none"
-
-    # Count outs for draw evaluation
-    outs = 0
-    remaining = 52 - len(hole_cards) - len(public_cards)
-    if info["flush_draw"]:
-        for suit, count in suit_counts.items():
-            if count == 4:
-                known = sum(1 for c in hole_cards + public_cards if card_suit(c) == suit)
-                outs += 13 - known
-                break
-    if info["straight_draw"] in ("open_ended", "double_gutshot"):
-        outs += 8
-    elif info["straight_draw"] == "gutshot":
-        outs += 4
-    if info["combo_draw"]:
-        outs = max(outs, 15)
-    info["outs"] = min(outs, remaining)
-
     quality = max(flush_quality, straight_quality)
     if info["flush_draw"] and info["straight_draw"] != "none":
-        quality = max(quality, flush_quality + straight_quality + 0.06)
+        quality = max(quality, flush_quality + straight_quality + 0.04)
     if len(public_cards) == 3:
         quality += 0.025 * info["overcards"]
     elif info["overcards"] >= 2:
@@ -732,7 +736,7 @@ def draw_call_margin(draw_info, board_texture, round_idx, spot_info):
 
     if round_idx == 2:
         if draw_type == "gutshot":
-            margin += 0.025
+            margin += 0.020
         elif draw_type == "flush_draw":
             if draw_info.get("near_nut_flush_draw", False) and size_bucket != "large" and (board_texture is None or not board_texture["paired"]):
                 margin += 0.000
@@ -758,6 +762,7 @@ def draw_call_margin(draw_info, board_texture, round_idx, spot_info):
 
 
 def made_flush_profile(hole_cards, public_cards, board_texture=None):
+    from card_utils import evaluate_best
     info = {
         "is_flush": False,
         "flush_suit": None,
@@ -830,9 +835,11 @@ def made_flush_profile(hole_cards, public_cards, board_texture=None):
 
 
 def blocker_bluff_profile(hole_cards, public_cards, pair_profile=None, board_texture=None):
+    from card_utils import evaluate_best
     info = {
         "eligible": False,
         "score": 0.0,
+        "block_strength": 0.0,
         "type": "none",
     }
 
@@ -887,23 +894,29 @@ def blocker_bluff_profile(hole_cards, public_cards, pair_profile=None, board_tex
         if bluff_type == "none":
             bluff_type = "straight_pressure_blocker"
 
+    block_strength = min(1.0, blocker_score / 0.28)
+    if board_texture.get("flush_completed") and bluff_type.startswith("flush"):
+        block_strength = min(1.0, block_strength * 1.4)
+    if board_texture.get("straight_completed") and bluff_type == "straight_pressure_blocker":
+        block_strength = min(1.0, block_strength * 1.3)
+
     info["score"] = blocker_score
+    info["block_strength"] = block_strength
     info["type"] = bluff_type
     info["eligible"] = blocker_score >= 0.14
     return info
 
 
-def allow_low_frequency_blocker_bluff(req, hole_cards, public_cards, blocker_profile, round_idx):
+def allow_low_frequency_blocker_bluff(req, hole_cards, public_cards, blocker_profile, round_idx, bluff_freq_bonus=0.0):
     if not blocker_profile["eligible"]:
         return False
 
-    hand_idx = get_hand_index(req) or 0
-    token = (sum(hole_cards) * 7 + sum(public_cards) * 11 + hand_idx * 13 + round_idx * 17) % 100
-    threshold = int(clamp(blocker_profile["score"] * 35.0, 5.0, 18.0))
-    return token < threshold
+    threshold = clamp(blocker_profile["score"] * 35.0, 5.0, 18.0) + bluff_freq_bonus * 100.0
+    return random.random() * 100 < threshold
 
 
 def nutted_risk_profile(hole_cards, public_cards, pair_profile=None, board_texture=None, value_profile=None, paired_board_profile=None):
+    from card_utils import evaluate_best
     info = {
         "risk": 0.0,
         "label": "none",
@@ -995,3 +1008,52 @@ def nutted_risk_profile(hole_cards, public_cards, pair_profile=None, board_textu
     info["label"] = label
     info["vulnerable"] = info["risk"] >= 0.04
     return info
+
+
+def check_probe_resistance_margin(spot_info, opponent_model, round_idx):
+    if round_idx <= 0 or not spot_info["facing_postflop_aggression"]:
+        return 0.0
+
+    margin = 0.0
+    same_street_check_raise = (
+        spot_info.get("opp_current_round_check_count", 0) > 0
+        and spot_info.get("opp_current_round_bet_count", 0) > 0
+    )
+    delayed_resistance = (
+        spot_info.get("opp_prior_postflop_check_count", 0) >= 2
+        and spot_info.get("opp_current_round_bet_count", 0) > 0
+    )
+
+    if same_street_check_raise:
+        margin += 0.035
+    if delayed_resistance:
+        margin += 0.018
+
+    confidence = opponent_model.get("confidence", 0.0)
+    if opponent_model.get("postflop_check_rate", 0.42) >= 0.52:
+        margin += confidence * 0.018
+
+    size_bucket = bet_size_bucket(spot_info["last_raise_pot_ratio"])
+    if size_bucket == "large":
+        margin += 0.020
+    elif size_bucket == "medium":
+        margin += 0.010
+
+    return clamp(margin, 0.0, 0.085)
+
+
+def must_continue_vs_raise(value_profile, made_strength, pot_odds, nutted_risk, board_texture):
+    tier = value_profile.get("tier", "none") if value_profile is not None else "none"
+    risk = nutted_risk.get("risk", 0.0) if nutted_risk is not None else 0.0
+    extreme_texture = (
+        board_texture is not None
+        and (board_texture["flush_pressure"] >= 1.0 or board_texture["straight_pressure"] >= 1.0)
+    )
+
+    if tier == "nut":
+        return True
+    if made_strength >= 0.58 and pot_odds <= 0.42 and risk <= 0.07:
+        return not (extreme_texture and risk >= 0.04)
+    if tier == "strong" and pot_odds <= 0.36 and risk <= 0.05:
+        return True
+    return False
