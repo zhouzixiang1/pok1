@@ -1,3 +1,7 @@
+"""
+Bot 6 constants.
+"""
+
 N_PLAYERS = 2
 INITIAL_CHIPS = 20000
 SMALL_BLIND = 50
@@ -8,7 +12,7 @@ LOCK_WIN_MARGIN = 1500
 HAND_CLASS_SCORE = [0.08, 0.22, 0.40, 0.58, 0.69, 0.76, 0.84, 0.93, 0.98]
 SIMULATIONS_BY_PUBLIC_COUNT = {
     0: 500,
-    3: 700,
+    3: 800,
     4: 900,
     5: 0,
 }
@@ -18,7 +22,7 @@ EXTRA_SIMULATIONS_BY_PUBLIC_COUNT = {
     4: 180,
 }
 
-# Improvement 2: Preflop 169-hand lookup table
+# Preflop 169-hand lookup table
 # Key: (high_rank, low_rank, suited) -> normalized strength [0,1]
 # Values derived from Chen formula + empirical equity data
 PREFLOP_STRENGTH_TABLE = {}

@@ -1,15 +1,13 @@
+"""
+Opponent range building and equity estimation via simulation.
+"""
 import bisect
 import itertools
-import math
 import random
 
 from card_utils import clamp, evaluate_7
 from state import estimate_preflop_strength
 from postflop import made_hand_metric, draw_potential
-
-# Module-level cache for cumulative weights
-_cumulative_cache = {}
-_CUMULATIVE_CACHE_MAX_SIZE = 256
 
 
 def combo_range_weight(combo, public_cards, state, opponent_model, spot_info):
@@ -98,11 +96,8 @@ def monte_carlo_weighted_equity(my_cards, public_cards, combos, cumulative, tota
     deck = [card for card in range(52) if card not in used]
     need_public = 5 - len(public_cards)
 
-    early_term_60 = int(iterations * 0.60)
-    early_term_80 = int(iterations * 0.80)
-
     wins = 0.0
-    for i in range(iterations):
+    for _ in range(iterations):
         combo = combos[weighted_choice_index(cumulative, total_weight)]
         combo_used = set(combo)
         rest_public_pool = [card for card in deck if card not in combo_used]
@@ -114,19 +109,6 @@ def monte_carlo_weighted_equity(my_cards, public_cards, combos, cumulative, tota
             wins += 1.0
         elif my_score == opponent_score:
             wins += 0.5
-
-        # Early termination: if result is clear after 60% of iterations
-        if i + 1 == early_term_60 and early_term_60 > 0:
-            current_rate = wins / (i + 1)
-            if current_rate >= 0.70 or current_rate <= 0.30:
-                return current_rate
-
-        # Early termination: if converged after 80% of iterations
-        if i + 1 == early_term_80 and early_term_80 > 0:
-            current_rate = wins / (i + 1)
-            std_est = math.sqrt(current_rate * (1.0 - current_rate) / (i + 1))
-            if std_est < 0.02:
-                return current_rate
 
     return wins / max(1, iterations)
 

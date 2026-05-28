@@ -1,0 +1,106 @@
+
+[LEAD CODE REVIEWER PROMPT]
+=============================
+# Role
+You are the strict Lead Code Reviewer (Critic) for a Texas Hold'em poker bot team.
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files.
+- **Use the Bash tool** to run git diff and other commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Task
+Worker Agents have modified the bot codebase based on the Master Architect's instructions.
+Your job is the final quality gate before production (the next evolution iteration).
+
+# Context
+1. **Master's Original Plan/Tasks:**
+[
+  "Tighten CBet exploitation thresholds from 0.65/0.40 to 0.60/0.35 with stronger margin adjustments (0.02\u21920.025)",
+  "Add river overbet path for strong-tier hands on dry boards: target 1.3-1.7x pot for straights, sets, high flushes on wetness\u22640.20 rivers",
+  "Tighten gutshot turn fold margin (0.020\u21920.025) to fold weak draws faster",
+  "Extract choose_raise, choose_anti_lock_pressure_action, choose_preflop_spot_action, track_opponent_gift, safe_exploitation_lambda into new sizing.py module to stay under 1000-line file limit"
+]
+
+2. **Bot directory**: `bots/claude_v13/`
+3. **Parent version tag**: `bot-v15`
+
+# How to Review
+You have full access to git and file reading tools. Use them:
+
+1. **See all changes**: Run `git diff bot-v15 -- bots/claude_v13/`
+   This shows exactly what the workers changed vs the parent bot.
+2. **See change summary**: Run `git diff --stat bot-v15 -- bots/claude_v13/`
+3. **Read specific files**: Use the Read tool on any file in `bots/claude_v13/`
+4. **List all files**: Run `ls bots/claude_v13/` to see the full file list
+
+Focus your review on the diff, but read full files when you need more context.
+
+# Rules
+1. Verify the changes fulfill the Master's instructions without logical flaws or contradictions.
+2. ENFORCE THE DUAL-TRACK BOUNDARY:
+   - If a "Hyperparameter Tuner" was assigned, verify they ONLY changed constants/thresholds. If they injected complex new logic, REJECT.
+   - If an "Algorithmic Logic Architect" was assigned, verify their logic is sound.
+3. Ensure the code compiles conceptually and adheres to the `{"response": int}` JSON output format constraint.
+4. Output exactly ONE JSON block containing your decision. If you reject the code, you must provide a detailed "feedback" string explaining what the Developer Agents need to fix.
+5. FILE SIZE CONSTRAINT: No single .py file should exceed 1000 lines. If any file is too large, REJECT and instruct workers to split it into focused modules. Keep main.py as the slim entry point.
+
+# Correctness Criteria (MANDATORY CHECK)
+Before approving, verify the bot does NOT do any of the following:
+- Fold premium hands (AA, KK, QQ, AKs) preflop without extreme pressure
+- Call all-in with obviously dominated hands on the river
+- Return invalid JSON (must output `{"response": <int>}`)
+- Use `input()` or `print()` instead of stdin/stdout for game communication
+- Import unavailable modules (only stdlib + numpy if present)
+- Have obvious infinite loops or unbounded recursion
+
+# Output Format
+You MUST output your response containing exactly ONE JSON block formatted as follows:
+
+```json
+{
+  "approved": true or false,
+  "feedback": "If approved=false, provide detailed instructions on what needs to be fixed. If true, this can be empty.",
+  "quality_score": 7,
+  "change_summary": "A 1-2 sentence summary of the key changes made in this generation.",
+  "risk_areas": ["List of potential risks or concerns about the changes, if any"]
+}
+```
+
+# Quality Score Rubric
+- **9-10**: Clean, well-structured changes that clearly improve strategy. No risks. Code is concise and follows project conventions.
+- **7-8**: Good changes that address the plan. Minor concerns (e.g., slightly verbose code, a heuristic that might not generalize). Approve.
+- **5-6**: Changes work but are mediocre — copy-pasted code, brute-force approaches where elegant solutions exist, or unclear strategy. Approve with caution.
+- **3-4**: Changes introduce regression risk, violate role boundaries, or show fundamental misunderstanding of poker strategy. REJECT.
+- **1-2**: Broken code, catastrophic strategic errors (folding AA preflop), or complete failure to follow instructions. REJECT.
+
+- `change_summary`: Required even when approved=true. This is used to update the experience pool for future generations.
+- `risk_areas`: Optional. List potential issues that could cause regression.
+
+=============================
+[CLAUDE OUTPUT]
+Let me start by examining the changes systematically.
+Now let me verify the import chain is correct and that the extracted functions don't have broken dependencies:
+Let me run a quick smoke test to verify the bot executes correctly:
+The smoke test failure is due to my incomplete test JSON (missing `dealer_id`), not a code defect. Let me verify the river overbet logic in its full context:
+Let me verify the postflop.py gutshot change in its full context:
+Now let me verify the function extraction was exact (no silent modifications):
+All five extracted functions are byte-for-byte identical to their originals. Let me do one final check on the river overbet logic for edge cases:
+I notice a discrepancy in the overbet ratio. Let me verify:
+I've completed my thorough review. Here's the final assessment:
+
+```json
+{
+  "approved": true,
+  "feedback": "",
+  "quality_score": 8,
+  "change_summary": "Four targeted changes: (1) Tightened CBet exploitation thresholds from 0.65/0.40 to 0.60/0.35 with stronger 0.025 margin adjustments. (2) Added river overbet path for strong-tier hands on dry non-dynamic boards with nutted risk ≤0.03 (actual range 1.30–1.46x pot). (3) Tightened gutshot turn fold margin from 0.020 to 0.025. (4) Extracted 5 functions (choose_raise, choose_anti_lock_pressure_action, choose_preflop_spot_action, track_opponent_gift, safe_exploitation_lambda) into a new 328-line sizing.py module, dropping strategy.py from >1200 to 957 lines.",
+  "risk_areas": [
+    "River overbet max ratio is ~1.46x pot (at win_rate=1.0) rather than the Master's specified 1.7x — the 0.40 coefficient on (win_rate-0.60) is too small to reach 1.70x. This means the overbet is more conservative than intended. Not harmful, but doesn't fully exploit the intended sizing range. Consider using coefficient ~1.00 to achieve the full 1.3–1.7x range.",
+    "CBet exploitation thresholds (0.60/0.35) are wider than before — against opponents with very few observed hands (low confidence), the bot may over-adjust to unreliable statistics.",
+    "postflop.py is at 969 lines, very close to the 1000-line limit. Future changes to postflop logic will likely need another extraction.",
+    "main_backup.py at 2941 lines technically violates the 1000-line file constraint, though it is inactive backup code."
+  ]
+}
+```

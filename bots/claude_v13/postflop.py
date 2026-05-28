@@ -1,6 +1,8 @@
+"""
+Postflop hand evaluation: made hands, draws, board texture, blocker bluffs, nutted risk.
+"""
 from constants import HAND_CLASS_SCORE
-from card_utils import clamp, card_suit, card_number
-from card_utils import evaluate_best
+from card_utils import clamp, card_suit, card_number, evaluate_best
 from state import get_hand_index
 
 
@@ -702,7 +704,7 @@ def draw_call_margin(draw_info, board_texture, round_idx, spot_info):
 
     if round_idx == 2:
         if draw_type == "gutshot":
-            margin += 0.020
+            margin += 0.025
         elif draw_type == "flush_draw":
             if draw_info.get("near_nut_flush_draw", False) and size_bucket != "large" and (board_texture is None or not board_texture["paired"]):
                 margin += 0.000
@@ -965,35 +967,3 @@ def nutted_risk_profile(hole_cards, public_cards, pair_profile=None, board_textu
     info["label"] = label
     info["vulnerable"] = info["risk"] >= 0.04
     return info
-
-
-def check_probe_resistance_margin(spot_info, opponent_model, round_idx):
-    if round_idx <= 0 or not spot_info["facing_postflop_aggression"]:
-        return 0.0
-
-    margin = 0.0
-    same_street_check_raise = (
-        spot_info.get("opp_current_round_check_count", 0) > 0
-        and spot_info.get("opp_current_round_bet_count", 0) > 0
-    )
-    delayed_resistance = (
-        spot_info.get("opp_prior_postflop_check_count", 0) >= 2
-        and spot_info.get("opp_current_round_bet_count", 0) > 0
-    )
-
-    if same_street_check_raise:
-        margin += 0.035
-    if delayed_resistance:
-        margin += 0.018
-
-    confidence = opponent_model.get("confidence", 0.0)
-    if opponent_model.get("postflop_check_rate", 0.42) >= 0.52:
-        margin += confidence * 0.018
-
-    size_bucket = bet_size_bucket(spot_info["last_raise_pot_ratio"])
-    if size_bucket == "large":
-        margin += 0.020
-    elif size_bucket == "medium":
-        margin += 0.010
-
-    return clamp(margin, 0.0, 0.085)

@@ -1,0 +1,35 @@
+
+[STAGNATION ANALYST PROMPT]
+=============================
+You are a rating trend analyst for a poker bot evolution system.
+Analyze whether the evolution is truly stagnating or if rating changes are just Glicko variance.
+
+Current bot: claude_v15
+Top 5 bots by rating:
+  claude_v15: r=1639 rd=33
+  claude_v4: r=1633 rd=31
+  claude_v5: r=1621 rd=34
+  claude_v14: r=1620 rd=34
+  claude_v8: r=1620 rd=35
+
+Rating history (last 10 periods):
+  Period 34: top_r=1648
+  Period 35: top_r=1630
+  Period 37: top_r=1630
+  Period 36: top_r=1636
+  Period 38: top_r=1632
+  Period 39: top_r=1626
+  Period 40: top_r=1644
+  Period 41: top_r=1626
+  Period 42: top_r=1639
+  Period 42: top_r=1639
+
+Is this real stagnation or Glicko variance? Answer in JSON only:
+```json
+{"is_stagnant": true/false, "confidence": "high/medium/low", "recommendation": "continue|branch|crossover", "branch_from": "claude_vN" or null, "reason": "brief explanation"}
+```
+=============================
+[CLAUDE OUTPUT]
+```json
+{"is_stagnant": true, "confidence": "medium", "recommendation": "crossover", "branch_from": null, "reason": "Ratings oscillate within 22-point range (1626-1648) over 8+ periods — well within 1 rd (~33), so fluctuations are consistent with Glicko noise. However, the sustained inability to break above the ~1640 ceiling across multiple bot versions constitutes real stagnation at a local optimum. Top 5 bots span only 19 points (1620-1639), indicating the evolution has converged. Crossover between top-2 (claude_v15 and claude_v4) offers the best chance to escape the plateau by recombining independently evolved strategies."}
+```
