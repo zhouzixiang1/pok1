@@ -148,30 +148,20 @@ def build_opponent_model(requests, my_id):
         "drift_detected": False,
     }
 
-    if len(hand_vpip_flags) >= 8:
+    if len(hand_vpip_flags) >= 12:
         recent_count = min(10, len(hand_vpip_flags))
         recent_vpip = sum(hand_vpip_flags[-10:]) / recent_count
         all_time_vpip = sum(hand_vpip_flags) / len(hand_vpip_flags)
         recent_pfr = sum(hand_pfr_flags[-10:]) / recent_count
         all_time_pfr = sum(hand_pfr_flags) / len(hand_pfr_flags)
 
-        recent_postflop_aggr_actions = sum(hand_postflop_aggr_counts[-10:])
-        recent_postflop_total_actions = sum(hand_postflop_action_counts[-10:])
-        all_time_postflop_aggr_actions = sum(hand_postflop_aggr_counts)
-        all_time_postflop_total_actions = sum(hand_postflop_action_counts)
-        recent_postflop_aggr_rate = smooth_rate(recent_postflop_aggr_actions, recent_postflop_total_actions, 0.36, 5.0)
-        all_time_postflop_aggr_rate = smooth_rate(all_time_postflop_aggr_actions, all_time_postflop_total_actions, 0.36, 5.0)
-
-        vpip_pfr_drift = abs(recent_vpip - all_time_vpip) > 0.15 or abs(recent_pfr - all_time_pfr) > 0.12
-        postflop_aggr_drift = abs(recent_postflop_aggr_rate - all_time_postflop_aggr_rate) > 0.18
-
-        if vpip_pfr_drift or postflop_aggr_drift:
+        if abs(recent_vpip - all_time_vpip) > 0.15 or abs(recent_pfr - all_time_pfr) > 0.12:
             result["drift_detected"] = True
-            if vpip_pfr_drift:
-                result["vpip"] = recent_vpip
-                result["pfr"] = recent_pfr
-            if postflop_aggr_drift:
-                result["postflop_aggr"] = recent_postflop_aggr_rate
+            result["vpip"] = recent_vpip
+            result["pfr"] = recent_pfr
+            recent_postflop_aggr_actions = sum(hand_postflop_aggr_counts[-10:])
+            recent_postflop_total_actions = sum(hand_postflop_action_counts[-10:])
+            result["postflop_aggr"] = smooth_rate(recent_postflop_aggr_actions, recent_postflop_total_actions, 0.36, 5.0)
             result["confidence"] = max(0.25, confidence * 0.6)
 
     return result

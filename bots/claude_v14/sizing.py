@@ -226,7 +226,7 @@ def track_opponent_gift(requests, my_id):
 def safe_exploitation_lambda(gift_balance, confidence):
     if confidence < 0.25:
         return 0.0
-    return clamp(confidence * (0.15 + min(0.7, max(0, gift_balance) / 2.0)), 0.0, 0.85)
+    return clamp(confidence * min(1.0, max(0, gift_balance) / 2.0), 0.0, 0.85)
 
 
 def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_strength, win_rate, match_profile):
@@ -293,10 +293,10 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
                 return -2
             return target
 
-        if 0.36 <= preflop_strength <= 0.54 and confidence >= 0.25 and fold_to_raise > 0.42:
+        if 0.38 <= preflop_strength <= 0.52 and confidence >= 0.25 and fold_to_raise > 0.45:
             hand_index = get_hand_index(req) or 0
             token = (sum(req["my_cards"]) * 13 + hand_index * 7) % 100
-            bluff_freq = clamp((fold_to_raise - 0.42) * 1.2, 0, 0.7)
+            bluff_freq = clamp((fold_to_raise - 0.45) * 1.2, 0, 0.6)
             if token < int(bluff_freq * 100):
                 target = int(to_call + pot_after_call * 0.60)
                 target = max(target, state["min_raise_action"])
@@ -326,91 +326,3 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
         return -1
 
     return None
-
-
-def choose_donk_bet(
-    my_chips,
-    to_call,
-    pot,
-    round_idx,
-    value_profile,
-    board_texture,
-    opponent_model,
-    pair_profile,
-    min_raise,
-):
-    """Return a donk-bet sizing target, or None if conditions aren't met.
-
-    Donk-bet criteria:
-      1. Strong or nut hand on a dynamic board (value donk).
-      2. Weak made hand (top pair+ with weak kicker or better) on a static
-         board against a passive opponent (postflop_aggr < 0.35 or
-         postflop_check_rate > 0.50).
-
-    Sizing: 25-35% of pot.
-    """
-    if value_profile is None or board_texture is None:
-        return None
-    if pair_profile is None:
-        return None
-
-    tier = value_profile.get("tier", "none")
-    confidence = opponent_model.get("confidence", 0.0)
-    postflop_aggr = opponent_model.get("postflop_aggr", 0.36)
-    postflop_check_rate = opponent_model.get("postflop_check_rate", 0.42)
-    is_dynamic = board_texture.get("dynamic", False)
-
-    # --- Condition 1: value donk on dynamic board ---
-    value_donk = (
-        tier in ("strong", "nut")
-        and is_dynamic
-    )
-
-    # --- Condition 2: thin donk on static board vs passive opponent ---
-    # "Weak made hand" = top_pair with weak kicker, overpair, pocket pair,
-    # or two-pair+.  We check pair_profile made_class == 1 (one pair)
-    # with top_pair/overpair, or tier >= "thin" for two-pair+.
-    has_weak_made = False
-    if pair_profile.get("made_class") == 1:
-        pair_type = pair_profile.get("pair_type", "none")
-        if pair_type in ("top_pair", "overpair"):
-            has_weak_made = True
-        elif pair_type in ("middle_pair",) and not pair_profile.get("weak_kicker", True):
-            has_weak_made = True
-    elif tier in ("thin", "strong", "nut"):
-        # two-pair+ already covered by tier
-        has_weak_made = True
-
-    passive_opp = (
-        confidence >= 0.20
-        and (postflop_aggr < 0.35 or postflop_check_rate > 0.50)
-    )
-    thin_donk = (
-        has_weak_made
-        and not is_dynamic
-        and passive_opp
-    )
-
-    if not value_donk and not thin_donk:
-        return None
-
-    # Sizing: 25-35% pot.  Bias toward the lower end for thin donks,
-    # higher end for value donks.
-    if value_donk:
-        ratio = 0.35
-    else:
-        ratio = 0.25
-
-    # Slightly increase sizing on later streets
-    if round_idx >= 2:
-        ratio += 0.03
-    if round_idx >= 3:
-        ratio += 0.02
-
-    target = int(pot * ratio)
-    target = max(target, min_raise)
-    target = min(target, my_chips - 1)
-
-    if target <= to_call or target < min_raise or target >= my_chips:
-        return None
-    return target

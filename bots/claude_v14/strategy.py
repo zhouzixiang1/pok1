@@ -46,8 +46,8 @@ from sizing import (
     track_opponent_gift,
     safe_exploitation_lambda,
     choose_preflop_spot_action,
-    choose_donk_bet,
 )
+
 
 def opponent_pressure_adjustment(opponent_model, spot_info, round_idx):
     confidence = opponent_model["confidence"]
@@ -63,6 +63,7 @@ def opponent_pressure_adjustment(opponent_model, spot_info, round_idx):
 
     return clamp(adjustment, -0.05, 0.07)
 
+
 def aggressive_line_strength(spot_info, board_texture):
     strength = 0.0
     if spot_info.get("opp_postflop_bet_count", 0) >= 2:
@@ -72,6 +73,7 @@ def aggressive_line_strength(spot_info, board_texture):
     if spot_info.get("opp_current_round_bet_count", 0) >= 3:
         strength += 0.03
     return clamp(strength, 0.0, 0.15)
+
 
 def check_probe_resistance_margin(spot_info, opponent_model, round_idx):
     if round_idx <= 0 or not spot_info["facing_postflop_aggression"]:
@@ -104,6 +106,7 @@ def check_probe_resistance_margin(spot_info, opponent_model, round_idx):
 
     return clamp(margin, 0.0, 0.085)
 
+
 def must_continue_vs_raise(value_profile, made_strength, pot_odds, nutted_risk, board_texture):
     tier = value_profile.get("tier", "none") if value_profile is not None else "none"
     risk = nutted_risk.get("risk", 0.0) if nutted_risk is not None else 0.0
@@ -119,6 +122,7 @@ def must_continue_vs_raise(value_profile, made_strength, pot_odds, nutted_risk, 
     if tier == "strong" and pot_odds <= 0.36 and risk <= 0.05:
         return True
     return False
+
 
 def paired_board_stackoff_profile(pair_profile, paired_board_profile, board_texture, spot_info, round_idx):
     info = {
@@ -164,6 +168,7 @@ def paired_board_stackoff_profile(pair_profile, paired_board_profile, board_text
     info["size_bucket"] = size_bucket
     return info
 
+
 def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength, round_idx, has_position):
     if round_idx <= 0:
         return 0.0
@@ -204,6 +209,7 @@ def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength
         margin -= confidence * max(0.0, opponent_model["postflop_aggr"] - 0.50) * 0.008
 
     return clamp(margin, 0.0, 0.08)
+
 
 def realized_postflop_equity(
     win_rate,
@@ -281,6 +287,7 @@ def realized_postflop_equity(
             return win_rate * eqr
 
     return win_rate
+
 
 def get_action(req, requests):
     my_id = req["my_id"]
@@ -564,10 +571,10 @@ def get_action(req, requests):
                 pot,
             )
             cbet_rate = opponent_model.get("cbet_rate", 0.55)
-            if round_idx == 1 and spot_info["facing_postflop_aggression"] and cbet_rate > 0.65:
-                call_margin -= 0.02
-            if round_idx == 1 and spot_info["facing_postflop_aggression"] and cbet_rate < 0.40:
-                call_margin += 0.02
+            if round_idx == 1 and spot_info["facing_postflop_aggression"] and cbet_rate > 0.60:
+                call_margin -= 0.025
+            if round_idx == 1 and spot_info["facing_postflop_aggression"] and cbet_rate < 0.35:
+                call_margin += 0.025
         if anti_lock_pressure:
             call_margin -= 0.07
         anti_lock_call_continue = anti_lock_can_continue(
@@ -725,39 +732,6 @@ def get_action(req, requests):
                 return raise_amount
         return 0
 
-    # --- Donk-bet logic (OOP lead when opponent checked) ---
-    donk_bet_eligible = (
-        round_idx > 0
-        and to_call == 0
-        and not spot_info["has_position"]
-        and board_texture is not None
-        and value_profile is not None
-        and pair_profile is not None
-        and (
-            spot_info["last_opp_action_type"] == "check"
-            or (
-                spot_info["opp_preflop_raises"] > 0
-                and spot_info["opp_current_round_bet_count"] == 0
-                and spot_info["opp_current_round_check_count"] > 0
-            )
-            or spot_info["opp_prior_postflop_check_count"] > 0
-        )
-    )
-    if donk_bet_eligible:
-        donk_amount = choose_donk_bet(
-            my_chips,
-            to_call,
-            pot,
-            round_idx,
-            value_profile,
-            board_texture,
-            opponent_model,
-            pair_profile,
-            state["min_raise_action"],
-        )
-        if donk_amount is not None:
-            return donk_amount
-
     weak_pair_river = (
         round_idx == 3
         and pair_profile is not None
@@ -868,21 +842,44 @@ def get_action(req, requests):
     if big_pot and round_idx == 3 and (value_profile is None or value_profile["tier"] not in ("strong", "nut")):
         if blocker_profile is None or not blocker_profile["eligible"]:
             return 0
-    # River thin value bet: bet thin-tier hands for value on dry boards
-    river_thin_value = (
-        round_idx == 3 and to_call == 0
-        and value_profile is not None and value_profile["tier"] == "thin"
-        and board_texture is not None and board_texture["wetness"] <= 0.30 and not board_texture["dynamic"]
-        and made_strength >= 0.50 and opponent_model["confidence"] >= 0.20
-        and opponent_model["fold_to_raise"] > 0.50 and nutted_risk["risk"] <= 0.08
-        and pot >= 200 and not anti_lock_pressure
-    )
-    if river_thin_value:
-        thin_value_ratio = 0.40 + 0.10 * max(0, min(1, (made_strength - 0.50) / 0.15))
-        thin_value_target = max(int(pot * thin_value_ratio), state["min_raise_action"])
-        thin_value_target = min(thin_value_target, my_chips - 1)
-        if thin_value_target > to_call and thin_value_target < my_chips:
-            return thin_value_target
+    # v14 ADDITION: Thin value bet against loose callers on late streets
+    # Against opponents who call too much, thin value bets are profitable even on static boards
+    if (
+        round_idx >= 2
+        and to_call == 0
+        and value_profile is not None
+        and value_profile["tier"] == "thin"
+        and board_texture is not None
+        and not board_texture["dynamic"]
+        and draw_strength < 0.12
+        and not anti_lock_pressure
+        and opponent_model["confidence"] >= 0.40
+        and opponent_model["vpip"] > 0.62
+        and opponent_model["fold_to_raise"] < 0.36
+        and made_strength >= 0.38
+    ):
+        thin_value_raise = choose_raise(
+            state["min_raise_action"],
+            my_chips,
+            state["my_round_bet"],
+            to_call,
+            pot,
+            win_rate,
+            round_idx,
+            spot_info["preflop_spot"],
+            preflop_strength,
+            spot_info["has_position"],
+            opponent_model,
+            value_profile=value_profile,
+            value_plan=value_plan,
+            board_texture=board_texture,
+            probe_mode=True,
+            match_sizing_delta=match_profile["sizing_delta"],
+        )
+        if thin_value_raise is not None:
+            return thin_value_raise
+        return 0
+
     thin_static_showdown_control = (
         round_idx >= 2
         and value_profile is not None
@@ -974,25 +971,18 @@ def get_action(req, requests):
             match_sizing_delta=match_profile["sizing_delta"],
         )
         if raise_amount is not None:
-            # River overbet override: strong/thin hands on dry boards extract 1.3-1.7x pot
-            river_thin_overbet_eligible = (
-                value_profile is not None
-                and value_profile["tier"] == "thin"
-                and made_strength >= 0.55
-                and board_texture is not None
-                and board_texture["wetness"] <= 0.15
-            )
+            # River overbet override: strong hands on dry boards extract 1.3-1.7x pot
             river_dry_overbet = (
                 round_idx == 3
                 and to_call == 0
+                and value_profile is not None
+                and value_profile["tier"] == "strong"
                 and board_texture is not None
+                and board_texture["wetness"] <= 0.20
                 and not board_texture["dynamic"]
+                and nutted_risk["risk"] <= 0.03
                 and pot >= 400
                 and not anti_lock_pressure
-                and (
-                    (value_profile is not None and value_profile["tier"] == "strong" and board_texture["wetness"] <= 0.20 and nutted_risk["risk"] <= 0.03)
-                    or (river_thin_overbet_eligible and nutted_risk["risk"] <= 0.03)
-                )
             )
             if river_dry_overbet:
                 overbet_ratio = 1.30 + 0.40 * max(0, win_rate - 0.60)
@@ -1001,5 +991,28 @@ def get_action(req, requests):
                 overbet_target = min(overbet_target, my_chips - 1)
                 if overbet_target > raise_amount and overbet_target > to_call and overbet_target < my_chips:
                     return overbet_target
+            # v14 ADDITION: River nut overbet vs calling stations
+            # Against passive callers, extract max value with nut hands instead of inducing
+            river_nut_overbet = (
+                round_idx == 3
+                and to_call == 0
+                and value_profile is not None
+                and value_profile["tier"] == "nut"
+                and board_texture is not None
+                and not board_texture["dynamic"]
+                and nutted_risk["risk"] <= 0.03
+                and pot >= 500
+                and not anti_lock_pressure
+                and opponent_model["confidence"] >= 0.30
+                and opponent_model["fold_to_raise"] < 0.38
+            )
+            if river_nut_overbet:
+                call_tendency = max(0.0, 0.42 - opponent_model["fold_to_raise"])
+                nut_overbet_ratio = 1.40 + 0.80 * call_tendency
+                nut_overbet_target = int(pot * nut_overbet_ratio)
+                nut_overbet_target = max(nut_overbet_target, state["min_raise_action"])
+                nut_overbet_target = min(nut_overbet_target, my_chips - 1)
+                if nut_overbet_target > raise_amount and nut_overbet_target > to_call and nut_overbet_target < my_chips:
+                    return nut_overbet_target
             return raise_amount
     return 0
