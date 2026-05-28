@@ -110,6 +110,7 @@ def choose_raise(
     induce_mode=False,
     nutted_risk_score=0.0,
     match_sizing_delta=0.0,
+    anti_bot4_bonus=0.0,
 ):
     if my_chips <= max(min_raise, to_call) + 1:
         return None
@@ -142,6 +143,7 @@ def choose_raise(
     ratio += value_profile.get("size_bonus", 0.0)
     ratio += value_plan.get("size_delta", 0.0)
     ratio += match_sizing_delta
+    ratio += anti_bot4_bonus
     if round_idx > 0 and value_profile.get("tier") == "strong" and not semi_bluff and not pressure_line:
         if not board_texture["dynamic"]:
             ratio -= 0.05

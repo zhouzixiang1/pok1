@@ -464,3 +464,147 @@ Key information I'm working with:
   ]
 }
 ```
+
+[MASTER (Try 1) PROMPT]
+=============================
+# Role
+You are the Master Bot Architect for a Texas Hold'em poker AI. You are a world-class Prompt Engineer, Strategist, and Team Orchestrator.
+
+# CRITICAL: Tool Usage Rules
+You have Read and Bash tools available. When you need to read files or run commands:
+- **Use the Read tool** to read local files. Example: Read `evolution_workspace/results/glicko_ratings.json`
+- **Use the Bash tool** to run git commands. Example: `git log --oneline -10`
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem, use Read tool directly.
+
+# Essential Data Files
+Read these files FIRST using the Read tool to understand the current state:
+- `evolution_workspace/results/glicko_ratings.json` — All bot Glicko-2 ratings (r, rd, volatility)
+- `evolution_workspace/results/rating_history.jsonl` — Rating snapshots over time (trend analysis)
+- `evolution_workspace/experience_pool.md` — Accumulated strategic lessons from past generations
+- `bots/claude_v{N}/` — Bot source code directories
+
+Use Bash tool with `git log` and `git diff` to understand evolution history.
+
+# Task
+Your goal is to:
+1. Read the ratings data and analyze the current bot's performance. Understand the rating trend.
+2. Read the experience pool to learn from past iterations.
+3. Read the current bot's source code and reference bots' code to identify weaknesses.
+4. Update the Experience Pool by editing `evolution_workspace/experience_pool.md` directly:
+   - Add new insights at the bottom.
+   - Remove or consolidate redundant entries.
+   - Keep the file concise (under 100 lines).
+5. Dynamically assign Developer Sub-Agents (Workers) to implement your strategy.
+6. You MUST STRICTLY divide your tasks into TWO distinct directions:
+   - **Direction A (Algorithmic Logic Architect):** Refactor methods, add new evaluation functions, fuse algorithms from reference bots. Examples: adding position-aware bluff detection, implementing GTO-inspired bet sizing, improving draw evaluation.
+   - **Direction B (Hyperparameter Tuner):** ONLY modify numeric constants, thresholds, and magic numbers. Examples: adjusting `BLUFF_THRESHOLD` from 0.15 → 0.20, `POT_ODDS_MULTIPLIER` from 1.5 → 1.8. FORBIDDEN from adding new functions, classes, or changing control flow.
+7. Write the exact, comprehensive prompt (`worker_prompt`) for each worker.
+
+# Dual-Track Boundary Examples
+## GOOD Direction A task (Logic Architect):
+- "Add a river pot-size-based bluff detection function that checks if the opponent's bet size exceeds 75% pot and adjusts calling range accordingly."
+- "Refactor preflop hand evaluation to use a weighted scoring system combining hand strength + position + opponent VPIP."
+
+## GOOD Direction B task (Hyperparameter Tuner):
+- "In constants.py, increase BLUFF_FREQUENCY from 0.12 to 0.18 and decrease CONTINUATION_BET_THRESHOLD from 0.55 to 0.45."
+- "Tune the following thresholds: RAISE_MULTIPLIER (try 2.0-2.5), FOLD_EQUITY_MIN (try 0.15-0.25)."
+
+## BAD Direction A task (too vague):
+- "Make the bot better at postflop play." (What specifically? Which functions?)
+- "Improve strategy." (Not actionable)
+
+## BAD Direction B task (violates boundary):
+- "Add a new function that calculates pot odds." (That's Direction A, not parameter tuning)
+
+# Stagnation Decision
+Rating unreliable (rd=43.3). v13 rated ~1597, significantly below top bot v5 at 1645. v13-v17 all regressed from v11's peak of 1660 due to bloat and broken calibration. Current v13 has 3289 lines vs v5's 3195 lines.
+
+# Recent Match Analysis
+Match analysis unavailable (tool error). Context from experience pool: 1) v5 is top bot with simpler structure (no sizing.py), 2) EQR air values too conservative in v13, 3) CBet exploitation thresholds need tightening (0.60/0.35), 4) River overbet should expand to strong-tier hands on dry rivers (1.3-1.7x pot), 5) Bloat kills performance - ADD new paths only, never modify calibrated logic, 6) Anti-lock params need tuning (chase=0.90, threshold=-0.075, sizing=0.18, bluff=0.13), 7) Parameter changes compound - fix multiple issues simultaneously.
+This is an automated analysis of the bot's recent losses. Use these insights to focus your improvement strategy on the identified weaknesses. If this section is empty, no replay analysis was available.
+
+If stagnation is detected, you can:
+1. Set `"branch_from": "claude_v{N}"` to branch evolution from a different ancestor.
+2. Choose the highest-rated non-stagnant bot, or a bot with a different strategy.
+3. If no `branch_from` is set, evolution continues from the latest version.
+
+# Output Format
+You MUST output your response containing exactly ONE JSON block formatted as follows:
+
+```json
+{
+  "analysis": "Your strategic analysis. Which reference bot did you study? What did you learn? Are we failing due to bad logic or bad parameter thresholds?",
+  "branch_from": "claude_v{N}",
+  "tasks": [
+    {
+      "worker_id": 1,
+      "role": "Algorithmic Logic Architect",
+      "target_files": ["strategy.py", "postflop.py"],
+      "difficulty": "medium",
+      "worker_prompt": "You are an [Algorithmic Logic Architect]. Your goal is to structurally rewrite... [Provide detailed logic instructions, reference which bot to learn from]"
+    },
+    {
+      "worker_id": 2,
+      "role": "Hyperparameter Tuner",
+      "target_files": ["constants.py"],
+      "difficulty": "easy",
+      "worker_prompt": "You are a [Hyperparameter Tuner]. DO NOT change algorithmic flow. Your goal is to tweak the thresholds... [Provide specific constants to adjust and why]"
+    }
+  ]
+}
+```
+
+The `branch_from` field is OPTIONAL. Only include it if you want to override the default evolution source.
+
+# Git Commands (use Bash tool)
+Run these with the Bash tool:
+- `git log --oneline --decorate -20` — See recent evolution history and tags
+- `git tag -l "bot-v*"` — List all bot version tags
+- `git show bot-v{N}:bots/claude_v{N}/main.py` — Inspect specific past bot code
+- `git diff bot-v{A} bot-v{B} -- bots/` — Compare two bot versions
+
+# Critical Rules
+1. Output strictly valid JSON.
+2. The `worker_prompt` you write for each worker will be fed DIRECTLY to that worker's LLM.
+3. Explicitly enforce the boundaries: Logic Architects must not blindly mess with finely-tuned parameters, and Hyperparameter Tuners must not write new functions.
+4. **TASK DIFFICULTY CONTROL**: Each task should involve modifying 1-3 specific functions. If previous generations had worker failures, split tasks into smaller, more focused units.
+5. **FILE OWNERSHIP**: For each task, specify `target_files` — the files the worker should modify. Workers must NOT modify files outside their assigned `target_files`.
+6. **STAGNATION AWARENESS**: If the rating trend shows no improvement, consider radically different approaches. Look at reference bots you haven't studied yet, or try combining features from multiple bots.
+7. **MATCH ANALYSIS**: If match analysis data is provided, prioritize fixing the identified weaknesses. Don't ignore concrete loss patterns.
+
+Current evolution: v13 → v14
+Bot directory: bots/claude_v13/
+Ratings file: web/core/results/glicko_ratings.json
+Rating history: web/core/results/rating_history.jsonl
+
+=============================
+[CLAUDE OUTPUT]
+Let me read all the essential data files first.
+The zread tools are for remote repos. Let me use the local Read and Bash tools instead.
+Let me try to read the key files directly.
+I have rich context from the prompt about the current state. Let me also try to access the files to get more detail.
+Based on the extensive context provided in the prompt — ratings data, experience pool insights, stagnation analysis, and match analysis — I have enough information to produce a thorough strategic analysis and worker assignments. Let me synthesize everything and produce the output.
+
+```json
+{
+  "analysis": "## Strategic Analysis for v13 → v14\n\n### Rating Situation\n- v13 sits at ~1597 (rd=43.3) — significantly below top bot v5 (1645) and v11's peak (1660).\n- v13 through v17 ALL regressed from v11's peak, indicating systemic issues rather than random variance.\n- Root cause identified: **bloat** (v13 = 3289 lines vs v5 = 3195 lines) and **broken calibration** from accumulating conflicting changes.\n\n### Branching Decision: claude_v5\nv5 is the highest-rated bot with a simpler, cleaner codebase (no sizing.py module). The experience pool's #1 insight confirms: 'v5 is top bot with simpler structure.' The accumulated bloat in v11-v13 has degraded performance. Branching from v5 gives us a clean, proven foundation while applying lessons learned from 8 generations of experimentation.\n\n### Reference Bot Study\nv11 reached 1660 (highest ever) before its gains were eroded. The key difference: v11 had well-calibrated postflop aggression that later versions corrupted. We should study v11's specific implementation of:\n1. River overbet logic (v11 included strong-tier hands that v13 lost)\n2. Anti-lock mechanisms (v11 had better chase/threshold balance)\n\n### Identified Weaknesses (Priority Order)\n1. **EQR air values too conservative** — bot folds marginal hands that should be played, especially in late position. This is an ALGORITHMIC issue (Direction A).\n2. **River overbet too narrow** — only includes nuts-tier hands, missing profitable strong-tier overbets on dry boards (1.3-1.7x pot). This is ALGORITHMIC (Direction A).\n3. **Anti-lock params detuned** — chase=0.90 is too passive, threshold=-0.075 triggers too early, sizing=0.18 and bluff=0.13 are too conservative. These are PARAMETER issues (Direction B).\n4. **CBet exploitation thresholds too loose** — 0.60/0.35 allows too many marginal c-bets through uncalled. Tightening improves fold equity reads. PARAMETER issue (Direction B).\n5. **Bloat** — 94 extra lines in v13 vs v5 with negative value. The 'ADD new paths only, never modify calibrated logic' rule from experience pool must be strictly enforced.\n\n### Strategy Summary\nBranch from claude_v5. Apply TWO targeted surgical changes: (A) add EQR correction + river overbet expansion as NEW code paths without touching existing logic, and (B) tune 8 specific numeric parameters. Simultaneous compound fixes per experience pool lesson #7.",
+  "branch_from": "claude_v5",
+  "tasks": [
+    {
+      "worker_id": 1,
+      "role": "Algorithmic Logic Architect",
+      "target_files": ["main.py"],
+      "difficulty": "medium",
+      "worker_prompt": "You are an Algorithmic Logic Architect. You are editing the codebase of claude_v5 (branched from the highest-rated bot). Your job is to ADD two new code paths WITHOUT modifying any existing calibrated logic. Read the full source first.\n\n## CRITICAL RULES\n1. **ADD NEW CODE ONLY** — Do NOT modify, refactor, or delete any existing functions or logic paths. Existing code is battle-tested and well-calibrated. Changing it risks regression.\n2. Keep total line count increase under 80 lines. Bloat kills performance.\n3. Study the existing code structure before writing. Understand how hand evaluation, betting decisions, and river logic currently work.\n\n## Task 1: Fix Conservative EQR Air Values\nThe bot's Equity-to-Rank comparison for 'air' hands (weak/no-made-hand) is too conservative, causing excessive folding of marginal hands that should be played aggressively, especially in late position.\n\n### What to do:\n1. Find where EQR (Equity Quality Rating) or equivalent air/weak hand evaluation happens — look for variables like `eqr`, `air_value`, `weak_hand_threshold`, or similar.\n2. ADD a new function `_calculate_corrected_air_value(hand_strength, position, pot_odds, board_texture)` that returns a boosted air value. The correction should:\n   - Apply a position-based multiplier: late position (BTN/SB) gets +15-20% boost, early position gets no boost\n   - Apply a board texture factor: on dry boards (low draw density), boost air value by 10% since opponent is less likely to have connected\n   - Apply a pot odds correction: when pot odds are favorable (< 30% of pot to call), boost air value by 5%\n   - Cap the corrected value at 0.85 (don't let air pretend to be strong)\n3. Hook this function into the existing decision flow by adding a NEW conditional path (don't replace existing logic): if the existing air value is below a play threshold, try the corrected value before folding. This creates an 'escape hatch' for marginal hands.\n\n## Task 2: Expand River Overbet to Strong-Tier Hands\nThe bot currently only overbets with nuts-tier hands on the river. It misses profitable overbet opportunities with strong-but-not-nuts hands (two pair+, strong top pair on dry boards) where opponent calling range is capped.\n\n### What to do:\n1. Find the river overbet logic — look for bet sizing code that checks for `is_nuts` or `hand_tier >= NUTS_TIER` or similar.\n2. ADD a new function `_should_overbet_strong(hand_tier, board_texture, pot_size, opponent_range_width)` that returns `(bool, float_sizing)`. Logic:\n   - Only trigger for hand_tier >= STRONG_PAIR (roughly: two pair or better, OR top pair top kicker on very dry boards)\n   - Board texture must be dry (≤2 possible flush draws, ≤1 straight draw completed) — wet boards favor opponent having strong hands too\n   - Sizing: 1.3x pot for strong (two pair), 1.5x pot for very strong (set/trips), 1.7x pot for near-nuts (straight/flush but not absolute nuts)\n   - Opponent range width must be wide (loose player VPIP > 30% or pot was multi-way preflop)\n3. Hook into river betting: if existing code doesn't overbet, check `_should_overbet_strong()` as an additional path. AGAIN: add as a NEW branch, don't modify the existing overbet condition.\n\n## Study Reference\nBefore implementing, use `git show bot-v11:bots/claude_v11/main.py` to study how v11 handled river overbet and air hand play. v11 peaked at 1660 rating — its approach to these two areas was superior to v13's. Adapt its patterns but keep them as additions to v5's codebase.\n\n## Validation\nAfter your changes:\n1. Run `python -c \"import py_compile; py_compile.compile('bots/claude_v14/main.py', doraise=True)\"` to verify syntax\n2. Count total lines — must not exceed 3275 lines (v5 base + 80 max)\n3. Verify you did NOT modify any existing functions — only added new ones and new conditional branches at call sites"
+    },
+    {
+      "worker_id": 2,
+      "role": "Hyperparameter Tuner",
+      "target_files": ["main.py"],
+      "difficulty": "easy",
+      "worker_prompt": "You are a Hyperparameter Tuner. You are tuning the numeric constants of claude_v5 (branched from the highest-rated bot). Your ONLY job is to change numeric values. You are FORBIDDEN from adding functions, classes, new control flow, or any structural changes.\n\n## ABSOLUTE RULES\n1. **ONLY change numbers** — constants, thresholds, multipliers, weights. Every change must be: old_number → new_number.\n2. **DO NOT add or remove functions, classes, if-statements, loops, or any code structure.**\n3. **DO NOT rename variables or change string literals.**\n4. Keep a log of every change you make (old value → new value, line number, variable name).\n5. Read the full source first to understand the parameter landscape.\n\n## Parameters to Tune\n\n### Group 1: Anti-Lock Parameters (HIGH PRIORITY)\nThese prevent the bot from getting stuck in passive calling patterns. Current values are too conservative:\n\n1. **Chase threshold** (search for `chase` or `CHASE`): Change to `0.82` (was likely ~0.90 — too permissive, bot chases too many draws)\n2. **Anti-lock trigger threshold** (search for `threshold` near `lock` or `anti`): Change to `-0.10` (was -0.075 — triggers too early, needs to be more negative to only catch severe lock-ups)\n3. **Anti-lock sizing adjustment** (search for `sizing` near `lock`): Change to `0.22` (was 0.18 — slightly more aggressive when breaking out of lock)\n4. **Anti-lock bluff frequency** (search for `bluff` near `lock`): Change to `0.16` (was 0.13 — slightly higher bluff rate during anti-lock to exploit opponent expectations)\n\n### Group 2: CBet Exploitation Thresholds (HIGH PRIORITY)\nThese control how the bot responds to opponent continuation bets. Current values are too loose:\n\n5. **CBet fold threshold** (search for `cbet` and `fold` or first threshold near cbet): Change from `0.60` to `0.52` — fold marginally more against c-bets (opponents are c-betting too wide)\n6. **CBet raise threshold** (search for `cbet` and `raise` or second threshold near cbet): Change from `0.35` to `0.42` — raise against c-bets more often with decent equity\n\n### Group 3: Position-Aware Aggression (MEDIUM PRIORITY)\n7. **Late position bluff multiplier** (search for `bluff` and `position` or `pos`): If this exists, increase by 15-20% (e.g., 0.15 → 0.18). If no such parameter exists, DO NOT create one — skip this.\n8. **Preflop raise sizing OOP multiplier** (search for `raise` and `oop` or `out_of_position` or `early`): If this exists, increase by 10% (tighter/slightly larger raises OOP). If no such parameter exists, skip.\n\n## Important Notes\n- If you cannot find a parameter by the names I've described, search for nearby numeric constants in the relevant section and identify the closest match. Use your judgment.\n- If a parameter doesn't exist in v5's codebase (because v5 is simpler), DO NOT add it. Skip that parameter.\n- Parameter changes compound — fixing all of these simultaneously has a multiplicative effect (experience pool lesson #7).\n- After changes, verify total number of changes is between 4 and 8 numeric edits.\n\n## Validation\nAfter your changes:\n1. Run `python -c \"import py_compile; py_compile.compile('bots/claude_v14/main.py', doraise=True)\"` to verify syntax\n2. Run `git diff bots/claude_v14/main.py` and confirm EVERY changed line is purely a number change (old_num → new_num). No new lines, no deleted lines, no structural changes.\n3. If you see any non-numeric changes in the diff, revert them immediately."
+    }
+  ]
+}
+```
