@@ -333,3 +333,90 @@ Now I have the exact locations. Let me apply the 3 improvements to v19:
 
 **Change 1: Add CBet exploitation** (after line 770, before line 771)
 [tool: Edit]
+**Change 2: Extend river overbet to strong-tier hands** (modify `choose_overbet_river`)
+[tool: Edit]
+**Change 3: Tighten gutshot turn margin**
+[tool: Edit]
+All 3 changes applied. Now let me check file sizes and run quality gates:
+[tool: Bash]
+Both files are oversized (strategy.py 1174, postflop.py 1015). Let me run quality gates to see the exact status:
+[tool: mcp__evolution__run_quality_gates]
+Need to split both files. Let me identify extraction targets:
+[tool: Bash]
+
+[tool: Bash]
+I'll do a two-part extraction:
+1. Move `check_probe_resistance_margin` + `must_continue_vs_raise` from postflop.py → strategy.py (decision functions, not hand evaluation)
+2. Extract `choose_raise`, `choose_anti_lock_pressure_action`, `choose_preflop_spot_action`, `choose_overbet_river/bluff` from strategy.py → sizing.py
+
+Let me read the functions to move:
+[tool: Read]
+Now let me read the v7 strategy functions to extract to sizing.py:
+[tool: Read]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+Now let me create sizing.py for v19 and handle the splits efficiently:
+[tool: Read]
+
+[tool: Bash]
+Now remove extracted functions from strategy.py and update imports:
+[tool: Edit]
+
+[tool: Edit]
+Now update strategy.py imports — add sizing import and remove unused imports:
+[tool: Edit]
+Now handle postflop.py — move `check_probe_resistance_margin` and `must_continue_vs_raise` from postflop.py into strategy.py (they're already imported from postflop, now we'll define them locally):
+[tool: Edit]
+Now add the two functions into strategy.py (since they're no longer in postflop.py, strategy.py needs them locally) and update imports:
+[tool: Edit]
+Now add the two functions at the end of strategy.py (before `get_action` if they're not already there):
+[tool: Bash]
+
+[tool: Edit]
+Check line counts:
+[tool: Bash]
+All files under 1000 lines. Run quality gates:
+[tool: mcp__evolution__run_quality_gates]
+All quality gates pass: compile ✅, smoke ✅, decisions 87% ✅, size ✅. Quick battle verification:
+[tool: Bash]
+Quality gates all pass. Let me proceed with the review and commit while the battle runs:
+
+**Manual Review — v19 (from v7):**
+1. ✅ **CBet exploitation added** — new code path (not modifying existing), thresholds 0.60/0.35 with margin 0.025
+2. ✅ **River overbet extended** — strong-tier on dry boards (wetness≤0.20, 1.3-1.5x pot), nut unchanged
+3. ✅ **Gutshot margin** — 0.020→0.025, conservative tightening
+4. ✅ **File splits** — strategy.py 925, postflop.py 968, sizing.py 314. All under 1000
+5. ✅ **87% decision pass rate**, no compile/smoke errors
+
+**Review: APPROVED**
+[tool: mcp__evolution__commit_bot]
+
+[tool: Bash]
+**v19 beats v7 in 4/5 games!** Very strong early result — our improvements to the #1 bot are paying off.
+
+---
+
+## Generation v19 Complete ✅
+
+**Summary:**
+- **Source**: v7 (#1 bot, r=1644.7)
+- **Changes**: 3 targeted improvements + file split
+  1. Added CBet exploitation (v7 had none) — thresholds 0.60/0.35
+  2. Extended river overbet to strong-tier on dry boards (1.3-1.5x pot)
+  3. Tightened gutshot turn fold margin (+0.005)
+- **Quality**: compile ✅, smoke ✅, decisions 87% ✅, size ✅
+- **Battle**: v19 beats v7 in 4/5 games
+- **Commit**: ✅ tagged
+
+---
+
+**Session summary — 2 generations completed:**
+- **v13**: Branched from v15, added CBet exploitation + river overbet + gutshot margin + file split
+- **v19**: Branched from v7 (proven #1), ported same improvements, wins 4/5 vs parent
+
+Both bots are now in the daemon pool and will be rated as matches accumulate. The key strategic improvements (CBet exploitation, river overbet expansion, tighter draw folding) have been applied to both the v15 and v7 lineages, maximizing the chance that at least one rises to the top.
+[CYCLE DONE] cost=$3.9833
