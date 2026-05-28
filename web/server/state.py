@@ -5,7 +5,7 @@ import threading
 
 class AppState:
     def __init__(self):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self.mode: str = "orchestrator"
         self.running: bool = False
         self.daemon_enabled: bool = True
@@ -45,9 +45,9 @@ class AppState:
                 self.mode = kwargs["mode"]
             if "daemon_enabled" in kwargs and isinstance(kwargs["daemon_enabled"], bool):
                 self.daemon_enabled = kwargs["daemon_enabled"]
-            if "daemon_workers" in kwargs and isinstance(kwargs["daemon_workers"], int):
+            if "daemon_workers" in kwargs and isinstance(kwargs["daemon_workers"], int) and not isinstance(kwargs["daemon_workers"], bool):
                 self.daemon_workers = max(1, min(32, kwargs["daemon_workers"]))
-            if "daemon_pairs" in kwargs and isinstance(kwargs["daemon_pairs"], int):
+            if "daemon_pairs" in kwargs and isinstance(kwargs["daemon_pairs"], int) and not isinstance(kwargs["daemon_pairs"], bool):
                 self.daemon_pairs = max(1, min(20, kwargs["daemon_pairs"]))
             return self.get_config()
 

@@ -27,10 +27,25 @@ class ModeRequest(BaseModel):
 
 
 class ConfigRequest(BaseModel):
+    model_config = {"strict": True}
     mode: str | None = None
     daemon_enabled: bool | None = None
     daemon_workers: int | None = None
     daemon_pairs: int | None = None
+
+    @property
+    def safe_updates(self) -> dict:
+        """Filter out None values."""
+        result = {}
+        if self.mode is not None:
+            result["mode"] = self.mode
+        if self.daemon_enabled is not None:
+            result["daemon_enabled"] = self.daemon_enabled
+        if self.daemon_workers is not None:
+            result["daemon_workers"] = self.daemon_workers
+        if self.daemon_pairs is not None:
+            result["daemon_pairs"] = self.daemon_pairs
+        return result
 
 
 class ToolRequest(BaseModel):
@@ -56,7 +71,9 @@ async def get_config():
 
 @router.put("/config")
 async def set_config(req: ConfigRequest):
-    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    updates = req.safe_updates
+    if not updates:
+        return app_state.get_config()
     return app_state.update_config(**updates)
 
 

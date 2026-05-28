@@ -38,6 +38,11 @@ def main():
     if args.no_daemon:
         os.environ["DAEMON_DISABLED"] = "1"
 
+    # Pre-populate app_state from CLI args so lifespan reads correct config
+    sys.path.insert(0, str(WEB_DIR / "server"))
+    from server.state import app_state
+    app_state.update_config(mode=args.mode, daemon_enabled=not args.no_daemon)
+
     uvicorn.run(
         "server.app:app",
         host=args.host,

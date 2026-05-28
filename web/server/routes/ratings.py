@@ -76,24 +76,6 @@ async def get_ratings():
     return rows
 
 
-@router.get("/ratings/{bot_name}")
-async def get_rating_detail(bot_name: str):
-    data = _cached_read("ratings", RATINGS_FILE)
-    if not data or bot_name not in data:
-        return {"error": "Bot not found"}
-    d = data[bot_name]
-    r, rd = d["r"], d["rd"]
-    return {
-        "name": bot_name,
-        "rating": round(r, 1),
-        "rd": round(rd, 1),
-        "sigma": round(d.get("sigma", 0.06), 4),
-        "conservative_rating": round(r - 2 * rd, 1),
-        "confidence": _confidence(rd),
-        "last_period": d.get("last_period", ""),
-    }
-
-
 @router.get("/ratings/stream")
 async def ratings_stream():
     import asyncio
@@ -113,6 +95,24 @@ async def ratings_stream():
             pass
 
     return EventSourceResponse(generate())
+
+
+@router.get("/ratings/{bot_name}")
+async def get_rating_detail(bot_name: str):
+    data = _cached_read("ratings", RATINGS_FILE)
+    if not data or bot_name not in data:
+        return {"error": "Bot not found"}
+    d = data[bot_name]
+    r, rd = d["r"], d["rd"]
+    return {
+        "name": bot_name,
+        "rating": round(r, 1),
+        "rd": round(rd, 1),
+        "sigma": round(d.get("sigma", 0.06), 4),
+        "conservative_rating": round(r - 2 * rd, 1),
+        "confidence": _confidence(rd),
+        "last_period": d.get("last_period", ""),
+    }
 
 
 def _load_history() -> list[dict]:
@@ -192,9 +192,11 @@ async def experience():
 @router.get("/daemon/status")
 async def daemon_status():
     import os
+    from server.state import app_state
+    config = app_state.get_config()
     if RATINGS_FILE.exists():
         mtime = os.path.getmtime(RATINGS_FILE)
         age = time.time() - mtime
         status = "active" if age < 60 else ("recent" if age < 600 else "idle")
-        return {"status": status, "last_update_age_seconds": round(age, 0)}
-    return {"status": "unknown", "last_update_age_seconds": -1}
+        return {"status": status, "last_update_age_seconds": round(age, 0), "daemon_enabled": config["daemon_enabled"]}
+    return {"status": "unknown", "last_update_age_seconds": -1, "daemon_enabled": config["daemon_enabled"]}
