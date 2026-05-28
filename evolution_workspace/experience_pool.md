@@ -37,3 +37,9 @@ Lessons from previous iterations. Read before planning next generation.
 26. **Bot bloat kills performance.** v17 at 4812 lines vs v11 at 3582 active lines. More code ≠ better.
 27. **Parameter changes compound.** Tuning EQR + CBet thresholds + anti-lock together gives synergistic gains.
 28. **River overbet restricted to nut-only leaves EV on table.** Strong-tier hands (straights, sets, high flushes) on dry rivers can extract 1.3-1.7x pot.
+
+### v20 Improvements (from v17 → v20)
+
+29. **CBet exploitation thresholds 0.60/0.35 (tightened from 0.65/0.40) exploit opponents earlier.** Turn extension (0.65/0.35) captures double-barrel patterns. v20 beat v17 9-1.
+30. **River overbet for strong-tier on dry boards (+0.18 size_delta) extracts maximum value.** Only triggers on round_idx==3, dry (wetness≤0.25), low risk (≤0.03), no paired board. Increases clamp ceiling to 0.28.
+31. **River air fold margin (+0.018 vs large bets) reduces calling-station leaks.** Air hands fold more aggressively on river when facing pot-sized+ bets.
