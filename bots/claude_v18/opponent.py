@@ -1,8 +1,12 @@
-"""Opponent modeling and anti-bot_4 exploitation."""
-
-from constants import BIG_BLIND
+"""
+Opponent modeling and spot analysis.
+"""
+from constants import N_PLAYERS, BIG_BLIND
 from card_utils import clamp, next_player
-from state import collect_latest_requests_by_hand
+from state import (
+    get_hand_index,
+    collect_latest_requests_by_hand,
+)
 from tournament import opponent_can_lock_win
 
 
@@ -14,7 +18,6 @@ def build_opponent_model(requests, my_id):
     opponent_id = next_player(my_id, 1)
     hand_requests = collect_latest_requests_by_hand(requests)
 
-    # Accumulators for all-time stats
     preflop_opportunities = 0
     voluntary_preflop = 0
     preflop_raise = 0
@@ -260,9 +263,11 @@ def detect_bot4_profile(opponent_model, n_hands_played):
     post_aggr = opponent_model["postflop_aggr"]
     fold_raise = opponent_model["fold_to_raise"]
 
-    if abs(vpip - 0.58) < 0.15:
+    # v13 uses priors vpip=0.52, pfr=0.24 but bot4's actual stats are ~0.58, 0.28
+    # Detect based on convergence toward bot4-like patterns
+    if abs(vpip - 0.55) < 0.15:
         score += 0.20
-    if abs(pfr - 0.28) < 0.13:
+    if abs(pfr - 0.26) < 0.13:
         score += 0.20
     if abs(post_aggr - 0.36) < 0.15:
         score += 0.20
@@ -276,7 +281,7 @@ def detect_bot4_profile(opponent_model, n_hands_played):
 
 
 def get_anti_bot4_adjustments(bot4_score, board_texture, spot_info, round_idx, value_profile):
-    """Return strategy adjustments targeting bot_4's weaknesses."""
+    """Return strategy adjustments targeting exploitable opponent patterns."""
     adj = {
         "bluff_freq_bonus": 0.0,
         "raise_size_bonus": 0.0,
@@ -286,21 +291,27 @@ def get_anti_bot4_adjustments(bot4_score, board_texture, spot_info, round_idx, v
         "trap_defense_delta": 0.0,
     }
 
-    # Wet board: exploit bot_4 overfold on dynamic boards
+    if bot4_score < 0.10:
+        # River overbet always enabled for nut/strong hands regardless of bot4 detection
+        if round_idx == 3 and value_profile and value_profile["tier"] in ("nut", "strong"):
+            adj["river_overbet_enabled"] = True
+        return adj
+
+    # Wet board: exploit overfold on dynamic boards
     if board_texture and board_texture["dynamic"]:
         adj["bluff_freq_bonus"] += 0.15 * bot4_score
         adj["raise_size_bonus"] += 0.08 * bot4_score
 
-    # Paired board: exploit bot_4 paired board caution
+    # Paired board: exploit paired board caution
     if board_texture and board_texture["paired"]:
         adj["bluff_freq_bonus"] += 0.10 * bot4_score
         adj["raise_size_bonus"] += 0.05 * bot4_score
 
-    # River check exploit: bot_4 checks too much on river
+    # River check exploit: checks too much on river
     if round_idx == 3 and spot_info.get("last_opp_action_type") == "check":
         adj["bluff_freq_bonus"] += 0.12 * bot4_score
 
-    # Preflop 3-Bet wider vs bot_4
+    # Preflop 3-Bet wider vs exploitable opponents
     if round_idx == 0 and spot_info.get("preflop_spot") in ("bb_vs_raise", "sb_vs_reraise"):
         adj["call_threshold_delta"] -= 0.05 * bot4_score
 
@@ -308,54 +319,8 @@ def get_anti_bot4_adjustments(bot4_score, board_texture, spot_info, round_idx, v
     if spot_info.get("opp_current_round_check_count", 0) > 0 and spot_info["facing_raise"]:
         adj["trap_defense_delta"] += 0.08 * bot4_score
 
-    # River overbet always enabled with strong hands (not just vs bot_4)
+    # River overbet for nut/strong hands
     if round_idx == 3 and value_profile and value_profile["tier"] in ("nut", "strong"):
         adj["river_overbet_enabled"] = True
 
     return adj
-
-
-def classify_opponent_style(opp_model):
-    """Classify opponent style and return threshold deltas.
-    Based on v3's classification but WITHOUT EXP3.
-    Returns dict of deltas that default to zero for unknown opponents."""
-    deltas = {
-        "strong_delta": 0.0,
-        "medium_delta": 0.0,
-        "bluff_freq_bonus": 0.0,
-        "call_aggression_bonus": 0.0,
-        "fold_vs_passive_bonus": 0.0,
-    }
-    
-    confidence = opp_model.get("confidence", 0.0)
-    if confidence < 0.15:
-        return deltas
-    
-    vpip = opp_model.get("vpip", 0.52)
-    pfr = opp_model.get("pfr", 0.24)
-    fold_to_raise = opp_model.get("fold_to_raise", 0.44)
-    postflop_aggr = opp_model.get("postflop_aggr", 0.36)
-    
-    # Nit: low VPIP, high fold_to_raise
-    if vpip < 0.35 and fold_to_raise > 0.50:
-        deltas["strong_delta"] = -0.02
-        deltas["medium_delta"] = -0.015
-        deltas["bluff_freq_bonus"] = 0.12
-    # Maniac: high VPIP, high PFR, high postflop aggression
-    elif vpip > 0.65 and pfr > 0.40 and postflop_aggr > 0.45:
-        deltas["strong_delta"] = 0.03
-        deltas["medium_delta"] = 0.025
-        deltas["bluff_freq_bonus"] = -0.08
-        deltas["call_aggression_bonus"] = 0.04
-    # Calling station: high VPIP, low PFR, low fold_to_raise
-    elif vpip > 0.55 and pfr < 0.20 and fold_to_raise < 0.38:
-        deltas["strong_delta"] = -0.01
-        deltas["medium_delta"] = -0.02
-        deltas["bluff_freq_bonus"] = -0.12
-    # Fold-heavy: high fold_to_raise
-    elif fold_to_raise > 0.52:
-        deltas["strong_delta"] = -0.015
-        deltas["medium_delta"] = -0.01
-        deltas["bluff_freq_bonus"] = 0.10
-    
-    return deltas

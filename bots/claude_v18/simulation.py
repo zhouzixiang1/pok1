@@ -1,3 +1,6 @@
+"""
+Opponent range building and equity estimation via simulation.
+"""
 import bisect
 import itertools
 import random
