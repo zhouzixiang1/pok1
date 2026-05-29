@@ -1,30 +1,21 @@
 {
-  "next_v": 22,
-  "source_v": 21,
+  "next_v": 23,
+  "source_v": 22,
   "stage": "critic_checked",
   "master_plan": [
     {
-      "difficulty": "hard",
+      "difficulty": "medium",
       "role": "Algorithmic Logic Architect",
       "target_files": [
+        "opponent.py",
         "strategy.py",
-        "bluff_analysis.py",
-        "betting.py"
+        "strategy_helpers.py"
       ],
       "worker_id": 1,
-      "worker_prompt": "Port 5 missing features from v12: river_thin_value_profile, river_bluff_ev, donk_bet_profile, spr_profile, turn_barrel_profile"
-    },
-    {
-      "difficulty": "medium",
-      "role": "Hyperparameter Tuner",
-      "target_files": [
-        "strategy.py"
-      ],
-      "worker_id": 2,
-      "worker_prompt": "Tune preflop thresholds: reduce fold rate from ~75% to ~50%"
+      "worker_prompt": "Fix 5 critical parameter bugs from experience pool: wrong opponent priors, harmful exploit_lambda, too-high EQR values, missing classify_opponent_style, and jam buffer cap"
     }
   ],
   "reviewer_feedback": "",
   "generation_attempt": 0,
-  "timestamp": "2026-05-29T22:49:19"
+  "timestamp": "2026-05-29T23:34:01"
 }

@@ -1,0 +1,61 @@
+
+[PERFORMANCE ANALYST PROMPT]
+=============================
+You are a Performance Verification Analyst for a self-evolving poker bot system.
+Your job: synthesise the quantitative data below into actionable LLM-readable insight.
+
+Current bot under analysis: claude_v22
+
+## Rating History (last 10 periods, top rating)
+  Period 31: top_r=1624
+  Period 32: top_r=1624
+  Period 33: top_r=1648
+  Period 34: top_r=1648
+  Period 35: top_r=1648
+  Period 36: top_r=1648
+  Period 37: top_r=1648
+  Period 38: top_r=1648
+  Period 39: top_r=1648
+  Period 40: top_r=1648
+
+## Overall Win Rate
+  No stats available
+
+## Head-to-Head Results (per-opponent)
+  No H2H data available
+
+## Top Active Bots
+  claude_v4: r=1648 rd=60
+  claude_v18: r=1632 rd=63
+  claude_v13: r=1604 rd=60
+  claude_v6: r=1602 rd=61
+  claude_v5: r=1577 rd=60
+
+Produce a JSON block answering:
+```json
+{"trend": "improving|stagnant|declining",
+ "verified_improvements": ["list of things that actually helped recent gens"],
+ "persistent_weaknesses": ["list of recurring problems not yet fixed"],
+ "diversity_needed": true|false,
+ "diversity_reason": "why diversity is needed (or null)",
+ "suggestion": "one concrete high-priority suggestion for next gen"}
+```
+Set `diversity_needed: true` if: trend is stagnant/declining for 2+ gens, OR the last 2 gens applied the same type of change. Be direct and concise.
+=============================
+[CLAUDE OUTPUT]
+```json
+{
+  "trend": "stagnant",
+  "verified_improvements": [
+    "Broke through 1624 → 1648 at period 33, likely from a structural or strategic change in that generation"
+  ],
+  "persistent_weaknesses": [
+    "Rating capped at 1648 for 8 consecutive periods — no generation has surpassed claude_v4",
+    "No H2H data to diagnose per-opponent leaks; blind spot in strategic feedback loop",
+    "Newer bots (v22) not appearing in top 5 despite many generations of evolution — changes are not producing measurably stronger play"
+  ],
+  "diversity_needed": true,
+  "diversity_reason": "Rating stuck at 1648 for 8 periods across ~10 generations; incremental tuning of the same strategy is clearly not breaking the ceiling. The pool needs a fundamentally different approach (e.g., exploitative adjustments, alternative hand evaluation models, or a different betting architecture) to escape the local optimum.",
+  "suggestion": "Branch the next generation from a lower-rated but structurally different ancestor (e.g., claude_v18 or claude_v6) and apply an aggressive structural rewrite — such as replacing the static hand strength model with an equity-based range-aware evaluation, or switching from fixed-threshold to adaptive multi-street decision logic — to search a genuinely new region of strategy space rather than continuing to polish the v4 lineage."
+}
+```

@@ -1,0 +1,283 @@
+
+[WORKER 1 (Algorithmic Logic Architect) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Algorithmic Logic Architect**.
+You must directly edit the source files in `bots/claude_v23/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v23/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+## If you are an "Opponent Modeler":
+- **ALLOWED**: Adding/modifying opponent tracking data structures and statistics
+- **ALLOWED**: Per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']`
+- **ALLOWED**: Bet sizing pattern detection: `opp_bet_sizes[street]` as rolling list (cap at 20), `statistics.median()`
+- **ALLOWED**: Exploitative adjustments based on detected opponent tendencies
+- **FORBIDDEN**: Changing overall decision flow or non-opponent-model logic
+- **FORBIDDEN**: Modifying any constant that is not opponent-model related
+
+You have access to `web/core/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+
+**Important — Parallel Execution**: You may be running concurrently with other Worker Agents on the same codebase. Your `target_files` are exclusively yours — other workers will NOT touch them. Only modify your assigned `target_files`. Do NOT read or write files outside your assignment.
+
+# Poker Engineering Best Practices
+Apply these when implementing changes:
+
+**Opponent Modeling:**
+- Use per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']` where `street ∈ {'preflop', 'flop', 'turn', 'river'}`
+- Track bet sizing: `opp_bet_sizes[street]` as a rolling list (cap at last 20), use `statistics.median()` for typical size
+- Exploit detected tendencies: if `opp_stats['river']['bet_freq'] > 0.65` → opponent bluffs river heavily → widen call range
+
+**Postflop Decision Making:**
+- EV-based fold/call: `EV_call = equity * pot_after_call - (1 - equity) * call_amount`. Call when EV > 0
+- River value bet sizing: if equity > 70%, bet 60-80% of pot for value; if equity 50-70%, bet 40-50% pot
+- Avoid "fear thresholds" — don't fold based on hand rank alone; compute EV against opponent range
+
+**Anti-Regression Checklist (verify before finishing):**
+- [ ] AA/KK/QQ preflop: still raises/3-bets aggressively (no passive limping)?
+- [ ] Nut flush/straight/full house on river: still places a value bet?
+- [ ] New code doesn't import modules not in stdlib + numpy?
+- [ ] `{"response": int}` JSON output format still correct?
+- [ ] No infinite loops or recursion in new functions?
+
+# Master Architect's Specific Prompt For You
+You are an Algorithmic Logic Architect fixing CRITICAL PARAMETER BUGS documented in the experience pool. The bot has known bugs that caused a 62-point rating collapse in v17. Your job is to fix these specific issues. DO NOT add new features. DO NOT restructure the decision flow. ONLY fix the bugs listed below.
+
+## CRITICAL BUG 1: Wrong opponent priors (opponent.py)
+
+In opponent.py, `build_opponent_model()`:
+- Change vpip prior from 0.52 to 0.58
+- Change pfr prior from 0.24 to 0.28  
+- Change confidence divisor from (total_actions - 5) / 35.0 to keep 35.0 but change the prior weights: vpip prior_weight from 4.0 to 3.5, pfr prior_weight from 4.0 to 3.5
+- The experience pool states: 'Correct priors: vpip=0.58, pfr=0.28, confidence divisor=35. Wrong priors (v17 used 0.52/0.24) corrupt ALL opponent modeling.'
+
+## CRITICAL BUG 2: Remove harmful exploit_lambda (strategy.py)
+
+In strategy.py, the variable `exploit_lambda` is computed and used to blend strong/medium thresholds:
+```python
+gto_strong = strong + match_adjust + match_profile['threshold_delta']
+gto_medium = medium + match_adjust + 0.75 * match_profile['threshold_delta']
+# ...
+if exploit_lambda > 0.0:
+    strong = (1 - exploit_lambda) * gto_strong + exploit_lambda * strong
+    medium = (1 - exploit_lambda) * gto_medium + exploit_lambda * medium
+```
+
+The experience pool explicitly states: 'exploit_lambda (gift_balance blending) is HARMFUL — corrupts GTO base. Use style_deltas instead.'
+
+FIX: Comment out or remove the exploit_lambda blending entirely. Remove the `gift_balance` and `exploit_lambda` computation. Just use the pure adjusted thresholds (strong and medium as computed with match_adjust, pressure_adjust, etc.). Remove the `track_opponent_gift` and `safe_exploitation_lambda` function calls in strategy.py.
+
+## CRITICAL BUG 3: Too-high EQR values (strategy_helpers.py)
+
+In `realized_postflop_equity()` in strategy_helpers.py:
+- For air hands (made_strength < 0.18 and draw_strength < 0.08):
+  - IP: Change eqr from 0.72 to 0.65
+  - OOP: Change eqr from 0.62 to 0.53
+  - Add pot > 3000 penalty: eqr -= 0.03
+  - Add explicit OOP penalty already exists but ensure it's applied
+- For marginal pairs (middle/bottom/underpair/board_pair):
+  - IP: Change eqr from 0.86 to 0.84
+  - OOP: Change eqr from 0.78 to 0.73
+  - Add pot > 3000 penalty: eqr -= 0.03
+  - Add double barrel penalty already exists
+
+The experience pool states: 'EQR: v9's LOWER values outperform (air: 0.65/0.53 vs v17's 0.72/0.62). Higher EQR over-realizes weak hands → calls too light.'
+
+## CRITICAL BUG 4: Add classify_opponent_style function (opponent.py)
+
+Add a `classify_opponent_style(opponent_model)` function that returns bluff/threshold deltas based on opponent type:
+```python
+def classify_opponent_style(opponent_model):
+    """Classify opponent as nit/maniac/station/fold-heavy and return threshold deltas."""
+    deltas = {
+        'style': 'unknown',
+        'bluff_freq_bonus': 0.0,
+        'call_threshold_delta': 0.0,
+        'fold_threshold_delta': 0.0,
+    }
+    confidence = opponent_model.get('confidence', 0.0)
+    if confidence < 0.15:
+        return deltas
+    
+    vpip = opponent_model.get('vpip', 0.58)
+    pfr = opponent_model.get('pfr', 0.28)
+    postflop_aggr = opponent_model.get('postflop_aggr', 0.36)
+    fold_to_raise = opponent_model.get('fold_to_raise', 0.44)
+    
+    # Nit: low vpip, low pfr
+    if vpip < 0.40 and pfr < 0.20:
+        deltas['style'] = 'nit'
+        deltas['bluff_freq_bonus'] = 0.04
+        deltas['fold_threshold_delta'] = 0.02
+        deltas['call_threshold_delta'] = 0.015
+    # Maniac: high aggression, high vpip
+    elif vpip > 0.70 and postflop_aggr > 0.45:
+        deltas['style'] = 'maniac'
+        deltas['bluff_freq_bonus'] = -0.03
+        deltas['call_threshold_delta'] = -0.02
+        deltas['fold_threshold_delta'] = -0.02
+    # Station: high vpip, low fold_to_raise
+    elif vpip > 0.62 and fold_to_raise < 0.35:
+        deltas['style'] = 'station'
+        deltas['bluff_freq_bonus'] = -0.04
+        deltas['call_threshold_delta'] = -0.01
+        deltas['fold_threshold_delta'] = -0.01
+    # Fold-heavy: high fold_to_raise
+    elif fold_to_raise > 0.55:
+        deltas['style'] = 'fold_heavy'
+        deltas['bluff_freq_bonus'] = 0.05
+        deltas['call_threshold_delta'] = 0.02
+        deltas['fold_threshold_delta'] = 0.02
+    
+    # Scale by confidence
+    for key in ('bluff_freq_bonus', 'call_threshold_delta', 'fold_threshold_delta'):
+        deltas[key] *= confidence
+    
+    return deltas
+```
+
+Then in strategy.py, after computing `opponent_model`, call:
+```python
+style_deltas = classify_opponent_style(opponent_model)
+```
+
+And propagate style_deltas:
+- Subtract `style_deltas['bluff_freq_bonus']` from all bluff frequency thresholds
+- Add `style_deltas['call_threshold_delta']` to the strong/medium thresholds
+- Add `style_deltas['fold_threshold_delta']` to fold decision margins
+
+Specifically in strategy.py, after computing `strong` and `medium`:
+```python
+strong += style_deltas.get('call_threshold_delta', 0.0)
+medium += style_deltas.get('call_threshold_delta', 0.0) * 0.7
+```
+
+And adjust bluff thresholds:
+```python
+river_bluff_threshold -= style_deltas.get('bluff_freq_bonus', 0.0)
+probe_fold_threshold -= style_deltas.get('bluff_freq_bonus', 0.0)
+semi_bluff_threshold -= style_deltas.get('bluff_freq_bonus', 0.0)
+```
+
+## CRITICAL BUG 5: Jam buffer cap (strategy.py)
+
+In strategy.py, where `jam_buffer` and `shove_buffer` are computed, change the cap from 0.14 to 0.11:
+```python
+jam_buffer = clamp(jam_buffer, -0.05 if anti_lock_pressure else 0.0, 0.11)  # was 0.14
+shove_buffer = clamp(shove_buffer, -0.05 if anti_lock_pressure else 0.0, 0.11)  # was 0.14
+```
+
+The experience pool states: 'v17's higher jam/shove buffer caps (0.14 vs v9's 0.11) caused more aggressive all-in with marginal hands.'
+
+## IMPORTANT RULES
+- Do NOT change any other parameters or add any new functions beyond what's described above.
+- Do NOT change the decision flow or control structure.
+- The changes above are all documented in experience_pool.md as proven improvements.
+- Each change is small and targeted — together they compound synergistically.
+- After making changes, ensure all imports are correct and the code compiles with `py_compile`.
+
+# Recent Worker Failures (avoid repeating these mistakes):
+- Gen 22 Worker 1 (Algorithmic Logic Architect): unknown
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v23/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v23/main.py` (and other .py files you changed)
+   - Smoke test: `python web/core/smoke_tester.py bots/claude_v23/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v23/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading the relevant source files to understand the current code before making changes.
+Now let me read all the target files to understand the current code:
+The MCP tool can't find the repo. Let me use Bash to read the files directly:
+Let me read the full strategy.py file since it was truncated:
+Now let me get the specific context around each area I need to modify:
+Now I have a clear picture of all the code. Let me implement all 5 bug fixes. Let me start with the edits:
+
+**BUG 1: Fix opponent priors in opponent.py**
+Good, BUG 1 is fixed. Now **BUG 4: Add classify_opponent_style to opponent.py**:
+Now **BUG 3: Fix EQR values in strategy_helpers.py**:
+Now I'll fix the EQR values for air hands:
+Good. BUG 3 is done - air hand EQR changed from 0.68/0.56 to 0.65/0.53. The marginal pair values are already at the target (0.84/0.73) and the big_pot penalty already exists.
+
+Now **BUG 2: Remove exploit_lambda in strategy.py** and **BUG 5: Fix jam buffer caps**:
+Now I'll make the strategy.py changes. Let me use a Python script for precision:
+All changes applied. Now let me verify each fix was applied correctly:
+All fixes verified. Let me also verify the classify_opponent_style function was added correctly to opponent.py:
+Good. Now let me run the quality checks:
+All files compile. Now run the smoke test:
+Smoke test passed. Now let me do the final review - check the diff to ensure all changes are correct:
+The bot is a new untracked directory, so git diff won't work. Let me verify the key changes manually by inspecting the critical sections:
+All 5 bug fixes are correctly applied and verified. Let me do a final line count check:
+All files are well within the 1000-line limit. Let me do the final self-review checklist:
+
+**Self-Review Checklist:**
+
+1. ✅ **Role Boundary Check** (Algorithmic Logic Architect): All changes are structural — added a new function (`classify_opponent_style`), removed harmful blending logic (exploit_lambda), integrated style_deltas into threshold computation. No arbitrary constant tuning beyond what's structurally required.
+
+2. ✅ **Target File Check**: Only modified files in `bots/claude_v23/`:
+   - `opponent.py` — BUG 1 (priors fix) + BUG 4 (classify_opponent_style)
+   - `strategy.py` — BUG 2 (removed exploit_lambda) + BUG 4 (style_deltas integration) + BUG 5 (jam buffer caps)
+   - `strategy_helpers.py` — BUG 3 (EQR values)
+
+3. ✅ **Protocol Check**: Bot still outputs `{"response": <int>}` via stdout. No changes to `main.py`.
+
+4. ✅ **Anti-Regression Check**:
+   - AA/KK/QQ preflop: No changes to preflop decision flow
+   - Nut hands on river: No changes to value betting logic
+   - No new imports outside stdlib + existing project modules
+   - No infinite loops or recursion
+
+5. ✅ **Compile Check**: All files pass `py_compile`
+6. ✅ **Smoke Test**: Passed successfully
+
+## Summary of All Changes
+
+| Bug | File | Change |
+|-----|------|--------|
+| **BUG 1** | `opponent.py` | VPIP prior: 0.52→0.58, PFR prior: 0.24→0.28, prior weights: 4.0→3.5 |
+| **BUG 2** | `strategy.py` | Removed `gift_balance`, `exploit_lambda`, `gto_strong`, `gto_medium`, and the exploit_lambda blending block |
+| **BUG 3** | `strategy_helpers.py` | Air hand EQR: 0.68/0.56→0.65/0.53 (IP/OOP) |
+| **BUG 4** | `opponent.py` + `strategy.py` | Added `classify_opponent_style()` function; integrated style_deltas into strong/medium thresholds and bluff thresholds |
+| **BUG 5** | `strategy.py` | Jam/shove buffer cap: 0.14→0.11 |
