@@ -13,7 +13,8 @@ Read these files FIRST using the Read tool to understand the current state:
 - `web/core/results/glicko_ratings.json` — All bot Glicko-2 ratings (r, rd, volatility)
 - `web/core/results/rating_history.jsonl` — Rating snapshots over time (trend analysis)
 - `web/core/experience_pool.md` — Accumulated strategic lessons from past generations (**THIS is the active pool, not evolution_workspace/experience_pool.md**)
-- `bots/claude_v{N}/` — Bot source code directories
+- `bots/claude_v{source_v}/` — Current source bot code (source_v is given in the context appended below)
+- `web/core/reference_bots/bot1/` … `web/core/reference_bots/bot6/` — 6 strong reference bots. Read whichever is relevant.
 
 Use Bash tool with `git log` and `git diff` to understand evolution history.
 

@@ -16,14 +16,15 @@ These are specialized tools for the evolution pipeline. Call them directly — y
 - **execute_workers(tasks, next_v, source_v, reviewer_feedback)** — Execute code modification tasks (max 3 concurrent). Each task has role, target_files, and worker_prompt.
 - **run_quality_gates(version)** — Run compile check, smoke test, decision tests, file size check. Returns pass/fail for each.
 - **run_review(version, source_v, plan)** — Run Lead Code Reviewer (code correctness + role boundaries). Returns approved/rejected with quality score.
-- **run_critic(version, source_v, plan, reviewer_feedback)** — Run Poker Strategy Critic (strategic quality). Returns score 1–10 and feedback. Score ≥ 6 = approved.
+- **run_critic(version, source_v, plan, reviewer_feedback, force_advance)** — Run Poker Strategy Critic (strategic quality). Returns score 1–10 and feedback. Score ≥ 6 = approved. Set `force_advance=true` when intra-gen retries are exhausted to advance checkpoint even on rejection.
 - **run_crossover(parent_a, parent_b, target_v)** — Combine two elite bots into a new child bot.
 - **prepare_next_gen(source_v, next_v)** — Copy source bot directory to prepare for modifications.
 - **commit_bot(version, source_v, strategy, review_approved)** — Git commit and tag the new bot.
 - **reap_weakest** — Cull weakest bot if pool exceeds 30.
 - **trim_experience** — Trim experience pool to recent entries.
 - **consolidate_experience** — LLM-based deduplication of experience pool (produces categorised format).
-- **analyze_stagnation(source_v, active_bots)** — Analyze if evolution is stagnating.
+- **analyze_stagnation(source_v, active_bots)** — Analyze if evolution is stagnating. Only call when `rating_reliable: true`.
+- **wait_for_eval(version, timeout, min_matches, max_rd)** — Block until the daemon has enough matches on this bot (rd drops below max_rd). Returns `eval_completed: bool`.
 
 ## Category 2: Built-in Tools
 - **Read** — Read any local file (ratings, experience pool, bot source code, logs).
@@ -39,24 +40,31 @@ A typical generation follows this pattern, but you can modify it:
    - Check `rating_reliable`: if false (rd > 40), do NOT make stagnation/branch decisions.
 2. **Housekeeping** → `reap_weakest()` if needed, `trim_experience()`
 3. **Wait for evaluation** → `wait_for_eval(version=source_v, timeout=600, min_matches=20, max_rd=40)`
-   - If `eval_completed: false`, ratings preliminary. Skip stagnation analysis if `current_bot_rd > 60`.
+   - If `eval_completed: false`, ratings are preliminary — skip stagnation analysis if `current_bot_rd > 60`.
+3.5. **Stagnation analysis** → `analyze_stagnation(source_v, active_bots)` (only when `rating_reliable: true`)
+   - If stagnation confirmed, prepare `stagnation_info` string summarising the diagnosis for Master.
+   - If stagnation severe (≥ 3 gens), consider `run_crossover()` instead of the normal pipeline.
 4. **Analyze losses** → `run_match_analysis(source_v)` — returns weaknesses + per-street action breakdown
 4.5. **Performance verification** → `run_performance_verification(source_v)` — synthesises trend data for Master
    - Pass its JSON output as the `performance_verification` parameter to `run_master` (separate from `match_analysis`)
-   - If `diversity_needed: true` in the result, explicitly mention it to `run_master` via `stagnation_info`
+   - If `diversity_needed: true` in the result, explicitly mention it in `stagnation_info`
 5. **Plan improvements** → `run_master(source_v, next_v, stagnation_info, match_analysis, performance_verification)`
    - Pass `run_match_analysis` result as `match_analysis`
    - Pass `run_performance_verification` result as `performance_verification`
-   - Master may return 1–3 worker tasks; pass them all to `execute_workers`
-6. **Prepare** → `prepare_next_gen(source_v, next_v)`
-7. **Implement** → `execute_workers(tasks, next_v, source_v, reviewer_feedback="")`
+   - Master returns a plan dict with `tasks` (list), optional `branch_from`, and `analysis`.
+   - If `branch_from` is set, use that version as `source_v` for `prepare_next_gen` and `execute_workers`.
+6. **Prepare** → `prepare_next_gen(source_v, next_v)` — copies source bot, removes `.completed`, writes checkpoint.
+7. **Implement** → `execute_workers(tasks=plan["tasks"], next_v=next_v, source_v=source_v, reviewer_feedback="")`
    - Workers run with max 3 concurrent and 1000s timeout each
+   - `tasks` must be the `tasks` list from the Master plan (NOT the full plan dict)
 8. **Quality check** → `run_quality_gates(next_v)` — MUST return `all_passed: true`
-   - If fails: retry `execute_workers` with quality failure as `reviewer_feedback`
-9. **Code Review** → `run_review(next_v, source_v, plan)` — MUST return `approved: true`
-   - If rejected: retry `execute_workers` with reviewer feedback (max 2 retries)
-9.5. **Strategy Critic** → `run_critic(next_v, source_v, plan, reviewer_feedback="")`
-   - If `score < 6` AND you have retried fewer than 2 times: retry `execute_workers` with critic feedback
+   - If fails: retry `execute_workers` with quality failure message as `reviewer_feedback`
+9. **Code Review** → `run_review(version=next_v, source_v=source_v, plan=plan["tasks"])` — MUST return `approved: true`
+   - `plan` argument = the `tasks` list from Master's output (NOT the full plan dict which also has `analysis`, `branch_from`)
+   - If rejected: retry `execute_workers` with reviewer feedback (counts toward `intra_gen_attempts`)
+9.5. **Strategy Critic** → `run_critic(version=next_v, source_v=source_v, plan=plan["tasks"], reviewer_feedback="")`
+   - `plan` argument = same `tasks` list
+   - If `score < 6` AND `intra_gen_attempts < 2`: retry `execute_workers` with critic feedback
    - If `score ≥ 6` OR exhausted retries: proceed to commit
 10. **Commit** → `commit_bot(next_v, source_v, strategy, review_approved=true)`
 11. **Repeat** → Go back to step 1 for the next generation

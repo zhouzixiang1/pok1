@@ -51,7 +51,7 @@ Your goal is to produce the full Python code for the Child bot.
    You may split the code into `main.py`, `preflop.py`, `postflop.py`, etc., just like the parents.
 4. After editing, run quality checks:
    - `python -m py_compile bots/claude_v{version}/main.py`
-   - `python evolution_workspace/smoke_tester.py bots/claude_v{version}/main.py`
+   - `python web/core/smoke_tester.py bots/claude_v{version}/main.py`
    - Fix any errors before finishing.
 
 DO NOT output conversational filler. Just think step by step, and then create the files.

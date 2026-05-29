@@ -21,7 +21,8 @@ Parent version tag: `bot-v{parent_version}`
 1. Run `git diff bot-v{parent_version} -- bots/claude_v{version}/` to see all changes
 2. Run `git diff --stat bot-v{parent_version} -- bots/claude_v{version}/` for a summary
 3. Read the most changed functions for strategic context
-4. Score against the criteria below
+4. **For diversity/local-optima check**: Run `git log --oneline bot-v{parent_version}..HEAD --decorate` to see recent commits, then `git show bot-v{parent_version}` to read the previous generation's commit message and strategy. Also read `web/core/experience_pool.md` for `[POSSIBLY EXHAUSTED]` tags.
+5. Score against the criteria below
 
 # Scoring Criteria (1–10)
 
