@@ -69,10 +69,10 @@ def _clear_orchestrator_session():
 def _make_precompact_hook():
     """Return hooks dict that injects evolution state before Claude compacts context."""
     async def handler(hook_input, tool_use_id, context) -> SyncHookJSONOutput:
-        from evolution_core import _find_current_v, read_pipeline_checkpoint
+        from evolution_core import read_pipeline_checkpoint
         lines = ["=== EVOLUTION STATE — PRESERVE DURING COMPACTION ==="]
         try:
-            current_v = _find_current_v()
+            current_v = _find_current_v()  # defined in this module
             lines.append(f"Current completed bot: claude_v{current_v}")
             checkpoint = read_pipeline_checkpoint()
             if checkpoint:
@@ -205,17 +205,20 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
     if dry_run:
         prompt += "\n\nIMPORTANT: This is a DRY RUN. Only call get_status() and report the current state. Do NOT modify anything."
 
-    # Session resume: if a pipeline checkpoint exists (mid-gen kill), resume the exact
-    # Orchestrator conversation rather than starting fresh.
+    # Session resume: if orchestrator_session.json exists (written on every tool call),
+    # the previous cycle was interrupted — resume the exact conversation.
+    # The file is cleared on natural cycle completion, so its presence reliably means
+    # the process was killed mid-gen.  No need to gate this on pipeline_state.json.
     from evolution_core import read_pipeline_checkpoint
     checkpoint = read_pipeline_checkpoint()
-    saved_session_id = _load_orchestrator_session() if checkpoint else None
+    saved_session_id = _load_orchestrator_session()
 
     resume_kwargs = {"resume": saved_session_id} if saved_session_id else {}
     if saved_session_id and ui:
+        stage_info = checkpoint.get("stage", "unknown") if checkpoint else "no checkpoint"
         ui.log_history(
             f"[Orchestrator] Resuming session {saved_session_id[:8]}... "
-            f"(checkpoint stage={checkpoint.get('stage', '?')})",
+            f"(pipeline stage={stage_info})",
             "warn",
         )
 

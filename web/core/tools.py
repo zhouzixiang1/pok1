@@ -50,6 +50,8 @@ from evolution_core import (
     summarize_replay_for_analysis,
     parse_json_output,
     clear_pipeline_checkpoint,
+    write_pipeline_checkpoint,
+    read_pipeline_checkpoint,
 )
 from glicko2 import Glicko2Player, update_rating_period
 
@@ -323,6 +325,10 @@ async def execute_workers(args):
         source_v=source_v,
     )
 
+    if success:
+        write_pipeline_checkpoint(next_v, source_v, "workers_done",
+                                  master_plan=tasks, reviewer_feedback=reviewer_feedback)
+
     result = {"success": success, "logs": ui.get_output(), "costs": ui.costs}
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
 
@@ -341,6 +347,21 @@ async def run_quality_gates(args):
     decision_rate = run_decision_tests(bot_dir)
     total_lines, oversized = check_code_size(bot_dir)
 
+    all_passed = (
+        len(compile_errors) == 0
+        and len(smoke_errors) == 0
+        and decision_rate >= 0.7
+        and len(oversized) == 0
+    )
+
+    if all_passed:
+        # Advance checkpoint to quality_passed; carry source_v/master_plan from previous stage
+        _ckpt = read_pipeline_checkpoint()
+        if _ckpt and _ckpt.get("next_v") == v:
+            write_pipeline_checkpoint(v, _ckpt["source_v"], "quality_passed",
+                                      master_plan=_ckpt.get("master_plan"),
+                                      reviewer_feedback=_ckpt.get("reviewer_feedback", ""))
+
     result = {
         "version": v,
         "compile_ok": len(compile_errors) == 0,
@@ -352,12 +373,7 @@ async def run_quality_gates(args):
         "total_lines": total_lines,
         "oversized_files": {name: lines for name, lines in oversized} if oversized else {},
         "size_ok": len(oversized) == 0,
-        "all_passed": (
-            len(compile_errors) == 0
-            and len(smoke_errors) == 0
-            and decision_rate >= 0.7
-            and len(oversized) == 0
-        ),
+        "all_passed": all_passed,
     }
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
 
@@ -390,6 +406,10 @@ async def run_review(args):
     data = parse_json_output(output)
 
     if data and "approved" in data:
+        if data["approved"]:
+            write_pipeline_checkpoint(v, source_v, "reviewed",
+                                      master_plan=plan,
+                                      reviewer_feedback=data.get("feedback", ""))
         result = {
             "approved": data["approved"],
             "quality_score": data.get("quality_score", 0),
@@ -426,6 +446,11 @@ async def run_critic(args):
     master_plan_str = json.dumps(plan, indent=2)
     ui = _get_ui()
     data = await _run_critic(v, source_v, master_plan_str, ui, is_text_ui=False)
+
+    if data.get("approved", True):
+        write_pipeline_checkpoint(v, source_v, "critic_checked",
+                                  master_plan=plan,
+                                  reviewer_feedback=reviewer_feedback)
 
     result = {
         **data,
@@ -756,10 +781,12 @@ all_tools = [
     get_bot_info,
     get_match_history,
     run_match_analysis,
+    run_performance_verification,
     run_master,
     execute_workers,
     run_quality_gates,
     run_review,
+    run_critic,
     run_crossover,
     prepare_next_gen,
     commit_bot,
