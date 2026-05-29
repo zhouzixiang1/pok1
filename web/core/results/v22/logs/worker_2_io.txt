@@ -353,3 +353,162 @@ The bot still follows the `{"response": <int>}` stdout protocol — the JSON out
 - Nut hands on river: Still value bets (overbet logic unchanged by my constants)
 - No new imports added
 - JSON output format intact
+
+[WORKER 2 (Hyperparameter Tuner) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Hyperparameter Tuner**.
+You must directly edit the source files in `bots/claude_v22/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v22/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+## If you are an "Opponent Modeler":
+- **ALLOWED**: Adding/modifying opponent tracking data structures and statistics
+- **ALLOWED**: Per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']`
+- **ALLOWED**: Bet sizing pattern detection: `opp_bet_sizes[street]` as rolling list (cap at 20), `statistics.median()`
+- **ALLOWED**: Exploitative adjustments based on detected opponent tendencies
+- **FORBIDDEN**: Changing overall decision flow or non-opponent-model logic
+- **FORBIDDEN**: Modifying any constant that is not opponent-model related
+
+You have access to `web/core/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+
+**Important — Parallel Execution**: You may be running concurrently with other Worker Agents on the same codebase. Your `target_files` are exclusively yours — other workers will NOT touch them. Only modify your assigned `target_files`. Do NOT read or write files outside your assignment.
+
+# Poker Engineering Best Practices
+Apply these when implementing changes:
+
+**Opponent Modeling:**
+- Use per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']` where `street ∈ {'preflop', 'flop', 'turn', 'river'}`
+- Track bet sizing: `opp_bet_sizes[street]` as a rolling list (cap at last 20), use `statistics.median()` for typical size
+- Exploit detected tendencies: if `opp_stats['river']['bet_freq'] > 0.65` → opponent bluffs river heavily → widen call range
+
+**Postflop Decision Making:**
+- EV-based fold/call: `EV_call = equity * pot_after_call - (1 - equity) * call_amount`. Call when EV > 0
+- River value bet sizing: if equity > 70%, bet 60-80% of pot for value; if equity 50-70%, bet 40-50% pot
+- Avoid "fear thresholds" — don't fold based on hand rank alone; compute EV against opponent range
+
+**Anti-Regression Checklist (verify before finishing):**
+- [ ] AA/KK/QQ preflop: still raises/3-bets aggressively (no passive limping)?
+- [ ] Nut flush/straight/full house on river: still places a value bet?
+- [ ] New code doesn't import modules not in stdlib + numpy?
+- [ ] `{"response": int}` JSON output format still correct?
+- [ ] No infinite loops or recursion in new functions?
+
+# Master Architect's Specific Prompt For You
+You are a Hyperparameter Tuner for a Texas Hold'em poker bot. Your mission is to fix the SECOND BIGGEST LEAK: the river all-in rate is 14-16%, causing catastrophic blowout losses of -50k to -157k chips per game.
+
+## CRITICAL RULES
+- You may ONLY modify numeric constants, thresholds, and magic numbers
+- You may NOT add new functions, classes, or change control flow
+- You may NOT add new if/else branches or loops
+- You may ONLY change the VALUES of existing constants/thresholds
+
+## Context
+The bot plays heads-up No-Limit Texas Hold'em. Match analysis shows:
+- River all-in rate: 14-16% (WAY too high — should be ≤8%)
+- River raise rate: 38-51% (too aggressive for the most information-complete street)
+- The bot loses massive pots (-50k to -157k chips) from ill-timed river bluffs and overplaying marginal hands
+- Win-size asymmetry: wins are narrow margins but losses are devastating blowouts
+
+## Your Task
+
+### Step 1: Read the bot code
+Read `bots/claude_v21/main.py` and find ALL constants/thresholds related to:
+- River aggression / all-in decisions
+- River bluff frequency/threshold
+- River raise sizing
+- Any `RIVER_` prefixed constants
+- Any thresholds that control when to go all-in on the river
+- Bluff detection thresholds used on the river
+- Bet sizing multipliers on the river
+
+### Step 2: Tune These Specific Parameters
+Find and adjust the following types of constants (your exact names may differ — find the equivalents):
+
+1. **River all-in threshold**: Whatever threshold controls river all-in decisions, INCREASE it by 40-60%. If the bot goes all-in when hand_strength > 0.6, change it to > 0.85 or higher. The bot should only go all-in on the river with the absolute best hands or perfectly calibrated bluffs.
+
+2. **River bluff frequency**: Find any bluff probability/threshold on the river and REDUCE it by at least 50%. If it's 0.15, make it ≤0.07. River bluffs in HU are extremely risky because the opponent has full information.
+
+3. **River raise threshold**: Find what hand strength triggers a river raise and increase it by ~20-30%. The bot should only raise the river with genuinely strong hands (top pair good kicker+, two pair+).
+
+4. **Maximum river bet sizing cap**: If there's a river bet size multiplier, cap it. For example, if the bot can bet 2x pot on the river, limit it to 1x pot. River overbetting with marginal hands is the primary cause of blowout losses.
+
+5. **River fold threshold**: If the bot calls too many big river bets, SLIGHTLY increase the calling threshold (fold more to big river bets with marginal holdings).
+
+### Step 3: Document Changes
+In comments next to each changed constant, add: `# TUNED v22: was X, changed to Y because [reason]`
+
+### Target Outcomes
+- River all-in rate: ≤8% (down from 14-16%)
+- River raise rate: ~30-35% (down from 38-51%)
+- Expected reduction in catastrophic losses: -50k+ chip losses should become rare
+- Overall: preserve win rate while drastically cutting loss magnitude
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v22/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v22/main.py` (and other .py files you changed)
+   - Smoke test: `python web/core/smoke_tester.py bots/claude_v22/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v22/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+Let me start by reading the bot code to find all river-related constants and thresholds.
+Now let me read the postflop and postflop_decision files for more river-related logic:
+Now let me read the remaining relevant files:
+Now I have a thorough understanding of all the river-related code. Let me identify the key areas to tune:
+
+1. **River `strong` threshold** (line 734): `0.59` for round_idx==3 — controls when to raise/value bet
+2. **River `medium` threshold** (line 735): No explicit river value, falls through to `0.48`
+3. **River bluff threshold** (line 1179): `0.62 - 0.28 * match_profile["bluff_delta"]`
+4. **River `choose_raise` ratio for round_idx==3** (line 409-410): `0.85`
+5. **River raise cap** in `choose_raise`: `1.45`
+6. **Blocker bluff eligibility threshold** (bluff_analysis.py line 70): `0.14`
+7. **River blocker bluff `made_strength < 0.16`** (line 1195)
+8. **`allow_low_frequency_blocker_bluff` threshold multiplier** (bluff_analysis.py line 80): `35.0`
+9. **River call margin for weak hands** (line 877-879): `0.04`
+10. **River `probe_ratio` bonus** (line 99-100): `+0.05`
+11. **`strong_river_overbet` size delta** (hand_evaluation.py line 351): `+0.18`
+
+Let me now make all the changes. I'll edit the key files:

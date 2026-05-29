@@ -701,3 +701,164 @@ Let me read the Zread MCP Server docs to get the correct parameter names:
 **webReader_result_summary:** [{"text": {"title": "Zread MCP Server - Overview - Z.AI DEVELOPER DOCUMENT", "url": "https://docs.z.ai/devpack/mcp/zread-mcp-server", "content": "> ## Documentation Index\n>\n> Fetch the complete documentation index at: https://docs.z.ai/llms.txt\n>\n> Use this file to discover all available pages b...
                                                 
 Let me try to get the task output with the correct parameter format:
+
+[WORKER 1 (Algorithmic Logic Architect) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Algorithmic Logic Architect**.
+You must directly edit the source files in `bots/claude_v22/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v22/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+## If you are an "Opponent Modeler":
+- **ALLOWED**: Adding/modifying opponent tracking data structures and statistics
+- **ALLOWED**: Per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']`
+- **ALLOWED**: Bet sizing pattern detection: `opp_bet_sizes[street]` as rolling list (cap at 20), `statistics.median()`
+- **ALLOWED**: Exploitative adjustments based on detected opponent tendencies
+- **FORBIDDEN**: Changing overall decision flow or non-opponent-model logic
+- **FORBIDDEN**: Modifying any constant that is not opponent-model related
+
+You have access to `web/core/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+
+**Important — Parallel Execution**: You may be running concurrently with other Worker Agents on the same codebase. Your `target_files` are exclusively yours — other workers will NOT touch them. Only modify your assigned `target_files`. Do NOT read or write files outside your assignment.
+
+# Poker Engineering Best Practices
+Apply these when implementing changes:
+
+**Opponent Modeling:**
+- Use per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']` where `street ∈ {'preflop', 'flop', 'turn', 'river'}`
+- Track bet sizing: `opp_bet_sizes[street]` as a rolling list (cap at last 20), use `statistics.median()` for typical size
+- Exploit detected tendencies: if `opp_stats['river']['bet_freq'] > 0.65` → opponent bluffs river heavily → widen call range
+
+**Postflop Decision Making:**
+- EV-based fold/call: `EV_call = equity * pot_after_call - (1 - equity) * call_amount`. Call when EV > 0
+- River value bet sizing: if equity > 70%, bet 60-80% of pot for value; if equity 50-70%, bet 40-50% pot
+- Avoid "fear thresholds" — don't fold based on hand rank alone; compute EV against opponent range
+
+**Anti-Regression Checklist (verify before finishing):**
+- [ ] AA/KK/QQ preflop: still raises/3-bets aggressively (no passive limping)?
+- [ ] Nut flush/straight/full house on river: still places a value bet?
+- [ ] New code doesn't import modules not in stdlib + numpy?
+- [ ] `{"response": int}` JSON output format still correct?
+- [ ] No infinite loops or recursion in new functions?
+
+# Master Architect's Specific Prompt For You
+You are an Algorithmic Logic Architect for a Texas Hold'em poker bot. Your mission is to fix the SINGLE BIGGEST LEAK: the preflop fold rate is 72-77%, which is catastrophically tight for heads-up poker.
+
+## Context
+This is a heads-up (2-player) No-Limit Texas Hold'em bot on Botzone. In HU poker, folding more than ~50% preflop means surrendering blinds relentlessly. The current bot only plays ~25% of hands, letting opponents accumulate dead money every round.
+
+## Card Representation
+Cards are integers 0-51: rank = card // 4 + 2 (2-14 = 2-A), suit = card % 4. The bot receives hole cards as two integers.
+
+## Your Task: Refactor Preflop Decision Logic
+
+### Step 1: Read the current bot code
+Read `bots/claude_v21/main.py` and identify where preflop decisions are made. Look for the preflop action selection logic — it likely has overly tight hand evaluation.
+
+### Step 2: Implement a HU Preflop Hand Strength Classifier
+Add a function `classify_preflop_hand(card1, card2, position)` that returns a strength category:
+- **Tier S** (always raise/3-bet): AA, KK, QQ, JJ, AKs, AKo
+- **Tier A** (raise, call 3-bet): TT, 99, AQs, AQo, AJs, KQs
+- **Tier B** (raise or call): 88-66, ATs+, AJo+, KTs+, QJs, JTs, T9s
+- **Tier C** (call or small raise): 55-22, A9s-A2s, K9s-K6s, Q9s-Q8s, J9s-J8s, 98s, 87s, 76s
+- **Tier D** (fold to big raise, but open-raise from SB or defend BB vs min-raise): K5s-K2s, Q7s-Q2s, J7s-J4s, T8s-T7s, 97s-96s, 86s-85s, 75s-74s, 64s-63s, 53s-52s, 43s, A9o-A7o, K9o-K8o, Q9o, J9o, T9o
+- **Tier F** (fold): everything else (but even these should be opened from SB if unopened)
+
+For pairs: rank1 == rank2
+For suited: rank1 % 4 == rank2 % 4 (same suit)
+For connected: abs(rank1 - rank2) == 1
+For gapped: abs(rank1 - rank2) <= 3 (with adjustments)
+
+### Step 3: Implement Position-Aware Preflop Strategy
+
+**From Small Blind (SB) / Button position (first to act preflop):**
+- Tier S-A: Raise 3x BB (pot-sized raise)
+- Tier B-C: Raise 2.5x BB
+- Tier D: Raise 2x BB (min-raise) — these are speculative but we open them because opponent folds too much
+- Tier F: Fold (but only ~15% of hands should be here with this classification)
+
+**Facing a raise from SB (we're in BB):**
+- Tier S-A: 3-bet to 3x opponent's raise
+- Tier B: Call
+- Tier C: Call vs min-raise or 2.5x raise; fold vs 3x+ raise
+- Tier D: Call vs min-raise only; fold vs larger raises
+- Tier F: Fold
+
+**Facing a 3-bet:**
+- Tier S: 4-bet or jam
+- Tier A: Call
+- Tier B: Call if pot odds are reasonable; fold to huge 3-bets
+- Tier C-D: Fold
+
+### Step 4: Integrate into Decision Flow
+Modify the preflop action selection to use this new classifier. The key metric to achieve: **overall preflop fold rate should be 40-50%**, not 72-77%.
+
+Make sure to:
+- Keep the existing postflop logic completely untouched
+- Keep the bot's data/state management untouched
+- Ensure the action encoding is correct: 0 = call/check, -1 = fold, -2 = all-in, >0 = raise amount
+- The raise amounts should be absolute (not relative to pot)
+- Ensure backward compatibility with the request/response JSON protocol
+
+### Testing
+After changes, verify:
+- The bot still compiles/runs without errors
+- Preflop fold rate should drop to ~40-50%
+- The bot should be opening ~60% of hands from SB
+- The bot should be defending BB with ~55% of hands vs a min-raise
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v22/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v22/main.py` (and other .py files you changed)
+   - Smoke test: `python web/core/smoke_tester.py bots/claude_v22/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v22/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+Let me start by reading the relevant files to understand the current structure.
+Now let me read the preflop-related files:
+Now let me read the remaining relevant files:
+Now let me understand the problem better. Let me check what the current preflop behavior looks like in practice:
