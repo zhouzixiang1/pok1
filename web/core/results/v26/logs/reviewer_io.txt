@@ -1,0 +1,142 @@
+
+[LEAD CODE REVIEWER PROMPT]
+=============================
+# Role
+You are the strict Lead Code Reviewer (Critic) for a Texas Hold'em poker bot team.
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files.
+- **Use the Bash tool** to run git diff and other commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Task
+Worker Agents have modified the bot codebase based on the Master Architect's instructions.
+Your job is the final quality gate before production (the next evolution iteration).
+
+# Context
+1. **Master's Original Plan/Tasks:**
+[
+  {
+    "worker_id": 1,
+    "role": "Algorithmic Logic Architect",
+    "target_files": [
+      "bots/claude_v25/main.py"
+    ],
+    "difficulty": "medium",
+    "worker_prompt": "Surgical changes: (1) Fix preflop over-folding from 57% to \u226430%, (2) Fix bet sizing from 0.4-0.6x to 0.65-1.0x pot, (3) Add postflop fold logic targeting 15-25% fold rate."
+  }
+]
+
+2. **Bot directory**: `bots/claude_v26/`
+3. **Parent version tag**: `bot-v25`
+
+# How to Review
+You have full access to git and file reading tools. Use them:
+
+1. **See all changes**: Run `git diff bot-v25 -- bots/claude_v26/`
+   This shows exactly what the workers changed vs the parent bot.
+2. **See change summary**: Run `git diff --stat bot-v25 -- bots/claude_v26/`
+3. **Read specific files**: Use the Read tool on any file in `bots/claude_v26/`
+4. **List all files**: Run `ls bots/claude_v26/` to see the full file list
+
+Focus your review on the diff, but read full files when you need more context.
+
+# Rules
+1. Verify the changes fulfill the Master's instructions without logical flaws or contradictions.
+2. ENFORCE THE DUAL-TRACK BOUNDARY:
+   - If a "Hyperparameter Tuner" was assigned, verify they ONLY changed constants/thresholds. If they injected complex new logic, REJECT.
+   - If an "Algorithmic Logic Architect" was assigned, verify their logic is sound.
+3. Ensure the code compiles conceptually and adheres to the `{"response": int}` JSON output format constraint.
+4. Output exactly ONE JSON block containing your decision. If you reject the code, you must provide a detailed "feedback" string explaining what the Developer Agents need to fix.
+5. FILE SIZE CONSTRAINT: No single .py file should exceed 1000 lines. If any file is too large, REJECT and instruct workers to split it into focused modules. Keep main.py as the slim entry point.
+
+# Correctness Criteria (MANDATORY CHECK)
+Before approving, verify the bot does NOT do any of the following:
+- Fold premium hands (AA, KK, QQ, AKs) preflop without extreme pressure
+- Call all-in with obviously dominated hands on the river
+- Return invalid JSON (must output `{"response": <int>}`)
+- Use `input()` or `print()` instead of stdin/stdout for game communication
+- Import unavailable modules (only stdlib + numpy if present)
+- Have obvious infinite loops or unbounded recursion
+
+# Output Format
+You MUST output your response containing exactly ONE JSON block formatted as follows:
+
+```json
+{
+  "approved": true or false,
+  "feedback": "If approved=false, provide detailed instructions on what needs to be fixed. If true, this can be empty.",
+  "quality_score": 7,
+  "change_summary": "A 1-2 sentence summary of the key changes made in this generation.",
+  "risk_areas": ["List of potential risks or concerns about the changes, if any"]
+}
+```
+
+# Quality Score Rubric
+- **9-10**: Clean, well-structured changes that clearly improve strategy. No risks. Code is concise and follows project conventions.
+- **7-8**: Good changes that address the plan. Minor concerns (e.g., slightly verbose code, a heuristic that might not generalize). Approve.
+- **5-6**: Changes work but are mediocre — copy-pasted code, brute-force approaches where elegant solutions exist, or unclear strategy. Approve with caution.
+- **3-4**: Changes introduce regression risk, violate role boundaries, or show fundamental misunderstanding of poker strategy. REJECT.
+- **1-2**: Broken code, catastrophic strategic errors (folding AA preflop), or complete failure to follow instructions. REJECT.
+
+- `change_summary`: Required even when approved=true. This is used to update the experience pool for future generations.
+- `risk_areas`: Optional. List potential issues that could cause regression.
+
+=============================
+[CLAUDE OUTPUT]
+The diff shows no output — meaning either there are no differences between `bot-v25` and `bots/claude_v26/`, or the tag/path mapping is different. Let me investigate further.
+The diff is empty between the tag and HEAD. The files exist but may have been created as a copy without any changes yet, or the commit hasn't been made. Let me compare the actual file contents between v25 and v26.
+Only two files changed: `betting.py` and `state.py`. Let me see the actual diffs.
+Now let me read the full files to understand the context better, especially the key changed sections.
+Now let me check the full state.py for the preflop hand tier classification and the wider hand range changes:
+Now let me verify the v25 versions to understand the full scope of changes:
+Good. Now let me check the preflop fold rate with these changes more carefully:
+Now let me do one final check — verify the v25 preflop fold rate was actually the claimed 57% and that v26 is indeed much lower:
+Now I have a complete picture of all changes. Let me summarize my findings.
+
+## Review Analysis
+
+### Changes Identified (2 files: `betting.py`, `state.py`)
+
+**`state.py` — Preflop Hand Tier Expansion:**
+- Added K2o-K7o (any King offsuit), Q6o-Q7o, J7o-J8o, and 3-gappers (T7o, 96o, 85o) to tier 4
+- Tier 4 expanded from 38.3% → 49.2% of all combos; tier 5 (trash) reduced from 39.8% → 29.0%
+
+**`betting.py` — All Three Master Tasks Addressed:**
+
+1. **Preflop over-folding fix**: SB open never folds (even tier 5 completes); BB vs raise calls tier 1-4 always, tier 5 only folds to >5BB raises with strength < 0.35; SB vs reraise calls tier 1-3, tier 4 up to 6BB, tier 5 up to 4BB; unknown spot fallback also never folds. Fold rate should drop dramatically from the 57% baseline.
+
+2. **Bet sizing increase**: Preflop ratios raised from 0.55→0.75 (open), 0.60→0.75, 0.70→0.80, 0.85→1.00 (river). Preflop raise bases increased across all tiers (e.g., tier 1: 3.5→4.5BB, tier 4: 2.2→3.0BB). Added tier 3 sizing tier. Added 3-bet logic (top ~40% hands, 50% deterministic frequency). All sizing now targets 0.65-1.0x pot range as requested.
+
+3. **Postflop fold logic**: `should_fold_postflop()` rewritten with 5 structured criteria: (1) large bets vs weak hands, (2) turn/river no-pair no-draw, (3) double barrel detection, (4) multi-street aggression on scary boards, (5) large bets vs medium hands on scary late streets. Protects nuts/strong/top pair+/decent draws. Targets 15-25% fold rate.
+
+### Correctness Checks
+- ✅ Premium hands (AA, KK, QQ, AKs) all tier 1 — never folded preflop
+- ✅ Code compiles cleanly (all `.py` files verified)
+- ✅ JSON output format correct: `{"response": int}`
+- ✅ Uses `json.loads(input())` / `print(json.dumps(...))` — correct protocol
+- ✅ Only stdlib imports, no unavailable modules
+- ✅ No infinite loops or unbounded recursion
+- ✅ All files under 1000 lines (max: postflop.py at 999)
+- ✅ Role boundary respected: Algorithmic Logic Architect made structural logic changes, not just constant tweaks
+
+### Concerns (non-blocking)
+1. **72s is tier 3 and qualifies for 3-bet range** (estimated strength 0.52 ≥ 0.50 threshold). 72s has poor equity even suited, and 3-betting it could be slightly too aggressive, though in HU context this is debatable.
+2. **Files near line limit**: postflop.py (999 lines) and strategy.py (993 lines) are dangerously close to 1000-line cap. Future changes will need splitting.
+3. **`three_bet_coinflip` is deterministic per hand** (same hand always 3-bets or calls). Theoretically exploitable but practically reasonable.
+
+```json
+{
+  "approved": true,
+  "feedback": "",
+  "quality_score": 7,
+  "change_summary": "Expanded preflop tier 4 hand range (39%→49% of combos), overhauled preflop action logic to never fold from SB and call much wider from BB (addressing 57%→≤30% fold rate), increased bet sizing ratios from 0.4-0.6x to 0.65-1.0x pot with bigger preflop raise bases and a new 3-bet frequency system, and rewrote postflop fold logic with 5 structured criteria including double-barrel detection targeting 15-25% fold rate.",
+  "risk_areas": [
+    "72s is tier 3 and qualifies for 3-bet range (strength 0.52 ≥ 0.50) — slightly aggressive for such a weak hand",
+    "postflop.py at 999 lines and strategy.py at 993 lines — dangerously close to 1000-line cap, next generation may need file splitting",
+    "3-bet coinflip is deterministic per hand (same hand always 3-bets or calls), theoretically exploitable by observant opponents",
+    "Double-barrel fold criterion folds anything below top pair (<0.45 strength) which may over-fold medium-strength hands vs aggressive opponents"
+  ]
+}
+```

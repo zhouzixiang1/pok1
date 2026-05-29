@@ -1,6 +1,6 @@
 {
-  "next_v": 25,
-  "source_v": 9,
+  "next_v": 26,
+  "source_v": 25,
   "stage": "critic_checked",
   "master_plan": [
     {
@@ -9,20 +9,11 @@
       "target_files": [
         "main.py"
       ],
-      "difficulty": "hard",
-      "worker_prompt": "Fix CRITICAL structural flaw: preflop nit + postflop calling station. Widen preflop range, add postflop folding logic, increase bet sizing."
-    },
-    {
-      "worker_id": 2,
-      "role": "Hyperparameter Tuner",
-      "target_files": [
-        "main.py"
-      ],
       "difficulty": "medium",
-      "worker_prompt": "Tune numeric constants: lower preflop fold thresholds, raise bet sizing multipliers, increase aggression factors."
+      "worker_prompt": "Fix broken decision paths in postflop code. Add SPR awareness and opponent bet-size profiling."
     }
   ],
-  "reviewer_feedback": "Workers went beyond scope: removed existing features (SPR profiling, donk betting, river thin value, barrel profiling, CBet adjustments), consolidated 23\u219211 files, added unsolicited anti-bot4 detection. strategy.py at 993 lines and postflop.py at 999 lines dangerously close to 1000-line limit. Core structural changes (5-tier preflop, postflop folding) are what was requested.",
+  "reviewer_feedback": "Previous critic scored 5/10 citing stale wider-preflop+bigger-sizing pattern. Worker retry added: (1) Pot-size-aware postflop logic with SPR thresholds, (2) Opponent bet-size profiling in postflop.py, (3) Reduced tier 3-4 preflop sizing from 3.5x to 2.5x BB. Fixed broken decision paths (0%\u219287% decision tests). Postflop decision quality should now better support wider preflop ranges.",
   "generation_attempt": 0,
-  "timestamp": "2026-05-30T03:59:31"
+  "timestamp": "2026-05-30T05:52:58"
 }

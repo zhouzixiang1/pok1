@@ -1,0 +1,52 @@
+
+[MATCH ANALYST PROMPT]
+=============================
+You are a Poker Hand Analyst specializing in Texas Hold'em bot strategy.
+Analyze the following match replay summaries (losses and close wins) for weaknesses and patterns.
+
+## Recent Match Summaries (LOSS = bot lost, CLOSE WIN = bot won by ≤2 games)
+
+[CLOSE WIN] Match: claude_v19 vs claude_v25, Result: 6W/4L out of 10 games
+Chip delta: avg=3207, best=19435, worst=-4024
+Per-street actions (bot):
+  Preflop: fold=57%, raise=21%, call=19%, allin=1%, avg_raise=0.6x_pot
+  Flop: fold=0%, raise=39%, call=59%, allin=1%, avg_raise=0.5x_pot
+  Turn: fold=0%, raise=20%, call=79%, avg_raise=0.4x_pot
+  River: fold=0%, raise=6%, call=93%, avg_raise=0.5x_pot
+
+Based on the data above, identify:
+1. Key weaknesses (e.g., folding too much, not raising enough, poor all-in timing)
+2. Street-specific weaknesses from the Per-street actions data:
+   - River fold rate ≥40% → scared-money, consider expanding river calling range
+   - Flop raise rate ≤10% → too passive postflop, giving free cards
+   - Preflop raise rate ≤15% → limping too much, losing positional advantage
+   - avg_raise < 0.5x pot on river with big pot → underbetting strong hands
+3. Any detectable patterns (e.g., weak out-of-position, poor against aggressive opponents)
+4. What seems to be working (from close wins, if any)
+5. A concrete recommendation for improvement (be specific: which street, what change)
+
+Output ONLY a JSON block:
+```json
+{"weaknesses": ["..."], "street_weaknesses": {"river": "...", "flop": "..."}, "patterns": "...", "working": "...", "recommendation": "..."}
+```
+Keep it concise — 2-3 weaknesses, specific street observations, 1 recommendation.
+=============================
+[CLAUDE OUTPUT]
+```json
+{
+  "weaknesses": [
+    "Extremely high preflop fold rate (57%) — in heads-up play this is catastrophically tight; the bot is surrendering ~half of all hands without contest, bleeding chips to any opponent who opens wide",
+    "Severely passive river play (6% raise, 93% call) — the bot is failing to value-bet strong made hands on the most expensive street, leaving significant EV on the table",
+    "Diminishing aggression on later streets (preflop raise 21% → flop 39% → turn 20% → river 6%) suggests the bot loses confidence as the pot grows, characteristic of a fear-driven strategy"
+  ],
+  "street_weaknesses": {
+    "preflop": "57% fold rate is roughly double what a competent heads-up strategy requires (~25-30%). Only raising 21% with avg_raise of 0.6x pot means the bot is limping or folding the vast majority of hands — easily exploitable by any aggressive opponent. This triggers the 'limping too much' warning hard.",
+    "flop": "Decent raise rate (39%) but avg_raise at only 0.5x pot suggests weak sizing — the bot may be making many small stabs that don't deny equity effectively. Call rate of 59% combined with 0% fold means it never gives up flop equity, which is reasonable but paired with small sizing it floats too passively.",
+    "turn": "Raise rate drops to 20% with avg_raise of just 0.4x pot — the bot is checking back or calling with hands that should be betting for value or protection. The turn is where pot commitment begins and the bot is playing almost purely defensively (79% call).",
+    "river": "6% raise rate with 93% call is the signature weakness. The river has zero fold equity concern — the only question is whether your hand beats the opponent's range. Raising only 6% means the bot is almost never value-betting strong hands (sets, flushes, straights) and never bluffing. avg_raise of 0.5x pot on the river with a big pot indicates underbetting."
+  },
+  "patterns": "The bot exhibits a classic 'nit in heads-up' pattern: fold heavily preflop, then call down passively postflop. The worst game loss of -4024 chips likely corresponds to spots where the bot called down multiple streets with a medium-strength hand against a stronger range, while its best win of +19435 likely came from a lucky all-in or cooler. The chip delta variance (range of ~23K) suggests the bot lacks a consistent winning mechanism — it wins big occasionally but doesn't grind opponents down through superior aggression. Against aggressive opponents, this bot would bleed chips through preflop folds and fail to punish wide ranges postflop.",
+  "working": "The flop raise rate of 39% is the one genuinely strong metric — the bot does apply pressure on the most important postflop street. The 0% fold rate on all postflop streets means the bot never makes hero folds, which in heads-up is often correct since opponents can barrel with air. The 6W/4L record in this close win suggests the bot's postflop calling strategy does catch bluffs, and when it does see flops with strong hands, the flop aggression generates enough EV to compensate for the tight preflop range.",
+  "recommendation": "Reduce preflop fold rate from 57% to ~30% and increase preflop raise rate from 21% to ≥45%. In heads-up, the big blind should defend against any raise with ~85% of hands, and the button should open-raise ~80-90% of hands. Implement a simple preflop chart: raise first-in from button with top 80% of hands, defend BB with top 85% vs a min-raise. This single change will dramatically reduce the number of uncontested pots surrendered and put the opponent in more marginal postflop spots. Additionally, on the river, implement a polarized raising strategy: raise the top 15% of value hands (two-pair+) to 0.7-1.0x pot, and mix in 5-8% bluffs from missed draws. This alone could shift the river raise rate from 6% to ~20% and extract significantly more value from strong holdings."
+}
+```
