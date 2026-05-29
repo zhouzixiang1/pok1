@@ -577,6 +577,10 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         permission_mode="bypassPermissions",
         cwd=str(PROJECT_ROOT),  # pok/ — workers use relative paths like bots/claude_vN/
         tools=tools,
+        strict_mcp_config=True,
+        mcp_servers={},
+        disallowed_tools=["ToolSearch"],
+        setting_sources=[],
     )
 
     full_text = []

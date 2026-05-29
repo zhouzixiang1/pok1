@@ -1,0 +1,28 @@
+{
+  "next_v": 25,
+  "source_v": 9,
+  "stage": "critic_checked",
+  "master_plan": [
+    {
+      "worker_id": 1,
+      "role": "Algorithmic Logic Architect",
+      "target_files": [
+        "main.py"
+      ],
+      "difficulty": "hard",
+      "worker_prompt": "Fix CRITICAL structural flaw: preflop nit + postflop calling station. Widen preflop range, add postflop folding logic, increase bet sizing."
+    },
+    {
+      "worker_id": 2,
+      "role": "Hyperparameter Tuner",
+      "target_files": [
+        "main.py"
+      ],
+      "difficulty": "medium",
+      "worker_prompt": "Tune numeric constants: lower preflop fold thresholds, raise bet sizing multipliers, increase aggression factors."
+    }
+  ],
+  "reviewer_feedback": "Workers went beyond scope: removed existing features (SPR profiling, donk betting, river thin value, barrel profiling, CBet adjustments), consolidated 23\u219211 files, added unsolicited anti-bot4 detection. strategy.py at 993 lines and postflop.py at 999 lines dangerously close to 1000-line limit. Core structural changes (5-tier preflop, postflop folding) are what was requested.",
+  "generation_attempt": 0,
+  "timestamp": "2026-05-30T03:59:31"
+}
