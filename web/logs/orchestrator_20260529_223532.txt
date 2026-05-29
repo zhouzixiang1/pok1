@@ -324,3 +324,88 @@ v23 not yet evaluated. I'll use v22 (which has games, r=1589.8) as the analysis 
 [tool: mcp__evolution__run_match_analysis]
 
 [tool: mcp__evolution__run_performance_verification]
+**v22 Analysis Summary:**
+- **Preflop**: Still too tight at 54-59% fold rate (target ≤40%), raise rate only 14-18% (target ≥30%)
+- **Postflop**: **0% fold rate** on every street — never releases hands! Plus underbetting at 0.4x pot
+- **Turn raise rate**: Key W/L predictor (19% loss vs 30-38% wins)
+- **Trend: improving** (1631→1653) but diversity_needed=true
+- **Weak matchup**: v15 at 40% WR
+
+Now let me run Master to plan v24.
+[tool: mcp__evolution__run_master]
+Master plan for v24: 1 worker targeting the 3 biggest leaks:
+1. **Postflop folding** (0% → 15-25%) — biggest EV gain
+2. **Bet sizing** (0.4x → 0.65-0.75x pot)
+3. **Preflop aggression** (fold ≤40%, raise ≥30%)
+
+Let me prepare v24 and try execute_workers.
+[tool: mcp__evolution__prepare_next_gen]
+
+[tool: mcp__evolution__execute_workers]
+`execute_workers` still broken. I'll make the changes manually. Let me read the key decision code.
+[tool: Bash]
+
+[tool: Read]
+
+[tool: Bash]
+
+[tool: Read]
+
+[tool: Read]
+
+[tool: Read]
+
+[tool: Bash]
+
+[tool: Bash]
+The `should_fold_postflop` was added by a previous worker (between v22→v23). Let me also check if preflop thresholds and sizing were updated.
+[tool: Bash]
+**All three fixes from Master's plan are already in v24!** The previous worker executed successfully before the internal error:
+
+1. ✅ **Postflop folding**: `should_fold_postflop()` added (39 lines) — targets 15-25% fold rate
+2. ✅ **Bet sizing increased**: Flop 0.60→0.65, Turn 0.70→0.75, low_ratio 0.40→0.50
+3. ✅ **Preflop more aggressive**: open 0.43→0.38, call 0.34→0.28, iso 0.50→0.44, limp 0.27→0.22
+
+v24 is ready. Let me run quality gates.
+[tool: mcp__evolution__run_quality_gates]
+All quality gates passed! ✅ Now code review.
+[tool: mcp__evolution__run_review]
+**Review approved!** Score: 7/10. Now the Strategy Critic.
+[tool: mcp__evolution__run_critic]
+**Critic approved!** Score: 6/10 (meets the ≥6 threshold). All three mandatory checks passed:
+
+1. ✅ Quality gates: `all_passed: true`
+2. ✅ Review: `approved: true`, score 7/10
+3. ✅ Critic: score 6/10, `approved: true`
+
+Committing v24.
+[tool: mcp__evolution__commit_bot]
+**v24 committed!** 🎉
+
+---
+
+## Generation v24 Summary
+
+**Source**: claude_v23 → **Target**: claude_v24
+
+**Changes Made** (3 critical leak fixes):
+1. **Postflop folding** (NEW CAPABILITY): Added `should_fold_postflop()` — air hands fold to turn/river bets, weak pairs fold to big bets, weak made hands fold to large bets. Targets 15-25% fold rate (was 0%).
+2. **Bet sizing increased**: Flop 0.60→0.65, turn 0.70→0.75, preflop 0.55/0.75→0.60/0.80, minimum sizing 0.40→0.50.
+3. **Preflop ranges widened**: SB open 0.43→0.38, BB call 0.34→0.28, BB iso 0.50→0.44, limp threshold 0.27→0.22, SB vs reraise 0.68→0.62.
+
+**Quality Gates**: ✅ All passed (compile, smoke, decisions 93%, size)
+**Review**: ✅ Approved, score 7/10
+**Critic**: ✅ Approved, score 6/10
+
+---
+
+## Session Summary (3 generations completed)
+
+| Gen | Key Changes | Review | Critic |
+|-----|-------------|--------|--------|
+| **v22** | Ported 5 v12 features (river value, donk betting, SPR, barrel, bluff EV) + preflop threshold overhaul | 7/10 | 7/10 |
+| **v23** | Fixed 5 parameter bugs (opponent priors, exploit_lambda removal, EQR tuning, classify_opponent_style, jam buffer cap) | 8/10 | 8/10 |
+| **v24** | Added postflop folding (0→15-25%), increased bet sizing, further widened preflop ranges | 7/10 | 6/10 |
+
+**Evolution trajectory**: v21 (r≈1580) → v22 (r=1589.8, rising) → v23 (untested) → v24 (untested). The changes are compounding: v22 added structural features, v23 fixed opponent modeling bugs, v24 addresses the remaining calling-station and underbetting leaks. The daemon should now evaluate these bots through mirror battles.
+[CYCLE DONE] cost=$2.4975
