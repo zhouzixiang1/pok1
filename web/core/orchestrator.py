@@ -179,10 +179,15 @@ def _build_context(one_gen=False, dry_run=False):
             }
             stage = checkpoint.get("stage", "unknown")
             hint = stage_hints.get(stage, "call get_status to assess")
+            # master_plan is only persisted starting from workers_done; prepared checkpoint
+            # does NOT carry a plan (prepare_next_gen writes it without master_plan).
+            if checkpoint.get("master_plan"):
+                plan_note = "Master plan is saved in session history — do NOT call run_master again."
+            else:
+                plan_note = "WARNING: Master plan NOT in checkpoint — call run_master first, then execute_workers."
             lines.append(
                 f"PIPELINE CHECKPOINT: v{checkpoint['next_v']} (from v{checkpoint['source_v']}) "
-                f"reached stage='{stage}'. Next step: {hint}. "
-                "Master plan is saved — do NOT call run_master again."
+                f"reached stage='{stage}'. Next step: {hint}. {plan_note}"
             )
     except Exception:
         pass

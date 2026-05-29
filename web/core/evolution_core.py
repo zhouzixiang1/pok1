@@ -144,11 +144,14 @@ def _stage_done(resume_stage, this_stage):
 
 
 @contextmanager
-def locked_file(path, mode='r', lock_type=None):
+def locked_file(path, mode='r', lock_type=None, encoding=None):
     """Context manager for file operations with fcntl locking."""
     if lock_type is None:
         lock_type = fcntl.LOCK_EX if ('w' in mode or 'a' in mode or '+' in mode) else fcntl.LOCK_SH
-    with open(path, mode) as f:
+    open_kwargs = {}
+    if encoding is not None:
+        open_kwargs["encoding"] = encoding
+    with open(path, mode, **open_kwargs) as f:
         fcntl.flock(f, lock_type)
         try:
             yield f
@@ -576,7 +579,7 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
     options = ClaudeAgentOptions(
         model=model,
         permission_mode="bypassPermissions",
-        cwd=str(Path(__file__).parent.parent),  # project root
+        cwd=str(PROJECT_ROOT),  # pok/ — workers use relative paths like bots/claude_vN/
     )
 
     full_text = []
@@ -716,7 +719,7 @@ def run_smoke_test(directory):
     if not os.path.exists(main_path):
         return ["main.py not found!"]
     proc = subprocess.run(
-        ["python", str(CORE_DIR / "smoke_tester.py"), main_path],
+        [sys.executable, str(CORE_DIR / "smoke_tester.py"), main_path],
         capture_output=True, text=True
     )
     if proc.returncode != 0:
