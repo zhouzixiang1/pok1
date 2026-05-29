@@ -16,12 +16,13 @@ const CheckIcon = ({ className }: { className?: string }) => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="20 6 9 17 4 12"/></svg>
 );
 
-function RatingBadge({ r, rd }: { r: number; rd: number }) {
+function RatingBadge({ r, rd, winRate, games }: { r: number; rd: number; winRate?: number; games?: number }) {
   const conf = rd < 50 ? "text-green-600" : rd < 100 ? "text-yellow-600" : "text-orange-500";
   return (
     <span className="text-sm">
       <span className="font-mono font-semibold">{r.toFixed(0)}</span>
       <span className={`ml-1 text-xs ${conf}`}>±{(2 * rd).toFixed(0)}</span>
+      {winRate != null && <span className="ml-2 text-xs text-gray-500">WR {(winRate * 100).toFixed(0)}%{games ? ` (${games})` : ""}</span>}
     </span>
   );
 }
@@ -97,7 +98,7 @@ function BotCard({ bot, onAction }: { bot: BotSummary; onAction: (msg: string) =
           {bot.graveyard && <span className="px-1.5 py-0.5 text-[10px] rounded bg-gray-100 text-gray-400">已归档</span>}
         </div>
         <div className="flex items-center gap-4 text-sm text-gray-500">
-          {bot.rating && <RatingBadge r={bot.rating.r} rd={bot.rating.rd} />}
+          {bot.rating && <RatingBadge r={bot.rating.r} rd={bot.rating.rd} winRate={bot.win_rate} games={bot.games} />}
           <span className="text-xs text-gray-400">{bot.total_lines} 行</span>
           <span className="text-xs text-gray-400">保守 {conserv}</span>
           <span className="text-gray-400">{expanded ? "▲" : "▼"}</span>

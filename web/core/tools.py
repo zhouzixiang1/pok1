@@ -419,7 +419,7 @@ async def run_review(args):
     from evolution_core import run_claude_query
     ui = _get_ui()
     output, _, _ = await run_claude_query(
-        reviewer_prompt, [], ui, "LEAD CODE REVIEWER", log_file, is_text_ui=False
+        reviewer_prompt, [], ui, "LEAD CODE REVIEWER", log_file, is_text_ui=False, tools=["Bash", "Read"]
     )
     data = parse_json_output(output)
 

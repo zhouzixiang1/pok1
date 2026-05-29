@@ -13,8 +13,11 @@ Your job is **purely strategic**: will this change actually make the bot play be
 ## Master's Plan:
 {master_plan}
 
-Bot directory: `bots/claude_v{version}/`  
+Bot directory: `bots/claude_v{version}/`
 Parent version tag: `bot-v{parent_version}`
+
+## Head-to-Head Context
+Read `web/core/results/head_to_head.json` and find the current bot's weakest opponent matchups (win rate < 40%). A high-quality change should address these specific weaknesses. Also check `web/core/results/bot_stats.json` for the current bot's overall win rate and game count.
 
 # How to Evaluate
 

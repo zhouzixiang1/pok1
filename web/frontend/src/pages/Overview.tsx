@@ -89,7 +89,7 @@ export default function Overview() {
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5 md:gap-6">
         <StatCard title="活跃 Bot" value={ratings.length} />
         <StatCard title="总对局数" value={(stats?.total_games ?? 0).toLocaleString()} />
-        <StatCard title="评分周期" value={stats?.total_periods ?? 0} />
+        <StatCard title="对局组合" value={stats?.total_pairs ?? 0} />
         <StatCard
           title="最活跃组合"
           value={stats?.most_active_pair ?? "—"}
@@ -111,6 +111,8 @@ export default function Overview() {
                 <th className="px-5 py-3 font-medium">评分</th>
                 <th className="px-5 py-3 font-medium">RD</th>
                 <th className="px-5 py-3 font-medium">保守评分</th>
+                <th className="px-5 py-3 font-medium">胜率</th>
+                <th className="px-5 py-3 font-medium">场数</th>
                 <th className="px-5 py-3 font-medium">置信度</th>
                 <th className="px-5 py-3 font-medium">最后更新</th>
               </tr>
@@ -123,6 +125,10 @@ export default function Overview() {
                   <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{bot.rating.toFixed(1)}</td>
                   <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{bot.rd.toFixed(1)}</td>
                   <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{bot.conservative_rating.toFixed(1)}</td>
+                  <td className="px-5 py-3 text-gray-600 dark:text-gray-300">
+                    {bot.win_rate != null ? `${(bot.win_rate * 100).toFixed(1)}%` : "—"}
+                  </td>
+                  <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{bot.games ?? "—"}</td>
                   <td className="px-5 py-3"><ConfidenceBadge level={bot.confidence} /></td>
                   <td className="px-5 py-3 text-gray-400 text-xs">{bot.last_period ? new Date(bot.last_period).toLocaleString() : "—"}</td>
                 </tr>

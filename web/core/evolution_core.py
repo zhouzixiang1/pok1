@@ -259,7 +259,7 @@ def load_daemon_stats():
         with locked_file(STATS_FILE, "r") as f:
             data = json.load(f)
         return data
-    return {"pairs": {}, "total_periods": 0}
+    return {"pairs": {}, "total_periods": 0, "total_games": 0}
 
 
 async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=MIN_GAMES_FOR_EVAL):
@@ -521,8 +521,12 @@ def git_get_stagnation_count(bot_name, ratings):
 # LLM & Code Tools
 # ──────────────────────────────────────────────
 
-async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, is_text_ui, model="sonnet"):
-    """Run a Claude query via the Agent SDK with cost tracking and typed streaming."""
+async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, is_text_ui, model="sonnet", tools=None):
+    """Run a Claude query via the Agent SDK with cost tracking and typed streaming.
+
+    tools: list of built-in tool names (e.g. ["Bash", "Read"]) or a ToolsPreset dict.
+           When None, no built-in tools are exposed to the model.
+    """
     # Build (path, content) pairs for context files
     context_parts = []
     if context_files:
@@ -572,6 +576,7 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         model=model,
         permission_mode="bypassPermissions",
         cwd=str(PROJECT_ROOT),  # pok/ — workers use relative paths like bots/claude_vN/
+        tools=tools,
     )
 
     full_text = []
@@ -2060,7 +2065,7 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
                 reviewer_approved = False
                 for review_attempt in range(MAX_REVIEWER_RETRIES):
                     ui.clear_io()
-                    reviewer_output, _, _ = await run_claude_query(reviewer_prompt, [], ui, "LEAD CODE REVIEWER", reviewer_log_file, is_text_ui)
+                    reviewer_output, _, _ = await run_claude_query(reviewer_prompt, [], ui, "LEAD CODE REVIEWER", reviewer_log_file, is_text_ui, tools=["Bash", "Read"])
                     reviewer_data = parse_json_output(reviewer_output)
 
                     if reviewer_data and "approved" in reviewer_data:

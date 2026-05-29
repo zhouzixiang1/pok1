@@ -59,11 +59,13 @@ def _confidence(rd: float) -> str:
 @router.get("/ratings")
 async def get_ratings():
     data = _cached_read("ratings", RATINGS_FILE)
+    bot_stats_data = _cached_read("bot_stats", BOT_STATS_FILE) or {}
     if not data:
         return []
     rows = []
     for name, d in data.items():
         r, rd = d["r"], d["rd"]
+        bs = bot_stats_data.get(name, {})
         rows.append({
             "name": name,
             "rating": round(r, 1),
@@ -72,6 +74,8 @@ async def get_ratings():
             "conservative_rating": round(r - 2 * rd, 1),
             "confidence": _confidence(rd),
             "last_period": d.get("last_period", ""),
+            "win_rate": bs.get("win_rate"),
+            "games": bs.get("games", 0),
         })
     rows.sort(key=lambda x: x["conservative_rating"], reverse=True)
     for i, row in enumerate(rows):
@@ -82,10 +86,12 @@ async def get_ratings():
 @router.get("/ratings/{bot_name}")
 async def get_rating_detail(bot_name: str):
     data = _cached_read("ratings", RATINGS_FILE)
+    bot_stats_data = _cached_read("bot_stats", BOT_STATS_FILE) or {}
     if not data or bot_name not in data:
         return {"error": "Bot not found"}
     d = data[bot_name]
     r, rd = d["r"], d["rd"]
+    bs = bot_stats_data.get(bot_name, {})
     return {
         "name": bot_name,
         "rating": round(r, 1),
@@ -94,6 +100,8 @@ async def get_rating_detail(bot_name: str):
         "conservative_rating": round(r - 2 * rd, 1),
         "confidence": _confidence(rd),
         "last_period": d.get("last_period", ""),
+        "win_rate": bs.get("win_rate"),
+        "games": bs.get("games", 0),
     }
 
 

@@ -15,6 +15,11 @@ You are given the source code of TWO elite surviving bots from the previous gene
 
 Your goal is to produce the full Python code for the Child bot.
 
+# Data Context
+- Read `web/core/results/head_to_head.json` to understand each parent's strengths/weaknesses against specific opponents. Find matchups where one parent loses (WR < 40%) and the other wins (WR > 55%).
+- Read `web/core/results/bot_stats.json` for overall win rates of each parent.
+- If Parent B beats opponents that Parent A loses to, strongly consider importing Parent B's approach for those matchups.
+
 # Crossover Strategy
 1. **Analyze both parents**: Read all .py files from both parents. Identify each parent's strengths:
    - Preflop strategy (hand ranges, opening ranges, 3-bet logic)

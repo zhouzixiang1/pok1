@@ -134,9 +134,22 @@ def _build_context(one_gen=False, dry_run=False):
 
     # Current bot rating reliability
     cur_p = ratings.get(f"claude_v{current_v}")
+    bot_name = f"claude_v{current_v}"
     if cur_p:
-        reliable = "RELIABLE" if cur_p.rd <= 40 else "UNRELIABLE (high RD — wait for more matches)"
-        lines.append(f"Current bot claude_v{current_v}: r={cur_p.r:.1f}, rd={cur_p.rd:.1f} [{reliable}]")
+        # Load bot_stats for games-based reliability
+        bot_stats_file = CORE_DIR / "results" / "bot_stats.json"
+        games = 0
+        wr = 0.0
+        if bot_stats_file.exists():
+            try:
+                with open(bot_stats_file, "r") as f:
+                    bs = json.load(f)
+                games = bs.get(bot_name, {}).get("games", 0)
+                wr = bs.get(bot_name, {}).get("win_rate", 0.0)
+            except Exception:
+                pass
+        reliable = "RELIABLE" if games >= 100 else f"UNRELIABLE ({games}/100 games — wait for more matches)"
+        lines.append(f"Current bot {bot_name}: r={cur_p.r:.1f}, rd={cur_p.rd:.1f}, wr={wr:.0%} ({games} games) [{reliable}]")
 
     # Incomplete bot detection — previous cycle may have been interrupted
     next_dir = get_bot_dir(current_v + 1)

@@ -2,6 +2,7 @@ import type {
   BotRating, MatchStats, MatchMatrix, HistoryEntry, GenerationLog, LogContent,
   MatchSummary, MatchReplayData, DaemonStatus, BotSummary, BotDetail,
   PipelineCheckpoint, WorkerFailure, PromptInfo, OrchestratorSession, OrchestratorLogFile,
+  H2HEntry, BotStatsEntry,
 } from "./types";
 
 const BASE = "/api";
@@ -61,6 +62,12 @@ export const api = {
   recentMatches: (limit = 100) => fetchJSON<MatchSummary[]>(`${BASE}/matches/recent?limit=${limit}`),
   matchReplay: (id: string) => fetchJSON<MatchReplayData>(`${BASE}/matches/replay/${id}`),
   matchCommentary: (id: string) => fetchJSON<Record<string, string>>(`${BASE}/matches/commentary/${id}`),
+
+  // H2H & Bot Stats
+  h2h: (botName?: string) => fetchJSON<Record<string, H2HEntry>>(
+    `${BASE}/h2h${botName ? `?bot_name=${encodeURIComponent(botName)}` : ""}`
+  ),
+  botStats: () => fetchJSON<Record<string, BotStatsEntry>>(`${BASE}/bot-stats`),
 
   // Logs - generation
   generations: () => fetchJSON<GenerationLog[]>(`${BASE}/logs/generations`),

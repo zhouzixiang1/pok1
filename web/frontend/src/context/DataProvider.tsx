@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useRef, type ReactNode } from "react";
 import type {
   BotRating, MatchStats, MatchMatrix, HistoryEntry, GenerationLog,
-  MatchSummary, DaemonStatus, BotSummary,
+  MatchSummary, DaemonStatus, BotSummary, H2HEntry, BotStatsEntry,
 } from "../api/types";
 
 export type DataStore = {
@@ -13,6 +13,8 @@ export type DataStore = {
   matrix: MatchMatrix | null;
   history: HistoryEntry[];
   generations: GenerationLog[];
+  h2h: Record<string, H2HEntry>;
+  botStats: Record<string, BotStatsEntry>;
 };
 
 const initial: DataStore = {
@@ -24,6 +26,8 @@ const initial: DataStore = {
   matrix: null,
   history: [],
   generations: [],
+  h2h: {},
+  botStats: {},
 };
 
 const DataContext = createContext<DataStore>(initial);
@@ -47,6 +51,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
         generations: (data) => setStore((s) => ({ ...s, generations: data as GenerationLog[] })),
         matrix: (data) => setStore((s) => ({ ...s, matrix: data as MatchMatrix })),
         history: (data) => setStore((s) => ({ ...s, history: data as HistoryEntry[] })),
+        h2h: (data) => setStore((s) => ({ ...s, h2h: data as Record<string, H2HEntry> })),
+        bot_stats: (data) => setStore((s) => ({ ...s, botStats: data as Record<string, BotStatsEntry> })),
       };
 
       Object.entries(handlers).forEach(([event, handler]) => {
@@ -81,3 +87,5 @@ export const useRecentMatches = () => useContext(DataContext).matches;
 export const useMatchMatrix = () => useContext(DataContext).matrix;
 export const useHistory = () => useContext(DataContext).history;
 export const useGenerations = () => useContext(DataContext).generations;
+export const useH2H = () => useContext(DataContext).h2h;
+export const useBotStats = () => useContext(DataContext).botStats;

@@ -98,6 +98,7 @@ def _get_daemon_status() -> dict:
 
 def _get_bots() -> dict:
     ratings = _cached_read("ds_ratings_bots", RATINGS_FILE) or {}
+    bot_stats_data = _cached_read("ds_bot_stats_bots", BOT_STATS_FILE) or {}
 
     def _count_lines(path: Path) -> int:
         try:
@@ -116,9 +117,11 @@ def _get_bots() -> dict:
         if r_data:
             r, rd = r_data.get("r", 1500), r_data.get("rd", 350)
             rating_info = {"r": round(r, 1), "rd": round(rd, 1), "conservative": round(r - 2 * rd, 1)}
+        bs = bot_stats_data.get(bot_name, {})
         return {
             "name": bot_name, "version": version, "completed": completed,
             "total_lines": total_lines, "files": [f.name for f in py_files], "rating": rating_info,
+            "win_rate": bs.get("win_rate"), "games": bs.get("games", 0),
         }
 
     def _version_key(p: Path) -> int:

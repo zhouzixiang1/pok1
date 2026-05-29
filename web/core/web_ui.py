@@ -145,6 +145,7 @@ class WebUI(BaseUI):
         self._emit("daemon", {
             "total_matches": sum(pairs.values()),
             "total_periods": stats.get("total_periods", 0),
+            "total_games": stats.get("total_games", 0),
             "n_bots": len(ratings),
         })
 

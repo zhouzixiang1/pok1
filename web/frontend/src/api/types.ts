@@ -7,6 +7,8 @@ export interface BotRating {
   conservative_rating: number;
   confidence: string;
   last_period: string;
+  win_rate?: number;
+  games?: number;
 }
 
 export interface MatchStats {
@@ -19,7 +21,24 @@ export interface MatchStats {
 
 export interface MatchMatrix {
   bots: string[];
-  matrix: number[][];
+  matrix: (number | null)[][];
+  source?: string;
+}
+
+export interface H2HEntry {
+  games: number;
+  a_wins: number;
+  b_wins: number;
+  draws: number;
+  win_rate: number;
+}
+
+export interface BotStatsEntry {
+  wins: number;
+  losses: number;
+  draws: number;
+  games: number;
+  win_rate: number;
 }
 
 export interface HistoryEntry {
@@ -114,6 +133,8 @@ export interface BotSummary {
   total_lines: number;
   files: string[];
   rating: { r: number; rd: number; conservative: number } | null;
+  win_rate?: number;
+  games?: number;
   graveyard?: boolean;
 }
 
