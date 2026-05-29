@@ -35,6 +35,7 @@ const STAGE_LABELS: Record<string, string> = {
 };
 
 function PipelineStatus({ checkpoint }: { checkpoint: PipelineCheckpoint | null }) {
+  const [expanded, setExpanded] = useState(false);
   if (!checkpoint) {
     return (
       <div className="rounded-2xl border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-white/[0.03]">
@@ -44,12 +45,17 @@ function PipelineStatus({ checkpoint }: { checkpoint: PipelineCheckpoint | null 
     );
   }
   const currentIdx = PIPELINE_STAGES.indexOf(checkpoint.stage);
+  const plan = Array.isArray(checkpoint.master_plan) ? checkpoint.master_plan : [];
 
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-white/[0.03]">
-      <h3 className="mb-1 text-xs font-semibold uppercase text-gray-500">流水线</h3>
-      <p className="text-xs text-gray-400 mb-2">
+      <button onClick={() => setExpanded(!expanded)} className="w-full text-left flex items-center justify-between">
+        <h3 className="text-xs font-semibold uppercase text-gray-500">流水线</h3>
+        <span className="text-[10px] text-gray-400">{expanded ? "▲" : "▼"}</span>
+      </button>
+      <p className="text-xs text-gray-400 my-1">
         v{checkpoint.next_v} ← v{checkpoint.source_v}
+        {checkpoint.generation_attempt ? ` (尝试 ${checkpoint.generation_attempt})` : ""}
       </p>
       <div className="flex gap-1 flex-wrap">
         {PIPELINE_STAGES.map((stage, i) => (
@@ -67,6 +73,28 @@ function PipelineStatus({ checkpoint }: { checkpoint: PipelineCheckpoint | null 
           </span>
         ))}
       </div>
+      {expanded && (
+        <div className="mt-2 pt-2 border-t border-gray-100 dark:border-gray-700 space-y-2">
+          {plan.length > 0 && (
+            <div>
+              <p className="text-[10px] text-gray-500 mb-1">Master Plan</p>
+              {plan.map((task: Record<string, unknown>, i: number) => (
+                <div key={i} className="text-[10px] text-gray-600 dark:text-gray-400 pl-2 border-l-2 border-blue-300 mb-1">
+                  <span className="font-medium">{String(task.role || `Task ${i + 1}`)}</span>
+                  {task.target_files ? <span className="text-gray-400 ml-1">→ {Array.isArray(task.target_files) ? (task.target_files as string[]).join(", ") : String(task.target_files)}</span> : null}
+                  {task.difficulty ? <span className="ml-1 px-1 rounded bg-gray-100 dark:bg-gray-800 text-gray-500">{String(task.difficulty)}</span> : null}
+                </div>
+              ))}
+            </div>
+          )}
+          {checkpoint.reviewer_feedback && (
+            <div>
+              <p className="text-[10px] text-gray-500 mb-1">Reviewer 反馈</p>
+              <p className="text-[10px] text-gray-600 dark:text-gray-400 whitespace-pre-wrap max-h-24 overflow-y-auto">{checkpoint.reviewer_feedback}</p>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -267,6 +295,8 @@ export default function EvolutionMonitor() {
   const [failures, setFailures] = useState<WorkerFailure[]>([]);
   const [workers, setWorkers] = useState<WorkerInfo[]>([]);
   const [roleCosts, setRoleCosts] = useState<RoleCost[]>([]);
+  const [metrics, setMetrics] = useState<Record<string, number>>({});
+  const [daemonInfo, setDaemonInfo] = useState<{ total_matches: number; total_periods: number; total_games: number; n_bots: number } | null>(null);
 
   const ioRef = useRef<HTMLDivElement>(null);
   const openToolId = useRef<number | null>(null);
@@ -390,6 +420,21 @@ export default function EvolutionMonitor() {
       };
       addMsg(msg);
     },
+    onEvalTable: (rows) => {
+      const mapped: BotRating[] = rows.map((r: { rank: number; name: string; rating: number; rd: number; conservative: number }) => ({
+        name: r.name,
+        rank: r.rank,
+        rating: r.rating,
+        rd: r.rd,
+        sigma: 0,
+        conservative_rating: r.conservative,
+        confidence: r.rd < 50 ? "very_confident" : r.rd < 100 ? "confident" : r.rd < 200 ? "uncertain" : "very_uncertain",
+        last_period: "",
+      }));
+      setLeaderboard(mapped);
+    },
+    onMetrics: (m) => setMetrics(m),
+    onDaemon: (data) => setDaemonInfo(data),
   });
 
   useEffect(() => {
@@ -402,7 +447,6 @@ export default function EvolutionMonitor() {
     }).catch(() => {});
     const refreshLeaderboard = () => api.ratings().then(setLeaderboard).catch(() => {});
     refreshLeaderboard();
-    const lbInterval = setInterval(refreshLeaderboard, 10000);
 
     const refreshPipeline = () => api.pipelineCheckpoint().then(setCheckpoint).catch(() => {});
     refreshPipeline();
@@ -414,7 +458,6 @@ export default function EvolutionMonitor() {
 
     const disconnect = connect();
     return () => {
-      clearInterval(lbInterval);
       clearInterval(pipeInterval);
       clearInterval(failInterval);
       disconnect();
@@ -446,6 +489,9 @@ export default function EvolutionMonitor() {
               {status}
             </span>
             <span className="text-gray-400">成本: ${grand.toFixed(3)}</span>
+            {daemonInfo && (
+              <span className="text-gray-400 text-xs">{daemonInfo.total_games} 场 / {daemonInfo.n_bots} Bot</span>
+            )}
           </div>
         </div>
       </div>
@@ -517,6 +563,40 @@ export default function EvolutionMonitor() {
 
           {/* Worker progress */}
           <WorkerProgress workers={workers} />
+
+          {/* Evolution metrics */}
+          {Object.keys(metrics).length > 0 && (
+            <div className="rounded-2xl border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-white/[0.03]">
+              <h3 className="mb-2 text-xs font-semibold uppercase text-gray-500">进化指标</h3>
+              <div className="space-y-1 text-xs">
+                {metrics.success_rate != null && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">成功率</span>
+                    <span className={metrics.success_rate >= 0.8 ? "text-green-600" : metrics.success_rate >= 0.5 ? "text-yellow-600" : "text-red-600"}>
+                      {(metrics.success_rate * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                )}
+                {metrics.rating_trend != null && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">评分趋势</span>
+                    <span className={metrics.rating_trend > 0 ? "text-green-600" : metrics.rating_trend < 0 ? "text-red-600" : "text-gray-500"}>
+                      {metrics.rating_trend > 0 ? "↑" : metrics.rating_trend < 0 ? "↓" : "→"} {metrics.rating_trend > 0 ? "+" : ""}{Math.round(metrics.rating_trend)}
+                    </span>
+                  </div>
+                )}
+                {metrics.avg_gen_time_s != null && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">平均耗时</span>
+                    <span className="text-gray-700 dark:text-gray-300">{Math.round(metrics.avg_gen_time_s)}s</span>
+                  </div>
+                )}
+                <div className="flex justify-between text-gray-400">
+                  <span>代次 {metrics.total_gens ?? "—"} / 失败 {metrics.fail_count ?? "—"}</span>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Leaderboard */}
           {leaderboard.length > 0 && (

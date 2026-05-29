@@ -1,11 +1,15 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import Chart from "react-apexcharts";
 import type { ApexOptions } from "apexcharts";
-import { useMatchMatrix } from "../context/DataProvider";
+import { useMatchMatrix, useH2H } from "../context/DataProvider";
 import PageMeta from "../components/common/PageMeta";
+
+type ViewMode = "winrate" | "count";
 
 export default function MatchMatrix() {
   const data = useMatchMatrix();
+  const h2hRaw = useH2H();
+  const [viewMode, setViewMode] = useState<ViewMode>("winrate");
 
   const { series, options } = useMemo(() => {
     if (!data || !data.bots.length) return { series: [], options: {} };
@@ -13,6 +17,49 @@ export default function MatchMatrix() {
     const bots = data.bots.map((b) => b.replace("claude_", "v"));
     const isH2H = data.source === "h2h";
 
+    if (viewMode === "count" && Object.keys(h2hRaw).length > 0) {
+      // Build games count matrix from H2H data
+      const gamesMatrix: (number | null)[][] = data.bots.map((_, i) =>
+        data.bots.map((__, j) => {
+          if (i === j) return null;
+          const key1 = `${data.bots[i]} vs ${data.bots[j]}`;
+          const key2 = `${data.bots[j]} vs ${data.bots[i]}`;
+          const entry = h2hRaw[key1] || h2hRaw[key2];
+          return entry ? entry.games : null;
+        })
+      );
+
+      const series = data.bots.map((botName, i) => ({
+        name: botName.replace("claude_", "v"),
+        data: data.bots.map((_, j) => ({ x: bots[j], y: gamesMatrix[i][j] })),
+      }));
+
+      const options: ApexOptions = {
+        chart: { fontFamily: "Outfit, sans-serif", height: Math.max(400, bots.length * 32), type: "heatmap", background: "transparent", toolbar: { show: true } },
+        dataLabels: { enabled: false },
+        plotOptions: {
+          heatmap: {
+            radius: 2, shadeIntensity: 0.8,
+            colorScale: {
+              ranges: [
+                { from: 0, to: 0, color: "#f3f4f6", name: "无" },
+                { from: 1, to: 100, color: "#dbeafe", name: "低" },
+                { from: 101, to: 500, color: "#93c5fd", name: "中" },
+                { from: 501, to: 1500, color: "#3b82f6", name: "高" },
+                { from: 1501, to: 10000, color: "#1d4ed8", name: "极高" },
+              ],
+            },
+          },
+        },
+        xaxis: { labels: { style: { fontSize: "10px" } }, axisBorder: { show: false }, axisTicks: { show: false } },
+        yaxis: { labels: { style: { fontSize: "10px" } } },
+        tooltip: { theme: "dark", y: { formatter: (val: number | null) => val === null ? "无数据" : `${val} 场对局` } },
+        stroke: { width: 1, colors: ["#fff"] },
+      };
+      return { series, options };
+    }
+
+    // Default: win rate view
     const series = data.bots.map((botName, i) => ({
       name: botName.replace("claude_", "v"),
       data: data.bots.map((_, j) => ({
@@ -77,7 +124,7 @@ export default function MatchMatrix() {
     };
 
     return { series, options };
-  }, [data]);
+  }, [data, h2hRaw, viewMode]);
 
   if (!data || !data.bots.length) {
     return <div className="p-6 text-gray-500 dark:text-gray-400">加载中...</div>;
@@ -88,12 +135,30 @@ export default function MatchMatrix() {
       <PageMeta title="对局矩阵 — Bot 自进化" description="Bot 间的 Head-to-Head 胜率" />
       <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
         <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800">
-          <h3 className="text-lg font-semibold text-gray-800 dark:text-white">Head-to-Head 胜率矩阵</h3>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            {data.source === "h2h"
-              ? "每格表示行 Bot 对列 Bot 的胜率（蓝=强，红=弱）"
-              : "所有 Bot 之间的一对一对局次数"}
-          </p>
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-800 dark:text-white">Head-to-Head 胜率矩阵</h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                {viewMode === "winrate"
+                  ? "每格表示行 Bot 对列 Bot 的胜率（蓝=强，红=弱）"
+                  : "每格表示行 Bot 与列 Bot 之间的对局总数"}
+              </p>
+            </div>
+            <div className="flex gap-1">
+              <button
+                onClick={() => setViewMode("winrate")}
+                className={`px-3 py-1 text-xs rounded-l border ${viewMode === "winrate" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-300 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-600"}`}
+              >
+                胜率
+              </button>
+              <button
+                onClick={() => setViewMode("count")}
+                className={`px-3 py-1 text-xs rounded-r border ${viewMode === "count" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-300 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-600"}`}
+              >
+                对局数
+              </button>
+            </div>
+          </div>
         </div>
         <div className="p-5">
           <Chart

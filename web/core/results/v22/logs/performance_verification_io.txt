@@ -59,3 +59,72 @@ Set `diversity_needed: true` if: trend is stagnant/declining for 2+ gens, OR the
   "suggestion": "Branch the next generation from a lower-rated but structurally different ancestor (e.g., claude_v18 or claude_v6) and apply an aggressive structural rewrite — such as replacing the static hand strength model with an equity-based range-aware evaluation, or switching from fixed-threshold to adaptive multi-street decision logic — to search a genuinely new region of strategy space rather than continuing to polish the v4 lineage."
 }
 ```
+
+[PERFORMANCE ANALYST PROMPT]
+=============================
+You are a Performance Verification Analyst for a self-evolving poker bot system.
+Your job: synthesise the quantitative data below into actionable LLM-readable insight.
+
+Current bot under analysis: claude_v22
+
+## Rating History (last 10 periods, top rating)
+  Period 79: top_r=1666
+  Period 80: top_r=1631
+  Period 81: top_r=1631
+  Period 82: top_r=1631
+  Period 83: top_r=1631
+  Period 84: top_r=1631
+  Period 85: top_r=1636
+  Period 86: top_r=1636
+  Period 87: top_r=1653
+  Period 88: top_r=1653
+
+## Overall Win Rate
+  claude_v22: 60% overall (60 games)
+
+## Head-to-Head Results (per-opponent)
+  vs claude_v15: 4W-6L (40%)
+  vs claude_v4: 5W-5L (50%)
+  vs claude_v12: 5W-5L (50%)
+  vs claude_v18: 6W-4L (60%)
+  vs claude_v19: 6W-4L (60%)
+  vs claude_v1: 10W-0L (100%) ← STRENGTH
+
+## Top Active Bots
+  claude_v5: r=1653 rd=67
+  claude_v8: r=1635 rd=61
+  claude_v9: r=1613 rd=61
+  claude_v6: r=1612 rd=61
+  claude_v19: r=1603 rd=61
+
+Produce a JSON block answering:
+```json
+{"trend": "improving|stagnant|declining",
+ "verified_improvements": ["list of things that actually helped recent gens"],
+ "persistent_weaknesses": ["list of recurring problems not yet fixed"],
+ "diversity_needed": true|false,
+ "diversity_reason": "why diversity is needed (or null)",
+ "suggestion": "one concrete high-priority suggestion for next gen"}
+```
+Set `diversity_needed: true` if: trend is stagnant/declining for 2+ gens, OR the last 2 gens applied the same type of change. Be direct and concise.
+=============================
+[CLAUDE OUTPUT]
+```json
+{
+  "trend": "improving",
+  "verified_improvements": [
+    "Rating climbed from 1631 (period 80-84) to 1653 (period 87-88), breaking a 5-period plateau",
+    "Solid 60% win rates against mid-tier opponents (v18, v19)",
+    "Reliable exploitation of weak opponents (100% vs v1)"
+  ],
+  "persistent_weaknesses": [
+    "Losing record vs claude_v15 (40%) — likely a stronger/near-peer bot exploiting a specific leak in v22's strategy",
+    "Even matches vs v4 and v12 (50%) — no edge against established mid-tier bots",
+    "Still below period-79 peak of 1666; the 'improvement' is recovery, not breakthrough",
+    "v22 absent from top-5 active bots (v5 leads at 1653 rd=67), meaning v22 hasn't surpassed legacy versions"
+  ],
+  "diversity_needed": true,
+  "diversity_reason": "Rating was flat at 1631 for 5 consecutive periods (80-84); recent gains are modest and may reflect noise from small sample (60 games). v22 fails to beat any top-5 bot convincingly, suggesting the current strategic approach has plateaued and cannot surpass v5 (1653) with incremental tuning alone.",
+  "suggestion": "Target the v15 matchup specifically — assign the Algorithmic Logic Architect to analyze v15 replays and identify the exploitable pattern causing the 40% loss rate, then build a counter-strategy. Simultaneously, branch the Hyperparameter Tuner from a different ancestor (e.g., v5 or v8) to introduce architectural diversity and escape the local optimum around 1630-1650."
+}
+```

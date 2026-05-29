@@ -146,3 +146,181 @@ MODE: Continuous evolution. After completing one generation, immediately start t
 
 
 [OUTPUT]
+The checkpoint says v22 passed quality gates and I need to run `run_review` next. The Master plan is saved in session history. Let me load the tools and proceed with the review.
+[tool: ToolSearch]
+Let me run the code review on v22. The Master plan had two tasks: Worker 1 (Algorithmic Logic Architect - port v12 features) and Worker 2 (Hyperparameter Tuner - preflop thresholds).
+[tool: mcp__evolution__run_review]
+**Review approved!** Score: 7/10. Risk areas noted (aggressive preflop ranges, untested donk/thin value features) but no blockers. Now let me run the Strategy Critic.
+[tool: mcp__evolution__run_critic]
+
+[tool: mcp__evolution__run_critic]
+**Critic approved!** Score: 7/10. Strategic assessment: conservative implementation with strict safety guards. No local optima warning. 
+
+All three mandatory checks passed:
+1. ✅ Quality gates: `all_passed: true`
+2. ✅ Review: `approved: true`, score 7
+3. ✅ Critic: score 7, `approved: true`
+
+Now committing v22.
+[tool: mcp__evolution__commit_bot]
+**v22 committed!** 🎉
+
+---
+
+## Generation v22 Summary
+
+**Source**: claude_v21 (r≈1580) → **Target**: claude_v22
+
+**Changes Made:**
+1. **Worker 1 (Logic Architect)**: Ported 5 features from v12 (top-rated bot):
+   - `river_thin_value_profile` — fixes 0% river raise in losses (strict: top_pair/overpair only, kicker≥10, no dynamic boards)
+   - `river_bluff_ev` — EV-based bluff analysis
+   - `donk_bet_profile` — OOP lead betting on wet boards
+   - `spr_profile` — Stack-to-pot ratio awareness for sizing
+   - `turn_barrel_profile` — Turn barrel continuation analysis
+   - Integrated all into `strategy.py` with SPR-aware threshold adjustments
+
+2. **Worker 2 (Tuning)**: Tuned 7 preflop thresholds:
+   - `call_threshold`: 0.42 → 0.34 (BB defense widened)
+   - `open_threshold`: 0.49 → 0.43 (SB opening widened)
+   - `limp_threshold`: 0.36 → 0.27 (fewer folds)
+   - Plus iso-raise, fold condition, 4bet range, 3bet call window
+
+3. **Refactoring**: Extracted helpers to `strategy_helpers.py` (579 lines), reducing `strategy.py` from 1259 → 748 lines.
+
+**Quality Gates**: ✅ All passed (compile, smoke, decisions 93%, file size)
+**Review**: ✅ Approved, score 7/10
+**Critic**: ✅ Approved, score 7/10
+
+---
+
+Now starting the next generation. Let me check fresh status.
+[tool: mcp__evolution__get_status]
+**New generation (v23) starting.** v22 just committed with 0 games — needs evaluation. v8 leads at 1624.9. Let me do housekeeping and wait for v22 eval.
+[tool: mcp__evolution__reap_weakest]
+
+[tool: mcp__evolution__trim_experience]
+
+[tool: mcp__evolution__wait_for_eval]
+v22 has no games yet (still at default 1500/350). Let me check if the daemon is running and processing.
+[tool: Bash]
+
+[tool: Bash]
+Daemon is running (14 workers, 5 pairs). v22 just committed — needs time to accumulate games. Since the daemon is active, let me try a shorter wait.
+[tool: mcp__evolution__wait_for_eval]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+v22 is registered but no games yet. The daemon should pick it up soon. Rather than waiting indefinitely, I'll proceed with the pipeline using what we know. v22 was built from v21 analysis, so I'll run match analysis on v21 as proxy and note the uncertainty.
+[tool: mcp__evolution__run_match_analysis]
+
+[tool: mcp__evolution__run_performance_verification]
+Match analysis empty (no v22 games yet), but performance verification gave useful pool-level insights:
+- **Trend: stagnant** — rating ceiling at ~1648 for 8 periods
+- **diversity_needed: true** — structural changes required
+- Suggests branching from different ancestor
+
+Let me run Master to plan v23, noting that v22's structural changes haven't been evaluated yet.
+[tool: mcp__evolution__run_master]
+**Master plan for v23**: Focus on **critical parameter bug fixes** from the experience pool — orthogonal to v22's structural changes:
+1. Fix wrong opponent priors (vpip/pfr)
+2. Remove harmful exploit_lambda
+3. Lower too-high EQR values
+4. Add classify_opponent_style function
+5. Lower jam buffer cap 0.14→0.11
+
+Let me prepare v23 and execute the worker.
+[tool: ToolSearch]
+
+[tool: mcp__evolution__prepare_next_gen]
+v23 prepared. Now executing the worker with the bug fix plan.
+[tool: mcp__evolution__execute_workers]
+`execute_workers` still has the internal error. I'll make the bug fixes manually — they're well-defined and targeted. Let me read the relevant files and apply each fix.
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+Interesting! Many fixes are already applied from v22 or earlier iterations:
+- ✅ **Bug 1**: vpip=0.58, pfr=0.28, weight=3.5 (lines 138-139)
+- ✅ **Bug 2**: exploit_lambda not found in strategy.py (already removed)
+- ✅ **Bug 5**: jam/shove buffer capped at 0.11 (lines 266, 292)
+- ✅ **Bug 3 partial**: Air EQR = 0.65/0.53, marginal = 0.84/0.73
+
+Let me check Bug 3 (pot > 3000 penalty) and Bug 4 (classify_opponent_style).
+[tool: Bash]
+
+[tool: Bash]
+All 5 bugs are already fixed in v22 (and thus in v23)! Let me verify v22 and v23 are identical.
+[tool: Bash]
+
+[tool: Bash]
+There ARE differences in 3 files. Let me check what the actual changes are.
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+All 5 bug fixes are present in v23! The diffs confirm:
+
+1. ✅ **opponent.py**: vpip 0.52→0.58, pfr 0.24→0.28, weight 4.0→3.5, + classify_opponent_style function
+2. ✅ **strategy.py**: Removed exploit_lambda, added style_deltas propagation, jam/shove cap 0.14→0.11, bluff threshold adjustments
+3. ✅ **strategy_helpers.py**: Air EQR 0.68/0.56→0.65/0.53
+
+The worker apparently ran before the internal error. Let me run quality gates.
+[tool: mcp__evolution__run_quality_gates]
+All quality gates passed! ✅ Now code review.
+[tool: mcp__evolution__run_review]
+**Review approved!** Score: 8/10. Clean, targeted bug fixes. Now the Strategy Critic.
+[tool: mcp__evolution__run_critic]
+**Critic approved!** Score: 8/10. All changes grounded in documented experience pool lessons. No local optima warning.
+
+All three mandatory checks passed:
+1. ✅ Quality gates: `all_passed: true`
+2. ✅ Review: `approved: true`, score 8/10
+3. ✅ Critic: score 8/10, `approved: true`
+
+Committing v23.
+[tool: mcp__evolution__commit_bot]
+**v23 committed!** 🎉
+
+---
+
+## Generation v23 Summary
+
+**Source**: claude_v22 → **Target**: claude_v23
+
+**Changes Made** (5 critical bug fixes from experience pool):
+1. **Opponent priors**: vpip 0.52→0.58, pfr 0.24→0.28, weight 4.0→3.5 — fixes all downstream opponent modeling
+2. **Removed exploit_lambda**: Eliminated harmful GTO/exploitive blending that corrupted decision thresholds
+3. **classify_opponent_style**: New function classifying opponents as nit/maniac/station/fold_heavy, with confidence-scaled deltas propagated to strong/medium thresholds and all bluff thresholds
+4. **EQR lowered**: Air-hand EQR 0.68/0.56→0.65/0.53 (proven v9 values) to reduce over-realization of weak hands
+5. **Jam/shove buffer**: Cap tightened 0.14→0.11 to reduce marginal all-ins
+
+**Quality Gates**: ✅ All passed (compile, smoke, decisions 93%, size)
+**Review**: ✅ Approved, score 8/10
+**Critic**: ✅ Approved, score 8/10
+
+---
+
+Now starting v24. Let me check fresh status.
+[tool: mcp__evolution__get_status]
+**v24 starting.** v22 at r=1589.8 (rd=66.5, 7th place) — structural changes showing promise. v23 just committed with bug fixes. Let me do housekeeping and wait for evaluation.
+[tool: mcp__evolution__reap_weakest]
+
+[tool: mcp__evolution__trim_experience]
+
+[tool: mcp__evolution__wait_for_eval]
+v23 not yet evaluated. I'll use v22 (which has games, r=1589.8) as the analysis proxy since v23 only added bug fixes on top. Let me run analysis on v22.
+[tool: mcp__evolution__run_match_analysis]
+
+[tool: mcp__evolution__run_performance_verification]

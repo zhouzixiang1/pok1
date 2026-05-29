@@ -1,4 +1,7 @@
+import { useEffect, useState } from "react";
+import { Link } from "react-router";
 import { useRatings, useMatchStats, useDaemonStatus } from "../context/DataProvider";
+import { api } from "../api/client";
 import PageMeta from "../components/common/PageMeta";
 
 function ConfidenceBadge({ level }: { level: string }) {
@@ -75,9 +78,21 @@ function DaemonStatusWidget() {
   );
 }
 
+function formatLastPeriod(val: string): string {
+  if (!val) return "—";
+  const parsed = new Date(val);
+  if (isNaN(parsed.getTime())) return val;
+  return parsed.toLocaleString();
+}
+
 export default function Overview() {
   const ratings = useRatings();
   const stats = useMatchStats();
+  const [summary, setSummary] = useState<Record<string, { peak_rating: number; current_rating: number; trend: number; periods: number }>>({});
+
+  useEffect(() => {
+    api.historySummary().then(setSummary).catch(() => {});
+  }, []);
 
   if (ratings.length === 0) {
     return <div className="p-6 text-gray-500 dark:text-gray-400">加载中...</div>;
@@ -110,29 +125,46 @@ export default function Overview() {
                 <th className="px-5 py-3 font-medium">Bot</th>
                 <th className="px-5 py-3 font-medium">评分</th>
                 <th className="px-5 py-3 font-medium">RD</th>
+                <th className="px-5 py-3 font-medium">波动率</th>
                 <th className="px-5 py-3 font-medium">保守评分</th>
                 <th className="px-5 py-3 font-medium">胜率</th>
                 <th className="px-5 py-3 font-medium">场数</th>
+                <th className="px-5 py-3 font-medium">趋势</th>
                 <th className="px-5 py-3 font-medium">置信度</th>
                 <th className="px-5 py-3 font-medium">最后更新</th>
               </tr>
             </thead>
             <tbody>
-              {ratings.map((bot) => (
-                <tr key={bot.name} className="border-b border-gray-50 dark:border-gray-800/50 hover:bg-gray-50 dark:hover:bg-gray-800/30">
-                  <td className="px-5 py-3 font-medium text-gray-800 dark:text-gray-200">#{bot.rank}</td>
-                  <td className="px-5 py-3 font-medium text-gray-800 dark:text-white">{bot.name.replace("claude_", "v")}</td>
-                  <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{bot.rating.toFixed(1)}</td>
-                  <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{bot.rd.toFixed(1)}</td>
-                  <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{bot.conservative_rating.toFixed(1)}</td>
-                  <td className="px-5 py-3 text-gray-600 dark:text-gray-300">
-                    {bot.win_rate != null ? `${(bot.win_rate * 100).toFixed(1)}%` : "—"}
-                  </td>
-                  <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{bot.games ?? "—"}</td>
-                  <td className="px-5 py-3"><ConfidenceBadge level={bot.confidence} /></td>
-                  <td className="px-5 py-3 text-gray-400 text-xs">{bot.last_period ? new Date(bot.last_period).toLocaleString() : "—"}</td>
-                </tr>
-              ))}
+              {ratings.map((bot) => {
+                const s = summary[bot.name];
+                return (
+                  <tr key={bot.name} className="border-b border-gray-50 dark:border-gray-800/50 hover:bg-gray-50 dark:hover:bg-gray-800/30">
+                    <td className="px-5 py-3 font-medium text-gray-800 dark:text-gray-200">#{bot.rank}</td>
+                    <td className="px-5 py-3 font-medium">
+                      <Link to="/bots" className="text-gray-800 dark:text-white hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                        {bot.name.replace("claude_", "v")}
+                      </Link>
+                    </td>
+                    <td className="px-5 py-3 text-gray-600 dark:text-gray-300" title={s ? `峰值: ${s.peak_rating.toFixed(1)}` : undefined}>{bot.rating.toFixed(1)}</td>
+                    <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{bot.rd.toFixed(1)}</td>
+                    <td className="px-5 py-3 text-gray-400 text-xs">{bot.sigma.toFixed(4)}</td>
+                    <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{bot.conservative_rating.toFixed(1)}</td>
+                    <td className="px-5 py-3 text-gray-600 dark:text-gray-300">
+                      {bot.win_rate != null ? `${(bot.win_rate * 100).toFixed(1)}%` : "—"}
+                    </td>
+                    <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{bot.games ?? "—"}</td>
+                    <td className="px-5 py-3 text-xs">
+                      {s ? (
+                        <span className={s.trend > 0 ? "text-green-600" : s.trend < 0 ? "text-red-600" : "text-gray-400"}>
+                          {s.trend > 0 ? "↑" : s.trend < 0 ? "↓" : "→"} {s.trend > 0 ? "+" : ""}{s.trend.toFixed(1)}
+                        </span>
+                      ) : "—"}
+                    </td>
+                    <td className="px-5 py-3"><ConfidenceBadge level={bot.confidence} /></td>
+                    <td className="px-5 py-3 text-gray-400 text-xs">{formatLastPeriod(bot.last_period)}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

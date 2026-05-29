@@ -45,7 +45,7 @@ export function useEvolutionSSE(
     onIO?: (line: IOLine) => void;
     onClearIO?: () => void;
     onEvalTable?: (rows: EvolutionState["ratings"]) => void;
-    onDaemon?: (data: { total_matches: number; total_periods: number; n_bots: number }) => void;
+    onDaemon?: (data: { total_matches: number; total_periods: number; total_games: number; n_bots: number }) => void;
     onHeader?: (msg: string) => void;
     onCost?: (data: {
       role: string;

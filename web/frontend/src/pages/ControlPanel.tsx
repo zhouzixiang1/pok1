@@ -41,6 +41,8 @@ const TOOL_GROUPS: { label: string; tools: ToolDef[] }[] = [
       { name: "get_status", description: "获取当前进化系统状态、评分、评分引擎状态。", params: [] },
       { name: "get_bot_info", description: "查看 Bot 的详细信息：评分、父代、文件、代码大小。", params: [{ name: "version", type: "int", placeholder: "22" }] },
       { name: "get_match_history", description: "查看指定 Bot 的近期对局结果。", params: [{ name: "version", type: "int", placeholder: "22" }, { name: "n", type: "int", placeholder: "5", optional: true }] },
+      { name: "get_h2h", description: "查看指定 Bot 的 Head-to-Head 胜率数据（按对手）。", params: [{ name: "bot_name", type: "str", placeholder: "claude_v22" }, { name: "opponent", type: "str", placeholder: "claude_v21", optional: true }] },
+      { name: "get_bot_stats", description: "查看指定 Bot 的总战绩：胜/负/平/场数/胜率。", params: [{ name: "bot_name", type: "str", placeholder: "claude_v22" }] },
     ],
   },
   {
@@ -54,11 +56,11 @@ const TOOL_GROUPS: { label: string; tools: ToolDef[] }[] = [
   {
     label: "进化流程",
     tools: [
-      { name: "run_master", description: "运行主架构师，规划下一代任务分配。", params: [{ name: "source_v", type: "int" }, { name: "next_v", type: "int" }, { name: "stagnation_info", type: "str", placeholder: "无停滞", optional: true }, { name: "match_analysis", type: "str", placeholder: "", optional: true }] },
+      { name: "run_master", description: "运行主架构师，规划下一代任务分配。", params: [{ name: "source_v", type: "int" }, { name: "next_v", type: "int" }, { name: "stagnation_info", type: "str", placeholder: "无停滞", optional: true }, { name: "match_analysis", type: "str", placeholder: "", optional: true }, { name: "performance_verification", type: "str", placeholder: "", optional: true }] },
       { name: "execute_workers", description: "执行 Worker 任务以修改 Bot 代码。", params: [{ name: "tasks", type: "list", placeholder: "[]" }, { name: "next_v", type: "int" }, { name: "source_v", type: "int" }, { name: "reviewer_feedback", type: "str", placeholder: "", optional: true }] },
       { name: "run_quality_gates", description: "运行编译、冒烟测试、决策测试、文件大小检查。", params: [{ name: "version", type: "int" }] },
       { name: "run_review", description: "运行首席代码审核员。返回通过/拒绝及评分。", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int" }, { name: "plan", type: "list", placeholder: "[]" }] },
-      { name: "run_critic", description: "运行扑克策略评论家。评分 1-10；≥6 = 通过。", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int" }, { name: "plan", type: "list", placeholder: "[]" }, { name: "reviewer_feedback", type: "str", placeholder: "", optional: true }] },
+      { name: "run_critic", description: "运行扑克策略评论家。评分 1-10；≥6 = 通过。", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int" }, { name: "plan", type: "list", placeholder: "[]" }, { name: "reviewer_feedback", type: "str", placeholder: "", optional: true }, { name: "force_advance", type: "bool", optional: true }] },
     ],
   },
   {
@@ -74,7 +76,7 @@ const TOOL_GROUPS: { label: string; tools: ToolDef[] }[] = [
     tools: [
       { name: "start_daemon", description: "启动后台评分引擎（镜像对战 + 评分）。", params: [{ name: "workers", type: "int", placeholder: "14", optional: true }, { name: "pairs", type: "int", placeholder: "5", optional: true }] },
       { name: "stop_daemon", description: "停止后台评分引擎。", params: [] },
-      { name: "wait_for_eval", description: "等待评分引擎评估 Bot（足够对局 + 低 RD）。", params: [{ name: "version", type: "int" }, { name: "timeout", type: "int", placeholder: "600", optional: true }, { name: "min_matches", type: "int", placeholder: "20", optional: true }, { name: "max_rd", type: "int", placeholder: "40", optional: true }] },
+      { name: "wait_for_eval", description: "等待评分引擎评估 Bot（足够对局数）。", params: [{ name: "version", type: "int" }, { name: "timeout", type: "int", placeholder: "600", optional: true }, { name: "min_games", type: "int", placeholder: "100", optional: true }] },
       { name: "run_inline_eval", description: "让 Bot 与所有活跃对手对战并更新评分。", params: [{ name: "version", type: "int" }, { name: "n_games", type: "int", placeholder: "5", optional: true }] },
     ],
   },

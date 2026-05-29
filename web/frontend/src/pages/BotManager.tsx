@@ -1,9 +1,9 @@
 import { useEffect, useState, useCallback } from "react";
 import { api } from "../api/client";
-import type { BotSummary, BotDetail } from "../api/types";
+import type { BotSummary, BotDetail, H2HEntry } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
 import { controlApi } from "../api/control";
-import { useBots } from "../context/DataProvider";
+import { useBots, useH2H } from "../context/DataProvider";
 
 // ── Inline SVG helpers ─────────────────────────────────────────────────────────
 const TombIcon = ({ className }: { className?: string }) => (
@@ -27,7 +27,7 @@ function RatingBadge({ r, rd, winRate, games }: { r: number; rd: number; winRate
   );
 }
 
-function BotCard({ bot, onAction }: { bot: BotSummary; onAction: (msg: string) => void }) {
+function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<string, H2HEntry>; onAction: (msg: string) => void }) {
   const [expanded, setExpanded] = useState(false);
   const [detail, setDetail] = useState<BotDetail | null>(null);
   const [selectedFile, setSelectedFile] = useState("");
@@ -72,6 +72,17 @@ function BotCard({ bot, onAction }: { bot: BotSummary; onAction: (msg: string) =
     setToolLoading("eval");
     try {
       const r = await controlApi.callTool("run_inline_eval", { version: bot.version, n_games: 5 });
+      onAction(r.result || r.error || "完成");
+    } finally {
+      setToolLoading(null);
+    }
+  };
+
+  const handleCommit = async () => {
+    if (!confirm(`确认提交 ${bot.name}？将创建 git commit 和 tag。`)) return;
+    setToolLoading("commit");
+    try {
+      const r = await controlApi.callTool("commit_bot", { version: bot.version, source_v: bot.version - 1, strategy: "", review_approved: true });
       onAction(r.result || r.error || "完成");
     } finally {
       setToolLoading(null);
@@ -146,8 +157,53 @@ function BotCard({ bot, onAction }: { bot: BotSummary; onAction: (msg: string) =
                   >
                     <PlayIcon /> {toolLoading === "eval" ? "运行中..." : "快速评估 (5 局)"}
                   </button>
+                  <button
+                    onClick={handleCommit}
+                    disabled={toolLoading === "commit"}
+                    className="px-3 py-1.5 text-xs rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50 flex items-center gap-1"
+                  >
+                    <CheckIcon /> {toolLoading === "commit" ? "提交中..." : "提交"}
+                  </button>
                 </div>
               )}
+
+              {/* H2H breakdown */}
+              {(() => {
+                const opponents: Array<{ name: string; wr: number; games: number }> = [];
+                for (const [key, val] of Object.entries(h2hData)) {
+                  const parts = key.split(" vs ");
+                  if (parts.length !== 2) continue;
+                  const isA = parts[0] === bot.name;
+                  const opp = isA ? parts[1] : parts[0];
+                  if (!isA && parts[1] !== bot.name) continue;
+                  const wr = isA ? val.a_wins / val.games : val.b_wins / val.games;
+                  if (!isNaN(wr)) opponents.push({ name: opp, wr, games: val.games });
+                }
+                if (opponents.length === 0) return null;
+                opponents.sort((a, b) => b.wr - a.wr);
+                return (
+                  <div>
+                    <h4 className="text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1">H2H 对战记录</h4>
+                    <div className="space-y-1">
+                      {opponents.map((opp) => (
+                        <div key={opp.name} className="flex items-center gap-2 text-xs">
+                          <span className="w-16 text-gray-600 dark:text-gray-400 truncate">{opp.name.replace("claude_", "v")}</span>
+                          <div className="flex-1 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${opp.wr > 0.6 ? "bg-green-500" : opp.wr < 0.4 ? "bg-red-500" : "bg-gray-400"}`}
+                              style={{ width: `${opp.wr * 100}%` }}
+                            />
+                          </div>
+                          <span className={`w-12 text-right font-mono ${opp.wr > 0.6 ? "text-green-600" : opp.wr < 0.4 ? "text-red-600" : "text-gray-500"}`}>
+                            {(opp.wr * 100).toFixed(0)}%
+                          </span>
+                          <span className="w-14 text-right text-gray-400">{opp.games} 场</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
             </>
           ) : (
             <div className="text-xs text-gray-400">加载详情中...</div>
@@ -165,13 +221,16 @@ const PlayIcon = ({ className }: { className?: string }) => (
 
 export default function BotManager() {
   const { active: rawBots, graveyard: rawGraveyard } = useBots();
+  const h2hData = useH2H();
   const bots = [...rawBots].sort((a, b) => b.version - a.version);
   const graveyard = [...rawGraveyard].sort((a, b) => b.version - a.version);
   const [showGraveyard, setShowGraveyard] = useState(false);
   const [message, setMessage] = useState("");
   const [prepForm, setPrepForm] = useState({ source_v: "", next_v: "" });
+  const [crossForm, setCrossForm] = useState({ parent_a: "", parent_b: "", target_v: "" });
   const [reapLoading, setReapLoading] = useState(false);
   const [prepLoading, setPrepLoading] = useState(false);
+  const [crossLoading, setCrossLoading] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -201,6 +260,21 @@ export default function BotManager() {
       await refresh();
     } finally {
       setPrepLoading(false);
+    }
+  };
+
+  const handleCrossover = async () => {
+    const pa = parseInt(crossForm.parent_a);
+    const pb = parseInt(crossForm.parent_b);
+    const tv = parseInt(crossForm.target_v);
+    if (!pa || !pb || !tv) return;
+    setCrossLoading(true);
+    try {
+      const r = await controlApi.callTool("run_crossover", { parent_a: pa, parent_b: pb, target_v: tv });
+      setMessage(r.result || r.error || "完成");
+      await refresh();
+    } finally {
+      setCrossLoading(false);
     }
   };
 
@@ -268,6 +342,48 @@ export default function BotManager() {
             <DocIcon /> {prepLoading ? "准备中..." : "准备下一代"}
           </button>
         </div>
+
+        <div className="flex items-end gap-2">
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">父代 A</label>
+            <select
+              value={crossForm.parent_a}
+              onChange={(e) => setCrossForm((p) => ({ ...p, parent_a: e.target.value }))}
+              className="w-24 px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-gray-700 rounded"
+            >
+              <option value="">选择</option>
+              {bots.map((b) => <option key={b.version} value={String(b.version)}>v{b.version}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">父代 B</label>
+            <select
+              value={crossForm.parent_b}
+              onChange={(e) => setCrossForm((p) => ({ ...p, parent_b: e.target.value }))}
+              className="w-24 px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-gray-700 rounded"
+            >
+              <option value="">选择</option>
+              {bots.map((b) => <option key={b.version} value={String(b.version)}>v{b.version}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">目标版本</label>
+            <input
+              type="number"
+              value={crossForm.target_v}
+              onChange={(e) => setCrossForm((p) => ({ ...p, target_v: e.target.value }))}
+              className="w-20 px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-gray-700 rounded"
+              placeholder="23"
+            />
+          </div>
+          <button
+            onClick={handleCrossover}
+            disabled={crossLoading || !crossForm.parent_a || !crossForm.parent_b || !crossForm.target_v}
+            className="px-4 py-2 text-sm rounded bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50"
+          >
+            {crossLoading ? "杂交中..." : "杂交"}
+          </button>
+        </div>
       </div>
 
       {/* Active bots */}
@@ -276,7 +392,7 @@ export default function BotManager() {
           活跃 Bot ({bots.length})
         </h2>
         {bots.map((bot) => (
-          <BotCard key={bot.name} bot={bot} onAction={setMessage} />
+          <BotCard key={bot.name} bot={bot} h2hData={h2hData} onAction={setMessage} />
         ))}
         {bots.length === 0 && <p className="text-sm text-gray-400">暂无活跃 Bot。</p>}
       </div>
@@ -293,7 +409,7 @@ export default function BotManager() {
         {showGraveyard && (
           <div className="space-y-2">
             {graveyard.map((bot) => (
-              <BotCard key={bot.name} bot={bot} onAction={setMessage} />
+              <BotCard key={bot.name} bot={bot} h2hData={h2hData} onAction={setMessage} />
             ))}
             {graveyard.length === 0 && <p className="text-sm text-gray-400">无已归档 Bot。</p>}
           </div>
