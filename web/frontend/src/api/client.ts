@@ -106,17 +106,3 @@ export const api = {
   clearOrchestratorSession: () => deleteReq<{ cleared: boolean; message: string }>(`${BASE}/control/orchestrator/session`),
 };
 
-export function useRatingsSSE(onData: (ratings: { name: string; rating: number; rd: number }[]) => void) {
-  const connect = () => {
-    const source = new EventSource(`${BASE}/ratings/stream`);
-    source.addEventListener("ratings", (e) => {
-      try { onData(JSON.parse(e.data)); } catch {}
-    });
-    source.onerror = () => {
-      source.close();
-      setTimeout(connect, 5000);
-    };
-    return source;
-  };
-  return connect;
-}

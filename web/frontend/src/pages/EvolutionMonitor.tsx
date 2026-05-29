@@ -27,11 +27,11 @@ const ThoughtIcon = ({ className }: { className?: string }) => (
 
 const PIPELINE_STAGES = ["prepared", "workers_done", "quality_passed", "reviewed", "critic_checked"];
 const STAGE_LABELS: Record<string, string> = {
-  prepared: "已准备",
-  workers_done: "工作器完成",
-  quality_passed: "质量通过",
-  reviewed: "已审核",
-  critic_checked: "策略审核",
+  prepared: "环境就绪",
+  workers_done: "Worker 完成",
+  quality_passed: "质量检查通过",
+  reviewed: "代码审核通过",
+  critic_checked: "策略审核通过",
 };
 
 function PipelineStatus({ checkpoint }: { checkpoint: PipelineCheckpoint | null }) {
@@ -102,7 +102,7 @@ function CostBreakdown({
         {costs.map((c) => (
           <div key={c.role} className="flex justify-between text-xs">
             <span className="text-gray-500 truncate max-w-[90px]">{c.role}</span>
-            <span className="text-gray-400 font-mono">{(c.input_tokens + c.output_tokens).toLocaleString()} 令牌</span>
+            <span className="text-gray-400 font-mono">{(c.input_tokens + c.output_tokens).toLocaleString()} tokens</span>
             <span className="text-gray-800 dark:text-gray-200 font-mono">${c.cost_usd.toFixed(4)}</span>
           </div>
         ))}
@@ -139,7 +139,7 @@ function WorkerProgress({ workers }: { workers: WorkerInfo[] }) {
   if (workers.length === 0) return null;
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-white/[0.03]">
-      <h3 className="mb-2 text-xs font-semibold uppercase text-gray-500">工作器</h3>
+      <h3 className="mb-2 text-xs font-semibold uppercase text-gray-500">Worker</h3>
       <div className="space-y-1">
         {workers.map((w) => (
           <div key={w.id} className="flex items-center gap-2 text-xs">
@@ -150,7 +150,7 @@ function WorkerProgress({ workers }: { workers: WorkerInfo[] }) {
               {w.status === "running" ? <StatusDot className="inline" /> : w.status === "done" ? <CheckIcon className="inline" /> : <CrossIcon className="inline" />}
             </span>
             <span className="text-gray-600 dark:text-gray-300">
-              工作器 {w.id}{w.role ? ` (${w.role})` : ""}
+              Worker {w.id}{w.role ? ` (${w.role})` : ""}
             </span>
           </div>
         ))}
@@ -428,7 +428,7 @@ export default function EvolutionMonitor() {
 
   return (
     <>
-      <PageMeta title="进化监控" description="实时进化视图" />
+      <PageMeta title="进化监控 — Bot 自进化" description="实时进化视图" />
 
       {/* Header */}
       <div className="mb-4 rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-white/[0.03]">
@@ -454,7 +454,7 @@ export default function EvolutionMonitor() {
                 onClick={() => setAutoScroll(!autoScroll)}
                 className={`rounded px-2 py-1 text-xs ${autoScroll ? "bg-blue-900/30 text-blue-400" : "text-gray-500"}`}
               >
-                {autoScroll ? "自动滚动 开" : "自动滚动 关"}
+                {autoScroll ? "自动滚动: 开" : "自动滚动: 关"}
               </button>
               <button
                 onClick={() => { setMessages([]); openToolId.current = null; }}
@@ -534,7 +534,7 @@ export default function EvolutionMonitor() {
               <div className="space-y-2">
                 {failures.map((f, i) => (
                   <div key={i} className="text-xs">
-                    <div className="font-medium text-red-700 dark:text-red-300">代 {f.gen} 工作器 {f.worker_id} ({f.role})</div>
+                    <div className="font-medium text-red-700 dark:text-red-300">第 {f.gen} 代 Worker {f.worker_id} ({f.role})</div>
                     <div className="text-red-500 dark:text-red-400 truncate">{f.error}</div>
                   </div>
                 ))}

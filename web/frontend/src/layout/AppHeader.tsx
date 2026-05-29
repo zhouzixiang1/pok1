@@ -35,7 +35,7 @@ const AppHeader: React.FC = () => {
           </button>
 
           <span className="lg:hidden text-lg font-semibold text-gray-800 dark:text-white">
-            进化仪表盘
+            Bot 自进化
           </span>
 
           <button
@@ -49,7 +49,7 @@ const AppHeader: React.FC = () => {
 
           <div className="hidden lg:block">
             <h1 className="text-xl font-semibold text-gray-800 dark:text-white">
-              进化仪表盘
+              Bot 自进化
             </h1>
           </div>
         </div>

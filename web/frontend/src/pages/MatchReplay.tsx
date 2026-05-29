@@ -1,8 +1,9 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import type { MatchSummary, MatchReplayData, DisplayFrame, GameReplay } from "../api/types";
+import type { MatchReplayData, DisplayFrame, GameReplay } from "../api/types";
 import { api } from "../api/client";
 import PokerTable from "../components/PokerTable";
 import PageMeta from "../components/common/PageMeta";
+import { useRecentMatches } from "../context/DataProvider";
 
 function extractFrames(game: GameReplay): DisplayFrame[] {
   const frames: DisplayFrame[] = [];
@@ -40,7 +41,7 @@ const NextHandIcon = ({ className }: { className?: string }) => (
 );
 
 export default function MatchReplay() {
-  const [matches, setMatches] = useState<MatchSummary[]>([]);
+  const matches = useRecentMatches();
   const [selectedMatch, setSelectedMatch] = useState<MatchReplayData | null>(null);
   const [currentHand, setCurrentHand] = useState(0);
   const [currentStep, setCurrentStep] = useState(0);
@@ -49,10 +50,6 @@ export default function MatchReplay() {
   const [speed, setSpeed] = useState(800);
   const [commentary, setCommentary] = useState<Record<string, string>>({});
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  useEffect(() => {
-    api.recentMatches(100).then(setMatches).catch(() => {});
-  }, []);
 
   const loadMatch = useCallback(async (id: string) => {
     const data = await api.matchReplay(id);
@@ -105,7 +102,7 @@ export default function MatchReplay() {
 
   return (
     <>
-      <PageMeta title="对局回放" description="扑克对局回放查看器" />
+      <PageMeta title="对局回放 — Bot 自进化" description="扑克对局回放查看器" />
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-4">
         {/* Match list */}
         <div className="xl:col-span-1">
@@ -115,7 +112,7 @@ export default function MatchReplay() {
             </h2>
             <div className="max-h-[600px] space-y-2 overflow-y-auto">
               {matches.length === 0 && (
-                <div className="text-xs text-gray-500">尚未记录任何对局。运行守护进程以生成回放。</div>
+                <div className="text-xs text-gray-500">尚未记录任何对局。运行评分引擎以生成回放。</div>
               )}
               {matches.map((m) => (
                 <button
@@ -152,8 +149,8 @@ export default function MatchReplay() {
           <div className="mb-4 rounded-2xl border border-gray-200 bg-gray-900 p-4 dark:border-gray-800">
             <PokerTable
               frame={currentFrame}
-              bot0Name={selectedMatch?.bot0 || "机器人 0"}
-              bot1Name={selectedMatch?.bot1 || "机器人 1"}
+              bot0Name={selectedMatch?.bot0 || "Bot 0"}
+              bot1Name={selectedMatch?.bot1 || "Bot 1"}
             />
           </div>
 

@@ -100,14 +100,14 @@ export default function PokerTable({ frame, bot0Name, bot1Name }: PokerTableProp
     ctx.fillStyle = "#fff";
     ctx.font = "bold 16px sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText(`底池: ${frame.pot}`, cx, H / 2 + TABLE_RY / 2);
+    ctx.fillText(`底池 ${frame.pot}`, cx, H / 2 + TABLE_RY / 2);
 
     // Phase & hand info
     ctx.font = "13px sans-serif";
     ctx.fillStyle = "rgba(255,255,255,0.7)";
     ctx.textAlign = "left";
     ctx.fillText(`手牌 ${frame.matchdata.hand + 1}/${frame.matchdata.max_hand}`, 20, 25);
-    ctx.fillText(`阶段: ${PHASES[frame.round] || "摊牌"}`, 20, 45);
+    ctx.fillText(`阶段 ${PHASES[frame.round] || "摊牌"}`, 20, 45);
 
     // Last action
     if (frame.last_action) {
@@ -171,10 +171,17 @@ function drawCard(ctx: CanvasRenderingContext2D, x: number, y: number, card: num
     ctx.fillStyle = "rgba(255,255,255,0.1)";
     roundRect(ctx, x + 4, y + 4, CARD_W - 8, CARD_H - 8, 3);
     ctx.fill();
-    ctx.fillStyle = "rgba(255,255,255,0.3)";
-    ctx.font = "bold 12px sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText("牌背", x + CARD_W / 2, y + CARD_H / 2 + 4);
+    // Diamond pattern instead of Chinese text (font rendering issues on canvas)
+    const cx2 = x + CARD_W / 2;
+    const cy2 = y + CARD_H / 2;
+    ctx.fillStyle = "rgba(255,255,255,0.25)";
+    ctx.beginPath();
+    ctx.moveTo(cx2, cy2 - 10);
+    ctx.lineTo(cx2 + 7, cy2);
+    ctx.lineTo(cx2, cy2 + 10);
+    ctx.lineTo(cx2 - 7, cy2);
+    ctx.closePath();
+    ctx.fill();
   }
 }
 
@@ -190,10 +197,10 @@ function drawPlayerInfo(
   }
   ctx.fillStyle = isTurn ? "#ffee58" : "#fff";
   ctx.font = "bold 14px sans-serif";
-  ctx.fillText(`${name}  筹码:${chips}`, x, y);
+  ctx.fillText(`${name}  筹码 ${chips}`, x, y);
   ctx.font = "11px sans-serif";
   ctx.fillStyle = "rgba(255,255,255,0.6)";
-  ctx.fillText(`累计: ${totalWin > 0 ? "+" : ""}${Math.floor(totalWin)}`, x, y + 15);
+  ctx.fillText(`累计 ${totalWin > 0 ? "+" : ""}${Math.floor(totalWin)}`, x, y + 15);
 }
 
 function drawActionLabel(
@@ -223,7 +230,7 @@ function drawRoundBet(ctx: CanvasRenderingContext2D, x: number, y: number, bet: 
     ctx.fillStyle = "#fff";
     ctx.font = "12px sans-serif";
     ctx.textAlign = "left";
-    ctx.fillText(`下注: ${bet}`, x, y + 10);
+    ctx.fillText(`下注 ${bet}`, x, y + 10);
   }
 }
 

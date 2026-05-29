@@ -1,8 +1,7 @@
-import { useEffect, useState, useMemo } from "react";
+import { useState, useMemo } from "react";
 import Chart from "react-apexcharts";
 import type { ApexOptions } from "apexcharts";
-import { api } from "../api/client";
-import type { HistoryEntry } from "../api/types";
+import { useHistory } from "../context/DataProvider";
 import PageMeta from "../components/common/PageMeta";
 
 const COLORS = [
@@ -13,16 +12,8 @@ const COLORS = [
 ];
 
 export default function RatingTrends() {
-  const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [loading, setLoading] = useState(true);
+  const history = useHistory();
   const [showConfidence, setShowConfidence] = useState(false);
-
-  useEffect(() => {
-    api.history([], "full")
-      .then(setHistory)
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
 
   const { series, categories } = useMemo(() => {
     if (!history.length) return { series: [] as ApexAxisChartSeries, categories: [] as string[] };
@@ -116,13 +107,13 @@ export default function RatingTrends() {
     [categories, showConfidence]
   );
 
-  if (loading) {
+  if (history.length === 0) {
     return <div className="p-6 text-gray-500 dark:text-gray-400">加载中...</div>;
   }
 
   return (
     <>
-      <PageMeta title="评分趋势 — 进化仪表盘" description="历史评分趋势" />
+      <PageMeta title="评分趋势 — Bot 自进化" description="历史评分趋势" />
       <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
           <h3 className="text-lg font-semibold text-gray-800 dark:text-white">评分趋势</h3>

@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from "react";
 import { api } from "../api/client";
-import type { GenerationLog, OrchestratorLogFile } from "../api/types";
+import type { OrchestratorLogFile } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
+import { useGenerations } from "../context/DataProvider";
 
 type Tab = "generation" | "orchestrator" | "conversation";
 
@@ -219,11 +220,10 @@ function ConvPartView({ part }: { part: ConvPart }) {
 export default function Logs() {
   const [tab, setTab] = useState<Tab>("generation");
 
-  const [generations, setGenerations] = useState<GenerationLog[]>([]);
+  const generations = useGenerations();
   const [selectedVersion, setSelectedVersion] = useState<string>("");
   const [selectedFile, setSelectedFile] = useState<string>("");
   const [logContent, setLogContent] = useState<string>("");
-  const [genLoading, setGenLoading] = useState(true);
 
   const [orchFiles, setOrchFiles] = useState<OrchestratorLogFile[]>([]);
   const [selectedOrch, setSelectedOrch] = useState<string>("");
@@ -235,13 +235,10 @@ export default function Logs() {
   const [convLoading, setConvLoading] = useState(false);
 
   useEffect(() => {
-    api.generations()
-      .then((gens) => {
-        setGenerations(gens);
-        if (gens.length > 0) setSelectedVersion(gens[gens.length - 1].version);
-      })
-      .finally(() => setGenLoading(false));
-  }, []);
+    if (generations.length > 0 && !selectedVersion) {
+      setSelectedVersion(generations[generations.length - 1].version);
+    }
+  }, [generations, selectedVersion]);
 
   useEffect(() => {
     if (selectedVersion) {
@@ -307,7 +304,7 @@ export default function Logs() {
 
   return (
     <>
-      <PageMeta title="日志 — 进化仪表盘" description="代际日志与编排器日志" />
+      <PageMeta title="日志 — Bot 自进化" description="迭代日志与编排器日志" />
 
       {/* Tab bar */}
       <div className="mb-4 flex gap-1">
@@ -321,7 +318,7 @@ export default function Logs() {
                 : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700"
             }`}
           >
-            {t === "generation" ? "代际日志" : t === "orchestrator" ? "编排器日志" : "LLM 对话"}
+            {t === "generation" ? "迭代日志" : t === "orchestrator" ? "编排器日志" : "LLM 对话"}
           </button>
         ))}
       </div>
@@ -330,9 +327,9 @@ export default function Logs() {
       {tab === "generation" && (
         <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
           <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800">
-            <h3 className="text-lg font-semibold text-gray-800 dark:text-white">代际日志</h3>
+            <h3 className="text-lg font-semibold text-gray-800 dark:text-white">迭代日志</h3>
           </div>
-          {genLoading ? (
+          {generations.length === 0 ? (
             <div className="p-6 text-gray-500">加载中...</div>
           ) : (
             <div className="flex">

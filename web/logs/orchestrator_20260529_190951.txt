@@ -135,3 +135,55 @@ MODE: Continuous evolution. After completing one generation, immediately start t
 
 
 [OUTPUT]
+I'll begin by checking the current status to understand the state of the evolution system.
+[tool: ToolSearch]
+Let me get the current status first.
+[tool: mcp__evolution__get_status]
+**Status Summary:**
+- v21: r=1564.6, rd=43.8 — unreliable, needs more matches
+- v22 directory exists (interrupted cycle) — need to assess
+- Top bot: v19 at 1608.6
+- 21 active bots, rating unreliable (rd > 40)
+
+Let me check the incomplete v22 state and v21's details.
+[tool: mcp__evolution__get_bot_info]
+
+[tool: mcp__evolution__get_bot_info]
+v22 has code (5123 lines, workers ran) but was interrupted before commit. Let me check the checkpoint state to see how far it got.
+[tool: ToolSearch]
+
+[tool: Bash]
+No checkpoint files in v22 — the cycle was interrupted early and we don't have the original Master plan. Without the plan, we can't properly run review/critic on v22. I'll clean it up and start fresh.
+
+Let me first do housekeeping, then wait for v21's rating to stabilize before starting the pipeline.
+[tool: Bash]
+
+[tool: mcp__evolution__reap_weakest]
+
+[tool: mcp__evolution__trim_experience]
+Good — v22 cleaned up, pool at 21 (no reap needed), experience trimmed. Now let me wait for v21's rating to stabilize before proceeding.
+[tool: mcp__evolution__wait_for_eval]
+v21 rating: r=1574.0, rd=42.3 — still above 40 threshold, but well under 60. I'll skip stagnation analysis and proceed with the pipeline. Rating is close to reliable.
+
+Now let me run match analysis and performance verification on v21 in parallel.
+[tool: mcp__evolution__run_match_analysis]
+
+[tool: mcp__evolution__run_performance_verification]
+**Key findings:**
+- **Preflop too tight**: 72-77% fold rate (should be ~40-50% for HU)
+- **River over-aggression**: 14-16% all-in rate causing catastrophic losses
+- **Trend: declining** — dropped from peak 1613
+- **diversity_needed: true** — structural change required, not incremental tuning
+
+Now let me run the Master Architect to plan v22, incorporating the diversity signal.
+[tool: mcp__evolution__run_master]
+Excellent plan from Master — two targeted workers addressing the two biggest leaks:
+1. **Worker 1**: Structural preflop overhaul (fold rate 72-77% → 40-50%)
+2. **Worker 2**: River aggression cap (all-in rate 14-16% → ≤8%)
+
+Let me prepare v22 and execute the workers.
+[tool: mcp__evolution__prepare_next_gen]
+Good, v22 prepared. Now let me execute both workers concurrently.
+[tool: mcp__evolution__execute_workers]
+
+[CYCLE DONE] cost=$0.2580

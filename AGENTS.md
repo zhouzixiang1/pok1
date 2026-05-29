@@ -9,9 +9,9 @@ This file provides essential context for AI coding agents working with this repo
 This project develops and benchmarks heads-up (2-player) No-Limit Texas Hold'em bots. It has two main facets:
 
 1. **Game Engine & Battle System** (`engine/`): A complete local poker engine with card evaluation, game state machine, subprocess-based bot battles, mirror-pair fairness matches, round-robin ELO tournaments, and anchor benchmarking.
-2. **LLM-Driven Evolution** (`evolution_workspace/`): An automated multi-agent pipeline where LLMs (Master Architect → Workers → Reviewer) iteratively improve bots based on match results, Glicko-2 ratings, and an experience pool of strategic lessons.
+2. **LLM-Driven Evolution** (`web/`): The unified entry point containing all evolution logic, web backend, and dashboard frontend. It implements an automated multi-agent pipeline where LLMs (Master Architect → Workers → Reviewer → Critic) iteratively improve bots based on match results, Glicko-2 ratings, and an experience pool of strategic lessons.
 
-Bots are written in Python (standard library only), tested locally, then uploaded to compete on Botzone. The evolution system can run headless or via a React/Vite dashboard with SSE streaming.
+Bots are written in Python (standard library only), tested locally, then uploaded to compete on Botzone. The evolution system can run via web dashboard (FastAPI + React), Textual TUI, or headless CLI.
 
 ---
 
@@ -52,37 +52,42 @@ Bots are written in Python (standard library only), tested locally, then uploade
 │   ├── claude_v1/ .. v17/      # LLM-evolved bots (single-file or modular)
 │   └── graveyard/              # Culled weak bots (gitignored)
 │
-├── evolution_workspace/        # LLM-driven evolution framework
-│   ├── evolution_manager.py    # Thin entry point (TUI or text mode)
-│   ├── evolution_core.py       # Main loop, LLM orchestration, ratings, git mgmt
-│   ├── elo_daemon.py           # Background Glicko-2 rating daemon
-│   ├── glicko2.py              # Glicko-2 math implementation
-│   ├── tui.py / tui.tcss       # Textual TUI dashboard
-│   ├── fast_evaluator.py       # One bot vs multiple opponents
-│   ├── smoke_tester.py         # 1-mirror-game crash test
-│   ├── decision_tester.py      # Scenario-based decision validation
-│   ├── test_scenarios.json     # Decision test scenarios
-│   ├── experience_pool.md      # Accumulated strategic lessons
-│   ├── prompts/                # LLM prompt templates
-│   │   ├── initial_prompt.md   # Genesis bot creation
-│   │   ├── master_prompt.md    # Analysis & planning
-│   │   ├── worker_prompt.md    # Code improvement tasks
-│   │   ├── reviewer_prompt.md  # Output validation
-│   │   └── crossover_prompt.md # Bot crossover + mutation
-│   ├── reference_bots/         # Baseline bots (bot1-bot6) for seeding
-│   └── results/                # Ratings, logs, history
+├── web/                        # Unified evolution entry point (replaces evolution_workspace + dashboard + orchestrator)
+│   ├── main.py                 # Unified launcher: web server OR Textual TUI
+│   ├── tui.py / tui.tcss       # Textual TUI dashboard (frontend-inspired dark theme)
+│   ├── core/                   # All evolution business logic
+│   │   ├── evolution_core.py   # Main loop, LLM orchestration, ratings, git mgmt
+│   │   ├── orchestrator.py     # LLM-driven orchestrator with MCP tools
+│   │   ├── tools.py            # MCP server tool definitions
+│   │   ├── elo_daemon.py       # Background Glicko-2 rating daemon
+│   │   ├── glicko2.py          # Glicko-2 math implementation
+│   │   ├── web_ui.py           # SSE broadcaster + WebUI bridge
+│   │   ├── commentary.py       # Match commentary generation
+│   │   ├── smoke_tester.py     # 1-mirror-game crash test
+│   │   ├── decision_tester.py  # Scenario-based decision validation
+│   │   ├── experience_pool.md  # Accumulated strategic lessons
+│   │   ├── prompts/            # LLM prompt templates
+│   │   │   ├── initial_prompt.md
+│   │   │   ├── master_prompt.md
+│   │   │   ├── worker_prompt.md
+│   │   │   ├── reviewer_prompt.md
+│   │   │   ├── crossover_prompt.md
+│   │   │   ├── critic_prompt.md
+│   │   │   └── orchestrator.md
+│   │   ├── reference_bots/     # Baseline bots (bot1-bot6) for seeding
+│   │   └── results/            # Ratings, logs, history, match replays
+│   ├── server/                 # FastAPI backend (modular routes)
+│   │   ├── app.py              # FastAPI app with lifespan
+│   │   ├── state.py            # Thread-safe global state
+│   │   └── routes/             # API route modules
+│   └── frontend/               # React 19 + Vite + Tailwind dashboard
+│       ├── src/pages/          # 10 pages including Overview, EvolutionMonitor, BotManager, etc.
+│       └── ...
 │
-├── orchestrator/               # Higher-level LLM orchestration layer
-│   ├── orchestrator.py         # Continuous evolution via LLM agent loop
-│   ├── tools.py                # MCP server tools for orchestrator
-│   └── prompts/orchestrator.md
-│
-├── dashboard/                  # Web dashboard for monitoring evolution
-│   ├── backend/app.py          # FastAPI with integrated evolution loop
-│   ├── backend/web_ui.py       # SSE broadcaster + WebUI bridge
-│   ├── backend/commentary.py   # Match commentary generation
-│   ├── frontend/               # React + Vite app
-│   └── start.sh                # Dev/prod startup script
+├── archive/                    # Archived legacy directories (preserved for history)
+│   ├── evolution_workspace/    # Old evolution core (superseded by web/core/)
+│   ├── orchestrator/           # Old orchestrator (merged into web/core/)
+│   └── dashboard/              # Old dashboard (merged into web/server/ + web/frontend/)
 │
 ├── scripts/                    # Botzone integration tools
 │   ├── botzone_upload_match.py # Full Botzone client (upload, rooms, matches)
@@ -124,47 +129,49 @@ python engine/anchor_runner.py 5 -n 100 -j 24
 # Results go to ladder_results/
 ```
 
-### Evolution System
+### Evolution System (Unified Web Entry Point)
 
 ```bash
-# Textual TUI mode (default)
-python evolution_workspace/evolution_manager.py
+# Web server mode (default: orchestrator + daemon + frontend)
+python web/main.py
 
-# Plain text mode
-python evolution_workspace/evolution_manager.py --no-tui
+# Classic evolution loop (web server)
+python web/main.py --mode classic
 
-# Inline evaluation (no background daemon)
-python evolution_workspace/evolution_manager.py --no-daemon
+# Manual mode (daemon only, no evolution loop)
+python web/main.py --mode manual
 
-# Custom daemon settings
-python evolution_workspace/evolution_manager.py --workers 8 --pairs 3
+# Textual TUI mode (frontend-inspired dashboard in terminal)
+python web/main.py --tui
+python web/main.py --tui --mode classic
+python web/main.py --tui --no-daemon --workers 8 --pairs 3
+
+# Standalone TUI (direct)
+python web/tui.py --mode orchestrator
+python web/tui.py --mode classic --no-daemon
 
 # Standalone background daemon
-python evolution_workspace/elo_daemon.py --pairs 5 --workers 14 --verbose
-
-# Fast evaluation (one bot vs opponents)
-python evolution_workspace/fast_evaluator.py bots/claude_v1/main.py bots/bot1/main.py bots/bot2/main.py -n 5 --output-dir results/test
+python web/core/elo_daemon.py --pairs 5 --workers 14 --verbose
 
 # Smoke test (1 mirror game vs reference bot)
-python evolution_workspace/smoke_tester.py bots/claude_v1/main.py
+python web/core/smoke_tester.py bots/claude_v1/main.py
 
 # Decision scenario tests
-python evolution_workspace/decision_tester.py bots/claude_v11/main.py --verbose
+python web/core/decision_tester.py bots/claude_v11/main.py --verbose
 ```
 
-### Dashboard
+### Web Dashboard
 
 ```bash
 # Development mode (backend + frontend dev servers)
-./dashboard/start.sh
-# Backend: http://localhost:8000
-# Frontend dev: http://localhost:5173
+cd web/frontend && npm run dev   # Vite dev server on :5173
+python web/main.py --dev         # FastAPI backend on :8000
 
 # Production mode (build frontend, serve from FastAPI)
-./dashboard/start.sh --build
+python web/main.py --no-build    # Skip build if already done
 
-# Dashboard only, no evolution
-./dashboard/start.sh --no-evolve
+# Frontend build only
+cd web/frontend && npm run build  # Outputs to web/server/static/
 ```
 
 ### Botzone Upload & Match
@@ -346,15 +353,30 @@ The primary deployment target is Botzone (botzone.org.cn):
 | Battle & mirror logic | `engine/battle.py` |
 | ELO tournament | `engine/ladder.py` |
 | Anchor benchmarking | `engine/anchor_runner.py` |
-| Evolution entry | `evolution_workspace/evolution_manager.py` |
-| Evolution core logic | `evolution_workspace/evolution_core.py` |
-| Glicko-2 math | `evolution_workspace/glicko2.py` |
-| Background daemon | `evolution_workspace/elo_daemon.py` |
-| Decision tests | `evolution_workspace/decision_tester.py` + `test_scenarios.json` |
-| Strategic lessons | `evolution_workspace/experience_pool.md` |
-| LLM prompts | `evolution_workspace/prompts/*.md` |
-| Dashboard backend | `dashboard/backend/app.py` |
-| Dashboard startup | `dashboard/start.sh` |
+| **Unified entry point** | **`web/main.py`** |
+| **Textual TUI** | **`web/tui.py`** |
+| Evolution core logic | `web/core/evolution_core.py` |
+| Orchestrator (LLM agent) | `web/core/orchestrator.py` |
+| MCP tools | `web/core/tools.py` |
+| Glicko-2 math | `web/core/glicko2.py` |
+| Background daemon | `web/core/elo_daemon.py` |
+| SSE / WebUI bridge | `web/core/web_ui.py` |
+| Decision tests | `web/core/decision_tester.py` + `web/core/test_scenarios.json` |
+| Strategic lessons | `web/core/experience_pool.md` |
+| LLM prompts | `web/core/prompts/*.md` |
+| FastAPI backend | `web/server/app.py` |
+| Dashboard frontend | `web/frontend/src/` |
 | Botzone client | `scripts/botzone_upload_match.py` |
 | Baseline bot (most sophisticated) | `bots/bot5/main.py` + modules |
 | Latest evolved bot | `bots/claude_v16/main.py` (or highest v{N}) |
+
+---
+
+## Post-Task Workflow
+
+After completing each task, always commit and push changes:
+```bash
+git add -A
+git commit -m "<descriptive message>"
+git push
+```

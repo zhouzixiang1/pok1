@@ -77,27 +77,6 @@ async def get_ratings():
     return rows
 
 
-@router.get("/ratings/stream")
-async def ratings_stream():
-    import asyncio
-    from sse_starlette.sse import EventSourceResponse
-
-    async def generate():
-        try:
-            while True:
-                data = _cached_read("ratings", RATINGS_FILE)
-                if data:
-                    rows = []
-                    for name, d in data.items():
-                        rows.append({"name": name, "rating": round(d["r"], 1), "rd": round(d["rd"], 1)})
-                    yield {"event": "ratings", "data": json.dumps(rows)}
-                await asyncio.sleep(2)
-        except asyncio.CancelledError:
-            pass
-
-    return EventSourceResponse(generate())
-
-
 @router.get("/ratings/{bot_name}")
 async def get_rating_detail(bot_name: str):
     data = _cached_read("ratings", RATINGS_FILE)

@@ -7,6 +7,7 @@ type NavItem = {
   name: string;
   icon: React.ReactNode;
   path?: string;
+  group?: string;
   subItems?: { name: string; path: string }[];
 };
 
@@ -15,53 +16,65 @@ const navItems: NavItem[] = [
     icon: <GridIcon />,
     name: "总览",
     path: "/",
+    group: "概览",
   },
   {
     icon: <BoltIcon />,
     name: "进化监控",
     path: "/evolution",
+    group: "概览",
   },
   {
     icon: <ChatIcon />,
     name: "对局回放",
     path: "/matches",
+    group: "对局",
   },
   {
     icon: <PieChartIcon />,
     name: "评分趋势",
     path: "/rating-trends",
+    group: "对局",
   },
   {
     icon: <TableIcon />,
     name: "对局矩阵",
     path: "/match-matrix",
+    group: "对局",
   },
   {
     icon: <PageIcon />,
-    name: "代际日志",
+    name: "迭代日志",
     path: "/logs",
+    group: "管理",
   },
   {
     icon: <PlugInIcon />,
     name: "控制面板",
     path: "/control",
+    group: "管理",
   },
   {
     icon: <BoxIcon />,
-    name: "机器人管理",
+    name: "Bot 管理",
     path: "/bots",
+    group: "管理",
   },
   {
     icon: <DocsIcon />,
     name: "经验池",
     path: "/experience",
+    group: "管理",
   },
   {
     icon: <FileIcon />,
     name: "提示词编辑器",
     path: "/prompts",
+    group: "管理",
   },
 ];
+
+const GROUP_ORDER = ["概览", "对局", "管理"];
 
 const LogoIcon = ({ className }: { className?: string }) => (
   <svg className={className} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -83,6 +96,13 @@ const AppSidebar: React.FC = () => {
     [location.pathname]
   );
 
+  const showLabels = isExpanded || isHovered || isMobileOpen;
+
+  const grouped = GROUP_ORDER.map((g) => ({
+    label: g,
+    items: navItems.filter((n) => n.group === g),
+  }));
+
   return (
     <aside
       className={`fixed mt-16 flex flex-col lg:mt-0 top-0 px-5 left-0 bg-white dark:bg-gray-900 dark:border-gray-800 text-gray-900 h-screen transition-all duration-300 ease-in-out z-50 border-r border-gray-200
@@ -94,10 +114,10 @@ const AppSidebar: React.FC = () => {
     >
       <div className={`py-8 flex ${!isExpanded && !isHovered ? "lg:justify-center" : "justify-start"}`}>
         <Link to="/" className="flex items-center gap-2">
-          {isExpanded || isHovered || isMobileOpen ? (
+          {showLabels ? (
             <span className="text-xl font-bold text-gray-800 dark:text-white flex items-center gap-2">
               <LogoIcon className="text-brand-500" />
-              进化系统
+              Bot 自进化
             </span>
           ) : (
             <LogoIcon className="text-brand-500" />
@@ -106,37 +126,39 @@ const AppSidebar: React.FC = () => {
       </div>
       <div className="flex flex-col overflow-y-auto duration-300 ease-linear no-scrollbar">
         <nav className="mb-6">
-          <div className="flex flex-col gap-4">
-            <div>
-              <h2
-                className={`mb-4 text-xs uppercase flex leading-[20px] text-gray-400 ${
-                  !isExpanded && !isHovered ? "lg:justify-center" : "justify-start"
-                }`}
-              >
-                {isExpanded || isHovered || isMobileOpen ? "菜单" : <HorizontaLDots className="size-6" />}
-              </h2>
-              <ul className="flex flex-col gap-4">
-                {navItems.map((nav) => (
-                  <li key={nav.name}>
-                    {nav.path && (
-                      <Link
-                        to={nav.path}
-                        className={`menu-item group ${isActive(nav.path) ? "menu-item-active" : "menu-item-inactive"}`}
-                      >
-                        <span
-                          className={`menu-item-icon-size ${isActive(nav.path) ? "menu-item-icon-active" : "menu-item-icon-inactive"}`}
+          <div className="flex flex-col gap-2">
+            {grouped.map((group, gi) => (
+              <div key={group.label}>
+                <h2
+                  className={`mb-3 text-xs uppercase flex leading-[20px] text-gray-400 ${
+                    !isExpanded && !isHovered ? "lg:justify-center" : "justify-start"
+                  }`}
+                >
+                  {showLabels ? group.label : gi === 0 ? <HorizontaLDots className="size-6" /> : <span className="h-6" />}
+                </h2>
+                <ul className="flex flex-col gap-1">
+                  {group.items.map((nav) => (
+                    <li key={nav.name}>
+                      {nav.path && (
+                        <Link
+                          to={nav.path}
+                          className={`menu-item group ${isActive(nav.path) ? "menu-item-active" : "menu-item-inactive"}`}
                         >
-                          {nav.icon}
-                        </span>
-                        {(isExpanded || isHovered || isMobileOpen) && (
-                          <span className="menu-item-text">{nav.name}</span>
-                        )}
-                      </Link>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </div>
+                          <span
+                            className={`menu-item-icon-size ${isActive(nav.path) ? "menu-item-icon-active" : "menu-item-icon-inactive"}`}
+                          >
+                            {nav.icon}
+                          </span>
+                          {showLabels && (
+                            <span className="menu-item-text">{nav.name}</span>
+                          )}
+                        </Link>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
           </div>
         </nav>
       </div>

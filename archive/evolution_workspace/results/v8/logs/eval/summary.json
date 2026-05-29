@@ -1,0 +1,48 @@
+{
+  "target_bot": "bots/claude_v8/main.py",
+  "results": {
+    "bots/claude_v1/main.py": {
+      "wins": 3,
+      "losses": 2,
+      "draws": 0,
+      "win_rate": 0.6
+    },
+    "bots/claude_v2/main.py": {
+      "wins": 4,
+      "losses": 1,
+      "draws": 0,
+      "win_rate": 0.8
+    },
+    "bots/claude_v3/main.py": {
+      "wins": 4,
+      "losses": 1,
+      "draws": 0,
+      "win_rate": 0.8
+    },
+    "bots/claude_v4/main.py": {
+      "wins": 1,
+      "losses": 4,
+      "draws": 0,
+      "win_rate": 0.2
+    },
+    "bots/claude_v5/main.py": {
+      "wins": 3,
+      "losses": 2,
+      "draws": 0,
+      "win_rate": 0.6
+    },
+    "bots/claude_v6/main.py": {
+      "wins": 2,
+      "losses": 3,
+      "draws": 0,
+      "win_rate": 0.4
+    },
+    "bots/claude_v7/main.py": {
+      "wins": 4,
+      "losses": 1,
+      "draws": 0,
+      "win_rate": 0.8
+    }
+  },
+  "average_win_rate": 0.6
+}

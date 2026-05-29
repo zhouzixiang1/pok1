@@ -110,7 +110,7 @@ export default function PromptEditor() {
 
   return (
     <>
-      <PageMeta title="提示词编辑器 — 进化仪表盘" description="编辑 LLM 提示词文件" />
+      <PageMeta title="提示词编辑器 — Bot 自进化" description="编辑 LLM 提示词文件" />
 
       <div className="flex h-[calc(100vh-8rem)] gap-4 overflow-hidden">
         {/* Left sidebar — prompt list */}
@@ -164,7 +164,7 @@ export default function PromptEditor() {
               )}
               <span className="ml-3 text-xs text-gray-500">{lines} 行</span>
               {selectedInfo?.mtime_str && (
-                <span className="ml-2 text-xs text-gray-400">修改于: {selectedInfo.mtime_str}</span>
+                <span className="ml-2 text-xs text-gray-400">最后修改: {selectedInfo.mtime_str}</span>
               )}
             </div>
             <div className="flex gap-2">

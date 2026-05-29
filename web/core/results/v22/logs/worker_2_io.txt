@@ -512,3 +512,67 @@ Now I have a thorough understanding of all the river-related code. Let me identi
 11. **`strong_river_overbet` size delta** (hand_evaluation.py line 351): `+0.18`
 
 Let me now make all the changes. I'll edit the key files:
+Now I have a thorough understanding of the codebase. Let me identify all the river-related constants and make the necessary adjustments. Let me make the edits systematically.
+
+**strategy.py changes:**
+Now the river call margin changes in postflop_call_margin within strategy.py:
+Now the river fold margin for weak hands (in the to_call > 0 section):
+Now the bad_river_bluff_candidate threshold:
+Now the river bluff, probe fold, and semi-bluff thresholds:
+Now the river blocker bluff conditions:
+Now the small_probe and check_probe thresholds:
+Now let me edit the bluff_analysis.py file:
+Now the hand_evaluation.py river overbet change:
+Now let me verify the changes:
+All changes look correct — only numeric constants/thresholds were modified, no new functions, classes, or control flow. Let me run the quality checks:
+All checks pass. Let me do the final self-review:
+Let me verify each anti-regression checklist item by examining the key paths:
+Good, the output format is `{"response": int(action)}` — unchanged.
+
+Now let me do a final comprehensive verification:
+Every single change is a numeric constant adjustment — no new functions, no new control flow, no new imports. Let me summarize all the changes made:
+
+## Summary of Changes
+
+### Files Modified
+- `bots/claude_v22/strategy.py` (20 numeric constant changes)
+- `bots/claude_v22/bluff_analysis.py` (2 numeric constant changes)
+- `bots/claude_v22/hand_evaluation.py` (1 numeric constant change)
+
+### Change Categories
+
+**1. River raise threshold increased (reduce raise frequency)**
+- `strong` river threshold: `0.59` → `0.67` (+14%)
+- `medium` turn/river threshold: `0.48` → `0.53` (+10%)
+
+**2. River all-in buffer increased (reduce all-in rate from ~15% to ≤8%)**
+- Jam buffer base: `0.02` → `0.04` (doubled)
+- Shove buffer base: `0.01` → `0.03` (tripled)
+- Max buffer cap: `0.14` → `0.18` (both jam and shove)
+
+**3. River bluff frequency drastically reduced**
+- River bluff base threshold: `0.62` → `0.78` (+26%)
+- River bluff pressure coefficient: `0.28` → `0.15` (-46%)
+- Probe fold base: `0.56` → `0.68` (+21%)
+- Probe fold coefficient: `0.32` → `0.18` (-44%)
+- Blocker bluff eligibility: `0.14` → `0.20` (+43% harder to qualify)
+- Blocker bluff frequency multiplier: `35.0` → `20.0` (-43%)
+- Blocker bluff strength ceiling: `0.16` → `0.10` (only absolute air)
+- Blocker bluff confidence requirement: `0.35` → `0.50` (+43%)
+
+**4. River bet sizing capped**
+- River base ratio: `0.85` → `0.70` (-18%)
+- Raise ratio cap: `1.45` → `1.20` (-17%)
+- River probe bonus: `0.05` → `0.00` (eliminated)
+- Blocker bluff probe base: `0.34` → `0.28` (-18%)
+- Strong river overbet delta: `0.18` → `0.08` (-56%)
+
+**5. River fold threshold increased (fold more marginal hands)**
+- River call margin vs large bets: `0.020` → `0.035` (+75%)
+- River air fold vs large bets: `0.018` → `0.030` (+67%)
+- River weak hand fold threshold: `0.40` → `0.50` (+25%)
+- Paired board river fold: `0.05` → `0.07` (+40%)
+- Bad river bluff catch range: `0.40` → `0.50` (+25%)
+- Small probe strength ceiling: `0.62` → `0.52` (-16%)
+- Check probe strength ceiling: `0.58` → `0.48` (-17%)
+- Check probe river exclusion: `0.18` → `0.30` (+67%)

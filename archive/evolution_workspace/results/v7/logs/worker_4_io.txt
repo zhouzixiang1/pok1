@@ -1,0 +1,593 @@
+
+[WORKER 4 (Hyperparameter Tuner) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Hyperparameter Tuner**.
+You must directly edit the source files in `bots/claude_v7/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v7/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+IMPORTANT RULES BASED ON YOUR ROLE:
+- If you are a "Hyperparameter Tuner", you MUST NOT add new algorithmic logic, classes, or complex methods. You are only allowed to modify numeric constants, float thresholds, and integer conditions.
+- If you are an "Algorithmic Logic Architect", you MUST NOT arbitrarily change finely-tuned parameters unless it is structurally necessary for your new algorithm.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+You are a Hyperparameter Tuner modifying bots/claude_v6/tournament.py. DO NOT change any algorithmic logic, add new functions, or modify function signatures. Your ONLY job is to adjust the anti-lock pressure parameter values to match bot5's (the #1 reference bot) proven values.
+
+## CHANGE: Update anti-lock parameters in apply_anti_lock_pressure()
+Find the function `apply_anti_lock_pressure()` in tournament.py. It should contain these lines:
+```python
+match_profile["protect"] = 0.0
+match_profile["chase"] = max(match_profile["chase"], 0.85)
+match_profile["threshold_delta"] = min(match_profile["threshold_delta"], -0.070)
+match_profile["sizing_delta"] = max(match_profile["sizing_delta"], 0.16)
+match_profile["open_delta"] = min(match_profile["open_delta"], -0.045)
+match_profile["bluff_delta"] = max(match_profile["bluff_delta"], 0.11)
+```
+
+Change these specific values to match bot5's proven settings:
+```python
+match_profile["protect"] = 0.0
+match_profile["chase"] = max(match_profile["chase"], 0.90)
+match_profile["threshold_delta"] = min(match_profile["threshold_delta"], -0.075)
+match_profile["sizing_delta"] = max(match_profile["sizing_delta"], 0.18)
+match_profile["open_delta"] = min(match_profile["open_delta"], -0.045)
+match_profile["bluff_delta"] = max(match_profile["bluff_delta"], 0.13)
+```
+
+The changes are:
+- chase: 0.85 → 0.90 (chase more aggressively when behind)
+- threshold_delta: -0.070 → -0.075 (lower thresholds to see more showdowns)
+- sizing_delta: 0.16 → 0.18 (bigger sizing when chasing)
+- bluff_delta: 0.11 → 0.13 (more bluffing when chasing)
+
+These are the exact values from bot5 (the highest-rated reference bot). open_delta stays at -0.045 (same as bot5).
+
+Also, check if `match_pressure_profile` has a line like:
+```python
+profile["threshold_delta"] = 0.050 * protect - 0.060 * chase
+```
+If so, change to match bot5:
+```python
+profile["threshold_delta"] = 0.055 * protect - 0.055 * chase
+```
+
+That's it. ONLY change these numeric constants. Do not touch any other code.
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v7/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v7/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v7/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v7/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+
+[WORKER 4 (Hyperparameter Tuner) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Hyperparameter Tuner**.
+You must directly edit the source files in `bots/claude_v7/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v7/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+IMPORTANT RULES BASED ON YOUR ROLE:
+- If you are a "Hyperparameter Tuner", you MUST NOT add new algorithmic logic, classes, or complex methods. You are only allowed to modify numeric constants, float thresholds, and integer conditions.
+- If you are an "Algorithmic Logic Architect", you MUST NOT arbitrarily change finely-tuned parameters unless it is structurally necessary for your new algorithm.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+You are a Hyperparameter Tuner for a Texas Hold'em poker AI. Your ONLY job is to adjust numeric constants, thresholds, and magic numbers in bots/claude_v6/main.py. You MUST NOT change any algorithmic logic, add new functions, or restructure code.
+
+FIRST: Read these files:
+1. evolution_workspace/results/glicko_ratings.json — current ratings
+2. evolution_workspace/results/rating_history.jsonl — look at rating trends to understand if performance is improving or stagnating
+3. evolution_workspace/experience_pool.md — past tuning lessons
+4. bots/claude_v6/main.py — the current bot code (identify ALL numeric constants)
+5. bots/bot5/main.py — reference bot for comparison of parameter values
+
+THEN tune these specific parameters:
+
+A) **Preflop Aggression Parameters**:
+   - Adjust opening raise sizes (if too large, we lose when folded to; if too small, we don't build enough pots)
+   - Tune 3-bet sizing (should be approximately 3x the raise in position, 3.5-4x out of position)
+   - Adjust calling range thresholds based on position (wider in position, tighter out of position)
+
+B) **Bluff Frequency Parameters**:
+   - Tune the base bluff probability (start by reducing if losing, increasing if too passive)
+   - Adjust the blocker weight in bluff decisions (how much do blocker cards influence bluff choice)
+   - Fine-tune continuation bet (c-bet) frequency on different board textures
+
+C) **Value Bet Sizing Parameters**:
+   - Tune value bet percentages of the pot for each hand strength tier
+   - Adjust the threshold for overbetting (when to bet >100% pot)
+   - Fine-tune thin value bet thresholds (minimum hand strength to value bet)
+
+D) **Draw Calling Parameters**:
+   - Adjust minimum pot odds required to call with flush draws
+   - Tune straight draw calling thresholds
+   - Adjust combination draw (flush + straight) calling parameters
+
+E) **Match Pressure Parameters** (if applicable):
+   - Tune chip lead/deficit thresholds that trigger strategy adjustments
+   - Adjust aggression multiplier for late-game scenarios
+
+Constraints:
+- ONLY change numeric values. Do NOT add/remove/rename functions or change control flow.
+- Document each change with a comment explaining why the new value was chosen
+- If you find hardcoded magic numbers in the code, extract them into named constants at the top of the file
+- Keep changes reversible — each constant change should be traceable
+- Save your changes to the file when done
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v7/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v7/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v7/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v7/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+
+[WORKER 4 (Hyperparameter Tuner) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Hyperparameter Tuner**.
+You must directly edit the source files in `bots/claude_v7/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v7/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+IMPORTANT RULES BASED ON YOUR ROLE:
+- If you are a "Hyperparameter Tuner", you MUST NOT add new algorithmic logic, classes, or complex methods. You are only allowed to modify numeric constants, float thresholds, and integer conditions.
+- If you are an "Algorithmic Logic Architect", you MUST NOT arbitrarily change finely-tuned parameters unless it is structurally necessary for your new algorithm.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+You are a Hyperparameter Tuner for the claude_v6 Texas Hold'em poker bot. You are evolving v6 into v7. Your job is to fix parameter thresholds in tournament.py. You MUST NOT change any algorithmic logic, add functions, or modify control flow.
+
+## CONTEXT
+claude_v6 is the worst-performing claude bot (r=1408). The tournament.py parameters for anti-lock pressure are wrong compared to the reference bot5. These thresholds control how aggressively the bot plays when behind in a match.
+
+## YOUR FILE (you MUST ONLY modify this)
+- `bots/claude_v6/tournament.py` — Tournament-level logic
+
+## REFERENCE FILE (READ this, do NOT modify)
+- `bots/bot5/tournament.py` — Has the correct parameter values
+
+## TASK: Fix 5 parameter values in tournament.py
+
+You are ONLY changing number literals. Do not add, remove, or reorder any code.
+
+### Fix 1: In `match_pressure_profile` function, change the threshold_delta line from:
+```python
+profile["threshold_delta"] = 0.050 * protect - 0.060 * chase
+```
+to:
+```python
+profile["threshold_delta"] = 0.055 * protect - 0.055 * chase
+```
+This makes the formula symmetric (0.055/0.055 instead of 0.050/0.060).
+
+### Fix 2: In `apply_anti_lock_pressure` function, change these 5 parameter values:
+
+Change `match_profile["chase"] = max(match_profile["chase"], 0.85)` to:
+```python
+match_profile["chase"] = max(match_profile["chase"], 0.90)
+```
+
+Change `match_profile["threshold_delta"] = min(match_profile["threshold_delta"], -0.070)` to:
+```python
+match_profile["threshold_delta"] = min(match_profile["threshold_delta"], -0.075)
+```
+
+Change `match_profile["sizing_delta"] = max(match_profile["sizing_delta"], 0.16)` to:
+```python
+match_profile["sizing_delta"] = max(match_profile["sizing_delta"], 0.18)
+```
+
+Change `match_profile["bluff_delta"] = max(match_profile["bluff_delta"], 0.11)` to:
+```python
+match_profile["bluff_delta"] = max(match_profile["bluff_delta"], 0.13)
+```
+
+## SUMMARY OF CHANGES
+Only these exact number changes:
+- 0.050 → 0.055 (threshold_delta protect coefficient)
+- 0.060 → 0.055 (threshold_delta chase coefficient)
+- 0.85 → 0.90 (anti-lock chase threshold)
+- -0.070 → -0.075 (anti-lock threshold_delta floor)
+- 0.16 → 0.18 (anti-lock sizing_delta floor)
+- 0.11 → 0.13 (anti-lock bluff_delta floor)
+
+## CRITICAL RULES
+- You are FORBIDDEN from changing any algorithmic logic, adding functions, modifying control flow, or changing anything beyond the 6 number literals listed above.
+- Do NOT modify any other files.
+- These are precisely the values that bot5 uses. Do not second-guess them.
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v7/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v7/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v7/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v7/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+
+[WORKER 4 (Hyperparameter Tuner) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Hyperparameter Tuner**.
+You must directly edit the source files in `bots/claude_v7/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v7/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+IMPORTANT RULES BASED ON YOUR ROLE:
+- If you are a "Hyperparameter Tuner", you MUST NOT add new algorithmic logic, classes, or complex methods. You are only allowed to modify numeric constants, float thresholds, and integer conditions.
+- If you are an "Algorithmic Logic Architect", you MUST NOT arbitrarily change finely-tuned parameters unless it is structurally necessary for your new algorithm.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+You are a [Hyperparameter Tuner] for a Texas Hold'em poker bot. You are FORBIDDEN from changing any algorithmic logic, control flow, or adding/removing functions. Your ONLY job is to adjust specific numeric constants.
+
+## Context
+The experience pool has identified a proven parameter fix for tournament.py.
+
+## CRITICAL: File Ownership
+You MUST ONLY modify tournament.py. Do NOT touch any other file.
+
+## Task: Fix threshold_delta symmetry
+
+In bots/claude_v6/tournament.py, find the match_pressure_profile function. Inside it, find this line:
+
+```python
+profile["threshold_delta"] = 0.050 * protect - 0.060 * chase
+```
+
+Change it to:
+
+```python
+profile["threshold_delta"] = 0.055 * protect - 0.055 * chase
+```
+
+That's it. This makes the protect/chase adjustment symmetric (both 0.055 instead of asymmetric 0.050/0.060), which has been validated in bot5.
+
+## Verification
+1. python -c "import sys; sys.path.insert(0, 'bots/claude_v6'); from tournament import match_pressure_profile; print('OK')"
+2. grep 'threshold_delta' bots/claude_v6/tournament.py should show 0.055 for both
+
+## IMPORTANT
+- Do NOT change ANYTHING else in tournament.py or any other file
+- This is a ONE-LINE change
+- Do not refactor, reformat, or add comments
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v7/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v7/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v7/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v7/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+
+[WORKER 4 (Hyperparameter Tuner) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Hyperparameter Tuner**.
+You must directly edit the source files in `bots/claude_v7/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v7/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+IMPORTANT RULES BASED ON YOUR ROLE:
+- If you are a "Hyperparameter Tuner", you MUST NOT add new algorithmic logic, classes, or complex methods. You are only allowed to modify numeric constants, float thresholds, and integer conditions.
+- If you are an "Algorithmic Logic Architect", you MUST NOT arbitrarily change finely-tuned parameters unless it is structurally necessary for your new algorithm.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+You are a Hyperparameter Tuner. Your goal is to tune the anti-lock parameters and threshold_delta in tournament.py. You are working on bot version claude_v7, evolved from claude_v6. The file to modify is bots/claude_v6/tournament.py.
+
+DO NOT change algorithmic flow, add new functions, or modify logic structure. ONLY change numeric constants and thresholds.
+
+## Tasks (modify ONLY tournament.py):
+
+### 1. Fix apply_anti_lock_pressure() parameters
+Change the hardcoded values in apply_anti_lock_pressure():
+- `"chase": max(match_profile["chase"], 0.85)` → change to `0.90`
+- `"threshold_delta": min(match_profile["threshold_delta"], -0.070)` → change to `-0.075`
+- `"sizing_delta": max(match_profile["sizing_delta"], 0.16)` → change to `0.18`
+- `"bluff_delta": max(match_profile["bluff_delta"], 0.11)` → change to `0.13`
+
+### 2. Fix match_pressure_profile() threshold_delta
+In match_pressure_profile(), change the threshold_delta calculation from asymmetric to symmetric:
+- OLD: `profile["threshold_delta"] = 0.050 * protect - 0.060 * chase`
+- NEW: `profile["threshold_delta"] = 0.055 * protect - 0.055 * chase`
+
+That's it — just these two numeric changes. Do NOT modify any other code in tournament.py. Do NOT touch any other files.
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v7/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v7/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v7/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v7/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+
+[WORKER 4 (Hyperparameter Tuner) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Hyperparameter Tuner**.
+You must directly edit the source files in `bots/claude_v7/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v7/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+IMPORTANT RULES BASED ON YOUR ROLE:
+- If you are a "Hyperparameter Tuner", you MUST NOT add new algorithmic logic, classes, or complex methods. You are only allowed to modify numeric constants, float thresholds, and integer conditions.
+- If you are an "Algorithmic Logic Architect", you MUST NOT arbitrarily change finely-tuned parameters unless it is structurally necessary for your new algorithm.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+You are a Hyperparameter Tuner for a Texas Hold'em poker bot. Your job is to fix the parameters in bots/claude_v6/tournament.py to match the reference bots/bot5/tournament.py. DO NOT change any algorithmic flow or add/remove functions. Only adjust constants and thresholds.
+
+## Context
+v6's tournament.py has several wrong parameter values compared to bot5's proven version.
+
+## Changes Required in tournament.py
+
+### 1. Fix match_pressure_profile() — threshold_delta (around line 78)
+Change: `profile['threshold_delta'] = 0.050 * protect - 0.060 * chase`
+To:     `profile['threshold_delta'] = 0.055 * protect - 0.055 * chase`
+(Make the coefficients symmetric: both 0.055 instead of 0.050/0.060)
+
+### 2. Fix apply_anti_lock_pressure() (around line 85)
+Change: `match_profile['chase'] = max(match_profile['chase'], 0.85)`
+To:     `match_profile['chase'] = max(match_profile['chase'], 0.90)`
+
+Change: `match_profile['threshold_delta'] = min(match_profile['threshold_delta'], -0.070)`
+To:     `match_profile['threshold_delta'] = min(match_profile['threshold_delta'], -0.075)`
+
+Change: `match_profile['sizing_delta'] = max(match_profile['sizing_delta'], 0.16)`
+To:     `match_profile['sizing_delta'] = max(match_profile['sizing_delta'], 0.18)`
+
+Change: `match_profile['bluff_delta'] = max(match_profile['bluff_delta'], 0.11)`
+To:     `match_profile['bluff_delta'] = max(match_profile['bluff_delta'], 0.13)`
+
+## Verification
+After making changes, the tournament.py should be IDENTICAL to bots/bot5/tournament.py in all parameter values. You can verify by comparing the two files.
+
+## CRITICAL RULES
+- Do NOT add or remove any functions.
+- Do NOT change any algorithmic flow or logic.
+- Do NOT modify any other files.
+- Only change the 5 specific numeric values listed above.
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v7/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v7/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v7/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v7/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+
+[WORKER 4 (Hyperparameter Tuner) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Hyperparameter Tuner**.
+You must directly edit the source files in `bots/claude_v7/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v7/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+IMPORTANT RULES BASED ON YOUR ROLE:
+- If you are a "Hyperparameter Tuner", you MUST NOT add new algorithmic logic, classes, or complex methods. You are only allowed to modify numeric constants, float thresholds, and integer conditions.
+- If you are an "Algorithmic Logic Architect", you MUST NOT arbitrarily change finely-tuned parameters unless it is structurally necessary for your new algorithm.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+You are a [Hyperparameter Tuner]. You are FORBIDDEN from changing algorithmic flow, adding functions, or modifying control structures. Your ONLY job is to adjust numeric constants and thresholds in tournament.py to match the proven bot5 values.
+
+## Context
+v6's anti-lock pressure parameters and threshold_delta coefficients are wrong compared to the reference bot5. These have been confirmed as losing approximately 20-30 Glicko points.
+
+## File to Modify: tournament.py
+
+### 1. Fix match_pressure_profile() threshold_delta (line 129)
+Change from ASYMMETRIC to SYMMETRIC:
+- OLD: `profile['threshold_delta'] = 0.050 * protect - 0.060 * chase`
+- NEW: `profile['threshold_delta'] = 0.055 * protect - 0.055 * chase`
+
+### 2. Fix apply_anti_lock_pressure() parameters (lines 135-139)
+All four parameters need adjustment:
+- OLD: `match_profile['chase'] = max(match_profile['chase'], 0.85)`
+  NEW: `match_profile['chase'] = max(match_profile['chase'], 0.90)`
+- OLD: `match_profile['threshold_delta'] = min(match_profile['threshold_delta'], -0.070)`
+  NEW: `match_profile['threshold_delta'] = min(match_profile['threshold_delta'], -0.075)`
+- OLD: `match_profile['sizing_delta'] = max(match_profile['sizing_delta'], 0.16)`
+  NEW: `match_profile['sizing_delta'] = max(match_profile['sizing_delta'], 0.18)`
+- OLD: `match_profile['bluff_delta'] = max(match_profile['bluff_delta'], 0.11)`
+  NEW: `match_profile['bluff_delta'] = max(match_profile['bluff_delta'], 0.13)`
+
+## Summary of ALL changes:
+| Location | Old Value | New Value |
+|----------|-----------|----------|
+| threshold_delta protect coeff | 0.050 | 0.055 |
+| threshold_delta chase coeff | 0.060 | 0.055 |
+| anti-lock chase floor | 0.85 | 0.90 |
+| anti-lock threshold_delta cap | -0.070 | -0.075 |
+| anti-lock sizing_delta floor | 0.16 | 0.18 |
+| anti-lock bluff_delta floor | 0.11 | 0.13|
+
+## CRITICAL RULES
+- ONLY change the numeric constants listed above. Do NOT add, remove, or restructure any code.
+- Do NOT modify any other file (strategy.py, opponent.py, etc.).
+- Do NOT change any function signatures.
+- After editing, verify with: `cd bots/claude_v7 && python -c 'from tournament import *; print('OK')'`
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v7/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v7/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v7/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v7/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]

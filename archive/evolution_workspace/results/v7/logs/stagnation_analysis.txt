@@ -1,0 +1,41 @@
+
+[STAGNATION ANALYST PROMPT]
+=============================
+You are a rating trend analyst for a poker bot evolution system.
+Analyze whether the evolution is truly stagnating or if rating changes are just Glicko variance.
+
+Current bot: claude_v7
+Top 5 bots by rating:
+  claude_v2: r=1552 rd=46
+  claude_v3: r=1533 rd=47
+  claude_v15: r=1531 rd=45
+  claude_v5: r=1523 rd=46
+  claude_v13: r=1504 rd=46
+
+Rating history (last 10 periods):
+  Period 851: top_r=1541
+  Period 852: top_r=1540
+  Period 853: top_r=1545
+  Period 854: top_r=1542
+  Period 855: top_r=1534
+  Period 856: top_r=1534
+  Period 857: top_r=1542
+  Period 858: top_r=1546
+  Period 859: top_r=1550
+  Period 860: top_r=1552
+
+Is this real stagnation or Glicko variance? Answer in JSON only:
+```json
+{"is_stagnant": true/false, "confidence": "high/medium/low", "recommendation": "continue|branch|crossover", "branch_from": "claude_vN" or null, "reason": "brief explanation"}
+```
+=============================
+[CLAUDE OUTPUT]
+```json
+{
+  "is_stagnant": true,
+  "confidence": "medium",
+  "recommendation": "crossover",
+  "branch_from": "claude_v2",
+  "reason": "The 10-period range (1534–1552, 18 pts) is well within one RD (~46), meaning all top bots are statistically indistinguishable — classic Glicko noise floor. The key stagnation signal: claude_v2 (an early version) still tops the board, and the current bot claude_v7 isn't even in the top 5. Incremental evolution is going sideways, not up. Crossover is recommended to recombine strongest traits from the v2/v3/v15 cluster and break out of the plateau."
+}
+```

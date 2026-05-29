@@ -16,6 +16,7 @@ import signal
 import random
 import argparse
 import time
+from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -46,6 +47,7 @@ UNDER_EVAL_WEIGHT = 0.6
 DIVERSITY_WEIGHT = 0.4
 UNDER_EVAL_BASELINE = 50
 RATING_GAP_SCALE = 200
+DIVERSITY_COUNT_DECAY = 100  # Penalise diversity for heavily-played pairs
 MAX_HISTORY_LINES = 200
 HISTORY_KEEP_LINES = 100
 
@@ -154,25 +156,31 @@ def pair_key(a, b):
 
 
 def pick_matches(active_bots, stats, ratings, n_picks=14):
-    """Pick n_picks match pairs, balancing under-evaluation and rating diversity."""
-    pairs = []
-    for i, a in enumerate(active_bots):
-        for b in active_bots[i + 1:]:
-            pairs.append((a, b))
+    """Pick n_picks match pairs with per-bot fairness cap and count-penalised diversity."""
+    pairs = [(a, b) for i, a in enumerate(active_bots) for b in active_bots[i + 1:]]
 
     def priority(a, b):
         count = stats.get("pairs", {}).get(pair_key(a, b), 0)
         rating_gap = abs(ratings.get(a, Glicko2Player()).r - ratings.get(b, Glicko2Player()).r)
-
-        # Under-evaluation score: high when few games played
-        under_eval = max(0, UNDER_EVAL_BASELINE - count) / UNDER_EVAL_BASELINE  # 0-1
-        # Diversity score: high when rating gap is large (different strategies)
-        diversity = min(rating_gap / RATING_GAP_SCALE, 1.0)  # 0-1
-
-        return UNDER_EVAL_WEIGHT * under_eval + DIVERSITY_WEIGHT * diversity
+        under_eval = max(0, UNDER_EVAL_BASELINE - count) / UNDER_EVAL_BASELINE
+        diversity = min(rating_gap / RATING_GAP_SCALE, 1.0)
+        count_penalty = 1.0 / (1.0 + max(0, count - UNDER_EVAL_BASELINE) / DIVERSITY_COUNT_DECAY)
+        return UNDER_EVAL_WEIGHT * under_eval + DIVERSITY_WEIGHT * diversity * count_penalty
 
     pairs.sort(key=lambda p: priority(p[0], p[1]), reverse=True)
-    return pairs[:n_picks]
+
+    n_bots = len(active_bots)
+    max_per_bot = max(1, n_picks * 2 // n_bots)
+    selected = []
+    bot_counts = Counter()
+    for a, b in pairs:
+        if len(selected) >= n_picks:
+            break
+        if bot_counts[a] < max_per_bot and bot_counts[b] < max_per_bot:
+            selected.append((a, b))
+            bot_counts[a] += 1
+            bot_counts[b] += 1
+    return selected
 
 
 def save_match_replay(a, b, wins_a, wins_b, draws, replay_data):
@@ -325,6 +333,15 @@ def run_rating_period(active_bots, ratings, stats, n_pairs, n_workers, verbose=F
     for b in active_bots:
         if results_by_bot[b]:
             ratings[b] = update_rating_period(ratings[b], results_by_bot[b])
+
+    # Decay RD for bots that didn't play this period
+    played_bots = set()
+    for a, b, _, _, _ in match_results:
+        played_bots.add(a)
+        played_bots.add(b)
+    for b in active_bots:
+        if b not in played_bots and b in ratings:
+            ratings[b] = decay_rd(ratings[b], elapsed_periods=1)
 
     # Update stats
     for a, b, wins_a, wins_b, draws in match_results:

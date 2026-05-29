@@ -92,3 +92,12 @@ The `data` field is optional state the bot can persist across decisions within o
 - Each game is 50 hands, starting chips 20000, small blind 50, big blind 100
 - Botzone game ID: `63dcfaddee1bce5e6c8f4b53` (2-player Texas Hold'em)
 - All code is Python 3, no external dependencies for bots or core engine
+
+## Post-Task Workflow
+
+After completing each task, always commit and push changes:
+```bash
+git add -A
+git commit -m "<descriptive message>"
+git push
+```

@@ -95,13 +95,13 @@ export default function ExperiencePool() {
 
   return (
     <>
-      <PageMeta title="经验池 — 进化仪表盘" description="查看和编辑策略经验池" />
+      <PageMeta title="经验池 — Bot 自进化" description="查看和编辑策略知识库" />
 
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-800 dark:text-white">经验池</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-            共享策略记忆 — 主架构师每代都会读取此内容
+            策略知识库 — 每次迭代 Master 都会读取
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs text-gray-400">

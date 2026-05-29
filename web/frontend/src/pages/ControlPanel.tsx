@@ -38,24 +38,24 @@ const TOOL_GROUPS: { label: string; tools: ToolDef[] }[] = [
   {
     label: "状态",
     tools: [
-      { name: "get_status", description: "获取当前进化系统状态、评分、守护进程状态。", params: [] },
-      { name: "get_bot_info", description: "查看机器人的详细信息：评分、父代、文件、代码大小。", params: [{ name: "version", type: "int", placeholder: "22" }] },
-      { name: "get_match_history", description: "查看指定机器人的近期对局结果。", params: [{ name: "version", type: "int", placeholder: "22" }, { name: "n", type: "int", placeholder: "5", optional: true }] },
+      { name: "get_status", description: "获取当前进化系统状态、评分、评分引擎状态。", params: [] },
+      { name: "get_bot_info", description: "查看 Bot 的详细信息：评分、父代、文件、代码大小。", params: [{ name: "version", type: "int", placeholder: "22" }] },
+      { name: "get_match_history", description: "查看指定 Bot 的近期对局结果。", params: [{ name: "version", type: "int", placeholder: "22" }, { name: "n", type: "int", placeholder: "5", optional: true }] },
     ],
   },
   {
     label: "分析",
     tools: [
-      { name: "run_match_analysis", description: "分析机器人的近期败局，返回弱点与模式。", params: [{ name: "source_v", type: "int", placeholder: "22" }] },
+      { name: "run_match_analysis", description: "分析 Bot 的近期败局，返回弱点与模式。", params: [{ name: "source_v", type: "int", placeholder: "22" }] },
       { name: "run_performance_verification", description: "LLM 性能分析：趋势、弱点、多样性。", params: [{ name: "source_v", type: "int", placeholder: "22" }] },
       { name: "analyze_stagnation", description: "检查进化是否停滞或只是 Glicko 噪声。", params: [{ name: "source_v", type: "int", placeholder: "22" }, { name: "active_bots", type: "list", placeholder: '["claude_v22","claude_v21"]' }] },
     ],
   },
   {
-    label: "流水线",
+    label: "进化流程",
     tools: [
       { name: "run_master", description: "运行主架构师，规划下一代任务分配。", params: [{ name: "source_v", type: "int" }, { name: "next_v", type: "int" }, { name: "stagnation_info", type: "str", placeholder: "无停滞", optional: true }, { name: "match_analysis", type: "str", placeholder: "", optional: true }] },
-      { name: "execute_workers", description: "执行工作器任务以修改机器人代码。", params: [{ name: "tasks", type: "list", placeholder: "[]" }, { name: "next_v", type: "int" }, { name: "source_v", type: "int" }, { name: "reviewer_feedback", type: "str", placeholder: "", optional: true }] },
+      { name: "execute_workers", description: "执行 Worker 任务以修改 Bot 代码。", params: [{ name: "tasks", type: "list", placeholder: "[]" }, { name: "next_v", type: "int" }, { name: "source_v", type: "int" }, { name: "reviewer_feedback", type: "str", placeholder: "", optional: true }] },
       { name: "run_quality_gates", description: "运行编译、冒烟测试、决策测试、文件大小检查。", params: [{ name: "version", type: "int" }] },
       { name: "run_review", description: "运行首席代码审核员。返回通过/拒绝及评分。", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int" }, { name: "plan", type: "list", placeholder: "[]" }] },
       { name: "run_critic", description: "运行扑克策略评论家。评分 1-10；≥6 = 通过。", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int" }, { name: "plan", type: "list", placeholder: "[]" }, { name: "reviewer_feedback", type: "str", placeholder: "", optional: true }] },
@@ -64,24 +64,24 @@ const TOOL_GROUPS: { label: string; tools: ToolDef[] }[] = [
   {
     label: "提交",
     tools: [
-      { name: "prepare_next_gen", description: "复制源机器人目录以准备下一代。", params: [{ name: "source_v", type: "int" }, { name: "next_v", type: "int" }] },
-      { name: "run_crossover", description: "将两个精英机器人组合为杂交子代。", params: [{ name: "parent_a", type: "int" }, { name: "parent_b", type: "int" }, { name: "target_v", type: "int" }] },
-      { name: "commit_bot", description: "Git 提交并标记新机器人。review_approved 必须为 true。", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int" }, { name: "strategy", type: "str", placeholder: "改进弃牌范围" }, { name: "review_approved", type: "bool" }] },
+      { name: "prepare_next_gen", description: "复制源 Bot 目录以准备下一代。", params: [{ name: "source_v", type: "int" }, { name: "next_v", type: "int" }] },
+      { name: "run_crossover", description: "将两个精英 Bot 组合为杂交子代。", params: [{ name: "parent_a", type: "int" }, { name: "parent_b", type: "int" }, { name: "target_v", type: "int" }] },
+      { name: "commit_bot", description: "Git 提交并标记新 Bot。review_approved 必须为 true。", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int" }, { name: "strategy", type: "str", placeholder: "改进弃牌范围" }, { name: "review_approved", type: "bool" }] },
     ],
   },
   {
-    label: "守护进程",
+    label: "评分引擎",
     tools: [
-      { name: "start_daemon", description: "启动后台 ELO 守护进程（镜像对战 + 评分）。", params: [{ name: "workers", type: "int", placeholder: "14", optional: true }, { name: "pairs", type: "int", placeholder: "5", optional: true }] },
-      { name: "stop_daemon", description: "停止后台 ELO 守护进程。", params: [] },
-      { name: "wait_for_eval", description: "等待守护进程评估机器人（足够对局 + 低 RD）。", params: [{ name: "version", type: "int" }, { name: "timeout", type: "int", placeholder: "600", optional: true }, { name: "min_matches", type: "int", placeholder: "20", optional: true }, { name: "max_rd", type: "int", placeholder: "40", optional: true }] },
-      { name: "run_inline_eval", description: "让机器人与所有活跃对手对战并更新评分。", params: [{ name: "version", type: "int" }, { name: "n_games", type: "int", placeholder: "5", optional: true }] },
+      { name: "start_daemon", description: "启动后台评分引擎（镜像对战 + 评分）。", params: [{ name: "workers", type: "int", placeholder: "14", optional: true }, { name: "pairs", type: "int", placeholder: "5", optional: true }] },
+      { name: "stop_daemon", description: "停止后台评分引擎。", params: [] },
+      { name: "wait_for_eval", description: "等待评分引擎评估 Bot（足够对局 + 低 RD）。", params: [{ name: "version", type: "int" }, { name: "timeout", type: "int", placeholder: "600", optional: true }, { name: "min_matches", type: "int", placeholder: "20", optional: true }, { name: "max_rd", type: "int", placeholder: "40", optional: true }] },
+      { name: "run_inline_eval", description: "让 Bot 与所有活跃对手对战并更新评分。", params: [{ name: "version", type: "int" }, { name: "n_games", type: "int", placeholder: "5", optional: true }] },
     ],
   },
   {
-    label: "池管理",
+    label: "经验管理",
     tools: [
-      { name: "reap_weakest", description: "若池子超过 30 个机器人，淘汰最弱的。", params: [] },
+      { name: "reap_weakest", description: "当 Bot 池超过 30 个时，淘汰保守评分最低的。", params: [] },
       { name: "trim_experience", description: "裁剪经验池，仅保留近期条目。", params: [] },
       { name: "consolidate_experience", description: "基于 LLM 的经验池整合与去重。", params: [] },
     ],
@@ -348,7 +348,7 @@ export default function ControlPanel() {
           </div>
           {checkpoint && (
             <div>
-              <span className="text-xs text-gray-500 block mb-1">流水线阶段</span>
+              <span className="text-xs text-gray-500 block mb-1">流程阶段</span>
               <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 text-xs font-medium">
                 v{checkpoint.next_v} ← v{checkpoint.source_v}: {checkpoint.stage}
               </span>
@@ -369,10 +369,10 @@ export default function ControlPanel() {
 
       {/* Settings */}
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
-        <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">守护进程设置</h2>
+        <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">评分引擎设置</h2>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="flex items-center gap-3">
-            <label className="text-sm text-gray-600 dark:text-gray-300">守护进程</label>
+            <label className="text-sm text-gray-600 dark:text-gray-300">评分引擎</label>
             <button
               role="switch"
               aria-checked={editDaemon}
@@ -383,11 +383,11 @@ export default function ControlPanel() {
             </button>
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-sm text-gray-600 dark:text-gray-300 whitespace-nowrap">工作器</label>
+            <label className="text-sm text-gray-600 dark:text-gray-300 whitespace-nowrap">Worker</label>
             <input type="number" min={1} max={32} value={editWorkers} onChange={(e) => setEditWorkers(Math.max(1, Math.min(32, Number(e.target.value) || 1)))} disabled={!editDaemon} className="w-20 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white disabled:opacity-40" />
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-sm text-gray-600 dark:text-gray-300 whitespace-nowrap">配对数</label>
+            <label className="text-sm text-gray-600 dark:text-gray-300 whitespace-nowrap">每次配对数</label>
             <input type="number" min={1} max={20} value={editPairs} onChange={(e) => setEditPairs(Math.max(1, Math.min(20, Number(e.target.value) || 1)))} disabled={!editDaemon} className="w-20 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white disabled:opacity-40" />
           </div>
         </div>
@@ -400,9 +400,9 @@ export default function ControlPanel() {
 
       {/* Decision Chain */}
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
-        <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">决策链</h2>
+        <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">调用记录</h2>
         {decisions.length === 0 ? (
-          <p className="text-sm text-gray-400">暂无决策</p>
+          <p className="text-sm text-gray-400">暂无调用</p>
         ) : (
           <div className="space-y-1.5 max-h-40 overflow-y-auto">
             {[...decisions].reverse().map((d, i) => (

@@ -1,0 +1,68 @@
+
+[MATCH ANALYST PROMPT]
+=============================
+You are a Poker Hand Analyst specializing in Texas Hold'em bot strategy.
+Analyze the following match replay summaries for weaknesses and patterns.
+
+## Recent Loss Summaries
+
+Match: claude_v2 vs claude_v4, Result: 4W/6L out of 10 games
+Chip delta: avg=-6224, best=17417, worst=-20054
+Big losses (>-5000): 6 games
+  Game 0: -17009 chips
+  Game 2: -19831 chips
+  Game 4: -19414 chips
+
+Based on the data above, identify:
+1. Key weaknesses (e.g., folding too much, not raising enough, poor all-in timing)
+2. Any detectable patterns (e.g., weak out-of-position, poor against aggressive opponents)
+3. A concrete recommendation for improvement
+
+Output ONLY a JSON block:
+```json
+{"weaknesses": ["..."], "patterns": "...", "recommendation": "..."}
+```
+Keep it concise — 2-3 weaknesses, 1 pattern, 1 recommendation.
+=============================
+[CLAUDE OUTPUT]
+```json
+{
+  "weaknesses": [
+    "Catastrophic all-in timing — three losses near full stack (-17k to -20k) indicate the bot is getting stacked repeatedly, likely overvaluing marginal hands in all-in confrontations or calling off too lightly against opponent aggression.",
+    "Inability to control pot size on losses — 6 of 10 games losing >5000 chips suggests the bot lacks an effective damage-control/give-up mechanism when behind, preferring to pay off rather than find disciplined folds.",
+    "Exploitable by aggressive opponents — the large loss magnitude paired with a losing record points to the bot being pushable off its best game by pressure, folding equity away in some spots while paying off in others."
+  ],
+  "patterns": "High-variance asymmetric profile: wins are big (+17417) but losses are both more frequent and even larger (avg -6224, worst -20054). This is the classic signature of a bot that overcommits with the second-best hand — it fights hard for pots it can win but fails to differentiate spots where it is dominated, leading to repeated full-stack losses.",
+  "recommendation": "Add a showdown-value tier system that explicitly widens the folding range against big bets/raises on later streets. Specifically: (1) classify hand strength into tiers (premium, strong, marginal, weak) with hard fold thresholds per tier against opponent aggression, (2) implement an opponent 'commitment signal' detector — if the opponent's bet sizing indicates a polarized strong range, fold all but premium hands, and (3) cap max loss per game by auto-tuning stack-off thresholds tighter when down >8000 chips in a session. This should reduce the frequency of -15k+ losses without sacrificing the +17k upside in spots where the bot legitimately has the best hand."
+}
+```
+
+[MATCH ANALYST PROMPT]
+=============================
+You are a Poker Hand Analyst specializing in Texas Hold'em bot strategy.
+Analyze the following match replay summaries for weaknesses and patterns.
+
+## Recent Loss Summaries
+
+Match: claude_v2 vs claude_v4, Result: 4W/6L out of 10 games
+Chip delta: avg=-6224, best=17417, worst=-20054
+Big losses (>-5000): 6 games
+  Game 0: -17009 chips
+  Game 2: -19831 chips
+  Game 4: -19414 chips
+
+Based on the data above, identify:
+1. Key weaknesses (e.g., folding too much, not raising enough, poor all-in timing)
+2. Any detectable patterns (e.g., weak out-of-position, poor against aggressive opponents)
+3. A concrete recommendation for improvement
+
+Output ONLY a JSON block:
+```json
+{"weaknesses": ["..."], "patterns": "...", "recommendation": "..."}
+```
+Keep it concise — 2-3 weaknesses, 1 pattern, 1 recommendation.
+=============================
+[CLAUDE OUTPUT]
+```json
+{"weaknesses": ["Catastrophic all-in timing: three losses near the -20000 full-stack range (-17009, -19831, -19414) indicate the bot is repeatedly getting its entire stack in while dominated, likely calling or incorrectly shoving with marginal holdings against strong ranges.", "Negative skew in loss distribution: 6 of 10 games lose >5000 chips while only ~2 wins are significant, suggesting the bot both gets stacked too easily and fails to extract proportional value when it has the best hand.", "Insufficient loss-limiting / pot control: no stop-loss mechanism to prevent near-full-stack drawdowns, implying the bot over-commits in marginal spots rather than finding fold equity at intermediate decision points."], "patterns": "The loss profile is massively right-tailed — three separate games lose between -17k and -20k (85–100% of the starting stack). This clustering of near-maximum losses across 30% of games indicates a systematic flaw, not variance: the bot is consistently making committing decisions (calling all-ins or shoving) in situations where its equity is significantly negative, particularly suspect in pre-flop all-in confrontations and river spots where opponent aggression signals strength.", "recommendation": "Add an explicit stack-off safety check before any all-in commitment: estimate minimum equity threshold (e.g., >55% equity against opponent's estimated shove range) using Monte Carlo simulation and refuse to commit the full stack below that threshold, opting instead for a fold or smaller sizing. Additionally, track in-game chip trajectory and tighten ranges when already down >8000 chips in a game to prevent catastrophic double-stacking."}
+```

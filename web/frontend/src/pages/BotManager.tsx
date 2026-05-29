@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import type { BotSummary, BotDetail } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
 import { controlApi } from "../api/control";
+import { useBots } from "../context/DataProvider";
 
 // ── Inline SVG helpers ─────────────────────────────────────────────────────────
 const TombIcon = ({ className }: { className?: string }) => (
@@ -80,7 +81,7 @@ function BotCard({ bot, onAction }: { bot: BotSummary; onAction: (msg: string) =
   const conserv = bot.rating ? bot.rating.conservative.toFixed(0) : "—";
 
   return (
-    <div className={`rounded-xl border ${bot.graveyard ? "border-gray-300 opacity-70" : "border-gray-200 dark:border-gray-700"} bg-white dark:bg-gray-800 overflow-hidden`}>
+    <div className={`rounded-xl border ${bot.graveyard ? "border-gray-300 opacity-60" : "border-gray-200 dark:border-gray-700"} bg-white dark:bg-gray-800 overflow-hidden`}>
       <button
         onClick={() => setExpanded(!expanded)}
         className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 text-left"
@@ -93,7 +94,7 @@ function BotCard({ bot, onAction }: { bot: BotSummary; onAction: (msg: string) =
             ? <span className="px-1.5 py-0.5 text-[10px] rounded bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 flex items-center gap-0.5"><CheckIcon /> 完成</span>
             : <span className="px-1.5 py-0.5 text-[10px] rounded bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400">进行中</span>
           }
-          {bot.graveyard && <span className="px-1.5 py-0.5 text-[10px] rounded bg-gray-200 text-gray-600">墓地</span>}
+          {bot.graveyard && <span className="px-1.5 py-0.5 text-[10px] rounded bg-gray-100 text-gray-400">已归档</span>}
         </div>
         <div className="flex items-center gap-4 text-sm text-gray-500">
           {bot.rating && <RatingBadge r={bot.rating.r} rd={bot.rating.rd} />}
@@ -142,7 +143,7 @@ function BotCard({ bot, onAction }: { bot: BotSummary; onAction: (msg: string) =
                     disabled={toolLoading === "eval"}
                     className="px-3 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"
                   >
-                    <PlayIcon /> {toolLoading === "eval" ? "运行中..." : "内联评估 (5 局)"}
+                    <PlayIcon /> {toolLoading === "eval" ? "运行中..." : "快速评估 (5 局)"}
                   </button>
                 </div>
               )}
@@ -162,9 +163,9 @@ const PlayIcon = ({ className }: { className?: string }) => (
 );
 
 export default function BotManager() {
-  const [bots, setBots] = useState<BotSummary[]>([]);
-  const [graveyard, setGraveyard] = useState<BotSummary[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { active: rawBots, graveyard: rawGraveyard } = useBots();
+  const bots = rawBots.sort((a, b) => b.version - a.version);
+  const graveyard = rawGraveyard.sort((a, b) => b.version - a.version);
   const [showGraveyard, setShowGraveyard] = useState(false);
   const [message, setMessage] = useState("");
   const [prepForm, setPrepForm] = useState({ source_v: "", next_v: "" });
@@ -173,15 +174,9 @@ export default function BotManager() {
 
   const refresh = useCallback(async () => {
     try {
-      const data = await api.listBots(true);
-      setBots(data.active.sort((a, b) => b.version - a.version));
-      setGraveyard(data.graveyard.sort((a, b) => b.version - a.version));
+      await api.listBots(true);
     } catch {}
   }, []);
-
-  useEffect(() => {
-    refresh().finally(() => setLoading(false));
-  }, [refresh]);
 
   const handleReapWeakest = async () => {
     setReapLoading(true);
@@ -208,14 +203,14 @@ export default function BotManager() {
     }
   };
 
-  if (loading) return <div className="p-6 text-gray-500">加载中...</div>;
+  if (bots.length === 0 && graveyard.length === 0) return <div className="p-6 text-gray-500">加载中...</div>;
 
   return (
     <>
-      <PageMeta title="机器人管理 — 进化仪表盘" description="管理所有机器人版本" />
+      <PageMeta title="Bot 管理 — Bot 自进化" description="管理所有 Bot 版本" />
 
       <div className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-bold text-gray-800 dark:text-white">机器人管理</h1>
+        <h1 className="text-2xl font-bold text-gray-800 dark:text-white">Bot 管理</h1>
         <div className="flex gap-2">
           <button onClick={refresh} className="px-3 py-1.5 text-sm rounded bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600">
             刷新
@@ -238,9 +233,9 @@ export default function BotManager() {
             disabled={reapLoading}
             className="px-4 py-2 text-sm rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 flex items-center gap-1"
           >
-            <TombIcon /> {reapLoading ? "淘汰中..." : "淘汰最弱"}
+            <TombIcon /> {reapLoading ? "淘汰中..." : "淘汰最弱 Bot"}
           </button>
-          <p className="text-xs text-gray-400 mt-1">若池子超过 30 个机器人则淘汰最弱的</p>
+          <p className="text-xs text-gray-400 mt-1">当 Bot 池超过 30 个时，淘汰保守评分最低的</p>
         </div>
 
         <div className="flex items-end gap-2">
@@ -277,12 +272,12 @@ export default function BotManager() {
       {/* Active bots */}
       <div className="space-y-2 mb-6">
         <h2 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wide">
-          活跃机器人 ({bots.length})
+          活跃 Bot ({bots.length})
         </h2>
         {bots.map((bot) => (
           <BotCard key={bot.name} bot={bot} onAction={setMessage} />
         ))}
-        {bots.length === 0 && <p className="text-sm text-gray-400">未找到活跃机器人。</p>}
+        {bots.length === 0 && <p className="text-sm text-gray-400">暂无活跃 Bot。</p>}
       </div>
 
       {/* Graveyard */}
@@ -292,14 +287,14 @@ export default function BotManager() {
           className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wide flex items-center gap-1 mb-2"
         >
           <span>{showGraveyard ? "▼" : "▶"}</span>
-          墓地 ({graveyard.length})
+          已归档 ({graveyard.length})
         </button>
         {showGraveyard && (
           <div className="space-y-2">
             {graveyard.map((bot) => (
               <BotCard key={bot.name} bot={bot} onAction={setMessage} />
             ))}
-            {graveyard.length === 0 && <p className="text-sm text-gray-400">无退役机器人。</p>}
+            {graveyard.length === 0 && <p className="text-sm text-gray-400">无已归档 Bot。</p>}
           </div>
         )}
       </div>

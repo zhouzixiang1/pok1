@@ -1,0 +1,273 @@
+
+[WORKER 2 (Hyperparameter Tuner) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Hyperparameter Tuner**.
+You must directly edit the source files in `bots/claude_v9/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v9/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+IMPORTANT RULES BASED ON YOUR ROLE:
+- If you are a "Hyperparameter Tuner", you MUST NOT add new algorithmic logic, classes, or complex methods. You are only allowed to modify numeric constants, float thresholds, and integer conditions.
+- If you are an "Algorithmic Logic Architect", you MUST NOT arbitrarily change finely-tuned parameters unless it is structurally necessary for your new algorithm.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+First attempt. Crossover v2 x v3. No prior review.
+
+ORIGINAL:
+You are a Hyperparameter Tuner. Your ONLY job is to adjust numeric constants and thresholds in bots/claude_v9/strategy.py. You are FORBIDDEN from adding new functions, changing algorithmic flow, or modifying any logic structure. Only change numbers.
+
+Read bots/claude_v9/strategy.py first.
+
+## Task 1: Tighten jam_buffer for thin/marginal hands
+Find the `if state["opponent_allin"]:` block in get_action. Change:
+
+1a) Thin tier bonus: change `jam_buffer += 0.04` (where value_profile tier is "thin") → `jam_buffer += 0.02`
+
+1b) After the jam_buffer accumulation but BEFORE the `clamp` call, add a tighter cap for thin/marginal:
+Replace: `jam_buffer = clamp(jam_buffer, -0.05 if anti_lock_pressure else 0.0, 0.14)`
+With:
+```python
+jam_max = 0.14
+if value_profile is not None and value_profile["tier"] == "thin":
+    jam_max = 0.11
+jam_buffer = clamp(jam_buffer, -0.05 if anti_lock_pressure else 0.0, jam_max)
+```
+
+## Task 2: Tighten shove_buffer for thin/marginal hands
+Find the `if to_call >= my_chips:` block. Apply the EXACT same changes as Task 1 but for shove_buffer:
+- Thin tier bonus: `shove_buffer += 0.04` → `shove_buffer += 0.02`
+- Add tighter cap: `shove_max = 0.14` → `0.11` if thin tier
+- Replace: `shove_buffer = clamp(shove_buffer, ...)` with the same conditional max
+
+## Task 3: Tighten air EQR in realized_postflop_equity
+Find the `realized_postflop_equity` function. Change these base EQR values:
+
+3a) Air hand EQR:
+- `eqr = 0.68 if has_position else 0.56` → `eqr = 0.65 if has_position else 0.53`
+If the values are different (e.g., 0.72/0.62 from original v2), still change them to 0.65/0.53.
+
+3b) Marginal pair EQR (middle_pair, bottom_pair, underpair, board_pair):
+- Whatever the current values are → `eqr = 0.82 if has_position else 0.70`
+
+## Task 4: Tighten air EQR lower bound
+In the same function:
+- `eqr = clamp(eqr, 0.40, 0.85)` → `eqr = clamp(eqr, 0.38, 0.85)`
+If the current lower bound is different, still change to 0.38.
+
+## CRITICAL RULES
+- Do NOT add any new functions.
+- Do NOT change any if/elif/else logic structure.
+- Do NOT add new variables or imports.
+- Do NOT modify opponent.py, constants.py, or any other file.
+- ONLY change the specific numbers listed above.
+- Each change should be a simple number replacement (e.g., 0.04 → 0.02).
+- The bot must pass `python -c "from strategy import get_action"` after changes.
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v9/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v9/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v9/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v9/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+Now I have the full file. Let me identify all the changes needed and make them.
+
+**Changes needed:**
+1. Line 757: `jam_buffer += 0.04` → `0.02` (Task 1a)
+2. Line 782: Replace clamp with conditional jam_max (Task 1b)
+3. Line 789: `shove_buffer += 0.04` → `0.02` (Task 2)
+4. Line 808: Replace clamp with conditional shove_max (Task 2)
+5. Line 232: Air EQR `0.68/0.56` → `0.65/0.53` (Task 3a)
+6. Line 269: Marginal pair EQR `0.84/0.73` → `0.82/0.70` (Task 3b)
+7. Line 247: Clamp lower bound `0.40` → `0.38` (Task 4)
+
+Let me make all edits:
+Now the EQR changes in `realized_postflop_equity`:
+All edits are done. Now let me verify with git diff and run quality checks:
+The diff shows many pre-existing changes from prior edits by other Worker Agents. My specific changes are exactly what was requested:
+
+1. ✅ `jam_buffer += 0.04` → `0.02` (Task 1a)
+2. ✅ Conditional `jam_max = 0.11` for thin tier (Task 1b)
+3. ✅ `shove_buffer += 0.04` → `0.02` (Task 2)
+4. ✅ Conditional `shove_max = 0.11` for thin tier (Task 2)
+5. ✅ Air EQR `0.68/0.56` → `0.65/0.53` (Task 3a)
+6. ✅ Marginal pair EQR `0.84/0.73` → `0.82/0.70` (Task 3b)
+7. ✅ Air EQR clamp lower bound `0.40` → `0.38` (Task 4)
+
+Now let me run quality checks:
+All quality checks pass. Let me do the final self-review by checking only the files I was supposed to modify:
+All checks pass. Let me do the final role boundary and target file verification:
+
+**Role Boundary Check**: My actual edits (beyond pre-existing changes by other Worker Agents) are limited to:
+1. **Numeric threshold changes**: `0.04→0.02` (jam/shove buffer), `0.68/0.56→0.65/0.53` (air EQR), `0.84/0.73→0.82/0.70` (marginal pair EQR), `0.40→0.38` (EQR lower bound)
+2. **Conditional max blocks**: `jam_max = 0.11` and `shove_max = 0.11` for thin tier — these were **explicitly instructed** by the Master as the exact code to add
+
+**Target File Check**: I only edited `bots/claude_v9/strategy.py`. No other files were modified by me.
+
+**Summary of all changes made:**
+
+| Task | Location | Change |
+|------|----------|--------|
+| 1a | jam_buffer thin tier | `+= 0.04` → `+= 0.02` |
+| 1b | jam_buffer clamp | Hardcoded `0.14` → conditional `jam_max` (0.14/0.11) |
+| 2 | shove_buffer thin tier | `+= 0.04` → `+= 0.02` |
+| 2 | shove_buffer clamp | Hardcoded `0.14` → conditional `shove_max` (0.14/0.11) |
+| 3a | Air EQR | `0.68/0.56` → `0.65/0.53` |
+| 3b | Marginal pair EQR | `0.84/0.73` → `0.82/0.70` |
+| 4 | Air EQR lower bound | `0.40` → `0.38` |
+
+[WORKER 2 (Hyperparameter Tuner) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Hyperparameter Tuner**.
+You must directly edit the source files in `bots/claude_v9/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v9/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+IMPORTANT RULES BASED ON YOUR ROLE:
+- If you are a "Hyperparameter Tuner", you MUST NOT add new algorithmic logic, classes, or complex methods. You are only allowed to modify numeric constants, float thresholds, and integer conditions.
+- If you are an "Algorithmic Logic Architect", you MUST NOT arbitrarily change finely-tuned parameters unless it is structurally necessary for your new algorithm.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+First attempt from v8 base. v9 must preserve v8's existing code - only ADD new features. Previous v9 attempt (from v2 base) failed with 0% decision pass rate.
+
+ORIGINAL:
+You are a Hyperparameter Tuner. You are FORBIDDEN from altering algorithmic flow, adding functions, or changing control structures. ONLY change numeric constants.
+
+## Working Directory
+All files are in bots/claude_v9/
+
+## Task 1: Lower air EQR values in strategy.py
+
+Find the `realized_postflop_equity` function. Change these EQR values:
+
+- Air IP (has_position=True): 0.68 → 0.65
+- Air OOP (has_position=False): 0.56 → 0.53
+- Marginal pair IP: 0.84 → 0.82
+- Marginal pair OOP: 0.73 → 0.70
+
+Look for the pattern `eqr = 0.68 if has_position else 0.56` (air) and `eqr = 0.84 if has_position else 0.73` (pair).
+
+## Task 2: Add constants to constants.py
+Add these at the END of constants.py:
+
+```python
+
+# River refinement thresholds
+RIVER_EXACT_RAISE_THRESHOLD = 0.85
+RIVER_EXACT_FOLD_THRESHOLD = 0.15
+RIVER_EXACT_FOLD_POT_ODDS_MARGIN = 0.10
+```
+
+## CRITICAL RULES
+1. ONLY change the specific EQR values listed.
+2. Do NOT touch any other values.
+3. Do NOT add functions or change logic.
+4. Verify: `python3 -c "from strategy import get_action; print('OK')"`
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v9/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v9/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v9/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v9/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading the files I need to modify to understand their current state.
+The MCP tool can't access local files. Let me use Bash to read them instead.
+Now let me find the specific EQR values I need to change in strategy.py:
+I found the exact lines. Let me see the context around those lines to make precise edits:
+Now I have all the information I need. Let me make the edits:
+
+**Task 1**: Change EQR values in strategy.py (lines 236 and 256)
+**Task 2**: Append constants to constants.py
+Good, the edits are done. Now let me verify the changes and run quality checks:
+There are a lot of changes from previous worker agents. Let me check specifically that my changes are only the ones I was supposed to make:
+I can see that my EQR changes are correct:
+- Air: `0.68 → 0.65` IP, `0.56 → 0.53` OOP ✅
+- Marginal pair: `0.84 → 0.82` IP, `0.73 → 0.70` OOP ✅
+- Constants appended correctly ✅
+
+The other diffs (like removing `double_barrel`/`big_pot` variables and changing them to inline expressions) are from previous worker agents, not me. My changes are only the numeric constants as required.
+
+Now let me run quality checks:
+The first test passed from the correct working directory. Let me fix the path issue:
+I'm already inside the `bots/claude_v9/` directory. That's why the previous test passed with relative import. Let me run all checks from this directory:
+Now let me run the smoke test:
+All checks pass. Let me do the final self-review by checking my diff one more time:
+## Self-Review Summary
+
+All changes verified. Here's exactly what was modified:
+
+### Task 1: EQR values in `strategy.py`
+| Location | Old Value | New Value |
+|---|---|---|
+| Air IP (`has_position=True`) | `0.68` | `0.65` |
+| Air OOP (`has_position=False`) | `0.56` | `0.53` |
+| Marginal pair IP | `0.84` | `0.82` |
+| Marginal pair OOP | `0.73` | `0.70` |
+
+### Task 2: Constants added to `constants.py`
+Three new constants appended at the end:
+- `RIVER_EXACT_RAISE_THRESHOLD = 0.85`
+- `RIVER_EXACT_FOLD_THRESHOLD = 0.15`
+- `RIVER_EXACT_FOLD_POT_ODDS_MARGIN = 0.10`
+
+### Quality Checks
+- ✅ Compile check: All `.py` files compile successfully
+- ✅ Import test: `from strategy import get_action` passes
+- ✅ Smoke test: `smoke_tester.py` passes
+- ✅ Role boundary: Only numeric constants were changed (EQR values and new constants). No new functions, classes, or control flow logic added.
+- ✅ Target file check: Only `bots/claude_v9/strategy.py` and `bots/claude_v9/constants.py` were modified.

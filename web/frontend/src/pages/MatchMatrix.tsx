@@ -1,23 +1,14 @@
-import { useEffect, useState, useMemo } from "react";
+import { useMemo } from "react";
 import Chart from "react-apexcharts";
 import type { ApexOptions } from "apexcharts";
-import { api } from "../api/client";
-import type { MatchMatrix as MatchMatrixType } from "../api/types";
+import { useMatchMatrix } from "../context/DataProvider";
 import PageMeta from "../components/common/PageMeta";
 
 export default function MatchMatrix() {
-  const [data, setData] = useState<MatchMatrixType | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    api.matchMatrix()
-      .then(setData)
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
+  const data = useMatchMatrix();
 
   const { series, options } = useMemo(() => {
-    if (!data) return { series: [], options: {} };
+    if (!data || !data.bots.length) return { series: [], options: {} };
 
     const bots = data.bots.map((b) => b.replace("claude_", "v"));
     const series = data.bots.map((botName, i) => ({
@@ -64,7 +55,7 @@ export default function MatchMatrix() {
       tooltip: {
         theme: "dark",
         y: {
-          formatter: (val: number) => `${val} 对局配对`,
+          formatter: (val: number) => `${val} 场对局`,
         },
       },
       stroke: { width: 1, colors: ["#fff"] },
@@ -73,18 +64,18 @@ export default function MatchMatrix() {
     return { series, options };
   }, [data]);
 
-  if (loading) {
+  if (!data || !data.bots.length) {
     return <div className="p-6 text-gray-500 dark:text-gray-400">加载中...</div>;
   }
 
   return (
     <>
-      <PageMeta title="对局矩阵 — 进化仪表盘" description="机器人间的对局次数" />
+      <PageMeta title="对局矩阵 — Bot 自进化" description="Bot 间的对局次数" />
       <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
         <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800">
           <h3 className="text-lg font-semibold text-gray-800 dark:text-white">对局矩阵</h3>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            所有机器人之间的 head-to-head 对局配对次数
+            所有 Bot 之间的一对一对局次数
           </p>
         </div>
         <div className="p-5">

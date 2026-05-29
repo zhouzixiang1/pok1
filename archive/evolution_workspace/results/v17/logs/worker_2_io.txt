@@ -1,0 +1,263 @@
+
+[WORKER 2 (Algorithmic Logic Architect) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Algorithmic Logic Architect**.
+You must directly edit the source files in `bots/claude_v17/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v17/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+IMPORTANT RULES BASED ON YOUR ROLE:
+- If you are a "Hyperparameter Tuner", you MUST NOT add new algorithmic logic, classes, or complex methods. You are only allowed to modify numeric constants, float thresholds, and integer conditions.
+- If you are an "Algorithmic Logic Architect", you MUST NOT arbitrarily change finely-tuned parameters unless it is structurally necessary for your new algorithm.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+You are an Algorithmic Logic Architect specializing in poker AI betting strategy. Your goal is to improve the betting decision logic of claude_v16 to create claude_v17.
+
+## STEP 1: READ FILES FIRST (MANDATORY)
+Before writing ANY code, you MUST read:
+1. `evolution_workspace/experience_pool.md` — Past strategic lessons
+2. `bots/claude_v16/main.py` — Current bot code
+3. `bots/bot5/main.py` — Reference bot with sophisticated strategy
+
+## STEP 2: ANALYZE BETTING LOGIC
+Examine claude_v16's betting decision framework:
+- How does it decide between check/call/raise/fold?
+- Does it have separate logic for value betting vs bluffing?
+- How does it size bets?
+- Does it consider pot odds and implied odds?
+- Does it have position-aware strategy?
+
+## STEP 3: IMPLEMENT IMPROVEMENTS
+Focus on these betting strategy enhancements:
+
+### A. Value Betting Tier System
+Create a function `classify_hand_value(hole_cards, board_cards, equity)` that returns:
+- 'monster' (two pair+, very strong): bet big for value (70-100% pot)
+- 'strong' (top pair good kicker): bet medium (50-70% pot)
+- 'medium' (middle pair, decent hand): bet small or check-call (30-50% pot)
+- 'weak' (below average): check-fold or small bluff-catch
+- 'draw': semi-bluff sizing based on draw strength
+
+### B. Position-Aware Strategy
+- In position (acting last): wider range, more aggressive, more float plays
+- Out of position: tighter range, more check-calling, more check-raise bluffing
+
+### C. Pot Odds and Implied Odds Calculator
+- Add `calculate_pot_odds(pot_size, bet_to_call)` returning the percentage needed to break even
+- Add `estimate_implied_odds(hole_cards, board_cards, pot_size, opponent_stack)` for draw decisions
+- Use these to make mathematically correct call/fold decisions on draws
+
+### D. River Bluff/Catch Balance
+- On the river, calculate optimal bluff frequency based on bet size
+- Use blocker effects (cards in hand that reduce opponent's strong combos)
+- Implement a simple 'scare card' detection for river bluffing opportunities
+
+## CRITICAL RULES:
+- DO NOT modify the hand evaluation or card representation logic (that's Worker 1's domain)
+- DO NOT tune existing numerical thresholds/parameters (that's the Hyperparameter Tuner's job)
+- Focus purely on the decision-making FLOW and LOGIC
+- Keep all improvements in the same file structure
+- The output file should be `bots/claude_v17/main.py` — but since Worker 1 is also modifying this file, you should focus on writing your improvements as SEPARATE, CLEARLY MARKED FUNCTIONS that Worker 1's changes can integrate with
+- Actually, IMPORTANT: Coordinate with Worker 1's output. Both of you should write to the SAME output file. Worker 1 focuses on hand evaluation, you focus on betting decisions. If there's a conflict, the betting decision logic takes precedence for the final merge.
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v17/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v17/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v17/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v17/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading all the required files to understand the current codebase and strategic context.
+
+<tool_use>
+<server_name>Read</server_name>
+<tool_name>Read</tool_name>
+<input>
+{"file_path": "evolution_workspace/experience_pool.md"}
+</input>
+</tool_use>
+
+<tool_use>
+<server_name>Read</server_name>
+<tool_name>Read</tool_name>
+<input>
+{"file_path": "bots/claude_v16/main.py"}
+</input>
+</tool_use>
+
+<tool_use>
+<server_name>Read</server_name>
+<tool_name>Read</tool_name>
+<input>
+{"file_path": "bots/bot5/main.py"}
+</input>
+</tool_use>
+
+<tool_use>
+<server_name>Read</server_name>
+<tool_name>Read</tool_name>
+<input>
+{"file_path": "bots/claude_v17/main.py"}
+</input>
+</tool_use>
+
+[WORKER 2 (Algorithmic Logic Architect) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Algorithmic Logic Architect**.
+You must directly edit the source files in `bots/claude_v17/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v17/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+IMPORTANT RULES BASED ON YOUR ROLE:
+- If you are a "Hyperparameter Tuner", you MUST NOT add new algorithmic logic, classes, or complex methods. You are only allowed to modify numeric constants, float thresholds, and integer conditions.
+- If you are an "Algorithmic Logic Architect", you MUST NOT arbitrarily change finely-tuned parameters unless it is structurally necessary for your new algorithm.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+These files exceed 1000 lines and must be split into modules: strategy.py=1186, postflop.py=1017. Keep main.py as the entry point, extract logic into separate .py files.
+
+ORIGINAL:
+You are an Algorithmic Logic Architect specializing in poker AI betting strategy. Your goal is to improve the betting decision logic of claude_v16 to create claude_v17.
+
+## STEP 1: READ FILES FIRST (MANDATORY)
+Before writing ANY code, you MUST read:
+1. `evolution_workspace/experience_pool.md` — Past strategic lessons
+2. `bots/claude_v16/main.py` — Current bot code
+3. `bots/bot5/main.py` — Reference bot with sophisticated strategy
+
+## STEP 2: ANALYZE BETTING LOGIC
+Examine claude_v16's betting decision framework:
+- How does it decide between check/call/raise/fold?
+- Does it have separate logic for value betting vs bluffing?
+- How does it size bets?
+- Does it consider pot odds and implied odds?
+- Does it have position-aware strategy?
+
+## STEP 3: IMPLEMENT IMPROVEMENTS
+Focus on these betting strategy enhancements:
+
+### A. Value Betting Tier System
+Create a function `classify_hand_value(hole_cards, board_cards, equity)` that returns:
+- 'monster' (two pair+, very strong): bet big for value (70-100% pot)
+- 'strong' (top pair good kicker): bet medium (50-70% pot)
+- 'medium' (middle pair, decent hand): bet small or check-call (30-50% pot)
+- 'weak' (below average): check-fold or small bluff-catch
+- 'draw': semi-bluff sizing based on draw strength
+
+### B. Position-Aware Strategy
+- In position (acting last): wider range, more aggressive, more float plays
+- Out of position: tighter range, more check-calling, more check-raise bluffing
+
+### C. Pot Odds and Implied Odds Calculator
+- Add `calculate_pot_odds(pot_size, bet_to_call)` returning the percentage needed to break even
+- Add `estimate_implied_odds(hole_cards, board_cards, pot_size, opponent_stack)` for draw decisions
+- Use these to make mathematically correct call/fold decisions on draws
+
+### D. River Bluff/Catch Balance
+- On the river, calculate optimal bluff frequency based on bet size
+- Use blocker effects (cards in hand that reduce opponent's strong combos)
+- Implement a simple 'scare card' detection for river bluffing opportunities
+
+## CRITICAL RULES:
+- DO NOT modify the hand evaluation or card representation logic (that's Worker 1's domain)
+- DO NOT tune existing numerical thresholds/parameters (that's the Hyperparameter Tuner's job)
+- Focus purely on the decision-making FLOW and LOGIC
+- Keep all improvements in the same file structure
+- The output file should be `bots/claude_v17/main.py` — but since Worker 1 is also modifying this file, you should focus on writing your improvements as SEPARATE, CLEARLY MARKED FUNCTIONS that Worker 1's changes can integrate with
+- Actually, IMPORTANT: Coordinate with Worker 1's output. Both of you should write to the SAME output file. Worker 1 focuses on hand evaluation, you focus on betting decisions. If there's a conflict, the betting decision logic takes precedence for the final merge.
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v17/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v17/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v17/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v17/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading all the required files to understand the current state of the codebase and my task.
+Let me read all the required files first.
+Let me continue reading the strategy file in sections, and also read the postflop.py file:
+Now let me read the postflop.py file:
+Now let me read the other key files:
+Now let me read bot5 for reference:
+Let me check the git status and understand the current state:
+Good, now I have a complete picture. Let me implement the refactoring. The plan is:
+
+**Split strategy.py (1245 lines) into:**
+1. `betting.py` — choose_raise, choose_anti_lock_pressure_action 
+2. `preflop_strategy.py` — choose_preflop_spot_action
+3. `postflop_decision.py` — opponent_pressure_adjustment, aggressive_line_strength, check_probe_resistance_margin, must_continue_vs_raise, paired_board_stackoff_profile, postflop_call_margin, realized_postflop_equity, track_opponent_gift, safe_exploitation_lambda
+
+**Split postflop.py (969 lines) into:**
+1. `hand_evaluation.py` — made_hand_metric, pair_board_profile, pair_domination_margin, marginal_pair_under_pressure, bet_size_bucket, value_hand_tier, value_bet_plan, made_flush_profile
+2. `board_analysis.py` — board_texture_profile, paired_board_outcome_profile
+3. `draw_analysis.py` — straight_draw_value, empty_draw_profile, draw_profile, draw_potential, draw_call_margin
+4. `bluff_analysis.py` — blocker_bluff_profile, allow_low_frequency_blocker_bluff, nutted_risk_profile
+
+**New file:**
+5. `odds.py` — NEW: calculate_pot_odds, estimate_implied_odds, classify_hand_value, river_bluff_frequency, detect_scare_card, position_adjustment
+
+**Thin wrappers:**
+- `postflop.py` — re-exports from hand_evaluation, board_analysis, draw_analysis, bluff_analysis
+- `strategy.py` — thin get_action wrapper importing from the above
+
+Let me start creating the files:
+Now create `hand_evaluation.py`:
+Now create `draw_analysis.py`:
+Now create `bluff_analysis.py`:
+Now create the new `odds.py` with the new algorithmic features:
+Now create `postflop_decision.py` (extracted from strategy.py):
+Now create `betting.py` (extracted from strategy.py):
+Now create `preflop_strategy.py`:
+Now update `postflop.py` to be a thin re-export layer:
