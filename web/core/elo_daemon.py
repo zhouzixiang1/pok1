@@ -53,11 +53,14 @@ running = True
 
 
 @contextmanager
-def locked_file(path, mode='r', lock_type=None):
+def locked_file(path, mode='r', lock_type=None, encoding=None):
     """Context manager for file operations with fcntl locking."""
     if lock_type is None:
         lock_type = fcntl.LOCK_EX if ('w' in mode or 'a' in mode or '+' in mode) else fcntl.LOCK_SH
-    with open(path, mode) as f:
+    open_kwargs = {}
+    if encoding is not None:
+        open_kwargs["encoding"] = encoding
+    with open(path, mode, **open_kwargs) as f:
         fcntl.flock(f, lock_type)
         try:
             yield f

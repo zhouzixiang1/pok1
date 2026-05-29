@@ -82,9 +82,13 @@ async def list_bots(include_graveyard: bool = Query(False)):
     active = []
     graveyard = []
 
-    # Active bots
+    # Active bots (numeric sort so v10 comes after v9, not after v1)
+    def _version_key(p: Path) -> int:
+        m = re.search(r'\d+', p.name)
+        return int(m.group()) if m else 0
+
     if BOTS_DIR.exists():
-        for d in sorted(BOTS_DIR.iterdir()):
+        for d in sorted(BOTS_DIR.iterdir(), key=_version_key):
             if d.is_dir() and d.name.startswith("claude_v") and d.name != "claude_v0":
                 active.append(_bot_summary(d, d.name, ratings))
 

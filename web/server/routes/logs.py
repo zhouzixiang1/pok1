@@ -31,7 +31,11 @@ async def list_generations():
 
 @router.get("/logs/generations/{version}/{filename}")
 async def get_log(version: str, filename: str, tail: int = Query(0)):
-    path = RESULTS_DIR / version / "logs" / filename
+    # Resolve to prevent path traversal (e.g. version="../../etc")
+    resolved = (RESULTS_DIR / version / "logs" / filename).resolve()
+    if not resolved.is_relative_to(RESULTS_DIR.resolve()):
+        return {"error": "Invalid path", "content": ""}
+    path = resolved
     if not path.is_file():
         return {"version": version, "filename": filename, "content": ""}
     with open(path, "r") as f:
