@@ -795,6 +795,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui
         output, _, _ = await run_claude_query(
             master_prompt + "\n" + master_ctx, [], ui,
             f"MASTER (Try {attempt+1})", master_log_file, is_text_ui,
+            tools=["Bash", "Read"],
         )
         data = parse_json_output(output)
         if data and "tasks" in data:
@@ -1276,6 +1277,7 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, is_text_ui):
     try:
         output, _, _ = await run_claude_query(
             critic_prompt, [], ui, "STRATEGY CRITIC", log_file, is_text_ui,
+            tools=["Bash", "Read"],
         )
         data = parse_json_output(output)
         if data and "score" in data:
@@ -1455,6 +1457,7 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui, is_text_ui):
             crossover_prompt, [], ui,
             f"CROSSOVER v{parent_a_v}×v{parent_b_v}→v{target_v}",
             log_file, is_text_ui,
+            tools=["Bash", "Read", "Edit"],
         )
 
         compile_errors = verify_code(target_dir)
@@ -1514,6 +1517,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 run_claude_query(
                     worker_prompt, context_files, ui,
                     f"WORKER {w_id} ({role})", worker_log_file, is_text_ui,
+                    tools=["Bash", "Read", "Edit"],
                 ),
                 timeout=WORKER_TIMEOUT,
             )
@@ -1644,7 +1648,8 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
 
             genesis_ok = False
             for attempt in range(MAX_GENESIS_RETRIES):
-                await run_claude_query(instruction, [], ui, f"GENESIS BOT (Try {attempt+1})", log_file, is_text_ui)
+                await run_claude_query(instruction, [], ui, f"GENESIS BOT (Try {attempt+1})", log_file, is_text_ui,
+                                       tools=["Bash", "Read", "Edit"])
 
                 compile_errors = verify_code(get_bot_dir(1))
                 if compile_errors:

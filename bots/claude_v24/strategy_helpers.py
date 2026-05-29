@@ -374,11 +374,11 @@ def choose_raise(
     wetness = board_texture["wetness"]
 
     if round_idx == 0:
-        ratio = 0.55 if to_call == 0 else 0.75
+        ratio = 0.60 if to_call == 0 else 0.80
     elif round_idx == 1:
-        ratio = 0.60
+        ratio = 0.65
     elif round_idx == 2:
-        ratio = 0.70
+        ratio = 0.75
     else:
         ratio = 0.85
 
@@ -428,7 +428,7 @@ def choose_raise(
     if value_plan.get("thin_control", False) and value_profile.get("tier") != "nut" and to_call == 0:
         thin_cap = 0.46 + 0.08 * wetness + 0.05 * max(0, round_idx - 1)
         ratio = min(ratio, thin_cap)
-    low_ratio = 0.28 if inducing_value else 0.22 if probe_mode or (blocker_bluff and to_call == 0) else 0.40
+    low_ratio = 0.28 if inducing_value else 0.22 if probe_mode or (blocker_bluff and to_call == 0) else 0.50
     if thin_cap is not None:
         low_ratio = min(low_ratio, thin_cap)
     ratio = clamp(ratio, low_ratio, 1.45)
@@ -484,8 +484,8 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
     trash_hand = is_preflop_trash_hand(req["my_cards"], preflop_strength)
 
     if spot_info["preflop_spot"] == "sb_open":
-        open_threshold = 0.43 + match_adjust + 0.02 + match_profile["open_delta"]
-        limp_threshold = 0.27 + match_adjust
+        open_threshold = 0.38 + match_adjust + 0.02 + match_profile["open_delta"]
+        limp_threshold = 0.22 + match_adjust
         raise_amount = choose_raise(
             state["min_raise_action"],
             my_chips,
@@ -507,7 +507,7 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
         return 0
 
     if spot_info["preflop_spot"] == "bb_vs_limp":
-        iso_threshold = 0.50 + match_adjust - loose_bonus + match_profile["open_delta"]
+        iso_threshold = 0.44 + match_adjust - loose_bonus + match_profile["open_delta"]
         iso_threshold -= confidence * max(0.0, opponent_model["vpip"] - 0.58) * 0.08
         iso_threshold -= confidence * max(0.0, opponent_model["fold_to_raise"] - 0.52) * 0.05
         raise_amount = choose_raise(
@@ -550,15 +550,15 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
                     return -2
                 return target
 
-        call_threshold = 0.34 + match_adjust - loose_bonus
+        call_threshold = 0.28 + match_adjust - loose_bonus
         if preflop_strength >= call_threshold:
             return 0
-        if preflop_strength < 0.26 and to_call > BIG_BLIND * 5:
+        if preflop_strength < 0.22 and to_call > BIG_BLIND * 6:
             return -1
         return 0
 
     if spot_info["preflop_spot"] == "sb_vs_reraise":
-        if preflop_strength >= 0.68:
+        if preflop_strength >= 0.62:
             # Premium hands (AKs+, QQ+): always continue vs reraise
             if to_call >= my_chips * 0.5 or state["opponent_allin"]:
                 return -2
@@ -569,7 +569,7 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
                 return -2
             return target
 
-        if preflop_strength >= 0.52 and to_call <= my_chips * 0.15:
+        if preflop_strength >= 0.45 and to_call <= my_chips * 0.18:
             return 0
 
         return -1
@@ -577,3 +577,42 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
     return None
 
 
+def should_fold_postflop(win_rate, made_strength, draw_strength, pot_odds,
+                         to_call, pot, round_idx, pair_profile,
+                         value_profile, board_texture, spot_info):
+    """Return True when we should fold a weak hand postflop. Targets 15-25% fold rate."""
+    tier = value_profile.get("tier", "none") if value_profile is not None else "none"
+    if tier in ("nut", "strong"):
+        return False
+    if draw_strength >= 0.18:
+        return False
+
+    bet_ratio = to_call / max(1, pot)
+    air_hand = made_strength < 0.18 and draw_strength < 0.08
+    double_barrel = spot_info.get("opp_postflop_bet_count", 0) >= 2
+
+    # Air hands: fold to most bets on turn/river
+    if air_hand and round_idx >= 2 and bet_ratio >= 0.25:
+        return True
+    # Air hands: fold to double barrels
+    if air_hand and double_barrel and bet_ratio >= 0.30:
+        return True
+    # Air hands: fold to large flop bets
+    if air_hand and round_idx == 1 and bet_ratio >= 0.65:
+        return True
+
+    # Weak pairs: fold to big bets on turn/river
+    if pair_profile is not None and pair_profile["made_class"] == 1:
+        pt = pair_profile["pair_type"]
+        if pt in ("bottom_pair", "underpair", "board_pair"):
+            if round_idx >= 2 and bet_ratio >= 0.55:
+                return True
+        elif pt == "middle_pair" and pair_profile.get("weak_kicker", False):
+            if round_idx == 3 and bet_ratio >= 0.65:
+                return True
+
+    # Weak made hands: fold to large bets on later streets
+    if 0.18 <= made_strength < 0.35 and round_idx >= 2 and bet_ratio >= 0.65:
+        return True
+
+    return False

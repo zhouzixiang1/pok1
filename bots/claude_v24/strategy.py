@@ -370,6 +370,13 @@ def get_action(req, requests):
             nutted_risk,
             board_texture,
         )
+        # Postflop fold logic: fold weak hands facing significant bets
+        if round_idx > 0 and should_fold_postflop(
+            win_rate, made_strength, draw_strength, pot_odds, to_call, pot,
+            round_idx, pair_profile, value_profile, board_texture, spot_info,
+        ):
+            if not anti_lock_call_continue and not strong_made_continue:
+                return -1
         anti_lock_attack = None
         if anti_lock_pressure:
             if round_idx > 0 or preflop_3bet_candidate:
