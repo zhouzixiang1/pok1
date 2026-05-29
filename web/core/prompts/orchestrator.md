@@ -12,7 +12,7 @@ These are specialized tools for the evolution pipeline. Call them directly — y
 - **get_match_history(version, n)** — Recent match results for a bot.
 - **run_match_analysis(source_v)** — Analyze recent losses using LLM. Returns weaknesses, patterns, and per-street action breakdown.
 - **run_performance_verification(source_v)** — SATLUTION-style LLM performance analysis. Synthesises rating trends + win rates into structured insight for Master. Returns `trend`, `verified_improvements`, `persistent_weaknesses`, `diversity_needed`.
-- **run_master(source_v, next_v, stagnation_info, match_analysis)** — Run Master Architect to plan improvements. Returns a task plan with 1–3 worker assignments.
+- **run_master(source_v, next_v, stagnation_info, match_analysis, performance_verification)** — Run Master Architect to plan improvements. Returns a task plan with 1–3 worker assignments. Pass `run_match_analysis` output as `match_analysis` and `run_performance_verification` output as `performance_verification` (pass them separately — do NOT concatenate).
 - **execute_workers(tasks, next_v, source_v, reviewer_feedback)** — Execute code modification tasks (max 3 concurrent). Each task has role, target_files, and worker_prompt.
 - **run_quality_gates(version)** — Run compile check, smoke test, decision tests, file size check. Returns pass/fail for each.
 - **run_review(version, source_v, plan)** — Run Lead Code Reviewer (code correctness + role boundaries). Returns approved/rejected with quality score.
@@ -42,9 +42,11 @@ A typical generation follows this pattern, but you can modify it:
    - If `eval_completed: false`, ratings preliminary. Skip stagnation analysis if `current_bot_rd > 60`.
 4. **Analyze losses** → `run_match_analysis(source_v)` — returns weaknesses + per-street action breakdown
 4.5. **Performance verification** → `run_performance_verification(source_v)` — synthesises trend data for Master
-   - Pass its output as `match_analysis` to `run_master` (append to the match_analysis string)
+   - Pass its JSON output as the `performance_verification` parameter to `run_master` (separate from `match_analysis`)
    - If `diversity_needed: true` in the result, explicitly mention it to `run_master` via `stagnation_info`
-5. **Plan improvements** → `run_master(source_v, next_v, stagnation_info, match_analysis)`
+5. **Plan improvements** → `run_master(source_v, next_v, stagnation_info, match_analysis, performance_verification)`
+   - Pass `run_match_analysis` result as `match_analysis`
+   - Pass `run_performance_verification` result as `performance_verification`
    - Master may return 1–3 worker tasks; pass them all to `execute_workers`
 6. **Prepare** → `prepare_next_gen(source_v, next_v)`
 7. **Implement** → `execute_workers(tasks, next_v, source_v, reviewer_feedback="")`
@@ -90,7 +92,8 @@ Steps 8, 9, 9.5, 10 form a locked sequence — you MUST NOT call `commit_bot()` 
 **Intra-generation retry loop (Critic-driven):**
 - Track `intra_gen_attempts` (start at 0)
 - If critic score < 6 AND `intra_gen_attempts < 2`: increment counter, inject critic feedback, re-run workers from step 7
-- If score ≥ 6 OR `intra_gen_attempts ≥ 2`: proceed to commit regardless of score
+- If score ≥ 6: call `run_critic(..., force_advance=false)` (default) — checkpoint written automatically
+- If `intra_gen_attempts ≥ 2` AND score still < 6: call `run_critic(..., force_advance=true)` on the FINAL call — this writes the `critic_checked` checkpoint so a restart does not re-trigger the retry loop
 
 If quality gates fail → retry workers.
 If review rejects → inject feedback, retry workers (counts toward intra_gen_attempts).

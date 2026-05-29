@@ -784,6 +784,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui
         f"Bot directory: bots/claude_v{source_v}/\n"
         f"Ratings file: web/core/results/glicko_ratings.json\n"
         f"Rating history: web/core/results/rating_history.jsonl\n"
+        f"Experience pool: web/core/experience_pool.md  ← READ THIS, not evolution_workspace/experience_pool.md\n"
     )
     master_log_file = get_logs_dir(next_v) / "master_io.txt"
 

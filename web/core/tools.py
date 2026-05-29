@@ -278,19 +278,23 @@ class RunMasterInput(TypedDict):
     source_v: Annotated[int, "Source bot version"]
     next_v: Annotated[int, "Target next version"]
     stagnation_info: Annotated[str, "Stagnation context (or 'No stagnation')"]
-    match_analysis: Annotated[str, "Match analysis context (or '')"]
+    match_analysis: Annotated[str, "Match analysis context from run_match_analysis (or '')"]
+    performance_verification: Annotated[str, "Performance verification output from run_performance_verification (or '')"]
 
 
-@tool("run_master", "Run Master Architect analysis to plan the next generation. Returns a task plan with worker assignments.", {"source_v": int, "next_v": int, "stagnation_info": str, "match_analysis": str})
+@tool("run_master", "Run Master Architect analysis to plan the next generation. Returns a task plan with worker assignments.", {"source_v": int, "next_v": int, "stagnation_info": str, "match_analysis": str, "performance_verification": str})
 async def run_master(args):
     source_v = args["source_v"]
     next_v = args["next_v"]
     stagnation_info = args.get("stagnation_info", "No stagnation detected. Continue from latest version.")
     match_analysis = args.get("match_analysis", "")
+    performance_verification = args.get("performance_verification", "")
 
     ui = _get_ui()
     data = await _run_master_analysis(
-        source_v, next_v, stagnation_info, ui, is_text_ui=False, match_analysis=match_analysis
+        source_v, next_v, stagnation_info, ui, is_text_ui=False,
+        match_analysis=match_analysis,
+        performance_verification=performance_verification,
     )
 
     if data is None:
@@ -434,20 +438,26 @@ class RunCriticInput(TypedDict):
     source_v: Annotated[int, "Parent bot version"]
     plan: Annotated[list, "Master's task plan (list of task dicts)"]
     reviewer_feedback: Annotated[str, "Reviewer feedback if available (or '')"]
+    force_advance: Annotated[bool, "Set true when retries exhausted — advances checkpoint to critic_checked regardless of score so a kill+restart does not re-trigger the retry loop"]
 
 
-@tool("run_critic", "Run Poker Strategy Critic on bot changes. Returns score 1-10 and strategic feedback. score ≥ 6 = approved.", {"version": int, "source_v": int, "plan": list, "reviewer_feedback": str})
+@tool("run_critic", "Run Poker Strategy Critic on bot changes. Returns score 1-10 and strategic feedback. score ≥ 6 = approved.", {"version": int, "source_v": int, "plan": list, "reviewer_feedback": str, "force_advance": bool})
 async def run_critic(args):
     v = args["version"]
     source_v = args["source_v"]
     plan = args["plan"]
     reviewer_feedback = args.get("reviewer_feedback", "")
+    force_advance = args.get("force_advance", False)
 
     master_plan_str = json.dumps(plan, indent=2)
     ui = _get_ui()
     data = await _run_critic(v, source_v, master_plan_str, ui, is_text_ui=False)
 
-    if data.get("approved", True):
+    approved = data.get("approved", True)
+    # Write critic_checked checkpoint if critic approves OR caller is force-advancing past exhausted retries.
+    # Without force_advance on a rejection, a kill+restart would see stage=reviewed and re-run the full
+    # intra-gen retry loop even though retries are already exhausted.
+    if approved or force_advance:
         write_pipeline_checkpoint(v, source_v, "critic_checked",
                                   master_plan=plan,
                                   reviewer_feedback=reviewer_feedback)
@@ -455,7 +465,8 @@ async def run_critic(args):
     result = {
         **data,
         "logs": ui.get_output(),
-        "action": "approve" if data.get("approved", True) else "retry_workers",
+        "action": "approve" if approved else "retry_workers",
+        "force_advanced": force_advance and not approved,
     }
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
 
@@ -526,6 +537,9 @@ async def prepare_next_gen(args):
         shutil.rmtree(next_dir)
     shutil.copytree(source_dir, next_dir, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     (next_dir / ".completed").unlink(missing_ok=True)
+
+    # Write "prepared" checkpoint so a kill+restart shows "Workers not yet run → call execute_workers"
+    write_pipeline_checkpoint(next_v, source_v, "prepared")
 
     return {"content": [{"type": "text", "text": json.dumps({"prepared": True, "next_v": next_v, "source_v": source_v})}]}
 

@@ -28,7 +28,7 @@ Your role determines what you CAN and CANNOT do:
 - **FORBIDDEN**: Changing well-tuned constants unless structurally required
 - Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
 
-You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+You have access to `web/core/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
 Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
 
 # Poker Engineering Best Practices
@@ -62,7 +62,7 @@ Please write the Python code to fulfill your objective. After editing:
 2. If you see unexpected changes, fix them before finishing.
 3. **Run quality checks**:
    - Compile check: `python -m py_compile bots/claude_v{version}/main.py` (and other .py files you changed)
-   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v{version}/main.py`
+   - Smoke test: `python web/core/smoke_tester.py bots/claude_v{version}/main.py`
    - If any check fails, fix the errors before finishing.
 
 # Self-Review Before Finishing
