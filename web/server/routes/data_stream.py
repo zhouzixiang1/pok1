@@ -17,6 +17,8 @@ BOTS_DIR = PROJECT_ROOT / "bots"
 RESULTS_DIR = PROJECT_ROOT / "web" / "core" / "results"
 RATINGS_FILE = RESULTS_DIR / "glicko_ratings.json"
 STATS_FILE = RESULTS_DIR / "elo_daemon_stats.json"
+H2H_FILE = RESULTS_DIR / "head_to_head.json"
+BOT_STATS_FILE = RESULTS_DIR / "bot_stats.json"
 HISTORY_FILE = RESULTS_DIR / "rating_history.jsonl"
 MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 
@@ -171,26 +173,58 @@ def _get_recent_matches(limit: int = 100) -> list[dict]:
 
 
 def _get_match_matrix() -> dict:
-    stats = _cached_read("ds_stats_matrix", STATS_FILE)
-    if not stats:
-        return {"bots": [], "matrix": []}
-    ratings = _cached_read("ds_ratings_matrix", RATINGS_FILE) or {}
-    bot_names = sorted(
-        ratings.keys(),
-        key=lambda n: int(re.search(r"\d+", n).group()) if re.search(r"\d+", n) else 0,
-    )
+    h2h = _cached_read("ds_h2h_matrix", H2H_FILE)
+    if not h2h:
+        # Fallback to legacy stats
+        stats = _cached_read("ds_stats_matrix", STATS_FILE)
+        if not stats:
+            return {"bots": [], "matrix": []}
+        ratings = _cached_read("ds_ratings_matrix", RATINGS_FILE) or {}
+        bot_names = sorted(
+            ratings.keys(),
+            key=lambda n: int(re.search(r"\d+", n).group()) if re.search(r"\d+", n) else 0,
+        )
+        n = len(bot_names)
+        matrix = [[0] * n for _ in range(n)]
+        pairs = stats.get("pairs", {})
+        for key, count in pairs.items():
+            parts = key.split(" vs ")
+            if len(parts) == 2:
+                a, b = parts[0].strip(), parts[1].strip()
+                if a in bot_names and b in bot_names:
+                    i, j = bot_names.index(a), bot_names.index(b)
+                    matrix[i][j] = count
+                    matrix[j][i] = count
+        return {"bots": bot_names, "matrix": matrix}
+
+    # Build from H2H data
+    all_bots = set()
+    for k in h2h:
+        parts = k.split(" vs ")
+        all_bots.update(parts)
+    bot_names = sorted(all_bots, key=lambda n: int(re.search(r"\d+", n).group()) if re.search(r"\d+", n) else 0)
     n = len(bot_names)
-    matrix = [[0] * n for _ in range(n)]
-    pairs = stats.get("pairs", {})
-    for key, count in pairs.items():
-        parts = key.split(" vs ")
-        if len(parts) == 2:
-            a, b = parts[0].strip(), parts[1].strip()
-            if a in bot_names and b in bot_names:
-                i, j = bot_names.index(a), bot_names.index(b)
-                matrix[i][j] = count
-                matrix[j][i] = count
-    return {"bots": bot_names, "matrix": matrix}
+    # Matrix stores win rates (bot_i vs bot_j = bot_i's win rate)
+    wr_matrix = [[None] * n for _ in range(n)]
+    for k, v in h2h.items():
+        parts = k.split(" vs ")
+        if len(parts) != 2:
+            continue
+        a, b = parts[0].strip(), parts[1].strip()
+        if a in bot_names and b in bot_names:
+            i, j = bot_names.index(a), bot_names.index(b)
+            wr = v.get("win_rate", 0.5)
+            wr_matrix[i][j] = round(wr, 4)
+            wr_matrix[j][i] = round(1.0 - wr, 4) if wr is not None else None
+    return {"bots": bot_names, "matrix": wr_matrix, "source": "h2h"}
+
+
+def _get_h2h() -> dict:
+    return _cached_read("ds_h2h", H2H_FILE) or {}
+
+
+def _get_bot_stats() -> dict:
+    return _cached_read("ds_bot_stats", BOT_STATS_FILE) or {}
 
 
 def _get_history() -> list[dict]:
@@ -238,6 +272,8 @@ async def data_stream():
                     yield _event("generations", _get_generations())
                 if tick % 15 == 0:
                     yield _event("matrix", _get_match_matrix())
+                    yield _event("h2h", _get_h2h())
+                    yield _event("bot_stats", _get_bot_stats())
                     yield _event("history", _get_history())
                 await asyncio.sleep(1)
                 tick += 1

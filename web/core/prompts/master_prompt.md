@@ -10,11 +10,15 @@ You have Read and Bash tools available. When you need to read files or run comma
 
 # Essential Data Files
 Read these files FIRST using the Read tool to understand the current state:
-- `web/core/results/glicko_ratings.json` — All bot Glicko-2 ratings (r, rd, volatility)
+- `web/core/results/glicko_ratings.json` — All bot Elo ratings (r, rd) for overall ranking
+- `web/core/results/head_to_head.json` — **Head-to-Head matrix**: per-opponent W/L data. Shows who beats whom.
+- `web/core/results/bot_stats.json` — Per-bot stats: wins, losses, games, win_rate
 - `web/core/results/rating_history.jsonl` — Rating snapshots over time (trend analysis)
 - `web/core/experience_pool.md` — Accumulated strategic lessons from past generations (**THIS is the active pool, not evolution_workspace/experience_pool.md**)
 - `bots/claude_v<source_v>/` — Current source bot code (actual version number given in the context appended below)
 - `web/core/reference_bots/bot1/` … `web/core/reference_bots/bot6/` — 6 strong reference bots. Read whichever is relevant.
+
+**H2H Matrix Usage:** The head_to_head.json file is the most important data for identifying weaknesses. For each bot, check which opponents it loses to (< 40% WR = WEAKNESS) and which it beats (> 60% WR = STRENGTH). Focus improvements on closing weakness gaps.
 
 Use Bash tool with `git log` and `git diff` to understand evolution history.
 
@@ -33,15 +37,15 @@ Your goal is to:
 6. Write the exact, comprehensive prompt (`worker_prompt`) for each worker.
 
 # Worker Count Decision
-Choose 1–3 workers based on the current bot's rating deviation (rd):
-- **rd > 100** (very uncertain, < 5 matches): **1 worker only** — conservative change, avoid big structural risk
-- **rd 40–100** (moderate confidence): **2 workers** — standard plan (Direction A + Direction B)
-- **rd ≤ 40** (reliable rating): **up to 3 workers** — can explore bolder, parallel improvements
+Choose 1–3 workers based on the current bot's total games played:
+- **games < 50** (very uncertain): **1 worker only** — conservative change, avoid big structural risk
+- **games 50–200** (moderate confidence): **2 workers** — standard plan (Direction A + Direction B)
+- **games ≥ 200** (well-evaluated): **up to 3 workers** — can explore bolder, parallel improvements
 
 # Worker Directions (assign to each worker)
 - **Direction A (Algorithmic Logic Architect):** Refactor methods, add new evaluation functions, fuse algorithms from reference bots. Examples: adding position-aware bluff detection, implementing GTO-inspired bet sizing, improving draw evaluation, opponent modeling.
 - **Direction B (Hyperparameter Tuner):** ONLY modify numeric constants, thresholds, and magic numbers. Examples: adjusting `BLUFF_THRESHOLD` from 0.15 → 0.20, `POT_ODDS_MULTIPLIER` from 1.5 → 1.8. FORBIDDEN from adding new functions, classes, or changing control flow.
-- **Direction C (Opponent Modeler):** *(Only use as 3rd worker when rd ≤ 40)*
+- **Direction C (Opponent Modeler):** *(Only use as 3rd worker when games ≥ 200)*
   - ALLOWED: Adding/modifying opponent tracking data structures
   - ALLOWED: Per-street statistics (preflop/flop/turn/river aggression separately): `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']`
   - ALLOWED: Bet sizing pattern detection: `opp_bet_sizes[street]` as rolling list, use median

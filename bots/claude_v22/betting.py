@@ -205,3 +205,32 @@ def choose_anti_lock_pressure_action(
     if amount <= to_call or amount < min_raise_action:
         return -2 if hands_left <= 4 else None
     return amount
+
+
+def spr_profile(my_chips, pot):
+    """Calculate stack-to-pot ratio and return commitment profile.
+
+    Returns dict with keys:
+        spr (float): Stack-to-pot ratio.
+        commitment_level (str): 'deep', 'medium', 'shallow', 'commit'.
+        sizing_scale (float): Multiplier for bet sizing adjustments.
+    """
+    if pot <= 0:
+        return {"spr": 100.0, "commitment_level": "deep", "sizing_scale": 1.0}
+
+    spr = my_chips / pot
+
+    if spr >= 10:
+        level = "deep"
+        scale = 1.0
+    elif spr >= 5:
+        level = "medium"
+        scale = 0.95
+    elif spr >= 2.5:
+        level = "shallow"
+        scale = 0.88
+    else:
+        level = "commit"
+        scale = 0.80
+
+    return {"spr": spr, "commitment_level": level, "sizing_scale": scale}

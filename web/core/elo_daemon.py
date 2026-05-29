@@ -1,8 +1,9 @@
 """
-Background Glicko-2 Rating Daemon for Poker Bot Evolution.
+Background Rating Daemon for Poker Bot Evolution.
 
-Continuously runs mirror battles between active bots, updates Glicko-2
-ratings after each rating period. Prioritizes under-evaluated pairs.
+Continuously runs mirror battles between active bots. Uses per-game Elo
+updates and maintains a Head-to-Head win/loss matrix. Continuous scheduling
+eliminates idle cores.
 
 Usage:
     python web/core/elo_daemon.py --pairs 5 --workers 14 --verbose
@@ -13,50 +14,52 @@ import sys
 import json
 import fcntl
 import signal
-import random
 import argparse
 import time
-from collections import Counter
+from collections import Counter, deque
 from contextlib import contextmanager
 from pathlib import Path
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 from datetime import datetime
 
-# Add project root and core dir to sys.path
 CORE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CORE_DIR.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "engine"))
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(CORE_DIR))
 
-from glicko2 import Glicko2Player, update_rating_period, decay_rd
+from glicko2 import Glicko2Player, update_single_game, decay_rd
 from battle import mirror_battle
 
 BOTS_DIR = PROJECT_ROOT / "bots"
 RESULTS_DIR = CORE_DIR / "results"
 RATINGS_FILE = RESULTS_DIR / "glicko_ratings.json"
 STATS_FILE = RESULTS_DIR / "elo_daemon_stats.json"
+H2H_FILE = RESULTS_DIR / "head_to_head.json"
+BOT_STATS_FILE = RESULTS_DIR / "bot_stats.json"
 REPLAY_DIR = RESULTS_DIR / "match_replay"
 MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 MAX_REPLAY_FILES = 200
-
-MIN_PERIOD_GAMES = 10  # Min matches per bot before rating period closes
 
 # Match selection priority weights
 UNDER_EVAL_WEIGHT = 0.6
 DIVERSITY_WEIGHT = 0.4
 UNDER_EVAL_BASELINE = 50
 RATING_GAP_SCALE = 200
-DIVERSITY_COUNT_DECAY = 100  # Penalise diversity for heavily-played pairs
+DIVERSITY_COUNT_DECAY = 100
 MAX_HISTORY_LINES = 200
 HISTORY_KEEP_LINES = 100
+
+# Continuous scheduling parameters
+SAVE_EVERY_N_GAMES = 20
+SAVE_INTERVAL_SEC = 60
+POLL_TIMEOUT = 0.5
 
 running = True
 
 
 @contextmanager
 def locked_file(path, mode='r', lock_type=None, encoding=None):
-    """Context manager for file operations with fcntl locking."""
     if lock_type is None:
         lock_type = fcntl.LOCK_EX if ('w' in mode or 'a' in mode or '+' in mode) else fcntl.LOCK_SH
     open_kwargs = {}
@@ -74,7 +77,6 @@ def handle_signal(signum, frame):
     global running
     print(f"\n[DAEMON] Received signal {signum}, shutting down gracefully...")
     running = False
-    # Kill all child processes (ProcessPoolExecutor workers + battle subprocesses)
     try:
         os.killpg(os.getpgid(os.getpid()), signal.SIGTERM)
     except (ProcessLookupError, PermissionError, OSError):
@@ -82,7 +84,6 @@ def handle_signal(signum, frame):
 
 
 def get_active_bots():
-    """Scan bots/ for completed claude_v* directories."""
     bots = []
     if BOTS_DIR.exists():
         for d in sorted(os.listdir(BOTS_DIR)):
@@ -97,7 +98,6 @@ def bot_path(bot_name):
 
 
 def load_ratings():
-    """Load Glicko-2 ratings with shared lock."""
     if not RATINGS_FILE.exists():
         return {}
     with locked_file(RATINGS_FILE, "r") as f:
@@ -105,8 +105,7 @@ def load_ratings():
     return {name: Glicko2Player.from_dict(d) for name, d in data.items()}
 
 
-def save_ratings(ratings, period=None):
-    """Save Glicko-2 ratings with exclusive lock. Optionally append to history."""
+def save_ratings(ratings, save_num=None):
     os.makedirs(RESULTS_DIR, exist_ok=True)
     data = {}
     for name, p in ratings.items():
@@ -116,18 +115,16 @@ def save_ratings(ratings, period=None):
     with locked_file(RATINGS_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
-    # Append snapshot to history log (atomic under LOCK_EX)
-    if period is not None:
+    if save_num is not None:
         history_file = RESULTS_DIR / "rating_history.jsonl"
         snapshot = {
-            "period": period,
+            "period": save_num,
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "ratings": {name: {"r": p.r, "rd": p.rd} for name, p in ratings.items()},
         }
         with locked_file(history_file, "a+") as f:
             f.write(json.dumps(snapshot) + "\n")
             f.flush()
-            # Trim history file to prevent unbounded growth
             f.seek(0)
             lines = f.readlines()
             if len(lines) > MAX_HISTORY_LINES:
@@ -138,7 +135,7 @@ def save_ratings(ratings, period=None):
 
 def load_stats():
     if not STATS_FILE.exists():
-        return {"pairs": {}, "total_periods": 0}
+        return {"pairs": {}, "total_games": 0}
     with locked_file(STATS_FILE, "r") as f:
         data = json.load(f)
     return data
@@ -151,16 +148,43 @@ def save_stats(stats):
 
 
 def pair_key(a, b):
-    """Canonical pair key (alphabetical order)."""
     return f"{a} vs {b}" if a < b else f"{b} vs {a}"
 
 
-def pick_matches(active_bots, stats, ratings, n_picks=14):
-    """Pick n_picks match pairs with per-bot fairness cap and count-penalised diversity."""
+def load_h2h():
+    if not H2H_FILE.exists():
+        return {}
+    with locked_file(H2H_FILE, "r") as f:
+        return json.load(f)
+
+
+def save_h2h(h2h):
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    with locked_file(H2H_FILE, "w") as f:
+        json.dump(h2h, f, indent=2)
+
+
+def load_bot_stats():
+    if not BOT_STATS_FILE.exists():
+        return {}
+    with locked_file(BOT_STATS_FILE, "r") as f:
+        return json.load(f)
+
+
+def save_bot_stats(bot_stats):
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    with locked_file(BOT_STATS_FILE, "w") as f:
+        json.dump(bot_stats, f, indent=2)
+
+
+def pick_matches(active_bots, h2h, ratings, n_picks=14):
+    """Pick match pairs prioritizing under-evaluated and rating-diverse matchups."""
     pairs = [(a, b) for i, a in enumerate(active_bots) for b in active_bots[i + 1:]]
 
     def priority(a, b):
-        count = stats.get("pairs", {}).get(pair_key(a, b), 0)
+        k = pair_key(a, b)
+        h = h2h.get(k, {})
+        count = h.get("games", 0)
         rating_gap = abs(ratings.get(a, Glicko2Player()).r - ratings.get(b, Glicko2Player()).r)
         under_eval = max(0, UNDER_EVAL_BASELINE - count) / UNDER_EVAL_BASELINE
         diversity = min(rating_gap / RATING_GAP_SCALE, 1.0)
@@ -184,7 +208,6 @@ def pick_matches(active_bots, stats, ratings, n_picks=14):
 
 
 def save_match_replay(a, b, wins_a, wins_b, draws, replay_data):
-    """Save a match replay JSON and append summary to match_history.jsonl."""
     os.makedirs(REPLAY_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     fname = f"{timestamp}_{a}_vs_{b}.json"
@@ -199,7 +222,6 @@ def save_match_replay(a, b, wins_a, wins_b, draws, replay_data):
         "games": replay_data,
     }
 
-    # Step 1: Write replay JSON
     replay_path = REPLAY_DIR / fname
     try:
         with open(replay_path, "w", encoding="utf-8") as f:
@@ -207,7 +229,6 @@ def save_match_replay(a, b, wins_a, wins_b, draws, replay_data):
     except OSError:
         raise
 
-    # Step 2: Append summary to permanent JSONL (with lock)
     try:
         os.makedirs(RESULTS_DIR, exist_ok=True)
         summary = {
@@ -222,7 +243,6 @@ def save_match_replay(a, b, wins_a, wins_b, draws, replay_data):
         with locked_file(MATCH_HISTORY_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(summary, ensure_ascii=False) + "\n")
     except Exception:
-        # JSONL append failed — remove orphaned replay file
         try:
             replay_path.unlink()
         except OSError:
@@ -233,7 +253,6 @@ def save_match_replay(a, b, wins_a, wins_b, draws, replay_data):
 
 
 def cleanup_old_replays():
-    """Keep only the most recent MAX_REPLAY_FILES replay files."""
     if not REPLAY_DIR.exists():
         return
     files = sorted(REPLAY_DIR.iterdir(), key=lambda f: f.name)
@@ -243,135 +262,129 @@ def cleanup_old_replays():
 
 
 def run_single_match(args):
-    """Run a mirror_battle in a subprocess. Called by ProcessPoolExecutor."""
+    """Run mirror_battle, return per-game independent results from all_logs."""
     bot_a_name, bot_b_name, bot_a_path, bot_b_path, n_pairs = args
     try:
         match_wins, draws, n_played, all_logs = mirror_battle(
             bot_a_path, bot_b_path, n_games=n_pairs, verbose=False, save_log=True
         )
-        return (bot_a_name, bot_b_name, match_wins[0], match_wins[1], draws, n_played, None, all_logs)
+        # Count each game (normal + mirror) independently by winner
+        games_a, games_b, games_draw = 0, 0, 0
+        for game in all_logs:
+            w = game.get("winner", -1)
+            if w == 0:
+                games_a += 1
+            elif w == 1:
+                games_b += 1
+            else:
+                games_draw += 1
+        total = games_a + games_b + games_draw
+        return (bot_a_name, bot_b_name, games_a, games_b, games_draw, total, None, all_logs)
     except Exception as e:
         return (bot_a_name, bot_b_name, 0, 0, 0, 0, str(e), [])
 
 
-def run_rating_period(active_bots, ratings, stats, n_pairs, n_workers, verbose=False):
-    """
-    Run one rating period:
-    1. Schedule matches prioritizing under-evaluated pairs
-    2. Execute in parallel
-    3. Collect results
-    4. Glicko-2 batch update
-    """
-    # Ensure all active bots have rating entries
-    for b in active_bots:
-        if b not in ratings:
-            ratings[b] = Glicko2Player()
-
-    # Decide how many rounds needed so each bot gets enough games
-    n_bots = len(active_bots)
-    if n_bots < 2:
+def process_result(result, ratings, h2h, bot_stats, verbose=False):
+    """Process one completed match: update Elo, H2H, bot_stats, save replay."""
+    a, b, wins_a, wins_b, draws, total, err, replay_data = result
+    if err is not None:
         if verbose:
-            print("[DAEMON] Less than 2 active bots, nothing to do.")
-        return ratings, stats
-
-    # Schedule matches
-    matches = pick_matches(active_bots, stats, ratings, n_picks=n_workers)
-    if not matches:
-        return ratings, stats
-
-    # Build match args
-    match_args = [
-        (a, b, bot_path(a), bot_path(b), n_pairs)
-        for a, b in matches
-    ]
+            print(f"[DAEMON] Error in {a} vs {b}: {err}")
+        return 0
 
     if verbose:
-        print(f"[DAEMON] Rating period: {len(match_args)} matches, {n_workers} workers")
+        print(f"[DAEMON] {a} vs {b}: {wins_a}-{wins_b}-{draws} ({total} games)")
 
-    # Execute matches in parallel
-    results_by_bot = {b: [] for b in active_bots}  # bot -> list of (opponent_player, score)
-    match_results = []
-
-    with ProcessPoolExecutor(max_workers=n_workers) as executor:
-        futures = {executor.submit(run_single_match, arg): arg for arg in match_args}
-        for future in as_completed(futures):
-            if not running:
-                executor.shutdown(wait=False, cancel_futures=True)
-                return ratings, stats  # Early return, don't wait for executor
-            result = future.result()
-            a, b, wins_a, wins_b, draws, n_played, err, replay_data = result
-            if err is not None:
-                if verbose:
-                    print(f"[DAEMON] Error in {a} vs {b}: {err}")
-                continue
-
-            match_results.append((a, b, wins_a, wins_b, draws))
-
-            # Save replay data
-            if replay_data:
-                try:
-                    save_match_replay(a, b, wins_a, wins_b, draws, replay_data)
-                except Exception as e:
-                    if verbose:
-                        print(f"[DAEMON] Error saving replay {a} vs {b}: {e}")
-
+    # Save replay (using per-game counts)
+    if replay_data:
+        try:
+            save_match_replay(a, b, wins_a, wins_b, draws, replay_data)
+        except Exception as e:
             if verbose:
-                print(f"[DAEMON] {a} vs {b}: {wins_a}-{wins_b}-{draws}")
+                print(f"[DAEMON] Error saving replay {a} vs {b}: {e}")
 
-            # Convert to per-game scores for Glicko-2
-            for _ in range(wins_a):
-                results_by_bot[a].append((ratings[b], 1.0))
-                results_by_bot[b].append((ratings[a], 0.0))
-            for _ in range(wins_b):
-                results_by_bot[a].append((ratings[b], 0.0))
-                results_by_bot[b].append((ratings[a], 1.0))
-            for _ in range(draws):
-                results_by_bot[a].append((ratings[b], 0.5))
-                results_by_bot[b].append((ratings[a], 0.5))
+    # Snapshot opponent ratings for Elo updates
+    opp_b = Glicko2Player(r=ratings[b].r, rd=ratings[b].rd, sigma=ratings[b].sigma)
+    opp_a = Glicko2Player(r=ratings[a].r, rd=ratings[a].rd, sigma=ratings[a].sigma)
 
-    # Glicko-2 batch update
-    for b in active_bots:
-        if results_by_bot[b]:
-            ratings[b] = update_rating_period(ratings[b], results_by_bot[b])
+    # Per-game Elo updates
+    for _ in range(wins_a):
+        ratings[a] = update_single_game(ratings[a], opp_b, 1.0)
+        ratings[b] = update_single_game(ratings[b], opp_a, 0.0)
+    for _ in range(wins_b):
+        ratings[a] = update_single_game(ratings[a], opp_b, 0.0)
+        ratings[b] = update_single_game(ratings[b], opp_a, 1.0)
+    for _ in range(draws):
+        ratings[a] = update_single_game(ratings[a], opp_b, 0.5)
+        ratings[b] = update_single_game(ratings[b], opp_a, 0.5)
 
-    # Decay RD for bots that didn't play this period
-    played_bots = set()
-    for a, b, _, _, _ in match_results:
-        played_bots.add(a)
-        played_bots.add(b)
-    for b in active_bots:
-        if b not in played_bots and b in ratings:
-            ratings[b] = decay_rd(ratings[b], elapsed_periods=1)
+    # Update H2H
+    k = pair_key(a, b)
+    h2h.setdefault(k, {"games": 0, "a_wins": 0, "b_wins": 0, "draws": 0})
+    h2h[k]["games"] += total
+    # a is bot0, b is bot1; key is lexical, so track by position
+    if a < b:
+        h2h[k]["a_wins"] += wins_a
+        h2h[k]["b_wins"] += wins_b
+    else:
+        h2h[k]["a_wins"] += wins_b
+        h2h[k]["b_wins"] += wins_a
+    h2h[k]["draws"] += draws
 
-    # Update stats
-    for a, b, wins_a, wins_b, draws in match_results:
-        k = pair_key(a, b)
-        stats.setdefault("pairs", {})
-        stats["pairs"][k] = stats["pairs"].get(k, 0) + wins_a + wins_b + draws
+    # Update bot stats
+    for name, w, l in [(a, wins_a, wins_b), (b, wins_b, wins_a)]:
+        if name not in bot_stats:
+            bot_stats[name] = {"wins": 0, "losses": 0, "draws": 0, "games": 0}
+        bot_stats[name]["wins"] += w
+        bot_stats[name]["losses"] += l
+        bot_stats[name]["draws"] += draws
+        bot_stats[name]["games"] += w + l + draws
+        g = bot_stats[name]["games"]
+        bot_stats[name]["win_rate"] = round(bot_stats[name]["wins"] / g, 4) if g > 0 else 0.0
 
-    stats["total_periods"] = stats.get("total_periods", 0) + 1
+    return total
 
-    # Cleanup old replay files
+
+def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots, verbose=False):
+    """Write all data files to disk."""
+    save_ratings(ratings, save_num=save_num)
+
+    # Recompute win rates for H2H
+    h2h_out = {}
+    for k, v in h2h.items():
+        entry = dict(v)
+        g = entry["games"]
+        entry["win_rate"] = round(entry["a_wins"] / g, 4) if g > 0 else 0.5
+        h2h_out[k] = entry
+    save_h2h(h2h_out)
+
+    save_bot_stats(bot_stats)
+
+    # Update legacy stats for backward compat
+    stats["total_games"] = sum(v["games"] for v in bot_stats.values()) // 2
+    stats["pairs"] = {k: v["games"] for k, v in h2h_out.items()}
+    save_stats(stats)
+
     cleanup_old_replays()
 
     if verbose:
-        # Print current leaderboard
         sorted_bots = sorted(active_bots, key=lambda b: ratings[b].r, reverse=True)
-        print(f"\n[DAEMON] Leaderboard after period {stats['total_periods']}:")
+        print(f"\n[DAEMON] Leaderboard (save #{save_num}):")
         for i, b in enumerate(sorted_bots):
             p = ratings[b]
-            print(f"  {i+1}. {b}: r={p.r:.1f} rd={p.rd:.1f} (conservative={p.conservative_rating():.1f})")
+            bs = bot_stats.get(b, {})
+            wr = bs.get("win_rate", 0.0)
+            g = bs.get("games", 0)
+            print(f"  {i+1}. {b}: r={p.r:.1f} rd={p.rd:.1f} wr={wr:.2%} ({g} games)")
         print()
-
-    return ratings, stats
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Background Glicko-2 Rating Daemon")
+    parser = argparse.ArgumentParser(description="Background Rating Daemon")
     parser.add_argument("--pairs", type=int, default=5, help="Mirror pairs per match")
     parser.add_argument("--workers", type=int, default=14, help="Parallel workers")
     parser.add_argument("--verbose", "-v", action="store_true", help="Print match results")
-    parser.add_argument("--once", action="store_true", help="Run one rating period then exit")
+    parser.add_argument("--once", action="store_true", help="Run ~14 matches then exit")
     args = parser.parse_args()
 
     signal.signal(signal.SIGTERM, handle_signal)
@@ -379,50 +392,129 @@ def main():
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
-    print(f"[DAEMON] Starting Glicko-2 daemon (workers={args.workers}, pairs={args.pairs})")
+    print(f"[DAEMON] Starting rating daemon (workers={args.workers}, pairs={args.pairs})")
+    print(f"[DAEMON] Elo ranking + Head-to-Head matrix + per-game updates")
 
-    while running:
-        active_bots = get_active_bots()
-        if len(active_bots) < 2:
+    # Load persisted state
+    ratings = load_ratings()
+    h2h = load_h2h()
+    bot_stats = load_bot_stats()
+    stats = load_stats()
+
+    active_bots = get_active_bots()
+    n_workers = args.workers
+    n_pairs = args.pairs
+
+    # Ensure new bots have entries
+    for b in active_bots:
+        if b not in ratings:
+            ratings[b] = Glicko2Player()
             if args.verbose:
-                print(f"[DAEMON] Waiting for bots... ({len(active_bots)} active)")
-            if args.once:
+                print(f"[DAEMON] New bot: {b} (r=1500, rd=350)")
+
+    # Remove retired bots
+    retired = [b for b in ratings if b not in active_bots]
+    for b in retired:
+        del ratings[b]
+        if b in bot_stats:
+            del bot_stats[b]
+        if args.verbose:
+            print(f"[DAEMON] Retired: {b}")
+
+    if len(active_bots) < 2:
+        print("[DAEMON] Less than 2 active bots, exiting.")
+        return
+
+    # Build initial match queue
+    match_queue = deque()
+    matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
+    for a, b in matches:
+        match_queue.append((a, b, bot_path(a), bot_path(b), n_pairs))
+
+    executor = ProcessPoolExecutor(max_workers=n_workers)
+    in_flight = {}  # future -> (bot_a, bot_b)
+
+    # Fill initial pool
+    while len(in_flight) < n_workers and match_queue:
+        m = match_queue.popleft()
+        fut = executor.submit(run_single_match, m)
+        in_flight[fut] = (m[0], m[1])
+
+    games_since_save = 0
+    last_save_time = time.time()
+    save_num = stats.get("total_games", 0) // SAVE_EVERY_N_GAMES
+    total_matches = 0
+
+    try:
+        while running and in_flight:
+            done, _ = wait(in_flight.keys(), timeout=POLL_TIMEOUT, return_when=FIRST_COMPLETED)
+
+            for fut in done:
+                a, b = in_flight.pop(fut)
+                result = fut.result()
+                n = process_result(result, ratings, h2h, bot_stats, verbose=args.verbose)
+                games_since_save += n
+                total_matches += 1
+
+                # Replenish: submit next match
+                if match_queue:
+                    m = match_queue.popleft()
+                    new_fut = executor.submit(run_single_match, m)
+                    in_flight[new_fut] = (m[0], m[1])
+                else:
+                    # Refill queue when empty
+                    matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
+                    for ma, mb in matches:
+                        match_queue.append((ma, mb, bot_path(ma), bot_path(mb), n_pairs))
+                    if match_queue:
+                        m = match_queue.popleft()
+                        new_fut = executor.submit(run_single_match, m)
+                        in_flight[new_fut] = (m[0], m[1])
+
+            # Periodic save
+            now = time.time()
+            if games_since_save >= SAVE_EVERY_N_GAMES or now - last_save_time >= SAVE_INTERVAL_SEC:
+                if games_since_save > 0:
+                    save_num += 1
+                    save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots, verbose=args.verbose)
+                    games_since_save = 0
+                    last_save_time = now
+
+            # Refresh bot list periodically
+            if total_matches % 50 == 0:
+                new_bots = get_active_bots()
+                added = set(new_bots) - set(active_bots)
+                removed = set(active_bots) - set(new_bots)
+                for b in added:
+                    ratings[b] = Glicko2Player()
+                    if args.verbose:
+                        print(f"[DAEMON] New bot: {b}")
+                for b in removed:
+                    ratings.pop(b, None)
+                    bot_stats.pop(b, None)
+                    if args.verbose:
+                        print(f"[DAEMON] Retired: {b}")
+                if added or removed:
+                    active_bots = new_bots
+
+            # --once mode: stop after first batch completes
+            if args.once and total_matches >= n_workers:
                 break
-            time.sleep(10)
-            continue
 
-        ratings = load_ratings()
-        stats = load_stats()
+    finally:
+        # Graceful shutdown: wait briefly for in-flight, then final save
+        print(f"[DAEMON] Draining {len(in_flight)} in-flight matches...")
+        for fut in in_flight:
+            try:
+                result = fut.result(timeout=10)
+                process_result(result, ratings, h2h, bot_stats, verbose=args.verbose)
+            except Exception:
+                pass
+        executor.shutdown(wait=False)
 
-        # Ensure new bots are in ratings
-        for b in active_bots:
-            if b not in ratings:
-                ratings[b] = Glicko2Player()
-                if args.verbose:
-                    print(f"[DAEMON] New bot discovered: {b} (r=1500, rd=350)")
-
-        # Remove retired bots from ratings
-        retired = [b for b in ratings if b not in active_bots]
-        for b in retired:
-            del ratings[b]
-            if args.verbose:
-                print(f"[DAEMON] Retired bot removed: {b}")
-
-        ratings, stats = run_rating_period(
-            active_bots, ratings, stats,
-            n_pairs=args.pairs, n_workers=args.workers, verbose=args.verbose
-        )
-
-        save_ratings(ratings, period=stats.get("total_periods", 0))
-        save_stats(stats)
-
-        if args.once:
-            break
-
-        # Brief pause between periods
-        time.sleep(1)
-
-    print("[DAEMON] Shutdown complete.")
+        # Final save
+        save_cycle(ratings, h2h, bot_stats, stats, save_num + 1, active_bots, verbose=args.verbose)
+        print(f"[DAEMON] Shutdown complete. {total_matches} matches processed.")
 
 
 if __name__ == "__main__":

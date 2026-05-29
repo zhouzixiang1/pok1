@@ -163,6 +163,49 @@ def update_rating_period(player, results):
     return Glicko2Player(r_new, rd_new, sigma_star)
 
 
+def update_single_game(player, opponent, score, tau=TAU):
+    """Glicko-1 per-game update: update r and rd, keep sigma fixed.
+
+    Simplified from the full Glicko-2 batch update. Uses the same _g() and _E()
+    helpers but skips the Illinois sigma-search. Sigma stays constant — fine for
+    static bots whose true skill doesn't change between games.
+
+    Args:
+        player: Glicko2Player (will not be mutated)
+        opponent: Glicko2Player snapshot at game time
+        score: 1.0 (win), 0.0 (loss), or 0.5 (draw)
+
+    Returns:
+        New Glicko2Player with updated r/rd, same sigma.
+    """
+    mu = (player.r - DEFAULT_R) / SCALE
+    phi = player.rd / SCALE
+
+    mu_j = (opponent.r - DEFAULT_R) / SCALE
+    phi_j = opponent.rd / SCALE
+
+    g_j = _g(phi_j)
+    e_j = _E(mu, mu_j, phi_j)
+
+    # Variance contribution from this single game
+    v_inv = g_j * g_j * e_j * (1.0 - e_j)
+    if v_inv < 1e-10:
+        return Glicko2Player(player.r, player.rd, player.sigma)
+
+    v = 1.0 / v_inv
+    delta_sum = g_j * (score - e_j)
+
+    # Add sigma uncertainty then update
+    phi_star = math.sqrt(phi * phi + player.sigma * player.sigma)
+    phi_new = 1.0 / math.sqrt(1.0 / (phi_star * phi_star) + 1.0 / v)
+    mu_new = mu + phi_new * phi_new * delta_sum
+
+    r_new = mu_new * SCALE + DEFAULT_R
+    rd_new = phi_new * SCALE
+
+    return Glicko2Player(r_new, rd_new, player.sigma)
+
+
 def decay_rd(player, elapsed_periods=1):
     """
     Increase RD for a player who hasn't played recently.

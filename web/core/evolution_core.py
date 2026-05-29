@@ -43,14 +43,15 @@ REFERENCE_DIR = CORE_DIR / "reference_bots"
 GRAVEYARD_DIR = BOTS_DIR / "graveyard"
 RATINGS_FILE = RESULTS_DIR / "glicko_ratings.json"
 STATS_FILE = RESULTS_DIR / "elo_daemon_stats.json"
+H2H_FILE = RESULTS_DIR / "head_to_head.json"
+BOT_STATS_FILE = RESULTS_DIR / "bot_stats.json"
 WORKER_FAILURES_FILE = RESULTS_DIR / "worker_failures.jsonl"
 
 MAX_ACTIVE_BOTS = 30
 
 # Evaluation & quality thresholds
 DAEMON_EVAL_TIMEOUT = 600
-MIN_MATCHES_FOR_EVAL = 20
-MAX_RD_FOR_EVAL = 40
+MIN_GAMES_FOR_EVAL = 100
 MAX_LINES_PER_FILE = 1000
 MIN_DECISION_PASS_RATE = 0.7
 MIN_CROSSOVER_DECISION_RATE = 0.6
@@ -261,39 +262,30 @@ def load_daemon_stats():
     return {"pairs": {}, "total_periods": 0}
 
 
-async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_matches=MIN_MATCHES_FOR_EVAL, max_rd=MAX_RD_FOR_EVAL):
+async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=MIN_GAMES_FOR_EVAL):
     """Wait for daemon to evaluate a new bot (async, non-blocking).
 
-    Requires both sufficient matches AND low rating deviation for confidence.
-    Uses mtime caching to avoid redundant disk reads.
+    Requires sufficient games played. Uses mtime caching to avoid redundant disk reads.
     """
     start = time.time()
-    cached_stats = None
-    cached_ratings = None
-    stats_mtime = 0
-    ratings_mtime = 0
+    cached_bot_stats = None
+    bot_stats_mtime = 0
 
     while time.time() - start < timeout:
-        # Only re-read files if they've been modified
-        if STATS_FILE.exists():
-            mt = os.path.getmtime(STATS_FILE)
-            if mt != stats_mtime:
-                stats_mtime = mt
-                cached_stats = load_daemon_stats()
-        if cached_stats is None:
-            cached_stats = {"pairs": {}, "total_periods": 0}
+        if BOT_STATS_FILE.exists():
+            mt = os.path.getmtime(BOT_STATS_FILE)
+            if mt != bot_stats_mtime:
+                bot_stats_mtime = mt
+                try:
+                    with locked_file(BOT_STATS_FILE, "r") as f:
+                        cached_bot_stats = json.load(f)
+                except (json.JSONDecodeError, FileNotFoundError):
+                    cached_bot_stats = {}
+        if cached_bot_stats is None:
+            cached_bot_stats = {}
 
-        if RATINGS_FILE.exists():
-            mt = os.path.getmtime(RATINGS_FILE)
-            if mt != ratings_mtime:
-                ratings_mtime = mt
-                cached_ratings = load_ratings()
-        if cached_ratings is None:
-            cached_ratings = {}
-
-        matches = sum(v for k, v in cached_stats.get("pairs", {}).items() if bot_name in k)
-        rd = cached_ratings.get(bot_name, Glicko2Player()).rd
-        if matches >= min_matches and rd <= max_rd:
+        games = cached_bot_stats.get(bot_name, {}).get("games", 0)
+        if games >= min_games:
             return True
         await asyncio.sleep(5)
     return False
@@ -787,6 +779,8 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui
         f"Bot directory: bots/claude_v{source_v}/\n"
         f"Ratings file: web/core/results/glicko_ratings.json\n"
         f"Rating history: web/core/results/rating_history.jsonl\n"
+        f"Head-to-Head data: web/core/results/head_to_head.json\n"
+        f"Bot stats: web/core/results/bot_stats.json\n"
         f"Experience pool: web/core/experience_pool.md  ← READ THIS, not evolution_workspace/experience_pool.md\n"
     )
     master_log_file = get_logs_dir(next_v) / "master_io.txt"
@@ -1349,15 +1343,65 @@ async def _run_performance_verification(source_v, ratings, ui, is_text_ui):
     )[:5]
     ratings_lines = [f"  {b}: r={p.r:.0f} rd={p.rd:.0f}" for b, p in sorted_bots]
 
+    # ── Head-to-Head data ──
+    h2h_lines = []
+    if H2H_FILE.exists():
+        try:
+            with locked_file(H2H_FILE, "r") as hf:
+                h2h_data = json.load(hf)
+            for k, v in h2h_data.items():
+                parts = k.split(" vs ")
+                if len(parts) != 2:
+                    continue
+                a_name, b_name = parts
+                if bot_name not in (a_name, b_name):
+                    continue
+                opponent = b_name if bot_name == a_name else a_name
+                g = v.get("games", 0)
+                if g == 0:
+                    continue
+                # Figure out which side our bot is
+                if bot_name == a_name:
+                    bot_w = v.get("a_wins", 0)
+                else:
+                    bot_w = v.get("b_wins", 0)
+                opp_w = g - bot_w - v.get("draws", 0)
+                wr = bot_w / g
+                tag = ""
+                if wr < 0.40:
+                    tag = " ← WEAKNESS"
+                elif wr > 0.60:
+                    tag = " ← STRENGTH"
+                h2h_lines.append((wr, f"  vs {opponent}: {bot_w}W-{opp_w}L ({wr:.0%}){tag}"))
+            h2h_lines.sort(key=lambda x: x[0])
+        except Exception:
+            pass
+
+    # ── Bot stats (overall win rate) ──
+    bot_stats_line = ""
+    if BOT_STATS_FILE.exists():
+        try:
+            with locked_file(BOT_STATS_FILE, "r") as bsf:
+                bs_data = json.load(bsf)
+            bs = bs_data.get(bot_name, {})
+            g = bs.get("games", 0)
+            wr = bs.get("win_rate", 0.0)
+            if g > 0:
+                bot_stats_line = f"  {bot_name}: {wr:.0%} overall ({g} games)"
+        except Exception:
+            pass
+
     # ── Build prompt ──
     prompt = (
         "You are a Performance Verification Analyst for a self-evolving poker bot system.\n"
         "Your job: synthesise the quantitative data below into actionable LLM-readable insight.\n\n"
         f"Current bot under analysis: {bot_name}\n\n"
-        "## Rating History (last 10 Glicko-2 periods, top rating)\n"
+        "## Rating History (last 10 periods, top rating)\n"
         + ("\n".join(gen_trend_lines) if gen_trend_lines else "  No history available") + "\n\n"
-        "## Current Win Rate\n"
-        + ("\n".join(win_rate_lines) if win_rate_lines else "  No match history available") + "\n\n"
+        "## Overall Win Rate\n"
+        + (bot_stats_line if bot_stats_line else "  No stats available") + "\n\n"
+        "## Head-to-Head Results (per-opponent)\n"
+        + ("\n".join(l for _, l in h2h_lines) if h2h_lines else "  No H2H data available") + "\n\n"
         "## Top Active Bots\n"
         + "\n".join(ratings_lines) + "\n\n"
         "Produce a JSON block answering:\n"

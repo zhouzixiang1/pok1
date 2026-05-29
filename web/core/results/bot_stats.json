@@ -1,0 +1,58 @@
+{
+  "claude_v18": {
+    "wins": 3,
+    "losses": 3,
+    "draws": 0,
+    "games": 6,
+    "win_rate": 0.5
+  },
+  "claude_v2": {
+    "wins": 3,
+    "losses": 3,
+    "draws": 0,
+    "games": 6,
+    "win_rate": 0.5
+  },
+  "claude_v14": {
+    "wins": 3,
+    "losses": 3,
+    "draws": 0,
+    "games": 6,
+    "win_rate": 0.5
+  },
+  "claude_v9": {
+    "wins": 3,
+    "losses": 3,
+    "draws": 0,
+    "games": 6,
+    "win_rate": 0.5
+  },
+  "claude_v1": {
+    "wins": 1,
+    "losses": 5,
+    "draws": 0,
+    "games": 6,
+    "win_rate": 0.1667
+  },
+  "claude_v10": {
+    "wins": 5,
+    "losses": 1,
+    "draws": 0,
+    "games": 6,
+    "win_rate": 0.8333
+  },
+  "claude_v16": {
+    "wins": 2,
+    "losses": 4,
+    "draws": 0,
+    "games": 6,
+    "win_rate": 0.3333
+  },
+  "claude_v19": {
+    "wins": 4,
+    "losses": 2,
+    "draws": 0,
+    "games": 6,
+    "win_rate": 0.6667
+  }
+}

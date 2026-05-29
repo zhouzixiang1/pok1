@@ -15,6 +15,8 @@ RESULTS_DIR = PROJECT_ROOT / "web" / "core" / "results"
 EXPERIENCE_FILE = PROJECT_ROOT / "web" / "core" / "experience_pool.md"
 RATINGS_FILE = RESULTS_DIR / "glicko_ratings.json"
 STATS_FILE = RESULTS_DIR / "elo_daemon_stats.json"
+H2H_FILE = RESULTS_DIR / "head_to_head.json"
+BOT_STATS_FILE = RESULTS_DIR / "bot_stats.json"
 HISTORY_FILE = RESULTS_DIR / "rating_history.jsonl"
 
 router = APIRouter(prefix="/api", tags=["ratings"])
@@ -215,3 +217,24 @@ async def daemon_status():
         status = "active" if age < 60 else ("recent" if age < 600 else "idle")
         return {"status": status, "last_update_age_seconds": round(age, 0), "daemon_enabled": config["daemon_enabled"]}
     return {"status": "unknown", "last_update_age_seconds": -1, "daemon_enabled": config["daemon_enabled"]}
+
+
+@router.get("/h2h")
+async def get_h2h(bot_name: str = Query("", description="Filter by bot name")):
+    data = _cached_read("h2h", H2H_FILE)
+    if not data:
+        return {}
+    if not bot_name:
+        return data
+    filtered = {}
+    for k, v in data.items():
+        parts = k.split(" vs ")
+        if bot_name in parts:
+            filtered[k] = v
+    return filtered
+
+
+@router.get("/bot-stats")
+async def get_all_bot_stats():
+    data = _cached_read("bot_stats", BOT_STATS_FILE)
+    return data or {}

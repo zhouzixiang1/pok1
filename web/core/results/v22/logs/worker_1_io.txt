@@ -1816,3 +1816,744 @@ After all quality checks pass, run these final checks:
 
 =============================
 [CLAUDE OUTPUT]
+
+[WORKER 1 (Algorithmic Logic Architect) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Algorithmic Logic Architect**.
+You must directly edit the source files in `bots/claude_v22/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v22/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+## If you are an "Opponent Modeler":
+- **ALLOWED**: Adding/modifying opponent tracking data structures and statistics
+- **ALLOWED**: Per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']`
+- **ALLOWED**: Bet sizing pattern detection: `opp_bet_sizes[street]` as rolling list (cap at 20), `statistics.median()`
+- **ALLOWED**: Exploitative adjustments based on detected opponent tendencies
+- **FORBIDDEN**: Changing overall decision flow or non-opponent-model logic
+- **FORBIDDEN**: Modifying any constant that is not opponent-model related
+
+You have access to `web/core/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+
+**Important — Parallel Execution**: You may be running concurrently with other Worker Agents on the same codebase. Your `target_files` are exclusively yours — other workers will NOT touch them. Only modify your assigned `target_files`. Do NOT read or write files outside your assignment.
+
+# Poker Engineering Best Practices
+Apply these when implementing changes:
+
+**Opponent Modeling:**
+- Use per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']` where `street ∈ {'preflop', 'flop', 'turn', 'river'}`
+- Track bet sizing: `opp_bet_sizes[street]` as a rolling list (cap at last 20), use `statistics.median()` for typical size
+- Exploit detected tendencies: if `opp_stats['river']['bet_freq'] > 0.65` → opponent bluffs river heavily → widen call range
+
+**Postflop Decision Making:**
+- EV-based fold/call: `EV_call = equity * pot_after_call - (1 - equity) * call_amount`. Call when EV > 0
+- River value bet sizing: if equity > 70%, bet 60-80% of pot for value; if equity 50-70%, bet 40-50% pot
+- Avoid "fear thresholds" — don't fold based on hand rank alone; compute EV against opponent range
+
+**Anti-Regression Checklist (verify before finishing):**
+- [ ] AA/KK/QQ preflop: still raises/3-bets aggressively (no passive limping)?
+- [ ] Nut flush/straight/full house on river: still places a value bet?
+- [ ] New code doesn't import modules not in stdlib + numpy?
+- [ ] `{"response": int}` JSON output format still correct?
+- [ ] No infinite loops or recursion in new functions?
+
+# Master Architect's Specific Prompt For You
+You are an Algorithmic Logic Architect. Your goal is to port 5 missing features from claude_v12 into claude_v21 to fix the CRITICAL river passivity weakness (0% raise in losses) and add postflop value extraction.
+
+## CONTEXT
+v21 (rating 1566) was a modular rewrite from v20 that lost critical features that v12 (rating 1597) had. The match analysis shows v21 raises 0% on the river in losses — it's a pure calling station on the most expensive street. This is because v21 has NO river value betting function, NO donk betting, NO SPR awareness, and NO EV-based bluff analysis.
+
+## REFERENCE: v12 CODE (use `git show bot-v12:bots/claude_v12/postflop.py` to read)
+
+### Feature 1: river_thin_value_profile (port to bluff_analysis.py)
+Port from v12 lines 1024-1077. This function analyzes whether a thin value bet on the river is warranted. CRITICAL SAFETY from experience pool: requires STRICT conditions — top_pair/overpair only, kicker≥10, no dynamic boards, risk<0.05. v17's looser version was NET NEGATIVE.
+
+### Feature 2: river_bluff_ev (port to bluff_analysis.py)
+Port from v12 lines 1126-1158. EV-based bluff analysis using fold_to_raise + blocker count. More principled than threshold-only.
+
+### Feature 3: donk_bet_profile (port to bluff_analysis.py)
+Port from v12 lines 1161-1235. OOP lead betting on wet/dynamic boards with strong/nut hands or combo draws.
+
+### Feature 4: spr_profile (port to betting.py)
+Port from v12 lines 1237-end. Stack-to-pot ratio awareness (deep/medium/shallow/commit) with sizing_scale.
+
+### Feature 5: turn_barrel_profile (port to bluff_analysis.py)
+Port from v12 lines 1086-1124. Turn barrel continuation analysis.
+
+## INTEGRATION INTO strategy.py
+
+### Step 1: Add imports at the top of strategy.py
+Add to the postflop import block:
+```python
+from bluff_analysis import river_thin_value_profile, river_bluff_ev, donk_bet_profile
+from betting import spr_profile
+from bluff_analysis import turn_barrel_profile
+```
+
+### Step 2: In get_action() function (around line 700, after computing other profiles)
+Add these new profile computations:
+```python
+spr_info = spr_profile(my_chips, pot)
+donk_info = (
+    donk_bet_profile(my_cards, public_cards, pair_profile, board_texture, value_profile, draw_info, spot_info, opponent_model)
+    if len(public_cards) >= 3
+    else {"eligible": False, "sizing_ratio": 0.0, "reason": "none"}
+)
+```
+
+### Step 3: Add SPR-aware threshold adjustments (after computing strong/medium thresholds, around line 762)
+Add BEFORE the existing 'if value_profile is not None:' block:
+```python
+# SPR-based adjustments: shallower stacks → lower commitment thresholds
+spr_commitment = spr_info["commitment_level"]
+if spr_commitment == "shallow":
+    strong -= 0.02
+    medium -= 0.015
+elif spr_commitment == "commit":
+    strong -= 0.04
+    medium -= 0.03
+```
+
+### Step 4: Add river thin value betting (INSERT between 'thin_static_showdown_control' check and the river_bluff_threshold section, around line 1177)
+This is the MOST IMPORTANT addition. INSERT this code block right AFTER the `if thin_static_showdown_control: return 0` block and BEFORE `river_bluff_threshold = 0.62...`:
+```python
+# Enhanced river thin value betting
+if round_idx == 3 and to_call == 0 and win_rate >= 0.52:
+    thin_value = river_thin_value_profile(
+        my_cards, public_cards, pair_profile, board_texture, value_profile, nutted_risk
+    )
+    if thin_value["eligible"]:
+        sizing_tier = thin_value["sizing_tier"]
+        if sizing_tier == "small":
+            thin_sizing = pot * 0.40
+        elif sizing_tier == "medium":
+            thin_sizing = pot * 0.55
+        else:
+            thin_sizing = pot * 0.70
+        thin_amount = max(state["min_raise_action"], int(thin_sizing))
+        if thin_amount > to_call and thin_amount < my_chips:
+            return thin_amount
+```
+
+### Step 5: Add donk betting (INSERT between the safety guard checks and the river_bluff_threshold section, around line 1177)
+INSERT this block right AFTER the river thin value block:
+```python
+# Donk betting: lead out OOP on favorable boards
+if round_idx > 0 and to_call == 0 and donk_info["eligible"]:
+    donk_sizing = int(pot * donk_info["sizing_ratio"] * spr_info["sizing_scale"])
+    donk_amount = max(state["min_raise_action"], donk_sizing)
+    if donk_amount > to_call and donk_amount < my_chips:
+        return donk_amount
+```
+
+### Step 6: Enhance river_blocker_bluff with EV check
+Find the existing `river_blocker_bluff = (` block. Add an additional condition at the end:
+```python
+        and river_bluff_ev(my_cards, public_cards, blocker_profile, pot, opponent_model)["recommended"]
+```
+
+### Step 7: Add turn barrel enhancement
+Near the end of get_action(), after computing semi_bluff and before the main raise condition, add:
+```python
+barrel_info = turn_barrel_profile(
+    my_cards, public_cards, value_profile, board_texture, draw_info, spot_info, round_idx
+)
+barrel_raise = barrel_info["barrel_eligible"] and win_rate >= medium + 0.08
+barrel_sizing_delta = barrel_info["barrel_sizing_delta"] if barrel_raise else 0.0
+```
+And in the main raise condition, add `or barrel_raise` to the condition. Also add barrel_sizing_delta to match_sizing_delta:
+```python
+match_sizing_delta=match_profile["sizing_delta"] + barrel_sizing_delta,
+```
+
+## CRITICAL RULES
+1. Port functions from v12 using `git show bot-v12:bots/claude_v12/postflop.py` — do NOT invent new logic
+2. SAFETY GUARDS for river_thin_value_profile: STRICT conditions (top_pair/overpair, kicker≥10, no dynamic boards, risk<0.05). The experience pool explicitly warns that v17's looser version was net negative.
+3. Keep all changes backward-compatible — existing safety guards (weak_pair_river, bad_river_bluff_candidate, etc.) must remain
+4. Do NOT modify the choose_preflop_spot_action function or any numeric thresholds — Worker 2 handles that
+5. Each new function must fit within the 1000-line limit per file
+6. strategy.py is already 1259 lines. You can safely add ~40 more lines for the new features. If strategy.py gets too large, consider that the 1000-line limit is per-file and strategy.py may already be over — but prioritize correctness over brevity.
+7. Update the postflop.py re-export list to include the new functions added to bluff_analysis.py
+
+# Recent Worker Failures (avoid repeating these mistakes):
+- Gen 22 Worker 1 (Algorithmic Logic Architect): unknown
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v22/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v22/main.py` (and other .py files you changed)
+   - Smoke test: `python web/core/smoke_tester.py bots/claude_v22/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v22/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+Let me start by reading the current codebase and the v12 reference code.
+Now let me read the current files I need to modify:
+Now let me read strategy.py to understand where to make insertions:
+Now let me find the key sections in strategy.py where I need to make insertions:
+Now let me find where profiles are computed in get_action (the "spr", "donk" area and the strong/medium thresholds):
+Now let me find where profiles like pair_profile, board_texture, value_profile, draw_info, spot_info, and opponent_model are computed, so I know where to insert the spr_info and donk_info:
+Now I have a clear picture. Let me check what's imported from betting.py in strategy.py:
+I see that `choose_raise` is defined within strategy.py itself, not imported. Let me check if the `made_hand_metric` function is accessible from bluff_analysis.py:
+Now let me also check what's in the draw_analysis.py for `empty_draw_profile` reference:
+Now I have all the information I need. Let me also verify the v12 code one more time for exact function signatures:
+Now I have the complete picture. Let me implement all changes:
+
+### Step 1: Add functions to bluff_analysis.py (river_thin_value_profile, turn_barrel_profile, river_bluff_ev, donk_bet_profile)
+Good. Now let me add the `spr_profile` function to betting.py:
+### Step 2: Update postflop.py re-export list
+### Step 3: Now modify strategy.py
+
+Let me read the full imports section and the key sections I need to modify:
+Now let me make the edits to strategy.py. First, update the imports:
+Now let me add the `spr_info` and `donk_info` computations. Let me find the right insertion point:
+I'll add `spr_info` and `donk_info` right after `paired_board_stackoff`:
+Now let me add the SPR-based threshold adjustments. Let me find the right spot:
+I need to insert the SPR adjustments BEFORE the `if value_profile is not None:` block:
+Now let me add the river thin value betting and donk betting. Let me find the exact insertion point:
+Now I need to insert the river thin value betting and donk betting between `if thin_static_showdown_control: return 0` and `river_bluff_threshold = 0.62 ...`:
+Now Step 6: Add EV check to river_blocker_bluff. Let me find it:
+Now Step 7: Add turn barrel enhancement. Let me find the semi_bluff section and the main raise condition:
+Now I'll add the barrel_info computation and integrate it:
+Now let me verify the changes compile correctly:
+All compile checks pass. Now let me run the smoke test:
+Smoke test passes. Now let me verify the diff to make sure everything is correct:
+I see there are also changes to the `choose_preflop_spot_action` function (changing thresholds like `0.49` to `0.43`, etc.). These are NOT my changes — they were made by another Worker Agent (the Hyperparameter Tuner). Let me verify these are only the preflop thresholds:
+Those preflop threshold changes (0.49→0.43, 0.36→0.27, 0.57→0.50, etc.) were NOT made by me — they were already in the working tree from another worker (the Hyperparameter Tuner). My changes are strictly:
+
+1. ✅ Import additions in strategy.py (lines 41-45)
+2. ✅ spr_info and donk_info computation (after paired_board_stackoff)
+3. ✅ SPR-based threshold adjustments (before value_profile check)
+4. ✅ River thin value betting block (after thin_static_showdown_control)
+5. ✅ Donk betting block (after river thin value)
+6. ✅ EV check added to river_blocker_bluff
+7. ✅ Turn barrel profile computation and integration
+
+Let me verify the other files' diffs are clean:
+All changes look clean and correct. Let me do the final self-review checks:
+
+**Role Boundary Check (Algorithmic Logic Architect):**
+- ✅ Added new functions: `river_thin_value_profile`, `turn_barrel_profile`, `river_bluff_ev`, `donk_bet_profile`, `spr_profile` — all ALLOWED
+- ✅ Added imports — ALLOWED
+- ✅ Added new control flow blocks (river thin value, donk betting, barrel) — ALLOWED
+- ✅ Did NOT modify any well-tuned constants unless structurally required (SPR adjustments affect strong/medium thresholds, which is structurally required by the new spr_profile function)
+- The preflop threshold changes in the diff were made by another worker, not me
+
+**Target File Check:**
+- ✅ Only modified: `bluff_analysis.py`, `betting.py`, `postflop.py`, `strategy.py` — all within `bots/claude_v22/`
+
+**Protocol Check:**
+- ✅ Bot still outputs `{"response": <int>}` — no changes to main.py or the output format
+- ✅ Action encoding preserved: 0=call/check, -1=fold, -2=all-in, >0=raise amount
+
+Let me run the smoke test one final time to confirm everything is stable:
+All checks pass. Here's a summary of what was implemented:
+
+## Changes Made
+
+### 1. `bluff_analysis.py` — Added 4 new functions (214 lines added):
+- **`river_thin_value_profile`** — Analyzes whether a thin value bet on the river is warranted. Uses STRICT safety conditions (top_pair/overpair only, kicker≥10, no dynamic boards, risk<0.05) as required by the experience pool warning.
+- **`turn_barrel_profile`** — Analyzes whether a turn barrel continuation is appropriate based on value tier and draw quality.
+- **`river_bluff_ev`** — EV-based bluff analysis using fold_to_raise probability + blocker count for more principled bluff decisions.
+- **`donk_bet_profile`** — OOP lead betting on wet/dynamic boards with strong/nut hands or combo draws.
+
+### 2. `betting.py` — Added `spr_profile` function (29 lines):
+- Stack-to-pot ratio awareness with 4 commitment levels (deep/medium/shallow/commit) and a sizing_scale multiplier.
+
+### 3. `postflop.py` — Updated re-export list:
+- Added all 5 new functions to the import/export chain so `strategy.py` can import them from `postflop`.
+
+### 4. `strategy.py` — Integrated all 5 features (67 lines changed):
+- **Import additions** for the 5 new functions
+- **spr_info + donk_info** computed alongside other profiles
+- **SPR-based threshold adjustments** lower strong/medium thresholds when stacks are shallow
+- **River thin value betting** block inserted between thin_static_showdown_control and river_bluff_threshold
+- **Donk betting** block for OOP lead betting on favorable boards
+- **EV check** added to river_blocker_bluff condition
+- **Turn barrel enhancement** with barrel_raise condition and barrel_sizing_delta added to match_sizing_delta
+
+[WORKER 1 (Algorithmic Logic Architect) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Algorithmic Logic Architect**.
+You must directly edit the source files in `bots/claude_v22/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v22/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+## If you are an "Opponent Modeler":
+- **ALLOWED**: Adding/modifying opponent tracking data structures and statistics
+- **ALLOWED**: Per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']`
+- **ALLOWED**: Bet sizing pattern detection: `opp_bet_sizes[street]` as rolling list (cap at 20), `statistics.median()`
+- **ALLOWED**: Exploitative adjustments based on detected opponent tendencies
+- **FORBIDDEN**: Changing overall decision flow or non-opponent-model logic
+- **FORBIDDEN**: Modifying any constant that is not opponent-model related
+
+You have access to `web/core/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+
+**Important — Parallel Execution**: You may be running concurrently with other Worker Agents on the same codebase. Your `target_files` are exclusively yours — other workers will NOT touch them. Only modify your assigned `target_files`. Do NOT read or write files outside your assignment.
+
+# Poker Engineering Best Practices
+Apply these when implementing changes:
+
+**Opponent Modeling:**
+- Use per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']` where `street ∈ {'preflop', 'flop', 'turn', 'river'}`
+- Track bet sizing: `opp_bet_sizes[street]` as a rolling list (cap at last 20), use `statistics.median()` for typical size
+- Exploit detected tendencies: if `opp_stats['river']['bet_freq'] > 0.65` → opponent bluffs river heavily → widen call range
+
+**Postflop Decision Making:**
+- EV-based fold/call: `EV_call = equity * pot_after_call - (1 - equity) * call_amount`. Call when EV > 0
+- River value bet sizing: if equity > 70%, bet 60-80% of pot for value; if equity 50-70%, bet 40-50% pot
+- Avoid "fear thresholds" — don't fold based on hand rank alone; compute EV against opponent range
+
+**Anti-Regression Checklist (verify before finishing):**
+- [ ] AA/KK/QQ preflop: still raises/3-bets aggressively (no passive limping)?
+- [ ] Nut flush/straight/full house on river: still places a value bet?
+- [ ] New code doesn't import modules not in stdlib + numpy?
+- [ ] `{"response": int}` JSON output format still correct?
+- [ ] No infinite loops or recursion in new functions?
+
+# Master Architect's Specific Prompt For You
+You are an Algorithmic Logic Architect. Your goal is to port 5 missing features from claude_v12 into claude_v21 to fix the CRITICAL river passivity weakness (0% raise in losses) and add postflop value extraction.
+
+## CONTEXT
+v21 (rating 1566) was a modular rewrite from v20 that lost critical features that v12 (rating 1597) had. The match analysis shows v21 raises 0% on the river in losses — it's a pure calling station on the most expensive street. This is because v21 has NO river value betting function, NO donk betting, NO SPR awareness, and NO EV-based bluff analysis.
+
+## REFERENCE: v12 CODE (use `git show bot-v12:bots/claude_v12/postflop.py` to read)
+
+### Feature 1: river_thin_value_profile (port to bluff_analysis.py)
+Port from v12 lines 1024-1077. This function analyzes whether a thin value bet on the river is warranted. CRITICAL SAFETY from experience pool: requires STRICT conditions — top_pair/overpair only, kicker≥10, no dynamic boards, risk<0.05. v17's looser version was NET NEGATIVE.
+
+### Feature 2: river_bluff_ev (port to bluff_analysis.py)
+Port from v12 lines 1126-1158. EV-based bluff analysis using fold_to_raise + blocker count. More principled than threshold-only.
+
+### Feature 3: donk_bet_profile (port to bluff_analysis.py)
+Port from v12 lines 1161-1235. OOP lead betting on wet/dynamic boards with strong/nut hands or combo draws.
+
+### Feature 4: spr_profile (port to betting.py)
+Port from v12 lines 1237-end. Stack-to-pot ratio awareness (deep/medium/shallow/commit) with sizing_scale.
+
+### Feature 5: turn_barrel_profile (port to bluff_analysis.py)
+Port from v12 lines 1086-1124. Turn barrel continuation analysis.
+
+## INTEGRATION INTO strategy.py
+
+### Step 1: Add imports at the top of strategy.py
+Add to the postflop import block:
+```python
+from bluff_analysis import river_thin_value_profile, river_bluff_ev, donk_bet_profile
+from betting import spr_profile
+from bluff_analysis import turn_barrel_profile
+```
+
+### Step 2: In get_action() function (around line 700, after computing other profiles)
+Add these new profile computations:
+```python
+spr_info = spr_profile(my_chips, pot)
+donk_info = (
+    donk_bet_profile(my_cards, public_cards, pair_profile, board_texture, value_profile, draw_info, spot_info, opponent_model)
+    if len(public_cards) >= 3
+    else {"eligible": False, "sizing_ratio": 0.0, "reason": "none"}
+)
+```
+
+### Step 3: Add SPR-aware threshold adjustments (after computing strong/medium thresholds, around line 762)
+Add BEFORE the existing 'if value_profile is not None:' block:
+```python
+# SPR-based adjustments: shallower stacks → lower commitment thresholds
+spr_commitment = spr_info["commitment_level"]
+if spr_commitment == "shallow":
+    strong -= 0.02
+    medium -= 0.015
+elif spr_commitment == "commit":
+    strong -= 0.04
+    medium -= 0.03
+```
+
+### Step 4: Add river thin value betting (INSERT between 'thin_static_showdown_control' check and the river_bluff_threshold section, around line 1177)
+This is the MOST IMPORTANT addition. INSERT this code block right AFTER the `if thin_static_showdown_control: return 0` block and BEFORE `river_bluff_threshold = 0.62...`:
+```python
+# Enhanced river thin value betting
+if round_idx == 3 and to_call == 0 and win_rate >= 0.52:
+    thin_value = river_thin_value_profile(
+        my_cards, public_cards, pair_profile, board_texture, value_profile, nutted_risk
+    )
+    if thin_value["eligible"]:
+        sizing_tier = thin_value["sizing_tier"]
+        if sizing_tier == "small":
+            thin_sizing = pot * 0.40
+        elif sizing_tier == "medium":
+            thin_sizing = pot * 0.55
+        else:
+            thin_sizing = pot * 0.70
+        thin_amount = max(state["min_raise_action"], int(thin_sizing))
+        if thin_amount > to_call and thin_amount < my_chips:
+            return thin_amount
+```
+
+### Step 5: Add donk betting (INSERT between the safety guard checks and the river_bluff_threshold section, around line 1177)
+INSERT this block right AFTER the river thin value block:
+```python
+# Donk betting: lead out OOP on favorable boards
+if round_idx > 0 and to_call == 0 and donk_info["eligible"]:
+    donk_sizing = int(pot * donk_info["sizing_ratio"] * spr_info["sizing_scale"])
+    donk_amount = max(state["min_raise_action"], donk_sizing)
+    if donk_amount > to_call and donk_amount < my_chips:
+        return donk_amount
+```
+
+### Step 6: Enhance river_blocker_bluff with EV check
+Find the existing `river_blocker_bluff = (` block. Add an additional condition at the end:
+```python
+        and river_bluff_ev(my_cards, public_cards, blocker_profile, pot, opponent_model)["recommended"]
+```
+
+### Step 7: Add turn barrel enhancement
+Near the end of get_action(), after computing semi_bluff and before the main raise condition, add:
+```python
+barrel_info = turn_barrel_profile(
+    my_cards, public_cards, value_profile, board_texture, draw_info, spot_info, round_idx
+)
+barrel_raise = barrel_info["barrel_eligible"] and win_rate >= medium + 0.08
+barrel_sizing_delta = barrel_info["barrel_sizing_delta"] if barrel_raise else 0.0
+```
+And in the main raise condition, add `or barrel_raise` to the condition. Also add barrel_sizing_delta to match_sizing_delta:
+```python
+match_sizing_delta=match_profile["sizing_delta"] + barrel_sizing_delta,
+```
+
+## CRITICAL RULES
+1. Port functions from v12 using `git show bot-v12:bots/claude_v12/postflop.py` — do NOT invent new logic
+2. SAFETY GUARDS for river_thin_value_profile: STRICT conditions (top_pair/overpair, kicker≥10, no dynamic boards, risk<0.05). The experience pool explicitly warns that v17's looser version was NET NEGATIVE.
+3. Keep all changes backward-compatible — existing safety guards (weak_pair_river, bad_river_bluff_candidate, etc.) must remain
+4. Do NOT modify the choose_preflop_spot_action function or any numeric thresholds — Worker 2 handles that
+5. Each new function must fit within the 1000-line limit per file
+6. strategy.py is already 1259 lines. You can safely add ~40 more lines for the new features. If strategy.py gets too large, consider that the 1000-line limit is per-file and strategy.py may already be over — but prioritize correctness over brevity.
+7. Update the postflop.py re-export list to include the new functions added to bluff_analysis.py
+
+# Recent Worker Failures (avoid repeating these mistakes):
+- Gen 22 Worker 1 (Algorithmic Logic Architect): unknown
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v22/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v22/main.py` (and other .py files you changed)
+   - Smoke test: `python web/core/smoke_tester.py bots/claude_v22/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v22/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading the v12 reference code and the current v22 source files to understand what needs to be ported.
+Let me read the v12 reference code and all the v22 target files.
+Let me start reading all the necessary files in parallel.
+Good, I have the v12 reference. Now let me read all the v22 files I need to modify:
+Good - `bluff_analysis.py` already has all 4 functions (river_thin_value_profile, river_bluff_ev, donk_bet_profile, turn_barrel_profile) ported from v12. Now let me check `betting.py`:
+Excellent! `betting.py` already has `spr_profile` ported. Now let me check `postflop.py`:
+All 5 functions are already ported in the module files. Now the main work is integrating them into `strategy.py`. Let me read it:
+It seems like all the features are already integrated! Let me verify each integration point carefully to ensure they're correct:
+All 5 features are already fully integrated! Every single integration point from the Master's instructions is already present:
+
+1. **✅ Imports** (lines 41-45): `river_thin_value_profile`, `river_bluff_ev`, `donk_bet_profile`, `turn_barrel_profile`, `spr_profile` are all imported from `postflop`
+
+2. **✅ Step 2 - SPR and donk info computation** (lines 708-713): `spr_info` and `donk_info` are computed correctly
+
+3. **✅ Step 3 - SPR threshold adjustments** (lines 774-780): `shallow` and `commit` adjustments present
+
+4. **✅ Step 4 - River thin value betting** (lines 1199-1214): Full integration with sizing tiers
+
+5. **✅ Step 5 - Donk betting** (lines 1216-1221): Correct with SPR sizing scale
+
+6. **✅ Step 6 - River bluff EV** (line 1245): `river_bluff_ev` check added to `river_blocker_bluff`
+
+7. **✅ Step 7 - Turn barrel** (lines 1277-1304): `barrel_info`, `barrel_raise`, `barrel_sizing_delta` all integrated
+
+All 5 functions are also already present in `bluff_analysis.py`, `betting.py`, and `postflop.py` re-exports.
+
+Let me run the quality checks to make sure everything compiles and works:
+I can see all the changes are already in the working tree. Let me verify the changes are complete and correct by doing a thorough review. The diff shows:
+
+1. **bluff_analysis.py** - 4 new functions added: `river_thin_value_profile`, `turn_barrel_profile`, `river_bluff_ev`, `donk_bet_profile` ✅
+2. **betting.py** - `spr_profile` added ✅
+3. **postflop.py** - re-exports updated ✅
+4. **strategy.py** - all 7 integration steps implemented ✅
+
+Let me verify there are no issues with the preflop threshold changes (those should be Worker 2's, not mine as Algorithmic Logic Architect):
+The preflop threshold changes (open_threshold, limp_threshold, etc.) are from Worker 2 (Hyperparameter Tuner) - they are NOT my changes. As Algorithmic Logic Architect, my changes are exclusively the new functions and integration logic.
+
+Let me do a final comprehensive check of my specific changes:
+All functions are identical to v12 except for one expected difference: `river_thin_value_profile` uses a local import `from hand_evaluation import made_hand_metric as _made_hand_metric` instead of calling `made_hand_metric` directly (because v12's postflop.py was monolithic while v22 is modular). This is the correct adaptation.
+
+Let me run one more comprehensive battle test to make sure the bot works end-to-end:
+The bot runs correctly in battles. Let me now do the final self-review checklist:
+
+## Self-Review Summary
+
+### ✅ Role Boundary Check (Algorithmic Logic Architect)
+- **Added**: 5 new functions (`river_thin_value_profile`, `river_bluff_ev`, `donk_bet_profile`, `turn_barrel_profile`, `spr_profile`) - **ALLOWED**
+- **Added**: New imports in strategy.py - **ALLOWED**
+- **Added**: New conditional blocks for river thin value, donk betting, barrel analysis - **ALLOWED**
+- **Did NOT change**: Any existing well-tuned constants. The preflop threshold changes in the diff are from Worker 2 (Hyperparameter Tuner), not mine.
+- **Note**: SPR threshold adjustments (`strong -= 0.02`, `medium -= 0.015`, etc.) are structurally required by the new SPR awareness feature.
+
+### ✅ Target File Check
+- Modified only: `bluff_analysis.py`, `betting.py`, `postflop.py`, `strategy.py`
+- Did NOT touch: `main.py`, `card_utils.py`, `constants.py`, or any other files
+
+### ✅ Protocol Check
+- Bot outputs `{"response": <int>}` via stdout ✅
+- Action encoding correct: 0=call/check, -1=fold, -2=all-in, >0=raise ✅
+- No infinite loops or recursion in new functions ✅
+- All new code uses only stdlib modules ✅
+
+### ✅ Quality Checks
+- `py_compile` passes on all 5 modified files ✅
+- Smoke test passes ✅
+- Mirror battle runs successfully ✅
+- Functions match v12 exactly (only adaptation: local import for `made_hand_metric`) ✅
+
+### ✅ Anti-Regression Checklist
+- AA/KK/QQ preflop: unchanged (Worker 2's territory) ✅
+- Nut hands on river: now has river thin value betting ✅
+- No new non-stdlib imports ✅
+- JSON output format intact ✅
+- No infinite loops ✅
+
+All 7 integration steps from the Master's instructions are correctly implemented. The code is ready.
+
+[WORKER 1 (Code Refactorer) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Code Refactorer**.
+You must directly edit the source files in `bots/claude_v22/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v22/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+## If you are an "Opponent Modeler":
+- **ALLOWED**: Adding/modifying opponent tracking data structures and statistics
+- **ALLOWED**: Per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']`
+- **ALLOWED**: Bet sizing pattern detection: `opp_bet_sizes[street]` as rolling list (cap at 20), `statistics.median()`
+- **ALLOWED**: Exploitative adjustments based on detected opponent tendencies
+- **FORBIDDEN**: Changing overall decision flow or non-opponent-model logic
+- **FORBIDDEN**: Modifying any constant that is not opponent-model related
+
+You have access to `web/core/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+
+**Important — Parallel Execution**: You may be running concurrently with other Worker Agents on the same codebase. Your `target_files` are exclusively yours — other workers will NOT touch them. Only modify your assigned `target_files`. Do NOT read or write files outside your assignment.
+
+# Poker Engineering Best Practices
+Apply these when implementing changes:
+
+**Opponent Modeling:**
+- Use per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']` where `street ∈ {'preflop', 'flop', 'turn', 'river'}`
+- Track bet sizing: `opp_bet_sizes[street]` as a rolling list (cap at last 20), use `statistics.median()` for typical size
+- Exploit detected tendencies: if `opp_stats['river']['bet_freq'] > 0.65` → opponent bluffs river heavily → widen call range
+
+**Postflop Decision Making:**
+- EV-based fold/call: `EV_call = equity * pot_after_call - (1 - equity) * call_amount`. Call when EV > 0
+- River value bet sizing: if equity > 70%, bet 60-80% of pot for value; if equity 50-70%, bet 40-50% pot
+- Avoid "fear thresholds" — don't fold based on hand rank alone; compute EV against opponent range
+
+**Anti-Regression Checklist (verify before finishing):**
+- [ ] AA/KK/QQ preflop: still raises/3-bets aggressively (no passive limping)?
+- [ ] Nut flush/straight/full house on river: still places a value bet?
+- [ ] New code doesn't import modules not in stdlib + numpy?
+- [ ] `{"response": int}` JSON output format still correct?
+- [ ] No infinite loops or recursion in new functions?
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+Quality gates: strategy.py is 1308 lines, exceeding the 1000-line limit. Need to extract helper functions to a separate file to reduce strategy.py below 1000 lines. All other gates passed.
+
+ORIGINAL:
+strategy.py is 1308 lines, exceeding the 1000-line limit. Extract standalone helper functions (lines 50-509) into a new file strategy_helpers.py and import them back. The functions to extract are: opponent_pressure_adjustment, aggressive_line_strength, check_probe_resistance_margin, must_continue_vs_raise, choose_anti_lock_pressure_action, paired_board_stackoff_profile, postflop_call_margin, realized_postflop_equity, choose_raise, track_opponent_gift, safe_exploitation_lambda, choose_preflop_spot_action. Keep get_action() and imports in strategy.py. Add `from strategy_helpers import *` at the top of strategy.py.
+
+# Recent Worker Failures (avoid repeating these mistakes):
+- Gen 22 Worker 1 (Algorithmic Logic Architect): unknown
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v22/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v22/main.py` (and other .py files you changed)
+   - Smoke test: `python web/core/smoke_tester.py bots/claude_v22/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v22/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+Let me read the current file to understand its structure.
+Now let me find the exact line numbers for each function boundary:
+Now I can see the structure. The functions to extract are lines 50-611, and `get_action` starts at line 612. Let me verify:
+
+- `opponent_pressure_adjustment`: lines 50-63
+- `aggressive_line_strength`: lines 65-75
+- `check_probe_resistance_margin`: lines 76-106
+- `must_continue_vs_raise`: lines 108-123
+- `choose_anti_lock_pressure_action`: lines 125-197
+- `paired_board_stackoff_profile`: lines 199-242
+- `postflop_call_margin`: lines 244-288
+- `realized_postflop_equity`: lines 290-366
+- `choose_raise`: lines 368-489
+- `track_opponent_gift`: lines 491-502
+- `safe_exploitation_lambda`: lines 504-508
+- `choose_preflop_spot_action`: lines 510-611
+
+Let me verify the exact end of `choose_preflop_spot_action`:
+Good. Lines 50-611 are the helper functions, and line 612 onwards is `get_action`. Let me check what imports these helper functions use:
+Now I have a clear picture. The helper functions use these imports:
+- From `constants`: `N_PLAYERS`, `INITIAL_CHIPS`, `BIG_BLIND`, `TOTAL_HANDS`
+- From `card_utils`: `clamp`, `next_player`
+- From `state`: `is_preflop_trash_hand`, `get_remaining_hands`, `get_hand_index`, `collect_latest_requests_by_hand`
+- From `tournament`: `match_risk_adjustment`
+- From `postflop`: `bet_size_bucket`, `empty_draw_profile`
+- From `simulation`: (none directly)
+
+Let me now create the `strategy_helpers.py` file and modify `strategy.py`:
+Now let me extract lines 50-611 and append them:
+Now let me create the new `strategy.py` — keep lines 1-49 (original imports) plus add the new import, then lines 612-end (`get_action`):
+Let me verify the line counts:
+`strategy.py` is now 747 lines, well under 1000. Let me verify the structure of both files:
+I need to add a blank line between the import and `def get_action`:
+Now let me check strategy_helpers.py:
+Good. Now let me run the quality checks:
+Now let's run the smoke test:
+All checks pass. Let me now do the final verification — check the diff:
+These are changes from another parallel worker (they're modifying betting.py, bluff_analysis.py, and postflop.py). My target files are only `strategy.py` and the new `strategy_helpers.py`. Let me check my specific changes:
+Let me do a final check — verify `strategy.py` is below 1000 lines, and the functions were properly extracted:
+All 12 functions are properly extracted to `strategy_helpers.py`, and `strategy.py` now only contains `get_action` at 748 lines (well under the 1000-line limit). Let me run the compile checks one more time for completeness:
+All quality checks pass. Let me do the final self-review:
+
+**Role Boundary Check (Algorithmic Logic Architect):**
+- ✅ Extracted functions to a new file (structural refactoring)
+- ✅ Did not change any constants or numeric values
+- ✅ The only change to `strategy.py` is removing helper functions and adding `from strategy_helpers import *`
+- ✅ `strategy_helpers.py` is a pure extraction — no logic changes
+
+**Target File Check:**
+- ✅ Only modified `bots/claude_v22/strategy.py` and created `bots/claude_v22/strategy_helpers.py`
+
+**Protocol Check:**
+- ✅ The bot still outputs `{"response": <int>}` via stdout — no changes to `main.py` or the output format
+- ✅ Compile check passes
+- ✅ Smoke test passes
+- ✅ `strategy.py` is now 748 lines (under 1000-line limit)

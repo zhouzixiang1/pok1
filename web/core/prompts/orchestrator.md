@@ -7,9 +7,11 @@ You have two categories of tools:
 ## Category 1: Evolution MCP Tools
 These are specialized tools for the evolution pipeline. Call them directly — you don't need Bash for these.
 
-- **get_status** — Check current state: latest bot version, top ratings, active bots count, daemon status. **Call this first** to understand where things stand.
+- **get_status** — Check current state: latest bot version, top ratings, active bots count, daemon status, bot games/win_rate. **Call this first** to understand where things stand.
 - **get_bot_info(version)** — Detailed info about a specific bot: rating, parent, files, code size.
 - **get_match_history(version, n)** — Recent match results for a bot.
+- **get_h2h(bot_name, opponent?)** — Head-to-Head matrix: per-opponent win rates. Shows who beats whom, with STRENGTH/WEAKNESS tags.
+- **get_bot_stats(bot_name)** — Per-bot stats: total wins, losses, games, win rate.
 - **run_match_analysis(source_v)** — Analyze recent losses using LLM. Returns weaknesses, patterns, and per-street action breakdown.
 - **run_performance_verification(source_v)** — SATLUTION-style LLM performance analysis. Synthesises rating trends + win rates into structured insight for Master. Returns `trend`, `verified_improvements`, `persistent_weaknesses`, `diversity_needed`.
 - **run_master(source_v, next_v, stagnation_info, match_analysis, performance_verification)** — Run Master Architect to plan improvements. Returns a task plan with 1–3 worker assignments. Pass `run_match_analysis` output as `match_analysis` and `run_performance_verification` output as `performance_verification` (pass them separately — do NOT concatenate).
@@ -24,7 +26,7 @@ These are specialized tools for the evolution pipeline. Call them directly — y
 - **trim_experience** — Trim experience pool to recent entries.
 - **consolidate_experience** — LLM-based deduplication of experience pool (produces categorised format).
 - **analyze_stagnation(source_v, active_bots)** — Analyze if evolution is stagnating. Only call when `rating_reliable: true`.
-- **wait_for_eval(version, timeout, min_matches, max_rd)** — Block until the daemon has enough matches on this bot (rd drops below max_rd). Returns `eval_completed: bool`.
+- **wait_for_eval(version, timeout, min_games)** — Block until the daemon has enough games on this bot (default 100 games). Returns `eval_completed: bool` and current bot stats.
 
 ## Category 2: Built-in Tools
 - **Read** — Read any local file (ratings, experience pool, bot source code, logs).
@@ -37,10 +39,10 @@ A typical generation follows this pattern, but you can modify it:
 
 1. **Check status** → `get_status()`
    - Check `incomplete_next_v`: if set, a previous cycle was interrupted. Decide: resume workers or clean up and restart.
-   - Check `rating_reliable`: if false (rd > 40), do NOT make stagnation/branch decisions.
+   - Check `rating_reliable`: if false (games < 100), do NOT make stagnation/branch decisions.
 2. **Housekeeping** → `reap_weakest()` if needed, `trim_experience()`
-3. **Wait for evaluation** → `wait_for_eval(version=source_v, timeout=600, min_matches=20, max_rd=40)`
-   - If `eval_completed: false`, ratings are preliminary — skip stagnation analysis if `current_bot_rd > 60`.
+3. **Wait for evaluation** → `wait_for_eval(version=source_v, timeout=600, min_games=100)`
+   - If `eval_completed: false`, ratings are preliminary — skip stagnation analysis.
 3.5. **Stagnation analysis** → `analyze_stagnation(source_v, active_bots)` (only when `rating_reliable: true`)
    - If stagnation confirmed, prepare `stagnation_info` string summarising the diagnosis for Master.
    - If stagnation severe (≥ 3 gens), consider `run_crossover()` instead of the normal pipeline.
@@ -108,9 +110,15 @@ If review rejects → inject feedback, retry workers (counts toward intra_gen_at
 Do NOT shortcut this sequence even if you are running low on turns.
 
 ## ELO Reliability Check
-- `rating_reliable: false` (from `get_status`) means rd > 40 — fewer than ~10 matches played.
+- `rating_reliable: false` (from `get_status`) means games < 100 — not enough data.
 - Do NOT call `analyze_stagnation()` or make branch decisions when rating is unreliable.
 - Wait via `wait_for_eval()` or proceed to Master without stagnation analysis.
+
+## Head-to-Head Data
+- Use `get_h2h(bot_name)` to check per-opponent win rates for the current bot.
+- Opponents tagged WEAKNESS (< 40% WR) should be priority improvement targets.
+- Opponents tagged STRENGTH (> 60% WR) indicate what's working well.
+- This is more actionable than a single Elo number for understanding *why* a bot is weak.
 
 # Output Style
 - Be concise in your reasoning

@@ -53,7 +53,7 @@ from evolution_core import (
     write_pipeline_checkpoint,
     read_pipeline_checkpoint,
 )
-from glicko2 import Glicko2Player, update_rating_period
+from glicko2 import Glicko2Player, update_rating_period, update_single_game
 
 
 # ──────────────────────────────────────────────
@@ -162,10 +162,22 @@ async def get_status(args):
     next_dir = get_bot_dir(current_v + 1)
     incomplete_next_v = (current_v + 1) if (next_dir.exists() and not (next_dir / ".completed").exists()) else None
 
-    # Current bot rating reliability (rd <= 40 means enough matches)
+    # Current bot rating reliability
     cur_p = ratings.get(f"claude_v{current_v}")
     current_bot_rd = round(cur_p.rd, 1) if cur_p else None
-    rating_reliable = bool(cur_p and cur_p.rd <= 40)
+
+    # Load bot stats for current bot
+    bot_stats_data = {}
+    bot_stats_file = PROJECT_ROOT / "web" / "core" / "results" / "bot_stats.json"
+    if bot_stats_file.exists():
+        try:
+            with open(bot_stats_file, "r") as f:
+                bot_stats_data = json.load(f)
+        except Exception:
+            pass
+    cur_bs = bot_stats_data.get(f"claude_v{current_v}", {})
+    games_played = cur_bs.get("games", 0)
+    rating_reliable = games_played >= 100
 
     # Recent worker failures for context
     from evolution_core import _load_recent_failures
@@ -176,9 +188,11 @@ async def get_status(args):
         "next_v": current_v + 1,
         "active_bots_count": len(active_bots),
         "top_ratings": _ratings_summary(ratings),
-        "daemon_periods": daemon_stats.get("total_periods", 0),
+        "daemon_total_games": daemon_stats.get("total_games", 0),
         "incomplete_next_v": incomplete_next_v,
         "current_bot_rd": current_bot_rd,
+        "current_bot_games": games_played,
+        "current_bot_win_rate": cur_bs.get("win_rate", 0.0),
         "rating_reliable": rating_reliable,
         "recent_worker_failures": recent_failures,
     }
@@ -626,26 +640,36 @@ async def stop_eval_daemon(args):
 class WaitForEvalInput(TypedDict):
     version: Annotated[int, "Bot version to wait for evaluation"]
     timeout: Annotated[int, "Timeout in seconds (default 600)"]
-    min_matches: Annotated[int, "Minimum matches required (default 20)"]
-    max_rd: Annotated[int, "Maximum rating deviation for confidence (default 40)"]
+    min_games: Annotated[int, "Minimum games required (default 100)"]
 
 
-@tool("wait_for_eval", "Wait for the daemon to evaluate a bot (enough matches + low RD). Returns whether eval completed.", {"version": int, "timeout": int, "min_matches": int, "max_rd": int})
+@tool("wait_for_eval", "Wait for the daemon to evaluate a bot (enough games played). Returns whether eval completed.", {"version": int, "timeout": int, "min_games": int})
 async def wait_for_eval(args):
     v = args["version"]
     timeout = args.get("timeout", 600)
-    min_matches = args.get("min_matches", 20)
-    max_rd = args.get("max_rd", 40)
+    min_games = args.get("min_games", 100)
     bot_name = f"claude_v{v}"
 
-    success = await wait_for_daemon_eval(bot_name, timeout=timeout, min_matches=min_matches, max_rd=max_rd)
+    success = await wait_for_daemon_eval(bot_name, timeout=timeout, min_games=min_games)
     ratings = load_ratings()
     p = ratings.get(bot_name)
+
+    # Load bot stats
+    bot_stats_data = {}
+    bot_stats_file = PROJECT_ROOT / "web" / "core" / "results" / "bot_stats.json"
+    if bot_stats_file.exists():
+        try:
+            with open(bot_stats_file, "r") as f:
+                bot_stats_data = json.load(f)
+        except Exception:
+            pass
+    bs = bot_stats_data.get(bot_name, {})
 
     result = {
         "version": v,
         "eval_completed": success,
         "current_rating": {"r": round(p.r, 1), "rd": round(p.rd, 1)} if p else None,
+        "bot_stats": {"games": bs.get("games", 0), "win_rate": bs.get("win_rate", 0.0)} if bs else None,
     }
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
 
@@ -786,6 +810,76 @@ async def analyze_stagnation(args):
     }, indent=2, ensure_ascii=False)}]}
 
 
+class GetH2HInput(TypedDict):
+    bot_name: Annotated[str, "Bot name (e.g. claude_v14)"]
+    opponent: Annotated[str, "Optional: specific opponent name. If omitted, returns all opponents."]
+
+
+@tool("get_h2h", "Get head-to-head win/loss data for a bot. Shows per-opponent win rates — who this bot beats and loses to.", {"bot_name": str, "opponent": str})
+async def get_h2h(args):
+    bot_name = args["bot_name"]
+    opponent = args.get("opponent")
+
+    h2h_file = PROJECT_ROOT / "web" / "core" / "results" / "head_to_head.json"
+    if not h2h_file.exists():
+        return {"content": [{"type": "text", "text": json.dumps({"error": "No H2H data yet", "bot_name": bot_name})}]}
+
+    try:
+        with open(h2h_file, "r") as f:
+            h2h = json.load(f)
+    except Exception:
+        return {"content": [{"type": "text", "text": json.dumps({"error": "Failed to read H2H data"})}]}
+
+    results = {}
+    for k, v in h2h.items():
+        parts = k.split(" vs ")
+        if len(parts) != 2:
+            continue
+        a, b = parts
+        if bot_name not in (a, b):
+            continue
+        opp = b if bot_name == a else a
+        if opponent and opp != opponent:
+            continue
+        g = v.get("games", 0)
+        bot_wins = v.get("a_wins", 0) if bot_name == a else v.get("b_wins", 0)
+        opp_wins = v.get("b_wins", 0) if bot_name == a else v.get("a_wins", 0)
+        wr = bot_wins / g if g > 0 else 0.5
+        tag = "STRENGTH" if wr > 0.60 else ("WEAKNESS" if wr < 0.40 else "neutral")
+        results[opp] = {"wins": bot_wins, "losses": opp_wins, "games": g, "win_rate": round(wr, 4), "tag": tag}
+
+    if not results:
+        return {"content": [{"type": "text", "text": json.dumps({"bot_name": bot_name, "opponents": {}, "message": "No H2H data found"})}]}
+
+    sorted_results = dict(sorted(results.items(), key=lambda x: x[1]["win_rate"]))
+    return {"content": [{"type": "text", "text": json.dumps({"bot_name": bot_name, "opponents": sorted_results}, indent=2, ensure_ascii=False)}]}
+
+
+class GetBotStatsInput(TypedDict):
+    bot_name: Annotated[str, "Bot name (e.g. claude_v14)"]
+
+
+@tool("get_bot_stats", "Get per-bot stats: total wins, losses, games, win rate.", {"bot_name": str})
+async def get_bot_stats(args):
+    bot_name = args["bot_name"]
+
+    bot_stats_file = PROJECT_ROOT / "web" / "core" / "results" / "bot_stats.json"
+    if not bot_stats_file.exists():
+        return {"content": [{"type": "text", "text": json.dumps({"error": "No bot stats yet", "bot_name": bot_name})}]}
+
+    try:
+        with open(bot_stats_file, "r") as f:
+            all_stats = json.load(f)
+    except Exception:
+        return {"content": [{"type": "text", "text": json.dumps({"error": "Failed to read bot stats"})}]}
+
+    bs = all_stats.get(bot_name)
+    if not bs:
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"No stats for {bot_name}"})}]}
+
+    return {"content": [{"type": "text", "text": json.dumps({"bot_name": bot_name, **bs}, indent=2)}]}
+
+
 # ──────────────────────────────────────────────
 # Register MCP Server
 # ──────────────────────────────────────────────
@@ -812,6 +906,8 @@ all_tools = [
     trim_experience,
     consolidate_experience,
     analyze_stagnation,
+    get_h2h,
+    get_bot_stats,
 ]
 
 evolution_server = create_sdk_mcp_server(

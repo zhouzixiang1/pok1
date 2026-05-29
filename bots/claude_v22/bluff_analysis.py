@@ -178,3 +178,217 @@ def nutted_risk_profile(hole_cards, public_cards, pair_profile=None, board_textu
     info["label"] = label
     info["vulnerable"] = info["risk"] >= 0.04
     return info
+
+
+def river_thin_value_profile(hole_cards, public_cards, pair_profile, board_texture, value_profile, nutted_risk):
+    """Analyze whether a thin value bet on the river is appropriate.
+
+    Returns a dict with keys:
+        eligible (bool): Whether a thin value bet is warranted.
+        sizing_tier (str): 'small', 'medium', or 'large'.
+        confidence (float): Confidence in the thin value bet [0, 1].
+    """
+    result = {
+        "eligible": False,
+        "sizing_tier": "small",
+        "confidence": 0.0,
+    }
+
+    if pair_profile is None or board_texture is None or value_profile is None or nutted_risk is None:
+        return result
+    if len(public_cards) < 5:
+        return result
+
+    tier = value_profile.get("tier", "none")
+    risk = nutted_risk.get("risk", 0.0)
+    from hand_evaluation import made_hand_metric as _made_hand_metric
+    made_strength = _made_hand_metric(hole_cards, public_cards)
+    wetness = board_texture.get("wetness", 0.0)
+    dynamic = board_texture.get("dynamic", False)
+    pair_type = pair_profile.get("pair_type", "none")
+    kicker = pair_profile.get("kicker_rank", 0)
+
+    eligible = False
+    if tier == "thin":
+        eligible = True
+    elif 0.40 <= made_strength <= 0.58:
+        eligible = True
+
+    if eligible:
+        if dynamic:
+            eligible = False
+        if risk >= 0.05:
+            eligible = False
+        if pair_type not in ("top_pair", "overpair"):
+            eligible = False
+        if pair_type == "top_pair" and kicker < 10:
+            eligible = False
+
+    if eligible:
+        if wetness < 0.20:
+            sizing_tier = "small"
+        elif wetness <= 0.35:
+            sizing_tier = "medium"
+        else:
+            sizing_tier = "large"
+
+        confidence = clamp((kicker - 8) / 8.0, 0.0, 1.0)
+    else:
+        sizing_tier = "small"
+        confidence = 0.0
+
+    result["eligible"] = eligible
+    result["sizing_tier"] = sizing_tier
+    result["confidence"] = confidence
+    return result
+
+
+def turn_barrel_profile(hole_cards, public_cards, value_profile, board_texture, draw_info, spot_info, round_idx):
+    """Analyze whether a turn barrel is appropriate.
+
+    Returns a dict with keys:
+        barrel_eligible (bool): Whether to barrel the turn.
+        barrel_sizing_delta (float): Sizing adjustment for the barrel.
+    """
+    result = {
+        "barrel_eligible": False,
+        "barrel_sizing_delta": 0.0,
+    }
+
+    if round_idx != 2:
+        return result
+    if value_profile is None or board_texture is None or draw_info is None or spot_info is None:
+        return result
+
+    tier = value_profile.get("tier", "none")
+    wetness = board_texture.get("wetness", 0.0)
+    semi_bluff = draw_info.get("semi_bluff", False)
+    draw_quality = draw_info.get("quality", 0.0)
+
+    eligible = False
+    sizing_delta = 0.0
+
+    if tier in ("strong", "nut"):
+        eligible = True
+        sizing_delta = 0.05
+    elif semi_bluff and draw_quality >= 0.18:
+        eligible = True
+        sizing_delta = -0.03
+
+    if eligible and wetness >= 0.55:
+        eligible = False
+
+    result["barrel_eligible"] = eligible
+    result["barrel_sizing_delta"] = sizing_delta
+    return result
+
+
+def river_bluff_ev(hole_cards, public_cards, blocker_profile, pot, opponent_model):
+    """Estimate the expected value of a river bluff.
+
+    Returns a dict with keys:
+        ev (float): Estimated bluff EV.
+        recommended (bool): Whether the bluff is recommended (ev > 0).
+    """
+    result = {
+        "ev": 0.0,
+        "recommended": False,
+    }
+
+    if len(public_cards) < 5 or pot <= 0:
+        return result
+
+    bluff_size = pot * 0.55
+    fold_prob = opponent_model.get("fold_to_raise", 0.44)
+    fold_prob = clamp(fold_prob, 0.15, 0.75)
+
+    blocker_count = 0
+    if blocker_profile is not None and blocker_profile.get("eligible", False):
+        blocker_count = int(blocker_profile.get("score", 0.0) * 10)
+
+    used = set(hole_cards + public_cards)
+    deck_size = 52 - len(used)
+
+    blocker_value = blocker_count / max(1, deck_size) * 0.10
+
+    ev = fold_prob * pot - (1.0 - fold_prob) * bluff_size + blocker_value * pot
+
+    result["ev"] = ev
+    result["recommended"] = ev > 0
+    return result
+
+
+def donk_bet_profile(hole_cards, public_cards, pair_profile, board_texture, value_profile, draw_info, spot_info, opponent_model):
+    """Analyze whether a donk bet (leading out OOP) is appropriate.
+
+    Returns dict with keys:
+        eligible (bool): Whether a donk bet is warranted.
+        sizing_ratio (float): Pot ratio for donk bet sizing.
+        reason (str): Reason for the donk bet.
+    """
+    result = {
+        "eligible": False,
+        "sizing_ratio": 0.0,
+        "reason": "none",
+    }
+
+    if len(public_cards) < 3:
+        return result
+    if pair_profile is None or board_texture is None or value_profile is None:
+        return result
+
+    # Only donk when OOP and opponent hasn't bet yet this street
+    if spot_info.get("facing_postflop_aggression", False):
+        return result
+    if spot_info.get("has_position", True):
+        return result
+
+    confidence = opponent_model.get("confidence", 0.0)
+    if confidence < 0.20:
+        return result
+
+    tier = value_profile.get("tier", "none")
+    wetness = board_texture.get("wetness", 0.0)
+    paired = board_texture.get("paired", False)
+
+    # Donk with strong/nut hands on wet boards to protect and build pot
+    if tier in ("strong", "nut") and wetness >= 0.25:
+        result["eligible"] = True
+        result["sizing_ratio"] = 0.55 + 0.10 * wetness
+        result["reason"] = "value_protect_wet_board"
+        return result
+
+    # Donk with strong hands on paired boards (deny free cards)
+    if tier == "strong" and paired:
+        result["eligible"] = True
+        result["sizing_ratio"] = 0.45
+        result["reason"] = "value_paired_board"
+        return result
+
+    # Donk with combo/nut draws on dynamic boards (semi-bluff initiative)
+    if draw_info is not None and draw_info.get("semi_bluff", False):
+        draw_quality = draw_info.get("quality", 0.0)
+        draw_type = draw_info.get("type", "none")
+        if draw_quality >= 0.18 and wetness >= 0.30:
+            result["eligible"] = True
+            result["sizing_ratio"] = 0.45 + 0.05 * wetness
+            result["reason"] = "semi_bluff_dynamic"
+            return result
+        if draw_type in ("combo_draw", "nut_flush_draw") and wetness >= 0.20:
+            result["eligible"] = True
+            result["sizing_ratio"] = 0.50
+            result["reason"] = "strong_draw_initiative"
+            return result
+
+    # Donk with overpairs on dry boards to extract value from weak calling ranges
+    if pair_profile is not None and pair_profile.get("pair_type") == "overpair":
+        if tier == "strong" and wetness < 0.25:
+            opp_fold_to_raise = opponent_model.get("fold_to_raise", 0.44)
+            if opp_fold_to_raise < 0.50:
+                # Opponent calls a lot - extract value
+                result["eligible"] = True
+                result["sizing_ratio"] = 0.40 + 0.05 * (0.50 - opp_fold_to_raise)
+                result["reason"] = "overpair_value_extraction"
+                return result
+
+    return result

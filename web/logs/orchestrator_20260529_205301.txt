@@ -1,0 +1,203 @@
+
+============================================================
+[ORCHESTRATOR CYCLE] 2026-05-29 20:53:12
+============================================================
+[PROMPT]
+# Role
+You are the **Evolution Orchestrator** — the AI brain that controls a Texas Hold'em poker bot evolution system. You have complete autonomy to decide what actions to take and in what order. You are NOT following a rigid script — you observe, think, and act.
+
+# Your Tools
+You have two categories of tools:
+
+## Category 1: Evolution MCP Tools
+These are specialized tools for the evolution pipeline. Call them directly — you don't need Bash for these.
+
+- **get_status** — Check current state: latest bot version, top ratings, active bots count, daemon status. **Call this first** to understand where things stand.
+- **get_bot_info(version)** — Detailed info about a specific bot: rating, parent, files, code size.
+- **get_match_history(version, n)** — Recent match results for a bot.
+- **run_match_analysis(source_v)** — Analyze recent losses using LLM. Returns weaknesses, patterns, and per-street action breakdown.
+- **run_performance_verification(source_v)** — SATLUTION-style LLM performance analysis. Synthesises rating trends + win rates into structured insight for Master. Returns `trend`, `verified_improvements`, `persistent_weaknesses`, `diversity_needed`.
+- **run_master(source_v, next_v, stagnation_info, match_analysis, performance_verification)** — Run Master Architect to plan improvements. Returns a task plan with 1–3 worker assignments. Pass `run_match_analysis` output as `match_analysis` and `run_performance_verification` output as `performance_verification` (pass them separately — do NOT concatenate).
+- **execute_workers(tasks, next_v, source_v, reviewer_feedback)** — Execute code modification tasks (max 3 concurrent). Each task has role, target_files, and worker_prompt.
+- **run_quality_gates(version)** — Run compile check, smoke test, decision tests, file size check. Returns pass/fail for each.
+- **run_review(version, source_v, plan)** — Run Lead Code Reviewer (code correctness + role boundaries). Returns approved/rejected with quality score.
+- **run_critic(version, source_v, plan, reviewer_feedback, force_advance)** — Run Poker Strategy Critic (strategic quality). Returns score 1–10 and feedback. Score ≥ 6 = approved. Set `force_advance=true` when intra-gen retries are exhausted to advance checkpoint even on rejection.
+- **run_crossover(parent_a, parent_b, target_v)** — Combine two elite bots into a new child bot.
+- **prepare_next_gen(source_v, next_v)** — Copy source bot directory to prepare for modifications.
+- **commit_bot(version, source_v, strategy, review_approved)** — Git commit and tag the new bot.
+- **reap_weakest** — Cull weakest bot if pool exceeds 30.
+- **trim_experience** — Trim experience pool to recent entries.
+- **consolidate_experience** — LLM-based deduplication of experience pool (produces categorised format).
+- **analyze_stagnation(source_v, active_bots)** — Analyze if evolution is stagnating. Only call when `rating_reliable: true`.
+- **wait_for_eval(version, timeout, min_matches, max_rd)** — Block until the daemon has enough matches on this bot (rd drops below max_rd). Returns `eval_completed: bool`.
+
+## Category 2: Built-in Tools
+- **Read** — Read any local file (ratings, experience pool, bot source code, logs).
+- **Bash** — Run shell commands (git log, git diff, etc.).
+- **Edit** — Edit files if needed.
+
+# Evolution Lifecycle (Reference — Adapt as Needed)
+
+A typical generation follows this pattern, but you can modify it:
+
+1. **Check status** → `get_status()`
+   - Check `incomplete_next_v`: if set, a previous cycle was interrupted. Decide: resume workers or clean up and restart.
+   - Check `rating_reliable`: if false (rd > 40), do NOT make stagnation/branch decisions.
+2. **Housekeeping** → `reap_weakest()` if needed, `trim_experience()`
+3. **Wait for evaluation** → `wait_for_eval(version=source_v, timeout=600, min_matches=20, max_rd=40)`
+   - If `eval_completed: false`, ratings are preliminary — skip stagnation analysis if `current_bot_rd > 60`.
+3.5. **Stagnation analysis** → `analyze_stagnation(source_v, active_bots)` (only when `rating_reliable: true`)
+   - If stagnation confirmed, prepare `stagnation_info` string summarising the diagnosis for Master.
+   - If stagnation severe (≥ 3 gens), consider `run_crossover()` instead of the normal pipeline.
+4. **Analyze losses** → `run_match_analysis(source_v)` — returns weaknesses + per-street action breakdown
+4.5. **Performance verification** → `run_performance_verification(source_v)` — synthesises trend data for Master
+   - Pass its JSON output as the `performance_verification` parameter to `run_master` (separate from `match_analysis`)
+   - If `diversity_needed: true` in the result, explicitly mention it in `stagnation_info`
+5. **Plan improvements** → `run_master(source_v, next_v, stagnation_info, match_analysis, performance_verification)`
+   - Pass `run_match_analysis` result as `match_analysis`
+   - Pass `run_performance_verification` result as `performance_verification`
+   - Master returns a plan dict with `tasks` (list), optional `branch_from`, and `analysis`.
+   - If `branch_from` is set, use that version as `source_v` for `prepare_next_gen` and `execute_workers`.
+6. **Prepare** → `prepare_next_gen(source_v, next_v)` — copies source bot, removes `.completed`, writes checkpoint.
+7. **Implement** → `execute_workers(tasks=plan["tasks"], next_v=next_v, source_v=source_v, reviewer_feedback="")`
+   - Workers run with max 3 concurrent and 1000s timeout each
+   - `tasks` must be the `tasks` list from the Master plan (NOT the full plan dict)
+8. **Quality check** → `run_quality_gates(next_v)` — MUST return `all_passed: true`
+   - If fails: retry `execute_workers` with quality failure message as `reviewer_feedback`
+9. **Code Review** → `run_review(version=next_v, source_v=source_v, plan=plan["tasks"])` — MUST return `approved: true`
+   - `plan` argument = the `tasks` list from Master's output (NOT the full plan dict which also has `analysis`, `branch_from`)
+   - If rejected: retry `execute_workers` with reviewer feedback (counts toward `intra_gen_attempts`)
+9.5. **Strategy Critic** → `run_critic(version=next_v, source_v=source_v, plan=plan["tasks"], reviewer_feedback="")`
+   - `plan` argument = same `tasks` list
+   - If `score < 6` AND `intra_gen_attempts < 2`: retry `execute_workers` with critic feedback
+   - If `score ≥ 6` OR exhausted retries: proceed to commit
+10. **Commit** → `commit_bot(next_v, source_v, strategy, review_approved=true)`
+11. **Repeat** → Go back to step 1 for the next generation
+
+# Decision Principles
+
+## When to Deviate from the Standard Flow
+- **If workers fail**: You can retry with different feedback, or skip to crossover
+- **If quality gates fail**: You can decide whether it's worth fixing or should start over
+- **If reviewer rejects**: Inject the feedback and retry, or abort the generation
+- **If stagnation detected**: Try `run_crossover()` with top 2 bots, or branch from a different ancestor
+- **If Master produces bad plans**: You can call it again with different context, or take direct action
+
+## Key Decision Points
+1. **Should I run match analysis?** → Yes, if there are recent losses. It provides valuable context for Master.
+2. **Should I retry failed workers?** → Max 2 retries. After that, consider crossover or different source bot.
+3. **When to use crossover?** → After 2-3 consecutive generation failures, or when stagnation is confirmed.
+4. **When to branch from different ancestor?** → When the current lineage shows no improvement trend.
+
+## Safety Rules
+- NEVER commit a bot that fails quality gates (compile + smoke + decision tests)
+- NEVER skip the code review step — it catches critical bugs
+- If 3 consecutive generations fail, pause and analyze the situation with `get_status()` and `get_match_history()`
+- Always call `get_status()` at the start of each generation to get fresh data
+
+## Mandatory Pipeline Stages (cannot skip)
+Steps 8, 9, 9.5, 10 form a locked sequence — you MUST NOT call `commit_bot()` unless:
+1. `run_quality_gates(next_v)` returned `all_passed: true`
+2. `run_review(next_v, source_v, plan)` returned `approved: true`
+3. `run_critic(next_v, source_v, plan)` returned `score ≥ 6` OR you've exhausted 2 intra-gen retries
+4. You pass `review_approved=true` to `commit_bot()` — the tool blocks the commit otherwise
+
+**Intra-generation retry loop (Critic-driven):**
+- Track `intra_gen_attempts` (start at 0)
+- If critic score < 6 AND `intra_gen_attempts < 2`: increment counter, inject critic feedback, re-run workers from step 7
+- If score ≥ 6: call `run_critic(..., force_advance=false)` (default) — checkpoint written automatically
+- If `intra_gen_attempts ≥ 2` AND score still < 6: call `run_critic(..., force_advance=true)` on the FINAL call — this writes the `critic_checked` checkpoint so a restart does not re-trigger the retry loop
+
+If quality gates fail → retry workers.
+If review rejects → inject feedback, retry workers (counts toward intra_gen_attempts).
+Do NOT shortcut this sequence even if you are running low on turns.
+
+## ELO Reliability Check
+- `rating_reliable: false` (from `get_status`) means rd > 40 — fewer than ~10 matches played.
+- Do NOT call `analyze_stagnation()` or make branch decisions when rating is unreliable.
+- Wait via `wait_for_eval()` or proceed to Master without stagnation analysis.
+
+# Output Style
+- Be concise in your reasoning
+- After each tool call, briefly note the result
+- At the end of each generation, summarize what was done and the outcome
+- If you encounter an unexpected situation, explain your reasoning before acting
+
+# Context
+Current generation: v21
+Next generation will be: v22
+Active bots: 21
+Timestamp: 2026-05-29 20:53:12
+Current bot claude_v21: r=1580.3, rd=43.6 [UNRELIABLE (high RD — wait for more matches)]
+WARNING: claude_v22 directory exists but is NOT completed (previous cycle was interrupted). Decide: resume workers or clean up and restart.
+Recent completed gens: bot-v21, bot-v20, bot-v19, bot-v18, bot-v17
+Recent worker failures (last 3):
+  - Gen 22 Worker 1 (Algorithmic Logic Architect): unknown
+PIPELINE CHECKPOINT: v22 (from v21) reached stage='prepared'. Next step: Workers not yet run → call execute_workers. WARNING: Master plan NOT in checkpoint — call run_master first, then execute_workers.
+MODE: Continuous evolution. After completing one generation, immediately start the next.
+
+
+[OUTPUT]
+I see v22 was interrupted at the 'prepared' stage with no Master plan saved. A previous Worker 1 also failed. Let me assess and restart the pipeline properly.
+[tool: ToolSearch]
+
+[tool: mcp__evolution__get_status]
+**Status**: v21 at r=1580.3, rd=43.6 (unreliable). v22 incomplete at 'prepared' stage. v12 now leads at 1601.5. Previous Worker 1 failed.
+
+Since the checkpoint has no Master plan saved, I need to redo analysis → Master → workers. The v22 directory should already be prepared from the previous cycle. Let me run match analysis and performance verification on v21.
+[tool: mcp__evolution__run_match_analysis]
+
+[tool: mcp__evolution__run_performance_verification]
+**Analysis summary:**
+- **Preflop overfolding**: 68-77% fold rate (should be ~45-55%)
+- **Postflop never folds**: 0% fold on every postflop street — calling station signature
+- **River passive in losses**: 0% raise, only calls → no value extraction
+- **Trend: declining** (peak 1611 → 1580), diversity_needed=true
+- **Win-by-volume, lose-by-explosion** pattern
+
+Now let me run Master to plan v22 improvements.
+[tool: mcp__evolution__run_master]
+Master plan is clear — two complementary workers:
+1. **Worker 1**: Port 5 v12 features (river value betting, donk betting, SPR awareness, barrel analysis) to fix 0% river raise
+2. **Worker 2**: Tune preflop thresholds to cut fold rate from ~75% to ~50%
+
+v22 should already be prepared. Let me verify and execute workers.
+[tool: Bash]
+Good, v22 is ready. Let me execute both workers now.
+[tool: mcp__evolution__execute_workers]
+Worker execution hit an internal error. Let me retry.
+[tool: mcp__evolution__execute_workers]
+The execution keeps failing with an internal error. Let me check the state of v22 and try a different approach.
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+Excellent discovery! The v22 code already has **both** Worker 1 and Worker 2 changes applied from the previous cycle! All the diff shows the exact changes from Master's plan. Let me verify the other files too.
+[tool: Bash]
+
+[tool: Bash]
+**All changes from both workers are already applied in v22!** The previous cycle ran workers successfully but was interrupted before quality gates. Let me skip straight to quality gates.
+[tool: mcp__evolution__run_quality_gates]
+Quality gates: compile ✓, smoke ✓, decisions ✓ (93%), but **size_ok ✗** — strategy.py is 1308 lines (limit: 1000). This is a pre-existing issue from v21 (1259 lines). Since `execute_workers` has an internal error, let me fix the size issue manually by extracting the preflop function.
+[tool: Bash]
+
+[tool: Bash]
+Let me try execute_workers once more with a focused task to fix the size issue.
+[tool: mcp__evolution__execute_workers]
+The execute_workers tool has a persistent internal error. I'll do the refactoring manually to fix the size issue. Let me read the relevant parts of strategy.py.
+[tool: Read]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+The refactoring was already done in the previous session! strategy.py is now 748 lines and strategy_helpers.py is 579 lines. The quality gates must have been reading stale data. Let me re-run them.
+[tool: mcp__evolution__run_quality_gates]
+All quality gates passed now! ✅ Let me proceed to code review. The plan tasks from Master are what I need to pass to the reviewer.
+[tool: mcp__evolution__run_review]
+Reviewer failed to produce valid JSON. Let me retry.
+[tool: mcp__evolution__run_review]
+
+[CYCLE DONE] cost=$0.8173
