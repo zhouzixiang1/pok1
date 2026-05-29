@@ -1,0 +1,114 @@
+
+[WORKER 2 (simulation-engineer) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **simulation-engineer**.
+You must directly edit the source files in `bots/claude_v18/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v18/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+No reviewer feedback - first iteration.
+
+ORIGINAL:
+Enhance the Monte Carlo simulation for better equity estimation:
+1. Increase default simulation iterations - if SIMULATIONS_BY_PUBLIC_COUNT has values less than [200, 400, 600, 1000], increase them to those minimums
+2. Add a fast early-exit in monte_carlo_weighted_equity: if after first 30% of iterations the win rate is clearly extreme (>0.85 or <0.15), skip remaining iterations and return the estimate
+3. In combo_range_weight, improve the opponent range narrowing by adding a check for paired boards: if public cards show a pair, weight combos that hit trips/full house higher by factor of 1.3
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v18/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v18/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v18/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v18/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading the current bot code to understand the existing implementation before making changes.
+Let me read the bot code first.
+Now let me read the card_utils to understand the available utilities:
+Now I have a clear understanding of the code. Let me implement the three changes:
+
+1. **SIMULATIONS_BY_PUBLIC_COUNT** - increase value for key 5 from 0 to 1000
+2. **Early-exit in monte_carlo_weighted_equity** - after 30% of iterations, check for extreme equity
+3. **Paired board boost in combo_range_weight** - weight combos hitting trips/full house 1.3x
+
+Let me start with `constants.py`:
+The minimums are [200, 400, 600, 1000] for keys [0, 3, 4, 5]. Only key 5 (0 < 1000) needs changing. Let me make all the edits:
+Good. Now let me edit `simulation.py` to add the early-exit in `monte_carlo_weighted_equity` and the paired board boost in `combo_range_weight`:
+Now I'll write the updated `simulation.py`:
+Good. Now let me verify the changes and run quality checks:
+There are many pre-existing uncommitted changes. Let me check what's specific to my changes:
+Good. My changes are clear and focused:
+- `constants.py`: Changed `5: 0` → `5: 1000` (the rest of the diff is pre-existing)
+- `simulation.py`: Added `card_number` import, paired board boost logic, and early-exit logic (the docstring change was pre-existing)
+
+Now let me run the quality checks:
+All compile checks pass. Now run the smoke test:
+All quality checks pass. Let me do the final self-review:
+
+**Role Boundary Check (Algorithmic Logic Architect):**
+- ✅ Added `card_number` to import — allowed (adding imports)
+- ✅ Added new paired board detection logic in `combo_range_weight` — allowed (adding new logic blocks)
+- ✅ Added early-exit logic in `monte_carlo_weighted_equity` — allowed (adding new control flow)
+- ✅ Changed `SIMULATIONS_BY_PUBLIC_COUNT` key 5 from 0→1000 — structurally required to support the simulation enhancement
+- ✅ Did NOT modify well-tuned constants (VPIP/PFR priors, opening thresholds, etc.)
+
+**Target File Check:**
+- ✅ Only modified `bots/claude_v18/simulation.py` and `bots/claude_v18/constants.py`
+
+**Protocol Check:**
+- ✅ Bot still outputs `{"response": <int>}` via stdout — no changes to the I/O protocol
+- ✅ Action encoding preserved: 0=call/check, -1=fold, -2=all-in, >0=raise amount
+
+All three requested enhancements are implemented:
+
+1. **SIMULATIONS_BY_PUBLIC_COUNT[5]** increased from 0 → 1000 (keys 0/3/4 already exceeded their minimums)
+2. **Fast early-exit** in `monte_carlo_weighted_equity`: after first 30% of iterations, if win rate >0.85 or <0.15, returns immediately
+3. **Paired board boost** in `combo_range_weight`: detects paired boards and applies 1.3x weight factor to combos that hit trips (hole card matches paired rank) or full house (pocket pair matches an unpaired board rank)

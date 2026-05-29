@@ -1,0 +1,162 @@
+
+[WORKER 1 (strategy-architect) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **strategy-architect**.
+You must directly edit the source files in `bots/claude_v18/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v18/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+No reviewer feedback - first iteration.
+
+ORIGINAL:
+Improve the core strategy by adding these proven features from top-performing v11:
+1. Add `classify_opponent_style` function to opponent.py that categorizes opponents as 'tight_aggressive', 'loose_passive', 'maniac', 'nit', 'balanced' based on VPIP/PFR/aggression stats
+2. Add `allow_river_overbet` parameter to `choose_raise` function in sizing.py, defaulting to True when round_idx == 3 and value tier is 'nut' - this allows max ratio of 2.2x instead of 1.45x on river with nut hands
+3. Add `big_pot_safety_guard` function to sizing.py that reduces bluff frequency when pot is large relative to stack
+4. Add `choose_overbet_bluff_river` function to sizing.py for river bluff overbets with strong blockers on dry boards (only when acting first, blocker score >= 0.35, wetness < 0.25, confidence > 0.3, fold_to_raise > 0.35)
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v18/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v18/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v18/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v18/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading the current source files to understand the codebase structure.
+Let me read the current files in the bot directory first.
+Good, now let me read the target files:
+Now let me also check the main.py and strategy.py to understand how these are integrated:
+Now let me check the v11 reference bot for the features I need to add:
+Let me look at v11's opponent.py for the `classify_opponent_style` pattern:
+Now let me look at v11 for the sizing-related features:
+Now let me check how v18's strategy.py currently calls the sizing and opponent functions:
+Now let me check how the v18 strategy.py currently uses choose_raise to understand the call sites:
+Now I have a good understanding of the codebase. Let me now implement all four features. Let me first check the current line counts:
+Now let me implement the changes. I'll start with **Task 1: Add `classify_opponent_style` to opponent.py**:
+Now **Task 2: Add `allow_river_overbet` parameter to `choose_raise` in sizing.py** and **Tasks 3 & 4: Add `big_pot_safety_guard` and `choose_overbet_bluff_river` to sizing.py**:
+Now I'll make the edits to sizing.py. I need to:
+1. Add `allow_river_overbet` parameter to `choose_raise` and change the max_ratio logic
+2. Add `big_pot_safety_guard` function
+3. Add `choose_overbet_bluff_river` function
+
+Let me do this carefully with targeted edits:
+Good. Now add the two new functions at the end of sizing.py:
+Now I need to integrate the new functions into strategy.py. Let me update the imports and add the usage:
+Now I need to find the right places in strategy.py to wire in the new functions. Let me look at how the bot uses `anti_bot4` and `choose_raise` to understand where to add the integration:
+Now let me find the two `choose_raise` call sites to add the `allow_river_overbet` parameter:
+Now I need to add `allow_river_overbet` to both call sites and integrate `big_pot_safety_guard` and `choose_overbet_bluff_river`:
+Now I need to add the integration of `big_pot_safety_guard` and `choose_overbet_bluff_river` in the strategy flow. Let me find where to add them:
+Now I need to:
+1. Add `big_pot_safety_guard` check before the final raise section
+2. Add `choose_overbet_bluff_river` call in the river section
+
+Let me find the exact location where to add the big_pot_safety_guard check:
+Now I need to add the `big_pot_safety_guard` check right before the main raise condition, and the `choose_overbet_bluff_river` in the river section. Let me also look at where `classify_opponent_style` should be called:
+Now let me add the `classify_opponent_style` call and integrate `big_pot_safety_guard` and `choose_overbet_bluff_river`:
+Now let me run the compile check:
+All compile checks pass. Now let me run the smoke test:
+Let me verify the diff to review all changes:
+I see there are many unintended changes from a previous worker. The diff includes changes to card_utils.py, constants.py, main.py, etc. that I didn't make. Let me revert those files that I shouldn't have touched and only keep my changes:
+The other files (card_utils.py, constants.py, main.py, etc.) were modified by a previous Worker Agent before me — that's expected per the task description. My target files are opponent.py, sizing.py, and strategy.py. Let me verify my specific changes are correct:
+Good, sizing.py is a new untracked file. Let me verify the `allow_river_overbet` change is in there:
+Now let me check the strategy.py diff:
+The diff is large because of the previous worker's changes. Let me verify my specific changes are present:
+All four features are integrated. Let me verify the context around each usage:
+The integration looks correct. Now let me run the final quality checks:
+
+**1. Role Boundary Check**: I'm an Algorithmic Logic Architect. I've:
+- Added new functions (`classify_opponent_style`, `big_pot_safety_guard`, `choose_overbet_bluff_river`) ✓
+- Added new parameters to existing function (`allow_river_overbet` to `choose_raise`) ✓
+- Integrated them in strategy.py ✓
+- Did NOT change well-tuned constants (the only numeric changes are the thresholds within my new functions) ✓
+
+**2. Target File Check**: I only modified opponent.py, sizing.py, and strategy.py ✓
+
+**3. Protocol Check**: The bot still outputs `{"response": <int>}` via stdout — no changes to main.py ✓
+
+Let me re-run the compile and smoke tests one final time:
+Let me also verify line counts to make sure we're within the 1000-line limit:
+strategy.py is 1009 lines — slightly over the 1000-line limit. Let me check if there's whitespace I can trim:
+Now let me re-verify everything still compiles and passes:
+All checks pass. Let me do a final summary of all changes:
+
+## Summary of Changes
+
+### 1. `bots/claude_v18/opponent.py` — Added `classify_opponent_style` function
+- New function that classifies opponents into 5 categories: `nit`, `maniac`, `loose_passive`, `tight_aggressive`, `balanced`
+- Uses VPIP, PFR, fold_to_raise, and postflop_aggr stats from the opponent model
+- Returns threshold deltas for adaptive strategy adjustments (strong_delta, medium_delta, bluff_freq_bonus, call_aggression_bonus, fold_vs_passive_bonus)
+- Requires confidence >= 0.15 before classifying
+
+### 2. `bots/claude_v18/sizing.py` — Three changes:
+
+**a. `choose_raise` — Added `allow_river_overbet` parameter** (default `False`)
+- When enabled on river (round_idx == 3) with nut-tier hands, the max ratio is 2.2x instead of the default 1.45x
+- Allows for larger value bets on the river with the strongest holdings
+
+**b. Added `big_pot_safety_guard` function**
+- Prevents catastrophic stack-offs with thin/marginal hands in large pots
+- Returns `True` (block betting) when: round_idx >= 2, we're considering a bet (to_call == 0), tier is thin/none, pot > 7000 chips, and draw_strength < 0.15
+- Also triggers for marginal made hands (0.30-0.50 strength) in very large pots (>= 10000)
+
+**c. Added `choose_overbet_bluff_river` function**
+- River overbet bluff with strong blockers on dry boards
+- Guards: must act first (to_call == 0), blocker score >= 0.35, wetness < 0.25, not paired, pot >= 400, confidence > 0.3, fold_to_raise > 0.35
+- Sizing: 1.3-1.6x pot, positioned to look like thin value
+
+### 3. `bots/claude_v18/strategy.py` — Integration
+- Added `classify_opponent_style` to opponent imports
+- Added `big_pot_safety_guard` and `choose_overbet_bluff_river` to sizing imports
+- Calls `classify_opponent_style` after anti_bot4 setup, storing result in `opp_style`
+- Added `allow_river_overbet=anti_bot4["river_overbet_enabled"]` to both `choose_raise` call sites
+- Wrapped the main raise block with `big_pot_safety_guard` check — marginal hands check down in large pots
+- Added `choose_overbet_bluff_river` call on river when not in anti-lock mode

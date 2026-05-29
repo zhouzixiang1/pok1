@@ -1,8 +1,9 @@
-"""Card utility functions and hand evaluation."""
-
+"""
+Card utility functions.
+"""
 import itertools
 
-from constants import N_PLAYERS, CARD_RANKS, CARD_SUITS
+from constants import N_PLAYERS
 
 
 def clamp(value, low, high):
@@ -10,11 +11,11 @@ def clamp(value, low, high):
 
 
 def card_suit(card):
-    return CARD_SUITS[card]
+    return card % 4
 
 
 def card_number(card):
-    return CARD_RANKS[card]
+    return card // 4 + 2
 
 
 def next_player(player, offset):

@@ -1,9 +1,12 @@
-"""Tournament-level strategy: lock-win detection, match pressure, anti-lock pressure."""
-
-from constants import N_PLAYERS, BIG_BLIND, LOCK_WIN_MARGIN, TOTAL_HANDS
+"""
+Tournament-level logic: lock-win detection, match pressure, anti-lock pressure.
+"""
+from constants import N_PLAYERS, BIG_BLIND, LOCK_WIN_MARGIN
 from card_utils import clamp, next_player
 from state import (
-    get_remaining_hands, reconstruct_state, forced_fold_loss_bound,
+    get_remaining_hands,
+    reconstruct_state,
+    forced_fold_loss_bound,
 )
 
 
@@ -167,3 +170,4 @@ def anti_lock_can_continue(anti_lock_pressure, win_rate, pot_odds, round_idx, va
     if not anti_lock_pressure:
         return False
     return win_rate >= anti_lock_continue_floor(pot_odds, round_idx, value_profile, draw_info, made_strength)
+
