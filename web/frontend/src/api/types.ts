@@ -42,6 +42,7 @@ export interface LogContent {
 export interface DaemonStatus {
   status: string;
   last_update_age_seconds: number;
+  daemon_enabled: boolean;
 }
 
 export interface EvolutionState {
@@ -103,4 +104,62 @@ export interface GameReplay {
 
 export interface MatchReplayData extends MatchSummary {
   games: GameReplay[];
+}
+
+// Bot management
+export interface BotSummary {
+  name: string;
+  version: number;
+  completed: boolean;
+  total_lines: number;
+  files: string[];
+  rating: { r: number; rd: number; conservative: number } | null;
+  graveyard?: boolean;
+}
+
+export interface BotDetail extends BotSummary {
+  parent?: string;
+}
+
+// Pipeline
+export interface PipelineCheckpoint {
+  next_v: number;
+  source_v: number;
+  stage: string;
+  master_plan: unknown;
+  reviewer_feedback: string;
+  generation_attempt: number;
+  timestamp: string;
+}
+
+export interface WorkerFailure {
+  gen: number;
+  worker_id: number;
+  role: string;
+  error: string;
+  timestamp?: string;
+}
+
+// Prompts
+export interface PromptInfo {
+  name: string;
+  filename?: string;
+  exists: boolean;
+  lines: number;
+  mtime: number | null;
+  mtime_str?: string;
+  role: string;
+}
+
+// Orchestrator session
+export interface OrchestratorSession {
+  session_id: string | null;
+  active: boolean;
+}
+
+// Orchestrator log file
+export interface OrchestratorLogFile {
+  filename: string;
+  size_bytes: number;
+  mtime: number;
 }

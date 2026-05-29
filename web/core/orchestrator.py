@@ -256,6 +256,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                             if ui:
                                 ui.log_history(f"[Orchestrator] Calling tool: {tool_name}", "info")
                                 ui.log_io(f"\n[tool: {tool_name}]", "tool")
+                                ui.emit_tool_call(tool_name, block.input)
                             else:
                                 print(f"\n[tool: {tool_name}]", end=" ", flush=True)
                             lf.write(f"\n[tool: {tool_name}]\n")

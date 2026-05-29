@@ -7,6 +7,9 @@ import RatingTrends from "./pages/RatingTrends";
 import MatchMatrix from "./pages/MatchMatrix";
 import Logs from "./pages/Logs";
 import ControlPanel from "./pages/ControlPanel";
+import BotManager from "./pages/BotManager";
+import ExperiencePool from "./pages/ExperiencePool";
+import PromptEditor from "./pages/PromptEditor";
 
 export default function App() {
   return (
@@ -20,6 +23,9 @@ export default function App() {
           <Route path="/match-matrix" element={<MatchMatrix />} />
           <Route path="/logs" element={<Logs />} />
           <Route path="/control" element={<ControlPanel />} />
+          <Route path="/bots" element={<BotManager />} />
+          <Route path="/experience" element={<ExperiencePool />} />
+          <Route path="/prompts" element={<PromptEditor />} />
         </Route>
       </Routes>
     </Router>

@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { Link, useLocation } from "react-router";
-import { HorizontaLDots, GridIcon, PieChartIcon, TableIcon, PageIcon, BoltIcon, ChatIcon, PlugInIcon } from "../icons";
+import { HorizontaLDots, GridIcon, PieChartIcon, TableIcon, PageIcon, BoltIcon, ChatIcon, PlugInIcon, BoxIcon, DocsIcon, FileIcon } from "../icons";
 import { useSidebar } from "../context/SidebarContext";
 
 type NavItem = {
@@ -45,6 +45,21 @@ const navItems: NavItem[] = [
     icon: <PlugInIcon />,
     name: "Control Panel",
     path: "/control",
+  },
+  {
+    icon: <BoxIcon />,
+    name: "Bot Manager",
+    path: "/bots",
+  },
+  {
+    icon: <DocsIcon />,
+    name: "Experience Pool",
+    path: "/experience",
+  },
+  {
+    icon: <FileIcon />,
+    name: "Prompt Editor",
+    path: "/prompts",
   },
 ];
 

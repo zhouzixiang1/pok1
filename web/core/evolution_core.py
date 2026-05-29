@@ -190,6 +190,7 @@ class BaseUI:
     def set_header(self, msg): pass
     def update_cost(self, role, cost_usd, usage): pass
     def update_metrics(self, metrics): pass
+    def emit_tool_call(self, tool_name: str, args: dict): pass
 
 
 class TextUI(BaseUI):

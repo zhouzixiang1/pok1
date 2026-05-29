@@ -112,12 +112,18 @@ from server.routes.matches import router as matches_router
 from server.routes.evolution import router as evolution_router
 from server.routes.logs import router as logs_router
 from server.routes.control import router as control_router
+from server.routes.bots import router as bots_router
+from server.routes.pipeline import router as pipeline_router
+from server.routes.prompts import router as prompts_router
 
 app.include_router(ratings_router)
 app.include_router(matches_router)
 app.include_router(evolution_router)
 app.include_router(logs_router)
 app.include_router(control_router)
+app.include_router(bots_router)
+app.include_router(pipeline_router)
+app.include_router(prompts_router)
 
 # ── Static files (production build) ──
 STATIC_DIR = Path(__file__).resolve().parent / "static"

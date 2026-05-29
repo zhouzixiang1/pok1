@@ -161,3 +161,30 @@ async def call_tool(tool_name: str, req: ToolRequest = Body(default=None)):
 async def list_tools():
     tools = _get_tool_map()
     return {"tools": list(tools.keys())}
+
+
+# ── Orchestrator Session Management ──
+
+ORCHESTRATOR_SESSION_FILE = PROJECT_ROOT / "web" / "core" / "results" / "orchestrator_session.json"
+
+
+@router.get("/orchestrator/session")
+async def get_orchestrator_session():
+    """Return current Orchestrator session ID (if any)."""
+    if not ORCHESTRATOR_SESSION_FILE.exists():
+        return {"session_id": None, "active": False}
+    try:
+        import json as _json
+        data = _json.loads(ORCHESTRATOR_SESSION_FILE.read_text())
+        session_id = data.get("session_id")
+        return {"session_id": session_id, "active": bool(session_id)}
+    except Exception:
+        return {"session_id": None, "active": False}
+
+
+@router.delete("/orchestrator/session")
+async def clear_orchestrator_session():
+    """Delete the Orchestrator session file — forces a fresh conversation on next startup."""
+    existed = ORCHESTRATOR_SESSION_FILE.exists()
+    ORCHESTRATOR_SESSION_FILE.unlink(missing_ok=True)
+    return {"cleared": existed, "message": "Session reset. Next Orchestrator start will begin a new conversation."}

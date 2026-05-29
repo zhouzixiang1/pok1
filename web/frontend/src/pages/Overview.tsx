@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
-import type { BotRating, MatchStats } from "../api/types";
+import type { BotRating, MatchStats, DaemonStatus } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
 
 function ConfidenceBadge({ level }: { level: string }) {
@@ -27,6 +27,51 @@ function StatCard({ title, value, subtitle }: { title: string; value: string | n
   );
 }
 
+function DaemonStatusWidget() {
+  const [daemon, setDaemon] = useState<DaemonStatus | null>(null);
+
+  useEffect(() => {
+    const refresh = () => api.daemonStatus().then(setDaemon).catch(() => {});
+    refresh();
+    const id = setInterval(refresh, 2000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (!daemon) return null;
+
+  const colors: Record<string, string> = {
+    active: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+    recent: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400",
+    idle: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
+    unknown: "bg-gray-100 text-gray-500",
+  };
+  const dotColors: Record<string, string> = {
+    active: "bg-green-500 animate-pulse",
+    recent: "bg-yellow-500",
+    idle: "bg-red-500",
+    unknown: "bg-gray-400",
+  };
+
+  const age = daemon.last_update_age_seconds;
+  const ageStr = age < 0 ? "never" : age < 60 ? `${age}s ago` : `${Math.round(age / 60)}m ago`;
+
+  return (
+    <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03]">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-gray-500 dark:text-gray-400">Eval Daemon</p>
+        <span className={`px-2 py-0.5 rounded text-xs font-medium flex items-center gap-1.5 ${colors[daemon.status] || colors.unknown}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${dotColors[daemon.status] || dotColors.unknown}`} />
+          {daemon.status}
+        </span>
+      </div>
+      <p className="mt-2 text-lg font-semibold text-gray-800 dark:text-white">
+        {daemon.daemon_enabled ? "Enabled" : "Disabled"}
+      </p>
+      <p className="mt-1 text-xs text-gray-400">Ratings updated {ageStr}</p>
+    </div>
+  );
+}
+
 export default function Overview() {
   const [ratings, setRatings] = useState<BotRating[]>([]);
   const [stats, setStats] = useState<MatchStats | null>(null);
@@ -49,7 +94,7 @@ export default function Overview() {
   return (
     <>
       <PageMeta title="Overview — Evolution Dashboard" description="Bot population overview" />
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4 md:gap-6">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5 md:gap-6">
         <StatCard title="Active Bots" value={ratings.length} />
         <StatCard title="Total Games" value={(stats?.total_games ?? 0).toLocaleString()} />
         <StatCard title="Rating Periods" value={stats?.total_periods ?? 0} />
@@ -58,6 +103,7 @@ export default function Overview() {
           value={stats?.most_active_pair ?? "—"}
           subtitle={`${stats?.most_active_count ?? 0} matches`}
         />
+        <DaemonStatusWidget />
       </div>
 
       <div className="mt-6 rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">

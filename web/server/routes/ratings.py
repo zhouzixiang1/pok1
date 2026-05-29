@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Query
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RESULTS_DIR = PROJECT_ROOT / "web" / "core" / "results"
@@ -187,6 +188,41 @@ async def experience():
     if not EXPERIENCE_FILE.exists():
         return ""
     return EXPERIENCE_FILE.read_text()
+
+
+class ExperienceUpdateRequest(BaseModel):
+    content: str
+
+
+class ExperienceAppendRequest(BaseModel):
+    lesson: str
+
+
+@router.put("/experience")
+async def update_experience(req: ExperienceUpdateRequest):
+    """Overwrite experience_pool.md with new content."""
+    try:
+        EXPERIENCE_FILE.write_text(req.content, encoding="utf-8")
+        lines = req.content.count("\n") + 1
+        return {"saved": True, "lines": lines, "chars": len(req.content)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.post("/experience/append")
+async def append_experience(req: ExperienceAppendRequest):
+    """Append a new lesson to experience_pool.md."""
+    lesson = req.lesson.strip()
+    if not lesson:
+        return {"error": "lesson is empty"}
+    try:
+        existing = EXPERIENCE_FILE.read_text(encoding="utf-8") if EXPERIENCE_FILE.exists() else ""
+        separator = "\n\n" if existing and not existing.endswith("\n\n") else ""
+        new_content = existing + separator + f"- {lesson}\n"
+        EXPERIENCE_FILE.write_text(new_content, encoding="utf-8")
+        return {"appended": True, "lesson": lesson, "total_chars": len(new_content)}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @router.get("/daemon/status")
