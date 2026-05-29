@@ -35,14 +35,13 @@ export default function RatingTrends() {
       }
     );
 
-    const categories = history.map((e) => `P${e.period}`);
+    const categories = history.map((e) => `周期${e.period}`);
 
     const series: ApexAxisChartSeries = [];
     if (showConfidence) {
-      // Range areas for confidence bands
       names.forEach((name, i) => {
         series.push({
-          name: `${name} band`,
+          name: `${name} 区间`,
           type: "rangeArea" as const,
           data: history.map((e) => {
             const r = e.ratings[name];
@@ -52,7 +51,6 @@ export default function RatingTrends() {
         });
       });
     }
-    // Line series
     names.forEach((name, i) => {
       series.push({
         name: name.replace("claude_", "v"),
@@ -111,7 +109,7 @@ export default function RatingTrends() {
         labels: {
           style: { fontSize: "12px", colors: ["#6B7280"] },
         },
-        title: { text: "Glicko-2 Rating", style: { fontSize: "12px" } },
+        title: { text: "Glicko-2 评分", style: { fontSize: "12px" } },
       },
       theme: { mode: "light" },
     }),
@@ -119,15 +117,15 @@ export default function RatingTrends() {
   );
 
   if (loading) {
-    return <div className="p-6 text-gray-500 dark:text-gray-400">Loading...</div>;
+    return <div className="p-6 text-gray-500 dark:text-gray-400">加载中...</div>;
   }
 
   return (
     <>
-      <PageMeta title="Rating Trends — Evolution Dashboard" description="Rating history over time" />
+      <PageMeta title="评分趋势 — 进化仪表盘" description="历史评分趋势" />
       <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
-          <h3 className="text-lg font-semibold text-gray-800 dark:text-white">Rating Trends</h3>
+          <h3 className="text-lg font-semibold text-gray-800 dark:text-white">评分趋势</h3>
           <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 cursor-pointer">
             <input
               type="checkbox"
@@ -135,7 +133,7 @@ export default function RatingTrends() {
               onChange={(e) => setShowConfidence(e.target.checked)}
               className="rounded"
             />
-            Confidence Band (r ± 2×rd)
+            置信带 (r ± 2×rd)
           </label>
         </div>
         <div className="p-5">

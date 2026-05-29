@@ -3,6 +3,23 @@ import { api } from "../api/client";
 import { controlApi } from "../api/control";
 import PageMeta from "../components/common/PageMeta";
 
+// ── Inline SVG helpers ─────────────────────────────────────────────────────────
+const ScissorsIcon = ({ className }: { className?: string }) => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>
+);
+const CrystalIcon = ({ className }: { className?: string }) => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
+);
+const SaveIcon = ({ className }: { className?: string }) => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+);
+const PencilIcon = ({ className }: { className?: string }) => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
+);
+const RefreshIcon = ({ className }: { className?: string }) => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+);
+
 export default function ExperiencePool() {
   const [content, setContent] = useState("");
   const [editContent, setEditContent] = useState("");
@@ -34,9 +51,9 @@ export default function ExperiencePool() {
       if (r.saved) {
         setContent(editContent);
         setIsEditing(false);
-        setMessage({ text: `Saved — ${r.lines} lines, ${r.chars} chars`, type: "success" });
+        setMessage({ text: `已保存 — ${r.lines} 行, ${r.chars} 字符`, type: "success" });
       } else {
-        setMessage({ text: "Save failed", type: "error" });
+        setMessage({ text: "保存失败", type: "error" });
       }
     } catch (e) {
       setMessage({ text: String(e), type: "error" });
@@ -52,7 +69,7 @@ export default function ExperiencePool() {
       const r = await api.appendExperience(lesson);
       if (r.appended) {
         setAppendLesson("");
-        setMessage({ text: `Lesson appended`, type: "success" });
+        setMessage({ text: `经验已追加`, type: "success" });
         await refresh();
       }
     } catch (e) {
@@ -64,42 +81,43 @@ export default function ExperiencePool() {
     setToolLoading(toolName);
     try {
       const r = await controlApi.callTool(toolName, {});
-      setMessage({ text: r.result || r.error || "Done", type: r.error ? "error" : "success" });
+      setMessage({ text: r.result || r.error || "完成", type: r.error ? "error" : "success" });
       await refresh();
     } finally {
       setToolLoading(null);
     }
   };
 
-  // Count experience entries (lines starting with "-" or "##")
   const entryCount = content.split("\n").filter((l) => l.trim().startsWith("-") || l.trim().startsWith("##")).length;
   const charCount = content.length;
 
-  if (loading) return <div className="p-6 text-gray-500">Loading...</div>;
+  if (loading) return <div className="p-6 text-gray-500">加载中...</div>;
 
   return (
     <>
-      <PageMeta title="Experience Pool — Evolution Dashboard" description="View and edit the strategic experience pool" />
+      <PageMeta title="经验池 — 进化仪表盘" description="查看和编辑策略经验池" />
 
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800 dark:text-white">Experience Pool</h1>
+          <h1 className="text-2xl font-bold text-gray-800 dark:text-white">经验池</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-            Shared strategic memory — Master reads this every generation
+            共享策略记忆 — 主架构师每代都会读取此内容
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs text-gray-400">
-          <span>~{entryCount} entries</span>
+          <span>约 {entryCount} 条经验</span>
           <span>·</span>
-          <span>{charCount.toLocaleString()} chars</span>
-          <button onClick={refresh} className="ml-2 px-2 py-1 rounded bg-gray-200 dark:bg-gray-700 hover:bg-gray-300">↺</button>
+          <span>{charCount.toLocaleString()} 字符</span>
+          <button onClick={refresh} className="ml-2 px-2 py-1 rounded bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 flex items-center gap-1">
+            <RefreshIcon />
+          </button>
         </div>
       </div>
 
       {message && (
         <div className={`mb-4 px-4 py-2 rounded-lg text-sm ${message.type === "success" ? "bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-300" : "bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-300"}`}>
           {message.text}
-          <button onClick={() => setMessage(null)} className="ml-2 text-xs underline">×</button>
+          <button onClick={() => setMessage(null)} className="ml-2 text-xs underline">关闭</button>
         </div>
       )}
 
@@ -112,7 +130,7 @@ export default function ExperiencePool() {
             value={appendLesson}
             onChange={(e) => setAppendLesson(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleAppend()}
-            placeholder="Add a new strategic lesson..."
+            placeholder="添加新的策略经验..."
             className="flex-1 px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-gray-700 rounded"
           />
           <button
@@ -120,7 +138,7 @@ export default function ExperiencePool() {
             disabled={!appendLesson.trim()}
             className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40"
           >
-            + Append
+            + 追加
           </button>
         </div>
 
@@ -128,16 +146,16 @@ export default function ExperiencePool() {
           <button
             onClick={() => handleTool("trim_experience")}
             disabled={toolLoading === "trim_experience"}
-            className="px-3 py-1.5 text-sm rounded bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600"
+            className="px-3 py-1.5 text-sm rounded bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 flex items-center gap-1"
           >
-            {toolLoading === "trim_experience" ? "Trimming..." : "✂ Trim"}
+            <ScissorsIcon /> {toolLoading === "trim_experience" ? "裁剪中..." : "裁剪"}
           </button>
           <button
             onClick={() => handleTool("consolidate_experience")}
             disabled={toolLoading === "consolidate_experience"}
-            className="px-3 py-1.5 text-sm rounded bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50"
+            className="px-3 py-1.5 text-sm rounded bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 flex items-center gap-1"
           >
-            {toolLoading === "consolidate_experience" ? "Consolidating (LLM)..." : "🔮 Consolidate (LLM)"}
+            <CrystalIcon /> {toolLoading === "consolidate_experience" ? "整合中 (LLM)..." : "整合 (LLM)"}
           </button>
 
           {isEditing ? (
@@ -145,23 +163,23 @@ export default function ExperiencePool() {
               <button
                 onClick={handleSave}
                 disabled={saving}
-                className="px-3 py-1.5 text-sm rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+                className="px-3 py-1.5 text-sm rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50 flex items-center gap-1"
               >
-                {saving ? "Saving..." : "💾 Save"}
+                <SaveIcon /> {saving ? "保存中..." : "保存"}
               </button>
               <button
                 onClick={() => { setEditContent(content); setIsEditing(false); }}
                 className="px-3 py-1.5 text-sm rounded bg-gray-300 dark:bg-gray-600 hover:bg-gray-400"
               >
-                Discard
+                放弃
               </button>
             </>
           ) : (
             <button
               onClick={() => { setEditContent(content); setIsEditing(true); }}
-              className="px-3 py-1.5 text-sm rounded bg-yellow-500 text-white hover:bg-yellow-600"
+              className="px-3 py-1.5 text-sm rounded bg-yellow-500 text-white hover:bg-yellow-600 flex items-center gap-1"
             >
-              ✏ Edit
+              <PencilIcon /> 编辑
             </button>
           )}
         </div>
@@ -178,7 +196,7 @@ export default function ExperiencePool() {
           />
         ) : (
           <pre className="p-4 text-sm font-mono text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed overflow-auto max-h-[600px]">
-            {content || <span className="text-gray-400 italic">Experience pool is empty.</span>}
+            {content || <span className="text-gray-400 italic">经验池为空。</span>}
           </pre>
         )}
       </div>

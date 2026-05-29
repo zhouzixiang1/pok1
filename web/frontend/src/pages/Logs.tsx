@@ -5,6 +5,17 @@ import PageMeta from "../components/common/PageMeta";
 
 type Tab = "generation" | "orchestrator" | "conversation";
 
+// ── Inline SVG helpers ─────────────────────────────────────────────────────────
+const FlagIcon = ({ className }: { className?: string }) => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
+);
+const ThoughtIcon = ({ className }: { className?: string }) => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+);
+const GearIcon = ({ className }: { className?: string }) => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.67 15 1.65 1.65 0 0 0 3 13.5V13a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V21a2 2 0 1 1 4 0v-.09a1.65 1.65 0 0 0 .33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H21a2 2 0 1 1 0-4h-.09a1.65 1.65 0 0 0-1.51-1z"/></svg>
+);
+
 // ── LLM Conversation Parser ────────────────────────────────────────────────────
 
 type ConvPart =
@@ -82,7 +93,6 @@ function parseConversation(raw: string): ConvPart[] {
     if (line.startsWith("▸ ") || line.startsWith("▸")) {
       flushTool();
       const text = line.replace(/^▸\s?/, "");
-      // Merge adjacent claude lines
       const last = parts[parts.length - 1];
       if (last && last.kind === "claude") {
         last.text += "\n" + text;
@@ -106,7 +116,6 @@ function parseConversation(raw: string): ConvPart[] {
       continue;
     }
 
-    // Append to current tool output or skip
     if (currentTool) {
       currentTool.lines.push(line);
     }
@@ -126,8 +135,8 @@ function ConvPartView({ part }: { part: ConvPart }) {
 
   if (part.kind === "cycle_end") {
     return (
-      <div className="my-2 px-3 py-1.5 rounded bg-gray-800 text-xs text-gray-400 font-mono">
-        🏁 {part.cost}
+      <div className="my-2 px-3 py-1.5 rounded bg-gray-800 text-xs text-gray-400 font-mono flex items-center gap-1">
+        <FlagIcon /> {part.cost}
       </div>
     );
   }
@@ -140,7 +149,7 @@ function ConvPartView({ part }: { part: ConvPart }) {
           className="text-xs text-gray-500 hover:text-gray-400 flex items-center gap-1"
         >
           <span>{expanded ? "▼" : "▶"}</span>
-          <span>[PROMPT — click to expand]</span>
+          <span>[提示词 — 点击展开]</span>
         </button>
         {expanded && (
           <pre className="mt-1 ml-4 text-[10px] text-gray-500 whitespace-pre-wrap font-mono max-h-64 overflow-y-auto">
@@ -158,7 +167,8 @@ function ConvPartView({ part }: { part: ConvPart }) {
           onClick={() => setExpanded(!expanded)}
           className="text-xs text-yellow-400/60 hover:text-yellow-300 flex items-center gap-1 italic"
         >
-          <span>💭 Thinking...</span>
+          <ThoughtIcon className="text-yellow-400/60" />
+          <span>思考中...</span>
           <span className="text-[10px]">{expanded ? "▲" : "▼"}</span>
         </button>
         {expanded && (
@@ -177,7 +187,7 @@ function ConvPartView({ part }: { part: ConvPart }) {
           onClick={() => setExpanded(!expanded)}
           className="w-full flex items-center justify-between px-3 py-1.5 text-left"
         >
-          <span className="text-xs text-cyan-400 font-mono">⚙ {part.name}</span>
+          <span className="text-xs text-cyan-400 font-mono flex items-center gap-1"><GearIcon /> {part.name}</span>
           <span className="text-[10px] text-gray-500">{expanded ? "▲" : "▼"}</span>
         </button>
         {expanded && part.output && (
@@ -209,25 +219,21 @@ function ConvPartView({ part }: { part: ConvPart }) {
 export default function Logs() {
   const [tab, setTab] = useState<Tab>("generation");
 
-  // Generation logs
   const [generations, setGenerations] = useState<GenerationLog[]>([]);
   const [selectedVersion, setSelectedVersion] = useState<string>("");
   const [selectedFile, setSelectedFile] = useState<string>("");
   const [logContent, setLogContent] = useState<string>("");
   const [genLoading, setGenLoading] = useState(true);
 
-  // Orchestrator logs
   const [orchFiles, setOrchFiles] = useState<OrchestratorLogFile[]>([]);
   const [selectedOrch, setSelectedOrch] = useState<string>("");
   const [orchContent, setOrchContent] = useState<string>("");
   const [orchLoading, setOrchLoading] = useState(false);
 
-  // Conversation
   const [convFile, setConvFile] = useState<string>("");
   const [convParts, setConvParts] = useState<ConvPart[]>([]);
   const [convLoading, setConvLoading] = useState(false);
 
-  // ── Generation logs ──
   useEffect(() => {
     api.generations()
       .then((gens) => {
@@ -250,11 +256,10 @@ export default function Logs() {
     if (selectedVersion && selectedFile) {
       api.logContent(selectedVersion, selectedFile, 500)
         .then((res) => setLogContent(res.content))
-        .catch(() => setLogContent("Error loading log"));
+        .catch(() => setLogContent("加载日志出错"));
     }
   }, [selectedVersion, selectedFile]);
 
-  // ── Orchestrator logs ──
   const loadOrchList = useCallback(async () => {
     try {
       const files = await api.orchestratorLogs();
@@ -278,7 +283,6 @@ export default function Logs() {
     }
   }, [selectedOrch, tab]);
 
-  // ── Conversation tab ──
   useEffect(() => {
     if (!convFile && orchFiles.length > 0) setConvFile(orchFiles[0].filename);
   }, [orchFiles, convFile]);
@@ -303,7 +307,7 @@ export default function Logs() {
 
   return (
     <>
-      <PageMeta title="Logs — Evolution Dashboard" description="Generation and orchestrator logs" />
+      <PageMeta title="日志 — 进化仪表盘" description="代际日志与编排器日志" />
 
       {/* Tab bar */}
       <div className="mb-4 flex gap-1">
@@ -317,7 +321,7 @@ export default function Logs() {
                 : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700"
             }`}
           >
-            {t === "generation" ? "Generation Logs" : t === "orchestrator" ? "Orchestrator Logs" : "LLM Conversations"}
+            {t === "generation" ? "代际日志" : t === "orchestrator" ? "编排器日志" : "LLM 对话"}
           </button>
         ))}
       </div>
@@ -326,10 +330,10 @@ export default function Logs() {
       {tab === "generation" && (
         <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
           <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800">
-            <h3 className="text-lg font-semibold text-gray-800 dark:text-white">Generation Logs</h3>
+            <h3 className="text-lg font-semibold text-gray-800 dark:text-white">代际日志</h3>
           </div>
           {genLoading ? (
-            <div className="p-6 text-gray-500">Loading...</div>
+            <div className="p-6 text-gray-500">加载中...</div>
           ) : (
             <div className="flex">
               <div className="w-48 border-r border-gray-100 dark:border-gray-800 overflow-y-auto max-h-[600px]">
@@ -344,7 +348,7 @@ export default function Logs() {
                     }`}
                   >
                     {gen.version}
-                    <span className="block text-xs text-gray-400">{gen.files.length} files</span>
+                    <span className="block text-xs text-gray-400">{gen.files.length} 个文件</span>
                   </button>
                 ))}
               </div>
@@ -368,7 +372,7 @@ export default function Logs() {
                 )}
                 <div className="p-4">
                   <pre className="text-xs text-gray-700 dark:text-gray-300 overflow-auto max-h-[500px] whitespace-pre-wrap font-mono leading-relaxed bg-gray-50 dark:bg-gray-900 rounded-lg p-4">
-                    {logContent || "Select a file to view"}
+                    {logContent || "选择一个文件以查看"}
                   </pre>
                 </div>
               </div>
@@ -381,7 +385,7 @@ export default function Logs() {
       {tab === "orchestrator" && (
         <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
           <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-gray-800 dark:text-white">Orchestrator Logs</h3>
+            <h3 className="text-lg font-semibold text-gray-800 dark:text-white">编排器日志</h3>
             <select
               value={selectedOrch}
               onChange={(e) => setSelectedOrch(e.target.value)}
@@ -394,10 +398,10 @@ export default function Logs() {
           </div>
           <div className="p-4">
             {orchLoading ? (
-              <div className="text-gray-400 text-sm">Loading...</div>
+              <div className="text-gray-400 text-sm">加载中...</div>
             ) : (
               <pre className="text-xs text-gray-700 dark:text-gray-300 overflow-auto max-h-[600px] whitespace-pre-wrap font-mono leading-relaxed bg-gray-50 dark:bg-gray-900 rounded-lg p-4">
-                {orchContent || "No log content"}
+                {orchContent || "无日志内容"}
               </pre>
             )}
           </div>
@@ -408,7 +412,7 @@ export default function Logs() {
       {tab === "conversation" && (
         <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03] overflow-hidden">
           <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-gray-800 dark:text-white">LLM Conversations</h3>
+            <h3 className="text-lg font-semibold text-gray-800 dark:text-white">LLM 对话</h3>
             <select
               value={convFile}
               onChange={(e) => setConvFile(e.target.value)}
@@ -421,9 +425,9 @@ export default function Logs() {
           </div>
           <div className="p-4 bg-gray-950 overflow-y-auto max-h-[600px]">
             {convLoading ? (
-              <div className="text-gray-400 text-sm">Parsing conversation...</div>
+              <div className="text-gray-400 text-sm">解析对话中...</div>
             ) : convParts.length === 0 ? (
-              <div className="text-gray-500 text-sm">Select a log file above</div>
+              <div className="text-gray-500 text-sm">在上面选择一个日志文件</div>
             ) : (
               <div className="space-y-0.5">
                 {convParts.map((part, i) => (

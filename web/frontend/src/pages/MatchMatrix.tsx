@@ -20,7 +20,6 @@ export default function MatchMatrix() {
     if (!data) return { series: [], options: {} };
 
     const bots = data.bots.map((b) => b.replace("claude_", "v"));
-    // ApexCharts heatmap expects [{x, y}, ...] per series
     const series = data.bots.map((botName, i) => ({
       name: botName.replace("claude_", "v"),
       data: data.bots.map((_, j) => ({
@@ -45,11 +44,11 @@ export default function MatchMatrix() {
           shadeIntensity: 0.8,
           colorScale: {
             ranges: [
-              { from: 0, to: 0, color: "#f3f4f6", name: "none" },
-              { from: 1, to: 100, color: "#dbeafe", name: "low" },
-              { from: 101, to: 500, color: "#93c5fd", name: "medium" },
-              { from: 501, to: 1500, color: "#3b82f6", name: "high" },
-              { from: 1501, to: 10000, color: "#1d4ed8", name: "very high" },
+              { from: 0, to: 0, color: "#f3f4f6", name: "无" },
+              { from: 1, to: 100, color: "#dbeafe", name: "低" },
+              { from: 101, to: 500, color: "#93c5fd", name: "中" },
+              { from: 501, to: 1500, color: "#3b82f6", name: "高" },
+              { from: 1501, to: 10000, color: "#1d4ed8", name: "极高" },
             ],
           },
         },
@@ -65,7 +64,7 @@ export default function MatchMatrix() {
       tooltip: {
         theme: "dark",
         y: {
-          formatter: (val: number) => `${val} match pairs`,
+          formatter: (val: number) => `${val} 对局配对`,
         },
       },
       stroke: { width: 1, colors: ["#fff"] },
@@ -75,17 +74,17 @@ export default function MatchMatrix() {
   }, [data]);
 
   if (loading) {
-    return <div className="p-6 text-gray-500 dark:text-gray-400">Loading...</div>;
+    return <div className="p-6 text-gray-500 dark:text-gray-400">加载中...</div>;
   }
 
   return (
     <>
-      <PageMeta title="Match Matrix — Evolution Dashboard" description="Head-to-head match counts" />
+      <PageMeta title="对局矩阵 — 进化仪表盘" description="机器人间的对局次数" />
       <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
         <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800">
-          <h3 className="text-lg font-semibold text-gray-800 dark:text-white">Match Matrix</h3>
+          <h3 className="text-lg font-semibold text-gray-800 dark:text-white">对局矩阵</h3>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            Head-to-head match pair counts between all bots
+            所有机器人之间的 head-to-head 对局配对次数
           </p>
         </div>
         <div className="p-5">

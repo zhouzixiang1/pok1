@@ -13,55 +13,66 @@ type NavItem = {
 const navItems: NavItem[] = [
   {
     icon: <GridIcon />,
-    name: "Overview",
+    name: "总览",
     path: "/",
   },
   {
     icon: <BoltIcon />,
-    name: "Evolution Monitor",
+    name: "进化监控",
     path: "/evolution",
   },
   {
     icon: <ChatIcon />,
-    name: "Match Replay",
+    name: "对局回放",
     path: "/matches",
   },
   {
     icon: <PieChartIcon />,
-    name: "Rating Trends",
+    name: "评分趋势",
     path: "/rating-trends",
   },
   {
     icon: <TableIcon />,
-    name: "Match Matrix",
+    name: "对局矩阵",
     path: "/match-matrix",
   },
   {
     icon: <PageIcon />,
-    name: "Generation Logs",
+    name: "代际日志",
     path: "/logs",
   },
   {
     icon: <PlugInIcon />,
-    name: "Control Panel",
+    name: "控制面板",
     path: "/control",
   },
   {
     icon: <BoxIcon />,
-    name: "Bot Manager",
+    name: "机器人管理",
     path: "/bots",
   },
   {
     icon: <DocsIcon />,
-    name: "Experience Pool",
+    name: "经验池",
     path: "/experience",
   },
   {
     icon: <FileIcon />,
-    name: "Prompt Editor",
+    name: "提示词编辑器",
     path: "/prompts",
   },
 ];
+
+const LogoIcon = ({ className }: { className?: string }) => (
+  <svg className={className} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="5" r="2"/>
+    <circle cx="12" cy="19" r="2"/>
+    <path d="M12 7v3.5a2.5 2.5 0 0 1-2.5 2.5H7"/>
+    <path d="M12 17v-3.5a2.5 2.5 0 0 1 2.5-2.5H17"/>
+    <path d="M7 12h3.5a2.5 2.5 0 0 1 2.5 2.5V17"/>
+    <path d="M17 12h-3.5a2.5 2.5 0 0 1-2.5-2.5V7"/>
+  </svg>
+);
 
 const AppSidebar: React.FC = () => {
   const { isExpanded, isMobileOpen, isHovered, setIsHovered } = useSidebar();
@@ -84,11 +95,12 @@ const AppSidebar: React.FC = () => {
       <div className={`py-8 flex ${!isExpanded && !isHovered ? "lg:justify-center" : "justify-start"}`}>
         <Link to="/" className="flex items-center gap-2">
           {isExpanded || isHovered || isMobileOpen ? (
-            <span className="text-xl font-bold text-gray-800 dark:text-white">
-              🧬 Evolution
+            <span className="text-xl font-bold text-gray-800 dark:text-white flex items-center gap-2">
+              <LogoIcon className="text-brand-500" />
+              进化系统
             </span>
           ) : (
-            <span className="text-2xl">🧬</span>
+            <LogoIcon className="text-brand-500" />
           )}
         </Link>
       </div>
@@ -101,7 +113,7 @@ const AppSidebar: React.FC = () => {
                   !isExpanded && !isHovered ? "lg:justify-center" : "justify-start"
                 }`}
               >
-                {isExpanded || isHovered || isMobileOpen ? "Menu" : <HorizontaLDots className="size-6" />}
+                {isExpanded || isHovered || isMobileOpen ? "菜单" : <HorizontaLDots className="size-6" />}
               </h2>
               <ul className="flex flex-col gap-4">
                 {navItems.map((nav) => (

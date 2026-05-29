@@ -5,23 +5,41 @@ import { api } from "../api/client";
 import type { BotRating, PipelineCheckpoint, WorkerFailure } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
 
+// ── Inline SVG helpers (replacing emoji) ──────────────────────────────────────
+
+const StatusDot = ({ className }: { className?: string }) => (
+  <svg width="10" height="10" viewBox="0 0 10 10" className={className}><circle cx="5" cy="5" r="4" fill="currentColor"/></svg>
+);
+const CheckIcon = ({ className }: { className?: string }) => (
+  <svg width="12" height="12" viewBox="0 0 12 12" className={className}><path d="M2 6.5l2.5 2.5L10 3.5" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>
+);
+const CrossIcon = ({ className }: { className?: string }) => (
+  <svg width="12" height="12" viewBox="0 0 12 12" className={className}><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/></svg>
+);
+const GearIcon = ({ className }: { className?: string }) => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.67 15 1.65 1.65 0 0 0 3 13.5V13a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V21a2 2 0 1 1 4 0v-.09a1.65 1.65 0 0 0 .33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H21a2 2 0 1 1 0-4h-.09a1.65 1.65 0 0 0-1.51-1z"/></svg>
+);
+const ThoughtIcon = ({ className }: { className?: string }) => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+);
+
 // ── Pipeline ──────────────────────────────────────────────────────────────────
 
 const PIPELINE_STAGES = ["prepared", "workers_done", "quality_passed", "reviewed", "critic_checked"];
 const STAGE_LABELS: Record<string, string> = {
-  prepared: "Prepared",
-  workers_done: "Workers Done",
-  quality_passed: "Quality ✓",
-  reviewed: "Reviewed",
-  critic_checked: "Critic ✓",
+  prepared: "已准备",
+  workers_done: "工作器完成",
+  quality_passed: "质量通过",
+  reviewed: "已审核",
+  critic_checked: "策略审核",
 };
 
 function PipelineStatus({ checkpoint }: { checkpoint: PipelineCheckpoint | null }) {
   if (!checkpoint) {
     return (
       <div className="rounded-2xl border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-white/[0.03]">
-        <h3 className="mb-2 text-xs font-semibold uppercase text-gray-500">Pipeline</h3>
-        <p className="text-xs text-gray-400">No active generation</p>
+        <h3 className="mb-2 text-xs font-semibold uppercase text-gray-500">流水线</h3>
+        <p className="text-xs text-gray-400">无活跃代次</p>
       </div>
     );
   }
@@ -29,7 +47,7 @@ function PipelineStatus({ checkpoint }: { checkpoint: PipelineCheckpoint | null 
 
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-white/[0.03]">
-      <h3 className="mb-1 text-xs font-semibold uppercase text-gray-500">Pipeline</h3>
+      <h3 className="mb-1 text-xs font-semibold uppercase text-gray-500">流水线</h3>
       <p className="text-xs text-gray-400 mb-2">
         v{checkpoint.next_v} ← v{checkpoint.source_v}
       </p>
@@ -77,20 +95,20 @@ function CostBreakdown({
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-white/[0.03]">
       <div className="flex items-center justify-between mb-2">
-        <h3 className="text-xs font-semibold uppercase text-gray-500">LLM Cost</h3>
-        <button onClick={onReset} className="text-[10px] text-gray-400 hover:text-gray-600 underline">reset gen</button>
+        <h3 className="text-xs font-semibold uppercase text-gray-500">LLM 成本</h3>
+        <button onClick={onReset} className="text-[10px] text-gray-400 hover:text-gray-600 underline">重置本代</button>
       </div>
       <div className="space-y-1">
         {costs.map((c) => (
           <div key={c.role} className="flex justify-between text-xs">
             <span className="text-gray-500 truncate max-w-[90px]">{c.role}</span>
-            <span className="text-gray-400 font-mono">{(c.input_tokens + c.output_tokens).toLocaleString()}t</span>
+            <span className="text-gray-400 font-mono">{(c.input_tokens + c.output_tokens).toLocaleString()} 令牌</span>
             <span className="text-gray-800 dark:text-gray-200 font-mono">${c.cost_usd.toFixed(4)}</span>
           </div>
         ))}
       </div>
       <div className="mt-2 pt-2 border-t border-gray-100 dark:border-gray-700 flex justify-between text-xs font-medium">
-        <span className="text-gray-500">Gen / Grand</span>
+        <span className="text-gray-500">本代 / 总计</span>
         <span className="text-gray-800 dark:text-gray-200 font-mono">${gen.toFixed(3)} / ${grand.toFixed(3)}</span>
       </div>
     </div>
@@ -108,7 +126,6 @@ interface WorkerInfo {
 }
 
 function parseWorkerStatus(msg: string): { id: number; role?: string; status: WorkerStatus } | null {
-  // Match patterns like "Worker 1", "Worker 2 (Logic Architect)", etc.
   const startMatch = msg.match(/Worker[s]?\s+(\d+)(?:\s*\(([^)]+)\))?\s*(start|begin|running|launch)/i);
   if (startMatch) return { id: parseInt(startMatch[1]), role: startMatch[2], status: "running" };
   const doneMatch = msg.match(/Worker[s]?\s+(\d+)(?:\s*\(([^)]+)\))?\s*(done|finish|success|complete)/i);
@@ -122,7 +139,7 @@ function WorkerProgress({ workers }: { workers: WorkerInfo[] }) {
   if (workers.length === 0) return null;
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-white/[0.03]">
-      <h3 className="mb-2 text-xs font-semibold uppercase text-gray-500">Workers</h3>
+      <h3 className="mb-2 text-xs font-semibold uppercase text-gray-500">工作器</h3>
       <div className="space-y-1">
         {workers.map((w) => (
           <div key={w.id} className="flex items-center gap-2 text-xs">
@@ -130,10 +147,10 @@ function WorkerProgress({ workers }: { workers: WorkerInfo[] }) {
               w.status === "running" ? "text-blue-500 animate-pulse" :
               w.status === "done" ? "text-green-500" : "text-red-500"
             }>
-              {w.status === "running" ? "🔵" : w.status === "done" ? "✅" : "❌"}
+              {w.status === "running" ? <StatusDot className="inline" /> : w.status === "done" ? <CheckIcon className="inline" /> : <CrossIcon className="inline" />}
             </span>
             <span className="text-gray-600 dark:text-gray-300">
-              Worker {w.id}{w.role ? ` (${w.role})` : ""}
+              工作器 {w.id}{w.role ? ` (${w.role})` : ""}
             </span>
           </div>
         ))}
@@ -167,11 +184,11 @@ function ToolCard({ msg }: { msg: ConvMsg }) {
         className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-blue-950/50"
       >
         <span className="flex items-center gap-2">
-          <span className="text-cyan-400 text-xs">⚙</span>
+          <GearIcon className="text-cyan-400" />
           <span className="text-cyan-300 text-xs font-mono font-medium">{msg.toolName}</span>
         </span>
         <span className="text-xs text-gray-500">
-          {msg.toolDone ? "Done" : "Running…"}
+          {msg.toolDone ? "完成" : "运行中…"}
           {" "}
           {expanded ? "▲" : "▼"}
         </span>
@@ -186,7 +203,7 @@ function ToolCard({ msg }: { msg: ConvMsg }) {
                 onClick={() => setArgsExpanded(!argsExpanded)}
                 className="text-[10px] text-gray-400 hover:text-gray-300 flex items-center gap-1"
               >
-                <span>{argsExpanded ? "▼" : "▶"}</span> Args
+                <span>{argsExpanded ? "▼" : "▶"}</span> 参数
               </button>
               {argsExpanded && (
                 <pre className="mt-1 text-[10px] font-mono text-gray-300 whitespace-pre-wrap">
@@ -198,7 +215,7 @@ function ToolCard({ msg }: { msg: ConvMsg }) {
           {/* Output */}
           {msg.toolOutput.length > 0 && (
             <div>
-              <div className="text-[10px] text-gray-500 mb-1">Output</div>
+              <div className="text-[10px] text-gray-500 mb-1">输出</div>
               <div className="text-[10px] font-mono text-gray-400 whitespace-pre-wrap max-h-48 overflow-y-auto">
                 {msg.toolOutput.join("\n")}
               </div>
@@ -218,8 +235,8 @@ function ThinkingBlock({ text }: { text: string }) {
         onClick={() => setExpanded(!expanded)}
         className="flex items-center gap-1.5 text-xs text-yellow-400/70 hover:text-yellow-300"
       >
-        <span>💭</span>
-        <span className="italic">Thinking...</span>
+        <ThoughtIcon className="text-yellow-400/70" />
+        <span className="italic">思考中...</span>
         <span className="text-[10px]">{expanded ? "▲" : "▼"}</span>
       </button>
       {expanded && (
@@ -239,9 +256,9 @@ const nextId = () => ++_msgId;
 export default function EvolutionMonitor() {
   const [messages, setMessages] = useState<ConvMsg[]>([]);
   const [historyLines, setHistoryLines] = useState<Array<{ msg: string; status: string }>>([]);
-  const [status, setStatus] = useState("Connecting...");
+  const [status, setStatus] = useState("连接中...");
   const [isWorking, setIsWorking] = useState(false);
-  const [header, setHeader] = useState("Evolution Framework");
+  const [header, setHeader] = useState("进化框架");
   const [grand, setGrand] = useState(0);
   const [gen, setGen] = useState(0);
   const [leaderboard, setLeaderboard] = useState<BotRating[]>([]);
@@ -252,8 +269,6 @@ export default function EvolutionMonitor() {
   const [roleCosts, setRoleCosts] = useState<RoleCost[]>([]);
 
   const ioRef = useRef<HTMLDivElement>(null);
-
-  // Mutable ref for current open tool card id (avoids stale closures)
   const openToolId = useRef<number | null>(null);
 
   const addMsg = useCallback((msg: ConvMsg) => {
@@ -285,7 +300,6 @@ export default function EvolutionMonitor() {
   const connect = useEvolutionSSE({
     onHistory: (msg, s) => {
       setHistoryLines((prev) => [...prev.slice(-200), { msg, status: s }]);
-      // Parse worker status
       const w = parseWorkerStatus(msg);
       if (w) {
         setWorkers((prev) => {
@@ -305,13 +319,11 @@ export default function EvolutionMonitor() {
     },
     onIO: (line: IOLine) => {
       if (line.streamType === "tool") {
-        // Append to current open tool
         if (line.text.trim() && !line.text.startsWith("\n[tool:")) {
           updateLastTool(line.text.trim());
         }
       } else if (line.streamType === "claude") {
         closeTool();
-        // Merge adjacent claude messages
         setMessages((prev) => {
           if (prev.length > 0 && prev[prev.length - 1].type === "claude") {
             const last = prev[prev.length - 1];
@@ -332,7 +344,6 @@ export default function EvolutionMonitor() {
         closeTool();
         addMsg({ id: nextId(), type: "error", text: line.text, toolOutput: [], toolDone: false });
       } else {
-        // default — only add if not just whitespace
         if (line.text.trim()) {
           closeTool();
           addMsg({ id: nextId(), type: "raw", text: line.text, toolOutput: [], toolDone: false });
@@ -417,7 +428,7 @@ export default function EvolutionMonitor() {
 
   return (
     <>
-      <PageMeta title="Evolution Monitor" description="Real-time evolution view" />
+      <PageMeta title="进化监控" description="实时进化视图" />
 
       {/* Header */}
       <div className="mb-4 rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-white/[0.03]">
@@ -428,7 +439,7 @@ export default function EvolutionMonitor() {
               <span className={`inline-block size-2 rounded-full ${isWorking ? "animate-pulse bg-green-400" : "bg-gray-400"}`} />
               {status}
             </span>
-            <span className="text-gray-400">Cost: ${grand.toFixed(3)}</span>
+            <span className="text-gray-400">成本: ${grand.toFixed(3)}</span>
           </div>
         </div>
       </div>
@@ -437,19 +448,19 @@ export default function EvolutionMonitor() {
         {/* Conversation stream - 2/3 */}
         <div className="overflow-hidden rounded-2xl border border-gray-800 bg-gray-950 lg:col-span-2">
           <div className="flex items-center justify-between border-b border-gray-800 px-4 py-2">
-            <span className="text-xs font-medium text-gray-400">LLM CONVERSATION STREAM</span>
+            <span className="text-xs font-medium text-gray-400">LLM 对话流</span>
             <div className="flex gap-2">
               <button
                 onClick={() => setAutoScroll(!autoScroll)}
                 className={`rounded px-2 py-1 text-xs ${autoScroll ? "bg-blue-900/30 text-blue-400" : "text-gray-500"}`}
               >
-                {autoScroll ? "Auto-scroll ON" : "Auto-scroll OFF"}
+                {autoScroll ? "自动滚动 开" : "自动滚动 关"}
               </button>
               <button
                 onClick={() => { setMessages([]); openToolId.current = null; }}
                 className="text-xs text-gray-500 hover:text-gray-300"
               >
-                Clear
+                清空
               </button>
             </div>
           </div>
@@ -459,7 +470,7 @@ export default function EvolutionMonitor() {
             className="h-[500px] overflow-y-auto p-3 font-mono text-xs leading-relaxed"
           >
             {messages.length === 0 && (
-              <div className="text-gray-600">Waiting for evolution output...</div>
+              <div className="text-gray-600">等待进化输出...</div>
             )}
             {messages.map((msg) => {
               if (msg.type === "tool_call") {
@@ -471,7 +482,7 @@ export default function EvolutionMonitor() {
               if (msg.type === "error") {
                 return (
                   <div key={msg.id} className="text-red-400 font-bold">
-                    ✖ {msg.text}
+                    <CrossIcon className="inline mr-1" /> {msg.text}
                   </div>
                 );
               }
@@ -504,7 +515,7 @@ export default function EvolutionMonitor() {
           {/* Leaderboard */}
           {leaderboard.length > 0 && (
             <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-white/[0.03]">
-              <h3 className="mb-2 text-sm font-semibold text-gray-700 dark:text-gray-300">Leaderboard</h3>
+              <h3 className="mb-2 text-sm font-semibold text-gray-700 dark:text-gray-300">排行榜</h3>
               <div className="space-y-1">
                 {leaderboard.slice(0, 8).map((bot) => (
                   <div key={bot.name} className="flex justify-between text-xs">
@@ -519,11 +530,11 @@ export default function EvolutionMonitor() {
           {/* Worker failures */}
           {failures.length > 0 && (
             <div className="rounded-2xl border border-red-200 bg-red-50 p-3 dark:border-red-900/40 dark:bg-red-900/10">
-              <h3 className="mb-2 text-xs font-semibold text-red-600 dark:text-red-400 uppercase">Recent Failures</h3>
+              <h3 className="mb-2 text-xs font-semibold text-red-600 dark:text-red-400 uppercase">最近失败</h3>
               <div className="space-y-2">
                 {failures.map((f, i) => (
                   <div key={i} className="text-xs">
-                    <div className="font-medium text-red-700 dark:text-red-300">Gen {f.gen} Worker {f.worker_id} ({f.role})</div>
+                    <div className="font-medium text-red-700 dark:text-red-300">代 {f.gen} 工作器 {f.worker_id} ({f.role})</div>
                     <div className="text-red-500 dark:text-red-400 truncate">{f.error}</div>
                   </div>
                 ))}
@@ -533,9 +544,9 @@ export default function EvolutionMonitor() {
 
           {/* History */}
           <div className="max-h-[200px] overflow-y-auto rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-white/[0.03]">
-            <h3 className="mb-2 text-sm font-semibold text-gray-700 dark:text-gray-300">History</h3>
+            <h3 className="mb-2 text-sm font-semibold text-gray-700 dark:text-gray-300">历史</h3>
             <div className="space-y-1">
-              {historyLines.length === 0 && <div className="text-xs text-gray-500">No events yet</div>}
+              {historyLines.length === 0 && <div className="text-xs text-gray-500">暂无事件</div>}
               {historyLines.slice(-50).reverse().map((line, i) => (
                 <div key={i} className={`text-xs ${
                   line.status === "error" ? "text-red-400" :

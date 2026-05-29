@@ -21,7 +21,7 @@ const AppHeader: React.FC = () => {
           <button
             className="items-center justify-center w-10 h-10 text-gray-500 border-gray-200 rounded-lg z-99999 dark:border-gray-800 lg:flex dark:text-gray-400 lg:h-11 lg:w-11 lg:border"
             onClick={handleToggle}
-            aria-label="Toggle Sidebar"
+            aria-label="切换侧边栏"
           >
             {isMobileOpen ? (
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
@@ -35,7 +35,7 @@ const AppHeader: React.FC = () => {
           </button>
 
           <span className="lg:hidden text-lg font-semibold text-gray-800 dark:text-white">
-            🧬 Evolution Dashboard
+            进化仪表盘
           </span>
 
           <button
@@ -49,7 +49,7 @@ const AppHeader: React.FC = () => {
 
           <div className="hidden lg:block">
             <h1 className="text-xl font-semibold text-gray-800 dark:text-white">
-              Evolution Dashboard
+              进化仪表盘
             </h1>
           </div>
         </div>

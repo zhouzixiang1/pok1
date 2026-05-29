@@ -5,6 +5,20 @@ import type { OrchestratorSession, PipelineCheckpoint } from "../api/types";
 
 const MODES = ["orchestrator", "classic", "manual"] as const;
 
+const modeLabels: Record<string, string> = {
+  orchestrator: "编排器",
+  classic: "经典",
+  manual: "手动",
+};
+
+// ── Inline SVG helpers ─────────────────────────────────────────────────────────
+const RefreshIcon = ({ className }: { className?: string }) => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+);
+const PlayIcon = ({ className }: { className?: string }) => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" className={className}><polygon points="5 3 19 12 5 21 5 3"/></svg>
+);
+
 // ── Tool schema for typed forms ────────────────────────────────────────────────
 
 interface ToolParam {
@@ -22,54 +36,54 @@ interface ToolDef {
 
 const TOOL_GROUPS: { label: string; tools: ToolDef[] }[] = [
   {
-    label: "Status",
+    label: "状态",
     tools: [
-      { name: "get_status", description: "Get current evolution system status, ratings, daemon state.", params: [] },
-      { name: "get_bot_info", description: "Detailed info about a bot: rating, parent, files, code size.", params: [{ name: "version", type: "int", placeholder: "22" }] },
-      { name: "get_match_history", description: "Recent match results for a specific bot.", params: [{ name: "version", type: "int", placeholder: "22" }, { name: "n", type: "int", placeholder: "5", optional: true }] },
+      { name: "get_status", description: "获取当前进化系统状态、评分、守护进程状态。", params: [] },
+      { name: "get_bot_info", description: "查看机器人的详细信息：评分、父代、文件、代码大小。", params: [{ name: "version", type: "int", placeholder: "22" }] },
+      { name: "get_match_history", description: "查看指定机器人的近期对局结果。", params: [{ name: "version", type: "int", placeholder: "22" }, { name: "n", type: "int", placeholder: "5", optional: true }] },
     ],
   },
   {
-    label: "Analysis",
+    label: "分析",
     tools: [
-      { name: "run_match_analysis", description: "Analyze recent losses for a bot. Returns weaknesses and patterns.", params: [{ name: "source_v", type: "int", placeholder: "22" }] },
-      { name: "run_performance_verification", description: "SATLUTION LLM performance analysis: trend, weaknesses, diversity.", params: [{ name: "source_v", type: "int", placeholder: "22" }] },
-      { name: "analyze_stagnation", description: "Check if evolution is stagnating or just Glicko noise.", params: [{ name: "source_v", type: "int", placeholder: "22" }, { name: "active_bots", type: "list", placeholder: '["claude_v22","claude_v21"]' }] },
+      { name: "run_match_analysis", description: "分析机器人的近期败局，返回弱点与模式。", params: [{ name: "source_v", type: "int", placeholder: "22" }] },
+      { name: "run_performance_verification", description: "LLM 性能分析：趋势、弱点、多样性。", params: [{ name: "source_v", type: "int", placeholder: "22" }] },
+      { name: "analyze_stagnation", description: "检查进化是否停滞或只是 Glicko 噪声。", params: [{ name: "source_v", type: "int", placeholder: "22" }, { name: "active_bots", type: "list", placeholder: '["claude_v22","claude_v21"]' }] },
     ],
   },
   {
-    label: "Pipeline",
+    label: "流水线",
     tools: [
-      { name: "run_master", description: "Run Master Architect to plan next generation task assignments.", params: [{ name: "source_v", type: "int" }, { name: "next_v", type: "int" }, { name: "stagnation_info", type: "str", placeholder: "No stagnation", optional: true }, { name: "match_analysis", type: "str", placeholder: "", optional: true }] },
-      { name: "execute_workers", description: "Execute worker tasks to modify bot code.", params: [{ name: "tasks", type: "list", placeholder: "[]" }, { name: "next_v", type: "int" }, { name: "source_v", type: "int" }, { name: "reviewer_feedback", type: "str", placeholder: "", optional: true }] },
-      { name: "run_quality_gates", description: "Run compile, smoke test, decision tests, file size check.", params: [{ name: "version", type: "int" }] },
-      { name: "run_review", description: "Run Lead Code Reviewer. Returns approved/rejected with score.", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int" }, { name: "plan", type: "list", placeholder: "[]" }] },
-      { name: "run_critic", description: "Run Poker Strategy Critic. Score 1-10; ≥6 = approved.", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int" }, { name: "plan", type: "list", placeholder: "[]" }, { name: "reviewer_feedback", type: "str", placeholder: "", optional: true }] },
+      { name: "run_master", description: "运行主架构师，规划下一代任务分配。", params: [{ name: "source_v", type: "int" }, { name: "next_v", type: "int" }, { name: "stagnation_info", type: "str", placeholder: "无停滞", optional: true }, { name: "match_analysis", type: "str", placeholder: "", optional: true }] },
+      { name: "execute_workers", description: "执行工作器任务以修改机器人代码。", params: [{ name: "tasks", type: "list", placeholder: "[]" }, { name: "next_v", type: "int" }, { name: "source_v", type: "int" }, { name: "reviewer_feedback", type: "str", placeholder: "", optional: true }] },
+      { name: "run_quality_gates", description: "运行编译、冒烟测试、决策测试、文件大小检查。", params: [{ name: "version", type: "int" }] },
+      { name: "run_review", description: "运行首席代码审核员。返回通过/拒绝及评分。", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int" }, { name: "plan", type: "list", placeholder: "[]" }] },
+      { name: "run_critic", description: "运行扑克策略评论家。评分 1-10；≥6 = 通过。", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int" }, { name: "plan", type: "list", placeholder: "[]" }, { name: "reviewer_feedback", type: "str", placeholder: "", optional: true }] },
     ],
   },
   {
-    label: "Commit",
+    label: "提交",
     tools: [
-      { name: "prepare_next_gen", description: "Copy source bot directory to prepare for next generation.", params: [{ name: "source_v", type: "int" }, { name: "next_v", type: "int" }] },
-      { name: "run_crossover", description: "Combine two elite bots into a hybrid child bot.", params: [{ name: "parent_a", type: "int" }, { name: "parent_b", type: "int" }, { name: "target_v", type: "int" }] },
-      { name: "commit_bot", description: "Git commit and tag the new bot. review_approved must be true.", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int" }, { name: "strategy", type: "str", placeholder: "Improved folding range" }, { name: "review_approved", type: "bool" }] },
+      { name: "prepare_next_gen", description: "复制源机器人目录以准备下一代。", params: [{ name: "source_v", type: "int" }, { name: "next_v", type: "int" }] },
+      { name: "run_crossover", description: "将两个精英机器人组合为杂交子代。", params: [{ name: "parent_a", type: "int" }, { name: "parent_b", type: "int" }, { name: "target_v", type: "int" }] },
+      { name: "commit_bot", description: "Git 提交并标记新机器人。review_approved 必须为 true。", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int" }, { name: "strategy", type: "str", placeholder: "改进弃牌范围" }, { name: "review_approved", type: "bool" }] },
     ],
   },
   {
-    label: "Daemon",
+    label: "守护进程",
     tools: [
-      { name: "start_daemon", description: "Start the background ELO daemon (mirror battles + ratings).", params: [{ name: "workers", type: "int", placeholder: "14", optional: true }, { name: "pairs", type: "int", placeholder: "5", optional: true }] },
-      { name: "stop_daemon", description: "Stop the background ELO daemon.", params: [] },
-      { name: "wait_for_eval", description: "Wait for daemon to evaluate a bot (enough matches + low RD).", params: [{ name: "version", type: "int" }, { name: "timeout", type: "int", placeholder: "600", optional: true }, { name: "min_matches", type: "int", placeholder: "20", optional: true }, { name: "max_rd", type: "int", placeholder: "40", optional: true }] },
-      { name: "run_inline_eval", description: "Battle bot against all active opponents and update ratings.", params: [{ name: "version", type: "int" }, { name: "n_games", type: "int", placeholder: "5", optional: true }] },
+      { name: "start_daemon", description: "启动后台 ELO 守护进程（镜像对战 + 评分）。", params: [{ name: "workers", type: "int", placeholder: "14", optional: true }, { name: "pairs", type: "int", placeholder: "5", optional: true }] },
+      { name: "stop_daemon", description: "停止后台 ELO 守护进程。", params: [] },
+      { name: "wait_for_eval", description: "等待守护进程评估机器人（足够对局 + 低 RD）。", params: [{ name: "version", type: "int" }, { name: "timeout", type: "int", placeholder: "600", optional: true }, { name: "min_matches", type: "int", placeholder: "20", optional: true }, { name: "max_rd", type: "int", placeholder: "40", optional: true }] },
+      { name: "run_inline_eval", description: "让机器人与所有活跃对手对战并更新评分。", params: [{ name: "version", type: "int" }, { name: "n_games", type: "int", placeholder: "5", optional: true }] },
     ],
   },
   {
-    label: "Pool",
+    label: "池管理",
     tools: [
-      { name: "reap_weakest", description: "Cull weakest bot if pool exceeds 30 bots.", params: [] },
-      { name: "trim_experience", description: "Trim experience pool to keep only recent entries.", params: [] },
-      { name: "consolidate_experience", description: "LLM-based consolidation and deduplication of experience pool.", params: [] },
+      { name: "reap_weakest", description: "若池子超过 30 个机器人，淘汰最弱的。", params: [] },
+      { name: "trim_experience", description: "裁剪经验池，仅保留近期条目。", params: [] },
+      { name: "consolidate_experience", description: "基于 LLM 的经验池整合与去重。", params: [] },
     ],
   },
 ];
@@ -112,9 +126,9 @@ function ToolForm({
       <button
         onClick={() => onCall(tool.name, {})}
         disabled={loading}
-        className="px-3 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+        className="px-3 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"
       >
-        {loading ? "Running..." : `▶ Run ${tool.name}`}
+        <PlayIcon /> {loading ? "运行中..." : `运行 ${tool.name}`}
       </button>
     );
   }
@@ -125,7 +139,7 @@ function ToolForm({
         {tool.params.map((p) => (
           <div key={p.name}>
             <label className="text-xs text-gray-500 block mb-0.5">
-              {p.name}{p.optional ? " (opt)" : ""}
+              {p.name}{p.optional ? " (可选)" : ""}
             </label>
             {p.type === "bool" ? (
               <label className="flex items-center gap-2 text-xs">
@@ -134,7 +148,7 @@ function ToolForm({
                   checked={boolValues[p.name] ?? false}
                   onChange={(e) => setBoolValues((v) => ({ ...v, [p.name]: e.target.checked }))}
                 />
-                <span className="text-gray-600 dark:text-gray-300">{boolValues[p.name] ? "true" : "false"}</span>
+                <span className="text-gray-600 dark:text-gray-300">{boolValues[p.name] ? "是" : "否"}</span>
               </label>
             ) : (p.type === "list" || p.type === "dict") ? (
               <textarea
@@ -159,9 +173,9 @@ function ToolForm({
       <button
         onClick={() => onCall(tool.name, buildArgs())}
         disabled={loading}
-        className="px-3 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+        className="px-3 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"
       >
-        {loading ? "Running..." : `▶ Run ${tool.name}`}
+        <PlayIcon /> {loading ? "运行中..." : `运行 ${tool.name}`}
       </button>
     </div>
   );
@@ -178,7 +192,7 @@ export default function ControlPanel() {
   const [editWorkers, setEditWorkers] = useState(14);
   const [editPairs, setEditPairs] = useState(5);
   const [editDaemon, setEditDaemon] = useState(true);
-  const [openGroup, setOpenGroup] = useState<string | null>("Status");
+  const [openGroup, setOpenGroup] = useState<string | null>("状态");
   const [session, setSession] = useState<OrchestratorSession | null>(null);
   const [checkpoint, setCheckpoint] = useState<PipelineCheckpoint | null>(null);
   const [sessionLoading, setSessionLoading] = useState(false);
@@ -258,7 +272,7 @@ export default function ControlPanel() {
   };
 
   const handleResetSession = async () => {
-    if (!confirm("Reset Orchestrator session? Next restart will begin a fresh LLM conversation.")) return;
+    if (!confirm("重置编排器会话？下次重启将开始全新的 LLM 对话。")) return;
     setSessionLoading(true);
     try {
       await api.clearOrchestratorSession();
@@ -279,9 +293,9 @@ export default function ControlPanel() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-800 dark:text-white">Control Panel</h1>
-        <button onClick={refresh} className="px-3 py-1 text-sm rounded bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600">
-          Refresh
+        <h1 className="text-2xl font-bold text-gray-800 dark:text-white">控制面板</h1>
+        <button onClick={refresh} className="px-3 py-1 text-sm rounded bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 flex items-center gap-1">
+          <RefreshIcon /> 刷新
         </button>
       </div>
 
@@ -289,33 +303,33 @@ export default function ControlPanel() {
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
         <div className="flex flex-wrap items-center gap-4">
           <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-500">Mode:</span>
+            <span className="text-sm text-gray-500">模式:</span>
             <select
               value={status?.mode || "orchestrator"}
               onChange={(e) => handleSetMode(e.target.value)}
               className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white text-sm"
             >
-              {MODES.map((m) => <option key={m} value={m}>{m}</option>)}
+              {MODES.map((m) => <option key={m} value={m}>{modeLabels[m] || m}</option>)}
             </select>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-500">Status:</span>
+            <span className="text-sm text-gray-500">状态:</span>
             <span className={`inline-flex items-center gap-1.5 text-sm font-medium ${status?.running ? "text-green-600" : "text-gray-400"}`}>
               <span className={`w-2 h-2 rounded-full ${status?.running ? "bg-green-500 animate-pulse" : "bg-gray-400"}`} />
-              {status?.running ? "Running" : "Stopped"}
+              {status?.running ? "运行中" : "已停止"}
             </span>
           </div>
           {status && (
-            <div className="text-sm text-gray-500">Gen {status.generation_count} | v{status.current_v} → v{status.next_v}</div>
+            <div className="text-sm text-gray-500">代 {status.generation_count} | v{status.current_v} → v{status.next_v}</div>
           )}
           <div className="flex gap-2 ml-auto">
             {!status?.running ? (
               <button onClick={handleStart} disabled={loading === "start"} className="px-4 py-1.5 text-sm rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50">
-                {loading === "start" ? "Starting..." : "Start"}
+                {loading === "start" ? "启动中..." : "启动"}
               </button>
             ) : (
               <button onClick={handleStop} disabled={loading === "stop"} className="px-4 py-1.5 text-sm rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">
-                {loading === "stop" ? "Stopping..." : "Stop"}
+                {loading === "stop" ? "停止中..." : "停止"}
               </button>
             )}
           </div>
@@ -324,17 +338,17 @@ export default function ControlPanel() {
 
       {/* LLM Session Control */}
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
-        <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">LLM Session</h2>
+        <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">LLM 会话</h2>
         <div className="flex flex-wrap items-center gap-4">
           <div>
-            <span className="text-xs text-gray-500 block mb-1">Orchestrator Session ID</span>
+            <span className="text-xs text-gray-500 block mb-1">编排器会话 ID</span>
             <span className="font-mono text-sm text-gray-800 dark:text-gray-200">
-              {session?.session_id ? session.session_id.slice(0, 12) + "..." : <span className="text-gray-400 italic">No active session</span>}
+              {session?.session_id ? session.session_id.slice(0, 12) + "..." : <span className="text-gray-400 italic">无活跃会话</span>}
             </span>
           </div>
           {checkpoint && (
             <div>
-              <span className="text-xs text-gray-500 block mb-1">Pipeline Stage</span>
+              <span className="text-xs text-gray-500 block mb-1">流水线阶段</span>
               <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 text-xs font-medium">
                 v{checkpoint.next_v} ← v{checkpoint.source_v}: {checkpoint.stage}
               </span>
@@ -344,21 +358,21 @@ export default function ControlPanel() {
             <button
               onClick={handleResetSession}
               disabled={sessionLoading || !session?.active}
-              className="px-4 py-1.5 text-sm rounded bg-orange-600 text-white hover:bg-orange-700 disabled:opacity-40"
+              className="px-4 py-1.5 text-sm rounded bg-orange-600 text-white hover:bg-orange-700 disabled:opacity-40 flex items-center gap-1"
             >
-              {sessionLoading ? "Resetting..." : "↺ Reset Session"}
+              <RefreshIcon /> {sessionLoading ? "重置中..." : "重置会话"}
             </button>
-            <p className="text-xs text-gray-400 mt-1">Forces fresh LLM conversation on next restart</p>
+            <p className="text-xs text-gray-400 mt-1">下次重启时强制开启全新 LLM 对话</p>
           </div>
         </div>
       </div>
 
       {/* Settings */}
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
-        <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">Daemon Settings</h2>
+        <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">守护进程设置</h2>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="flex items-center gap-3">
-            <label className="text-sm text-gray-600 dark:text-gray-300">Daemon</label>
+            <label className="text-sm text-gray-600 dark:text-gray-300">守护进程</label>
             <button
               role="switch"
               aria-checked={editDaemon}
@@ -369,26 +383,26 @@ export default function ControlPanel() {
             </button>
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-sm text-gray-600 dark:text-gray-300 whitespace-nowrap">Workers</label>
+            <label className="text-sm text-gray-600 dark:text-gray-300 whitespace-nowrap">工作器</label>
             <input type="number" min={1} max={32} value={editWorkers} onChange={(e) => setEditWorkers(Math.max(1, Math.min(32, Number(e.target.value) || 1)))} disabled={!editDaemon} className="w-20 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white disabled:opacity-40" />
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-sm text-gray-600 dark:text-gray-300 whitespace-nowrap">Pairs</label>
+            <label className="text-sm text-gray-600 dark:text-gray-300 whitespace-nowrap">配对数</label>
             <input type="number" min={1} max={20} value={editPairs} onChange={(e) => setEditPairs(Math.max(1, Math.min(20, Number(e.target.value) || 1)))} disabled={!editDaemon} className="w-20 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white disabled:opacity-40" />
           </div>
         </div>
         <div className="mt-3 flex justify-end">
           <button onClick={handleSaveConfig} disabled={!configDirty || loading === "config"} className="px-4 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40">
-            {loading === "config" ? "Saving..." : "Save"}
+            {loading === "config" ? "保存中..." : "保存"}
           </button>
         </div>
       </div>
 
       {/* Decision Chain */}
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
-        <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">Decision Chain</h2>
+        <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">决策链</h2>
         {decisions.length === 0 ? (
-          <p className="text-sm text-gray-400">No decisions yet</p>
+          <p className="text-sm text-gray-400">暂无决策</p>
         ) : (
           <div className="space-y-1.5 max-h-40 overflow-y-auto">
             {[...decisions].reverse().map((d, i) => (
@@ -404,7 +418,7 @@ export default function ControlPanel() {
 
       {/* Manual Tools — accordion groups */}
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
-        <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">Manual Tools</h2>
+        <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">手动工具</h2>
         <div className="space-y-2">
           {TOOL_GROUPS.map((group) => (
             <div key={group.label} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
@@ -439,8 +453,8 @@ export default function ControlPanel() {
       {toolResult && (
         <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
           <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">
-            Output — {toolResult.tool}
-            <button onClick={() => setToolResult(null)} className="ml-3 text-xs text-gray-400 hover:text-gray-600 underline">clear</button>
+            输出 — {toolResult.tool}
+            <button onClick={() => setToolResult(null)} className="ml-3 text-xs text-gray-400 hover:text-gray-600 underline">清空</button>
           </h2>
           {toolResult.error ? (
             <p className="text-sm text-red-600">{toolResult.error}</p>

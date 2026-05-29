@@ -4,7 +4,7 @@ import type { DisplayFrame } from "../api/types";
 const SUITS = ["♥", "♦", "♠", "♣"];
 const SUIT_COLORS = ["#e53935", "#e53935", "#1a1a1a", "#1a1a1a"];
 const POINTS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
-const PHASES = ["PreFlop", "Flop", "Turn", "River", "Showdown"];
+const PHASES = ["翻牌前", "翻牌", "转牌", "河牌", "摊牌"];
 const HAND_TYPES = [
   "", "高牌", "一对", "两对", "三条", "顺子", "同花", "葫芦", "四条", "同花顺",
 ];
@@ -65,7 +65,7 @@ export default function PokerTable({ frame, bot0Name, bot1Name }: PokerTableProp
       ctx.fillStyle = "rgba(255,255,255,0.5)";
       ctx.font = "18px sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText(frame ? "Incomplete replay data" : "Select a match to view replay", W / 2, H / 2);
+      ctx.fillText(frame ? "回放数据不完整" : "选择一场对局以查看回放", W / 2, H / 2);
       return;
     }
 
@@ -100,14 +100,14 @@ export default function PokerTable({ frame, bot0Name, bot1Name }: PokerTableProp
     ctx.fillStyle = "#fff";
     ctx.font = "bold 16px sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText(`Pot: ${frame.pot}`, cx, H / 2 + TABLE_RY / 2);
+    ctx.fillText(`底池: ${frame.pot}`, cx, H / 2 + TABLE_RY / 2);
 
     // Phase & hand info
     ctx.font = "13px sans-serif";
     ctx.fillStyle = "rgba(255,255,255,0.7)";
     ctx.textAlign = "left";
-    ctx.fillText(`Hand ${frame.matchdata.hand + 1}/${frame.matchdata.max_hand}`, 20, 25);
-    ctx.fillText(`Phase: ${PHASES[frame.round] || "Showdown"}`, 20, 45);
+    ctx.fillText(`手牌 ${frame.matchdata.hand + 1}/${frame.matchdata.max_hand}`, 20, 25);
+    ctx.fillText(`阶段: ${PHASES[frame.round] || "摊牌"}`, 20, 45);
 
     // Last action
     if (frame.last_action) {
@@ -172,9 +172,9 @@ function drawCard(ctx: CanvasRenderingContext2D, x: number, y: number, card: num
     roundRect(ctx, x + 4, y + 4, CARD_W - 8, CARD_H - 8, 3);
     ctx.fill();
     ctx.fillStyle = "rgba(255,255,255,0.3)";
-    ctx.font = "20px sans-serif";
+    ctx.font = "bold 12px sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText("🂠", x + CARD_W / 2, y + CARD_H / 2 + 7);
+    ctx.fillText("牌背", x + CARD_W / 2, y + CARD_H / 2 + 4);
   }
 }
 
@@ -190,7 +190,7 @@ function drawPlayerInfo(
   }
   ctx.fillStyle = isTurn ? "#ffee58" : "#fff";
   ctx.font = "bold 14px sans-serif";
-  ctx.fillText(`${name}  💰${chips}`, x, y);
+  ctx.fillText(`${name}  筹码:${chips}`, x, y);
   ctx.font = "11px sans-serif";
   ctx.fillStyle = "rgba(255,255,255,0.6)";
   ctx.fillText(`累计: ${totalWin > 0 ? "+" : ""}${Math.floor(totalWin)}`, x, y + 15);
@@ -218,7 +218,7 @@ function drawRoundBet(ctx: CanvasRenderingContext2D, x: number, y: number, bet: 
     ctx.fillStyle = "#bdbdbd";
     ctx.font = "12px sans-serif";
     ctx.textAlign = "left";
-    ctx.fillText("FOLD", x, y + 10);
+    ctx.fillText("弃牌", x, y + 10);
   } else if (bet > 0) {
     ctx.fillStyle = "#fff";
     ctx.font = "12px sans-serif";
