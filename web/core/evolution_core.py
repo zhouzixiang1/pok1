@@ -63,9 +63,84 @@ COOLDOWN_THRESHOLD = 3
 COOLDOWN_SECONDS = 3600
 CONSOLIDATE_EVERY_N_GENS = 3
 REPORT_EVERY_N_GENS = 5
+MAX_INTRA_GEN_ITERS = 2      # Intra-generation Critic-loop iteration limit
+WORKER_TIMEOUT = 1000         # Seconds before a hung worker call is aborted + retried
+MAX_PARALLEL_WORKERS = 3      # Hard cap on simultaneous LLM worker calls (Semaphore)
 
-# Prompt size limits
-MAX_PROMPT_CHARS = 100000
+# Prompt size limits — Sonnet supports 200K tokens (~800K chars); leave generous headroom
+MAX_PROMPT_CHARS = 700_000
+
+# Lazy-initialised semaphore — created on first use inside the event loop
+_WORKER_SEMAPHORE: "asyncio.Semaphore | None" = None
+
+
+def _get_worker_semaphore() -> "asyncio.Semaphore":
+    """Return (creating if needed) the module-level worker concurrency semaphore."""
+    global _WORKER_SEMAPHORE
+    if _WORKER_SEMAPHORE is None:
+        _WORKER_SEMAPHORE = asyncio.Semaphore(MAX_PARALLEL_WORKERS)
+    return _WORKER_SEMAPHORE
+
+
+# ──────────────────────────────────────────────
+# Prompt Budget Helpers
+# ──────────────────────────────────────────────
+
+def _trim_to_budget(text: str, max_chars: int, tail: bool = False) -> str:
+    """Trim text to max_chars. If tail=True, keep the LAST max_chars (most recent content)."""
+    if len(text) <= max_chars:
+        return text
+    note = "\n...[TRIMMED]\n"
+    if tail:
+        return note + text[-(max_chars - len(note)):]
+    return text[:max_chars - len(note)] + note
+
+
+# ──────────────────────────────────────────────
+# Pipeline Checkpoint (Process Recovery)
+# ──────────────────────────────────────────────
+
+PIPELINE_STATE_FILE = RESULTS_DIR / "pipeline_state.json"
+STAGE_ORDER = ["prepared", "workers_done", "quality_passed", "reviewed", "critic_checked"]
+
+
+def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
+                               reviewer_feedback="", generation_attempt=0):
+    """Write pipeline stage checkpoint so a killed process can resume."""
+    state = {
+        "next_v": next_v, "source_v": source_v, "stage": stage,
+        "master_plan": master_plan, "reviewer_feedback": reviewer_feedback,
+        "generation_attempt": generation_attempt,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    with locked_file(PIPELINE_STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+
+
+def read_pipeline_checkpoint():
+    """Return saved pipeline state dict, or None."""
+    if not PIPELINE_STATE_FILE.exists():
+        return None
+    try:
+        with locked_file(PIPELINE_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def clear_pipeline_checkpoint():
+    """Delete pipeline checkpoint (called on successful commit)."""
+    PIPELINE_STATE_FILE.unlink(missing_ok=True)
+
+
+def _stage_done(resume_stage, this_stage):
+    """True if resume_stage indicates this_stage has already been completed."""
+    if not resume_stage:
+        return False
+    try:
+        return STAGE_ORDER.index(resume_stage) >= STAGE_ORDER.index(this_stage)
+    except ValueError:
+        return False
 
 
 @contextmanager
@@ -452,17 +527,38 @@ def git_get_stagnation_count(bot_name, ratings):
 
 async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, is_text_ui, model="sonnet"):
     """Run a Claude query via the Agent SDK with cost tracking and typed streaming."""
-    full_prompt = prompt
+    # Build (path, content) pairs for context files
+    context_parts = []
     if context_files:
-        full_prompt += "\n\n# Context Files:\n"
         for cf in context_files:
             if os.path.exists(cf):
                 with open(cf, 'r') as f:
-                    full_prompt += f"\n--- {cf} ---\n{f.read()}\n"
+                    context_parts.append((cf, f.read()))
 
-    if len(full_prompt) > MAX_PROMPT_CHARS:
-        ui.log_history(f"Prompt too long ({len(full_prompt)} chars), truncating context...", "warn")
-        full_prompt = full_prompt[:MAX_PROMPT_CHARS - 100] + "\n\n[... CONTEXT TRUNCATED ...]"
+    # Assemble prompt with context files, smart-budgeting if needed
+    if context_parts:
+        ctx_section = "\n\n# Context Files:\n" + "".join(
+            f"\n--- {p} ---\n{c}\n" for p, c in context_parts
+        )
+        full_prompt = prompt + ctx_section
+        if len(full_prompt) > MAX_PROMPT_CHARS:
+            # Compress context_files proportionally while keeping base prompt intact
+            budget_for_files = MAX_PROMPT_CHARS - len(prompt) - 500
+            if budget_for_files > 0:
+                per_file = max(budget_for_files // len(context_parts), 500)
+                ctx_section = "\n\n# Context Files:\n" + "".join(
+                    f"\n--- {p} ---\n{_trim_to_budget(c, per_file)}\n"
+                    for p, c in context_parts
+                )
+                full_prompt = prompt + ctx_section
+            else:
+                full_prompt = prompt + "\n\n[Context files omitted — prompt too long]"
+            ui.log_history(f"Prompt budgeted to {len(full_prompt):,} chars (context compressed)", "warn")
+    else:
+        full_prompt = prompt
+        if len(full_prompt) > MAX_PROMPT_CHARS:
+            ui.log_history(f"Prompt too long ({len(full_prompt):,} chars), trimming...", "warn")
+            full_prompt = _trim_to_budget(full_prompt, MAX_PROMPT_CHARS)
 
     ui.log_io(f"\n[{role_name} PROMPT]", "prompt")
     ui.log_io(prompt[:200] + "...\n[Context Attached]", "prompt")
@@ -666,12 +762,21 @@ def seed_initial_bots(ui):
 # Master Analysis
 # ──────────────────────────────────────────────
 
-async def _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui, match_analysis=""):
+async def _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui,
+                               match_analysis="", performance_verification=""):
     """Run Master analysis — can run concurrently with daemon evaluation."""
     master_prompt = (PROMPTS_DIR / "master_prompt.md").read_text()
+    # Apply section budgets to avoid experience_pool crowding out match_analysis
+    match_analysis_trimmed = _trim_to_budget(match_analysis, 10_000, tail=True)
+    perf_trimmed = _trim_to_budget(
+        performance_verification if performance_verification
+        else "No performance verification data available.",
+        4_000
+    )
     master_prompt = substitute_template(master_prompt, {
         "stagnation_info": stagnation_info,
-        "match_analysis": match_analysis,
+        "match_analysis": match_analysis_trimmed,
+        "performance_verification": perf_trimmed,
     })
     master_ctx = (
         f"Current evolution: v{source_v} → v{next_v}\n"
@@ -720,12 +825,23 @@ async def _consolidate_experience_pool(ui, is_text_ui):
         "You are an Experience Pool Consolidator. Your job is to clean up the experience pool file.\n\n"
         "RULES:\n"
         "1. Read the current experience pool content provided below.\n"
-        "2. Merge duplicate or near-duplicate lessons into single, concise entries.\n"
+        "2. Merge duplicate or near-duplicate lessons into single, concise bullet points.\n"
         "3. Keep the most recent/relevant version of each lesson.\n"
-        "4. Remove entries that have been superseded by newer findings.\n"
-        "5. Preserve the markdown format.\n"
-        "6. Keep the total output under 60 lines.\n"
-        "7. Output ONLY the consolidated markdown content — no explanation, no code fences, no extra text.\n\n"
+        "4. Remove entries superseded by newer findings.\n"
+        "5. Keep the total output under 70 lines.\n"
+        "6. Output ONLY the consolidated markdown — no explanation, no code fences.\n\n"
+        "CRITICAL — Output MUST use exactly these category headers (in this order):\n"
+        "## OPPONENT_MODELING\n"
+        "## POSTFLOP_STRATEGY\n"
+        "## BLUFF_CALIBRATION\n"
+        "## PARAMETER_TUNING\n"
+        "## GENERAL\n"
+        "## RECENT_LESSONS\n\n"
+        "Sort each lesson into the most relevant category.\n"
+        "RECENT_LESSONS should contain only lessons from the last 3 generations.\n\n"
+        "LOCAL OPTIMA FLAG: If the same type of lesson appears for 3+ consecutive "
+        "generations (e.g. 3 gens of constant-tuning in the same direction with no gain), "
+        "append ' [POSSIBLY EXHAUSTED]' to that bullet so Master avoids repeating it.\n\n"
         "## Current experience_pool.md content:\n\n"
         f"{content}\n\n"
         "## Output the consolidated version now (plain markdown, no fences):"
@@ -828,11 +944,84 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui, is_text_ui):
     return parse_json_output(output)
 
 
+def _num_public_cards_to_street(n):
+    """Map community-card count to street name."""
+    return {0: "preflop", 3: "flop", 4: "turn", 5: "river"}.get(n, f"street_{n}")
+
+
+def extract_street_patterns(games, bot_idx):
+    """Extract per-street action frequencies from a list of game dicts.
+
+    Returns a dict mapping street name → action counts, plus a compact text summary.
+    Used by summarize_replay_for_analysis() to detect street-specific weaknesses.
+    """
+    from collections import defaultdict
+    streets = {s: defaultdict(int) for s in ("preflop", "flop", "turn", "river")}
+
+    for g in games:
+        for log in g.get("logs", []):
+            out = log.get("output")
+            if not out or not isinstance(out, dict):
+                continue
+            display = out.get("display")
+            if not display or not isinstance(display, dict):
+                continue
+            action_info = display.get("last_action")
+            if not action_info or not isinstance(action_info, dict):
+                continue
+            if action_info.get("player_id") != bot_idx:
+                continue
+
+            # Determine street from number of community cards present BEFORE this action
+            n_community = len(display.get("public_cards", []))
+            street = _num_public_cards_to_street(n_community)
+            if street not in streets:
+                continue
+
+            act_val = action_info.get("action", 0)
+            if act_val == -1:
+                streets[street]["fold"] += 1
+            elif act_val == -2:
+                streets[street]["allin"] += 1
+            elif act_val > 0:
+                streets[street]["raise"] += 1
+                # Track raise size relative to pot (pot available from display)
+                pot = display.get("pot", 0)
+                if pot > 0:
+                    streets[street]["raise_size_sum"] += act_val
+                    streets[street]["raise_size_pot_sum"] += act_val / pot
+                    streets[street]["raise_size_count"] += 1
+            else:
+                streets[street]["call"] += 1
+
+    # Build compact text lines
+    lines = []
+    for street in ("preflop", "flop", "turn", "river"):
+        s = streets[street]
+        total = s["fold"] + s["raise"] + s["call"] + s["allin"]
+        if total == 0:
+            continue
+        parts = [
+            f"fold={s['fold']*100//total}%",
+            f"raise={s['raise']*100//total}%",
+            f"call={s['call']*100//total}%",
+        ]
+        if s["allin"] > 0:
+            parts.append(f"allin={s['allin']*100//total}%")
+        if s.get("raise_size_count", 0) > 0:
+            avg_ratio = s["raise_size_pot_sum"] / s["raise_size_count"]
+            parts.append(f"avg_raise={avg_ratio:.1f}x_pot")
+        lines.append(f"  {street.capitalize()}: {', '.join(parts)}")
+
+    return "\n".join(lines) if lines else ""
+
+
 def summarize_replay_for_analysis(replay_data, bot_name):
     """Extract structured statistics from replay JSON for LLM analysis.
 
     Compresses ~253 game logs into a compact ~500 token summary covering
-    win rates, chip distribution, fold frequency, and key action patterns.
+    win rates, chip distribution, fold frequency, key action patterns,
+    and per-street behaviour breakdown.
     """
     bot_idx = None
     opp_idx = None
@@ -914,6 +1103,12 @@ def summarize_replay_for_analysis(replay_data, bot_name):
         lines.append(f"Big losses (>-5000): {len(big_pot_losses)} games")
         for gid, delta in big_pot_losses[:3]:
             lines.append(f"  Game {gid}: {delta:.0f} chips")
+
+    # Per-street action breakdown (StratFormer-style opponent modelling insight)
+    street_summary = extract_street_patterns(games, bot_idx)
+    if street_summary:
+        lines.append("Per-street actions (bot):")
+        lines.append(street_summary)
 
     return "\n".join(lines)
 
@@ -1026,14 +1221,20 @@ async def _analyze_recent_matches(source_v, ui, is_text_ui, max_matches=8):
     match_analyst_prompt += (
         "Based on the data above, identify:\n"
         "1. Key weaknesses (e.g., folding too much, not raising enough, poor all-in timing)\n"
-        "2. Any detectable patterns (e.g., weak out-of-position, poor against aggressive opponents)\n"
-        "3. What seems to be working (from close wins, if any)\n"
-        "4. A concrete recommendation for improvement\n\n"
+        "2. Street-specific weaknesses from the Per-street actions data:\n"
+        "   - River fold rate ≥40% → scared-money, consider expanding river calling range\n"
+        "   - Flop raise rate ≤10% → too passive postflop, giving free cards\n"
+        "   - Preflop raise rate ≤15% → limping too much, losing positional advantage\n"
+        "   - avg_raise < 0.5x pot on river with big pot → underbetting strong hands\n"
+        "3. Any detectable patterns (e.g., weak out-of-position, poor against aggressive opponents)\n"
+        "4. What seems to be working (from close wins, if any)\n"
+        "5. A concrete recommendation for improvement (be specific: which street, what change)\n\n"
         "Output ONLY a JSON block:\n"
         "```json\n"
-        '{"weaknesses": ["..."], "patterns": "...", "working": "...", "recommendation": "..."}\n'
+        '{"weaknesses": ["..."], "street_weaknesses": {"river": "...", "flop": "..."}, '
+        '"patterns": "...", "working": "...", "recommendation": "..."}\n'
         "```\n"
-        "Keep it concise — 2-3 weaknesses, 1 pattern, 1 recommendation."
+        "Keep it concise — 2-3 weaknesses, specific street observations, 1 recommendation."
     )
 
     log_file = get_logs_dir(source_v) / "match_analyst_io.txt"
@@ -1045,6 +1246,140 @@ async def _analyze_recent_matches(source_v, ui, is_text_ui, max_matches=8):
         return output or ""
     except Exception:
         return ""
+
+
+async def _run_critic(next_v, source_v, master_plan_str, ui, is_text_ui):
+    """Poker Strategy Critic — independently scores the strategic value of worker changes.
+
+    Separate from the Reviewer (which checks code correctness and role boundaries).
+    The Critic evaluates whether the diff will actually improve poker win rate.
+
+    Returns a dict: {score, approved, strategic_assessment, feedback, local_optima_warning}.
+    Returns a safe default on failure so the pipeline can always proceed.
+    """
+    critic_prompt_path = PROMPTS_DIR / "critic_prompt.md"
+    if not critic_prompt_path.exists():
+        return {"score": 7, "approved": True, "feedback": "Critic prompt not found — defaulting to approved."}
+
+    critic_prompt = critic_prompt_path.read_text()
+    critic_prompt = substitute_template(critic_prompt, {
+        "master_plan": master_plan_str,
+        "version": str(next_v),
+        "parent_version": str(source_v),
+    })
+
+    log_file = get_logs_dir(next_v) / "critic_io.txt"
+    try:
+        output, _, _ = await run_claude_query(
+            critic_prompt, [], ui, "STRATEGY CRITIC", log_file, is_text_ui,
+        )
+        data = parse_json_output(output)
+        if data and "score" in data:
+            # Normalise: score >= 6 → approved
+            data.setdefault("approved", data["score"] >= 6)
+            return data
+    except Exception as e:
+        ui.log_history(f"Critic error: {e}. Defaulting to approved.", "warn")
+
+    return {"score": 6, "approved": True, "feedback": "Critic unavailable — proceeding.", "local_optima_warning": False}
+
+
+async def _run_performance_verification(source_v, ratings, ui, is_text_ui):
+    """SATLUTION-style LLM performance verification.
+
+    Synthesises rating history + win-rate trends into a structured JSON insight
+    that Master uses to prioritise improvements and avoid local optima.
+
+    Returns a JSON-formatted string (to be injected into master prompt).
+    Returns "" on failure so master prompt degrades gracefully.
+    """
+    # ── Build rating history for last 10 periods ──
+    history_file = RESULTS_DIR / "rating_history.jsonl"
+    gen_trend_lines = []
+    if history_file.exists():
+        try:
+            with locked_file(history_file, "r") as hf:
+                raw_lines = hf.readlines()
+            for line in raw_lines[-10:]:
+                try:
+                    snap = json.loads(line.strip())
+                    bots_in_snap = snap.get("ratings", {})
+                    top_r = max((v.get("r", 1500) for v in bots_in_snap.values()), default=1500)
+                    gen_trend_lines.append(f"  Period {snap.get('period','?')}: top_r={top_r:.0f}")
+                except (json.JSONDecodeError, KeyError):
+                    continue
+        except Exception:
+            pass
+
+    # ── Win-rate summary for source_v (last 30 matches) ──
+    bot_name = f"claude_v{source_v}"
+    win_rate_lines = []
+    if MATCH_HISTORY_FILE.exists():
+        try:
+            wins, losses = 0, 0
+            with locked_file(MATCH_HISTORY_FILE, "r") as mf:
+                all_lines = mf.readlines()
+            for line in all_lines[-100:]:
+                try:
+                    entry = json.loads(line.strip())
+                    b0, b1 = entry.get("bot0"), entry.get("bot1")
+                    w0, w1 = entry.get("bot0_wins", 0), entry.get("bot1_wins", 0)
+                    if b0 == bot_name:
+                        wins += w0; losses += w1
+                    elif b1 == bot_name:
+                        wins += w1; losses += w0
+                except (json.JSONDecodeError, KeyError):
+                    continue
+            total = wins + losses
+            if total > 0:
+                win_rate_lines.append(f"  {bot_name} recent: {wins}W / {losses}L ({wins*100//total}% win rate)")
+        except Exception:
+            pass
+
+    # ── Top-5 active bots for context ──
+    active_bots = get_active_bots()
+    sorted_bots = sorted(
+        [(b, ratings.get(b, Glicko2Player())) for b in active_bots],
+        key=lambda x: x[1].r, reverse=True
+    )[:5]
+    ratings_lines = [f"  {b}: r={p.r:.0f} rd={p.rd:.0f}" for b, p in sorted_bots]
+
+    # ── Build prompt ──
+    prompt = (
+        "You are a Performance Verification Analyst for a self-evolving poker bot system.\n"
+        "Your job: synthesise the quantitative data below into actionable LLM-readable insight.\n\n"
+        f"Current bot under analysis: {bot_name}\n\n"
+        "## Rating History (last 10 Glicko-2 periods, top rating)\n"
+        + ("\n".join(gen_trend_lines) if gen_trend_lines else "  No history available") + "\n\n"
+        "## Current Win Rate\n"
+        + ("\n".join(win_rate_lines) if win_rate_lines else "  No match history available") + "\n\n"
+        "## Top Active Bots\n"
+        + "\n".join(ratings_lines) + "\n\n"
+        "Produce a JSON block answering:\n"
+        "```json\n"
+        '{"trend": "improving|stagnant|declining",\n'
+        ' "verified_improvements": ["list of things that actually helped recent gens"],\n'
+        ' "persistent_weaknesses": ["list of recurring problems not yet fixed"],\n'
+        ' "diversity_needed": true|false,\n'
+        ' "diversity_reason": "why diversity is needed (or null)",\n'
+        ' "suggestion": "one concrete high-priority suggestion for next gen"}\n'
+        "```\n"
+        "Set `diversity_needed: true` if: trend is stagnant/declining for 2+ gens, "
+        "OR the last 2 gens applied the same type of change. Be direct and concise."
+    )
+
+    log_file = get_logs_dir(source_v) / "performance_verification_io.txt"
+    try:
+        output, _, _ = await run_claude_query(
+            prompt, [], ui, "PERFORMANCE ANALYST", log_file, is_text_ui,
+        )
+        data = parse_json_output(output)
+        if data:
+            return json.dumps(data, ensure_ascii=False)
+    except Exception as e:
+        ui.log_history(f"Performance verification failed: {e}", "warn")
+
+    return ""
 
 
 async def _run_crossover(parent_a_v, parent_b_v, target_v, ui, is_text_ui):
@@ -1119,10 +1454,25 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             "version": str(next_v),
         })
 
-        await run_claude_query(
-            worker_prompt, context_files, ui,
-            f"WORKER {w_id} ({role})", worker_log_file, is_text_ui,
-        )
+        # ── Timeout isolation: abort and retry if worker hangs for >WORKER_TIMEOUT sec ──
+        try:
+            await asyncio.wait_for(
+                run_claude_query(
+                    worker_prompt, context_files, ui,
+                    f"WORKER {w_id} ({role})", worker_log_file, is_text_ui,
+                ),
+                timeout=WORKER_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            ui.log_history(
+                f"Worker {w_id} ({role}) timed out after {WORKER_TIMEOUT}s. Retrying with simpler task...",
+                "warn",
+            )
+            base_worker_prompt += (
+                "\n\nPREVIOUS ATTEMPT TIMED OUT. Start fresh with a minimal, focused implementation. "
+                "Implement only the single most impactful change — do NOT try to do everything at once."
+            )
+            continue
 
         compile_errors = verify_code(next_dir)
         if compile_errors:
@@ -1153,15 +1503,17 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             context_files, ui, is_text_ui, reviewer_feedback,
         )
 
-    # Try parallel execution
-    ui.log_history(f"Launching {len(tasks)} workers in parallel...", "info")
-    coros = [
-        _run_single_worker(
-            task, i, worker_template, next_dir, next_v,
-            context_files, ui, is_text_ui, reviewer_feedback,
-        )
-        for i, task in enumerate(tasks)
-    ]
+    # Try parallel execution (capped at MAX_PARALLEL_WORKERS via semaphore)
+    ui.log_history(f"Launching {len(tasks)} workers in parallel (max {MAX_PARALLEL_WORKERS} concurrent)...", "info")
+
+    async def _guarded_worker(task, i):
+        async with _get_worker_semaphore():
+            return await _run_single_worker(
+                task, i, worker_template, next_dir, next_v,
+                context_files, ui, is_text_ui, reviewer_feedback,
+            )
+
+    coros = [_guarded_worker(task, i) for i, task in enumerate(tasks)]
     results = await asyncio.gather(*coros, return_exceptions=True)
 
     all_ok = all(r is True for r in results)
@@ -1442,19 +1794,42 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
 
         ui.set_header(f"🔥 Antigravity Glicko-2 Evolution: v{source_v} ➡️ v{next_v} 🔥")
 
-        # 1. Wait for daemon evaluation or run inline — pipelined with Master analysis
+        # ── Pipeline checkpoint recovery ──
+        # If a previous run was killed mid-gen for this exact next_v, skip Master and
+        # resume directly in the intra-gen loop from the saved pipeline stage.
+        _checkpoint = read_pipeline_checkpoint()
+        resume_stage = None
+        tasks_data = None
+        reviewer_feedback_from_ckpt = ""
         my_bot = f"claude_v{current_v}"
+        if _checkpoint and _checkpoint.get("next_v") == next_v and _checkpoint.get("master_plan"):
+            resume_stage = _checkpoint.get("stage")
+            tasks_data = _checkpoint["master_plan"]
+            source_v = _checkpoint.get("source_v", source_v)
+            reviewer_feedback_from_ckpt = _checkpoint.get("reviewer_feedback", "")
+            ui.log_history(
+                f"Resuming v{next_v} from checkpoint stage='{resume_stage}' "
+                f"(source=v{source_v}). Skipping Master + eval.",
+                "info",
+            )
 
-        if not no_daemon:
+        if tasks_data is not None:
+            pass  # Checkpoint restored tasks_data; skip daemon eval + master
+        elif not no_daemon:
             ui.set_status(f"Pipelining daemon eval + Master analysis for v{current_v}...", is_working=True)
             ui.log_history(f"v{current_v} pipelining daemon eval + Master analysis...", "info")
 
             # Run match analysis (pipelined with daemon eval)
             match_analysis = await _analyze_recent_matches(source_v, ui, is_text_ui)
 
+            # SATLUTION-style performance verification (sequential with match analysis)
+            ui.log_history("Running performance verification...", "info")
+            perf_verification = await _run_performance_verification(source_v, ratings, ui, is_text_ui)
+
             # Launch Master analysis concurrently — it reads files via tools, doesn't need final ratings
             master_task = asyncio.create_task(
-                _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui, match_analysis)
+                _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui,
+                                     match_analysis, perf_verification)
             )
 
             # Wait for daemon evaluation (async, non-blocking)
@@ -1500,9 +1875,11 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
                 if my_results:
                     ratings[my_bot] = update_rating_period(ratings[my_bot], my_results)
 
-            # Run match analysis then Master after inline eval
+            # Run match analysis + performance verification then Master after inline eval
             match_analysis = await _analyze_recent_matches(source_v, ui, is_text_ui)
-            tasks_data = await _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui, match_analysis)
+            perf_verification = await _run_performance_verification(source_v, ratings, ui, is_text_ui)
+            tasks_data = await _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui,
+                                                    match_analysis, perf_verification)
 
         # 2. Master result check — auto-retry on failure
         if tasks_data is None:
@@ -1537,94 +1914,165 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
                 ui.log_history(f"Invalid branch_from value: {bf}", "warn")
 
         generation_approved = False
-        reviewer_feedback = ""
+        # Use reviewer_feedback from checkpoint if resuming, otherwise start fresh
+        reviewer_feedback = reviewer_feedback_from_ckpt if resume_stage else ""
+        # Intra-generation iteration: re-run workers within same gen if Critic score < 6
+        # MAX_INTRA_GEN_ITERS controls how many Critic-driven retries are allowed (max 2)
+        # The outer loop range(3) covers (initial + 2 retries), matching MAX_INTRA_GEN_ITERS
 
-        for generation_attempt in range(3):
+        for generation_attempt in range(MAX_INTRA_GEN_ITERS + 1):
             if generation_approved:
                 break
 
-            ui.log_history(f"Generation Pipeline (Attempt {generation_attempt+1})", "info")
+            ui.log_history(f"Generation Pipeline (Attempt {generation_attempt+1}/{MAX_INTRA_GEN_ITERS+1})", "info")
 
-            next_dir = get_bot_dir(next_v)
-            if next_dir.exists():
-                shutil.rmtree(next_dir)
-            shutil.copytree(get_bot_dir(source_v), next_dir, ignore=_COPY_IGNORE)
-            (next_dir / ".completed").unlink(missing_ok=True)
+            # On first attempt only, respect resume_stage from checkpoint.
+            # On subsequent attempts (intra-gen retries) always run all stages fresh.
+            skip_to = resume_stage if generation_attempt == 0 else None
+
+            # Prepare: copy source → next (skip if checkpoint says already done)
+            if not _stage_done(skip_to, "prepared"):
+                next_dir = get_bot_dir(next_v)
+                if next_dir.exists():
+                    shutil.rmtree(next_dir)
+                shutil.copytree(get_bot_dir(source_v), next_dir, ignore=_COPY_IGNORE)
+                (next_dir / ".completed").unlink(missing_ok=True)
+                write_pipeline_checkpoint(next_v, source_v, "prepared", tasks_data,
+                                          reviewer_feedback, generation_attempt)
+            else:
+                next_dir = get_bot_dir(next_v)
+                ui.log_history("[Resume] Skipping prepare (already done)", "info")
 
             with open(PROMPTS_DIR / "worker_prompt.md") as f:
                 worker_template = f.read()
 
-            # Build worker context files — workers read bot files via Read tool
-            worker_context_files = []
+            # Workers: skip if checkpoint says already done
+            if not _stage_done(skip_to, "workers_done"):
+                # Build worker context files — workers read bot files via Read tool
+                worker_context_files = []
 
-            workers_succeeded = await _execute_workers(
-                tasks_data["tasks"], worker_template, next_dir, next_v,
-                worker_context_files, ui, is_text_ui, reviewer_feedback,
-                source_v=source_v,
-            )
-
-            if not workers_succeeded:
-                continue  # Retry with fresh copy within generation_attempt loop
-
-            # Single-file size constraint — ensure readability
-            total_lines, oversized_files = check_code_size(next_dir)
-            if oversized_files:
-                details = ", ".join(f"{name}={lines}" for name, lines in oversized_files)
-                reviewer_feedback = (
-                    f"These files exceed 1000 lines and must be split into modules: {details}. "
-                    "Keep main.py as the entry point, extract logic into separate .py files."
+                workers_succeeded = await _execute_workers(
+                    tasks_data["tasks"], worker_template, next_dir, next_v,
+                    worker_context_files, ui, is_text_ui, reviewer_feedback,
+                    source_v=source_v,
                 )
-                ui.log_history(f"File size check failed: {details}", "warn")
-                continue
 
-            # Decision scenario tests — reject catastrophic blunders
-            decision_pass_rate = run_decision_tests(next_dir)
-            ui.log_history(f"Decision tests: {decision_pass_rate:.0%} pass rate", "info")
-            if decision_pass_rate < MIN_DECISION_PASS_RATE:
-                reviewer_feedback = (
-                    f"Bot failed decision tests ({decision_pass_rate:.0%} pass rate). "
-                    "Review fundamental strategy: don't fold premium hands, don't bluff with missed draws facing big bets."
-                )
-                ui.log_history("Decision test threshold not met, requesting revision.", "warn")
-                continue
+                if not workers_succeeded:
+                    continue  # Retry with fresh copy within generation_attempt loop
 
-            ui.set_status(f"Code Reviewer analyzing v{next_v}...", is_working=True)
-            with open(PROMPTS_DIR / "reviewer_prompt.md") as f:
-                reviewer_prompt = f.read()
-
-            reviewer_log_file = get_logs_dir(next_v) / "reviewer_io.txt"
-            reviewer_prompt = substitute_template(reviewer_prompt, {
-                "master_plan": json.dumps(tasks_data, indent=2),
-                "version": str(next_v),
-                "parent_version": str(source_v),
-            })
-
-            for review_attempt in range(MAX_REVIEWER_RETRIES):
-                ui.clear_io()
-                reviewer_output, _, _ = await run_claude_query(reviewer_prompt, [], ui, "LEAD CODE REVIEWER", reviewer_log_file, is_text_ui)
-                reviewer_data = parse_json_output(reviewer_output)
-
-                if reviewer_data and "approved" in reviewer_data:
-                    if reviewer_data["approved"]:
-                        generation_approved = True
-                        # Log quality score and change summary
-                        qs = reviewer_data.get("quality_score", 0)
-                        if qs:
-                            ui.log_history(f"Quality score: {qs}/10", "info")
-                        summary = reviewer_data.get("change_summary", "")
-                        if summary:
-                            with locked_file(EXPERIENCE_FILE, "a") as ep:
-                                ep.write(f"\n- **v{source_v} -> v{next_v} review**: {summary}\n")
-                        risks = reviewer_data.get("risk_areas", [])
-                        if risks:
-                            ui.log_history(f"Risk areas: {'; '.join(risks)}", "warn")
-                    else:
-                        reviewer_feedback = reviewer_data.get("feedback", "")
-                    break
+                write_pipeline_checkpoint(next_v, source_v, "workers_done", tasks_data,
+                                          reviewer_feedback, generation_attempt)
             else:
-                # Reviewer failed to produce valid JSON 3 times — reject conservatively
-                generation_approved = False
-                reviewer_feedback = "Reviewer failed to produce valid output. Please review and retry."
+                workers_succeeded = True
+                ui.log_history("[Resume] Skipping workers (already done)", "info")
+
+            # Single-file size constraint + decision tests (skip if checkpoint says passed)
+            if not _stage_done(skip_to, "quality_passed"):
+                total_lines, oversized_files = check_code_size(next_dir)
+                if oversized_files:
+                    details = ", ".join(f"{name}={lines}" for name, lines in oversized_files)
+                    reviewer_feedback = (
+                        f"These files exceed 1000 lines and must be split into modules: {details}. "
+                        "Keep main.py as the entry point, extract logic into separate .py files."
+                    )
+                    ui.log_history(f"File size check failed: {details}", "warn")
+                    continue
+
+                # Decision scenario tests — reject catastrophic blunders
+                decision_pass_rate = run_decision_tests(next_dir)
+                ui.log_history(f"Decision tests: {decision_pass_rate:.0%} pass rate", "info")
+                if decision_pass_rate < MIN_DECISION_PASS_RATE:
+                    reviewer_feedback = (
+                        f"Bot failed decision tests ({decision_pass_rate:.0%} pass rate). "
+                        "Review fundamental strategy: don't fold premium hands, don't bluff with missed draws facing big bets."
+                    )
+                    ui.log_history("Decision test threshold not met, requesting revision.", "warn")
+                    continue
+
+                write_pipeline_checkpoint(next_v, source_v, "quality_passed", tasks_data,
+                                          reviewer_feedback, generation_attempt)
+            else:
+                ui.log_history("[Resume] Skipping quality gates (already passed)", "info")
+
+            # ── Code Reviewer (correctness + role boundaries) ──
+            reviewer_data = {}
+            if not _stage_done(skip_to, "reviewed"):
+                ui.set_status(f"Code Reviewer analyzing v{next_v}...", is_working=True)
+                with open(PROMPTS_DIR / "reviewer_prompt.md") as f:
+                    reviewer_prompt = f.read()
+
+                reviewer_log_file = get_logs_dir(next_v) / "reviewer_io.txt"
+                reviewer_prompt = substitute_template(reviewer_prompt, {
+                    "master_plan": json.dumps(tasks_data, indent=2),
+                    "version": str(next_v),
+                    "parent_version": str(source_v),
+                })
+
+                reviewer_approved = False
+                for review_attempt in range(MAX_REVIEWER_RETRIES):
+                    ui.clear_io()
+                    reviewer_output, _, _ = await run_claude_query(reviewer_prompt, [], ui, "LEAD CODE REVIEWER", reviewer_log_file, is_text_ui)
+                    reviewer_data = parse_json_output(reviewer_output)
+
+                    if reviewer_data and "approved" in reviewer_data:
+                        if reviewer_data["approved"]:
+                            reviewer_approved = True
+                            qs = reviewer_data.get("quality_score", 0)
+                            if qs:
+                                ui.log_history(f"Reviewer quality score: {qs}/10", "info")
+                            risks = reviewer_data.get("risk_areas", [])
+                            if risks:
+                                ui.log_history(f"Risk areas: {'; '.join(risks)}", "warn")
+                        else:
+                            reviewer_feedback = reviewer_data.get("feedback", "")
+                            ui.log_history(f"Reviewer rejected (attempt {review_attempt+1}): {reviewer_feedback[:80]}", "warn")
+                        break
+                else:
+                    reviewer_feedback = "Reviewer failed to produce valid output. Please review and retry."
+
+                if not reviewer_approved:
+                    continue  # Retry workers with reviewer_feedback injected
+
+                write_pipeline_checkpoint(next_v, source_v, "reviewed", tasks_data,
+                                          reviewer_feedback, generation_attempt)
+            else:
+                reviewer_approved = True
+                ui.log_history("[Resume] Skipping reviewer (already approved)", "info")
+
+            # ── Strategy Critic (poker-specific quality gate) ──
+            if not _stage_done(skip_to, "critic_checked"):
+                ui.set_status(f"Strategy Critic evaluating v{next_v}...", is_working=True)
+                master_plan_str = json.dumps(tasks_data, indent=2)
+                critic_data = await _run_critic(next_v, source_v, master_plan_str, ui, is_text_ui)
+                critic_score = critic_data.get("score", 6)
+                critic_approved = critic_data.get("approved", True)
+
+                ui.log_history(f"Critic score: {critic_score}/10 ({'approved' if critic_approved else 'rejected'})", "info")
+                if critic_data.get("local_optima_warning"):
+                    ui.log_history(f"⚠️ Local optima warning: {critic_data.get('local_optima_reason', '')}", "warn")
+
+                if not critic_approved and generation_attempt < MAX_INTRA_GEN_ITERS:
+                    # Inject critic feedback for next intra-gen iteration
+                    critic_feedback = critic_data.get("feedback", "")
+                    reviewer_feedback = (
+                        f"[CRITIC FEEDBACK — score {critic_score}/10, attempt {generation_attempt+1}]: "
+                        f"{critic_feedback}\n"
+                        "The strategy change was insufficient — implement a more impactful improvement."
+                    )
+                    ui.log_history(f"Critic rejected (score {critic_score}/10). Retrying with new approach...", "warn")
+                    continue
+
+                write_pipeline_checkpoint(next_v, source_v, "critic_checked", tasks_data,
+                                          reviewer_feedback, generation_attempt)
+            else:
+                ui.log_history("[Resume] Skipping critic (already checked)", "info")
+
+            # ── Generation approved by both Reviewer and Critic ──
+            generation_approved = True
+            summary = reviewer_data.get("change_summary", "")
+            if summary:
+                with locked_file(EXPERIENCE_FILE, "a") as ep:
+                    ep.write(f"\n- **v{source_v} -> v{next_v} review**: {summary}\n")
 
         # Workers failed → auto-retry (not break)
         if not workers_succeeded:
@@ -1650,6 +2098,7 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             next_v, source_v, strategy_tag,
             rating_info=f"rating: r={my_p.r:.1f} rd={my_p.rd:.1f}"
         )
+        clear_pipeline_checkpoint()
 
         current_v = next_v
         fail_count = 0

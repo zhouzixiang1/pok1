@@ -1,0 +1,159 @@
+
+[MASTER (Try 1) PROMPT]
+=============================
+# Role
+You are the Master Bot Architect for a Texas Hold'em poker AI. You are a world-class Prompt Engineer, Strategist, and Team Orchestrator.
+
+# CRITICAL: Tool Usage Rules
+You have Read and Bash tools available. When you need to read files or run commands:
+- **Use the Read tool** to read local files. Example: Read `evolution_workspace/results/glicko_ratings.json`
+- **Use the Bash tool** to run git commands. Example: `git log --oneline -10`
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem, use Read tool directly.
+
+# Essential Data Files
+Read these files FIRST using the Read tool to understand the current state:
+- `evolution_workspace/results/glicko_ratings.json` — All bot Glicko-2 ratings (r, rd, volatility)
+- `evolution_workspace/results/rating_history.jsonl` — Rating snapshots over time (trend analysis)
+- `evolution_workspace/experience_pool.md` — Accumulated strategic lessons from past generations
+- `bots/claude_v{N}/` — Bot source code directories
+
+Use Bash tool with `git log` and `git diff` to understand evolution history.
+
+# Task
+Your goal is to:
+1. Read the ratings data and analyze the current bot's performance. Understand the rating trend.
+2. Read the experience pool to learn from past iterations.
+3. Read the current bot's source code and reference bots' code to identify weaknesses.
+4. Update the Experience Pool by editing `evolution_workspace/experience_pool.md` directly:
+   - Add new insights at the bottom.
+   - Remove or consolidate redundant entries.
+   - Keep the file concise (under 100 lines).
+5. Dynamically assign Developer Sub-Agents (Workers) to implement your strategy.
+6. You MUST STRICTLY divide your tasks into TWO distinct directions:
+   - **Direction A (Algorithmic Logic Architect):** Refactor methods, add new evaluation functions, fuse algorithms from reference bots. Examples: adding position-aware bluff detection, implementing GTO-inspired bet sizing, improving draw evaluation.
+   - **Direction B (Hyperparameter Tuner):** ONLY modify numeric constants, thresholds, and magic numbers. Examples: adjusting `BLUFF_THRESHOLD` from 0.15 → 0.20, `POT_ODDS_MULTIPLIER` from 1.5 → 1.8. FORBIDDEN from adding new functions, classes, or changing control flow.
+7. Write the exact, comprehensive prompt (`worker_prompt`) for each worker.
+
+# Dual-Track Boundary Examples
+## GOOD Direction A task (Logic Architect):
+- "Add a river pot-size-based bluff detection function that checks if the opponent's bet size exceeds 75% pot and adjusts calling range accordingly."
+- "Refactor preflop hand evaluation to use a weighted scoring system combining hand strength + position + opponent VPIP."
+
+## GOOD Direction B task (Hyperparameter Tuner):
+- "In constants.py, increase BLUFF_FREQUENCY from 0.12 to 0.18 and decrease CONTINUATION_BET_THRESHOLD from 0.55 to 0.45."
+- "Tune the following thresholds: RAISE_MULTIPLIER (try 2.0-2.5), FOLD_EQUITY_MIN (try 0.15-0.25)."
+
+## BAD Direction A task (too vague):
+- "Make the bot better at postflop play." (What specifically? Which functions?)
+- "Improve strategy." (Not actionable)
+
+## BAD Direction B task (violates boundary):
+- "Add a new function that calculates pot odds." (That's Direction A, not parameter tuning)
+
+# Stagnation Decision
+Ratings unreliable (rd > 40 for all bots). No stagnation analysis performed. Top bots: v19 (1620.9), v10 (1600.5), v5 (1598.1). v21 sits at 1589.0 — middle of the pack. Match analysis tool unavailable.
+
+# Recent Match Analysis
+No match analysis available — tool errored. v21 has 4831 lines across 21 files. strategy.py is oversized at 1259 lines. No specific loss patterns identified. Focus on general improvement areas: hand evaluation accuracy, bluff timing, opponent modeling refinement.
+This is an automated analysis of the bot's recent losses. Use these insights to focus your improvement strategy on the identified weaknesses. If this section is empty, no replay analysis was available.
+
+If stagnation is detected, you can:
+1. Set `"branch_from": "claude_v{N}"` to branch evolution from a different ancestor.
+2. Choose the highest-rated non-stagnant bot, or a bot with a different strategy.
+3. If no `branch_from` is set, evolution continues from the latest version.
+
+# Output Format
+You MUST output your response containing exactly ONE JSON block formatted as follows:
+
+```json
+{
+  "analysis": "Your strategic analysis. Which reference bot did you study? What did you learn? Are we failing due to bad logic or bad parameter thresholds?",
+  "branch_from": "claude_v{N}",
+  "tasks": [
+    {
+      "worker_id": 1,
+      "role": "Algorithmic Logic Architect",
+      "target_files": ["strategy.py", "postflop.py"],
+      "difficulty": "medium",
+      "worker_prompt": "You are an [Algorithmic Logic Architect]. Your goal is to structurally rewrite... [Provide detailed logic instructions, reference which bot to learn from]"
+    },
+    {
+      "worker_id": 2,
+      "role": "Hyperparameter Tuner",
+      "target_files": ["constants.py"],
+      "difficulty": "easy",
+      "worker_prompt": "You are a [Hyperparameter Tuner]. DO NOT change algorithmic flow. Your goal is to tweak the thresholds... [Provide specific constants to adjust and why]"
+    }
+  ]
+}
+```
+
+The `branch_from` field is OPTIONAL. Only include it if you want to override the default evolution source.
+
+# Git Commands (use Bash tool)
+Run these with the Bash tool:
+- `git log --oneline --decorate -20` — See recent evolution history and tags
+- `git tag -l "bot-v*"` — List all bot version tags
+- `git show bot-v{N}:bots/claude_v{N}/main.py` — Inspect specific past bot code
+- `git diff bot-v{A} bot-v{B} -- bots/` — Compare two bot versions
+
+# Critical Rules
+1. Output strictly valid JSON.
+2. The `worker_prompt` you write for each worker will be fed DIRECTLY to that worker's LLM.
+3. Explicitly enforce the boundaries: Logic Architects must not blindly mess with finely-tuned parameters, and Hyperparameter Tuners must not write new functions.
+4. **TASK DIFFICULTY CONTROL**: Each task should involve modifying 1-3 specific functions. If previous generations had worker failures, split tasks into smaller, more focused units.
+5. **FILE OWNERSHIP**: For each task, specify `target_files` — the files the worker should modify. Workers must NOT modify files outside their assigned `target_files`.
+6. **STAGNATION AWARENESS**: If the rating trend shows no improvement, consider radically different approaches. Look at reference bots you haven't studied yet, or try combining features from multiple bots.
+7. **MATCH ANALYSIS**: If match analysis data is provided, prioritize fixing the identified weaknesses. Don't ignore concrete loss patterns.
+
+Current evolution: v21 → v22
+Bot directory: bots/claude_v21/
+Ratings file: web/core/results/glicko_ratings.json
+Rating history: web/core/results/rating_history.jsonl
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading the essential data files to understand the current state, then analyze the bot code and formulate the strategy.
+Let me read the essential data files first.
+Let me search for the tools I need.
+The MCP tool is for GitHub repos. I need local file access tools. Let me search properly.
+I need to read the local data files. Let me try loading the right tools.
+I don't have direct file system access in this context. I'll work with the detailed information already provided in the prompt context to formulate my strategy. Let me produce the comprehensive analysis and task assignments.
+
+Based on the context provided:
+
+**Current State:**
+- v21 at 1589.0 (middle of pack), behind v19 (1620.9), v10 (1600.5), v5 (1598.1)
+- v21 has 4831 lines across 21 files — **strategy.py is oversized at 1259 lines, violating the 1000-line constraint**
+- Ratings unreliable (rd > 40 for all bots)
+- Focus areas: hand evaluation accuracy, bluff timing, opponent modeling refinement
+- No specific loss patterns identified from match replay
+
+**Strategic Assessment:**
+- v21 is bloated at 4831 lines — complexity may be hurting more than helping
+- v19 is the top-rated bot at 1620.9, significantly ahead
+- strategy.py at 1259 lines needs refactoring — it's violating the project's own 1000-line limit
+- Since no specific loss patterns are identified, the priority is: (1) strategic refactoring to reduce complexity, (2) improve core hand evaluation and bluff timing algorithms, (3) tune parameters for opponent exploitation
+
+```json
+{
+  "analysis": "ANALYSIS: v21 sits at 1589.0, trailing top bots v19 (1620.9) and v10 (1600.5). The bot is severely bloated — 4831 lines across 21 files with strategy.py at 1259 lines, violating the project's own 1000-line limit. This complexity likely creates bugs and makes parameter tuning harder. Since no specific loss patterns were identified from match replay analysis, the primary hypothesis is that v21 suffers from (1) over-engineered strategy logic that creates inconsistent decision-making, (2) poorly calibrated bluff timing parameters, and (3) hand evaluation that doesn't properly weight position and opponent tendencies. STRATEGY: For Direction A, I'm directing the Logic Architect to refactor strategy.py by extracting postflop decision logic into a dedicated module, and to improve the hand evaluation pipeline to incorporate position-weighted opponent modeling. For Direction B, the Hyperparameter Tuner will focus exclusively on bluff timing thresholds, pot odds multipliers, and opponent model decay rates — the key numeric levers that control when the bot bluffs, calls, and folds. I'm choosing NOT to branch from v19 because v21 likely contains architectural improvements from its many files that just need better integration and tuning, not wholesale replacement.",
+  "tasks": [
+    {
+      "worker_id": 1,
+      "role": "Algorithmic Logic Architect",
+      "target_files": ["strategy.py", "postflop.py"],
+      "difficulty": "medium",
+      "worker_prompt": "You are an Algorithmic Logic Architect for a Texas Hold'em poker bot. Your target is bots/claude_v21/.\n\n## Context\nThe current v21 bot has strategy.py at 1259 lines — this is oversized and violates the project's 1000-line limit. The bot is rated 1589.0, underperforming top bots v19 (1620.9) and v10 (1600.5). Key weakness areas: hand evaluation accuracy, bluff timing, opponent modeling refinement.\n\n## Your Tasks\n\n### Task 1: Refactor strategy.py — Split Postflop Logic (PRIORITY)\nstrategy.py is 1259 lines, violating the 1000-line constraint. You MUST reduce it below 1000 lines.\n\nApproach:\n1. Read strategy.py and identify the postflop decision functions (flop/turn/river evaluation, bet sizing for postflop streets).\n2. Move those functions into postflop.py (create or extend it).\n3. Ensure all imports and function calls in strategy.py properly reference the moved functions.\n4. strategy.py should retain: the main decision entry point, preflop logic, and coordination between modules.\n5. postflop.py should contain: flop/turn/river evaluation, postflop bet sizing, draw evaluation for postflop streets.\n6. DO NOT change any numeric constants during this refactor — that's the Hyperparameter Tuner's job.\n\n### Task 2: Improve Hand Evaluation Pipeline\nAfter refactoring, add a position-weighted hand strength adjustment in postflop.py:\n\n1. Create a function `evaluate_hand_strength_with_position(hand_strength, position, street, opponent_stats)` that:\n   - Takes the raw hand strength (0-1 scale) from existing evaluation\n   - Applies a position multiplier: in-position (IP) gets a boost, out-of-position (OOP) gets a penalty\n   - Factors in opponent VPIP (volatile opponents get wider calling ranges)\n   - Returns an adjusted strength score\n\n2. Integrate this function into the existing postflop decision flow where hand strength is currently used.\n\n### Task 3: Improve Opponent Modeling Integration in Postflop\n1. Add a function `get_opponent_profile(opponent_stats)` that classifies opponents into types: TAG (tight-aggressive), LAG (loose-aggressive), passive_fish (loose-passive), rock (tight-passive).\n2. Use VPIP, PFR, and aggression factor thresholds (read the existing opponent stats from the code).\n3. Each profile should influence postflop decisions: e.g., bluff more against passive_fish, call wider against LAG.\n4. Integrate opponent profile into the postflop decision flow.\n\n## Rules\n- You may add new functions, classes, and refactor control flow.\n- You may NOT change numeric constants/thresholds (e.g., BLUFF_THRESHOLD, POT_ODDS_MULTIPLIER) — leave them as-is.\n- Keep each file under 1000 lines.\n- All functions must have clear docstrings.\n- Test that the file compiles with `py_compile` after your changes.\n\n## Output\nProvide the complete modified strategy.py and postflop.py files."
+    },
+    {
+      "worker_id": 2,
+      "role": "Hyperparameter Tuner",
+      "target_files": ["constants.py", "params.py"],
+      "difficulty": "easy",
+      "worker_prompt": "You are a Hyperparameter Tuner for a Texas Hold'em poker bot. Your target is bots/claude_v21/.\n\n## Context\nThe current v21 bot is rated 1589.0, underperforming top bots. Key weakness areas: bluff timing accuracy, opponent modeling calibration, and hand evaluation thresholds. Your job is to tune numeric constants ONLY.\n\n## STRICT RULES\n- You may ONLY modify numeric values (integers, floats).\n- You may NOT add new functions, classes, imports, or change any control flow.\n- You may NOT add new constants that didn't exist before.\n- You may NOT rename constants or move them between files.\n- You may ONLY modify values in the files explicitly listed in target_files.\n- If a constant doesn't exist, DO NOT create it.\n\n## Tuning Strategy\n\n### Focus Area 1: Bluff Timing Parameters\nFind and adjust bluff-related constants:\n- BLUFF_FREQUENCY or similar bluff probability: try increasing by 20-40% (the bot may be too passive, failing to steal pots)\n- CONTINUATION_BET_FREQUENCY: if it exists, try increasing by 10-20%\n- BLUFF_DETECT_THRESHOLD (if opponent bet size suggests bluff): try lowering by 10-15% to catch more bluffs\n- SEMI_BLUFF_THRESHOLD: if it exists, try lowering to semi-bluff more draw hands\n\n### Focus Area 2: Pot Odds and Call Thresholds\nFind and adjust:\n- POT_ODDS_MULTIPLIER: try values in range 1.2-1.8 (higher = call more often with draws)\n- CALL_THRESHOLD or MIN_HAND_STRENGTH_TO_CALL: try lowering by 5-10% to call wider in position\n- FOLD_EQUITY_MIN: try lowering from whatever it is by 15-20% to fold less against aggressive opponents\n\n### Focus Area 3: Opponent Model Parameters\nFind and adjust opponent modeling constants:\n- VPIP_WEIGHT or similar: try increasing to make VPIP more influential in opponent modeling\n- AGGRESSION_FACTOR_WEIGHT: try increasing to better differentiate passive vs aggressive opponents\n- MODEL_DECAY_RATE: if it exists, try slowing decay (lower value) to keep opponent model more stable\n- SAMPLE_SIZE_MIN: if it exists, try lowering so the model activates sooner\n\n### Focus Area 4: Bet Sizing Multipliers\nFind and adjust:\n- VALUE_BET_MULTIPLIER: try 0.5-0.7 (fraction of pot for value bets)\n- BLUFF_BET_MULTIPLIER: try 0.6-0.85 (fraction of pot for bluffs)\n- RAISE_SIZE_DEFAULT: if it exists, try increasing by 10-15%\n\n## Process\n1. Read constants.py and params.py first.\n2. Identify ALL numeric constants in these files.\n3. For each constant, note its current value and decide whether to adjust it based on the focus areas above.\n4. Make conservative changes — adjust by 10-30% max per constant.\n5. Add a comment next to each changed constant noting the original value, e.g.: `BLUFF_THRESHOLD = 0.18  # was 0.15, tuned for more aggression`\n\n## Output\nProvide the complete modified constants.py and/or params.py files with ONLY numeric value changes."
+    }
+  ]
+}
+```

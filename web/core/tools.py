@@ -45,8 +45,13 @@ from evolution_core import (
     _analyze_recent_matches,
     _consolidate_experience_pool,
     _analyze_stagnation,
+    _run_critic,
+    _run_performance_verification,
     summarize_replay_for_analysis,
     parse_json_output,
+    clear_pipeline_checkpoint,
+    write_pipeline_checkpoint,
+    read_pipeline_checkpoint,
 )
 from glicko2 import Glicko2Player, update_rating_period
 
@@ -320,6 +325,10 @@ async def execute_workers(args):
         source_v=source_v,
     )
 
+    if success:
+        write_pipeline_checkpoint(next_v, source_v, "workers_done",
+                                  master_plan=tasks, reviewer_feedback=reviewer_feedback)
+
     result = {"success": success, "logs": ui.get_output(), "costs": ui.costs}
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
 
@@ -338,6 +347,21 @@ async def run_quality_gates(args):
     decision_rate = run_decision_tests(bot_dir)
     total_lines, oversized = check_code_size(bot_dir)
 
+    all_passed = (
+        len(compile_errors) == 0
+        and len(smoke_errors) == 0
+        and decision_rate >= 0.7
+        and len(oversized) == 0
+    )
+
+    if all_passed:
+        # Advance checkpoint to quality_passed; carry source_v/master_plan from previous stage
+        _ckpt = read_pipeline_checkpoint()
+        if _ckpt and _ckpt.get("next_v") == v:
+            write_pipeline_checkpoint(v, _ckpt["source_v"], "quality_passed",
+                                      master_plan=_ckpt.get("master_plan"),
+                                      reviewer_feedback=_ckpt.get("reviewer_feedback", ""))
+
     result = {
         "version": v,
         "compile_ok": len(compile_errors) == 0,
@@ -349,12 +373,7 @@ async def run_quality_gates(args):
         "total_lines": total_lines,
         "oversized_files": {name: lines for name, lines in oversized} if oversized else {},
         "size_ok": len(oversized) == 0,
-        "all_passed": (
-            len(compile_errors) == 0
-            and len(smoke_errors) == 0
-            and decision_rate >= 0.7
-            and len(oversized) == 0
-        ),
+        "all_passed": all_passed,
     }
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
 
@@ -387,6 +406,10 @@ async def run_review(args):
     data = parse_json_output(output)
 
     if data and "approved" in data:
+        if data["approved"]:
+            write_pipeline_checkpoint(v, source_v, "reviewed",
+                                      master_plan=plan,
+                                      reviewer_feedback=data.get("feedback", ""))
         result = {
             "approved": data["approved"],
             "quality_score": data.get("quality_score", 0),
@@ -403,6 +426,57 @@ async def run_review(args):
             "logs": ui.get_output(),
         }
 
+    return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
+
+
+class RunCriticInput(TypedDict):
+    version: Annotated[int, "Bot version being evaluated"]
+    source_v: Annotated[int, "Parent bot version"]
+    plan: Annotated[list, "Master's task plan (list of task dicts)"]
+    reviewer_feedback: Annotated[str, "Reviewer feedback if available (or '')"]
+
+
+@tool("run_critic", "Run Poker Strategy Critic on bot changes. Returns score 1-10 and strategic feedback. score ≥ 6 = approved.", {"version": int, "source_v": int, "plan": list, "reviewer_feedback": str})
+async def run_critic(args):
+    v = args["version"]
+    source_v = args["source_v"]
+    plan = args["plan"]
+    reviewer_feedback = args.get("reviewer_feedback", "")
+
+    master_plan_str = json.dumps(plan, indent=2)
+    ui = _get_ui()
+    data = await _run_critic(v, source_v, master_plan_str, ui, is_text_ui=False)
+
+    if data.get("approved", True):
+        write_pipeline_checkpoint(v, source_v, "critic_checked",
+                                  master_plan=plan,
+                                  reviewer_feedback=reviewer_feedback)
+
+    result = {
+        **data,
+        "logs": ui.get_output(),
+        "action": "approve" if data.get("approved", True) else "retry_workers",
+    }
+    return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
+
+
+class RunPerformanceVerificationInput(TypedDict):
+    source_v: Annotated[int, "Bot version to analyse performance for"]
+
+
+@tool("run_performance_verification", "SATLUTION-style LLM performance analysis. Synthesises rating trends, win rates, and persistent weaknesses into a structured insight for Master.", {"source_v": int})
+async def run_performance_verification(args):
+    source_v = args["source_v"]
+    ratings = load_ratings()
+    ui = _get_ui()
+    output = await _run_performance_verification(source_v, ratings, ui, is_text_ui=False)
+
+    try:
+        data = json.loads(output) if output else {}
+    except json.JSONDecodeError:
+        data = {"raw": output}
+
+    result = {**data, "logs": ui.get_output()}
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
 
 
@@ -501,6 +575,7 @@ async def commit_bot(args):
     rating_info = f"rating: r={p.r:.1f} rd={p.rd:.1f}" if p else ""
 
     git_commit_bot(v, source_v, strategy, rating_info=rating_info)
+    clear_pipeline_checkpoint()
 
     return {"content": [{"type": "text", "text": json.dumps({"committed": True, "version": v, "source_v": source_v})}]}
 
@@ -706,10 +781,12 @@ all_tools = [
     get_bot_info,
     get_match_history,
     run_match_analysis,
+    run_performance_verification,
     run_master,
     execute_workers,
     run_quality_gates,
     run_review,
+    run_critic,
     run_crossover,
     prepare_next_gen,
     commit_bot,

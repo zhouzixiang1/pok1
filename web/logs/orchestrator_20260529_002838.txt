@@ -4335,3 +4335,284 @@ Review tool also broken (WebUI error). All quality gates passed. The code change
 [CYCLE DONE] cost=$3.3986
 
 [ERROR] Claude Code returned an error result: Reached maximum number of turns (80)
+
+============================================================
+[ORCHESTRATOR CYCLE] 2026-05-29 08:50:46
+============================================================
+[PROMPT]
+# Role
+You are the **Evolution Orchestrator** — the AI brain that controls a Texas Hold'em poker bot evolution system. You have complete autonomy to decide what actions to take and in what order. You are NOT following a rigid script — you observe, think, and act.
+
+# Your Tools
+You have two categories of tools:
+
+## Category 1: Evolution MCP Tools
+These are specialized tools for the evolution pipeline. Call them directly — you don't need Bash for these.
+
+- **get_status** — Check current state: latest bot version, top ratings, active bots count, daemon status. **Call this first** to understand where things stand.
+- **get_bot_info(version)** — Detailed info about a specific bot: rating, parent, files, code size.
+- **get_match_history(version, n)** — Recent match results for a bot.
+- **run_match_analysis(source_v)** — Analyze recent losses using LLM. Returns weaknesses and recommendations.
+- **run_master(source_v, next_v, stagnation_info, match_analysis)** — Run Master Architect to plan improvements. Returns a task plan with worker assignments.
+- **execute_workers(tasks, next_v, source_v, reviewer_feedback)** — Execute code modification tasks. Each task has role, target_files, and worker_prompt.
+- **run_quality_gates(version)** — Run compile check, smoke test, decision tests, file size check. Returns pass/fail for each.
+- **run_review(version, source_v, plan)** — Run Lead Code Reviewer. Returns approved/rejected with quality score.
+- **run_crossover(parent_a, parent_b, target_v)** — Combine two elite bots into a new child bot.
+- **prepare_next_gen(source_v, next_v)** — Copy source bot directory to prepare for modifications.
+- **commit_bot(version, source_v, strategy)** — Git commit and tag the new bot.
+- **reap_weakest** — Cull weakest bot if pool exceeds 30.
+- **trim_experience** — Trim experience pool to recent entries.
+- **consolidate_experience** — LLM-based deduplication of experience pool.
+- **analyze_stagnation(source_v, active_bots)** — Analyze if evolution is stagnating.
+
+## Category 2: Built-in Tools
+- **Read** — Read any local file (ratings, experience pool, bot source code, logs).
+- **Bash** — Run shell commands (git log, git diff, etc.).
+- **Edit** — Edit files if needed.
+
+# Evolution Lifecycle (Reference — Adapt as Needed)
+
+A typical generation follows this pattern, but you can modify it:
+
+1. **Check status** → `get_status()`
+   - Check `incomplete_next_v`: if set, a previous cycle was interrupted mid-generation. Decide whether to resume (re-run workers) or clean up and restart.
+   - Check `rating_reliable`: if false (rd > 40), ratings are unreliable — do NOT make stagnation/branch decisions based on them.
+2. **Housekeeping** → `reap_weakest()` if needed, `trim_experience()`
+3. **Wait for evaluation** → `wait_for_eval(version=source_v, timeout=600, min_matches=20, max_rd=40)`
+   - If `eval_completed: false`, ratings are still preliminary. You may proceed but do NOT treat an unreliable rating as a signal for stagnation or branching.
+   - If `current_bot_rd > 60` from get_status, skip stagnation analysis entirely.
+4. **Analyze losses** → `run_match_analysis(source_v)` to understand weaknesses
+5. **Plan improvements** → `run_master(source_v, next_v, ...)`
+6. **Prepare** → `prepare_next_gen(source_v, next_v)`
+7. **Implement** → `execute_workers(tasks, next_v, source_v)`
+8. **Quality check** → `run_quality_gates(next_v)` — MUST return `all_passed: true` before proceeding
+9. **Review** → `run_review(next_v, source_v, plan)` — MUST return `approved: true` before committing
+10. **Commit** → `commit_bot(next_v, source_v, strategy, review_approved=true)`
+11. **Repeat** → Go back to step 1 for the next generation
+
+# Decision Principles
+
+## When to Deviate from the Standard Flow
+- **If workers fail**: You can retry with different feedback, or skip to crossover
+- **If quality gates fail**: You can decide whether it's worth fixing or should start over
+- **If reviewer rejects**: Inject the feedback and retry, or abort the generation
+- **If stagnation detected**: Try `run_crossover()` with top 2 bots, or branch from a different ancestor
+- **If Master produces bad plans**: You can call it again with different context, or take direct action
+
+## Key Decision Points
+1. **Should I run match analysis?** → Yes, if there are recent losses. It provides valuable context for Master.
+2. **Should I retry failed workers?** → Max 2 retries. After that, consider crossover or different source bot.
+3. **When to use crossover?** → After 2-3 consecutive generation failures, or when stagnation is confirmed.
+4. **When to branch from different ancestor?** → When the current lineage shows no improvement trend.
+
+## Safety Rules
+- NEVER commit a bot that fails quality gates (compile + smoke + decision tests)
+- NEVER skip the code review step — it catches critical bugs
+- If 3 consecutive generations fail, pause and analyze the situation with `get_status()` and `get_match_history()`
+- Always call `get_status()` at the start of each generation to get fresh data
+
+## Mandatory Pipeline Stages (cannot skip)
+Steps 8, 9, 10 form a locked sequence — you MUST NOT call `commit_bot()` unless:
+1. `run_quality_gates(next_v)` returned `all_passed: true`
+2. `run_review(next_v, source_v, plan)` returned `approved: true`
+3. You pass `review_approved=true` to `commit_bot()` — the tool will block the commit otherwise
+
+If quality gates fail → fix the bot (retry workers) or abandon the generation.
+If review rejects → inject feedback into `execute_workers()` and retry, up to 2 times.
+Do NOT shortcut this sequence even if you are running low on turns.
+
+## ELO Reliability Check
+- `rating_reliable: false` (from `get_status`) means rd > 40 — fewer than ~10 matches played.
+- Do NOT call `analyze_stagnation()` or make branch decisions when rating is unreliable.
+- Wait via `wait_for_eval()` or proceed to Master without stagnation analysis.
+
+# Output Style
+- Be concise in your reasoning
+- After each tool call, briefly note the result
+- At the end of each generation, summarize what was done and the outcome
+- If you encounter an unexpected situation, explain your reasoning before acting
+
+# Context
+Current generation: v21
+Next generation will be: v22
+Active bots: 22
+Timestamp: 2026-05-29 08:50:46
+Current bot claude_v21: r=1589.4, rd=42.5 [UNRELIABLE (high RD — wait for more matches)]
+Recent completed gens: bot-v21, bot-v20, bot-v19, bot-v18, bot-v17
+MODE: Continuous evolution. After completing one generation, immediately start the next.
+
+
+[OUTPUT]
+I'll start by checking the current status of the evolution system.
+[tool: ToolSearch]
+
+[tool: mcp__evolution__get_status]
+**Status Summary:**
+- v21 is current (r=1589.4, rd=42.5 — **unreliable**)
+- 22 active bots, top bot is v19 at 1620.9 (also unreliable rd=45.3)
+- No incomplete generation
+- All ratings have high RD (>38), so nothing is reliable enough for stagnation analysis
+
+Since ratings are unreliable (rd=42.5 for v21), I should wait for more evaluation matches to complete before making strategic decisions. Let me wait for eval data.
+[tool: ToolSearch]
+
+[tool: mcp__evolution__wait_for_eval]
+Eval didn't reach target RD (42.7 > 40). Ratings are still unreliable, so I'll skip stagnation analysis and proceed directly. Let me run match analysis on v21's losses and do housekeeping in parallel.
+[tool: ToolSearch]
+
+[tool: mcp__evolution__run_match_analysis]
+
+[tool: mcp__evolution__reap_weakest]
+
+[tool: mcp__evolution__trim_experience]
+Match analysis hit an error. Let me retry once, then proceed regardless.
+[tool: mcp__evolution__run_match_analysis]
+Match analysis tool is broken. Let me get match history manually to provide context to the Master instead.
+[tool: ToolSearch]
+
+[tool: mcp__evolution__get_match_history]
+
+[tool: mcp__evolution__get_bot_info]
+No match history available (eval still running). v21 has 4831 lines across 21 files with an oversized `strategy.py` (1259 lines). Let me proceed to Master planning for v22.
+[tool: ToolSearch]
+
+[tool: mcp__evolution__run_master]
+Master tool also failing with same WebUI error. The MCP tools that need LLM output are broken. Let me work with what I have — I'll read the current bot code and plan improvements directly.
+[tool: ToolSearch]
+Let me read the key v21 files to understand the current strategy and plan improvements manually.
+[tool: ToolSearch]
+Let me read v21's main strategy files to plan improvements.
+[tool: ToolSearch]
+
+[tool: Read]
+
+[tool: Read]
+
+[tool: Read]
+Let me find the actual bot file locations.
+[tool: ToolSearch]
+
+[tool: Bash]
+Found them — they're `claude_vN` not `botN`. And v22 already exists. Let me check v22's state and read v21's code.
+[tool: Bash]
+
+[tool: Read]
+Now let me read a few more key files to complete the picture.
+[tool: Read]
+
+[tool: Read]
+
+[tool: Read]
+Let me check the experience pool and recent git history for context.
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Bash]
+Let me look at the top-performing v19 and v5 for comparison insights.
+[tool: Read]
+
+[tool: Read]
+Interesting — v19 has features v21 lacks: a `sizing.py` module, overbet river strategies, and anti-bot4 detection. Let me read more of v19's key differentiators.
+[tool: Bash]
+
+[tool: Bash]
+
+[tool: Read]
+
+[tool: Read]
+Now I have a clear picture. v22 directory exists already (looks like a copy from a prior attempt). Let me check its state and understand what needs to happen.
+[tool: Bash]
+
+[tool: Bash]
+Good — v22 is a clean copy of v21, no git tag yet. Now I have a clear improvement plan based on comparing v19 (top rated) vs v21:
+
+**v22 Improvement Plan:**
+1. **River overbet strategy** — Port from v19: overbet 1.3-2.2x pot with nut/strong hands on dry rivers
+2. **Anti-bot4 detection & exploitation** — Port from v19: detect bot4 opponents, exploit their fold tendencies  
+3. **Tighten thin_control cap** — v21's cap (0.46+) is too loose vs v19's 0.30/0.38
+4. **Add `cbet_rate` tracking** to opponent model — v21 references it but doesn't compute it
+5. **Allow river overbet in `choose_raise`** — Add `allow_river_overbet` parameter
+
+Let me prepare v22 and implement.
+[tool: mcp__evolution__prepare_next_gen]
+Now let me read the current v22 opponent.py to plan changes.
+[tool: Read]
+Good — v21 already has `cbet_rate` tracking. Now let me implement the key improvements. I'll start with adding anti-bot4 detection to opponent.py.
+[tool: ToolSearch]
+
+[tool: Edit]
+Let me add the anti-bot4 functions at the end of opponent.py:
+[tool: Edit]
+Now let me update strategy.py. Key changes:
+1. Add `allow_river_overbet` and `anti_bot4_bonus` params to `choose_raise`
+2. Tighten thin_control cap
+3. Add river overbet logic in `get_action`
+4. Wire up anti-bot4 detection
+[tool: Read]
+
+[tool: Edit]
+Now update `choose_raise` to add the new parameters and tighten thin_cap:
+[tool: Edit]
+Now add `anti_bot4_bonus` to the ratio calculation and fix thin_cap:
+[tool: Edit]
+Now fix the thin_cap (tighten it to match v19's more conservative approach) and update max_ratio:
+[tool: Edit]
+Now add the river overbet function and the anti-bot4 wiring in `get_action`. First, let me add the river overbet function before `get_action`:
+[tool: Edit]
+Now wire up anti-bot4 detection and river overbet in `get_action`. I need to add the bot4 detection call after opponent_model is built, and add the river overbet check before the final return. Let me find the right insertion points:
+[tool: Edit]
+Now update the anti_bot4 adjustments once board_texture and value_profile are known (after line ~678 where board_texture is computed):
+[tool: Edit]
+Now I need to add the `anti_bot4_bonus` and `allow_river_overbet` parameters to the `choose_raise` calls in `get_action`. There are two main `choose_raise` calls — one in the `to_call > 0` branch and one in the no-call branch. Let me find them:
+[tool: Bash]
+Lines 520 and 544 are in `choose_preflop_spot_action` — they use `match_sizing_delta`. Lines 1079 and 1282 are in `get_action`. Let me update those two.
+[tool: Read]
+
+[tool: Edit]
+Now update the second `choose_raise` call (the no-call branch at line ~1282):
+[tool: Read]
+
+[tool: Edit]
+Good. Now let me also add `anti_bot4_bonus` to the preflop `choose_raise` calls in `choose_preflop_spot_action`:
+[tool: Read]
+
+[tool: Bash]
+
+[tool: Read]
+I need to pass anti_bot4 to the preflop function. Let me update the signature and call:
+[tool: Edit]
+Now add anti_bot4_bonus to the choose_raise calls inside choose_preflop_spot_action:
+[tool: Edit]
+Now add `anti_bot4_bonus` to the two `choose_raise` calls in `choose_preflop_spot_action`:
+[tool: Read]
+
+[tool: Edit]
+Now update the call site in `get_action` to pass `anti_bot4`:
+[tool: Edit]
+Good. Now let me verify the syntax is correct by running a quick compile check:
+[tool: Bash]
+Let me verify the line count and also do a quick smoke test:
+[tool: Bash]
+Good — strategy.py grew from 1259 to 1333 lines (added river overbet + anti-bot4 wiring). Now let me run quality gates:
+[tool: mcp__evolution__run_quality_gates]
+Quality gates failed — decision tests at 0% pass rate. Let me investigate:
+[tool: Bash]
+The `remaining_hands` variable isn't available yet at the point I inserted the bot4 detection. Let me fix the ordering:
+[tool: Read]
+I need to move the anti-bot4 detection after `remaining_hands` is defined:
+[tool: Edit]
+
+[tool: Bash]
+Good, preflop works. Let me test a postflop scenario:
+[tool: Bash]
+Compile and basic decisions look good. Let me re-run quality gates:
+[tool: mcp__evolution__run_quality_gates]
+Decision tests pass (93%), but size check fails due to strategy.py being 1334 lines. Let me check if this was already an issue with v21:
+[tool: Bash]
+strategy.py was already oversized in v21 (1259 lines). I need to refactor to get it under the threshold. I'll move the sizing functions into a separate `sizing.py` module like v19 has.
+[tool: Read]
+Let me create a `sizing.py` module and move the large sizing functions out of strategy.py:
+[CYCLE DONE] cost=$1.5740
