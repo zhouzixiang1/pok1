@@ -67,9 +67,11 @@ def _get_ratings() -> list[dict]:
     data = _cached_read("ds_ratings", RATINGS_FILE)
     if not data:
         return []
+    bot_stats_data = _cached_read("ds_bot_stats_ratings", BOT_STATS_FILE) or {}
     rows = []
     for name, d in data.items():
         r, rd = d["r"], d["rd"]
+        bs = bot_stats_data.get(name, {})
         rows.append({
             "name": name,
             "rating": round(r, 1),
@@ -78,6 +80,8 @@ def _get_ratings() -> list[dict]:
             "conservative_rating": round(r - 2 * rd, 1),
             "confidence": _confidence(rd),
             "last_period": d.get("last_period", ""),
+            "win_rate": bs.get("win_rate"),
+            "games": bs.get("games", 0),
         })
     rows.sort(key=lambda x: x["conservative_rating"], reverse=True)
     for i, row in enumerate(rows):
@@ -148,7 +152,7 @@ def _get_match_stats() -> dict:
     if not stats:
         return {"total_games": 0, "total_pairs": 0, "total_periods": 0, "most_active_pair": "", "most_active_count": 0}
     pairs = stats.get("pairs", {})
-    total_games = sum(pairs.values()) * 50
+    total_games = stats.get("total_games", sum(pairs.values()))
     most_active = max(pairs.items(), key=lambda x: x[1]) if pairs else ("", 0)
     return {
         "total_games": total_games, "total_pairs": len(pairs),
@@ -216,9 +220,10 @@ def _get_match_matrix() -> dict:
         a, b = parts[0].strip(), parts[1].strip()
         if a in bot_names and b in bot_names:
             i, j = bot_names.index(a), bot_names.index(b)
-            wr = v.get("win_rate", 0.5)
-            wr_matrix[i][j] = round(wr, 4)
-            wr_matrix[j][i] = round(1.0 - wr, 4) if wr is not None else None
+            wr = v.get("win_rate")
+            if wr is not None:
+                wr_matrix[i][j] = round(wr, 4)
+                wr_matrix[j][i] = round(1.0 - wr, 4)
     return {"bots": bot_names, "matrix": wr_matrix, "source": "h2h"}
 
 
@@ -239,7 +244,10 @@ def _get_history() -> list[dict]:
         for line in f:
             line = line.strip()
             if line:
-                entries.append(json.loads(line))
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
         fcntl.flock(f, fcntl.LOCK_UN)
     return entries
 
@@ -266,18 +274,36 @@ async def data_stream():
         try:
             while True:
                 if tick % 3 == 0:
-                    yield _event("ratings", _get_ratings())
-                    yield _event("daemon", _get_daemon_status())
-                    yield _event("bots", _get_bots())
-                    yield _event("stats", _get_match_stats())
+                    for evt in [
+                        _event("ratings", _get_ratings()),
+                        _event("daemon", _get_daemon_status()),
+                        _event("bots", _get_bots()),
+                        _event("stats", _get_match_stats()),
+                    ]:
+                        try:
+                            yield evt
+                        except Exception:
+                            pass
                 if tick % 10 == 0:
-                    yield _event("matches", _get_recent_matches(100))
-                    yield _event("generations", _get_generations())
+                    for evt in [
+                        _event("matches", _get_recent_matches(100)),
+                        _event("generations", _get_generations()),
+                    ]:
+                        try:
+                            yield evt
+                        except Exception:
+                            pass
                 if tick % 15 == 0:
-                    yield _event("matrix", _get_match_matrix())
-                    yield _event("h2h", _get_h2h())
-                    yield _event("bot_stats", _get_bot_stats())
-                    yield _event("history", _get_history())
+                    for evt in [
+                        _event("matrix", _get_match_matrix()),
+                        _event("h2h", _get_h2h()),
+                        _event("bot_stats", _get_bot_stats()),
+                        _event("history", _get_history()),
+                    ]:
+                        try:
+                            yield evt
+                        except Exception:
+                            pass
                 await asyncio.sleep(1)
                 tick += 1
         except asyncio.CancelledError:

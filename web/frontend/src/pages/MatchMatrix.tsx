@@ -38,12 +38,12 @@ export default function MatchMatrix() {
             ranges: isH2H
               ? [
                   { from: -0.01, to: 0.01, color: "#9ca3af", name: "无数据" },
-                  { from: 0.01, to: 0.25, color: "#ef4444", name: "很弱" },
-                  { from: 0.25, to: 0.40, color: "#f87171", name: "弱" },
-                  { from: 0.40, to: 0.50, color: "#fca5a5", name: "略弱" },
-                  { from: 0.50, to: 0.60, color: "#e0e7ff", name: "略强" },
-                  { from: 0.60, to: 0.75, color: "#818cf8", name: "强" },
-                  { from: 0.75, to: 1.01, color: "#4f46e5", name: "很强" },
+                  { from: 0.01, to: 0.30, color: "#ef4444", name: "很弱" },
+                  { from: 0.30, to: 0.45, color: "#f87171", name: "弱" },
+                  { from: 0.45, to: 0.55, color: "#e5e7eb", name: "均势" },
+                  { from: 0.55, to: 0.70, color: "#c7d2fe", name: "强" },
+                  { from: 0.70, to: 0.85, color: "#818cf8", name: "很强" },
+                  { from: 0.85, to: 1.01, color: "#4f46e5", name: "极强" },
                 ]
               : [
                   { from: 0, to: 0, color: "#f3f4f6", name: "无" },
@@ -67,7 +67,7 @@ export default function MatchMatrix() {
         theme: "dark",
         y: {
           formatter: (val: number | null) => {
-            if (val === null || val === 0) return "无数据";
+            if (val === null) return "无数据";
             if (isH2H) return `${(val * 100).toFixed(0)}% 胜率`;
             return `${val} 场对局`;
           },

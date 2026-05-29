@@ -64,23 +64,6 @@ export interface DaemonStatus {
   daemon_enabled: boolean;
 }
 
-export interface EvolutionState {
-  status: string;
-  is_working: boolean;
-  header: string;
-  metrics: Record<string, number>;
-  ratings: Array<{
-    rank: number;
-    name: string;
-    rating: number;
-    rd: number;
-    conservative: number;
-  }>;
-  active_bots: string[];
-  grand_cost_total: number;
-  gen_cost_total: number;
-}
-
 export interface MatchSummary {
   id: string;
   timestamp: string;

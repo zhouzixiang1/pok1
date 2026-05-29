@@ -137,7 +137,7 @@ def _build_context(one_gen=False, dry_run=False):
     bot_name = f"claude_v{current_v}"
     if cur_p:
         # Load bot_stats for games-based reliability
-        bot_stats_file = CORE_DIR / "results" / "bot_stats.json"
+        bot_stats_file = RESULTS_DIR / "bot_stats.json"
         games = 0
         wr = 0.0
         if bot_stats_file.exists():

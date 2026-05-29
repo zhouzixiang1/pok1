@@ -724,13 +724,10 @@ async def run_inline_eval(args):
         ratings[bot_name] = update_rating_period(ratings[bot_name], all_results)
 
     # Save updated ratings
-    from evolution_core import RATINGS_FILE
-    import fcntl
+    from evolution_core import RATINGS_FILE, locked_file
     data = {name: p.to_dict() for name, p in ratings.items()}
-    with open(RATINGS_FILE, "w") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+    with locked_file(RATINGS_FILE, "w") as f:
         json.dump(data, f, indent=2)
-        fcntl.flock(f, fcntl.LOCK_UN)
 
     result = {
         "version": v,
@@ -756,14 +753,49 @@ async def reap_weakest(args):
     active_ratings = [(b, ratings.get(b, Glicko2Player())) for b in active_bots]
     active_ratings.sort(key=lambda x: x[1].r - 2 * x[1].rd)
     weakest = active_ratings[0]
+    culled_name = weakest[0]
 
     graveyard = PROJECT_ROOT / "bots" / "graveyard"
     graveyard.mkdir(exist_ok=True)
-    shutil.move(PROJECT_ROOT / "bots" / weakest[0], graveyard / weakest[0])
+    shutil.move(PROJECT_ROOT / "bots" / culled_name, graveyard / culled_name)
+
+    # Clean up ratings, bot_stats, and h2h data
+    if culled_name in ratings:
+        del ratings[culled_name]
+    from elo_daemon import save_ratings
+    save_ratings(ratings)
+
+    from evolution_core import BOT_STATS_FILE, H2H_FILE, locked_file
+    if BOT_STATS_FILE.exists():
+        try:
+            with locked_file(BOT_STATS_FILE, "r+") as f:
+                bs = json.load(f)
+                if culled_name in bs:
+                    del bs[culled_name]
+                    f.seek(0)
+                    f.truncate()
+                    json.dump(bs, f, indent=2)
+        except Exception:
+            pass
+    if H2H_FILE.exists():
+        try:
+            with locked_file(H2H_FILE, "r+") as f:
+                h2h = json.load(f)
+                changed = False
+                for key in list(h2h.keys()):
+                    if culled_name in key.split(" vs "):
+                        del h2h[key]
+                        changed = True
+                if changed:
+                    f.seek(0)
+                    f.truncate()
+                    json.dump(h2h, f, indent=2)
+        except Exception:
+            pass
 
     return {"content": [{"type": "text", "text": json.dumps({
         "reaped": True,
-        "culled": weakest[0],
+        "culled": culled_name,
         "rating": {"r": round(weakest[1].r, 1), "rd": round(weakest[1].rd, 1)},
         "remaining": len(active_bots) - 1,
     })}]}

@@ -114,7 +114,10 @@ def _load_history() -> list[dict]:
         for line in f:
             line = line.strip()
             if line:
-                entries.append(json.loads(line))
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
         fcntl.flock(f, fcntl.LOCK_UN)
     return entries
 

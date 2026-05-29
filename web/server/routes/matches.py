@@ -14,6 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RESULTS_DIR = PROJECT_ROOT / "web" / "core" / "results"
 STATS_FILE = RESULTS_DIR / "elo_daemon_stats.json"
 RATINGS_FILE = RESULTS_DIR / "glicko_ratings.json"
+H2H_FILE = RESULTS_DIR / "head_to_head.json"
 REPLAY_DIR = RESULTS_DIR / "match_replay"
 MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 
@@ -47,6 +48,30 @@ def _cached_read(key: str, path: Path) -> Any:
 
 @router.get("/matches/matrix")
 async def match_matrix():
+    # Try H2H data first (win-rate matrix)
+    h2h = _cached_read("matches_h2h", H2H_FILE)
+    if h2h:
+        all_bots = set()
+        for k in h2h:
+            parts = k.split(" vs ")
+            all_bots.update(parts)
+        bot_names = sorted(all_bots, key=lambda n: int(re.search(r'\d+', n).group()) if re.search(r'\d+', n) else 0)
+        n = len(bot_names)
+        wr_matrix = [[None] * n for _ in range(n)]
+        for k, v in h2h.items():
+            parts = k.split(" vs ")
+            if len(parts) != 2:
+                continue
+            a, b = parts[0].strip(), parts[1].strip()
+            if a in bot_names and b in bot_names:
+                i, j = bot_names.index(a), bot_names.index(b)
+                wr = v.get("win_rate")
+                if wr is not None:
+                    wr_matrix[i][j] = round(wr, 4)
+                    wr_matrix[j][i] = round(1.0 - wr, 4)
+        return {"bots": bot_names, "matrix": wr_matrix, "source": "h2h"}
+
+    # Fallback to legacy pair counts
     stats = _cached_read("stats", STATS_FILE)
     if not stats:
         return {"bots": [], "matrix": []}
@@ -75,7 +100,7 @@ async def match_stats():
     if not stats:
         return {"total_games": 0, "total_pairs": 0, "total_periods": 0, "most_active_pair": ""}
     pairs = stats.get("pairs", {})
-    total_games = sum(pairs.values()) * 50
+    total_games = stats.get("total_games", sum(pairs.values()))
     most_active = max(pairs.items(), key=lambda x: x[1]) if pairs else ("", 0)
     return {
         "total_games": total_games,

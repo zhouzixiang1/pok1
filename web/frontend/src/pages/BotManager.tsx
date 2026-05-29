@@ -165,8 +165,8 @@ const PlayIcon = ({ className }: { className?: string }) => (
 
 export default function BotManager() {
   const { active: rawBots, graveyard: rawGraveyard } = useBots();
-  const bots = rawBots.sort((a, b) => b.version - a.version);
-  const graveyard = rawGraveyard.sort((a, b) => b.version - a.version);
+  const bots = [...rawBots].sort((a, b) => b.version - a.version);
+  const graveyard = [...rawGraveyard].sort((a, b) => b.version - a.version);
   const [showGraveyard, setShowGraveyard] = useState(false);
   const [message, setMessage] = useState("");
   const [prepForm, setPrepForm] = useState({ source_v: "", next_v: "" });

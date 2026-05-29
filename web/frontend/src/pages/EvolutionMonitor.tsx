@@ -393,7 +393,13 @@ export default function EvolutionMonitor() {
   });
 
   useEffect(() => {
-    fetchEvolutionState().catch(() => {});
+    fetchEvolutionState().then((state) => {
+      if (state) {
+        setStatus(state.status);
+        setIsWorking(state.is_working);
+        if (state.header) setHeader(state.header);
+      }
+    }).catch(() => {});
     const refreshLeaderboard = () => api.ratings().then(setLeaderboard).catch(() => {});
     refreshLeaderboard();
     const lbInterval = setInterval(refreshLeaderboard, 10000);

@@ -15,8 +15,8 @@ export default function RatingTrends() {
   const history = useHistory();
   const [showConfidence, setShowConfidence] = useState(false);
 
-  const { series, categories } = useMemo(() => {
-    if (!history.length) return { series: [] as ApexAxisChartSeries, categories: [] as string[] };
+  const { series, categories, names } = useMemo(() => {
+    if (!history.length) return { series: [] as ApexAxisChartSeries, categories: [] as string[], names: [] as string[] };
 
     const names = Object.keys(history[history.length - 1]?.ratings || {}).sort(
       (a, b) => {
@@ -51,7 +51,7 @@ export default function RatingTrends() {
       });
     });
 
-    return { series, categories };
+    return { series, categories, names };
   }, [history, showConfidence]);
 
   const options: ApexOptions = useMemo(
@@ -64,12 +64,12 @@ export default function RatingTrends() {
         background: "transparent",
       },
       stroke: {
-        width: showConfidence ? [0, 2] : 2,
+        width: showConfidence ? [...names.map(() => 0), ...names.map(() => 2)] : 2,
         curve: "smooth",
       },
       fill: {
-        type: showConfidence ? ["solid", "solid"] : "solid",
-        opacity: showConfidence ? [0.15, 1] : 1,
+        type: showConfidence ? [...names.map(() => "solid"), ...names.map(() => "solid")] : "solid",
+        opacity: showConfidence ? [...names.map(() => 0.15), ...names.map(() => 1)] : 1,
       },
       markers: { size: 0, hover: { size: 4 } },
       dataLabels: { enabled: false },
