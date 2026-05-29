@@ -10,7 +10,7 @@ from tournament import (
     match_risk_adjustment, match_pressure_profile, apply_anti_lock_pressure,
     anti_lock_can_continue,
 )
-from opponent import build_opponent_model, analyze_current_spot
+from opponent import build_opponent_model, analyze_current_spot, detect_bot4_profile, get_anti_bot4_adjustments
 from postflop import (
     made_hand_metric, pair_board_profile, pair_domination_margin,
     marginal_pair_under_pressure, board_texture_profile,
@@ -258,13 +258,13 @@ def choose_raise(
         draw_info = empty_draw_profile()
     wetness = board_texture["wetness"]
     if round_idx == 0:
-        ratio = 0.55 if to_call == 0 else 0.75
+        ratio = 0.63 if to_call == 0 else 0.86
     elif round_idx == 1:
-        ratio = 0.60
+        ratio = 0.65
     elif round_idx == 2:
-        ratio = 0.70
+        ratio = 0.75
     else:
-        ratio = 0.85
+        ratio = 0.90
     ratio += max(0.0, win_rate - 0.55) * (0.90 + 0.20 * round_idx)
     ratio += -0.05 if has_position else 0.05
     ratio += confidence * max(0.0, fold_to_raise - 0.52) * (0.20 if semi_bluff else 0.10)
@@ -484,12 +484,23 @@ def get_action(req, requests):
     line_strength = aggressive_line_strength(spot_info, board_texture) if len(public_cards) >= 3 else 0.0
     check_resistance = check_probe_resistance_margin(spot_info, opponent_model, round_idx) if len(public_cards) >= 3 else 0.0
     paired_board_stackoff = paired_board_stackoff_profile(pair_profile, paired_board_profile, board_texture, spot_info, round_idx) if len(public_cards) >= 3 else {"active": False, "severe": False, "line_strength": 0.0, "size_bucket": "small"}
-    anti_bot4 = {"bluff_freq_bonus": 0.0, "raise_size_bonus": 0.0, "call_threshold_delta": 0.0, "fold_threshold_delta": 0.0, "river_overbet_enabled": False, "trap_defense_delta": 0.0}
+    n_hands_played = len(collect_latest_requests_by_hand(requests))
+    is_bot4, bot4_score = detect_bot4_profile(opponent_model, n_hands_played)
+    if is_bot4 and board_texture is not None:
+        anti_bot4 = get_anti_bot4_adjustments(bot4_score, board_texture, spot_info, round_idx, value_profile)
+    else:
+        anti_bot4 = {"bluff_freq_bonus": 0.0, "raise_size_bonus": 0.0, "call_threshold_delta": 0.0, "fold_threshold_delta": 0.0, "river_overbet_enabled": False, "trap_defense_delta": 0.0}
     # POSTFLOP FOLD GATE — first check in postflop decision path, cannot be bypassed
     if round_idx > 0 and to_call > 0 and not anti_lock_pressure and len(public_cards) >= 3:
         pot_ratio = to_call / (pot + to_call)
         fold_threshold = {1: 0.35, 2: 0.40, 3: 0.45}  # flop/turn/river
-        if win_rate < fold_threshold.get(round_idx, 0.40) and pot_ratio >= 0.33:
+        # Protect strong draws from fold gate (flush draws=9+ outs, open-ended/double gutshot=8+ outs)
+        has_strong_draw = (
+            draw_info.get("flush_draw", False)
+            or draw_info.get("straight_draw") in ("open_ended", "double_gutshot")
+            or draw_info.get("combo_draw", False)
+        )
+        if not has_strong_draw and win_rate < fold_threshold.get(round_idx, 0.40) and pot_ratio >= 0.33:
             return -1  # FOLD — do not pass Go
     # River overbet with nut hands (always enabled, not just vs bot_4)
     if round_idx == 3 and to_call == 0 and len(public_cards) >= 3 and value_profile is not None and value_profile["tier"] == "nut":

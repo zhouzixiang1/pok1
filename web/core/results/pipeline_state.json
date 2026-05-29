@@ -1,19 +1,19 @@
 {
-  "next_v": 26,
-  "source_v": 25,
+  "next_v": 27,
+  "source_v": 7,
   "stage": "critic_checked",
   "master_plan": [
     {
-      "worker_id": 1,
+      "difficulty": "easy",
       "role": "Algorithmic Logic Architect",
       "target_files": [
         "main.py"
       ],
-      "difficulty": "medium",
-      "worker_prompt": "Fix broken decision paths in postflop code. Add SPR awareness and opponent bet-size profiling."
+      "worker_id": 1,
+      "worker_prompt": "Fix 3 issues: (1) add draw equity protection to fold gate, (2) restore anti-bot4 detection, (3) increase bet sizing constants"
     }
   ],
-  "reviewer_feedback": "Previous critic scored 5/10 citing stale wider-preflop+bigger-sizing pattern. Worker retry added: (1) Pot-size-aware postflop logic with SPR thresholds, (2) Opponent bet-size profiling in postflop.py, (3) Reduced tier 3-4 preflop sizing from 3.5x to 2.5x BB. Fixed broken decision paths (0%\u219287% decision tests). Postflop decision quality should now better support wider preflop ranges.",
+  "reviewer_feedback": "Reviewer approved score 8/10. All fixes applied: bet sizing increased 5-11% across streets, anti-bot4 restored, draw equity protection added to fold gate. Minor risks: gutshot draws not protected (only 4 outs), preflop 3-bet +11% may create expensive barrels when behind.",
   "generation_attempt": 0,
-  "timestamp": "2026-05-30T05:52:58"
+  "timestamp": "2026-05-30T07:21:32"
 }
