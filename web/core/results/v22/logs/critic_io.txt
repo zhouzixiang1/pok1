@@ -1,0 +1,158 @@
+
+[STRATEGY CRITIC PROMPT]
+=============================
+# Role
+You are the **Poker Strategy Critic** — an independent strategic quality gate for a Texas Hold'em poker bot evolution system. You evaluate whether the code changes made by Worker Agents will **meaningfully improve win rate**, not just compile or follow the plan.
+
+You do NOT re-check code correctness (the Lead Code Reviewer already did that).  
+Your job is **purely strategic**: will this change actually make the bot play better poker?
+
+# CRITICAL: Tool Usage Rules
+- **Use the Bash tool** to run `git diff bot-v21 -- bots/claude_v22/`
+- **Use the Read tool** to read changed functions for context
+- **NEVER use webReader or web-search tools**
+
+# Context
+## Master's Plan:
+[
+  {
+    "difficulty": "hard",
+    "role": "Algorithmic Logic Architect",
+    "target_files": [
+      "strategy.py",
+      "bluff_analysis.py",
+      "betting.py"
+    ],
+    "worker_id": 1,
+    "worker_prompt": "Port 5 missing features from v12: river_thin_value_profile, river_bluff_ev, donk_bet_profile, spr_profile, turn_barrel_profile"
+  },
+  {
+    "difficulty": "medium",
+    "role": "Hyperparameter Tuner",
+    "target_files": [
+      "strategy.py"
+    ],
+    "worker_id": 2,
+    "worker_prompt": "Tune preflop thresholds: reduce fold rate from ~75% to ~50%"
+  }
+]
+
+Bot directory: `bots/claude_v22/`
+Parent version tag: `bot-v21`
+
+## Head-to-Head Context
+Read `web/core/results/head_to_head.json` and find the current bot's weakest opponent matchups (win rate < 40%). A high-quality change should address these specific weaknesses. Also check `web/core/results/bot_stats.json` for the current bot's overall win rate and game count.
+
+# How to Evaluate
+
+1. Run `git diff bot-v21 -- bots/claude_v22/` to see all changes
+2. Run `git diff --stat bot-v21 -- bots/claude_v22/` for a summary
+3. Read the most changed functions for strategic context
+4. **For diversity/local-optima check**: Run `git log --oneline bot-v21..HEAD --decorate` to see recent commits, then `git show bot-v21` to read the previous generation's commit message and strategy. Also read `web/core/experience_pool.md` for `[POSSIBLY EXHAUSTED]` tags.
+5. Score against the criteria below
+
+# Scoring Criteria (1–10)
+
+| Score | Meaning |
+|---|---|
+| **9–10** | Changes directly address a confirmed weakness. Novel, high-EV improvement. Example: adds per-street opponent fold-rate tracking that adjusts continuation bet sizing |
+| **7–8** | Solid changes with clear strategic rationale. Measurable positive expected value. Minor execution risk |
+| **5–6** | Superficial — e.g. changing a constant by 5% with no analysis basis, minor refactors with no strategic significance. Likely won't help |
+| **3–4** | Changes likely to cause regression. Wrong strategic direction. Example: increasing passive-call threshold when match analysis shows opponent exploiting passivity |
+| **1–2** | Changes will clearly hurt. Catastrophic strategic errors or complete misfire on the problem |
+
+**Score ≥ 6 → `approved: true`. Score < 6 → `approved: false` (triggers intra-generation worker retry).**
+
+# Strategic Checklist (check each before scoring)
+
+- [ ] **Addresses confirmed weakness**: Does the change target a pattern from recent match analysis or experience pool?
+- [ ] **Opponent modeling**: Does it improve per-street tracking, bet-sizing detection, or exploitative adjustment?
+- [ ] **EV basis**: Are decisions based on equity/pot-odds/fold-equity rather than arbitrary thresholds?
+- [ ] **No regression on critical spots**: AA/KK/QQ still raises preflop; nut hands still value-bet river?
+- [ ] **Diversity check**: Is this substantially different from the last 2 generations' approach? If same type of change (e.g. constant tuning) failed twice, it should NOT be repeated without new insight.
+
+# Local Optima Detection
+
+Flag `local_optima_warning: true` if:
+- The change is the same TYPE as the previous 1-2 generations (e.g. constant tuning again with no new analysis)
+- The experience pool has a `[POSSIBLY EXHAUSTED]` tag on a related lesson
+- The change is incremental when a structural rethink is needed
+
+# Output Format
+
+Output exactly ONE JSON block:
+
+```json
+{
+  "score": 7,
+  "approved": true,
+  "strategic_assessment": "Brief evaluation: what the change does strategically and whether it's sound.",
+  "feedback": "If approved=false: specific, actionable guidance. What change WOULD score ≥7? Be concrete: which street, which opponent pattern, what mechanism.",
+  "local_optima_warning": false,
+  "local_optima_reason": null
+}
+```
+
+If `approved: false`, the `feedback` field MUST be specific enough that workers can act on it immediately. Examples of good feedback:
+- "The change tunes BLUFF_THRESHOLD without analysis basis. Instead, add per-street fold-to-cbet tracking: if opponent folds flop cbets >60%, increase flop cbet frequency to 75%."
+- "Constant tuning has been tried 2 generations with no gain. This generation needs a structural change: add opponent bet-size profiling to detect polarised vs merged betting ranges."
+
+=============================
+[CLAUDE OUTPUT]
+I'll begin by examining the changes and context. Let me load the necessary tools first.
+Let me start by gathering all the necessary context in parallel.
+Let me try creating a task to run the git commands I need.
+Let me read the files directly using the available tools.
+Good, Read is available. Let me also load Bash.
+Now let me gather all the context I need in parallel.
+Let me continue reading the diff and check the experience pool and key new features.
+Now let me check the key new features and the experience pool:
+Now let me check the preflop strategy changes and compare with the previous v21 code:
+Now I have a comprehensive picture. Let me compile my analysis.
+
+## Strategic Assessment
+
+### What v22 actually changes (vs v21):
+
+**Worker 1's task** — Port 5 v12 features:
+1. ✅ `river_thin_value_profile` — New function in `bluff_analysis.py`. Strict eligibility (top_pair/overpair only, kicker≥10, no dynamic boards, risk<0.05). Called in `get_action()` when `round_idx == 3` and `win_rate >= 0.52`. This is **genuinely new** — v21 had no thin value betting on river.
+2. ✅ `river_bluff_ev` — New function in `bluff_analysis.py`. EV-based bluff recommendation using `fold_to_raise` + blocker value. Integrated into `river_blocker_bluff` condition in `get_action()`. **Genuinely new.**
+3. ✅ `donk_bet_profile` — New function in `bluff_analysis.py`. OOP lead betting on wet/paired/dynamic boards with strong/nut hands or combo draws. Called in `get_action()` for donk betting path. **Genuinely new.**
+4. ✅ `spr_profile` — New function in `betting.py`. Stack-to-pot ratio awareness with commitment levels. Used in `get_action()` for threshold adjustments (shallow→lower commitment thresholds by 0.02-0.04) and sizing scaling for donk bets. **Genuinely new.**
+5. ✅ `turn_barrel_profile` — New function in `bluff_analysis.py`. Turn continuation barrel analysis for strong/nut hands or semi-bluffs. Integrated into the main betting decision in `get_action()`. **Genuinely new.**
+
+**Worker 2's task** — Tune preflop thresholds to reduce fold rate:
+- ❌ **Not done.** The preflop.py and preflop_strategy.py files are **identical** to v21. No threshold changes at all. The `open_threshold`, `call_threshold`, `limp_threshold`, `sb_vs_reraise` thresholds are unchanged.
+
+### Code Quality Issues:
+- Duplicate function definitions: `choose_preflop_spot_action` exists in 4 files, `choose_anti_lock_pressure_action` in 3 files. Only the `strategy_helpers.py` versions are used via `from strategy_helpers import *`. The copies in `preflop.py`, `preflop_strategy.py`, and `betting.py` are dead code.
+- The experience pool explicitly warns: "exploit_lambda (gift_balance blending) is HARMFUL — corrupts GTO base. Use style_deltas instead." Yet v22 still uses `safe_exploitation_lambda` and `track_opponent_gift` in strategy.py (line ~75). This was carried over from v21 and not addressed.
+
+### Strategic Evaluation:
+
+**Positives:**
+- The 5 ported features address real gaps identified in the experience pool: thin river value, donk betting, SPR awareness, EV-based bluffing, turn barrels.
+- The `river_thin_value_profile` has **strict conditions** matching the experience pool's warning about v17's loose version being net negative.
+- The `river_bluff_ev` provides a principled EV framework rather than threshold-only bluffing.
+- SPR commitment adjustments are conservative (0.02-0.04 threshold shifts).
+- The `turn_barrel_profile` adds a legitimate weapon for continuation betting with strong hands.
+
+**Negatives:**
+- Worker 2's task was completely ignored — preflop thresholds are unchanged.
+- The donk bet is only triggered OOP with strong/nut hands on specific boards. While sound, it's conservative and may fire rarely.
+- The `river_thin_value_profile` requires `len(public_cards) < 5` to return early (only 5-card rivers), and requires both `tier == "thin"` or `0.40 <= made_strength <= 0.58`, PLUS `pair_type in ("top_pair", "overpair")` with kicker≥10. The intersection of all these conditions is extremely narrow.
+- The turn barrel is only for round_idx == 2 with strong/nut hands or high-quality semi-bluffs on non-wet boards. Also narrow.
+- Dead code duplication creates maintenance risk and confusion.
+
+**No regression risk**: The core decision logic is identical to v21 except for the 5 additive features. AA/KK/QQ still raises preflop. Nut hands still value-bet. The new features only add paths, they don't change existing paths.
+
+```json
+{
+  "score": 7,
+  "approved": true,
+  "strategic_assessment": "v22 ports 5 genuinely new features from v12 with strict safety guards: river thin value betting (top_pair/overpair only, kicker≥10, no dynamic boards), EV-based river bluffing, donk betting (OOP strong hands on wet boards), SPR commitment awareness, and turn barrel profiling. These address real strategic gaps identified in the experience pool. The implementation is conservative — the narrow eligibility conditions mean these features will fire infrequently but correctly. Worker 2's preflop threshold tuning was not executed (preflop files are identical to v21). Dead code duplication (choose_preflop_spot_action in 4 files, choose_anti_lock_pressure_action in 3 files) is a maintenance concern but not a strategic issue.",
+  "feedback": null,
+  "local_optima_warning": false,
+  "local_optima_reason": null
+}
+```

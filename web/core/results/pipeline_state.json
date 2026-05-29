@@ -1,19 +1,30 @@
 {
   "next_v": 22,
   "source_v": 21,
-  "stage": "quality_passed",
+  "stage": "critic_checked",
   "master_plan": [
     {
+      "difficulty": "hard",
+      "role": "Algorithmic Logic Architect",
+      "target_files": [
+        "strategy.py",
+        "bluff_analysis.py",
+        "betting.py"
+      ],
       "worker_id": 1,
-      "role": "Code Refactorer",
+      "worker_prompt": "Port 5 missing features from v12: river_thin_value_profile, river_bluff_ev, donk_bet_profile, spr_profile, turn_barrel_profile"
+    },
+    {
+      "difficulty": "medium",
+      "role": "Hyperparameter Tuner",
       "target_files": [
         "strategy.py"
       ],
-      "difficulty": "easy",
-      "worker_prompt": "strategy.py is 1308 lines, exceeding the 1000-line limit. Extract standalone helper functions (lines 50-509) into a new file strategy_helpers.py and import them back. The functions to extract are: opponent_pressure_adjustment, aggressive_line_strength, check_probe_resistance_margin, must_continue_vs_raise, choose_anti_lock_pressure_action, paired_board_stackoff_profile, postflop_call_margin, realized_postflop_equity, choose_raise, track_opponent_gift, safe_exploitation_lambda, choose_preflop_spot_action. Keep get_action() and imports in strategy.py. Add `from strategy_helpers import *` at the top of strategy.py."
+      "worker_id": 2,
+      "worker_prompt": "Tune preflop thresholds: reduce fold rate from ~75% to ~50%"
     }
   ],
-  "reviewer_feedback": "Quality gates: strategy.py is 1308 lines, exceeding the 1000-line limit. Need to extract helper functions to a separate file to reduce strategy.py below 1000 lines. All other gates passed.",
+  "reviewer_feedback": "",
   "generation_attempt": 0,
-  "timestamp": "2026-05-29T21:35:10"
+  "timestamp": "2026-05-29T22:49:19"
 }

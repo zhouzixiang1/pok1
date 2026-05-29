@@ -294,3 +294,166 @@ You MUST output your response containing exactly ONE JSON block formatted as fol
 [CLAUDE OUTPUT]
 Let me begin the review by examining the changes and file structure.
 All 21 files are new insertions. Let me now check file sizes and examine the key modified files in detail.
+
+[LEAD CODE REVIEWER PROMPT]
+=============================
+# Role
+You are the strict Lead Code Reviewer (Critic) for a Texas Hold'em poker bot team.
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files.
+- **Use the Bash tool** to run git diff and other commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Task
+Worker Agents have modified the bot codebase based on the Master Architect's instructions.
+Your job is the final quality gate before production (the next evolution iteration).
+
+# Context
+1. **Master's Original Plan/Tasks:**
+[
+  {
+    "worker_id": 1,
+    "role": "Algorithmic Logic Architect",
+    "target_files": [
+      "strategy.py",
+      "bluff_analysis.py",
+      "betting.py"
+    ],
+    "difficulty": "hard",
+    "worker_prompt": "Port 5 missing features from v12: river_thin_value_profile, river_bluff_ev, donk_bet_profile, spr_profile, turn_barrel_profile"
+  },
+  {
+    "worker_id": 2,
+    "role": "Hyperparameter Tuner",
+    "target_files": [
+      "strategy.py"
+    ],
+    "difficulty": "medium",
+    "worker_prompt": "Tune preflop thresholds: reduce fold rate from ~75% to ~50%"
+  }
+]
+
+2. **Bot directory**: `bots/claude_v22/`
+3. **Parent version tag**: `bot-v21`
+
+# How to Review
+You have full access to git and file reading tools. Use them:
+
+1. **See all changes**: Run `git diff bot-v21 -- bots/claude_v22/`
+   This shows exactly what the workers changed vs the parent bot.
+2. **See change summary**: Run `git diff --stat bot-v21 -- bots/claude_v22/`
+3. **Read specific files**: Use the Read tool on any file in `bots/claude_v22/`
+4. **List all files**: Run `ls bots/claude_v22/` to see the full file list
+
+Focus your review on the diff, but read full files when you need more context.
+
+# Rules
+1. Verify the changes fulfill the Master's instructions without logical flaws or contradictions.
+2. ENFORCE THE DUAL-TRACK BOUNDARY:
+   - If a "Hyperparameter Tuner" was assigned, verify they ONLY changed constants/thresholds. If they injected complex new logic, REJECT.
+   - If an "Algorithmic Logic Architect" was assigned, verify their logic is sound.
+3. Ensure the code compiles conceptually and adheres to the `{"response": int}` JSON output format constraint.
+4. Output exactly ONE JSON block containing your decision. If you reject the code, you must provide a detailed "feedback" string explaining what the Developer Agents need to fix.
+5. FILE SIZE CONSTRAINT: No single .py file should exceed 1000 lines. If any file is too large, REJECT and instruct workers to split it into focused modules. Keep main.py as the slim entry point.
+
+# Correctness Criteria (MANDATORY CHECK)
+Before approving, verify the bot does NOT do any of the following:
+- Fold premium hands (AA, KK, QQ, AKs) preflop without extreme pressure
+- Call all-in with obviously dominated hands on the river
+- Return invalid JSON (must output `{"response": <int>}`)
+- Use `input()` or `print()` instead of stdin/stdout for game communication
+- Import unavailable modules (only stdlib + numpy if present)
+- Have obvious infinite loops or unbounded recursion
+
+# Output Format
+You MUST output your response containing exactly ONE JSON block formatted as follows:
+
+```json
+{
+  "approved": true or false,
+  "feedback": "If approved=false, provide detailed instructions on what needs to be fixed. If true, this can be empty.",
+  "quality_score": 7,
+  "change_summary": "A 1-2 sentence summary of the key changes made in this generation.",
+  "risk_areas": ["List of potential risks or concerns about the changes, if any"]
+}
+```
+
+# Quality Score Rubric
+- **9-10**: Clean, well-structured changes that clearly improve strategy. No risks. Code is concise and follows project conventions.
+- **7-8**: Good changes that address the plan. Minor concerns (e.g., slightly verbose code, a heuristic that might not generalize). Approve.
+- **5-6**: Changes work but are mediocre — copy-pasted code, brute-force approaches where elegant solutions exist, or unclear strategy. Approve with caution.
+- **3-4**: Changes introduce regression risk, violate role boundaries, or show fundamental misunderstanding of poker strategy. REJECT.
+- **1-2**: Broken code, catastrophic strategic errors (folding AA preflop), or complete failure to follow instructions. REJECT.
+
+- `change_summary`: Required even when approved=true. This is used to update the experience pool for future generations.
+- `risk_areas`: Optional. List potential issues that could cause regression.
+
+=============================
+[CLAUDE OUTPUT]
+Now let me read the full strategy.py to understand the changes holistically:
+Now let me verify the integration correctness of the new features by checking how they interact with existing logic:
+Now I have a complete picture. Let me compile my review.
+
+---
+
+## Code Review: v21 → v22
+
+### Files Changed
+| File | Lines (v21→v22) | Change |
+|---|---|---|
+| `strategy.py` | 1259 → 748 | -511 (split out helpers) |
+| `strategy_helpers.py` | NEW → 579 | Extracted from strategy.py |
+| `bluff_analysis.py` | 180 → 394 | +214 (5 new profile functions) |
+| `betting.py` | 207 → 236 | +29 (new `spr_profile`) |
+| `postflop.py` | 55 → 68 | +13 (re-exports for new functions) |
+
+### Worker 1 (Algorithmic Logic Architect) Assessment
+✅ **5 features ported from v12 as instructed:**
+- `river_thin_value_profile` — Only fires for top pair/overpair with kicker≥10, on non-dynamic boards, low nutted risk. Sound logic.
+- `river_bluff_ev` — Standard EV calculation: `fold_prob × pot - (1-fold_prob) × bluff_size + blocker_value × pot`. Correct.
+- `donk_bet_profile` — 4 distinct donk-bet scenarios (wet board value, paired board, strong draw semi-bluff, overpair extraction). All gated by OOP + no facing aggression. Sound.
+- `turn_barrel_profile` — Only on turn (round_idx==2). Strong/nut hands or quality semi-bluffs. Disabled on wet boards (wetness≥0.55). Sound.
+- `spr_profile` — Simple threshold-based SPR classification. Integration adjusts strong/medium thresholds by commitment level. Correct.
+
+✅ **strategy.py properly refactored** from 1259 lines (over limit) → 748 lines by extracting helpers to `strategy_helpers.py`. All functions verbatim moved, no logic altered.
+
+### Worker 2 (Hyperparameter Tuner) Assessment
+✅ **Role boundary respected** — All changes are purely threshold/constant adjustments:
+- `sb_open`: 0.49→0.43, `limp_threshold`: 0.36→0.27
+- `bb_vs_limp iso`: 0.57→0.50
+- `bb_vs_raise call`: 0.42→0.34, fold cutoff: 0.35→0.26, fold sizing: 3BB→5BB
+- `sb_vs_reraise premium`: 0.72→0.68, call: 0.60→0.52
+
+No new logic injected. Thresholds only. ✅
+
+### Correctness Checks
+- ✅ Premium hands (AA/KK/QQ/AKs, preflop_strength≥0.72) never folded preflop — protected in all 4 spot paths + opponent all-in handler
+- ✅ No river all-in calls with dominated hands — buffer system + hard_repressure_fold + paired_board_stackoff guards
+- ✅ JSON output: `print(json.dumps({"response": int(action)}))` — correct
+- ✅ stdin/stdout: `json.loads(input())` / `print()` — correct
+- ✅ Only stdlib imports — no exotic modules
+- ✅ No infinite loops or unbounded recursion
+- ✅ All files compile
+- ✅ Integration tests pass
+
+### Concerns Identified
+1. **Duplicate `choose_raise`** in `betting.py` (dead code) vs `strategy_helpers.py` (used). They differ in thin_cap formula (0.30/0.38 vs 0.46+wetness+round). The strategy_helpers version is used at runtime via `from strategy_helpers import *`. Not a correctness bug, but a maintenance hazard.
+2. **Aggressive preflop widening** — call_threshold dropped from 0.42→0.34 means calling raises with very speculative hands (e.g., J4s-type). The sb_vs_reraise call threshold (0.60→0.52) means calling 3-bets with medium-strength hands. Could be -EV against strong/tight opponents.
+3. **New features untested** — Donk betting, river thin value, turn barrel, and SPR adjustments are all new and unproven in battle. Could leak chips in edge cases.
+
+```json
+{
+  "approved": true,
+  "feedback": "",
+  "quality_score": 7,
+  "change_summary": "Ported 5 strategic features from v12 (river thin value, river bluff EV, donk betting, turn barrel profiling, SPR commitment) and integrated them into the decision pipeline. Tuned preflop thresholds to widen ranges (fold rate ~75%→~50%). Refactored strategy.py from 1259→748 lines by extracting helpers.",
+  "risk_areas": [
+    "Duplicate choose_raise in betting.py (dead code with different thin_cap formula) is a maintenance hazard — should be removed",
+    "Preflop call_threshold dropped from 0.42→0.34 and sb_vs_reraise call from 0.60→0.52 — very aggressive ranges that may be -EV vs tight opponents",
+    "Donk betting and river thin value features are untested in battle — sizing ratios may need tuning after observing match results",
+    "SPR adjustments reduce strong/medium thresholds by up to 0.04 in shallow stacks — could cause over-commitment with marginal hands"
+  ]
+}
+```
