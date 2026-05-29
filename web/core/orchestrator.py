@@ -32,11 +32,68 @@ from claude_agent_sdk import (
     ToolUseBlock,
     ThinkingBlock,
 )
+from claude_agent_sdk.types import HookMatcher, SyncHookJSONOutput
 from tools import evolution_server, inject_ui
 
 
 ORCHESTRATOR_PROMPT = (Path(__file__).parent / "prompts" / "orchestrator.md").read_text()
 LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
+RESULTS_DIR = Path(__file__).resolve().parent / "results"
+ORCHESTRATOR_SESSION_FILE = RESULTS_DIR / "orchestrator_session.json"
+
+
+# ── Orchestrator session persistence (process recovery) ──
+
+def _save_orchestrator_session(session_id: str):
+    """Persist session_id so a killed process can resume the exact conversation."""
+    ORCHESTRATOR_SESSION_FILE.write_text(json.dumps({"session_id": session_id}))
+
+
+def _load_orchestrator_session() -> "str | None":
+    """Return saved session_id, or None."""
+    if not ORCHESTRATOR_SESSION_FILE.exists():
+        return None
+    try:
+        return json.loads(ORCHESTRATOR_SESSION_FILE.read_text())["session_id"]
+    except Exception:
+        return None
+
+
+def _clear_orchestrator_session():
+    """Delete session file after a naturally completed cycle."""
+    ORCHESTRATOR_SESSION_FILE.unlink(missing_ok=True)
+
+
+# ── PreCompact hook — preserve generation state across LLM context compaction ──
+
+def _make_precompact_hook():
+    """Return hooks dict that injects evolution state before Claude compacts context."""
+    async def handler(hook_input, tool_use_id, context) -> SyncHookJSONOutput:
+        from evolution_core import _find_current_v, read_pipeline_checkpoint
+        lines = ["=== EVOLUTION STATE — PRESERVE DURING COMPACTION ==="]
+        try:
+            current_v = _find_current_v()
+            lines.append(f"Current completed bot: claude_v{current_v}")
+            checkpoint = read_pipeline_checkpoint()
+            if checkpoint:
+                stage_hints = {
+                    "prepared":       "execute_workers",
+                    "workers_done":   "run_quality_gates",
+                    "quality_passed": "run_review",
+                    "reviewed":       "run_critic",
+                    "critic_checked": "commit_bot",
+                }
+                stage = checkpoint.get("stage", "unknown")
+                next_step = stage_hints.get(stage, "check get_status")
+                lines.append(
+                    f"ACTIVE GENERATION: v{checkpoint['next_v']} (from v{checkpoint['source_v']}), "
+                    f"stage={stage}. Next tool: {next_step}. "
+                    "DO NOT restart this generation — continue from this stage."
+                )
+        except Exception:
+            pass
+        return SyncHookJSONOutput(reason="\n".join(lines))
+    return {"PreCompact": [HookMatcher(matcher="*", hooks=[handler])]}
 
 
 def _find_current_v():
@@ -108,6 +165,28 @@ def _build_context(one_gen=False, dry_run=False):
     except Exception:
         pass
 
+    # Pipeline checkpoint — tell Orchestrator exactly where a killed cycle left off
+    try:
+        from evolution_core import read_pipeline_checkpoint
+        checkpoint = read_pipeline_checkpoint()
+        if checkpoint:
+            stage_hints = {
+                "prepared":       "Workers not yet run → call execute_workers",
+                "workers_done":   "Workers done → call run_quality_gates",
+                "quality_passed": "Quality passed → call run_review",
+                "reviewed":       "Review passed → call run_critic",
+                "critic_checked": "Critic done → call commit_bot",
+            }
+            stage = checkpoint.get("stage", "unknown")
+            hint = stage_hints.get(stage, "call get_status to assess")
+            lines.append(
+                f"PIPELINE CHECKPOINT: v{checkpoint['next_v']} (from v{checkpoint['source_v']}) "
+                f"reached stage='{stage}'. Next step: {hint}. "
+                "Master plan is saved — do NOT call run_master again."
+            )
+    except Exception:
+        pass
+
     if one_gen:
         lines.append("MODE: Run exactly ONE generation, then stop.")
     elif dry_run:
@@ -126,17 +205,32 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
     if dry_run:
         prompt += "\n\nIMPORTANT: This is a DRY RUN. Only call get_status() and report the current state. Do NOT modify anything."
 
+    # Session resume: if a pipeline checkpoint exists (mid-gen kill), resume the exact
+    # Orchestrator conversation rather than starting fresh.
+    from evolution_core import read_pipeline_checkpoint
+    checkpoint = read_pipeline_checkpoint()
+    saved_session_id = _load_orchestrator_session() if checkpoint else None
+
+    resume_kwargs = {"resume": saved_session_id} if saved_session_id else {}
+    if saved_session_id and ui:
+        ui.log_history(
+            f"[Orchestrator] Resuming session {saved_session_id[:8]}... "
+            f"(checkpoint stage={checkpoint.get('stage', '?')})",
+            "warn",
+        )
+
     options = ClaudeAgentOptions(
         model="sonnet",
         permission_mode="bypassPermissions",
         cwd=str(PROJECT_ROOT),
         mcp_servers={"evolution": evolution_server},
+        hooks=_make_precompact_hook(),
+        max_turns=max_turns or 80,
+        **resume_kwargs,
     )
 
-    if max_turns:
-        options.max_turns = max_turns
-
     total_cost = 0.0
+    cycle_completed = False
 
     with open(log_file, "a") as lf:
         lf.write(f"\n{'='*60}\n[ORCHESTRATOR CYCLE] {time.strftime('%Y-%m-%d %H:%M:%S')}\n{'='*60}\n")
@@ -169,8 +263,13 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 print("[thinking...]", end=" ", flush=True)
 
                 elif isinstance(message, ResultMessage):
+                    # Save session_id so a kill -9 can resume this exact conversation
+                    if message.session_id:
+                        _save_orchestrator_session(message.session_id)
                     if message.total_cost_usd:
                         total_cost += message.total_cost_usd
+                    if not message.is_error:
+                        cycle_completed = True
                     if ui:
                         ui.update_cost("Orchestrator", total_cost, getattr(message, 'usage', None))
                     lf.write(f"\n[CYCLE DONE] cost=${total_cost:.4f}\n")
@@ -187,6 +286,11 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             else:
                 print(f"\n[Orchestrator] Error: {e}")
             lf.write(f"\n[ERROR] {e}\n")
+
+    # Only clear session file on natural (non-error) cycle completion.
+    # If killed, the session file remains so next startup can resume.
+    if cycle_completed:
+        _clear_orchestrator_session()
 
     return total_cost
 

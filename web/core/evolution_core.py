@@ -67,8 +67,8 @@ MAX_INTRA_GEN_ITERS = 2      # Intra-generation Critic-loop iteration limit
 WORKER_TIMEOUT = 1000         # Seconds before a hung worker call is aborted + retried
 MAX_PARALLEL_WORKERS = 3      # Hard cap on simultaneous LLM worker calls (Semaphore)
 
-# Prompt size limits
-MAX_PROMPT_CHARS = 100000
+# Prompt size limits — Sonnet supports 200K tokens (~800K chars); leave generous headroom
+MAX_PROMPT_CHARS = 700_000
 
 # Lazy-initialised semaphore — created on first use inside the event loop
 _WORKER_SEMAPHORE: "asyncio.Semaphore | None" = None
@@ -80,6 +80,67 @@ def _get_worker_semaphore() -> "asyncio.Semaphore":
     if _WORKER_SEMAPHORE is None:
         _WORKER_SEMAPHORE = asyncio.Semaphore(MAX_PARALLEL_WORKERS)
     return _WORKER_SEMAPHORE
+
+
+# ──────────────────────────────────────────────
+# Prompt Budget Helpers
+# ──────────────────────────────────────────────
+
+def _trim_to_budget(text: str, max_chars: int, tail: bool = False) -> str:
+    """Trim text to max_chars. If tail=True, keep the LAST max_chars (most recent content)."""
+    if len(text) <= max_chars:
+        return text
+    note = "\n...[TRIMMED]\n"
+    if tail:
+        return note + text[-(max_chars - len(note)):]
+    return text[:max_chars - len(note)] + note
+
+
+# ──────────────────────────────────────────────
+# Pipeline Checkpoint (Process Recovery)
+# ──────────────────────────────────────────────
+
+PIPELINE_STATE_FILE = RESULTS_DIR / "pipeline_state.json"
+STAGE_ORDER = ["prepared", "workers_done", "quality_passed", "reviewed", "critic_checked"]
+
+
+def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
+                               reviewer_feedback="", generation_attempt=0):
+    """Write pipeline stage checkpoint so a killed process can resume."""
+    state = {
+        "next_v": next_v, "source_v": source_v, "stage": stage,
+        "master_plan": master_plan, "reviewer_feedback": reviewer_feedback,
+        "generation_attempt": generation_attempt,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    with locked_file(PIPELINE_STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+
+
+def read_pipeline_checkpoint():
+    """Return saved pipeline state dict, or None."""
+    if not PIPELINE_STATE_FILE.exists():
+        return None
+    try:
+        with locked_file(PIPELINE_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def clear_pipeline_checkpoint():
+    """Delete pipeline checkpoint (called on successful commit)."""
+    PIPELINE_STATE_FILE.unlink(missing_ok=True)
+
+
+def _stage_done(resume_stage, this_stage):
+    """True if resume_stage indicates this_stage has already been completed."""
+    if not resume_stage:
+        return False
+    try:
+        return STAGE_ORDER.index(resume_stage) >= STAGE_ORDER.index(this_stage)
+    except ValueError:
+        return False
 
 
 @contextmanager
@@ -466,17 +527,38 @@ def git_get_stagnation_count(bot_name, ratings):
 
 async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, is_text_ui, model="sonnet"):
     """Run a Claude query via the Agent SDK with cost tracking and typed streaming."""
-    full_prompt = prompt
+    # Build (path, content) pairs for context files
+    context_parts = []
     if context_files:
-        full_prompt += "\n\n# Context Files:\n"
         for cf in context_files:
             if os.path.exists(cf):
                 with open(cf, 'r') as f:
-                    full_prompt += f"\n--- {cf} ---\n{f.read()}\n"
+                    context_parts.append((cf, f.read()))
 
-    if len(full_prompt) > MAX_PROMPT_CHARS:
-        ui.log_history(f"Prompt too long ({len(full_prompt)} chars), truncating context...", "warn")
-        full_prompt = full_prompt[:MAX_PROMPT_CHARS - 100] + "\n\n[... CONTEXT TRUNCATED ...]"
+    # Assemble prompt with context files, smart-budgeting if needed
+    if context_parts:
+        ctx_section = "\n\n# Context Files:\n" + "".join(
+            f"\n--- {p} ---\n{c}\n" for p, c in context_parts
+        )
+        full_prompt = prompt + ctx_section
+        if len(full_prompt) > MAX_PROMPT_CHARS:
+            # Compress context_files proportionally while keeping base prompt intact
+            budget_for_files = MAX_PROMPT_CHARS - len(prompt) - 500
+            if budget_for_files > 0:
+                per_file = max(budget_for_files // len(context_parts), 500)
+                ctx_section = "\n\n# Context Files:\n" + "".join(
+                    f"\n--- {p} ---\n{_trim_to_budget(c, per_file)}\n"
+                    for p, c in context_parts
+                )
+                full_prompt = prompt + ctx_section
+            else:
+                full_prompt = prompt + "\n\n[Context files omitted — prompt too long]"
+            ui.log_history(f"Prompt budgeted to {len(full_prompt):,} chars (context compressed)", "warn")
+    else:
+        full_prompt = prompt
+        if len(full_prompt) > MAX_PROMPT_CHARS:
+            ui.log_history(f"Prompt too long ({len(full_prompt):,} chars), trimming...", "warn")
+            full_prompt = _trim_to_budget(full_prompt, MAX_PROMPT_CHARS)
 
     ui.log_io(f"\n[{role_name} PROMPT]", "prompt")
     ui.log_io(prompt[:200] + "...\n[Context Attached]", "prompt")
@@ -684,11 +766,17 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui, is_text_ui
                                match_analysis="", performance_verification=""):
     """Run Master analysis — can run concurrently with daemon evaluation."""
     master_prompt = (PROMPTS_DIR / "master_prompt.md").read_text()
+    # Apply section budgets to avoid experience_pool crowding out match_analysis
+    match_analysis_trimmed = _trim_to_budget(match_analysis, 10_000, tail=True)
+    perf_trimmed = _trim_to_budget(
+        performance_verification if performance_verification
+        else "No performance verification data available.",
+        4_000
+    )
     master_prompt = substitute_template(master_prompt, {
         "stagnation_info": stagnation_info,
-        "match_analysis": match_analysis,
-        "performance_verification": performance_verification if performance_verification
-            else "No performance verification data available.",
+        "match_analysis": match_analysis_trimmed,
+        "performance_verification": perf_trimmed,
     })
     master_ctx = (
         f"Current evolution: v{source_v} → v{next_v}\n"
@@ -1706,10 +1794,28 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
 
         ui.set_header(f"🔥 Antigravity Glicko-2 Evolution: v{source_v} ➡️ v{next_v} 🔥")
 
-        # 1. Wait for daemon evaluation or run inline — pipelined with Master analysis
+        # ── Pipeline checkpoint recovery ──
+        # If a previous run was killed mid-gen for this exact next_v, skip Master and
+        # resume directly in the intra-gen loop from the saved pipeline stage.
+        _checkpoint = read_pipeline_checkpoint()
+        resume_stage = None
+        tasks_data = None
+        reviewer_feedback_from_ckpt = ""
         my_bot = f"claude_v{current_v}"
+        if _checkpoint and _checkpoint.get("next_v") == next_v and _checkpoint.get("master_plan"):
+            resume_stage = _checkpoint.get("stage")
+            tasks_data = _checkpoint["master_plan"]
+            source_v = _checkpoint.get("source_v", source_v)
+            reviewer_feedback_from_ckpt = _checkpoint.get("reviewer_feedback", "")
+            ui.log_history(
+                f"Resuming v{next_v} from checkpoint stage='{resume_stage}' "
+                f"(source=v{source_v}). Skipping Master + eval.",
+                "info",
+            )
 
-        if not no_daemon:
+        if tasks_data is not None:
+            pass  # Checkpoint restored tasks_data; skip daemon eval + master
+        elif not no_daemon:
             ui.set_status(f"Pipelining daemon eval + Master analysis for v{current_v}...", is_working=True)
             ui.log_history(f"v{current_v} pipelining daemon eval + Master analysis...", "info")
 
@@ -1808,7 +1914,8 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
                 ui.log_history(f"Invalid branch_from value: {bf}", "warn")
 
         generation_approved = False
-        reviewer_feedback = ""
+        # Use reviewer_feedback from checkpoint if resuming, otherwise start fresh
+        reviewer_feedback = reviewer_feedback_from_ckpt if resume_stage else ""
         # Intra-generation iteration: re-run workers within same gen if Critic score < 6
         # MAX_INTRA_GEN_ITERS controls how many Critic-driven retries are allowed (max 2)
         # The outer loop range(3) covers (initial + 2 retries), matching MAX_INTRA_GEN_ITERS
@@ -1819,107 +1926,146 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
 
             ui.log_history(f"Generation Pipeline (Attempt {generation_attempt+1}/{MAX_INTRA_GEN_ITERS+1})", "info")
 
-            next_dir = get_bot_dir(next_v)
-            if next_dir.exists():
-                shutil.rmtree(next_dir)
-            shutil.copytree(get_bot_dir(source_v), next_dir, ignore=_COPY_IGNORE)
-            (next_dir / ".completed").unlink(missing_ok=True)
+            # On first attempt only, respect resume_stage from checkpoint.
+            # On subsequent attempts (intra-gen retries) always run all stages fresh.
+            skip_to = resume_stage if generation_attempt == 0 else None
+
+            # Prepare: copy source → next (skip if checkpoint says already done)
+            if not _stage_done(skip_to, "prepared"):
+                next_dir = get_bot_dir(next_v)
+                if next_dir.exists():
+                    shutil.rmtree(next_dir)
+                shutil.copytree(get_bot_dir(source_v), next_dir, ignore=_COPY_IGNORE)
+                (next_dir / ".completed").unlink(missing_ok=True)
+                write_pipeline_checkpoint(next_v, source_v, "prepared", tasks_data,
+                                          reviewer_feedback, generation_attempt)
+            else:
+                next_dir = get_bot_dir(next_v)
+                ui.log_history("[Resume] Skipping prepare (already done)", "info")
 
             with open(PROMPTS_DIR / "worker_prompt.md") as f:
                 worker_template = f.read()
 
-            # Build worker context files — workers read bot files via Read tool
-            worker_context_files = []
+            # Workers: skip if checkpoint says already done
+            if not _stage_done(skip_to, "workers_done"):
+                # Build worker context files — workers read bot files via Read tool
+                worker_context_files = []
 
-            workers_succeeded = await _execute_workers(
-                tasks_data["tasks"], worker_template, next_dir, next_v,
-                worker_context_files, ui, is_text_ui, reviewer_feedback,
-                source_v=source_v,
-            )
-
-            if not workers_succeeded:
-                continue  # Retry with fresh copy within generation_attempt loop
-
-            # Single-file size constraint — ensure readability
-            total_lines, oversized_files = check_code_size(next_dir)
-            if oversized_files:
-                details = ", ".join(f"{name}={lines}" for name, lines in oversized_files)
-                reviewer_feedback = (
-                    f"These files exceed 1000 lines and must be split into modules: {details}. "
-                    "Keep main.py as the entry point, extract logic into separate .py files."
+                workers_succeeded = await _execute_workers(
+                    tasks_data["tasks"], worker_template, next_dir, next_v,
+                    worker_context_files, ui, is_text_ui, reviewer_feedback,
+                    source_v=source_v,
                 )
-                ui.log_history(f"File size check failed: {details}", "warn")
-                continue
 
-            # Decision scenario tests — reject catastrophic blunders
-            decision_pass_rate = run_decision_tests(next_dir)
-            ui.log_history(f"Decision tests: {decision_pass_rate:.0%} pass rate", "info")
-            if decision_pass_rate < MIN_DECISION_PASS_RATE:
-                reviewer_feedback = (
-                    f"Bot failed decision tests ({decision_pass_rate:.0%} pass rate). "
-                    "Review fundamental strategy: don't fold premium hands, don't bluff with missed draws facing big bets."
-                )
-                ui.log_history("Decision test threshold not met, requesting revision.", "warn")
-                continue
+                if not workers_succeeded:
+                    continue  # Retry with fresh copy within generation_attempt loop
+
+                write_pipeline_checkpoint(next_v, source_v, "workers_done", tasks_data,
+                                          reviewer_feedback, generation_attempt)
+            else:
+                workers_succeeded = True
+                ui.log_history("[Resume] Skipping workers (already done)", "info")
+
+            # Single-file size constraint + decision tests (skip if checkpoint says passed)
+            if not _stage_done(skip_to, "quality_passed"):
+                total_lines, oversized_files = check_code_size(next_dir)
+                if oversized_files:
+                    details = ", ".join(f"{name}={lines}" for name, lines in oversized_files)
+                    reviewer_feedback = (
+                        f"These files exceed 1000 lines and must be split into modules: {details}. "
+                        "Keep main.py as the entry point, extract logic into separate .py files."
+                    )
+                    ui.log_history(f"File size check failed: {details}", "warn")
+                    continue
+
+                # Decision scenario tests — reject catastrophic blunders
+                decision_pass_rate = run_decision_tests(next_dir)
+                ui.log_history(f"Decision tests: {decision_pass_rate:.0%} pass rate", "info")
+                if decision_pass_rate < MIN_DECISION_PASS_RATE:
+                    reviewer_feedback = (
+                        f"Bot failed decision tests ({decision_pass_rate:.0%} pass rate). "
+                        "Review fundamental strategy: don't fold premium hands, don't bluff with missed draws facing big bets."
+                    )
+                    ui.log_history("Decision test threshold not met, requesting revision.", "warn")
+                    continue
+
+                write_pipeline_checkpoint(next_v, source_v, "quality_passed", tasks_data,
+                                          reviewer_feedback, generation_attempt)
+            else:
+                ui.log_history("[Resume] Skipping quality gates (already passed)", "info")
 
             # ── Code Reviewer (correctness + role boundaries) ──
-            ui.set_status(f"Code Reviewer analyzing v{next_v}...", is_working=True)
-            with open(PROMPTS_DIR / "reviewer_prompt.md") as f:
-                reviewer_prompt = f.read()
+            reviewer_data = {}
+            if not _stage_done(skip_to, "reviewed"):
+                ui.set_status(f"Code Reviewer analyzing v{next_v}...", is_working=True)
+                with open(PROMPTS_DIR / "reviewer_prompt.md") as f:
+                    reviewer_prompt = f.read()
 
-            reviewer_log_file = get_logs_dir(next_v) / "reviewer_io.txt"
-            reviewer_prompt = substitute_template(reviewer_prompt, {
-                "master_plan": json.dumps(tasks_data, indent=2),
-                "version": str(next_v),
-                "parent_version": str(source_v),
-            })
+                reviewer_log_file = get_logs_dir(next_v) / "reviewer_io.txt"
+                reviewer_prompt = substitute_template(reviewer_prompt, {
+                    "master_plan": json.dumps(tasks_data, indent=2),
+                    "version": str(next_v),
+                    "parent_version": str(source_v),
+                })
 
-            reviewer_approved = False
-            for review_attempt in range(MAX_REVIEWER_RETRIES):
-                ui.clear_io()
-                reviewer_output, _, _ = await run_claude_query(reviewer_prompt, [], ui, "LEAD CODE REVIEWER", reviewer_log_file, is_text_ui)
-                reviewer_data = parse_json_output(reviewer_output)
+                reviewer_approved = False
+                for review_attempt in range(MAX_REVIEWER_RETRIES):
+                    ui.clear_io()
+                    reviewer_output, _, _ = await run_claude_query(reviewer_prompt, [], ui, "LEAD CODE REVIEWER", reviewer_log_file, is_text_ui)
+                    reviewer_data = parse_json_output(reviewer_output)
 
-                if reviewer_data and "approved" in reviewer_data:
-                    if reviewer_data["approved"]:
-                        reviewer_approved = True
-                        qs = reviewer_data.get("quality_score", 0)
-                        if qs:
-                            ui.log_history(f"Reviewer quality score: {qs}/10", "info")
-                        risks = reviewer_data.get("risk_areas", [])
-                        if risks:
-                            ui.log_history(f"Risk areas: {'; '.join(risks)}", "warn")
-                    else:
-                        reviewer_feedback = reviewer_data.get("feedback", "")
-                        ui.log_history(f"Reviewer rejected (attempt {review_attempt+1}): {reviewer_feedback[:80]}", "warn")
-                    break
+                    if reviewer_data and "approved" in reviewer_data:
+                        if reviewer_data["approved"]:
+                            reviewer_approved = True
+                            qs = reviewer_data.get("quality_score", 0)
+                            if qs:
+                                ui.log_history(f"Reviewer quality score: {qs}/10", "info")
+                            risks = reviewer_data.get("risk_areas", [])
+                            if risks:
+                                ui.log_history(f"Risk areas: {'; '.join(risks)}", "warn")
+                        else:
+                            reviewer_feedback = reviewer_data.get("feedback", "")
+                            ui.log_history(f"Reviewer rejected (attempt {review_attempt+1}): {reviewer_feedback[:80]}", "warn")
+                        break
+                else:
+                    reviewer_feedback = "Reviewer failed to produce valid output. Please review and retry."
+
+                if not reviewer_approved:
+                    continue  # Retry workers with reviewer_feedback injected
+
+                write_pipeline_checkpoint(next_v, source_v, "reviewed", tasks_data,
+                                          reviewer_feedback, generation_attempt)
             else:
-                reviewer_feedback = "Reviewer failed to produce valid output. Please review and retry."
-
-            if not reviewer_approved:
-                continue  # Retry workers with reviewer_feedback injected
+                reviewer_approved = True
+                ui.log_history("[Resume] Skipping reviewer (already approved)", "info")
 
             # ── Strategy Critic (poker-specific quality gate) ──
-            ui.set_status(f"Strategy Critic evaluating v{next_v}...", is_working=True)
-            master_plan_str = json.dumps(tasks_data, indent=2)
-            critic_data = await _run_critic(next_v, source_v, master_plan_str, ui, is_text_ui)
-            critic_score = critic_data.get("score", 6)
-            critic_approved = critic_data.get("approved", True)
+            if not _stage_done(skip_to, "critic_checked"):
+                ui.set_status(f"Strategy Critic evaluating v{next_v}...", is_working=True)
+                master_plan_str = json.dumps(tasks_data, indent=2)
+                critic_data = await _run_critic(next_v, source_v, master_plan_str, ui, is_text_ui)
+                critic_score = critic_data.get("score", 6)
+                critic_approved = critic_data.get("approved", True)
 
-            ui.log_history(f"Critic score: {critic_score}/10 ({'approved' if critic_approved else 'rejected'})", "info")
-            if critic_data.get("local_optima_warning"):
-                ui.log_history(f"⚠️ Local optima warning: {critic_data.get('local_optima_reason', '')}", "warn")
+                ui.log_history(f"Critic score: {critic_score}/10 ({'approved' if critic_approved else 'rejected'})", "info")
+                if critic_data.get("local_optima_warning"):
+                    ui.log_history(f"⚠️ Local optima warning: {critic_data.get('local_optima_reason', '')}", "warn")
 
-            if not critic_approved and generation_attempt < MAX_INTRA_GEN_ITERS:
-                # Inject critic feedback for next intra-gen iteration
-                critic_feedback = critic_data.get("feedback", "")
-                reviewer_feedback = (
-                    f"[CRITIC FEEDBACK — score {critic_score}/10, attempt {generation_attempt+1}]: "
-                    f"{critic_feedback}\n"
-                    "The strategy change was insufficient — implement a more impactful improvement."
-                )
-                ui.log_history(f"Critic rejected (score {critic_score}/10). Retrying with new approach...", "warn")
-                continue
+                if not critic_approved and generation_attempt < MAX_INTRA_GEN_ITERS:
+                    # Inject critic feedback for next intra-gen iteration
+                    critic_feedback = critic_data.get("feedback", "")
+                    reviewer_feedback = (
+                        f"[CRITIC FEEDBACK — score {critic_score}/10, attempt {generation_attempt+1}]: "
+                        f"{critic_feedback}\n"
+                        "The strategy change was insufficient — implement a more impactful improvement."
+                    )
+                    ui.log_history(f"Critic rejected (score {critic_score}/10). Retrying with new approach...", "warn")
+                    continue
+
+                write_pipeline_checkpoint(next_v, source_v, "critic_checked", tasks_data,
+                                          reviewer_feedback, generation_attempt)
+            else:
+                ui.log_history("[Resume] Skipping critic (already checked)", "info")
 
             # ── Generation approved by both Reviewer and Critic ──
             generation_approved = True
@@ -1952,6 +2098,7 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             next_v, source_v, strategy_tag,
             rating_info=f"rating: r={my_p.r:.1f} rd={my_p.rd:.1f}"
         )
+        clear_pipeline_checkpoint()
 
         current_v = next_v
         fail_count = 0

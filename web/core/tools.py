@@ -49,6 +49,7 @@ from evolution_core import (
     _run_performance_verification,
     summarize_replay_for_analysis,
     parse_json_output,
+    clear_pipeline_checkpoint,
 )
 from glicko2 import Glicko2Player, update_rating_period
 
@@ -549,6 +550,7 @@ async def commit_bot(args):
     rating_info = f"rating: r={p.r:.1f} rd={p.rd:.1f}" if p else ""
 
     git_commit_bot(v, source_v, strategy, rating_info=rating_info)
+    clear_pipeline_checkpoint()
 
     return {"content": [{"type": "text", "text": json.dumps({"committed": True, "version": v, "source_v": source_v})}]}
 
