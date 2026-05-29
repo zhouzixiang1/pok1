@@ -17,20 +17,34 @@ Read these files FIRST using the Read tool to understand the current state:
 
 Use Bash tool with `git log` and `git diff` to understand evolution history.
 
+**When reading `experience_pool.md`, prioritise in this order:**
+1. `## RECENT_LESSONS` — what just happened last 1-3 gens
+2. `## OPPONENT_MODELING` — opponent model improvements (often highest EV)
+3. Any entry with `[POSSIBLY EXHAUSTED]` — **avoid repeating these directions**
+
 # Task
 Your goal is to:
 1. Read the ratings data and analyze the current bot's performance. Understand the rating trend.
-2. Read the experience pool to learn from past iterations.
-3. Read the current bot's source code and reference bots' code to identify weaknesses.
-4. Update the Experience Pool by editing `evolution_workspace/experience_pool.md` directly:
-   - Add new insights at the bottom.
-   - Remove or consolidate redundant entries.
-   - Keep the file concise (under 100 lines).
-5. Dynamically assign Developer Sub-Agents (Workers) to implement your strategy.
-6. You MUST STRICTLY divide your tasks into TWO distinct directions:
-   - **Direction A (Algorithmic Logic Architect):** Refactor methods, add new evaluation functions, fuse algorithms from reference bots. Examples: adding position-aware bluff detection, implementing GTO-inspired bet sizing, improving draw evaluation.
-   - **Direction B (Hyperparameter Tuner):** ONLY modify numeric constants, thresholds, and magic numbers. Examples: adjusting `BLUFF_THRESHOLD` from 0.15 → 0.20, `POT_ODDS_MULTIPLIER` from 1.5 → 1.8. FORBIDDEN from adding new functions, classes, or changing control flow.
-7. Write the exact, comprehensive prompt (`worker_prompt`) for each worker.
+2. Read the performance verification report (provided below) for objective trend analysis.
+3. Read the experience pool to learn from past iterations.
+4. Read the current bot's source code and reference bots' code to identify weaknesses.
+5. Dynamically assign 1–3 Developer Sub-Agents (Workers) to implement your strategy.
+6. Write the exact, comprehensive prompt (`worker_prompt`) for each worker.
+
+# Worker Count Decision
+Choose 1–3 workers based on the current bot's rating deviation (rd):
+- **rd > 100** (very uncertain, < 5 matches): **1 worker only** — conservative change, avoid big structural risk
+- **rd 40–100** (moderate confidence): **2 workers** — standard plan (Direction A + Direction B)
+- **rd ≤ 40** (reliable rating): **up to 3 workers** — can explore bolder, parallel improvements
+
+# Worker Directions (assign to each worker)
+- **Direction A (Algorithmic Logic Architect):** Refactor methods, add new evaluation functions, fuse algorithms from reference bots. Examples: adding position-aware bluff detection, implementing GTO-inspired bet sizing, improving draw evaluation, opponent modeling.
+- **Direction B (Hyperparameter Tuner):** ONLY modify numeric constants, thresholds, and magic numbers. Examples: adjusting `BLUFF_THRESHOLD` from 0.15 → 0.20, `POT_ODDS_MULTIPLIER` from 1.5 → 1.8. FORBIDDEN from adding new functions, classes, or changing control flow.
+- **Direction C (Opponent Modeler):** *(Only use as 3rd worker when rd ≤ 40)*
+  - ALLOWED: Adding/modifying opponent tracking data structures
+  - ALLOWED: Per-street statistics (preflop/flop/turn/river aggression separately): `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']`
+  - ALLOWED: Bet sizing pattern detection: `opp_bet_sizes[street]` as rolling list, use median
+  - FORBIDDEN: Changing overall decision flow or non-opponent-model logic
 
 # Dual-Track Boundary Examples
 ## GOOD Direction A task (Logic Architect):
@@ -48,6 +62,22 @@ Your goal is to:
 ## BAD Direction B task (violates boundary):
 - "Add a new function that calculates pot odds." (That's Direction A, not parameter tuning)
 
+# Performance Verification Report (SATLUTION-style objective analysis)
+{performance_verification}
+Use `verified_improvements` to avoid duplicating what already worked.
+Use `persistent_weaknesses` to prioritise what to fix next.
+**If `diversity_needed: true`, you MUST try a substantially different approach this generation.**
+
+# Diversity Injection (Anti-Local-Optima)
+If `performance_verification.diversity_needed: true` OR the same type of change has failed 2+ consecutive generations:
+- You MUST try a **substantially different approach** this generation
+- Examples of "substantially different":
+  - Last 2 gens tuned constants → this gen add new opponent model function (Direction A)
+  - Last 2 gens added preflop logic → this gen focus on river/showdown decisions
+  - Last 2 gens had Logic Architect fail → this gen try only HyperTuner (conservative, 1 worker)
+- Explicitly state in your `analysis` field: `"Diversity injection: trying X instead of Y"`
+- This prevents getting trapped in a local optimum where the same direction never improves
+
 # Stagnation Decision
 {stagnation_info}
 
@@ -61,11 +91,12 @@ If stagnation is detected, you can:
 3. If no `branch_from` is set, evolution continues from the latest version.
 
 # Output Format
-You MUST output your response containing exactly ONE JSON block formatted as follows:
+You MUST output your response containing exactly ONE JSON block formatted as follows.
+`tasks` array may contain **1, 2, or 3** items based on your Worker Count Decision above.
 
 ```json
 {
-  "analysis": "Your strategic analysis. Which reference bot did you study? What did you learn? Are we failing due to bad logic or bad parameter thresholds?",
+  "analysis": "Your strategic analysis. Which reference bot did you study? What weakness are you targeting? Are we failing due to bad logic or bad parameters? If diversity injection applies, explain: 'Diversity injection: trying X instead of Y'.",
   "branch_from": "claude_v{N}",
   "tasks": [
     {
@@ -73,7 +104,7 @@ You MUST output your response containing exactly ONE JSON block formatted as fol
       "role": "Algorithmic Logic Architect",
       "target_files": ["strategy.py", "postflop.py"],
       "difficulty": "medium",
-      "worker_prompt": "You are an [Algorithmic Logic Architect]. Your goal is to structurally rewrite... [Provide detailed logic instructions, reference which bot to learn from]"
+      "worker_prompt": "You are an [Algorithmic Logic Architect]. Your goal is to... [Provide detailed logic instructions, reference which bot to learn from]"
     },
     {
       "worker_id": 2,
@@ -86,7 +117,10 @@ You MUST output your response containing exactly ONE JSON block formatted as fol
 }
 ```
 
-The `branch_from` field is OPTIONAL. Only include it if you want to override the default evolution source.
+Notes:
+- `branch_from` is OPTIONAL. Only include it to override the default evolution source.
+- For 1-worker plans, use only Direction A or only Direction B.
+- For 3-worker plans, add a Direction C (Opponent Modeler) task as worker_id 3.
 
 # Git Commands (use Bash tool)
 Run these with the Bash tool:

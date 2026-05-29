@@ -45,6 +45,8 @@ from evolution_core import (
     _analyze_recent_matches,
     _consolidate_experience_pool,
     _analyze_stagnation,
+    _run_critic,
+    _run_performance_verification,
     summarize_replay_for_analysis,
     parse_json_output,
 )
@@ -403,6 +405,52 @@ async def run_review(args):
             "logs": ui.get_output(),
         }
 
+    return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
+
+
+class RunCriticInput(TypedDict):
+    version: Annotated[int, "Bot version being evaluated"]
+    source_v: Annotated[int, "Parent bot version"]
+    plan: Annotated[list, "Master's task plan (list of task dicts)"]
+    reviewer_feedback: Annotated[str, "Reviewer feedback if available (or '')"]
+
+
+@tool("run_critic", "Run Poker Strategy Critic on bot changes. Returns score 1-10 and strategic feedback. score ≥ 6 = approved.", {"version": int, "source_v": int, "plan": list, "reviewer_feedback": str})
+async def run_critic(args):
+    v = args["version"]
+    source_v = args["source_v"]
+    plan = args["plan"]
+    reviewer_feedback = args.get("reviewer_feedback", "")
+
+    master_plan_str = json.dumps(plan, indent=2)
+    ui = _get_ui()
+    data = await _run_critic(v, source_v, master_plan_str, ui, is_text_ui=False)
+
+    result = {
+        **data,
+        "logs": ui.get_output(),
+        "action": "approve" if data.get("approved", True) else "retry_workers",
+    }
+    return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
+
+
+class RunPerformanceVerificationInput(TypedDict):
+    source_v: Annotated[int, "Bot version to analyse performance for"]
+
+
+@tool("run_performance_verification", "SATLUTION-style LLM performance analysis. Synthesises rating trends, win rates, and persistent weaknesses into a structured insight for Master.", {"source_v": int})
+async def run_performance_verification(args):
+    source_v = args["source_v"]
+    ratings = load_ratings()
+    ui = _get_ui()
+    output = await _run_performance_verification(source_v, ratings, ui, is_text_ui=False)
+
+    try:
+        data = json.loads(output) if output else {}
+    except json.JSONDecodeError:
+        data = {"raw": output}
+
+    result = {**data, "logs": ui.get_output()}
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
 
 
