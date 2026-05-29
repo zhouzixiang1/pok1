@@ -189,6 +189,8 @@ def analyze_current_spot(req, state):
         "opp_prior_postflop_check_count": 0,
         "opp_prior_postflop_raise_count": 0,
         "opp_previous_round_raise_count": 0,
+        "my_flop_bet_count": 0,
+        "opp_flop_bet_count": 0,
         "facing_raise": False,
         "facing_allin": state["opponent_allin"],
         "facing_postflop_aggression": False,
@@ -205,6 +207,13 @@ def analyze_current_spot(req, state):
                 info["opp_current_round_check_count"] += 1
             elif record["round"] < state["round"]:
                 info["opp_prior_postflop_check_count"] += 1
+
+        # Track flop bets by each player for delayed cbet detection
+        if record["round"] == 1 and record["action_type"] in ("raise", "allin"):
+            if record["player_id"] == my_id:
+                info["my_flop_bet_count"] += 1
+            elif record["player_id"] == opponent_id:
+                info["opp_flop_bet_count"] += 1
 
         if record["player_id"] != opponent_id or record["action_type"] not in ("raise", "allin"):
             continue
@@ -251,37 +260,113 @@ def analyze_current_spot(req, state):
 
 
 def detect_bot4_profile(opponent_model, n_hands_played):
-    """Detect if opponent exhibits bot_4's characteristic stats."""
-    confidence = opponent_model["confidence"]
-    if confidence < 0.10:
-        return False, 0.0
+    """Detect if opponent exhibits bot_4's characteristic stats.
+    Kept for backward compatibility — delegates to detect_exploitable_profile."""
+    profiles = detect_exploitable_profile(opponent_model, n_hands_played)
+    bot4 = profiles.get("bot4", {"detected": False, "score": 0.0})
+    return bot4["detected"], bot4["score"]
 
-    score = 0.0
+
+def detect_exploitable_profile(opponent_model, n_hands_played):
+    """Detect exploitable opponent patterns with confidence-weighted scores.
+
+    Returns a dict of profile names to {"detected": bool, "score": float}.
+    Each score is confidence-weighted so low-sample readings are dampened.
+    Patterns:
+      - bot4: specific bot4 fingerprint (unchanged logic)
+      - over_aggressive: postflop_aggr > 0.55 or aggression > 0.50
+      - over_passive: postflop_aggr < 0.25 or postflop_check_rate > 0.58
+      - over_folder: fold_to_raise > 0.58
+      - calling_station: fold_to_raise < 0.30 and postflop_aggr < 0.35
+    """
+    confidence = opponent_model["confidence"]
+    profiles = {
+        "bot4":             {"detected": False, "score": 0.0},
+        "over_aggressive":  {"detected": False, "score": 0.0},
+        "over_passive":     {"detected": False, "score": 0.0},
+        "over_folder":      {"detected": False, "score": 0.0},
+        "calling_station":  {"detected": False, "score": 0.0},
+    }
+
+    if confidence < 0.10:
+        return profiles
+
     vpip = opponent_model["vpip"]
     pfr = opponent_model["pfr"]
     aggr = opponent_model["aggression"]
     post_aggr = opponent_model["postflop_aggr"]
     fold_raise = opponent_model["fold_to_raise"]
+    check_rate = opponent_model["postflop_check_rate"]
 
-    # v13 uses priors vpip=0.52, pfr=0.24 but bot4's actual stats are ~0.58, 0.28
-    # Detect based on convergence toward bot4-like patterns
+    # --- bot4 pattern (unchanged) ---
+    bot4_score = 0.0
     if abs(vpip - 0.55) < 0.15:
-        score += 0.20
+        bot4_score += 0.20
     if abs(pfr - 0.26) < 0.13:
-        score += 0.20
+        bot4_score += 0.20
     if abs(post_aggr - 0.36) < 0.15:
-        score += 0.20
+        bot4_score += 0.20
     if abs(fold_raise - 0.44) < 0.15:
-        score += 0.15
+        bot4_score += 0.15
     if abs(aggr - 0.30) < 0.13:
-        score += 0.15
+        bot4_score += 0.15
+    bot4_score *= confidence
+    profiles["bot4"] = {"detected": bot4_score >= 0.20, "score": bot4_score}
 
-    score *= confidence
-    return score >= 0.20, score
+    # --- over_aggressive: postflop_aggr > 0.55 or aggression > 0.50 ---
+    oa_score = 0.0
+    if post_aggr > 0.55:
+        oa_score += 0.40
+    elif post_aggr > 0.48:
+        oa_score += 0.20
+    if aggr > 0.50:
+        oa_score += 0.35
+    elif aggr > 0.42:
+        oa_score += 0.15
+    oa_score *= confidence
+    profiles["over_aggressive"] = {"detected": oa_score >= 0.20, "score": oa_score}
+
+    # --- over_passive: postflop_aggr < 0.25 or postflop_check_rate > 0.58 ---
+    op_score = 0.0
+    if post_aggr < 0.25:
+        op_score += 0.40
+    elif post_aggr < 0.30:
+        op_score += 0.20
+    if check_rate > 0.58:
+        op_score += 0.35
+    elif check_rate > 0.52:
+        op_score += 0.15
+    op_score *= confidence
+    profiles["over_passive"] = {"detected": op_score >= 0.20, "score": op_score}
+
+    # --- over_folder: fold_to_raise > 0.58 ---
+    of_score = 0.0
+    if fold_raise > 0.58:
+        of_score += 0.55
+    elif fold_raise > 0.52:
+        of_score += 0.25
+    of_score *= confidence
+    profiles["over_folder"] = {"detected": of_score >= 0.20, "score": of_score}
+
+    # --- calling_station: fold_to_raise < 0.30 and postflop_aggr < 0.35 ---
+    cs_score = 0.0
+    if fold_raise < 0.30 and post_aggr < 0.35:
+        cs_score += 0.55
+    elif fold_raise < 0.35 and post_aggr < 0.38:
+        cs_score += 0.25
+    cs_score *= confidence
+    profiles["calling_station"] = {"detected": cs_score >= 0.20, "score": cs_score}
+
+    return profiles
 
 
-def get_anti_bot4_adjustments(bot4_score, board_texture, spot_info, round_idx, value_profile):
-    """Return strategy adjustments targeting exploitable opponent patterns."""
+def get_anti_bot4_adjustments(bot4_score, board_texture, spot_info, round_idx, value_profile, profiles=None):
+    """Return strategy adjustments targeting exploitable opponent patterns.
+
+    When *profiles* (from detect_exploitable_profile) is provided the function
+    applies adjustments for every detected pattern, not just bot4.  The
+    existing bot4_score path is preserved for backward-compatibility callers.
+    """
     adj = {
         "bluff_freq_bonus": 0.0,
         "raise_size_bonus": 0.0,
@@ -291,39 +376,82 @@ def get_anti_bot4_adjustments(bot4_score, board_texture, spot_info, round_idx, v
         "trap_defense_delta": 0.0,
     }
 
-    if bot4_score < 0.10:
-        # River overbet always enabled for nut/strong hands regardless of bot4 detection
-        if round_idx == 3 and value_profile and value_profile["tier"] in ("nut", "strong"):
-            adj["river_overbet_enabled"] = True
-        return adj
-
-    # Wet board: exploit overfold on dynamic boards
-    if board_texture and board_texture["dynamic"]:
-        adj["bluff_freq_bonus"] += 0.15 * bot4_score
-        adj["raise_size_bonus"] += 0.08 * bot4_score
-
-    # Paired board: exploit paired board caution
-    if board_texture and board_texture["paired"]:
-        adj["bluff_freq_bonus"] += 0.10 * bot4_score
-        adj["raise_size_bonus"] += 0.05 * bot4_score
-
-    # River check exploit: checks too much on river
-    if round_idx == 3 and spot_info.get("last_opp_action_type") == "check":
-        adj["bluff_freq_bonus"] += 0.12 * bot4_score
-
-    # Preflop 3-Bet wider vs exploitable opponents
-    if round_idx == 0 and spot_info.get("preflop_spot") in ("bb_vs_raise", "sb_vs_reraise"):
-        adj["call_threshold_delta"] -= 0.05 * bot4_score
-
-    # Anti-trap: more cautious vs check-raise
-    if spot_info.get("opp_current_round_check_count", 0) > 0 and spot_info["facing_raise"]:
-        adj["trap_defense_delta"] += 0.08 * bot4_score
-
-    # River overbet for nut/strong hands
+    # River overbet always enabled for nut/strong hands regardless of detection
     if round_idx == 3 and value_profile and value_profile["tier"] in ("nut", "strong"):
         adj["river_overbet_enabled"] = True
 
+    # If we have generalized profiles, use them; otherwise fall back to bot4 only
+    if profiles is None:
+        # Legacy path: only bot4 score
+        if bot4_score >= 0.10:
+            _apply_bot4_adjustments(adj, bot4_score, board_texture, spot_info, round_idx)
+        return adj
+
+    # --- Apply pattern-based adjustments (confidence-weighted) ---
+
+    # bot4 pattern (same logic as before)
+    bot4 = profiles.get("bot4", {"detected": False, "score": 0.0})
+    if bot4["detected"]:
+        _apply_bot4_adjustments(adj, bot4["score"], board_texture, spot_info, round_idx)
+
+    # Over-aggressive: expand call range, reduce bluff, trap more
+    oa = profiles.get("over_aggressive", {"detected": False, "score": 0.0})
+    if oa["detected"]:
+        s = oa["score"]
+        adj["call_threshold_delta"] -= 0.04 * s
+        adj["bluff_freq_bonus"] -= 0.10 * s
+        adj["trap_defense_delta"] += 0.06 * s
+        # More inclined to call postflop aggression
+        if spot_info.get("facing_postflop_aggression"):
+            adj["call_threshold_delta"] -= 0.02 * s
+
+    # Over-passive: bluff more, bet thinner value
+    op = profiles.get("over_passive", {"detected": False, "score": 0.0})
+    if op["detected"]:
+        s = op["score"]
+        adj["bluff_freq_bonus"] += 0.12 * s
+        adj["raise_size_bonus"] += 0.04 * s
+
+    # Over-folder: bluff more, use smaller sizing
+    of = profiles.get("over_folder", {"detected": False, "score": 0.0})
+    if of["detected"]:
+        s = of["score"]
+        adj["bluff_freq_bonus"] += 0.15 * s
+        adj["raise_size_bonus"] -= 0.05 * s  # smaller sizing since they fold anyway
+
+    # Calling station: reduce bluffs, value bet wider
+    cs = profiles.get("calling_station", {"detected": False, "score": 0.0})
+    if cs["detected"]:
+        s = cs["score"]
+        adj["bluff_freq_bonus"] -= 0.12 * s
+        adj["call_threshold_delta"] -= 0.02 * s  # value bet wider = lower threshold
+
     return adj
+
+
+def _apply_bot4_adjustments(adj, score, board_texture, spot_info, round_idx):
+    """Apply the original bot4-specific adjustments to *adj* dict in-place."""
+    # Wet board: exploit overfold on dynamic boards
+    if board_texture and board_texture["dynamic"]:
+        adj["bluff_freq_bonus"] += 0.15 * score
+        adj["raise_size_bonus"] += 0.08 * score
+
+    # Paired board: exploit paired board caution
+    if board_texture and board_texture["paired"]:
+        adj["bluff_freq_bonus"] += 0.10 * score
+        adj["raise_size_bonus"] += 0.05 * score
+
+    # River check exploit: checks too much on river
+    if round_idx == 3 and spot_info.get("last_opp_action_type") == "check":
+        adj["bluff_freq_bonus"] += 0.12 * score
+
+    # Preflop 3-Bet wider vs exploitable opponents
+    if round_idx == 0 and spot_info.get("preflop_spot") in ("bb_vs_raise", "sb_vs_reraise"):
+        adj["call_threshold_delta"] -= 0.05 * score
+
+    # Anti-trap: more cautious vs check-raise
+    if spot_info.get("opp_current_round_check_count", 0) > 0 and spot_info["facing_raise"]:
+        adj["trap_defense_delta"] += 0.08 * score
 
 
 def classify_opponent_style(opp_model):

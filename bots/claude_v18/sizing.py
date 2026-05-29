@@ -268,6 +268,8 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
         iso_threshold = 0.57 + match_adjust - loose_bonus + match_profile["open_delta"]
         iso_threshold -= confidence * max(0.0, opponent_model["vpip"] - 0.58) * 0.08
         iso_threshold -= confidence * max(0.0, opponent_model["fold_to_raise"] - 0.52) * 0.05
+        if opponent_model["fold_to_raise"] > 0.52:
+            iso_threshold -= 0.03
         raise_amount = choose_raise(
             state["min_raise_action"],
             my_chips,
@@ -316,13 +318,30 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
         return 0
 
     if spot_info["preflop_spot"] == "sb_vs_reraise":
+        pot_after_call = state["pot"] + to_call
+        fold_to_raise = opponent_model.get("fold_to_raise", 0.44)
+
         if preflop_strength >= 0.85:
-            pot_after_call = state["pot"] + to_call
             target = int(to_call + pot_after_call * 0.70)
             target = max(target, state["min_raise_action"])
             if target >= my_chips * 0.5:
                 return -2
             return target
+
+        # 3-bet bluff: medium-strength hands with blockers vs fold-prone opponents
+        if 0.40 <= preflop_strength <= 0.55 and fold_to_raise > 0.48 and confidence >= 0.25:
+            from state import preflop_hand_profile
+            profile = preflop_hand_profile(req["my_cards"])
+            if profile["high"] >= 12:
+                hand_index = get_hand_index(req) or 0
+                token = (sum(req["my_cards"]) * 17 + hand_index * 11) % 100
+                bluff_freq = clamp((fold_to_raise - 0.48) * 1.5, 0, 0.5)
+                if token < int(bluff_freq * 100):
+                    target = int(to_call + pot_after_call * 0.58)
+                    target = max(target, state["min_raise_action"])
+                    if target >= my_chips:
+                        return -2
+                    return target
 
         if preflop_strength >= 0.60 and to_call <= my_chips * 0.15:
             return 0

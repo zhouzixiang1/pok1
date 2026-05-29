@@ -160,3 +160,126 @@ All checks pass. Let me do a final summary of all changes:
 - Added `allow_river_overbet=anti_bot4["river_overbet_enabled"]` to both `choose_raise` call sites
 - Wrapped the main raise block with `big_pot_safety_guard` check — marginal hands check down in large pots
 - Added `choose_overbet_bluff_river` call on river when not in anti-lock mode
+
+[WORKER 1 (Postflop Enhancement Worker) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Postflop Enhancement Worker**.
+You must directly edit the source files in `bots/claude_v18/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v18/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+""
+
+ORIGINAL:
+Add backdoor draw evaluation to the draw_profile function. When public_cards length is exactly 3 (flop), evaluate: 1) Backdoor flush draws: when holding 2 cards of same suit and only 1 card of that suit is on the flop (need 2 more of that suit on turn+river). Quality ~0.04. 2) Backdoor straight draws: when holding connectors that could make a straight with the board if 2 perfect cards come. Quality ~0.02-0.03. Add these as 'backdoor_flush_draw' and 'backdoor_straight_draw' types. Update info['outs'] to count backdoor outs (1 out each for backdoor draws). These should NOT trigger semi_bluff on their own but should boost fold_threshold_delta by +0.01 for backdoor flush, 0.005 for backdoor straight, and increase quality slightly. Keep all existing logic intact.
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v18/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v18/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v18/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v18/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+Let me start by exploring the bot's files and understanding the current structure.
+Now let me read the relevant card_utils to understand the helper functions:
+Now I have a thorough understanding of the `draw_profile` function and the entire `postflop.py` structure. Let me implement the backdoor draw evaluation. I'll make the changes using a Python script for precise insertions.
+Now let me verify the changes by reviewing the diff:
+The diff looks clean and correct. Let me verify the key aspects:
+
+1. ✅ `empty_draw_profile()` — added two new fields
+2. ✅ Backdoor flush detection — both hole cards same suit + exactly 1 on flop
+3. ✅ Backdoor straight detection — 3 of 5 ranks in a straight window, hole cards contribute
+4. ✅ Outs updated (+1 each)
+5. ✅ Quality boosted (+0.04 flush, +0.025 straight)
+6. ✅ Type assignment as fallback (won't override primary draw types)
+7. ✅ fold_threshold_delta boosted (+0.01 flush, +0.005 straight, additive)
+8. ✅ Won't trigger semi_bluff (doesn't set flush_draw/straight_draw/combo_draw/nut_flush_draw)
+
+Now let me run the quality checks:
+All files compile. Now the smoke test:
+All quality checks pass. Let me do the final self-review:
+The other file changes (opponent.py, sizing.py, state.py, strategy.py) are from parallel Worker Agents. My changes are only in `postflop.py`. Let me verify my specific diff one more time:
+All checks pass. Here's a summary of what I implemented:
+
+## Changes Made to `bots/claude_v18/postflop.py`
+
+### 1. `empty_draw_profile()` — Added two new fields
+- `"backdoor_flush_draw": False`
+- `"backdoor_straight_draw": False`
+
+### 2. `draw_profile()` — Backdoor draw detection (flop only: `len(public_cards) == 3`)
+
+**Backdoor flush draw** (quality ~0.04):
+- Both hole cards are the same suit
+- Exactly 1 card of that suit appears on the flop
+- Needs 2 more of that suit on turn+river to complete the flush
+
+**Backdoor straight draw** (quality ~0.025):
+- Combined hole + board ranks cover exactly 3 of 5 ranks in some straight window
+- At least 1 hole card contributes to the window
+- No primary straight draw already exists
+
+### 3. Outs updated
+- +1 out for each backdoor draw detected
+
+### 4. Type assignment (fallback only)
+- `backdoor_flush_draw` / `backdoor_straight_draw` types set only when no primary draw type exists (combo, flush, straight draws take precedence)
+
+### 5. Additive bonuses
+- `fold_threshold_delta` += 0.01 (backdoor flush) / += 0.005 (backdoor straight)
+- Quality += 0.04 (backdoor flush) / += 0.025 (backdoor straight)
+
+### Safety guarantees
+- ✅ Won't trigger `semi_bluff` on their own (doesn't modify `flush_draw`, `straight_draw`, `combo_draw`, or `nut_flush_draw`)
+- ✅ Additive `fold_threshold_delta` boost applies even when combined with primary draws
+- ✅ All existing logic fully preserved — only additive insertions
+- ✅ Only `postflop.py` modified

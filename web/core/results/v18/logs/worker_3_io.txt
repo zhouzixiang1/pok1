@@ -1,0 +1,122 @@
+
+[WORKER 3 (River Strategy Worker) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **River Strategy Worker**.
+You must directly edit the source files in `bots/claude_v18/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v18/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+""
+
+ORIGINAL:
+Improve river thin value betting and river bluffing: 1) Extend river_thin_value_bet to also work OOP when opponent checked to us on the river with weak-medium hands - add condition: round_idx == 3 and to_call == 0 and not spot_info['has_position'] and spot_info['last_opp_action_type'] == 'check' and value_profile tier is 'thin' and made_strength >= 0.38 and board_texture not dynamic and opponent postflop_check_rate >= 0.45. 2) Add a river_delayed_bluff condition: round_idx == 3 and to_call == 0 and spot_info['last_opp_action_type'] == 'check' and made_strength < 0.16 and draw_strength < 0.08 and the bot raised the turn but opponent just called, and opponent has high fold_to_raise (> 0.55). This should use low frequency via hand_idx hashing. 3) Improve the thin_static_showdown_control logic: instead of always checking back thin hands on static boards, sometimes bet if opponent has high fold_to_raise (> 0.55) or low postflop_aggr (< 0.30).
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v18/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v18/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v18/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v18/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading the current bot code to understand the structure before making changes.
+Let me read the key files to understand the current river strategy implementation.
+Now let me read the strategy.py file where the river logic likely lives:
+Now let me also check the opponent.py for the opponent model structure:
+Now let me check the state.py for understanding the history format:
+Now I have a thorough understanding of the codebase. Let me implement the three changes the Master requested. Let me first fetch the Edit tool.
+Now let me implement all three changes. I'll make them one at a time.
+
+**Edit 1: Add the `_bot_raised_turn_opp_called` helper function before `get_action`**
+**Edit 2: Modify `thin_static_showdown_control` to exclude exploitable opponents**
+**Edit 3: Add `river_delayed_bluff` after `river_blocker_bluff`**
+Good, I can see the file has some additional conditions from another worker. Let me now make the edits for my changes.
+
+**Edit 2: Modify `river_thin_value_bet` to also work OOP when opponent checked**
+**Edit 3: Add `river_delayed_bluff` after `river_blocker_bluff`**
+**Edit 4: Modify the main raise condition to include `thin_exploitable_value_bet` and `river_delayed_bluff`**
+**Edit 5: Modify the `choose_raise` call parameters to pass the new flags**
+Now let me verify the changes by running git diff and compile checks:
+The diff looks correct. I can see all my changes plus some from another worker. Let me verify the compile check:
+All compile checks pass. Now let me run the smoke test:
+All quality checks pass. Now let me do the self-review:
+Now let me verify I only modified files in my assigned target directory:
+Let me check that I only touched `strategy.py`:
+Good - the changes to other files (opponent.py, postflop.py, etc.) were from the other worker, not from me. I only edited `strategy.py`. Let me verify the protocol is intact:
+Protocol is intact — the bot outputs `{"response": <int>}` via stdout, with action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+## Self-Review Summary
+
+**Role Boundary Check (Algorithmic Logic Architect):** ✅
+- Added new function `_bot_raised_turn_opp_called()` — ✅ allowed
+- Added new conditions `thin_exploitable_value_bet`, `river_delayed_bluff` — ✅ allowed
+- Refactored `river_thin_value_bet` logic to include OOP branch — ✅ allowed
+- Modified `thin_static_showdown_control` exclusion logic — ✅ allowed
+- Did NOT change well-tuned constants (thresholds like 0.48, 0.42, 0.55 etc. in existing conditions are preserved)
+- Only numeric constants added are structurally necessary for the new conditions (0.38, 0.45, 0.30, 0.55, 0.16, 0.08, 12, 0.25)
+
+**Target File Check:** ✅
+- Only modified `bots/claude_v18/strategy.py`
+
+**Protocol Check:** ✅
+- Bot outputs `{"response": <int>}` via stdout
+
+**Quality Checks:** ✅
+- Compile check: PASS
+- Smoke test: PASS
+
+### Changes Summary
+
+1. **River thin value bet OOP** (change 1): Extended `river_thin_value_bet` to also fire OOP when opponent checked the river, made_strength >= 0.38, board is static, and opponent has high postflop_check_rate (>= 0.45).
+
+2. **River delayed bluff** (change 2): Added `river_delayed_bluff` condition that fires at low frequency (~12%) when: river, no bet to call, opponent checked, bot has air (made < 0.16, draw < 0.08), bot raised the turn and opponent called, opponent folds to raises a lot (> 0.55). Uses deterministic hand hash for frequency control.
+
+3. **Thin static showdown control improvement** (change 3): Modified `thin_static_showdown_control` to NOT auto-check when opponent is exploitable (fold_to_raise > 0.55 or postflop_aggr < 0.30). Added `thin_exploitable_value_bet` condition that catches these excluded thin hands and allows betting them through the normal raise pipeline with probe-mode sizing.

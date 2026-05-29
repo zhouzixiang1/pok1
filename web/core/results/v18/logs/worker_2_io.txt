@@ -112,3 +112,139 @@ All three requested enhancements are implemented:
 1. **SIMULATIONS_BY_PUBLIC_COUNT[5]** increased from 0 → 1000 (keys 0/3/4 already exceeded their minimums)
 2. **Fast early-exit** in `monte_carlo_weighted_equity`: after first 30% of iterations, if win rate >0.85 or <0.15, returns immediately
 3. **Paired board boost** in `combo_range_weight`: detects paired boards and applies 1.3x weight factor to combos that hit trips (hole card matches paired rank) or full house (pocket pair matches an unpaired board rank)
+
+[WORKER 2 (Opponent Exploitation Worker) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Opponent Exploitation Worker**.
+You must directly edit the source files in `bots/claude_v18/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v18/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+You have access to `evolution_workspace/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+Other Worker Agents may have recently modified the codebase before you. Read the attached Context Files carefully.
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+""
+
+ORIGINAL:
+Generalize the opponent exploitation system. Rename or extend detect_bot4_profile to detect_exploitable_profile that also detects: 1) Over-aggressive opponents: postflop_aggr > 0.55 or aggression > 0.50 -> expand call range (call_threshold_delta -= 0.04), reduce bluff frequency, trap more. 2) Over-passive opponents: postflop_aggr < 0.25 or postflop_check_rate > 0.58 -> bluff more (bluff_freq_bonus += 0.12), bet thinner value. 3) Over-folder opponents: fold_to_raise > 0.58 -> bluff more (bluff_freq_bonus += 0.15), use smaller sizing. 4) Calling station: fold_to_raise < 0.30 and postflop_aggr < 0.35 -> reduce bluffs, value bet wider. In get_anti_bot4_adjustments, also apply adjustments based on these patterns (not just bot4 detection). Keep the existing bot4 detection as one pattern. The score for each pattern should be confidence-weighted.
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v18/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v18/main.py` (and other .py files you changed)
+   - Smoke test: `python evolution_workspace/smoke_tester.py bots/claude_v18/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v18/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+=============================
+[CLAUDE OUTPUT]
+Let me start by reading the current bot source files to understand the existing opponent exploitation system.
+Now let me search for how `detect_bot4_profile` and `get_anti_bot4_adjustments` are used:
+Now I have a thorough understanding of the codebase. Let me also look at the sizing.py to understand `anti_bot4_bonus`:
+Now I have a complete understanding. Let me implement the changes. The plan is:
+
+1. **In `opponent.py`**: Add a new `detect_exploitable_profile` function that detects multiple opponent archetypes (over-aggressive, over-passive, over-folder, calling station, and bot4). Rename the import to use the new generalized function.
+
+2. **In `opponent.py`**: Extend `get_anti_bot4_adjustments` (keep the name for compatibility) to apply adjustments based on all detected patterns.
+
+3. **In `strategy.py`**: Update the import and call site to use the new function.
+
+Let me write the code:
+I notice the files have been modified by another worker. Let me read the current state of both files to understand what's already there:
+Now I have a complete understanding. The previous worker already added `classify_opponent_style` but the Master's instructions are about generalizing `detect_bot4_profile` → `detect_exploitable_profile` and extending `get_anti_bot4_adjustments` to handle multiple opponent archetypes. Let me now implement the changes:
+
+1. Add `detect_exploitable_profile` in `opponent.py` that detects all patterns (bot4, over-aggressive, over-passive, over-folder, calling station)
+2. Extend `get_anti_bot4_adjustments` to apply adjustments from all patterns
+3. Update `strategy.py` to use the new function
+Now let me write the new `detect_exploitable_profile` function and the updated `get_anti_bot4_adjustments`. I'll replace the existing `detect_bot4_profile` with `detect_exploitable_profile` that detects all patterns, and extend `get_anti_bot4_adjustments` to use all detected patterns:
+Now update `strategy.py` to import and use `detect_exploitable_profile`, and pass the profiles to `get_anti_bot4_adjustments`:
+Now I need to update the call site in `strategy.py` where `detect_bot4_profile` and `get_anti_bot4_adjustments` are called. Let me find the exact lines:
+Now I need to update the call site to use `detect_exploitable_profile` and pass the profiles dict to `get_anti_bot4_adjustments`:
+Now let me verify the changes and run quality checks:
+All quality checks pass. Now let me review the diff to ensure correctness:
+I can see that another worker also made changes to `sizing.py`, `state.py`, and additional parts of `strategy.py`. Let me verify that my changes in `opponent.py` and `strategy.py` (the import + call site for `detect_exploitable_profile`) are exactly what I intended, and that no other files were modified by my edits:
+The changes to `sizing.py`, `state.py`, and parts of `strategy.py` (the turn_delayed_cbet, turn_thin_value, etc.) are from the other worker that ran before me. My changes are specifically:
+
+1. **`opponent.py`**: Added `detect_exploitable_profile()` function and refactored `detect_bot4_profile()` as a backward-compat wrapper. Extended `get_anti_bot4_adjustments()` with `profiles` parameter and extracted `_apply_bot4_adjustments()` helper. The 4 new patterns: over_aggressive, over_passive, over_folder, calling_station.
+
+2. **`strategy.py`**: Added `detect_exploitable_profile` to the import line, and updated the call site to compute `exploitable_profiles` and pass it to `get_anti_bot4_adjustments`.
+
+Let me verify the self-review checklist:
+
+**Role Boundary Check**: I'm an Algorithmic Logic Architect. I added new functions (`detect_exploitable_profile`, `_apply_bot4_adjustments`), new parameters (`profiles` in `get_anti_bot4_adjustments`), and new control flow. I did not modify any well-tuned constants (the original thresholds 0.55, 0.50, 0.25, 0.58, etc. from the Master's spec are the detection thresholds for the new patterns, not changes to existing tuned values).
+
+**Target File Check**: My edits were only in `opponent.py` and `strategy.py`. The other files (`sizing.py`, `state.py`) were modified by the previous worker.
+
+**Protocol Check**: The bot still outputs `{"response": <int>}` via stdout — no changes to `main.py` or the protocol interface.
+
+Let me run the full quality check one more time to be sure:
+All checks pass. Here's a summary of the changes I made:
+
+## Changes Made
+
+### `opponent.py` — Generalized opponent exploitation system
+
+1. **`detect_bot4_profile()`** — Refactored as a backward-compatible wrapper that delegates to the new `detect_exploitable_profile()`.
+
+2. **`detect_exploitable_profile()`** — New function that detects 5 exploitable opponent patterns with confidence-weighted scores:
+   - **bot4**: Unchanged detection logic (VPIP/PFR/aggression convergence pattern)
+   - **over_aggressive**: `postflop_aggr > 0.55` or `aggression > 0.50` → expands call range, reduces bluffing, increases trapping
+   - **over_passive**: `postflop_aggr < 0.25` or `postflop_check_rate > 0.58` → increases bluff frequency, bets thinner value
+   - **over_folder**: `fold_to_raise > 0.58` → increases bluff frequency, uses smaller sizing
+   - **calling_station**: `fold_to_raise < 0.30` and `postflop_aggr < 0.35` → reduces bluffs, value bets wider
+   
+   Each pattern returns `{"detected": bool, "score": float}` where score is confidence-weighted.
+
+3. **`get_anti_bot4_adjustments()`** — Extended with optional `profiles` parameter. When provided, applies adjustments from all detected patterns (not just bot4). Preserved backward compatibility via legacy path when `profiles=None`.
+
+4. **`_apply_bot4_adjustments()`** — Extracted helper function containing the original bot4-specific adjustment logic.
+
+### `strategy.py` — Integration
+
+1. Added `detect_exploitable_profile` to the import line.
+2. Updated call site to compute `exploitable_profiles` and pass it to `get_anti_bot4_adjustments(profiles=exploitable_profiles)`.
+
+The existing `classify_opponent_style` (added by previous worker) and `anti_bot4` adjustment infrastructure continue to work as before — the new system layers on top, providing more granular exploitation adjustments.

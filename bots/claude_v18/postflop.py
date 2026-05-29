@@ -204,113 +204,72 @@ def board_texture_profile(public_cards):
 
 
 def paired_board_outcome_profile(hole_cards, public_cards):
-    info = {
-        "board_paired": False,
-        "board_pair_rank": 0,
-        "board_pair_count": 0,
-        "hand_class": -1,
-        "uses_board_pair": False,
-        "board_two_pair": False,
-        "trips_vulnerable": False,
-        "strengthened": False,
-        "weakened": False,
-        "fragile_two_pair": False,
-        "prefer_check": False,
-        "fold_to_raise": False,
-        "label": "none",
-    }
+    info = {"board_paired": False, "board_pair_rank": 0, "board_pair_count": 0,
+            "hand_class": -1, "uses_board_pair": False, "board_two_pair": False,
+            "trips_vulnerable": False, "strengthened": False, "weakened": False,
+            "fragile_two_pair": False, "prefer_check": False, "fold_to_raise": False, "label": "none"}
 
-    if len(public_cards) < 3:
-        return info
+    if len(public_cards) < 3: return info
 
     board_counts = {}
     for card in public_cards:
         rank = card_number(card)
         board_counts[rank] = board_counts.get(rank, 0) + 1
-    paired_ranks = sorted(
-        ((rank, count) for rank, count in board_counts.items() if count >= 2),
-        reverse=True,
-    )
-    if not paired_ranks:
-        return info
+    paired_ranks = sorted(((r, c) for r, c in board_counts.items() if c >= 2), reverse=True)
+    if not paired_ranks: return info
 
-    board_pair_rank, board_pair_count = paired_ranks[0]
+    bpr, bpc = paired_ranks[0]
     score = evaluate_best(hole_cards + public_cards)
-    hand_class = score[0]
+    hc = score[0]
     hole_ranks = [card_number(card) for card in hole_cards]
-    top_unpaired_board_rank = max(
-        (rank for rank in board_counts if rank != board_pair_rank),
-        default=0,
-    )
+    top_ubr = max((r for r in board_counts if r != bpr), default=0)
 
-    info["board_paired"] = True
-    info["board_pair_rank"] = board_pair_rank
-    info["board_pair_count"] = board_pair_count
-    info["hand_class"] = hand_class
+    info.update({"board_paired": True, "board_pair_rank": bpr, "board_pair_count": bpc, "hand_class": hc})
 
-    if hand_class >= 6:
-        info["strengthened"] = True
-        info["label"] = "trips_plus_on_paired_board"
+    if hc >= 6:
+        info.update({"strengthened": True, "label": "trips_plus_on_paired_board"})
         return info
 
-    if hand_class == 3:
-        trips_rank = score[1]
-        if trips_rank == board_pair_rank or hole_ranks.count(trips_rank) == 2:
-            info["strengthened"] = True
-            info["label"] = "strong_trips_on_paired_board"
+    if hc == 3:
+        tr = score[1]
+        if tr == bpr or hole_ranks.count(tr) == 2:
+            info.update({"strengthened": True, "label": "strong_trips_on_paired_board"})
         else:
-            info["weakened"] = True
-            info["prefer_check"] = True
-            info["label"] = "fragile_trips_on_paired_board"
+            info.update({"weakened": True, "prefer_check": True, "label": "fragile_trips_on_paired_board"})
         return info
 
-    if hand_class != 2:
+    if hc != 2: return info
+
+    hp, lp = score[1], score[2]
+    uses_bp = bpr in (hp, lp)
+    pp = hole_ranks[0] == hole_ranks[1]
+    info["uses_board_pair"] = uses_bp
+    info["trips_vulnerable"] = uses_bp
+
+    if uses_bp and pp and hp == hole_ranks[0] and lp == bpr:
+        info.update({"board_two_pair": True, "fold_to_raise": True, "label": "overpair_two_pair_on_paired_board"})
         return info
 
-    high_pair = score[1]
-    low_pair = score[2]
-    uses_board_pair = board_pair_rank in (high_pair, low_pair)
-    pocket_pair = hole_ranks[0] == hole_ranks[1]
-    info["uses_board_pair"] = uses_board_pair
-    info["trips_vulnerable"] = uses_board_pair
-
-    if uses_board_pair and pocket_pair and high_pair == hole_ranks[0] and low_pair == board_pair_rank:
-        info["board_two_pair"] = True
-        info["fold_to_raise"] = True
-        info["label"] = "overpair_two_pair_on_paired_board"
-        return info
-
-    if uses_board_pair:
-        other_pair = low_pair if high_pair == board_pair_rank else high_pair
-        if high_pair == board_pair_rank and other_pair <= 6:
-            info["weakened"] = True
-            info["fragile_two_pair"] = True
-            info["label"] = "low_two_pair_on_paired_board"
-        elif high_pair == board_pair_rank and top_unpaired_board_rank > other_pair:
-            info["weakened"] = True
-            info["fragile_two_pair"] = True
-            info["label"] = "dominated_two_pair_on_paired_board"
-        elif low_pair == board_pair_rank and high_pair < top_unpaired_board_rank:
-            info["weakened"] = True
-            info["label"] = "under_top_two_pair_on_paired_board"
-        elif low_pair == board_pair_rank and high_pair < 11:
-            info["weakened"] = True
-            info["fragile_two_pair"] = True
-            info["label"] = "thin_two_pair_on_paired_board"
+    if uses_bp:
+        op = lp if hp == bpr else hp
+        if hp == bpr and op <= 6:
+            info.update({"weakened": True, "fragile_two_pair": True, "label": "low_two_pair_on_paired_board"})
+        elif hp == bpr and top_ubr > op:
+            info.update({"weakened": True, "fragile_two_pair": True, "label": "dominated_two_pair_on_paired_board"})
+        elif lp == bpr and hp < top_ubr:
+            info.update({"weakened": True, "label": "under_top_two_pair_on_paired_board"})
+        elif lp == bpr and hp < 11:
+            info.update({"weakened": True, "fragile_two_pair": True, "label": "thin_two_pair_on_paired_board"})
         else:
             info["label"] = "top_two_pair_with_board_pair"
     else:
-        if high_pair == top_unpaired_board_rank and high_pair >= 11:
-            info["strengthened"] = True
-            info["label"] = "top_two_pair_above_board_pair"
+        if hp == top_ubr and hp >= 11:
+            info.update({"strengthened": True, "label": "top_two_pair_above_board_pair"})
         else:
-            info["weakened"] = True
             info["label"] = "disconnected_two_pair_on_paired_board"
-            if high_pair < 12:
-                info["fragile_two_pair"] = True
+            if hp < 12: info["fragile_two_pair"] = True
 
-    if info["weakened"] and not info["strengthened"]:
-        info["prefer_check"] = True
+    if info["weakened"] and not info["strengthened"]: info["prefer_check"] = True
     if info["fragile_two_pair"]:
         info["prefer_check"] = True
         info["fold_to_raise"] = True
@@ -526,6 +485,8 @@ def empty_draw_profile():
         "overcards": 0,
         "semi_bluff": False,
         "fold_threshold_delta": 0.0,
+        "backdoor_flush_draw": False,
+        "backdoor_straight_draw": False,
         "size_bonus": 0.0,
     }
 
@@ -634,6 +595,27 @@ def draw_profile(hole_cards, public_cards, board_texture=None):
         outs = max(outs, 15)
     info["outs"] = min(outs, remaining)
 
+    # --- Backdoor draws (flop only) ---
+    backdoor_flush = False
+    backdoor_straight = False
+    if len(public_cards) == 3:
+        if not info["flush_draw"]:
+            s0, s1 = card_suit(hole_cards[0]), card_suit(hole_cards[1])
+            if s0 == s1 and sum(1 for c in public_cards if card_suit(c) == s0) == 1:
+                backdoor_flush = True
+        if info["straight_draw"] == "none":
+            hr, br = set(hole_ranks), set(card_number(c) for c in public_cards)
+            for s in range(1, 11):
+                w = set(range(s, s + 5))
+                if len((hr | br) & w) == 3 and len(hr & w) >= 1:
+                    backdoor_straight = True
+                    break
+
+    info["backdoor_flush_draw"] = backdoor_flush
+    info["backdoor_straight_draw"] = backdoor_straight
+    if backdoor_flush: info["outs"] += 1
+    if backdoor_straight: info["outs"] += 1
+
     quality = max(flush_quality, straight_quality)
     if info["flush_draw"] and info["straight_draw"] != "none":
         quality = max(quality, flush_quality + straight_quality + 0.06)
@@ -641,6 +623,8 @@ def draw_profile(hole_cards, public_cards, board_texture=None):
         quality += 0.025 * info["overcards"]
     elif info["overcards"] >= 2:
         quality += 0.015
+    if backdoor_flush: quality += 0.04
+    if backdoor_straight: quality += 0.025
 
     if info["combo_draw"]:
         info["type"] = "combo_draw"
@@ -673,6 +657,13 @@ def draw_profile(hole_cards, public_cards, board_texture=None):
         info["type"] = "gutshot"
         info["fold_threshold_delta"] = -0.03
         info["size_bonus"] = -0.02
+    elif backdoor_flush:
+        info["type"] = "backdoor_flush_draw"
+    elif backdoor_straight:
+        info["type"] = "backdoor_straight_draw"
+
+    if backdoor_flush: info["fold_threshold_delta"] += 0.01
+    if backdoor_straight: info["fold_threshold_delta"] += 0.005
 
     info["quality"] = clamp(quality, 0.0, 0.35)
     info["semi_bluff"] = (

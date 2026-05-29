@@ -55,6 +55,12 @@ def is_preflop_3bet_candidate(my_cards):
     profile = preflop_hand_profile(my_cards)
     if profile["pair"]:
         return True
+    # Suited connectors with high >= 10 and gap <= 2 (e.g., JTs, T9s)
+    if profile["suited"] and profile["high"] >= 10 and (profile["high"] - profile["low"]) <= 2:
+        return True
+    # Suited aces with low >= 7 (e.g., A7s-A9s)
+    if profile["high"] == 14 and profile["suited"] and profile["low"] >= 7:
+        return True
     return profile["high"] == 14 and profile["low"] >= 12
 
 
@@ -278,6 +284,21 @@ def forced_fold_loss_bound(req, state, my_id, remaining_hands):
         elif my_id == future_bb:
             loss += BIG_BLIND
     return loss
+
+
+def bot_raised_turn_opp_called(req, my_id):
+    """Check if the bot raised on the turn (round 2) and opponent called."""
+    opponent_id = next_player(my_id, 1)
+    history = req.get("history", [])
+    my_raise_found = False
+    for record in history:
+        if record["round"] != 2:
+            continue
+        if record["player_id"] == my_id and record["action_type"] == "raise":
+            my_raise_found = True
+        elif my_raise_found and record["player_id"] == opponent_id and record["action_type"] == "call":
+            return True
+    return False
 
 
 def collect_latest_requests_by_hand(requests):
