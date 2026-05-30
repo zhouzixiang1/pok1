@@ -1,19 +1,24 @@
 {
   "next_v": 29,
   "source_v": 28,
-  "stage": "quality_passed",
+  "stage": "critic_checked",
   "master_plan": [
     {
-      "difficulty": "easy",
       "role": "Algorithmic Logic Architect",
       "target_files": [
-        "main.py"
+        "bots/claude_v29/main.py"
       ],
-      "worker_id": 1,
-      "worker_prompt": "Fix 2 specific bugs in bot claude_v29:\n\n## BUG 1: Missing import in betting.py\nThe function choose_anti_lock_pressure_action uses TOTAL_HANDS but it's not imported. Find the import line in betting.py and add TOTAL_HANDS. Example fix:\n```python\nfrom constants import BIG_BLIND, TOTAL_HANDS\n```\n\n## BUG 2: River 3-branch blocks nut overbet\nIn strategy.py, the river_3branch_decision function runs before the nut overbet logic. For nut hands (value_profile['tier'] == 'nut'), the strong branch caps sizing at 60-75% pot instead of deferring to overbet logic (1.5-2.2x pot).\n\nFix: In the STRONG branch of river_3branch_decision, add a check for nut hands:\n```python\nif value_profile.get('tier') == 'nut':\n    return None  # defer to nut overbet logic downstream\n```\nThis lets the existing overbet code handle nut hands with proper 1.5-2.2x pot sizing.\n\n## RULES\n- Only fix these 2 bugs\n- Do NOT change anything else\n- Verify with py_compile"
+      "worker_prompt": "Analyze and improve the algorithmic decision-making logic"
+    },
+    {
+      "role": "Hyperparameter Tuner",
+      "target_files": [
+        "bots/claude_v29/main.py"
+      ],
+      "worker_prompt": "Tune hyperparameters and constants for better performance"
     }
   ],
-  "reviewer_feedback": "CODE REVIEW REJECTED. Two specific fixes required:\n\n1. **CRITICAL BUG in betting.py**: Add TOTAL_HANDS to the import from constants. The function choose_anti_lock_pressure_action uses TOTAL_HANDS on line 554 but it's not imported. Fix: `from constants import BIG_BLIND, TOTAL_HANDS` (or add TOTAL_HANDS to existing import).\n\n2. **STRATEGIC REGRESSION in river 3-branch**: The river_3branch_decision runs BEFORE the nut overbet logic, so nut hands get capped at 60-75% pot instead of 1.5-2.2x pot. Fix: In the STRONG branch of river_3branch_decision, check if value_profile['tier'] == 'nut' and return None to defer to the existing overbet logic, OR integrate overbet sizing (1.5-2.2x pot) for nut hands specifically.\n\nThese are targeted fixes \u2014 do NOT change anything else. The preflop tier system and bet sizing changes are working correctly.",
+  "reviewer_feedback": "Approved with score 7/10. Changes: 5-tier preflop hand classification, river 3-branch decision framework, wider BB defense, increased raise sizing ~10-15%. Risk areas: river logic may bypass edge-case handling, larger raise sizing increases variance, anti-lock pressure preflop ratios nearly doubled, betting.py doubled in size.",
   "generation_attempt": 0,
-  "timestamp": "2026-05-30T09:48:07"
+  "timestamp": "2026-05-30T16:02:31"
 }
