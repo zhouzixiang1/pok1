@@ -289,13 +289,18 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 print("[thinking...]", end=" ", flush=True)
 
                 elif isinstance(message, ResultMessage):
-                    # Save session_id so a kill -9 can resume this exact conversation
-                    if message.session_id:
-                        _save_orchestrator_session(message.session_id)
                     if message.total_cost_usd:
                         total_cost += message.total_cost_usd
                     if not message.is_error:
                         cycle_completed = True
+                        # Only persist session on success — a failed session
+                        # (e.g. 401/403 auth error) is never valid to resume.
+                        if message.session_id:
+                            _save_orchestrator_session(message.session_id)
+                    else:
+                        # Auth-style errors leave a useless session; clear it
+                        # so the next cycle starts fresh instead of re-resuming.
+                        _clear_orchestrator_session()
                     if ui:
                         ui.update_cost("Orchestrator", total_cost, getattr(message, 'usage', None))
                     lf.write(f"\n[CYCLE DONE] cost=${total_cost:.4f}\n")
@@ -355,6 +360,7 @@ async def orchestrator_loop(ui, no_daemon=False):
 
     log_file = LOGS_DIR / f"orchestrator_{time.strftime('%Y%m%d_%H%M%S')}.txt"
     gen_count = 0
+    consecutive_zero_cost = 0
 
     try:
         while True:
@@ -369,9 +375,29 @@ async def orchestrator_loop(ui, no_daemon=False):
                 max_turns=max_turns,
             )
 
+            if cost == 0:
+                consecutive_zero_cost += 1
+            else:
+                consecutive_zero_cost = 0
+
+            if consecutive_zero_cost >= 5:
+                backoff = min(30 * (2 ** min(consecutive_zero_cost - 5, 4)), 600)
+                msg = (
+                    f"Orchestrator: {consecutive_zero_cost} consecutive "
+                    f"zero-cost cycles (likely auth/API error). "
+                    f"Backing off {backoff}s."
+                )
+                if ui:
+                    ui.log_history(msg, "error")
+                await asyncio.sleep(backoff)
+                # Clear stale session before retrying
+                _clear_orchestrator_session()
+                continue
+
             if ui:
                 ui.log_history(f"Orchestrator cycle {gen_count} complete. Cost: ${cost:.4f}", "info")
 
+            consecutive_zero_cost = 0
             # Brief pause between cycles
             await asyncio.sleep(5)
 
