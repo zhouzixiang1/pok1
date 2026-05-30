@@ -112,5 +112,8 @@ export const api = {
   // Orchestrator session
   orchestratorSession: () => fetchJSON<OrchestratorSession>(`${BASE}/control/orchestrator/session`),
   clearOrchestratorSession: () => deleteReq<{ cleared: boolean; message: string }>(`${BASE}/control/orchestrator/session`),
+
+  // Evolution reset
+  resetEvolution: () => postJSON<{ status: string; details: Record<string, unknown> }>(`${BASE}/control/reset`),
 };
 

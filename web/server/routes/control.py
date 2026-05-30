@@ -188,3 +188,53 @@ async def clear_orchestrator_session():
     existed = ORCHESTRATOR_SESSION_FILE.exists()
     ORCHESTRATOR_SESSION_FILE.unlink(missing_ok=True)
     return {"cleared": existed, "message": "Session reset. Next Orchestrator start will begin a new conversation."}
+
+
+# ── Evolution Reset ──
+
+@router.post("/reset")
+async def reset_evolution_endpoint():
+    """Reset evolution to baseline (v1-v6), then auto-restart."""
+    if app_state.running:
+        app_state.set_running(False)
+        try:
+            from evolution_core import stop_daemon
+            stop_daemon()
+        except Exception:
+            pass
+        await asyncio.sleep(2)
+
+    loop = asyncio.get_event_loop()
+    from reset import reset_evolution
+    result = await loop.run_in_executor(None, reset_evolution)
+
+    # Git commit
+    import subprocess
+    try:
+        subprocess.run(["git", "add", "-A"], cwd=str(PROJECT_ROOT), check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "chore: reset evolution to baseline (v1-v6)"],
+            cwd=str(PROJECT_ROOT), check=True, capture_output=True,
+        )
+    except subprocess.CalledProcessError:
+        pass
+
+    # Auto-restart
+    config = app_state.get_config()
+    mode = config["mode"]
+    app_state.set_running(True)
+
+    from server.app import web_ui
+    if mode == "orchestrator":
+        from orchestrator import orchestrator_loop
+        asyncio.create_task(orchestrator_loop(web_ui, no_daemon=not config["daemon_enabled"]))
+        web_ui.log_history("Evolution reset complete. Orchestrator restarted.", "success")
+    elif mode == "classic":
+        from evolution_core import main_loop
+        asyncio.create_task(main_loop(web_ui, is_text_ui=False, no_daemon=not config["daemon_enabled"]))
+        web_ui.log_history("Evolution reset complete. Classic loop restarted.", "success")
+    else:
+        app_state.set_running(False)
+        web_ui.log_history("Evolution reset complete. Manual mode — start daemon manually.", "info")
+
+    return {"status": "reset_complete", "details": result}

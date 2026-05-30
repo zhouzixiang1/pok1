@@ -198,6 +198,7 @@ export default function ControlPanel() {
   const [session, setSession] = useState<OrchestratorSession | null>(null);
   const [checkpoint, setCheckpoint] = useState<PipelineCheckpoint | null>(null);
   const [sessionLoading, setSessionLoading] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -284,6 +285,21 @@ export default function ControlPanel() {
     }
   };
 
+  const handleResetEvolution = async () => {
+    if (!confirm("⚠️ 重置演化系统？将删除 v7+ 所有演化数据（bot、评分、对局记录），仅保留 v1-v6 基线。系统将自动重启。")) return;
+    if (!confirm("此操作不可逆！确认重置？")) return;
+    setResetLoading(true);
+    try {
+      await api.resetEvolution();
+      await refresh();
+      await refreshSession();
+    } catch (e) {
+      alert(`重置失败: ${e}`);
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
   const formatTime = (ts: number) => new Date(ts * 1000).toLocaleTimeString();
 
   const configDirty = config && (
@@ -366,6 +382,26 @@ export default function ControlPanel() {
             </button>
             <p className="text-xs text-gray-400 mt-1">下次重启时强制开启全新 LLM 对话</p>
           </div>
+        </div>
+      </div>
+
+      {/* Evolution Reset */}
+      <div className="rounded-lg border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-4">
+        <h2 className="text-lg font-semibold text-red-700 dark:text-red-400 mb-3">危险操作</h2>
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex-1">
+            <p className="text-sm text-red-600 dark:text-red-300">
+              重置演化系统将删除 v7+ 所有数据（bot、评分、对局记录、经验池），仅保留 v1-v6 基线。
+              系统将自动重启并从 v7 开始新一轮演化。
+            </p>
+          </div>
+          <button
+            onClick={handleResetEvolution}
+            disabled={resetLoading}
+            className="px-4 py-2 text-sm font-medium rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 whitespace-nowrap"
+          >
+            {resetLoading ? "重置中..." : "重置演化系统"}
+          </button>
         </div>
       </div>
 
