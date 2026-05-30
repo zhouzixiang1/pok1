@@ -1995,11 +1995,11 @@
     "win_rate": 0.5667
   },
   "claude_v25 vs claude_v3": {
-    "games": 20,
-    "a_wins": 11,
-    "b_wins": 9,
+    "games": 30,
+    "a_wins": 16,
+    "b_wins": 14,
     "draws": 0,
-    "win_rate": 0.55
+    "win_rate": 0.5333
   },
   "claude_v22 vs claude_v25": {
     "games": 20,
@@ -2497,5 +2497,12 @@
     "b_wins": 7,
     "draws": 0,
     "win_rate": 0.3
+  },
+  "claude_v15 vs claude_v27": {
+    "games": 10,
+    "a_wins": 4,
+    "b_wins": 6,
+    "draws": 0,
+    "win_rate": 0.4
   }
 }
