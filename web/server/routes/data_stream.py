@@ -252,6 +252,16 @@ def _get_history() -> list[dict]:
     return entries
 
 
+def _downsample(entries: list[dict], max_points: int = 200) -> list[dict]:
+    if len(entries) <= max_points:
+        return entries
+    step = max(1, len(entries) // max_points)
+    sampled = entries[::step]
+    if entries[-1] is not sampled[-1]:
+        sampled.append(entries[-1])
+    return sampled
+
+
 def _get_generations() -> list[dict]:
     if not RESULTS_DIR.exists():
         return []
@@ -298,7 +308,7 @@ async def data_stream():
                         _event("matrix", _get_match_matrix()),
                         _event("h2h", _get_h2h()),
                         _event("bot_stats", _get_bot_stats()),
-                        _event("history", _get_history()),
+                        _event("history", _downsample(_get_history())),
                     ]:
                         try:
                             yield evt

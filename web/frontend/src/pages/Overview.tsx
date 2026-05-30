@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { Link } from "react-router";
-import { useRatings, useMatchStats, useDaemonStatus } from "../context/DataProvider";
+import { useRatings, useMatchStats, useDaemonStatus, useBots, useRecentMatches, useH2H, useGenerations, useBotStats } from "../context/DataProvider";
 import { api } from "../api/client";
+import { controlApi, type ControlStatus } from "../api/control";
+import type { PipelineCheckpoint } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
 
 function ConfidenceBadge({ level }: { level: string }) {
@@ -78,6 +80,126 @@ function DaemonStatusWidget() {
   );
 }
 
+function EvolutionStatusWidget({ status }: { status: ControlStatus | null }) {
+  return (
+    <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03]">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-gray-500 dark:text-gray-400">进化状态</p>
+        <span className={`px-2 py-0.5 rounded text-xs font-medium flex items-center gap-1.5 ${
+          status?.running
+            ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+            : "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400"
+        }`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${status?.running ? "bg-green-500 animate-pulse" : "bg-gray-400"}`} />
+          {status?.running ? "运行中" : "已停止"}
+        </span>
+      </div>
+      <p className="mt-2 text-lg font-semibold text-gray-800 dark:text-white">
+        第 {status?.generation_count ?? 0} 代
+      </p>
+      <p className="mt-1 text-xs text-gray-400">
+        v{status?.current_v ?? 0} → v{status?.next_v ?? 0}
+      </p>
+    </div>
+  );
+}
+
+function PipelineStageBadge({ checkpoint }: { checkpoint: PipelineCheckpoint | null }) {
+  if (!checkpoint) return null;
+  const stageLabels: Record<string, string> = {
+    prepared: "环境就绪",
+    workers_done: "Worker 完成",
+    quality_passed: "质量通过",
+    reviewed: "审核通过",
+    critic_checked: "策略通过",
+    verified: "验证完成",
+  };
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="text-gray-500">流水线:</span>
+      <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 font-medium">
+        v{checkpoint.next_v} ← v{checkpoint.source_v}
+      </span>
+      <span className="text-gray-600 dark:text-gray-300">{stageLabels[checkpoint.stage] || checkpoint.stage}</span>
+    </div>
+  );
+}
+
+function RecentActivityCard() {
+  const matches = useRecentMatches();
+  const h2h = useH2H();
+  const generations = useGenerations();
+
+  const topRivalry = useMemo(() => {
+    const entries = Object.entries(h2h);
+    if (entries.length === 0) return null;
+    let best: { key: string; wr: number; games: number } | null = null;
+    for (const [key, val] of entries) {
+      const wr = Math.abs(val.win_rate - 0.5);
+      if (!best || wr > Math.abs(best.wr - 0.5)) {
+        best = { key, wr: val.win_rate, games: val.games };
+      }
+    }
+    return best;
+  }, [h2h]);
+
+  const latestGen = generations.length > 0 ? generations[generations.length - 1] : null;
+  const recentMatches = matches.slice(0, 5);
+
+  return (
+    <div className="space-y-3">
+      {/* Recent matches */}
+      <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-white/[0.03]">
+        <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">最近对局</h4>
+        {recentMatches.length === 0 ? (
+          <p className="text-xs text-gray-400">暂无对局记录</p>
+        ) : (
+          <div className="space-y-2">
+            {recentMatches.map((m) => (
+              <div key={m.id} className="flex items-center gap-2 text-xs">
+                <span className="text-gray-600 dark:text-gray-300 truncate">
+                  {m.bot0.replace("claude_", "")} vs {m.bot1.replace("claude_", "")}
+                </span>
+                <span className="ml-auto flex gap-2 text-gray-500 font-mono shrink-0">
+                  <span className={m.bot0_wins > m.bot1_wins ? "text-green-600 font-medium" : ""}>{m.bot0_wins}</span>
+                  <span>:</span>
+                  <span className={m.bot1_wins > m.bot0_wins ? "text-green-600 font-medium" : ""}>{m.bot1_wins}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Top rivalry */}
+      {topRivalry && (
+        <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-white/[0.03]">
+          <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">最悬殊对战</h4>
+          <div className="text-xs">
+            <p className="text-gray-600 dark:text-gray-300 font-medium">
+              {topRivalry.key.split(" vs ").map((n) => n.replace("claude_", "")).join(" vs ")}
+            </p>
+            <p className="text-gray-500 mt-1">
+              胜率 {(topRivalry.wr * 100).toFixed(0)}% · {topRivalry.games} 场
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Latest generation */}
+      {latestGen && (
+        <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-white/[0.03]">
+          <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">最新代次</h4>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-gray-800 dark:text-gray-200 font-medium">{latestGen.version}</span>
+            <span className="text-gray-400">{latestGen.files.length} 个日志文件</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function formatLastPeriod(val: string): string {
   if (!val) return "—";
   const parsed = new Date(val);
@@ -88,10 +210,24 @@ function formatLastPeriod(val: string): string {
 export default function Overview() {
   const ratings = useRatings();
   const stats = useMatchStats();
+  const bots = useBots();
+  const botStats = useBotStats();
   const [summary, setSummary] = useState<Record<string, { peak_rating: number; current_rating: number; trend: number; periods: number }>>({});
+  const [controlStatus, setControlStatus] = useState<ControlStatus | null>(null);
+  const [checkpoint, setCheckpoint] = useState<PipelineCheckpoint | null>(null);
 
   useEffect(() => {
     api.historySummary().then(setSummary).catch(() => {});
+  }, [ratings]);
+
+  useEffect(() => {
+    const refresh = () => {
+      controlApi.status().then(setControlStatus).catch(() => {});
+      api.pipelineCheckpoint().then(setCheckpoint).catch(() => {});
+    };
+    refresh();
+    const id = setInterval(refresh, 5000);
+    return () => clearInterval(id);
   }, []);
 
   if (ratings.length === 0) {
@@ -102,7 +238,7 @@ export default function Overview() {
     <>
       <PageMeta title="总览 — Bot 自进化" description="Bot 种群概览" />
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5 md:gap-6">
-        <StatCard title="活跃 Bot" value={ratings.length} />
+        <StatCard title="活跃 Bot" value={bots.active.length} />
         <StatCard title="总对局数" value={(stats?.total_games ?? 0).toLocaleString()} />
         <StatCard title="对局组合" value={stats?.total_pairs ?? 0} />
         <StatCard
@@ -111,6 +247,15 @@ export default function Overview() {
           subtitle={`${stats?.most_active_count ?? 0} 场对局`}
         />
         <DaemonStatusWidget />
+      </div>
+
+      {/* Evolution status + Recent activity row */}
+      <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 md:gap-6">
+        <div className="space-y-4">
+          <EvolutionStatusWidget status={controlStatus} />
+          <PipelineStageBadge checkpoint={checkpoint} />
+        </div>
+        <RecentActivityCard />
       </div>
 
       <div className="mt-6 rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
@@ -129,6 +274,7 @@ export default function Overview() {
                 <th className="px-5 py-3 font-medium">保守评分</th>
                 <th className="px-5 py-3 font-medium">胜率</th>
                 <th className="px-5 py-3 font-medium">场数</th>
+                <th className="px-5 py-3 font-medium">胜/负/平</th>
                 <th className="px-5 py-3 font-medium">趋势</th>
                 <th className="px-5 py-3 font-medium">置信度</th>
                 <th className="px-5 py-3 font-medium">最后更新</th>
@@ -153,6 +299,9 @@ export default function Overview() {
                       {bot.win_rate != null ? `${(bot.win_rate * 100).toFixed(1)}%` : "—"}
                     </td>
                     <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{bot.games ?? "—"}</td>
+                    <td className="px-5 py-3 text-xs font-mono text-gray-500">
+                      {(() => { const bs = botStats[bot.name]; return bs ? `${bs.wins}/${bs.losses}/${bs.draws}` : "—"; })()}
+                    </td>
                     <td className="px-5 py-3 text-xs">
                       {s ? (
                         <span className={s.trend > 0 ? "text-green-600" : s.trend < 0 ? "text-red-600" : "text-gray-400"}>

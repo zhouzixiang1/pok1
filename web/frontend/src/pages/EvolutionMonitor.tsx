@@ -94,6 +94,37 @@ function PipelineStatus({ checkpoint }: { checkpoint: PipelineCheckpoint | null 
               <p className="text-[10px] text-gray-600 dark:text-gray-400 whitespace-pre-wrap max-h-24 overflow-y-auto">{checkpoint.reviewer_feedback}</p>
             </div>
           )}
+          {(() => {
+            const gates = checkpoint.gate_results as Record<string, Record<string, unknown>> | undefined;
+            if (!gates || Object.keys(gates).length === 0) return null;
+            const gateLabels: Record<string, string> = {
+              quality: "质量检查",
+              review: "代码审核",
+              critic: "策略审核",
+              precommit_eval: "提交前验证",
+            };
+            return (
+              <div>
+                <p className="text-[10px] text-gray-500 mb-1">质量门</p>
+                <div className="space-y-1">
+                  {Object.entries(gates).map(([key, g]) => {
+                    const passed = g.passed ?? g.all_passed ?? g.approved;
+                    return (
+                      <div key={key} className="flex items-start gap-1.5 text-[10px] pl-2 border-l-2 border-blue-300">
+                        <span className="shrink-0 mt-px">{passed ? <CheckIcon className="text-green-600" /> : <CrossIcon className="text-red-500" />}</span>
+                        <div>
+                          <span className="font-medium text-gray-700 dark:text-gray-300">{gateLabels[key] || key}</span>
+                          {g.quality_score != null && <span className="ml-1 text-gray-400">分数 {String(g.quality_score)}</span>}
+                          {g.score != null && <span className="ml-1 text-gray-400">分数 {String(g.score)}</span>}
+                          {g.decision_pass_rate != null && <span className="ml-1 text-gray-400">决策 {String(Math.round((g.decision_pass_rate as number) * 100))}%</span>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>

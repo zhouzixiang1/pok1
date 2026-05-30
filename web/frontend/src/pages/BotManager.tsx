@@ -169,7 +169,7 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
 
               {/* H2H breakdown */}
               {(() => {
-                const opponents: Array<{ name: string; wr: number; games: number }> = [];
+                const opponents: Array<{ name: string; wr: number; games: number; wins: number; losses: number; draws: number }> = [];
                 for (const [key, val] of Object.entries(h2hData)) {
                   const parts = key.split(" vs ");
                   if (parts.length !== 2) continue;
@@ -177,7 +177,9 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
                   const opp = isA ? parts[1] : parts[0];
                   if (!isA && parts[1] !== bot.name) continue;
                   const wr = isA ? val.a_wins / val.games : val.b_wins / val.games;
-                  if (!isNaN(wr)) opponents.push({ name: opp, wr, games: val.games });
+                  const wins = isA ? val.a_wins : val.b_wins;
+                  const losses = isA ? val.b_wins : val.a_wins;
+                  if (!isNaN(wr)) opponents.push({ name: opp, wr, games: val.games, wins, losses, draws: val.draws });
                 }
                 if (opponents.length === 0) return null;
                 opponents.sort((a, b) => b.wr - a.wr);
@@ -198,6 +200,7 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
                             {(opp.wr * 100).toFixed(0)}%
                           </span>
                           <span className="w-14 text-right text-gray-400">{opp.games} 场</span>
+                          <span className="w-14 text-right text-gray-400 font-mono text-[10px]">{opp.wins}-{opp.draws}-{opp.losses}</span>
                         </div>
                       ))}
                     </div>

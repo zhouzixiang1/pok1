@@ -18,7 +18,6 @@ export default function MatchMatrix() {
     const isH2H = data.source === "h2h";
 
     if (viewMode === "count" && Object.keys(h2hRaw).length > 0) {
-      // Build games count matrix from H2H data
       const gamesMatrix: (number | null)[][] = data.bots.map((_, i) =>
         data.bots.map((__, j) => {
           if (i === j) return null;
@@ -53,7 +52,23 @@ export default function MatchMatrix() {
         },
         xaxis: { labels: { style: { fontSize: "10px" } }, axisBorder: { show: false }, axisTicks: { show: false } },
         yaxis: { labels: { style: { fontSize: "10px" } } },
-        tooltip: { theme: "dark", y: { formatter: (val: number | null) => val === null ? "无数据" : `${val} 场对局` } },
+        tooltip: {
+          custom: ({ seriesIndex, dataPointIndex }: { seriesIndex: number; dataPointIndex: number }) => {
+            const rowBot = data!.bots[seriesIndex];
+            const colBot = data!.bots[dataPointIndex];
+            const key1 = `${rowBot} vs ${colBot}`;
+            const key2 = `${colBot} vs ${rowBot}`;
+            const entry = h2hRaw[key1] || h2hRaw[key2];
+            if (!entry) return '<div style="padding:4px 8px;font-size:12px">无数据</div>';
+            const isA = !!h2hRaw[key1];
+            const w = isA ? entry.a_wins : entry.b_wins;
+            const l = isA ? entry.b_wins : entry.a_wins;
+            return `<div style="padding:6px 10px;font-size:12px">
+              <div style="font-weight:600">${bots[seriesIndex]} vs ${bots[dataPointIndex]}</div>
+              <div style="margin-top:2px">${entry.games} 场 · ${w}胜 ${entry.draws}平 ${l}负</div>
+            </div>`;
+          },
+        },
         stroke: { width: 1, colors: ["#fff"] },
       };
       return { series, options };
@@ -111,13 +126,27 @@ export default function MatchMatrix() {
         labels: { style: { fontSize: "10px" } },
       },
       tooltip: {
-        theme: "dark",
-        y: {
-          formatter: (val: number | null) => {
-            if (val === null) return "无数据";
-            if (isH2H) return `${(val * 100).toFixed(0)}% 胜率`;
-            return `${val} 场对局`;
-          },
+        custom: ({ seriesIndex, dataPointIndex }: { seriesIndex: number; dataPointIndex: number }) => {
+          const val = data!.matrix[seriesIndex]?.[dataPointIndex];
+          if (val == null) return '<div style="padding:4px 8px;font-size:12px">无数据</div>';
+          const rowBot = data!.bots[seriesIndex];
+          const colBot = data!.bots[dataPointIndex];
+          if (!isH2H) return `<div style="padding:6px 10px;font-size:12px">${bots[seriesIndex]} vs ${bots[dataPointIndex]}<br/>${val} 场对局</div>`;
+          const key1 = `${rowBot} vs ${colBot}`;
+          const key2 = `${colBot} vs ${rowBot}`;
+          const entry = h2hRaw[key1] || h2hRaw[key2];
+          let extra = "";
+          if (entry) {
+            const isA = !!h2hRaw[key1];
+            const w = isA ? entry.a_wins : entry.b_wins;
+            const l = isA ? entry.b_wins : entry.a_wins;
+            extra = `<div style="margin-top:2px">${entry.games} 场 · ${w}胜 ${entry.draws}平 ${l}负</div>`;
+          }
+          return `<div style="padding:6px 10px;font-size:12px">
+            <div style="font-weight:600">${bots[seriesIndex]} vs ${bots[dataPointIndex]}</div>
+            <div>${(val * 100).toFixed(0)}% 胜率</div>
+            ${extra}
+          </div>`;
         },
       },
       stroke: { width: 1, colors: ["#fff"] },

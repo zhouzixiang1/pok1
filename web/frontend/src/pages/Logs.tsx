@@ -6,6 +6,16 @@ import { useGenerations } from "../context/DataProvider";
 
 type Tab = "generation" | "orchestrator" | "conversation";
 
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatFileTime(mtime: number): string {
+  return new Date(mtime * 1000).toLocaleDateString();
+}
+
 // ── Inline SVG helpers ─────────────────────────────────────────────────────────
 const FlagIcon = ({ className }: { className?: string }) => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
@@ -389,7 +399,7 @@ export default function Logs() {
               className="text-sm border border-gray-200 dark:border-gray-700 dark:bg-gray-800 rounded px-2 py-1"
             >
               {orchFiles.map((f) => (
-                <option key={f.filename} value={f.filename}>{f.filename}</option>
+                <option key={f.filename} value={f.filename}>{f.filename} ({formatSize(f.size_bytes)}, {formatFileTime(f.mtime)})</option>
               ))}
             </select>
           </div>
@@ -416,7 +426,7 @@ export default function Logs() {
               className="text-sm border border-gray-200 dark:border-gray-700 dark:bg-gray-800 rounded px-2 py-1"
             >
               {orchFiles.map((f) => (
-                <option key={f.filename} value={f.filename}>{f.filename}</option>
+                <option key={f.filename} value={f.filename}>{f.filename} ({formatSize(f.size_bytes)}, {formatFileTime(f.mtime)})</option>
               ))}
             </select>
           </div>

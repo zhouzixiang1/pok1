@@ -53,7 +53,7 @@ export const controlApi = {
     fetchJSON<ToolResult>(`${BASE}/tool/${toolName}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tool_name: toolName, args }),
+      body: JSON.stringify({ args }),
     }),
   listTools: () => fetchJSON<{ tools: string[] }>(`${BASE}/tools`),
 };
