@@ -1943,3 +1943,4 @@
 {"id": "20260530_094828_027746_claude_v21_vs_claude_v24.json", "timestamp": "20260530_094828_027746", "bot0": "claude_v21", "bot1": "claude_v24", "bot0_wins": 4, "bot1_wins": 6, "draws": 0}
 {"id": "20260530_152339_021572_claude_v1_vs_claude_v10.json", "timestamp": "20260530_152339_021572", "bot0": "claude_v1", "bot1": "claude_v10", "bot0_wins": 1, "bot1_wins": 9, "draws": 0}
 {"id": "20260530_152402_415261_claude_v16_vs_claude_v19.json", "timestamp": "20260530_152402_415261", "bot0": "claude_v16", "bot1": "claude_v19", "bot0_wins": 5, "bot1_wins": 5, "draws": 0}
+{"id": "20260530_153019_045075_claude_v1_vs_claude_v11.json", "timestamp": "20260530_153019_045075", "bot0": "claude_v1", "bot1": "claude_v11", "bot0_wins": 1, "bot1_wins": 9, "draws": 0}
