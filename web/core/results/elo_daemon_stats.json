@@ -251,7 +251,7 @@
     "claude_v23 vs claude_v6": 40,
     "claude_v23 vs claude_v24": 30,
     "claude_v19 vs claude_v24": 30,
-    "claude_v14 vs claude_v23": 30,
+    "claude_v14 vs claude_v23": 40,
     "claude_v18 vs claude_v24": 30,
     "claude_v15 vs claude_v24": 30,
     "claude_v19 vs claude_v23": 40,
@@ -355,8 +355,9 @@
     "claude_v28 vs claude_v6": 10,
     "claude_v27 vs claude_v8": 10,
     "claude_v27 vs claude_v28": 10,
-    "claude_v28 vs claude_v7": 10
+    "claude_v28 vs claude_v7": 10,
+    "claude_v2 vs claude_v28": 10
   },
   "total_periods": 311,
-  "total_games": 12644
+  "total_games": 12664
 }
