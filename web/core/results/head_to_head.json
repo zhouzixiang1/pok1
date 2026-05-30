@@ -2511,5 +2511,12 @@
     "b_wins": 5,
     "draws": 0,
     "win_rate": 0.5
+  },
+  "claude_v24 vs claude_v28": {
+    "games": 10,
+    "a_wins": 6,
+    "b_wins": 4,
+    "draws": 0,
+    "win_rate": 0.6
   }
 }

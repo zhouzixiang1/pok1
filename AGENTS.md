@@ -1,3 +1,4 @@
+<!-- From: /Users/zhouzixiang/Documents/pok/AGENTS.md -->
 # AGENTS.md — Poker Bot Evolution Framework
 
 This file provides essential context for AI coding agents working with this repository. The project is a Texas Hold'em poker AI bot framework targeting the Botzone online platform (botzone.org.cn), with a sophisticated LLM-driven evolution pipeline for iterative bot improvement.
@@ -23,14 +24,14 @@ Bots are written in Python (standard library only), tested locally, then uploade
 | Frontend | React 19 + Vite + Tailwind CSS 4 + TypeScript |
 | Backend | FastAPI + uvicorn + sse-starlette |
 | Bot Engine | Pure Python stdlib (no external deps) |
-| Evolution SDK | `claude-agent-sdk` (async LLM queries) |
+| Evolution SDK | `claude_agent-sdk` (async LLM queries) |
 | Rating Systems | Glicko-2 (evolution), ELO (ladder) |
 | Bot Platform | Botzone (botzone.org.cn) |
 
 **Key external dependencies (evolution/dashboard only):**
 - `rich`, `textual` (TUI)
 - `fastapi`, `uvicorn`, `sse-starlette` (dashboard backend)
-- `claude-agent-sdk` (LLM orchestration)
+- `claude_agent-sdk` (LLM orchestration)
 - Node.js/npm (frontend build)
 
 **Bots and core engine have zero external dependencies.**
@@ -49,12 +50,13 @@ Bots are written in Python (standard library only), tested locally, then uploade
 │
 ├── bots/                       # All bot implementations
 │   ├── bot1/ .. bot6/          # Hand-crafted baseline bots (modular multi-file)
-│   ├── claude_v1/ .. v17/      # LLM-evolved bots (single-file or modular)
+│   ├── claude_v1/ .. v{N}/     # LLM-evolved bots (single-file or modular)
 │   └── graveyard/              # Culled weak bots (gitignored)
 │
-├── web/                        # Unified evolution entry point (replaces evolution_workspace + dashboard + orchestrator)
+├── web/                        # Unified evolution entry point
 │   ├── main.py                 # Unified launcher: web server OR Textual TUI
 │   ├── tui.py / tui.tcss       # Textual TUI dashboard (frontend-inspired dark theme)
+│   ├── requirements.txt        # Python backend deps (fastapi, uvicorn, sse-starlette, pydantic)
 │   ├── core/                   # All evolution business logic
 │   │   ├── evolution_core.py   # Main loop, LLM orchestration, ratings, git mgmt
 │   │   ├── orchestrator.py     # LLM-driven orchestrator with MCP tools
@@ -65,6 +67,7 @@ Bots are written in Python (standard library only), tested locally, then uploade
 │   │   ├── commentary.py       # Match commentary generation
 │   │   ├── smoke_tester.py     # 1-mirror-game crash test
 │   │   ├── decision_tester.py  # Scenario-based decision validation
+│   │   ├── test_scenarios.json # Decision test scenarios (preflop/flop/turn/river)
 │   │   ├── experience_pool.md  # Accumulated strategic lessons
 │   │   ├── prompts/            # LLM prompt templates
 │   │   │   ├── initial_prompt.md
@@ -80,9 +83,28 @@ Bots are written in Python (standard library only), tested locally, then uploade
 │   │   ├── app.py              # FastAPI app with lifespan
 │   │   ├── state.py            # Thread-safe global state
 │   │   └── routes/             # API route modules
+│   │       ├── bots.py
+│   │       ├── control.py
+│   │       ├── data_stream.py
+│   │       ├── evolution.py
+│   │       ├── logs.py
+│   │       ├── matches.py
+│   │       ├── pipeline.py
+│   │       ├── prompts.py
+│   │       └── ratings.py
 │   └── frontend/               # React 19 + Vite + Tailwind dashboard
-│       ├── src/pages/          # 10 pages including Overview, EvolutionMonitor, BotManager, etc.
-│       └── ...
+│       ├── package.json        # Frontend deps and build scripts
+│       ├── vite.config.ts      # Vite config with /api proxy
+│       ├── tsconfig.json       # TypeScript project references
+│       └── src/
+│           ├── App.tsx
+│           ├── api/            # Typed fetch wrappers (client.ts, types.ts)
+│           ├── components/     # Reusable UI (PokerTable, charts, common, ui)
+│           ├── context/        # React contexts (DataProvider, Sidebar, Theme)
+│           ├── hooks/          # Custom hooks (useGoBack, useModal)
+│           ├── icons/          # SVG icons
+│           ├── layout/         # AppLayout, AppHeader, AppSidebar
+│           └── pages/          # 10 pages: Overview, EvolutionMonitor, BotManager, etc.
 │
 ├── archive/                    # Archived legacy directories (preserved for history)
 │   ├── evolution_workspace/    # Old evolution core (superseded by web/core/)
@@ -93,7 +115,9 @@ Bots are written in Python (standard library only), tested locally, then uploade
 │   ├── botzone_upload_match.py # Full Botzone client (upload, rooms, matches)
 │   ├── botzone_room_series.py  # Batch room matches
 │   ├── botzone_multi_account_upload.py
-│   └── ref_strategy_labels.py  # Offline strategy analysis
+│   ├── ref_strategy_labels.py  # Offline strategy analysis
+│   ├── reset_evolution.py      # Reset evolution to baseline (v1-v6)
+│   └── test_claude_cli.py
 │
 ├── docs/
 │   └── multi_ai_bot_design.md  # Multi-AI evolution design document (Chinese)
@@ -102,7 +126,15 @@ Bots are written in Python (standard library only), tested locally, then uploade
 │   ├── player_api.js           # Botzone player API
 │   └── TexasHoldem2p.html      # Game viewer HTML
 │
-└── results/                    # Local battle result JSONs
+├── results/                    # Local battle result JSONs (gitignored)
+├── ladder_results/             # Ladder and anchor runner outputs
+│
+├── .gitignore                  # Excludes __pycache__, results/*.json, .env, graveyard/
+├── .vscode/settings.json       # VS Code: conda env manager
+├── AGENTS.md                   # This file
+├── CLAUDE.md                   # Claude Code guidance (root level)
+├── web/CLAUDE.md               # Claude Code guidance (web-specific)
+└── ONBOARDING.md               # Team onboarding guide
 ```
 
 ---
@@ -164,8 +196,8 @@ python web/core/decision_tester.py bots/claude_v11/main.py --verbose
 
 ```bash
 # Development mode (backend + frontend dev servers)
-cd web/frontend && npm run dev   # Vite dev server on :5173
-python web/main.py --dev         # FastAPI backend on :8000
+cd web/frontend && npm run dev   # Vite dev server on :5173, proxies /api to :8000
+python web/main.py --dev         # FastAPI backend on :8000 with auto-reload
 
 # Production mode (build frontend, serve from FastAPI)
 python web/main.py --no-build    # Skip build if already done
@@ -185,6 +217,9 @@ python scripts/botzone_upload_match.py rank-match --bot-name test --execute
 
 # Run room series
 python scripts/botzone_upload_match.py run-room-series --bot-name test --execute
+
+# Reset evolution to baseline (keeps v1-v6, deletes everything above)
+python scripts/reset_evolution.py --force --keep 6
 
 # Credentials via BOTZONE_EMAIL / BOTZONE_PASSWORD env vars or --email/--password flags
 ```
@@ -244,6 +279,18 @@ Each bot is a standalone Python script that reads JSON from stdin and writes JSO
 
 ---
 
+## Code Style Guidelines
+
+- Python 3 only. No Python 2 compatibility required.
+- Bots: keep entry points simple; delegate to strategy modules for complex bots.
+- Comments: mix of English and Chinese is acceptable (project convention). Engine core files tend to have Chinese comments; evolution workspace uses English docstrings.
+- Prefer explicit over implicit. Use `.get()` for dict access in bot protocol handling.
+- Bots must sanitize actions before output (see `sanitize_action()` patterns in `bots/bot5/main.py` and `bots/bot6/main.py`).
+- Use `json.dumps(payload, separators=(',', ':'))` for compact JSON in subprocess communication.
+- No formal Python packaging; modules use `sys.path.insert()` to resolve imports.
+
+---
+
 ## Testing and Evaluation
 
 ### Three-Layer Evaluation
@@ -270,21 +317,22 @@ Winner determined by combined chip difference across both games. This eliminates
 4. **Code size check**: Single-file ≤ 1000 lines
 5. **Basic competitiveness**: Must win at least some games
 
-### Rating Systems
+### Decision Test Scenarios
 
-- **ELO** (ladder): Initial 1200, K=40 (first 30 games), K=20 (stable). Rank titles: 青铜(<1000), 白银, 黄金, 铂金, 钻石, 大师, 王者(2000+).
-- **Glicko-2** (evolution): Initial r=1500, rd=350, sigma=0.06. Conservative rating = `r - 2*rd`. RD gates confidence: <50 green, 50-100 yellow, 100-200 orange, >200 red.
+`web/core/test_scenarios.json` contains ~15 predefined poker scenarios testing for catastrophic blunders:
+- AA/KK/QQ preflop: must not fold
+- 7-2 offsuit: must not go all-in
+- Top set on dry board: must not fold
+- Nut hands on river: must bet for value
+
+Pass rate threshold: **≥70%**.
 
 ---
 
-## Code Style Guidelines
+## Rating Systems
 
-- Python 3 only. No Python 2 compatibility required.
-- Bots: keep entry points simple; delegate to strategy modules for complex bots.
-- Comments: mix of English and Chinese is acceptable (project convention). Engine core files tend to have Chinese comments; evolution workspace uses English docstrings.
-- Prefer explicit over implicit. Use `.get()` for dict access in bot protocol handling.
-- Bots must sanitize actions before output (see `sanitize_action()` patterns in `bots/bot5/main.py` and `bots/bot6/main.py`).
-- Use `json.dumps(payload, separators=(',', ':'))` for compact JSON in subprocess communication.
+- **ELO** (ladder): Initial 1200, K=40 (first 30 games), K=20 (stable). Rank titles: 青铜(<1000), 白银, 黄金, 铂金, 钻石, 大师, 王者(2000+).
+- **Glicko-2** (evolution): Initial r=1500, rd=350, sigma=0.06. Conservative rating = `r - 2*rd`. RD gates confidence: <50 green, 50-100 yellow, 100-200 orange, >200 red.
 
 ---
 
@@ -368,7 +416,7 @@ The primary deployment target is Botzone (botzone.org.cn):
 | Dashboard frontend | `web/frontend/src/` |
 | Botzone client | `scripts/botzone_upload_match.py` |
 | Baseline bot (most sophisticated) | `bots/bot5/main.py` + modules |
-| Latest evolved bot | `bots/claude_v16/main.py` (or highest v{N}) |
+| Latest evolved bot | `bots/claude_v{N}/main.py` (highest numbered version) |
 
 ---
 

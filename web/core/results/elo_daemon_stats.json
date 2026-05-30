@@ -358,8 +358,9 @@
     "claude_v28 vs claude_v7": 10,
     "claude_v2 vs claude_v28": 10,
     "claude_v15 vs claude_v27": 10,
-    "claude_v18 vs claude_v27": 10
+    "claude_v18 vs claude_v27": 10,
+    "claude_v24 vs claude_v28": 10
   },
   "total_periods": 311,
-  "total_games": 12724
+  "total_games": 12734
 }
