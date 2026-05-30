@@ -11,11 +11,10 @@ A Texas Hold'em poker AI bot self-evolution framework. The system uses a multi-a
 ### Evolution System
 
 ```bash
-python web/main.py                           # Orchestrator mode (default) + daemon + frontend on :8000
-python web/main.py --mode classic            # Classic hardcoded evolution loop
-python web/main.py --mode manual --no-daemon # Manual mode, no background processes
+python web/main.py                           # Orchestrator mode + daemon + frontend on :8000
+python web/main.py --no-daemon               # No background daemon
 python web/main.py --dev                     # Enable uvicorn auto-reload
-python web/main.py --tui                     # Textual TUI instead of web server
+python web/main.py --no-build                # Skip frontend build
 
 # Standalone orchestrator CLI (no web server)
 python web/core/orchestrator.py              # Continuous evolution
@@ -52,13 +51,9 @@ Credentials via `BOTZONE_EMAIL` / `BOTZONE_PASSWORD` env vars.
 
 ## Architecture
 
-### Two Evolution Modes
+### Orchestrator-Driven Evolution
 
-**Orchestrator mode** (default): `orchestrator.py` spawns a Claude agent with MCP tools and lets it autonomously decide the evolution flow. Uses `claude_agent_sdk` with `create_sdk_mcp_server()` registering 20 tools from `tools.py`.
-
-**Classic mode**: `evolution_core.py:main_loop()` runs a hardcoded sequential pipeline per generation.
-
-Both modes share the same business logic in `evolution_core.py` (~2150 lines) — bot management, LLM orchestration, worker execution, git helpers, quality gates.
+`orchestrator.py` spawns a Claude agent with MCP tools and lets it autonomously decide the evolution flow. Uses `claude_agent_sdk` with `create_sdk_mcp_server()` registering tools from `tools.py`. Business logic is split into focused modules: `evolution_infra.py` (constants, git, daemon, ratings, `run_claude_query()`), `agent_master.py` (Master + analysis), `agent_workers.py` (worker execution), `agent_review.py` (Critic, Verification, Crossover). MCP tools are in `tool_pipeline.py` and `tool_status.py`. `evolution_core.py` and `tools.py` remain as re-export shells for backward compatibility.
 
 ### Per-Generation Pipeline
 
@@ -85,7 +80,7 @@ Entry point: `web/main.py` → `web/server/app.py`. Nine route modules in `serve
 
 - `/api/data/stream` — Periodic SSE pushing dashboard data (ratings, bots, matches, history, etc.) at 3s/10s/15s intervals. Frontend's `DataProvider` context subscribes to this.
 - `/api/evolution/stream` — Event-driven SSE from `EventBroadcaster` (ring buffer 500 events, per-client asyncio.Queue). Used by EvolutionMonitor for real-time LLM output streaming. Events: `history`, `status`, `io`, `clear_io`, `eval_table`, `daemon`, `header`, `cost`, `metrics`, `tool_call`.
-- `/api/control/tool/{name}` — Invokes any of the 20 MCP tools manually. Records decisions in `app_state`.
+- `/api/control/tool/{name}` — Invokes any of the MCP tools manually. Records decisions in `app_state`.
 - REST endpoints for ratings, bots, matches, logs, prompts, experience pool, pipeline state.
 
 All shared file reads use `fcntl.LOCK_SH` (shared) / `fcntl.LOCK_EX` (exclusive) with a 2-second TTL cache.
@@ -102,7 +97,7 @@ All shared file reads use `fcntl.LOCK_SH` (shared) / `fcntl.LOCK_EX` (exclusive)
 - Bot protocol: JSON on stdin/stdout. `0`=check/call, `-1`=fold, `-2`=all-in, `>0`=raise. 30s timeout per decision.
 - Each game = 50 hands, 20000 chips, blinds 50/100. Botzone game ID: `63dcfaddee1bce5e6c8f4b53`.
 
-### Key Constants (evolution_core.py)
+### Key Constants (evolution_infra.py)
 
 | Constant | Value | Purpose |
 |---|---|---|
@@ -113,10 +108,8 @@ All shared file reads use `fcntl.LOCK_SH` (shared) / `fcntl.LOCK_EX` (exclusive)
 | `MAX_MASTER_RETRIES` | 3 | Retries for Master plan |
 | `WORKER_TIMEOUT` | 1000s | Per-worker LLM call timeout |
 | `MAX_PARALLEL_WORKERS` | 3 | Concurrency cap |
-| `CONSOLIDATE_EVERY_N_GENS` | 3 | Experience pool consolidation |
 | `DAEMON_EVAL_TIMEOUT` | 600s | Wait for sufficient matches |
-| `MIN_MATCHES_FOR_EVAL` | 20 | Min matches for reliable rating |
-| `MAX_RD_FOR_EVAL` | 40 | Max RD for "evaluated" |
+| `MIN_GAMES_FOR_EVAL` | 100 | Min games for reliable rating |
 
 ### LLM Integration
 

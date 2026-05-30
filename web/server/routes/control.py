@@ -2,9 +2,8 @@
 
 import asyncio
 import json
-import os
 import sys
-import threading
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -30,13 +29,8 @@ async def _run_with_cleanup(coro):
         app_state.set_running(False)
 
 
-class ModeRequest(BaseModel):
-    mode: str  # orchestrator | classic | manual
-
-
 class ConfigRequest(BaseModel):
     model_config = {"strict": True}
-    mode: str | None = None
     daemon_enabled: bool | None = None
     daemon_workers: int | None = None
     daemon_pairs: int | None = None
@@ -45,8 +39,6 @@ class ConfigRequest(BaseModel):
     def safe_updates(self) -> dict:
         """Filter out None values."""
         result = {}
-        if self.mode is not None:
-            result["mode"] = self.mode
         if self.daemon_enabled is not None:
             result["daemon_enabled"] = self.daemon_enabled
         if self.daemon_workers is not None:
@@ -85,14 +77,6 @@ async def set_config(req: ConfigRequest):
     return app_state.update_config(**updates)
 
 
-@router.post("/mode")
-async def set_mode(req: ModeRequest):
-    if req.mode not in ("orchestrator", "classic", "manual"):
-        return {"error": "Invalid mode. Must be: orchestrator, classic, or manual"}
-    app_state.set_mode(req.mode)
-    return {"mode": req.mode}
-
-
 @router.get("/status")
 async def control_status():
     return app_state.to_dict()
@@ -112,35 +96,16 @@ async def start_evolution():
 
     from server.app import web_ui
     config = app_state.get_config()
-    mode = config["mode"]
 
     app_state.set_running(True)
 
-    if mode == "orchestrator":
-        from orchestrator import orchestrator_loop
-        task = asyncio.create_task(_run_with_cleanup(orchestrator_loop(
-            web_ui, no_daemon=not config["daemon_enabled"],
-            daemon_workers=config["daemon_workers"], daemon_pairs=config["daemon_pairs"])))
-        app_state.set_task(task)
-    elif mode == "classic":
-        if config["daemon_enabled"]:
-            from evolution_core import start_daemon, daemon_monitor_thread
-            start_daemon(workers=config["daemon_workers"], pairs=config["daemon_pairs"])
-            import threading
-            _monitor_stop = threading.Event()
-            threading.Thread(target=daemon_monitor_thread, args=(web_ui, _monitor_stop), daemon=True).start()
-        from evolution_core import main_loop
-        task = asyncio.create_task(_run_with_cleanup(
-            main_loop(web_ui, is_text_ui=False, no_daemon=not config["daemon_enabled"])))
-        app_state.set_task(task)
-    else:
-        if config["daemon_enabled"]:
-            from evolution_core import start_daemon
-            start_daemon(workers=config["daemon_workers"], pairs=config["daemon_pairs"])
-        app_state.set_running(False)
-        return {"status": "daemon_started" if config["daemon_enabled"] else "started", "mode": mode}
+    from orchestrator import orchestrator_loop
+    task = asyncio.create_task(_run_with_cleanup(orchestrator_loop(
+        web_ui, no_daemon=not config["daemon_enabled"],
+        daemon_workers=config["daemon_workers"], daemon_pairs=config["daemon_pairs"])))
+    app_state.set_task(task)
 
-    return {"status": "started", "mode": mode}
+    return {"status": "started", "mode": "orchestrator"}
 
 
 @router.post("/stop")
@@ -236,7 +201,6 @@ async def reset_evolution_endpoint():
     result = await loop.run_in_executor(None, reset_evolution)
 
     # Git commit
-    import subprocess
     try:
         subprocess.run(["git", "add", "-A"], cwd=str(PROJECT_ROOT), check=True, capture_output=True)
         subprocess.run(
@@ -248,28 +212,14 @@ async def reset_evolution_endpoint():
 
     # Auto-restart
     config = app_state.get_config()
-    mode = config["mode"]
     app_state.set_running(True)
 
     from server.app import web_ui
-    if mode == "orchestrator":
-        from orchestrator import orchestrator_loop
-        task = asyncio.create_task(_run_with_cleanup(orchestrator_loop(
-            web_ui, no_daemon=not config["daemon_enabled"],
-            daemon_workers=config["daemon_workers"], daemon_pairs=config["daemon_pairs"])))
-        app_state.set_task(task)
-        web_ui.log_history("Evolution reset complete. Orchestrator restarted.", "success")
-    elif mode == "classic":
-        if config["daemon_enabled"]:
-            from evolution_core import start_daemon
-            start_daemon(workers=config["daemon_workers"], pairs=config["daemon_pairs"])
-        from evolution_core import main_loop
-        task = asyncio.create_task(_run_with_cleanup(
-            main_loop(web_ui, is_text_ui=False, no_daemon=not config["daemon_enabled"])))
-        app_state.set_task(task)
-        web_ui.log_history("Evolution reset complete. Classic loop restarted.", "success")
-    else:
-        app_state.set_running(False)
-        web_ui.log_history("Evolution reset complete. Manual mode — start daemon manually.", "info")
+    from orchestrator import orchestrator_loop
+    task = asyncio.create_task(_run_with_cleanup(orchestrator_loop(
+        web_ui, no_daemon=not config["daemon_enabled"],
+        daemon_workers=config["daemon_workers"], daemon_pairs=config["daemon_pairs"])))
+    app_state.set_task(task)
+    web_ui.log_history("Evolution reset complete. Orchestrator restarted.", "success")
 
     return {"status": "reset_complete", "details": result}

@@ -10,10 +10,11 @@ The **Self-Evolution System** (`web/`) is an LLM-driven poker bot evolution fram
 
 ```bash
 # Start the full stack (FastAPI backend + frontend + orchestrator + daemon)
-python web/main.py                           # Default: orchestrator mode on port 8000
-python web/main.py --mode classic            # Classic evolution loop (no LLM orchestrator)
-python web/main.py --mode manual --no-daemon # Manual mode, no background evaluation
+python web/main.py                           # Orchestrator mode on port 8000
+python web/main.py --no-daemon               # No background evaluation
 python web/main.py --dev                     # Enable uvicorn auto-reload
+python web/main.py --no-build                # Skip frontend build
+python web/main.py --port 3000               # Custom port
 
 # Standalone orchestrator CLI (no web server)
 python web/core/orchestrator.py              # Continuous evolution
@@ -30,15 +31,11 @@ npm run build                                # Build + copy to web/server/static
 
 ## Architecture
 
-### Two Evolution Modes
+### Orchestrator-Driven Evolution
 
-**Classic mode** (`--mode classic`): A hardcoded Python loop in `evolution_core.py:main_loop()` orchestrates each generation sequentially — evaluate, plan (Master LLM call), execute workers, review, commit.
-
-**Orchestrator mode** (`--mode orchestrator`, default): An LLM agent (`orchestrator.py`) receives MCP tools and autonomously decides the evolution flow. It calls tools like `run_master()`, `execute_workers()`, `run_quality_gates()` in whatever order it deems optimal. This is more flexible — the Orchestrator can retry, deviate from the standard pipeline, or trigger crossovers as needed.
+An LLM agent (`orchestrator.py`) receives MCP tools and autonomously decides the evolution flow. It calls tools like `run_master()`, `execute_workers()`, `run_quality_gates()` in whatever order it deems optimal. The Orchestrator can retry, deviate from the standard pipeline, or trigger crossovers as needed.
 
 ### The Multi-Agent Evolution Pipeline (per generation)
-
-Each generation follows this flow (both modes, but classic is hardcoded while orchestrator decides dynamically):
 
 1. **Master Architect** (`prompts/master_prompt.md`): Analyzes ratings, experience pool, and current bot code. Produces a JSON task plan with 2 worker assignments — one "Algorithmic Logic Architect" (structural changes) and one "Hyperparameter Tuner" (numeric constants only). Can set `branch_from` to evolve from a different ancestor.
 
@@ -54,16 +51,23 @@ Each generation follows this flow (both modes, but classic is hardcoded while or
 
 | File | Role |
 |---|---|
-| `core/evolution_core.py` | All business logic: bot management, LLM orchestration, worker execution, git helpers, main classic loop. ~1600 lines. |
+| `core/evolution_core.py` | Re-export shell — imports from sub-modules for backward compatibility. |
+| `core/evolution_infra.py` | Shared infrastructure: constants, git ops, daemon management, ratings, `run_claude_query()`, code verification. |
+| `core/agent_master.py` | Master Architect agent + analysis helpers (stagnation, match analysis, experience consolidation, replay summarization). |
+| `core/agent_workers.py` | Worker agent execution: parallel/serial dispatch, timeout isolation, retry logic. |
+| `core/agent_review.py` | Review agents: Critic, Performance Verification, Crossover. |
 | `core/orchestrator.py` | LLM-driven orchestrator: spawns a Claude agent with MCP tools, streams output, logs to file. |
-| `core/tools.py` | MCP tool definitions wrapping evolution_core functions. Registered as `evolution` MCP server via `create_sdk_mcp_server()`. |
+| `core/tools.py` | Re-export shell — registers MCP server from all tool sub-modules. |
+| `core/tool_helpers.py` | Shared tool helpers: UI injection, checkpoint gates, boundary validation. |
+| `core/tool_pipeline.py` | Core pipeline MCP tools: Master → Workers → Quality → Review → Critic → Precommit → Commit. |
+| `core/tool_status.py` | Non-pipeline MCP tools: status queries, daemon control, bot management, analysis. |
 | `core/elo_daemon.py` | Background subprocess that continuously runs mirror battles and updates Glicko-2 ratings. Prioritizes under-evaluated pairs. |
 | `core/glicko2.py` | Glicko-2 rating system implementation (r, rd, volatility). |
 | `core/web_ui.py` | SSE broadcaster + WebUI adapter. Dual output: terminal + dashboard. |
 | `core/experience_pool.md` | Accumulated strategic lessons. Trimmed to 8 entries, consolidated by LLM every 3 gens. |
 | `core/prompts/*.md` | LLM prompt templates for each agent role (master, worker, reviewer, crossover, orchestrator, initial). |
-| `server/app.py` | FastAPI app with lifespan that starts evolution + daemon. Serves React SPA from `server/static/`. |
-| `server/state.py` | Thread-safe global state (mode, daemon config, generation counter). |
+| `server/app.py` | FastAPI app with lifespan that starts orchestrator + daemon. Serves React SPA from `server/static/`. |
+| `server/state.py` | Thread-safe global state (daemon config, generation counter). |
 | `frontend/` | React + Vite + Tailwind dashboard. Build outputs to `server/static/`. |
 
 ### Data Flow
@@ -94,8 +98,7 @@ Workers modify bot code → Reviewer validates → Git commit + tag
 
 ### Stagnation Handling
 
-- Tracked via `git_get_stagnation_count()` (consecutive non-improving ancestors)
-- LLM analyst (`_analyze_stagnation`) determines if stagnation is real or Glicko noise
+- Analyzed via `analyze_stagnation` MCP tool (LLM determines if stagnation is real or Glicko noise)
 - At stagnation ≥3: **crossover** between top-2 bots (`prompts/crossover_prompt.md`)
 - Master can `branch_from` a different ancestor
 

@@ -333,7 +333,7 @@ async def orchestrator_loop(ui, no_daemon=False, daemon_workers=14, daemon_pairs
         _evolution_task = asyncio.create_task(orchestrator_loop(web_ui))
 
     Args:
-        ui: BaseUI instance (WebUI for Dashboard, TextUI for CLI). Can be None for silent mode.
+        ui: BaseUI instance (WebUI for Dashboard). Can be None for silent mode.
         no_daemon: If True, skip daemon startup.
         daemon_workers: Number of parallel workers for the daemon subprocess.
         daemon_pairs: Mirror pairs per match for the daemon subprocess.
@@ -348,6 +348,7 @@ async def orchestrator_loop(ui, no_daemon=False, daemon_workers=14, daemon_pairs
         ui.set_header("🔥 LLM Orchestrator Evolution 🔥")
 
     # Start daemon
+    _daemon_stop = None
     if not no_daemon:
         from evolution_core import start_daemon, daemon_monitor_thread, stop_daemon
         import threading
@@ -410,6 +411,8 @@ async def orchestrator_loop(ui, no_daemon=False, daemon_workers=14, daemon_pairs
         if ui:
             ui.log_history(f"Orchestrator crashed: {e}", "error")
     finally:
+        if _daemon_stop is not None:
+            _daemon_stop.set()
         try:
             from server.state import app_state
             app_state.set_running(False)

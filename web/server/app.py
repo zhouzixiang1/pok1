@@ -1,9 +1,7 @@
 """Unified FastAPI backend — imports from web/core modules."""
 
 import asyncio
-import os
 import sys
-import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -25,68 +23,26 @@ broadcaster = EventBroadcaster(buffer_size=500)
 web_ui = WebUI(broadcaster)
 
 _evolution_task: asyncio.Task | None = None
-_daemon_monitor_stop: threading.Event | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _evolution_task, _daemon_monitor_stop
+    global _evolution_task
 
     config = app_state.get_config()
-    mode = config["mode"]
     daemon_enabled = config["daemon_enabled"]
 
-    if mode != "manual":
-        app_state.set_running(True)
-        try:
-            if mode == "orchestrator":
-                from orchestrator import orchestrator_loop
-                _evolution_task = asyncio.create_task(orchestrator_loop(
-                    web_ui, no_daemon=not daemon_enabled,
-                    daemon_workers=config["daemon_workers"], daemon_pairs=config["daemon_pairs"]))
-                app_state.set_task(_evolution_task)
-                web_ui.log_history("🔥 Orchestrator started (LLM-driven mode)", "success")
-            else:
-                from evolution_core import (
-                    main_loop, start_daemon, daemon_monitor_thread,
-                    PROMPTS_DIR, RESULTS_DIR as EVO_RESULTS_DIR,
-                )
-                os.makedirs(PROMPTS_DIR, exist_ok=True)
-                os.makedirs(EVO_RESULTS_DIR, exist_ok=True)
-
-                if daemon_enabled:
-                    start_daemon(
-                        workers=config["daemon_workers"],
-                        pairs=config["daemon_pairs"],
-                    )
-                    _daemon_monitor_stop = threading.Event()
-                    monitor = threading.Thread(
-                        target=daemon_monitor_thread,
-                        args=(web_ui, _daemon_monitor_stop),
-                        daemon=True,
-                    )
-                    monitor.start()
-
-                async def _run_classic():
-                    try:
-                        await main_loop(web_ui, is_text_ui=False, no_daemon=not daemon_enabled)
-                    finally:
-                        app_state.set_running(False)
-                _evolution_task = asyncio.create_task(_run_classic())
-                app_state.set_task(_evolution_task)
-                web_ui.log_history("Evolution started (classic mode)", "success")
-        except Exception:
-            app_state.set_running(False)
-            raise
-    elif mode == "manual" and daemon_enabled:
-        from evolution_core import start_daemon
-        start_daemon(
-            workers=config["daemon_workers"],
-            pairs=config["daemon_pairs"],
-        )
-        web_ui.log_history("Manual mode: daemon started, no evolution loop.", "info")
-    else:
-        web_ui.log_history("Evolution disabled.", "info")
+    app_state.set_running(True)
+    try:
+        from orchestrator import orchestrator_loop
+        _evolution_task = asyncio.create_task(orchestrator_loop(
+            web_ui, no_daemon=not daemon_enabled,
+            daemon_workers=config["daemon_workers"], daemon_pairs=config["daemon_pairs"]))
+        app_state.set_task(_evolution_task)
+        web_ui.log_history("🔥 Orchestrator started (LLM-driven mode)", "success")
+    except Exception:
+        app_state.set_running(False)
+        raise
 
     yield
 
@@ -96,9 +52,6 @@ async def lifespan(app: FastAPI):
             await asyncio.wait_for(_evolution_task, timeout=10)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
-
-    if _daemon_monitor_stop:
-        _daemon_monitor_stop.set()
 
     try:
         from evolution_core import stop_daemon

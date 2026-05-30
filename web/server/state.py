@@ -43,8 +43,6 @@ class AppState:
 
     def update_config(self, **kwargs) -> dict:
         with self._lock:
-            if "mode" in kwargs and kwargs["mode"] in ("orchestrator", "classic", "manual"):
-                self.mode = kwargs["mode"]
             if "daemon_enabled" in kwargs and isinstance(kwargs["daemon_enabled"], bool):
                 self.daemon_enabled = kwargs["daemon_enabled"]
             if "daemon_workers" in kwargs and isinstance(kwargs["daemon_workers"], int) and not isinstance(kwargs["daemon_workers"], bool):
@@ -52,11 +50,6 @@ class AppState:
             if "daemon_pairs" in kwargs and isinstance(kwargs["daemon_pairs"], int) and not isinstance(kwargs["daemon_pairs"], bool):
                 self.daemon_pairs = max(1, min(20, kwargs["daemon_pairs"]))
             return self.get_config()
-
-    def set_mode(self, mode: str):
-        with self._lock:
-            if mode in ("orchestrator", "classic", "manual"):
-                self.mode = mode
 
     def set_running(self, running: bool):
         with self._lock:

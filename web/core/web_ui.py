@@ -71,7 +71,7 @@ class EventBroadcaster:
 class WebUI(BaseUI):
     """
     Dual-output UI: prints to terminal AND broadcasts via SSE.
-    Pass is_text_ui=False so all LLM output routes through log_io().
+    All LLM output routes through log_io().
     """
 
     def __init__(self, broadcaster: EventBroadcaster):

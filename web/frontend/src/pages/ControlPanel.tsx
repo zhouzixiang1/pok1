@@ -3,13 +3,6 @@ import { controlApi, type ControlStatus, type Decision, type ToolResult, type Ap
 import { api } from "../api/client";
 import type { OrchestratorSession, PipelineCheckpoint } from "../api/types";
 
-const MODES = ["orchestrator", "classic", "manual"] as const;
-
-const modeLabels: Record<string, string> = {
-  orchestrator: "编排器",
-  classic: "经典",
-  manual: "手动",
-};
 
 // ── Inline SVG helpers ─────────────────────────────────────────────────────────
 const RefreshIcon = ({ className }: { className?: string }) => (
@@ -236,11 +229,6 @@ export default function ControlPanel() {
     return () => { clearInterval(id); clearInterval(sessId); };
   }, [refresh, refreshSession]);
 
-  const handleSetMode = async (mode: string) => {
-    await controlApi.setConfig({ mode });
-    await refresh();
-  };
-
   const handleSaveConfig = async () => {
     setLoading("config");
     try {
@@ -323,13 +311,7 @@ export default function ControlPanel() {
         <div className="flex flex-wrap items-center gap-4">
           <div className="flex items-center gap-2">
             <span className="text-sm text-gray-500">模式:</span>
-            <select
-              value={status?.mode || "orchestrator"}
-              onChange={(e) => handleSetMode(e.target.value)}
-              className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white text-sm"
-            >
-              {MODES.map((m) => <option key={m} value={m}>{modeLabels[m] || m}</option>)}
-            </select>
+            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">编排器</span>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-sm text-gray-500">状态:</span>

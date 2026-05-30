@@ -28,6 +28,7 @@ You have two categories of tools:
 These are specialized tools for the evolution pipeline. Call them directly — you don't need Bash for these.
 
 - **get_status** — Check current state: latest bot version, top ratings, active bots count, daemon status, bot games/win_rate. **Call this first** to understand where things stand.
+- **seed_initial_bots** — Seed claude_v1 through claude_v6 from reference bots. **Call this first** when `get_status()` returns `current_v: 0` or no completed bots exist.
 - **get_bot_info(version)** — Detailed info about a specific bot: rating, parent, files, code size.
 - **get_match_history(version, n)** — Recent match results for a bot.
 - **get_h2h(bot_name, opponent?)** — Head-to-Head matrix: per-opponent win rates. Shows who beats whom, with STRENGTH/WEAKNESS tags.
@@ -59,6 +60,7 @@ These are specialized tools for the evolution pipeline. Call them directly — y
 A generation must follow this order. You may choose retry/branch/crossover details, but you cannot skip forward.
 
 1. **Check status** → `get_status()`
+   - If `current_v: 0` or no completed bots, call `seed_initial_bots()` first to bootstrap v1–v6 from reference bots.
    - Check `incomplete_next_v`: if set, a previous cycle was interrupted. Decide: resume workers or clean up and restart.
    - Check `rating_reliable`: if false (games < 100), do NOT make stagnation/branch decisions.
 2. **Housekeeping** → `reap_weakest()` if needed, `trim_experience()`
