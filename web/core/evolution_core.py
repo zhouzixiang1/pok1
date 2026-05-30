@@ -1511,6 +1511,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
 
     compile_errors = []
     smoke_errors = []
+    _last_reason = "unknown"
     for attempt in range(MAX_WORKER_RETRIES):
         ui.clear_io()
         ui.set_status(f"[{role}] coding for v{next_v}...", is_working=True)
@@ -1532,6 +1533,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 timeout=WORKER_TIMEOUT,
             )
         except asyncio.TimeoutError:
+            _last_reason = f"timed out after {WORKER_TIMEOUT}s (attempt {attempt+1}/{MAX_WORKER_RETRIES})"
             ui.log_history(
                 f"Worker {w_id} ({role}) timed out after {WORKER_TIMEOUT}s. Retrying with simpler task...",
                 "warn",
@@ -1544,19 +1546,20 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
 
         compile_errors = verify_code(next_dir)
         if compile_errors:
+            _last_reason = f"compile error: {compile_errors[0][:200]}"
             base_worker_prompt += f"\n\nCRITICAL FIX: Fix syntax error:\n{compile_errors[0]}"
             continue
 
         smoke_errors = run_smoke_test(next_dir)
         if smoke_errors:
+            _last_reason = f"smoke test error: {smoke_errors[0][:200]}"
             base_worker_prompt += f"\n\nCRITICAL FIX: Fix runtime error:\n{smoke_errors[0]}"
             continue
 
         return True
 
     # Worker failed all retries — record failure
-    last_error = compile_errors[0] if compile_errors else (smoke_errors[0] if smoke_errors else "unknown")
-    _record_worker_failure(next_v, w_id, role, last_error)
+    _record_worker_failure(next_v, w_id, role, _last_reason)
     return False
 
 
