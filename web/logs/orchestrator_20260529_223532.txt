@@ -704,3 +704,159 @@ Risks: postflop.py at 999 lines, strategy.py at 993 lines (near limit), 3-bet de
 
 `intra_gen_attempts = 0`
 [tool: mcp__evolution__run_critic]
+Critic **rejected** with score 5/10. Strong feedback: **local optima detected** — three consecutive gens pushing wider preflop + bigger sizing without improving postflop decision quality. strategy.py and postflop.py are untouched despite being the real bottleneck.
+
+`intra_gen_attempts = 1` — retrying workers with critic feedback focusing on postflop quality.
+[tool: mcp__evolution__execute_workers]
+Same internal error. Let me check if the retry worker completed its work.
+[tool: mcp__evolution__run_quality_gates]
+Decision tests dropped to 0% — the retry broke something. Quality gates failed. I cannot commit with failed gates.
+
+`intra_gen_attempts = 1`. Let me retry workers with very focused feedback to fix the decision tests.
+[tool: mcp__evolution__execute_workers]
+
+[tool: mcp__evolution__run_quality_gates]
+Decision tests restored to 87% — all quality gates pass again. The worker fixed the broken code paths. Now let me re-run the critic to see if the postflop improvements address its concerns.
+
+`intra_gen_attempts = 1` — calling critic for second assessment.
+[tool: mcp__evolution__run_critic]
+Critic **approved** with score 6/10 on second assessment (after addressing postflop quality feedback). All mandatory pipeline stages now complete:
+
+1. ✅ Quality gates — all passed
+2. ✅ Code review — approved (score 7)
+3. ✅ Strategy critic — approved (score 6)
+
+Committing v26 now.
+[tool: mcp__evolution__commit_bot]
+**Generation v26 committed!** Here's the summary:
+
+---
+
+## Generation v26 Summary
+
+| Step | Result |
+|---|---|
+| **Source** | v25 (branched from v9) |
+| **Master Plan** | Single worker — surgical postflop focus |
+| **Workers** | Timed out twice, eventually completed |
+| **Quality Gates** | ✅ All passed (compile, smoke, 87% decision, size) |
+| **Code Review** | ✅ Approved (score 7/10) |
+| **Critic (1st)** | ❌ Score 5/10 — local optima: same wider-preflop pattern |
+| **Worker Retry 1** | Broke decision tests (0%) |
+| **Worker Retry 2** | Fixed decision tests, added postflop improvements |
+| **Critic (2nd)** | ✅ Score 6/10 — approved after postflop quality fixes |
+| **Commit** | ✅ `bot-v26` tagged |
+
+### Key Changes
+1. **SPR-aware postflop logic** — bigger pots need stronger hands
+2. **Opponent bet-size profiling** — classifies weak/standard/polarized bettors
+3. **Reduced tier 3-4 preflop sizing** — 2.5x BB instead of 3.5x
+4. Fixed broken decision paths
+
+---
+
+Now starting generation v27. Let me check status.
+[tool: mcp__evolution__get_status]
+Ratings shifted — v7 now top at 1657.8, v22 at 1651.7. v26 just committed with 0 games. Let me wait for evaluation.
+[tool: mcp__evolution__wait_for_eval]
+
+[tool: mcp__evolution__wait_for_eval]
+v26: 10 games, **90% win rate**, preliminary rating 1514.5 (rd=131.8 — very unreliable). The win rate is excellent. Let me wait for more data.
+[tool: mcp__evolution__wait_for_eval]
+v26: 30 games, **73.3% win rate**, rating 1526.9 (rd=84.8). Good win rate but rating still converging. Let me proceed with the pipeline using available data.
+[tool: mcp__evolution__run_match_analysis]
+
+[tool: mcp__evolution__run_performance_verification]
+Critical finding: **Postflop fold logic still isn't working** — 0% fold rate persists on all streets despite being "added" in v25 and v26. The calling station problem remains the #1 issue.
+
+**Match Analysis:** 73.3% WR (30 games), but 0% postflop fold, underbetting at 0.5x pot, river passive (18% raise). "Win small, lose big" pattern.
+
+**Performance Verification:** Declining trend, diversity_needed=true, 40% WR vs competitive peers. Rating plateau at ~1653.
+
+Let me call Master with this critical diagnostic.
+[tool: mcp__evolution__run_master]
+Master made a decisive pivot: **branch from v7** (top rated at 1657.8) with a **radically simpler approach** — embed the fold gate directly at the TOP of the postflop decision function as the FIRST check, no abstraction layers. This addresses the root cause of two generations of failed postflop folding.
+
+Two workers:
+1. **Worker 1:** Direct `return -1` fold gate at top of postflop function
+2. **Worker 2:** Tune bet sizing constants upward
+[tool: mcp__evolution__prepare_next_gen]
+
+[tool: mcp__evolution__execute_workers]
+
+[tool: mcp__evolution__run_quality_gates]
+Quality gates failed on **file size**: strategy.py at 1166 lines and postflop.py at 1015 lines (both exceed 1000-line limit). But compile ✅, smoke ✅, decision tests 93% ✅ — great code quality, just needs trimming.
+
+`intra_gen_attempts = 0`. Retrying workers to fix file sizes.
+[tool: mcp__evolution__execute_workers]
+
+[tool: mcp__evolution__run_quality_gates]
+All quality gates pass now — strategy.py and postflop.py trimmed successfully (3228→2814 total lines). Decision tests still 93%. Proceeding to code review.
+[tool: mcp__evolution__run_review]
+Code review **rejected** with score 5/10. Three clear issues:
+
+1. **Worker 2 ignored** — bet sizing constants unchanged (still identical to parent v7)
+2. **Anti-bot4 detection disabled** — unrequested regression removing working code
+3. **Fold gate may fold strong draws** — no draw equity protection
+
+`intra_gen_attempts = 1`. Retrying workers with specific fixes.
+[tool: mcp__evolution__execute_workers]
+
+[tool: mcp__evolution__run_quality_gates]
+Quality gates all pass (compile ✅, smoke ✅, decision 87%, size ✅). Decision rate dropped slightly from 93% to 87% but still well above threshold. Proceeding to review.
+[tool: mcp__evolution__run_review]
+Code review **approved** with score 8/10 (up from 5). All three fixes applied:
+- ✅ Bet sizing increased: preflop 0.55→0.63, 3-bet 0.75→0.86, flop→0.65, turn→0.75, river→0.90
+- ✅ Anti-bot4 detection restored
+- ✅ Draw equity protection in fold gate (flush draws, OESD, combo draws bypass)
+
+Proceeding to Strategy Critic. `intra_gen_attempts = 1`
+[tool: mcp__evolution__run_critic]
+Critic **approved** with score 6/10. All mandatory pipeline stages complete:
+
+1. ✅ Quality gates — all passed
+2. ✅ Code review — approved (score 8/10)
+3. ✅ Strategy critic — approved (score 6/10)
+
+Committing v27.
+[tool: mcp__evolution__commit_bot]
+**Generation v27 committed!** Here's the summary:
+
+---
+
+## Generation v27 Summary
+
+| Step | Result |
+|---|---|
+| **Source** | **Branched from v7** (top rated r=1657.8) — escaping v25/v26 lineage |
+| **Master Plan** | 2 workers — radical simplification of postflop fold + bet sizing tuning |
+| **Quality Gates (1st)** | ❌ File size exceeded (strategy.py 1166, postflop.py 1015) |
+| **Worker Retry** | Trimmed files to fit limits |
+| **Quality Gates (2nd)** | ✅ All passed |
+| **Code Review (1st)** | ❌ Score 5 — Worker 2 ignored, anti-bot4 disabled, fold gate risky |
+| **Worker Retry** | Fixed all 3 issues |
+| **Code Review (2nd)** | ✅ Score 8/10 |
+| **Strategy Critic** | ✅ Score 6/10 |
+| **Commit** | ✅ `bot-v27` tagged |
+
+### Key Changes (v7 → v27)
+1. **Direct postflop fold gate** — first check in decision path, simple `return -1`, no abstraction
+2. **Draw equity protection** — 8+ out draws bypass fold gate
+3. **Bet sizing increased** — preflop +15%, flop +8%, turn +7%, river +6%
+4. **Anti-bot4 detection restored**
+5. **Dead code removed**
+
+---
+
+Now starting generation v28. Let me check status.
+[tool: mcp__evolution__get_status]
+Ratings continue to shift — v8 now top at 1631.6, v7 at 1626.5 (from 1657.8 earlier). v27 just committed with 0 games. Let me wait for evaluation.
+[tool: mcp__evolution__wait_for_eval]
+
+[tool: mcp__evolution__wait_for_eval]
+v27: 10 games, 80% WR, rating 1405.0 (rd=121.1). Rating seems low but win rate is promising. Waiting for more data.
+[tool: mcp__evolution__wait_for_eval]
+v27: 20 games, 65% WR, rating 1518.5 (rd=87.0). Win rate settling as more games come in. Proceeding with pipeline using available data.
+[tool: mcp__evolution__run_match_analysis]
+
+[tool: mcp__evolution__run_performance_verification]

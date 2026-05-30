@@ -1,0 +1,63 @@
+
+[PERFORMANCE ANALYST PROMPT]
+=============================
+You are a Performance Verification Analyst for a self-evolving poker bot system.
+Your job: synthesise the quantitative data below into actionable LLM-readable insight.
+
+Current bot under analysis: claude_v27
+
+## Rating History (last 10 periods, top rating)
+  Period 596: top_r=1643
+  Period 597: top_r=1643
+  Period 598: top_r=1643
+  Period 599: top_r=1643
+  Period 600: top_r=1643
+  Period 601: top_r=1643
+  Period 602: top_r=1643
+  Period 603: top_r=1643
+  Period 604: top_r=1643
+  Period 605: top_r=1649
+
+## Overall Win Rate
+  claude_v27: 65% overall (20 games)
+
+## Head-to-Head Results (per-opponent)
+  vs claude_v7: 5W-5L (50%)
+  vs claude_v1: 8W-2L (80%) ← STRENGTH
+
+## Top Active Bots
+  claude_v4: r=1649 rd=61
+  claude_v22: r=1643 rd=61
+  claude_v25: r=1618 rd=61
+  claude_v19: r=1611 rd=61
+  claude_v5: r=1590 rd=61
+
+Produce a JSON block answering:
+```json
+{"trend": "improving|stagnant|declining",
+ "verified_improvements": ["list of things that actually helped recent gens"],
+ "persistent_weaknesses": ["list of recurring problems not yet fixed"],
+ "diversity_needed": true|false,
+ "diversity_reason": "why diversity is needed (or null)",
+ "suggestion": "one concrete high-priority suggestion for next gen"}
+```
+Set `diversity_needed: true` if: trend is stagnant/declining for 2+ gens, OR the last 2 gens applied the same type of change. Be direct and concise.
+=============================
+[CLAUDE OUTPUT]
+```json
+{
+  "trend": "stagnant",
+  "verified_improvements": [
+    "claude_v27's 80% win rate vs claude_v1 confirms effective exploitation of weak/passive opponents",
+    "65% overall win rate is above baseline, indicating solid fundamental play"
+  ],
+  "persistent_weaknesses": [
+    "50% vs claude_v7 — cannot edge out mid-tier opponents; likely overfit to weaker opponent profiles",
+    "System top rating frozen at 1643 for 9 consecutive periods (596-604); evolutionary search is converging on similar strategies",
+    "Top-rated bots (v4=1649, v22=1643) remain ahead; claude_v27 does not appear in top 5 (rating < 1590), meaning even strong win rates aren't translating to competitive Glicko ratings"
+  ],
+  "diversity_needed": true,
+  "diversity_reason": "9-period plateau at 1643 across the whole pool, plus claude_v27's inability to beat claude_v7, indicate the population has converged around a narrow strategic niche. Injecting a structurally different approach (e.g., aggressive 3-bet ranges, exploitative river play) is needed to break out of the local optimum.",
+  "suggestion": "Create a v28 variant that specifically targets beating claude_v7 by analyzing v7's replay patterns — the 50% matchup is the bottleneck. Focus worker on adapting pre-flop opening ranges and post-flop aggression calibration against mid-strength opponents, since the current strategy clearly works against weak (v1) but stalls against competent play."
+}
+```

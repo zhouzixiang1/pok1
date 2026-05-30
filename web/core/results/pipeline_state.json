@@ -1,19 +1,28 @@
 {
-  "next_v": 27,
-  "source_v": 7,
+  "next_v": 28,
+  "source_v": 8,
   "stage": "critic_checked",
   "master_plan": [
     {
-      "difficulty": "easy",
+      "difficulty": "medium",
       "role": "Algorithmic Logic Architect",
       "target_files": [
-        "main.py"
+        "bots/claude_v8/main.py"
       ],
       "worker_id": 1,
-      "worker_prompt": "Fix 3 issues: (1) add draw equity protection to fold gate, (2) restore anti-bot4 detection, (3) increase bet sizing constants"
+      "worker_prompt": "Add board texture analysis + position-aware postflop aggression"
+    },
+    {
+      "difficulty": "easy",
+      "role": "Hyperparameter Tuner",
+      "target_files": [
+        "bots/claude_v8/main.py"
+      ],
+      "worker_id": 2,
+      "worker_prompt": "Tune preflop & aggression constants"
     }
   ],
-  "reviewer_feedback": "Reviewer approved score 8/10. All fixes applied: bet sizing increased 5-11% across streets, anti-bot4 restored, draw equity protection added to fold gate. Minor risks: gutshot draws not protected (only 4 outs), preflop 3-bet +11% may create expensive barrels when behind.",
+  "reviewer_feedback": "Reviewer approved score 6/10. Key issues: (1) Worker 2 made ZERO constant changes \u2014 preflop/aggression tuning completely missing, (2) Dead code: board_tex_class computed but never consumed, (3) Bluff threshold may make bot too passive on completed boards. Board texture classification itself is a genuine structural improvement \u2014 dry/wet/completed classification with position-aware aggression scaling.",
   "generation_attempt": 0,
-  "timestamp": "2026-05-30T07:21:32"
+  "timestamp": "2026-05-30T08:16:27"
 }
