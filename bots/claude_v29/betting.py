@@ -1,5 +1,5 @@
 """Betting decision functions extracted from strategy.py for modularity."""
-from constants import BIG_BLIND
+from constants import BIG_BLIND, TOTAL_HANDS
 from card_utils import clamp
 from postflop import empty_draw_profile
 from state import (

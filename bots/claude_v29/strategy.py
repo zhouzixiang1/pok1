@@ -298,10 +298,15 @@ def get_action(req, requests):
                     )
                     if raise_amount is not None:
                         return raise_amount
+                # Premium hands always call all-in
+                if state.get("opponent_allin"):
+                    return -2
                 return 0
             elif preflop_tier == 3:
                 pot_odds_pf = to_call / (pot + to_call)
                 if pot_odds_pf <= 0.40 or preflop_strength >= 0.35 or to_call <= BIG_BLIND * 3:
+                    if state.get("opponent_allin") and preflop_strength >= 0.40:
+                        return -2
                     return 0
                 return -1
             elif preflop_tier == 4:
@@ -354,7 +359,9 @@ def get_action(req, requests):
         }
 
     # RIVER 3-BRANCH DECISION: fix 0% raise / 0% fold leak
-    if round_idx == 3 and len(public_cards) >= 5:
+    # Defer nut hands to overbet logic downstream (lines below)
+    is_nut_hand = value_profile is not None and value_profile.get("tier") == "nut"
+    if round_idx == 3 and len(public_cards) >= 5 and not is_nut_hand:
         river_action = river_3branch_decision(
             state, my_chips, to_call, pot, win_rate, made_strength,
             value_profile, pair_profile, draw_info, board_texture,

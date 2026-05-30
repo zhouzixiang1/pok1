@@ -279,3 +279,215 @@ As an **"Algorithmic Logic Architect"**, the worker should not have tuned consta
   ]
 }
 ```
+
+[LEAD CODE REVIEWER PROMPT]
+=============================
+# Role
+You are the strict Lead Code Reviewer (Critic) for a Texas Hold'em poker bot team.
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files.
+- **Use the Bash tool** to run git diff and other commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Task
+Worker Agents have modified the bot codebase based on the Master Architect's instructions.
+Your job is the final quality gate before production (the next evolution iteration).
+
+# Context
+1. **Master's Original Plan/Tasks:**
+[
+  {
+    "worker_id": 1,
+    "role": "Algorithmic Logic Architect",
+    "target_files": [
+      "bots/claude_v28/main.py"
+    ],
+    "difficulty": "hard",
+    "worker_prompt": "Rewrite preflop tier-based hand classification + add 3-branch river decision (fold/call/raise)"
+  },
+  {
+    "worker_id": 2,
+    "role": "Hyperparameter Tuner",
+    "target_files": [
+      "bots/claude_v28/main.py"
+    ],
+    "difficulty": "easy",
+    "worker_prompt": "Increase bet sizing constants from 0.5x to 0.65-0.75x pot"
+  }
+]
+
+2. **Bot directory**: `bots/claude_v29/`
+3. **Parent version tag**: `bot-v28`
+
+# How to Review
+You have full access to git and file reading tools. Use them:
+
+1. **See all changes**: Run `git diff bot-v28 -- bots/claude_v29/`
+   This shows exactly what the workers changed vs the parent bot.
+2. **See change summary**: Run `git diff --stat bot-v28 -- bots/claude_v29/`
+3. **Read specific files**: Use the Read tool on any file in `bots/claude_v29/`
+4. **List all files**: Run `ls bots/claude_v29/` to see the full file list
+
+Focus your review on the diff, but read full files when you need more context.
+
+# Rules
+1. Verify the changes fulfill the Master's instructions without logical flaws or contradictions.
+2. ENFORCE THE DUAL-TRACK BOUNDARY:
+   - If a "Hyperparameter Tuner" was assigned, verify they ONLY changed constants/thresholds. If they injected complex new logic, REJECT.
+   - If an "Algorithmic Logic Architect" was assigned, verify their logic is sound.
+3. Ensure the code compiles conceptually and adheres to the `{"response": int}` JSON output format constraint.
+4. Output exactly ONE JSON block containing your decision. If you reject the code, you must provide a detailed "feedback" string explaining what the Developer Agents need to fix.
+5. FILE SIZE CONSTRAINT: No single .py file should exceed 1000 lines. If any file is too large, REJECT and instruct workers to split it into focused modules. Keep main.py as the slim entry point.
+
+# Correctness Criteria (MANDATORY CHECK)
+Before approving, verify the bot does NOT do any of the following:
+- Fold premium hands (AA, KK, QQ, AKs) preflop without extreme pressure
+- Call all-in with obviously dominated hands on the river
+- Return invalid JSON (must output `{"response": <int>}`)
+- Use `input()` or `print()` instead of stdin/stdout for game communication
+- Import unavailable modules (only stdlib + numpy if present)
+- Have obvious infinite loops or unbounded recursion
+
+# Output Format
+You MUST output your response containing exactly ONE JSON block formatted as follows:
+
+```json
+{
+  "approved": true or false,
+  "feedback": "If approved=false, provide detailed instructions on what needs to be fixed. If true, this can be empty.",
+  "quality_score": 7,
+  "change_summary": "A 1-2 sentence summary of the key changes made in this generation.",
+  "risk_areas": ["List of potential risks or concerns about the changes, if any"]
+}
+```
+
+# Quality Score Rubric
+- **9-10**: Clean, well-structured changes that clearly improve strategy. No risks. Code is concise and follows project conventions.
+- **7-8**: Good changes that address the plan. Minor concerns (e.g., slightly verbose code, a heuristic that might not generalize). Approve.
+- **5-6**: Changes work but are mediocre — copy-pasted code, brute-force approaches where elegant solutions exist, or unclear strategy. Approve with caution.
+- **3-4**: Changes introduce regression risk, violate role boundaries, or show fundamental misunderstanding of poker strategy. REJECT.
+- **1-2**: Broken code, catastrophic strategic errors (folding AA preflop), or complete failure to follow instructions. REJECT.
+
+- `change_summary`: Required even when approved=true. This is used to update the experience pool for future generations.
+- `risk_areas`: Optional. List potential issues that could cause regression.
+
+=============================
+[CLAUDE OUTPUT]
+Now let me verify the bot's output format and check for critical correctness issues:
+This is a critical finding. Let me investigate the all-in handling further:
+Now let me check the parent bot for comparison and verify the main_backup file:
+Based on my thorough review, here is my verdict:
+
+```json
+{
+  "approved": false,
+  "feedback": "CRITICAL BUG REJECTED. The preflop tier-based defense in strategy.py (lines 287-313) returns 0 (call/check) for tier 1-2 hands (AA, KK, QQ, AKs, AKo) when facing an all-in preflop. The sanitize_action() function in main.py then converts 0 to -1 (fold) when opponent_allin=True, causing ALL premium hands to fold to all-in preflop. Verified: AA, KK, QQ, and AKs all return -1 (fold) when facing an all-in as BB — a catastrophic strategic error.\n\nRoot cause: In strategy.py get_action(), the preflop tier defense block (lines 287-313) returns 0 for tier<=2 hands without checking state['opponent_allin']. When the opponent is all-in, choose_raise() returns None (can't raise vs all-in due to chip check), so the code falls through to 'return 0'. sanitize_action() then converts 0→-1 because opponent_allin=True.\n\nFix: In strategy.py, lines 301 and 306-313, add a check for state['opponent_allin'] before returning 0. When the opponent is all-in and the hand is tier 1-2 (premium), return -2 (call all-in) instead of 0. Example fix for line 301:\n  if state.get('opponent_allin'):\n      return -2  # Premium hands always call all-in\n  return 0\n\nAlso apply the same check for tier 3 and tier 4 (lines 302-313) where return 0 is used.\n\nADDITIONAL ISSUE: main_backup.py is 3268 lines (exceeds the 1000-line file size limit) and is dead code not imported anywhere. DELETE this file entirely.\n\nThe bet sizing changes by the Hyperparameter Tuner (0.65-0.75x pot ratios) are correct and within role boundaries. The module refactoring and river 3-branch decision logic are structurally sound, but the preflop all-in bug makes this bot unplayable.",
+  "quality_score": 3,
+  "change_summary": "Refactored monolithic bot into modular architecture (12 files). Added tier-based preflop hand classification (5 tiers) and 3-branch river decision logic (strong/medium/weak). Increased bet sizing from ~0.5x to 0.65-0.75x pot. However, a critical bug in the preflop tier defense causes all premium hands (AA, KK, QQ, AKs) to fold to all-in preflop, making the bot fundamentally broken.",
+  "risk_areas": [
+    "CRITICAL: Preflop tier defense folds AA/KK/QQ/AKs to all-in (sanitize_action converts return 0 to -1 when opponent_allin=True)",
+    "main_backup.py is 3268 lines (3x over limit) and must be deleted",
+    "river_3branch_decision bypasses the main flow's all-in/raise handling for non-nut river hands, which may have edge cases with inconsistent action sanitization",
+    "classify_river_hand treats 'thin' value tier with made_strength >= 0.30 as 'strong', which may cause over-aggressive river betting with medium-strength hands",
+    "The tier-based defense handles 'sb_vs_reraise' through the same code path as 'bb_vs_raise', but SB facing a 3bet has fundamentally different stack-to-pot dynamics"
+  ]
+}
+```
+
+[LEAD CODE REVIEWER PROMPT]
+=============================
+# Role
+You are the strict Lead Code Reviewer (Critic) for a Texas Hold'em poker bot team.
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files.
+- **Use the Bash tool** to run git diff and other commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Task
+Worker Agents have modified the bot codebase based on the Master Architect's instructions.
+Your job is the final quality gate before production (the next evolution iteration).
+
+# Context
+1. **Master's Original Plan/Tasks:**
+[
+  {
+    "worker_id": 1,
+    "role": "Algorithmic Logic Architect",
+    "target_files": [
+      "bots/claude_v28/main.py"
+    ],
+    "difficulty": "hard",
+    "worker_prompt": "Rewrite preflop tier-based hand classification + add 3-branch river decision (fold/call/raise)"
+  },
+  {
+    "worker_id": 2,
+    "role": "Hyperparameter Tuner",
+    "target_files": [
+      "bots/claude_v28/main.py"
+    ],
+    "difficulty": "easy",
+    "worker_prompt": "Increase bet sizing constants from 0.5x to 0.65-0.75x pot"
+  }
+]
+
+2. **Bot directory**: `bots/claude_v29/`
+3. **Parent version tag**: `bot-v28`
+
+# How to Review
+You have full access to git and file reading tools. Use them:
+
+1. **See all changes**: Run `git diff bot-v28 -- bots/claude_v29/`
+   This shows exactly what the workers changed vs the parent bot.
+2. **See change summary**: Run `git diff --stat bot-v28 -- bots/claude_v29/`
+3. **Read specific files**: Use the Read tool on any file in `bots/claude_v29/`
+4. **List all files**: Run `ls bots/claude_v29/` to see the full file list
+
+Focus your review on the diff, but read full files when you need more context.
+
+# Rules
+1. Verify the changes fulfill the Master's instructions without logical flaws or contradictions.
+2. ENFORCE THE DUAL-TRACK BOUNDARY:
+   - If a "Hyperparameter Tuner" was assigned, verify they ONLY changed constants/thresholds. If they injected complex new logic, REJECT.
+   - If an "Algorithmic Logic Architect" was assigned, verify their logic is sound.
+3. Ensure the code compiles conceptually and adheres to the `{"response": int}` JSON output format constraint.
+4. Output exactly ONE JSON block containing your decision. If you reject the code, you must provide a detailed "feedback" string explaining what the Developer Agents need to fix.
+5. FILE SIZE CONSTRAINT: No single .py file should exceed 1000 lines. If any file is too large, REJECT and instruct workers to split it into focused modules. Keep main.py as the slim entry point.
+
+# Correctness Criteria (MANDATORY CHECK)
+Before approving, verify the bot does NOT do any of the following:
+- Fold premium hands (AA, KK, QQ, AKs) preflop without extreme pressure
+- Call all-in with obviously dominated hands on the river
+- Return invalid JSON (must output `{"response": <int>}`)
+- Use `input()` or `print()` instead of stdin/stdout for game communication
+- Import unavailable modules (only stdlib + numpy if present)
+- Have obvious infinite loops or unbounded recursion
+
+# Output Format
+You MUST output your response containing exactly ONE JSON block formatted as follows:
+
+```json
+{
+  "approved": true or false,
+  "feedback": "If approved=false, provide detailed instructions on what needs to be fixed. If true, this can be empty.",
+  "quality_score": 7,
+  "change_summary": "A 1-2 sentence summary of the key changes made in this generation.",
+  "risk_areas": ["List of potential risks or concerns about the changes, if any"]
+}
+```
+
+# Quality Score Rubric
+- **9-10**: Clean, well-structured changes that clearly improve strategy. No risks. Code is concise and follows project conventions.
+- **7-8**: Good changes that address the plan. Minor concerns (e.g., slightly verbose code, a heuristic that might not generalize). Approve.
+- **5-6**: Changes work but are mediocre — copy-pasted code, brute-force approaches where elegant solutions exist, or unclear strategy. Approve with caution.
+- **3-4**: Changes introduce regression risk, violate role boundaries, or show fundamental misunderstanding of poker strategy. REJECT.
+- **1-2**: Broken code, catastrophic strategic errors (folding AA preflop), or complete failure to follow instructions. REJECT.
+
+- `change_summary`: Required even when approved=true. This is used to update the experience pool for future generations.
+- `risk_areas`: Optional. List potential issues that could cause regression.
+
+=============================
+[CLAUDE OUTPUT]

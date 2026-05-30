@@ -250,7 +250,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
         disallowed_tools=_BLOCKED_MCP_TOOLS,
         setting_sources=[],
         hooks=_make_precompact_hook(),
-        max_turns=max_turns or 80,
+        max_turns=max_turns,
         **resume_kwargs,
     )
 
@@ -359,7 +359,7 @@ async def orchestrator_loop(ui, no_daemon=False):
     try:
         while True:
             gen_count += 1
-            max_turns = 80  # Limit per-cycle turns to prevent runaway
+            max_turns = None  # No turn limit — prompt constrains behavior
 
             cost = await _run_one_cycle(
                 ui=ui,
@@ -400,7 +400,7 @@ async def run_orchestrator_cli(args):
             log_file=log_file,
             one_gen=args.one_gen,
             dry_run=args.dry_run,
-            max_turns=args.max_turns or 50,
+            max_turns=args.max_turns,
         )
         print(f"\n[Orchestrator] Done. Cost: ${cost:.4f}")
     else:
@@ -410,7 +410,7 @@ async def run_orchestrator_cli(args):
             cost = await _run_one_cycle(
                 ui=None, log_file=log_file,
                 one_gen=False, dry_run=False,
-                max_turns=args.max_turns or 80,
+                max_turns=args.max_turns,
             )
             print(f"\n[Orchestrator] Cycle {gen_count} done. Cost: ${cost:.4f}")
             await asyncio.sleep(5)

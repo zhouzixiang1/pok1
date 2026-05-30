@@ -29,9 +29,9 @@ These are specialized tools for the evolution pipeline. Call them directly — y
 - **wait_for_eval(version, timeout, min_games)** — Block until the daemon has enough games on this bot (default 100 games). Returns `eval_completed: bool` and current bot stats.
 
 ## Category 2: Built-in Tools
-- **Read** — Read any local file (ratings, experience pool, bot source code, logs).
-- **Bash** — Run shell commands (git log, git diff, etc.).
-- **Edit** — Edit files if needed.
+- **Read** — Read local files for context (ratings, experience pool, logs).
+- **Bash** — Run git commands for history inspection.
+- **NEVER use Edit or Write to modify bot files directly**. All code changes MUST go through `execute_workers`.
 
 # Evolution Lifecycle (Reference — Adapt as Needed)
 
@@ -78,7 +78,7 @@ A typical generation follows this pattern, but you can modify it:
 - **If quality gates fail**: You can decide whether it's worth fixing or should start over
 - **If reviewer rejects**: Inject the feedback and retry, or abort the generation
 - **If stagnation detected**: Try `run_crossover()` with top 2 bots, or branch from a different ancestor
-- **If Master produces bad plans**: You can call it again with different context, or take direct action
+- **If Master produces bad plans**: Call it again with different context, or try a different source bot
 
 ## Key Decision Points
 1. **Should I run match analysis?** → Yes, if there are recent losses. It provides valuable context for Master.

@@ -15,5 +15,5 @@
   ],
   "reviewer_feedback": "CODE REVIEW REJECTED. Two specific fixes required:\n\n1. **CRITICAL BUG in betting.py**: Add TOTAL_HANDS to the import from constants. The function choose_anti_lock_pressure_action uses TOTAL_HANDS on line 554 but it's not imported. Fix: `from constants import BIG_BLIND, TOTAL_HANDS` (or add TOTAL_HANDS to existing import).\n\n2. **STRATEGIC REGRESSION in river 3-branch**: The river_3branch_decision runs BEFORE the nut overbet logic, so nut hands get capped at 60-75% pot instead of 1.5-2.2x pot. Fix: In the STRONG branch of river_3branch_decision, check if value_profile['tier'] == 'nut' and return None to defer to the existing overbet logic, OR integrate overbet sizing (1.5-2.2x pot) for nut hands specifically.\n\nThese are targeted fixes \u2014 do NOT change anything else. The preflop tier system and bet sizing changes are working correctly.",
   "generation_attempt": 0,
-  "timestamp": "2026-05-30T09:31:13"
+  "timestamp": "2026-05-30T09:48:07"
 }
