@@ -209,93 +209,6 @@ def detect_bot4_profile(opponent_model, n_hands_played):
     return score >= 0.20, score
 
 
-def classify_opponent_style(opponent_model):
-    """Classify opponent into strategic style and return threshold deltas.
-
-    Returns dict with:
-    - style: str ('nit', 'maniac', 'station', 'fold_heavy', 'balanced')
-    - bluff_freq_bonus: float (added to bluff frequency)
-    - strong_delta: float (added to strong raise threshold)
-    - medium_delta: float (added to medium raise threshold)
-    - call_delta: float (added to call margin)
-    - fold_delta: float (added to fold threshold)
-    """
-    confidence = opponent_model['confidence']
-    if confidence < 0.15:
-        return {
-            'style': 'unknown',
-            'bluff_freq_bonus': 0.0,
-            'strong_delta': 0.0,
-            'medium_delta': 0.0,
-            'call_delta': 0.0,
-            'fold_delta': 0.0,
-        }
-
-    vpip = opponent_model['vpip']
-    pfr = opponent_model['pfr']
-    postflop_aggr = opponent_model['postflop_aggr']
-    fold_to_raise = opponent_model['fold_to_raise']
-    aggression = opponent_model['aggression']
-    allin_rate = opponent_model['allin_rate']
-
-    style = 'balanced'
-    deltas = {
-        'bluff_freq_bonus': 0.0,
-        'strong_delta': 0.0,
-        'medium_delta': 0.0,
-        'call_delta': 0.0,
-        'fold_delta': 0.0,
-    }
-
-    # Classification rules
-    # NIT: low VPIP (<0.48), low aggression (<0.25)
-    if vpip < 0.48 and aggression < 0.25:
-        style = 'nit'
-        # Nit folds too much → bluff more, value bet thinner
-        deltas['bluff_freq_bonus'] = confidence * 0.08
-        # Their range is strong when they continue → raise thresholds
-        deltas['strong_delta'] = confidence * 0.02
-        deltas['medium_delta'] = confidence * 0.015
-        deltas['call_delta'] = confidence * 0.015
-        deltas['fold_delta'] = confidence * 0.01
-
-    # MANIAC: high VPIP (>0.68), high aggression (>0.42)
-    elif vpip > 0.68 and aggression > 0.42:
-        style = 'maniac'
-        # Maniac bluffs a lot → call down lighter, bluff less
-        deltas['bluff_freq_bonus'] = -confidence * 0.06
-        # Their range is wide → lower thresholds (we beat more)
-        deltas['strong_delta'] = -confidence * 0.02
-        deltas['medium_delta'] = -confidence * 0.015
-        # Call more against maniac aggression
-        deltas['call_delta'] = -confidence * 0.02
-        deltas['fold_delta'] = -confidence * 0.015
-
-    # STATION: high VPIP (>0.65), high fold_to_raise (>0.55), low postflop aggression
-    elif vpip > 0.65 and postflop_aggr < 0.30:
-        style = 'station'
-        # Station calls everything → value bet more, bluff less
-        deltas['bluff_freq_bonus'] = -confidence * 0.04
-        # They don't fold → lower raise thresholds to value bet wider
-        deltas['strong_delta'] = -confidence * 0.015
-        deltas['medium_delta'] = -confidence * 0.02
-        # Don't bluff raise against stations
-        deltas['call_delta'] = confidence * 0.01
-
-    # FOLD-HEAVY: high fold_to_raise (>0.56)
-    elif fold_to_raise > 0.56:
-        style = 'fold_heavy'
-        # Folds a lot → bluff more
-        deltas['bluff_freq_bonus'] = confidence * 0.10
-        # They fold to aggression → lower raise thresholds
-        deltas['strong_delta'] = -confidence * 0.01
-        deltas['medium_delta'] = -confidence * 0.015
-        deltas['fold_delta'] = confidence * 0.01
-
-    deltas['style'] = style
-    return deltas
-
-
 def get_anti_bot4_adjustments(bot4_score, board_texture, spot_info, round_idx, value_profile):
     """Return strategy adjustments targeting bot_4's weaknesses."""
     adj = {
@@ -334,3 +247,35 @@ def get_anti_bot4_adjustments(bot4_score, board_texture, spot_info, round_idx, v
         adj["river_overbet_enabled"] = True
 
     return adj
+
+
+def classify_opponent_style(opp_model):
+    deltas = {
+        'strong_delta': 0.0, 'medium_delta': 0.0, 'bluff_freq_bonus': 0.0,
+        'call_aggression_bonus': 0.0, 'fold_vs_passive_bonus': 0.0,
+    }
+    confidence = opp_model.get('confidence', 0.0)
+    if confidence < 0.15:
+        return deltas
+    vpip = opp_model.get('vpip', 0.52)
+    pfr = opp_model.get('pfr', 0.24)
+    fold_to_raise = opp_model.get('fold_to_raise', 0.44)
+    postflop_aggr = opp_model.get('postflop_aggr', 0.36)
+    if vpip < 0.35 and fold_to_raise > 0.50:
+        deltas['strong_delta'] = -0.02
+        deltas['medium_delta'] = -0.015
+        deltas['bluff_freq_bonus'] = 0.12
+    elif vpip > 0.65 and pfr > 0.40 and postflop_aggr > 0.45:
+        deltas['strong_delta'] = 0.03
+        deltas['medium_delta'] = 0.025
+        deltas['bluff_freq_bonus'] = -0.08
+        deltas['call_aggression_bonus'] = 0.04
+    elif vpip > 0.55 and pfr < 0.20 and fold_to_raise < 0.38:
+        deltas['strong_delta'] = -0.01
+        deltas['medium_delta'] = -0.02
+        deltas['bluff_freq_bonus'] = -0.12
+    elif fold_to_raise > 0.52:
+        deltas['strong_delta'] = -0.015
+        deltas['medium_delta'] = -0.01
+        deltas['bluff_freq_bonus'] = 0.10
+    return deltas

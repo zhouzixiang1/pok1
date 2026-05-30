@@ -52,13 +52,13 @@ def choose_raise(
     wetness = board_texture["wetness"]
 
     if round_idx == 0:
-        ratio = 0.60 if to_call == 0 else 0.80
+        ratio = 0.55 if to_call == 0 else 0.75
     elif round_idx == 1:
-        ratio = 0.68
+        ratio = 0.60
     elif round_idx == 2:
-        ratio = 0.78
+        ratio = 0.70
     else:
-        ratio = 0.92
+        ratio = 0.85
 
     ratio += max(0.0, win_rate - 0.55) * (0.90 + 0.20 * round_idx)
     ratio += -0.05 if has_position else 0.05
@@ -69,9 +69,9 @@ def choose_raise(
     ratio += anti_bot4_bonus
     if round_idx > 0 and value_profile.get("tier") == "strong" and not semi_bluff and not pressure_line:
         if not board_texture["dynamic"]:
-            ratio -= 0.02
+            ratio -= 0.05
         if wetness <= 0.20:
-            ratio -= 0.01
+            ratio -= 0.02
     if board_texture["dynamic"]:
         if value_profile.get("tier") in ("strong", "nut"):
             ratio += 0.05 * wetness
@@ -117,7 +117,7 @@ def choose_raise(
 
     if round_idx == 0 and preflop_strength is not None:
         if spot_name == "sb_open":
-            desired_total = int((2.2 + max(0.0, preflop_strength - 0.55) * 2.0) * BIG_BLIND)
+            desired_total = int((2.5 + max(0.0, preflop_strength - 0.58) * 1.8) * BIG_BLIND)
             amount = max(amount, desired_total - my_round_bet)
         elif spot_name == "bb_vs_limp":
             desired_total = int((3.2 + max(0.0, preflop_strength - 0.60) * 1.8) * BIG_BLIND)
@@ -145,8 +145,8 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
     trash_hand = is_preflop_trash_hand(req["my_cards"], preflop_strength)
 
     if spot_info["preflop_spot"] == "sb_open":
-        open_threshold = 0.42 + match_adjust + 0.02 + match_profile["open_delta"]
-        limp_threshold = 0.28 + match_adjust
+        open_threshold = 0.49 + match_adjust + 0.02 + match_profile["open_delta"]
+        limp_threshold = 0.36 + match_adjust
         raise_amount = choose_raise(
             state.get("min_raise_action", state["round_raise"]),
             my_chips,
@@ -168,7 +168,7 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
         return 0
 
     if spot_info["preflop_spot"] == "bb_vs_limp":
-        iso_threshold = 0.50 + match_adjust - loose_bonus + match_profile["open_delta"]
+        iso_threshold = 0.57 + match_adjust - loose_bonus + match_profile["open_delta"]
         iso_threshold -= confidence * max(0.0, opponent_model["vpip"] - 0.58) * 0.08
         iso_threshold -= confidence * max(0.0, opponent_model["fold_to_raise"] - 0.52) * 0.05
         raise_amount = choose_raise(
