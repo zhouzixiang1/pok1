@@ -4,7 +4,7 @@
     "claude_v14 vs claude_v9": 36,
     "claude_v1 vs claude_v10": 46,
     "claude_v16 vs claude_v19": 46,
-    "claude_v1 vs claude_v12": 40,
+    "claude_v1 vs claude_v12": 50,
     "claude_v1 vs claude_v11": 50,
     "claude_v12 vs claude_v13": 50,
     "claude_v14 vs claude_v16": 40,
@@ -358,5 +358,5 @@
     "claude_v28 vs claude_v7": 10
   },
   "total_periods": 311,
-  "total_games": 12624
+  "total_games": 12634
 }

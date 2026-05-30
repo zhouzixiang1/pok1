@@ -28,11 +28,11 @@
     "win_rate": 0.5288
   },
   "claude_v1": {
-    "wins": 119,
-    "losses": 957,
+    "wins": 120,
+    "losses": 966,
     "draws": 0,
-    "games": 1076,
-    "win_rate": 0.1106
+    "games": 1086,
+    "win_rate": 0.1105
   },
   "claude_v10": {
     "wins": 516,
@@ -56,11 +56,11 @@
     "win_rate": 0.5364
   },
   "claude_v12": {
-    "wins": 513,
-    "losses": 517,
+    "wins": 522,
+    "losses": 518,
     "draws": 0,
-    "games": 1030,
-    "win_rate": 0.4981
+    "games": 1040,
+    "win_rate": 0.5019
   },
   "claude_v11": {
     "wins": 492,
