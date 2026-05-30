@@ -26,6 +26,7 @@ You have full access to git and file reading tools. Use them:
 2. **See change summary**: Run `git diff --stat bot-v{parent_version} -- bots/claude_v{version}/`
 3. **Read specific files**: Use the Read tool on any file in `bots/claude_v{version}/`
 4. **List all files**: Run `ls bots/claude_v{version}/` to see the full file list
+5. **Inspect gate context if present**: Read `web/core/results/pipeline_state.json` and check `gate_results.quality`, especially `critical_failures`.
 
 Focus your review on the diff, but read full files when you need more context.
 
@@ -37,6 +38,9 @@ Focus your review on the diff, but read full files when you need more context.
 3. Ensure the code compiles conceptually and adheres to the `{"response": int}` JSON output format constraint.
 4. Output exactly ONE JSON block containing your decision. If you reject the code, you must provide a detailed "feedback" string explaining what the Developer Agents need to fix.
 5. FILE SIZE CONSTRAINT: No single .py file should exceed 1000 lines. If any file is too large, REJECT and instruct workers to split it into focused modules. Keep main.py as the slim entry point.
+6. Reject if the implementation passes aggregate tests but fails a critical scenario,
+   or if the diff makes attribution impossible for the stated generation objective.
+7. Reject if a Hyperparameter Tuner changed non-numeric text, added functions/classes/imports, or added control flow.
 
 # Correctness Criteria (MANDATORY CHECK)
 Before approving, verify the bot does NOT do any of the following:
@@ -46,6 +50,7 @@ Before approving, verify the bot does NOT do any of the following:
 - Use `input()` or `print()` instead of stdin/stdout for game communication
 - Import unavailable modules (only stdlib + numpy if present)
 - Have obvious infinite loops or unbounded recursion
+- Mix unrelated subsystem rewrites in a way that prevents attribution to the Master's `targeted_failure`
 
 # Output Format
 You MUST output your response containing exactly ONE JSON block formatted as follows:

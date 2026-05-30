@@ -102,16 +102,45 @@ def _trim_to_budget(text: str, max_chars: int, tail: bool = False) -> str:
 # ──────────────────────────────────────────────
 
 PIPELINE_STATE_FILE = RESULTS_DIR / "pipeline_state.json"
-STAGE_ORDER = ["prepared", "workers_done", "quality_passed", "reviewed", "critic_checked"]
+STAGE_ORDER = ["prepared", "workers_done", "quality_passed", "reviewed", "critic_checked", "verified"]
+STAGE_GATE_ALLOWLIST = {
+    "prepared": set(),
+    "workers_done": set(),
+    "quality_passed": {"quality"},
+    "reviewed": {"quality", "review"},
+    "critic_checked": {"quality", "review", "critic"},
+    "verified": {"quality", "review", "critic", "precommit_eval"},
+}
 
 
 def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
-                               reviewer_feedback="", generation_attempt=0):
+                               reviewer_feedback="", generation_attempt=0,
+                               gate_results=None):
     """Write pipeline stage checkpoint so a killed process can resume."""
+    existing_gate_results = {}
+    try:
+        if PIPELINE_STATE_FILE.exists():
+            with locked_file(PIPELINE_STATE_FILE) as f:
+                existing = json.load(f)
+            if existing.get("next_v") == next_v and existing.get("source_v") == source_v:
+                existing_gate_results = existing.get("gate_results", {}) or {}
+    except Exception:
+        existing_gate_results = {}
+    allowed_gates = STAGE_GATE_ALLOWLIST.get(stage)
+    if allowed_gates is not None:
+        existing_gate_results = {
+            name: data
+            for name, data in existing_gate_results.items()
+            if name in allowed_gates
+        }
+    if gate_results:
+        existing_gate_results.update(gate_results)
+
     state = {
         "next_v": next_v, "source_v": source_v, "stage": stage,
         "master_plan": master_plan, "reviewer_feedback": reviewer_feedback,
         "generation_attempt": generation_attempt,
+        "gate_results": existing_gate_results,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     with locked_file(PIPELINE_STATE_FILE, "w") as f:
@@ -434,10 +463,12 @@ def git_has_tag(version):
 
 
 def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=None):
-    """Commit a completed bot generation (bot code + ratings + experience pool).
+    """Commit a completed bot generation.
 
     Always commits on EVOLUTION_BRANCH (main). Calls _git_ensure_main_branch()
     first so that LLM-created side-branches never pollute the evolution history.
+    Stage only the evolved bot and curated learning notes; daemon/result churn
+    must not leak into evolution commits.
     """
     _git_ensure_main_branch()
     parent_line = f"parent: claude_v{source_v}"
@@ -449,7 +480,9 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
         f"strategy: {strategy_tag}\n"
         f"{rating_info}"
     )
-    _git("add", "-A")
+    _git("add", f"bots/claude_v{version}", check=False)
+    if EXPERIENCE_FILE.exists():
+        _git("add", str(EXPERIENCE_FILE.relative_to(PROJECT_ROOT)), check=False)
     _git("commit", "-m", msg)
     tag = f"bot-v{version}"
     # Delete existing tag if any (interrupted run), then create fresh
@@ -736,11 +769,25 @@ def run_smoke_test(directory):
 
 def run_decision_tests(directory):
     """Run standard decision scenarios. Returns pass rate (0.0 - 1.0)."""
+    return run_decision_test_details(directory)["pass_rate"]
+
+
+def run_decision_test_details(directory):
+    """Run standard decision scenarios. Returns detailed gate results."""
     main_path = os.path.join(directory, "main.py")
     if not os.path.exists(main_path):
-        return 0.0
-    from decision_tester import run_decision_tests as _run
-    return _run(main_path, verbose=False)
+        return {
+            "pass_rate": 0.0,
+            "passed": 0,
+            "total": 0,
+            "critical_passed": 0,
+            "critical_total": 0,
+            "critical_failures": [{"id": "main.py", "details": "main.py not found"}],
+            "failures": [{"id": "main.py", "severity": "critical", "details": "main.py not found"}],
+            "scenarios": [],
+        }
+    from decision_tester import run_decision_tests_detail as _run_detail
+    return _run_detail(main_path, verbose=False)
 
 
 def get_reference_context():
@@ -1678,6 +1725,11 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
 
                 (get_bot_dir(1) / ".completed").touch()
                 git_commit_bot(1, 0, "genesis: initial bot from scratch")
+                try:
+                    from server.state import app_state
+                    app_state.set_generation(1, 2)
+                except Exception:
+                    pass
                 ui.log_history("Genesis v1 generated successfully.", "success")
                 genesis_ok = True
                 break
@@ -1823,10 +1875,16 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             crossover_ok = await _run_crossover(parent_a, parent_b, next_v, ui, is_text_ui)
             if crossover_ok:
                 # Run decision tests on crossover bot
-                decision_pass_rate = run_decision_tests(next_dir)
-                if decision_pass_rate >= MIN_CROSSOVER_DECISION_RATE:
+                decision_detail = run_decision_test_details(next_dir)
+                decision_pass_rate = decision_detail["pass_rate"]
+                if decision_pass_rate >= MIN_CROSSOVER_DECISION_RATE and not decision_detail.get("critical_failures"):
                     (next_dir / ".completed").touch()
                     git_commit_bot(next_v, parent_a, f"crossover: v{parent_a}×v{parent_b}", parent2_v=parent_b)
+                    try:
+                        from server.state import app_state
+                        app_state.set_generation(next_v, next_v + 1)
+                    except Exception:
+                        pass
                     current_v = next_v
                     fail_count = 0
                     total_gens += 1
@@ -1853,7 +1911,8 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
                     gen_start_time = time.time()
                     continue
                 else:
-                    ui.log_history(f"Crossover v{next_v} failed decision tests ({decision_pass_rate:.0%}).", "warn")
+                    crit_count = len(decision_detail.get("critical_failures", []))
+                    ui.log_history(f"Crossover v{next_v} failed decision tests ({decision_pass_rate:.0%}, critical failures={crit_count}).", "warn")
             else:
                 ui.log_history("Crossover failed. Falling back to normal evolution.", "warn")
 
@@ -2051,11 +2110,14 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
                     continue
 
                 # Decision scenario tests — reject catastrophic blunders
-                decision_pass_rate = run_decision_tests(next_dir)
+                decision_detail = run_decision_test_details(next_dir)
+                decision_pass_rate = decision_detail["pass_rate"]
+                critical_failures = decision_detail.get("critical_failures", [])
                 ui.log_history(f"Decision tests: {decision_pass_rate:.0%} pass rate", "info")
-                if decision_pass_rate < MIN_DECISION_PASS_RATE:
+                if decision_pass_rate < MIN_DECISION_PASS_RATE or critical_failures:
                     reviewer_feedback = (
-                        f"Bot failed decision tests ({decision_pass_rate:.0%} pass rate). "
+                        f"Bot failed decision tests ({decision_pass_rate:.0%} pass rate, "
+                        f"{len(critical_failures)} critical failures). "
                         "Review fundamental strategy: don't fold premium hands, don't bluff with missed draws facing big bets."
                     )
                     ui.log_history("Decision test threshold not met, requesting revision.", "warn")
@@ -2171,6 +2233,12 @@ async def main_loop(ui, is_text_ui, no_daemon=False):
             rating_info=f"rating: r={my_p.r:.1f} rd={my_p.rd:.1f}"
         )
         clear_pipeline_checkpoint()
+
+        try:
+            from server.state import app_state
+            app_state.set_generation(next_v, next_v + 1)
+        except Exception:
+            pass
 
         current_v = next_v
         fail_count = 0

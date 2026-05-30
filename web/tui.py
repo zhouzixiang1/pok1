@@ -217,7 +217,8 @@ class TuiApp(App, BaseUI):
     async def _run_orchestrator(self):
         try:
             from orchestrator import orchestrator_loop
-            await orchestrator_loop(self, no_daemon=self.no_daemon)
+            await orchestrator_loop(self, no_daemon=self.no_daemon,
+                daemon_workers=self.daemon_workers, daemon_pairs=self.daemon_pairs)
         except Exception as e:
             self.log_history(f"Orchestrator fatal error: {e}", "error")
 

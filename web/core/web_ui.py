@@ -78,6 +78,7 @@ class WebUI(BaseUI):
         self._broadcaster = broadcaster
         self.grand_cost_total = 0.0
         self.gen_cost_total = 0.0
+        self.costs = []
         self._messages = []
         self._state: dict[str, Any] = {
             "status": "Initializing...",
@@ -155,6 +156,7 @@ class WebUI(BaseUI):
 
     def update_cost(self, role, cost_usd, usage):
         if cost_usd is not None:
+            self.costs.append({"role": role, "cost_usd": cost_usd})
             self.gen_cost_total += cost_usd
             self.grand_cost_total += cost_usd
             in_tok = usage.get("input_tokens", 0) if usage else 0

@@ -6,8 +6,10 @@ tools to control the evolution pipeline.
 """
 
 import asyncio
+import difflib
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -30,12 +32,11 @@ from evolution_core import (
     verify_code,
     check_code_size,
     run_smoke_test,
-    run_decision_tests,
+    run_decision_test_details,
     trim_experience_pool,
     git_has_tag,
     git_get_parent,
     git_commit_bot,
-    git_ensure_clean,
     start_daemon,
     stop_daemon,
     wait_for_daemon_eval,
@@ -127,6 +128,253 @@ def _ratings_summary(ratings, n=10):
         {"name": name, "r": round(p.r, 1), "rd": round(p.rd, 1)}
         for name, p in sorted_bots
     ]
+
+
+def _json_tool_result(data):
+    return {"content": [{"type": "text", "text": json.dumps(data, indent=2, ensure_ascii=False)}]}
+
+
+def _read_json(path, default):
+    try:
+        if not Path(path).exists():
+            return default
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def _matching_checkpoint(version, source_v=None):
+    ckpt = read_pipeline_checkpoint()
+    if not ckpt or ckpt.get("next_v") != version:
+        return None
+    if source_v is not None and ckpt.get("source_v") != source_v:
+        return None
+    return ckpt
+
+
+def _record_gate(version, source_v, gate_name, gate_data, stage=None,
+                 master_plan=None, reviewer_feedback=None):
+    ckpt = _matching_checkpoint(version, source_v)
+    if not ckpt:
+        return False
+    write_pipeline_checkpoint(
+        version,
+        source_v,
+        stage or ckpt.get("stage", "workers_done"),
+        master_plan=master_plan if master_plan is not None else ckpt.get("master_plan"),
+        reviewer_feedback=(
+            reviewer_feedback
+            if reviewer_feedback is not None
+            else ckpt.get("reviewer_feedback", "")
+        ),
+        generation_attempt=ckpt.get("generation_attempt", 0),
+        gate_results={gate_name: gate_data},
+    )
+    return True
+
+
+def _gate_payload(version, source_v, passed, **extra):
+    return {
+        "version": version,
+        "source_v": source_v,
+        "passed": bool(passed),
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        **extra,
+    }
+
+
+def _state_blocked(message, version, source_v=None, checkpoint=None):
+    return _json_tool_result({
+        "error": f"STATE BLOCKED: {message}",
+        "version": version,
+        "source_v": source_v,
+        "checkpoint_stage": checkpoint.get("stage") if checkpoint else None,
+        "gate_results": checkpoint.get("gate_results", {}) if checkpoint else {},
+    })
+
+
+def _checkpoint_gate(checkpoint, gate_name):
+    if not checkpoint:
+        return {}
+    return (checkpoint.get("gate_results", {}) or {}).get(gate_name, {}) or {}
+
+
+def _quality_gate_ok(checkpoint):
+    quality = _checkpoint_gate(checkpoint, "quality")
+    return quality.get("all_passed") is True and quality.get("critical_scenarios_passed") is True
+
+
+def _review_gate_ok(checkpoint):
+    return _checkpoint_gate(checkpoint, "review").get("approved") is True
+
+
+def _critic_gate_ok(checkpoint):
+    critic = _checkpoint_gate(checkpoint, "critic")
+    try:
+        score = float(critic.get("score", 0))
+    except (TypeError, ValueError):
+        score = 0.0
+    return critic.get("approved") is True and score >= 6
+
+
+def _bot_main(bot_name):
+    return PROJECT_ROOT / "bots" / bot_name / "main.py"
+
+
+def _load_h2h_data():
+    return _read_json(PROJECT_ROOT / "web" / "core" / "results" / "head_to_head.json", {})
+
+
+def _h2h_stats(bot_name, opponent, h2h):
+    for key, value in h2h.items():
+        parts = key.split(" vs ")
+        if len(parts) != 2 or bot_name not in parts or opponent not in parts:
+            continue
+        a, b = parts
+        games = value.get("games", 0)
+        if games <= 0:
+            return None
+        bot_wins = value.get("a_wins", 0) if bot_name == a else value.get("b_wins", 0)
+        opp_wins = value.get("b_wins", 0) if bot_name == a else value.get("a_wins", 0)
+        return {
+            "wins": bot_wins,
+            "losses": opp_wins,
+            "games": games,
+            "win_rate": bot_wins / games,
+        }
+    return None
+
+
+def _select_precommit_opponents(version, source_v, max_top=3, max_weak=2):
+    candidate = f"claude_v{version}"
+    parent = f"claude_v{source_v}"
+    active = [b for b in get_active_bots() if b != candidate and _bot_main(b).exists()]
+    ratings = load_ratings()
+    h2h = _load_h2h_data()
+
+    selected = []
+    reasons = {}
+
+    def add(name, reason):
+        if name == candidate or name in selected or not _bot_main(name).exists():
+            return
+        selected.append(name)
+        reasons[name] = reason
+
+    add(parent, "parent")
+
+    top = sorted(
+        active,
+        key=lambda name: ratings.get(name, Glicko2Player()).r,
+        reverse=True,
+    )
+    for name in top[:max_top]:
+        add(name, "top_rating")
+
+    source_name = parent
+    weak = []
+    for opp in active:
+        stats = _h2h_stats(source_name, opp, h2h)
+        if stats and stats["win_rate"] < 0.40:
+            weak.append((stats["win_rate"], opp))
+    for _, name in sorted(weak)[:max_weak]:
+        add(name, "source_h2h_weakness")
+
+    return [{"name": name, "reason": reasons[name]} for name in selected]
+
+
+def _target_rel(path, version):
+    raw = str(path).strip()
+    if not raw:
+        return ""
+    raw = raw.replace("\\", "/")
+    marker = f"bots/claude_v{version}/"
+    if marker in raw:
+        return raw.split(marker, 1)[1]
+    marker = f"claude_v{version}/"
+    if marker in raw:
+        return raw.split(marker, 1)[1]
+    return raw.lstrip("./")
+
+
+def _py_files_changed_between(source_dir, next_dir):
+    rels = set()
+    for base in (source_dir, next_dir):
+        if not base.exists():
+            continue
+        for path in base.rglob("*.py"):
+            rels.add(path.relative_to(base).as_posix())
+
+    changed = []
+    for rel in sorted(rels):
+        src = source_dir / rel
+        dst = next_dir / rel
+        src_text = src.read_text() if src.exists() else ""
+        dst_text = dst.read_text() if dst.exists() else ""
+        if src_text != dst_text:
+            changed.append(rel)
+    return changed
+
+
+_NUMERIC_LITERAL_RE = re.compile(
+    r"(?<![A-Za-z_])[-+]?(?:\d+\.\d+|\d+|\.\d+)(?:[eE][-+]?\d+)?"
+)
+
+
+def _numbers_only_changed(before, after):
+    return _NUMERIC_LITERAL_RE.sub("<NUM>", before) == _NUMERIC_LITERAL_RE.sub("<NUM>", after)
+
+
+def _validate_worker_boundaries(tasks, source_v, next_v):
+    source_dir = get_bot_dir(source_v)
+    next_dir = get_bot_dir(next_v)
+    all_targets = set()
+    errors = []
+
+    for task in tasks:
+        for target in task.get("target_files", []):
+            rel = _target_rel(target, next_v)
+            if rel:
+                all_targets.add(rel)
+
+    changed_files = _py_files_changed_between(source_dir, next_dir)
+    for rel in changed_files:
+        if all_targets and rel not in all_targets:
+            errors.append({
+                "type": "target_file_violation",
+                "file": rel,
+                "message": "Worker modified a Python file outside declared target_files.",
+            })
+
+    for task in tasks:
+        role = str(task.get("role", ""))
+        if "Hyperparameter Tuner" not in role:
+            continue
+        for target in task.get("target_files", []):
+            rel = _target_rel(target, next_v)
+            if not rel:
+                continue
+            src = source_dir / rel
+            dst = next_dir / rel
+            before = src.read_text() if src.exists() else ""
+            after = dst.read_text() if dst.exists() else ""
+            if before != after and not _numbers_only_changed(before, after):
+                diff = "\n".join(difflib.unified_diff(
+                    before.splitlines(),
+                    after.splitlines(),
+                    fromfile=f"v{source_v}/{rel}",
+                    tofile=f"v{next_v}/{rel}",
+                    lineterm="",
+                ))
+                errors.append({
+                    "type": "hyperparameter_boundary_violation",
+                    "file": rel,
+                    "message": "Hyperparameter Tuner changed non-numeric text or structure.",
+                    "diff_excerpt": diff[:1200],
+                })
+
+    return errors
 
 
 # ──────────────────────────────────────────────
@@ -336,6 +584,14 @@ async def execute_workers(args):
     prompts_dir = PROJECT_ROOT / "web" / "core" / "prompts"
     worker_template = (prompts_dir / "worker_prompt.md").read_text()
 
+    ckpt = _matching_checkpoint(next_v, source_v)
+    if not ckpt:
+        return _state_blocked(
+            "execute_workers requires a matching checkpoint from prepare_next_gen.",
+            next_v,
+            source_v,
+        )
+
     ui = _get_ui()
     success = await _execute_workers(
         tasks, worker_template, next_dir, next_v,
@@ -343,12 +599,23 @@ async def execute_workers(args):
         source_v=source_v,
     )
 
+    boundary_errors = []
+    if success:
+        boundary_errors = _validate_worker_boundaries(tasks, source_v, next_v)
+        if boundary_errors:
+            success = False
+
     if success:
         write_pipeline_checkpoint(next_v, source_v, "workers_done",
                                   master_plan=tasks, reviewer_feedback=reviewer_feedback)
 
-    result = {"success": success, "logs": ui.get_output(), "costs": ui.costs}
-    return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
+    result = {
+        "success": success,
+        "boundary_errors": boundary_errors,
+        "logs": ui.get_output(),
+        "costs": ui.costs,
+    }
+    return _json_tool_result(result)
 
 
 class RunQualityGatesInput(TypedDict):
@@ -362,23 +629,19 @@ async def run_quality_gates(args):
 
     compile_errors = verify_code(bot_dir)
     smoke_errors = run_smoke_test(bot_dir)
-    decision_rate = run_decision_tests(bot_dir)
+    decision_detail = run_decision_test_details(bot_dir)
+    decision_rate = decision_detail.get("pass_rate", 0.0)
+    critical_failures = decision_detail.get("critical_failures", [])
+    critical_ok = len(critical_failures) == 0
     total_lines, oversized = check_code_size(bot_dir)
+    decision_ok = decision_rate >= 0.7 and critical_ok
 
     all_passed = (
         len(compile_errors) == 0
         and len(smoke_errors) == 0
-        and decision_rate >= 0.7
+        and decision_ok
         and len(oversized) == 0
     )
-
-    if all_passed:
-        # Advance checkpoint to quality_passed; carry source_v/master_plan from previous stage
-        _ckpt = read_pipeline_checkpoint()
-        if _ckpt and _ckpt.get("next_v") == v:
-            write_pipeline_checkpoint(v, _ckpt["source_v"], "quality_passed",
-                                      master_plan=_ckpt.get("master_plan"),
-                                      reviewer_feedback=_ckpt.get("reviewer_feedback", ""))
 
     result = {
         "version": v,
@@ -387,13 +650,44 @@ async def run_quality_gates(args):
         "smoke_ok": len(smoke_errors) == 0,
         "smoke_errors": smoke_errors[:3] if smoke_errors else [],
         "decision_pass_rate": round(decision_rate, 2),
-        "decision_ok": decision_rate >= 0.7,
+        "decision_ok": decision_ok,
+        "critical_scenarios_passed": critical_ok,
+        "critical_passed": decision_detail.get("critical_passed", 0),
+        "critical_total": decision_detail.get("critical_total", 0),
+        "critical_failures": critical_failures,
+        "decision_failures": decision_detail.get("failures", []),
+        "scenario_results": decision_detail.get("scenarios", []),
         "total_lines": total_lines,
         "oversized_files": {name: lines for name, lines in oversized} if oversized else {},
         "size_ok": len(oversized) == 0,
         "all_passed": all_passed,
     }
-    return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
+
+    _ckpt = _matching_checkpoint(v)
+    if _ckpt:
+        source_v = _ckpt["source_v"]
+        gate = _gate_payload(
+            v,
+            source_v,
+            all_passed,
+            all_passed=all_passed,
+            critical_scenarios_passed=critical_ok,
+            decision_pass_rate=round(decision_rate, 4),
+            critical_failures=critical_failures,
+        )
+        _record_gate(
+            v,
+            source_v,
+            "quality",
+            gate,
+            stage="quality_passed" if all_passed else _ckpt.get("stage", "workers_done"),
+        )
+        result["checkpoint_recorded"] = True
+        result["source_v"] = source_v
+    else:
+        result["checkpoint_recorded"] = False
+
+    return _json_tool_result(result)
 
 
 class RunReviewInput(TypedDict):
@@ -407,6 +701,15 @@ async def run_review(args):
     v = args["version"]
     source_v = args["source_v"]
     plan = args["plan"]
+
+    ckpt = _matching_checkpoint(v, source_v)
+    if not _quality_gate_ok(ckpt):
+        return _state_blocked(
+            "run_review requires run_quality_gates all_passed=true and critical_scenarios_passed=true for the same version/source_v.",
+            v,
+            source_v,
+            ckpt,
+        )
 
     prompts_dir = PROJECT_ROOT / "web" / "core" / "prompts"
     reviewer_prompt = (prompts_dir / "reviewer_prompt.md").read_text()
@@ -424,27 +727,63 @@ async def run_review(args):
     data = parse_json_output(output)
 
     if data and "approved" in data:
-        if data["approved"]:
-            write_pipeline_checkpoint(v, source_v, "reviewed",
-                                      master_plan=plan,
-                                      reviewer_feedback=data.get("feedback", ""))
+        approved = bool(data["approved"])
+        feedback = data.get("feedback", "")
+        gate = _gate_payload(
+            v,
+            source_v,
+            approved,
+            approved=approved,
+            quality_score=data.get("quality_score", 0),
+            feedback=feedback,
+            change_summary=data.get("change_summary", ""),
+            risk_areas=data.get("risk_areas", []),
+        )
+        checkpoint_recorded = _record_gate(
+            v,
+            source_v,
+            "review",
+            gate,
+            stage="reviewed" if approved else None,
+            master_plan=plan,
+            reviewer_feedback=feedback,
+        )
         result = {
-            "approved": data["approved"],
+            "approved": approved,
             "quality_score": data.get("quality_score", 0),
             "change_summary": data.get("change_summary", ""),
             "risk_areas": data.get("risk_areas", []),
-            "feedback": data.get("feedback", ""),
+            "feedback": feedback,
+            "checkpoint_recorded": checkpoint_recorded,
             "logs": ui.get_output(),
         }
     else:
+        gate = _gate_payload(
+            v,
+            source_v,
+            False,
+            approved=False,
+            error="Reviewer failed to produce valid JSON",
+            raw_output=output[:500] if output else "",
+        )
+        checkpoint_recorded = _record_gate(
+            v,
+            source_v,
+            "review",
+            gate,
+            stage=None,
+            master_plan=plan,
+            reviewer_feedback="Reviewer failed to produce valid JSON",
+        )
         result = {
             "approved": False,
             "error": "Reviewer failed to produce valid JSON",
             "raw_output": output[:500] if output else "",
+            "checkpoint_recorded": checkpoint_recorded,
             "logs": ui.get_output(),
         }
 
-    return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
+    return _json_tool_result(result)
 
 
 class RunCriticInput(TypedDict):
@@ -463,26 +802,205 @@ async def run_critic(args):
     reviewer_feedback = args.get("reviewer_feedback", "")
     force_advance = args.get("force_advance", False)
 
+    ckpt = _matching_checkpoint(v, source_v)
+    if not _quality_gate_ok(ckpt) or not _review_gate_ok(ckpt):
+        return _state_blocked(
+            "run_critic requires passing quality gates and reviewer approval for the same version/source_v.",
+            v,
+            source_v,
+            ckpt,
+        )
+
     master_plan_str = json.dumps(plan, indent=2)
     ui = _get_ui()
     data = await _run_critic(v, source_v, master_plan_str, ui, is_text_ui=False)
 
-    approved = data.get("approved", True)
+    if not isinstance(data, dict):
+        data = {}
+    score = data.get("score", 0)
+    try:
+        score_num = float(score)
+    except (TypeError, ValueError):
+        score_num = 0.0
+    raw_approved = data.get("approved", score_num >= 6)
+    approved = bool(raw_approved) and score_num >= 6
+    gate = _gate_payload(
+        v,
+        source_v,
+        approved,
+        approved=approved,
+        raw_approved=raw_approved,
+        score=score_num,
+        feedback=data.get("feedback", ""),
+        strategic_assessment=data.get("strategic_assessment", ""),
+        local_optima_warning=data.get("local_optima_warning", False),
+        force_advanced=force_advance and not approved,
+    )
     # Write critic_checked checkpoint if critic approves OR caller is force-advancing past exhausted retries.
     # Without force_advance on a rejection, a kill+restart would see stage=reviewed and re-run the full
     # intra-gen retry loop even though retries are already exhausted.
-    if approved or force_advance:
-        write_pipeline_checkpoint(v, source_v, "critic_checked",
-                                  master_plan=plan,
-                                  reviewer_feedback=reviewer_feedback)
+    checkpoint_recorded = _record_gate(
+        v,
+        source_v,
+        "critic",
+        gate,
+        stage="critic_checked" if approved or force_advance else None,
+        master_plan=plan,
+        reviewer_feedback=reviewer_feedback,
+    )
 
     result = {
         **data,
+        "approved": approved,
+        "raw_approved": raw_approved,
+        "score": score_num,
         "logs": ui.get_output(),
         "action": "approve" if approved else "retry_workers",
         "force_advanced": force_advance and not approved,
+        "checkpoint_recorded": checkpoint_recorded,
     }
-    return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
+    return _json_tool_result(result)
+
+
+class RunPrecommitEvalInput(TypedDict):
+    version: Annotated[int, "Bot version being evaluated before commit"]
+    source_v: Annotated[int, "Parent bot version"]
+    n_games: Annotated[int, "Mirror pairs per opponent, default 1"]
+
+
+@tool("run_precommit_eval", "Run a minimal mirror-battle regression check before commit. Tests parent, current top opponents, and source H2H weaknesses; blocks obvious crashes or collapses.", {"version": int, "source_v": int, "n_games": int})
+async def run_precommit_eval(args):
+    v = args["version"]
+    source_v = args["source_v"]
+    n_games = max(1, int(args.get("n_games", 1) or 1))
+    candidate_name = f"claude_v{v}"
+    parent_name = f"claude_v{source_v}"
+    candidate_main = _bot_main(candidate_name)
+    blockers = []
+    matchups = []
+
+    ckpt = _matching_checkpoint(v, source_v)
+    if not _quality_gate_ok(ckpt) or not _review_gate_ok(ckpt) or not _critic_gate_ok(ckpt):
+        return _state_blocked(
+            "run_precommit_eval requires passing quality, reviewer, and critic gates for the same version/source_v.",
+            v,
+            source_v,
+            ckpt,
+        )
+
+    if not candidate_main.exists():
+        result = {
+            "version": v,
+            "source_v": source_v,
+            "n_games": n_games,
+            "passed": False,
+            "blockers": [{"reason": "candidate_missing", "details": str(candidate_main)}],
+            "opponents": [],
+            "matchups": [],
+        }
+        gate_extra = {k: val for k, val in result.items() if k not in {"version", "source_v", "passed"}}
+        _record_gate(v, source_v, "precommit_eval", _gate_payload(v, source_v, False, **gate_extra), stage=None)
+        return _json_tool_result(result)
+
+    compile_errors = verify_code(get_bot_dir(v))
+    smoke_errors = run_smoke_test(get_bot_dir(v))
+    if compile_errors:
+        blockers.append({"reason": "compile_errors", "details": compile_errors[:3]})
+    if smoke_errors:
+        blockers.append({"reason": "smoke_errors_or_timeout", "details": smoke_errors[:3]})
+
+    opponents = _select_precommit_opponents(v, source_v)
+    if not opponents:
+        blockers.append({"reason": "no_opponents", "details": "No parent/top/H2H opponents with main.py found."})
+
+    total_wins = 0
+    total_losses = 0
+    total_draws = 0
+    sys.path.insert(0, str((PROJECT_ROOT / "engine").resolve()))
+    from battle import mirror_battle
+
+    for item in opponents:
+        opponent = item["name"]
+        opponent_main = _bot_main(opponent)
+        matchup = {
+            "opponent": opponent,
+            "reason": item["reason"],
+            "wins": 0,
+            "losses": 0,
+            "draws": 0,
+            "n_played": 0,
+        }
+        try:
+            match_wins, draws, n_played, _ = mirror_battle(
+                str(candidate_main),
+                str(opponent_main),
+                n_games=n_games,
+                verbose=False,
+                save_log=False,
+            )
+            matchup.update({
+                "wins": int(match_wins[0]),
+                "losses": int(match_wins[1]),
+                "draws": int(draws),
+                "n_played": int(n_played),
+            })
+            total_wins += matchup["wins"]
+            total_losses += matchup["losses"]
+            total_draws += matchup["draws"]
+            if n_played < n_games:
+                blockers.append({
+                    "reason": "incomplete_or_timeout",
+                    "opponent": opponent,
+                    "details": f"Only {n_played}/{n_games} mirror pairs completed.",
+                })
+            if opponent == parent_name and matchup["wins"] < matchup["losses"]:
+                blockers.append({
+                    "reason": "lost_to_parent",
+                    "opponent": opponent,
+                    "details": f"{matchup['wins']}-{matchup['losses']}-{matchup['draws']}",
+                })
+        except Exception as exc:
+            matchup["error"] = str(exc)[:500]
+            blockers.append({
+                "reason": "match_exception",
+                "opponent": opponent,
+                "details": str(exc)[:500],
+            })
+        matchups.append(matchup)
+
+    if total_losses >= 3 and total_losses >= total_wins + 2:
+        blockers.append({
+            "reason": "aggregate_precommit_regression",
+            "details": f"Aggregate mirror result {total_wins}-{total_losses}-{total_draws}.",
+        })
+
+    passed = len(blockers) == 0
+    result = {
+        "version": v,
+        "source_v": source_v,
+        "n_games": n_games,
+        "opponents": opponents,
+        "matchups": matchups,
+        "total_wins": total_wins,
+        "total_losses": total_losses,
+        "total_draws": total_draws,
+        "passed": passed,
+        "blockers": blockers,
+    }
+    checkpoint_recorded = _record_gate(
+        v,
+        source_v,
+        "precommit_eval",
+        _gate_payload(
+            v,
+            source_v,
+            passed,
+            **{k: val for k, val in result.items() if k not in {"version", "source_v", "passed"}},
+        ),
+        stage="verified" if passed else None,
+    )
+    result["checkpoint_recorded"] = checkpoint_recorded
+    return _json_tool_result(result)
 
 
 class RunPerformanceVerificationInput(TypedDict):
@@ -574,27 +1092,100 @@ async def commit_bot(args):
 
     bot_dir = get_bot_dir(v)
 
+    ckpt = _matching_checkpoint(v, source_v)
+    missing_gates = []
+    failed_gates = []
+    gate_results = {}
+    if not ckpt:
+        missing_gates.append("pipeline_checkpoint")
+    else:
+        gate_results = ckpt.get("gate_results", {}) or {}
+
+        quality = gate_results.get("quality")
+        if not quality:
+            missing_gates.append("quality")
+        else:
+            if quality.get("all_passed") is not True:
+                failed_gates.append({"gate": "quality", "reason": "all_passed is not true", "value": quality})
+            if quality.get("critical_scenarios_passed") is not True:
+                failed_gates.append({"gate": "quality", "reason": "critical_scenarios_passed is not true", "value": quality})
+
+        review = gate_results.get("review")
+        if not review:
+            missing_gates.append("review")
+        elif review.get("approved") is not True:
+            failed_gates.append({"gate": "review", "reason": "reviewer did not approve", "value": review})
+
+        critic = gate_results.get("critic")
+        if not critic:
+            missing_gates.append("critic")
+        else:
+            try:
+                critic_score = float(critic.get("score", 0))
+            except (TypeError, ValueError):
+                critic_score = 0.0
+            if critic.get("approved") is not True or critic_score < 6:
+                failed_gates.append({
+                    "gate": "critic",
+                    "reason": "critic score must be >= 6 and approved must be true",
+                    "value": critic,
+                })
+
+        precommit = gate_results.get("precommit_eval")
+        if not precommit:
+            missing_gates.append("precommit_eval")
+        elif precommit.get("passed") is not True:
+            failed_gates.append({"gate": "precommit_eval", "reason": "precommit eval did not pass", "value": precommit})
+
+    if missing_gates or failed_gates:
+        return _json_tool_result({
+            "error": "COMMIT BLOCKED: gate ledger incomplete or failed.",
+            "version": v,
+            "source_v": source_v,
+            "checkpoint_stage": ckpt.get("stage") if ckpt else None,
+            "missing_gates": missing_gates,
+            "failed_gates": failed_gates,
+            "gate_results": gate_results,
+        })
+
     # Guard: compile check
     compile_errors = verify_code(bot_dir)
     if compile_errors:
-        return {"content": [{"type": "text", "text": json.dumps({
+        return _json_tool_result({
             "error": "COMMIT BLOCKED: compile errors present. Run run_quality_gates() first and fix errors.",
             "compile_errors": compile_errors[:3],
-        })}]}
+        })
 
-    # Guard: decision tests
-    decision_rate = run_decision_tests(bot_dir)
-    if decision_rate < 0.7:
-        return {"content": [{"type": "text", "text": json.dumps({
-            "error": f"COMMIT BLOCKED: decision test pass rate {decision_rate:.0%} < 70%. Fix catastrophic blunders first.",
+    smoke_errors = run_smoke_test(bot_dir)
+    if smoke_errors:
+        return _json_tool_result({
+            "error": "COMMIT BLOCKED: smoke test failed. Run run_quality_gates() first and fix runtime errors.",
+            "smoke_errors": smoke_errors[:3],
+        })
+
+    decision_detail = run_decision_test_details(bot_dir)
+    decision_rate = decision_detail.get("pass_rate", 0.0)
+    critical_failures = decision_detail.get("critical_failures", [])
+    if decision_rate < 0.7 or critical_failures:
+        return _json_tool_result({
+            "error": "COMMIT BLOCKED: decision tests failed. Fix catastrophic blunders first.",
             "decision_pass_rate": round(decision_rate, 2),
-        })}]}
+            "critical_failures": critical_failures,
+            "decision_failures": decision_detail.get("failures", []),
+        })
+
+    _, oversized = check_code_size(bot_dir)
+    if oversized:
+        return _json_tool_result({
+            "error": "COMMIT BLOCKED: code size gate failed.",
+            "oversized_files": {name: lines for name, lines in oversized},
+        })
 
     # Guard: reviewer approval required
     if not review_approved:
-        return {"content": [{"type": "text", "text": json.dumps({
+        return _json_tool_result({
             "error": "COMMIT BLOCKED: review_approved=false. Call run_review() first; only pass review_approved=true if it returns approved:true.",
-        })}]}
+        })
 
     (bot_dir / ".completed").touch()
 
@@ -605,7 +1196,13 @@ async def commit_bot(args):
     git_commit_bot(v, source_v, strategy, rating_info=rating_info)
     clear_pipeline_checkpoint()
 
-    return {"content": [{"type": "text", "text": json.dumps({"committed": True, "version": v, "source_v": source_v})}]}
+    try:
+        from server.state import app_state
+        app_state.set_generation(v, v + 1)
+    except Exception:
+        pass
+
+    return _json_tool_result({"committed": True, "version": v, "source_v": source_v})
 
 
 class StartDaemonInput(TypedDict):
@@ -927,6 +1524,7 @@ all_tools = [
     run_quality_gates,
     run_review,
     run_critic,
+    run_precommit_eval,
     run_crossover,
     prepare_next_gen,
     commit_bot,

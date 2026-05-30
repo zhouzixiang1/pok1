@@ -25,7 +25,8 @@ Read `web/core/results/head_to_head.json` and find the current bot's weakest opp
 2. Run `git diff --stat bot-v{parent_version} -- bots/claude_v{version}/` for a summary
 3. Read the most changed functions for strategic context
 4. **For diversity/local-optima check**: Run `git log --oneline bot-v{parent_version}..HEAD --decorate` to see recent commits, then `git show bot-v{parent_version}` to read the previous generation's commit message and strategy. Also read `web/core/experience_pool.md` for `[POSSIBLY EXHAUSTED]` tags.
-5. Score against the criteria below
+5. Cite the concrete evidence you used: weakest H2H matchups, experience-pool lessons, and the real diff.
+6. Score against the criteria below
 
 # Scoring Criteria (1–10)
 
@@ -38,6 +39,11 @@ Read `web/core/results/head_to_head.json` and find the current bot's weakest opp
 | **1–2** | Changes will clearly hurt. Catastrophic strategic errors or complete misfire on the problem |
 
 **Score ≥ 6 → `approved: true`. Score < 6 → `approved: false` (triggers intra-generation worker retry).**
+
+If the assessment is only "looks reasonable" and does not cite a validation path
+from H2H weakness, experience pool, and actual diff, the maximum score is 6.
+If the change repeats a prior failed or `[POSSIBLY EXHAUSTED]` pattern without new evidence,
+the maximum score is 5 and `local_optima_warning` must be true.
 
 # Strategic Checklist (check each before scoring)
 
@@ -63,6 +69,11 @@ Output exactly ONE JSON block:
   "score": 7,
   "approved": true,
   "strategic_assessment": "Brief evaluation: what the change does strategically and whether it's sound.",
+  "evidence": {
+    "h2h_weaknesses": ["Weak opponent matchup(s) and win rate(s) considered."],
+    "experience_pool_refs": ["Relevant lesson(s), especially exhausted patterns."],
+    "diff_refs": ["Changed function/file evidence from git diff."]
+  },
   "feedback": "If approved=false: specific, actionable guidance. What change WOULD score ≥7? Be concrete: which street, which opponent pattern, what mechanism.",
   "local_optima_warning": false,
   "local_optima_reason": null

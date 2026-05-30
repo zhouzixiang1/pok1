@@ -22,6 +22,14 @@ from server.state import app_state
 router = APIRouter(prefix="/api/control", tags=["control"])
 
 
+async def _run_with_cleanup(coro):
+    """Run an evolution coroutine, ensuring app_state.running is cleared on exit."""
+    try:
+        await coro
+    finally:
+        app_state.set_running(False)
+
+
 class ModeRequest(BaseModel):
     mode: str  # orchestrator | classic | manual
 
@@ -110,16 +118,27 @@ async def start_evolution():
 
     if mode == "orchestrator":
         from orchestrator import orchestrator_loop
-        asyncio.create_task(orchestrator_loop(web_ui, no_daemon=not config["daemon_enabled"]))
+        task = asyncio.create_task(_run_with_cleanup(orchestrator_loop(
+            web_ui, no_daemon=not config["daemon_enabled"],
+            daemon_workers=config["daemon_workers"], daemon_pairs=config["daemon_pairs"])))
+        app_state.set_task(task)
     elif mode == "classic":
+        if config["daemon_enabled"]:
+            from evolution_core import start_daemon, daemon_monitor_thread
+            start_daemon(workers=config["daemon_workers"], pairs=config["daemon_pairs"])
+            import threading
+            _monitor_stop = threading.Event()
+            threading.Thread(target=daemon_monitor_thread, args=(web_ui, _monitor_stop), daemon=True).start()
         from evolution_core import main_loop
-        asyncio.create_task(main_loop(web_ui, is_text_ui=False, no_daemon=not config["daemon_enabled"]))
+        task = asyncio.create_task(_run_with_cleanup(
+            main_loop(web_ui, is_text_ui=False, no_daemon=not config["daemon_enabled"])))
+        app_state.set_task(task)
     else:
         if config["daemon_enabled"]:
             from evolution_core import start_daemon
             start_daemon(workers=config["daemon_workers"], pairs=config["daemon_pairs"])
         app_state.set_running(False)
-        return {"status": "daemon_started", "mode": mode}
+        return {"status": "daemon_started" if config["daemon_enabled"] else "started", "mode": mode}
 
     return {"status": "started", "mode": mode}
 
@@ -127,6 +146,7 @@ async def start_evolution():
 @router.post("/stop")
 async def stop_evolution():
     app_state.set_running(False)
+    app_state.cancel_task()
     try:
         from evolution_core import stop_daemon
         stop_daemon()
@@ -151,6 +171,12 @@ async def call_tool(tool_name: str, req: ToolRequest = Body(default=None)):
                     text += item.get("text", "")
 
         app_state.add_decision(tool_name, text[:200])
+
+        # Post-tool state sync
+        if tool_name == "start_daemon":
+            app_state.update_config(daemon_enabled=True)
+        elif tool_name == "stop_daemon":
+            app_state.update_config(daemon_enabled=False)
 
         return {"tool": tool_name, "result": text}
     except Exception as e:
@@ -197,6 +223,7 @@ async def reset_evolution_endpoint():
     """Reset evolution to baseline (v1-v6), then auto-restart."""
     if app_state.running:
         app_state.set_running(False)
+        app_state.cancel_task()
         try:
             from evolution_core import stop_daemon
             stop_daemon()
@@ -227,11 +254,19 @@ async def reset_evolution_endpoint():
     from server.app import web_ui
     if mode == "orchestrator":
         from orchestrator import orchestrator_loop
-        asyncio.create_task(orchestrator_loop(web_ui, no_daemon=not config["daemon_enabled"]))
+        task = asyncio.create_task(_run_with_cleanup(orchestrator_loop(
+            web_ui, no_daemon=not config["daemon_enabled"],
+            daemon_workers=config["daemon_workers"], daemon_pairs=config["daemon_pairs"])))
+        app_state.set_task(task)
         web_ui.log_history("Evolution reset complete. Orchestrator restarted.", "success")
     elif mode == "classic":
+        if config["daemon_enabled"]:
+            from evolution_core import start_daemon
+            start_daemon(workers=config["daemon_workers"], pairs=config["daemon_pairs"])
         from evolution_core import main_loop
-        asyncio.create_task(main_loop(web_ui, is_text_ui=False, no_daemon=not config["daemon_enabled"]))
+        task = asyncio.create_task(_run_with_cleanup(
+            main_loop(web_ui, is_text_ui=False, no_daemon=not config["daemon_enabled"])))
+        app_state.set_task(task)
         web_ui.log_history("Evolution reset complete. Classic loop restarted.", "success")
     else:
         app_state.set_running(False)

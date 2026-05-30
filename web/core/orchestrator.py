@@ -81,7 +81,8 @@ def _make_precompact_hook():
                     "workers_done":   "run_quality_gates",
                     "quality_passed": "run_review",
                     "reviewed":       "run_critic",
-                    "critic_checked": "commit_bot",
+                    "critic_checked": "run_precommit_eval",
+                    "verified":       "commit_bot",
                 }
                 stage = checkpoint.get("stage", "unknown")
                 next_step = stage_hints.get(stage, "check get_status")
@@ -115,12 +116,11 @@ def _find_current_v():
 def _build_context(one_gen=False, dry_run=False):
     """Build context string injected into the orchestrator prompt."""
     from evolution_core import (
-        get_active_bots, load_ratings, git_ensure_clean,
+        get_active_bots, load_ratings,
         get_bot_dir, git_has_tag, _load_recent_failures, _git,
     )
     from glicko2 import Glicko2Player
 
-    git_ensure_clean()
     active_bots = get_active_bots()
     ratings = load_ratings()
     current_v = _find_current_v()
@@ -188,7 +188,8 @@ def _build_context(one_gen=False, dry_run=False):
                 "workers_done":   "Workers done → call run_quality_gates",
                 "quality_passed": "Quality passed → call run_review",
                 "reviewed":       "Review passed → call run_critic",
-                "critic_checked": "Critic done → call commit_bot",
+                "critic_checked": "Critic done → call run_precommit_eval",
+                "verified":       "Precommit eval passed → call commit_bot",
             }
             stage = checkpoint.get("stage", "unknown")
             hint = stage_hints.get(stage, "call get_status to assess")
@@ -325,7 +326,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
     return total_cost
 
 
-async def orchestrator_loop(ui, no_daemon=False):
+async def orchestrator_loop(ui, no_daemon=False, daemon_workers=14, daemon_pairs=5):
     """Orchestrator entry point compatible with BaseUI interface.
 
     Designed to be called from dashboard/backend/app.py:
@@ -334,6 +335,8 @@ async def orchestrator_loop(ui, no_daemon=False):
     Args:
         ui: BaseUI instance (WebUI for Dashboard, TextUI for CLI). Can be None for silent mode.
         no_daemon: If True, skip daemon startup.
+        daemon_workers: Number of parallel workers for the daemon subprocess.
+        daemon_pairs: Mirror pairs per match for the daemon subprocess.
     """
     from tools import inject_ui
     inject_ui(ui)
@@ -348,7 +351,7 @@ async def orchestrator_loop(ui, no_daemon=False):
     if not no_daemon:
         from evolution_core import start_daemon, daemon_monitor_thread, stop_daemon
         import threading
-        start_daemon()
+        start_daemon(workers=daemon_workers, pairs=daemon_pairs)
         _daemon_stop = threading.Event()
         monitor = threading.Thread(
             target=daemon_monitor_thread, args=(ui, _daemon_stop), daemon=True
@@ -406,6 +409,12 @@ async def orchestrator_loop(ui, no_daemon=False):
     except Exception as e:
         if ui:
             ui.log_history(f"Orchestrator crashed: {e}", "error")
+    finally:
+        try:
+            from server.state import app_state
+            app_state.set_running(False)
+        except Exception:
+            pass
 
 
 async def run_orchestrator_cli(args):

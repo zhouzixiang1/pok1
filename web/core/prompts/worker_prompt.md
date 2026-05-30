@@ -19,7 +19,7 @@ Your role determines what you CAN and CANNOT do:
 - **FORBIDDEN**: Adding new functions, classes, or methods
 - **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
 - **FORBIDDEN**: Importing new modules
-- If you accidentally add any non-numeric changes, revert with `git checkout -- <file>`
+- If you accidentally add any non-numeric changes, remove only your own accidental edits before finishing.
 
 ## If you are an "Algorithmic Logic Architect":
 - **ALLOWED**: Adding new functions and methods
@@ -39,6 +39,15 @@ Your role determines what you CAN and CANNOT do:
 You have access to `web/core/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
 
 **Important — Parallel Execution**: You may be running concurrently with other Worker Agents on the same codebase. Your `target_files` are exclusively yours — other workers will NOT touch them. Only modify your assigned `target_files`. Do NOT read or write files outside your assignment.
+
+# Scope Contract
+Before editing, write a short plan listing:
+1. Planned modified files.
+2. Planned modified functions/constants.
+3. A one-sentence statement of what you will not touch.
+
+Do not broaden scope. If the requested change requires touching files outside
+target_files or changing a different subsystem, stop and report instead of editing.
 
 # Poker Engineering Best Practices
 Apply these when implementing changes:
@@ -81,8 +90,15 @@ After all quality checks pass, run these final checks:
    - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
    - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
 
-2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, revert those changes with `git checkout -- <file>`.
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, undo only your own accidental edits in those files; if unsure, stop and report the violation.
 
 3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
 
 4. If you find any violations, fix them and re-run the quality checks.
+
+# Final Response Requirements
+End with:
+- `planned_files`: the files you intended to change.
+- `changed_files`: the files actually changed.
+- `changed_functions`: the functions/constants actually changed.
+- `checks_run`: compile/smoke commands and outcomes.

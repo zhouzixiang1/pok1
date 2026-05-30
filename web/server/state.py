@@ -1,5 +1,6 @@
 """Global state for the unified web app."""
 
+import asyncio
 import threading
 
 
@@ -15,6 +16,7 @@ class AppState:
         self.next_v: int = 0
         self.generation_count: int = 0
         self.decisions: list = []
+        self._evolution_task: asyncio.Task | None = None
 
     def to_dict(self) -> dict:
         with self._lock:
@@ -53,7 +55,8 @@ class AppState:
 
     def set_mode(self, mode: str):
         with self._lock:
-            self.mode = mode
+            if mode in ("orchestrator", "classic", "manual"):
+                self.mode = mode
 
     def set_running(self, running: bool):
         with self._lock:
@@ -64,6 +67,16 @@ class AppState:
             self.current_v = current_v
             self.next_v = next_v
             self.generation_count += 1
+
+    def set_task(self, task: asyncio.Task):
+        with self._lock:
+            self._evolution_task = task
+
+    def cancel_task(self):
+        with self._lock:
+            if self._evolution_task and not self._evolution_task.done():
+                self._evolution_task.cancel()
+            self._evolution_task = None
 
     def add_decision(self, tool_name: str, result_summary: str):
         import time

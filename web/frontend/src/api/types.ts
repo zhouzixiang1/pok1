@@ -133,6 +133,7 @@ export interface PipelineCheckpoint {
   master_plan: unknown;
   reviewer_feedback: string;
   generation_attempt: number;
+  gate_results?: Record<string, unknown>;
   timestamp: string;
 }
 

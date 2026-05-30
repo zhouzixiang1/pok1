@@ -20,6 +20,24 @@ SCENARIOS_FILE = WORKSPACE / "test_scenarios.json"
 
 TIMEOUT = 10  # seconds per bot decision
 
+CRITICAL_SCENARIO_IDS = {
+    # Premium preflop hands and unavoidable continues
+    "preflop_aa_first_act",
+    "preflop_kk_first_act",
+    "preflop_qq_facing_raise",
+    "preflop_aks_facing_allin",
+    "preflop_jj_facing_3bet",
+    # Strong made hands / high-equity postflop continues
+    "flop_top_set_safe_board",
+    "river_nut_flush_facing_bet",
+    "flop_nut_straight_dry_board",
+    "turn_two_pair_facing_bet",
+    "river_full_house_facing_raise",
+    "flop_flush_draw_facing_cbet",
+    # Explicit blunder guard from the v29 failure mode
+    "river_missed_draw_facing_big_bet",
+}
+
 
 def classify_action(action):
     """Convert numeric action to category string."""
@@ -79,29 +97,85 @@ def run_single_scenario(bot_path, scenario):
 
 def run_decision_tests(bot_path, verbose=False):
     """Run all test scenarios against a bot. Returns pass rate (0.0 - 1.0)."""
+    result = run_decision_tests_detail(bot_path, verbose=verbose)
+    return result["pass_rate"]
+
+
+def run_decision_tests_detail(bot_path, verbose=False):
+    """Run all scenarios and return detailed critical/advisory gate data."""
     if not SCENARIOS_FILE.exists():
         if verbose:
             print("[DECISION TESTER] No scenarios file found, skipping.")
-        return 1.0
+        return {
+            "pass_rate": 1.0,
+            "passed": 0,
+            "total": 0,
+            "critical_passed": 0,
+            "critical_total": 0,
+            "critical_failures": [],
+            "failures": [],
+            "scenarios": [],
+        }
 
     with open(SCENARIOS_FILE) as f:
         scenarios = json.load(f)
 
     if not scenarios:
-        return 1.0
+        return {
+            "pass_rate": 1.0,
+            "passed": 0,
+            "total": 0,
+            "critical_passed": 0,
+            "critical_total": 0,
+            "critical_failures": [],
+            "failures": [],
+            "scenarios": [],
+        }
 
     passed = 0
     total = len(scenarios)
+    critical_passed = 0
+    critical_total = 0
+    scenario_results = []
+    failures = []
+    critical_failures = []
 
     for scenario in scenarios:
         ok, details = run_single_scenario(bot_path, scenario)
+        severity = scenario.get(
+            "severity",
+            "critical" if scenario.get("id") in CRITICAL_SCENARIO_IDS else "advisory",
+        )
         if ok:
             passed += 1
+            if severity == "critical":
+                critical_passed += 1
+        elif severity == "critical":
+            critical_failures.append({"id": scenario["id"], "details": details})
+        if severity == "critical":
+            critical_total += 1
+        if not ok:
+            failures.append({"id": scenario["id"], "severity": severity, "details": details})
+        scenario_results.append({
+            "id": scenario["id"],
+            "severity": severity,
+            "passed": ok,
+            "details": details,
+        })
         if verbose:
             status = "PASS" if ok else "FAIL"
-            print(f"  [{status}] {scenario['id']}: {details}")
+            print(f"  [{status}] {scenario['id']} ({severity}): {details}")
 
-    return passed / total if total > 0 else 1.0
+    return {
+        "pass_rate": passed / total if total > 0 else 1.0,
+        "passed": passed,
+        "total": total,
+        "critical_passed": critical_passed,
+        "critical_total": critical_total,
+        "critical_failures": critical_failures,
+        "failures": failures,
+        "scenarios": scenario_results,
+    }
 
 
 if __name__ == "__main__":
@@ -112,6 +186,11 @@ if __name__ == "__main__":
     bot_path = sys.argv[1]
     verbose = "--verbose" in sys.argv
 
-    rate = run_decision_tests(bot_path, verbose=verbose)
+    result = run_decision_tests_detail(bot_path, verbose=verbose)
+    rate = result["pass_rate"]
     print(f"\nDecision test pass rate: {rate:.0%} ({int(rate * 100)}%)")
-    sys.exit(0 if rate >= 0.7 else 1)
+    if result["critical_failures"]:
+        print(f"Critical failures: {len(result['critical_failures'])}")
+        for failure in result["critical_failures"]:
+            print(f"  - {failure['id']}: {failure['details']}")
+    sys.exit(0 if rate >= 0.7 and not result["critical_failures"] else 1)

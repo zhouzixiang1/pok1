@@ -36,6 +36,15 @@ Your goal is to:
 5. Dynamically assign 1–3 Developer Sub-Agents (Workers) to implement your strategy.
 6. Write the exact, comprehensive prompt (`worker_prompt`) for each worker.
 
+Prefer one dominant hypothesis per generation. If changing multiple subsystems,
+explain why they are inseparable. Otherwise split into separate generations.
+
+Every plan must make attribution possible:
+- `targeted_failure`: the single failure pattern this generation targets, with H2H/replay/evidence if available.
+- `expected_behavior_change`: what concrete decisions should change at the table.
+- `do_not_touch`: files, functions, streets, or subsystems workers must avoid.
+- `measurement_plan`: how quality gates, critical scenarios, H2H, or precommit eval should prove the change is not a regression.
+
 # Worker Count Decision
 Choose 1–3 workers based on the current bot's total games played:
 - **games < 50** (very uncertain): **1 worker only** — conservative change, avoid big structural risk
@@ -102,6 +111,10 @@ You MUST output your response containing exactly ONE JSON block formatted as fol
 ```json
 {
   "analysis": "Your strategic analysis. Which reference bot did you study? What weakness are you targeting? Are we failing due to bad logic or bad parameters? If diversity injection applies, explain: 'Diversity injection: trying X instead of Y'.",
+  "targeted_failure": "One dominant failure pattern this generation targets, with the strongest evidence source.",
+  "expected_behavior_change": "Specific table behavior that should change, e.g. call AKs all-in preflop more often but do not widen weak offsuit calls.",
+  "do_not_touch": ["List files/functions/subsystems that must remain unchanged for attribution."],
+  "measurement_plan": "How to verify this hypothesis: critical scenarios, H2H weak opponent, parent comparison, expected small-sample signal.",
   "branch_from": "claude_v{N}",
   "tasks": [
     {
@@ -126,6 +139,7 @@ Notes:
 - `branch_from` is OPTIONAL. Only include it to override the default evolution source.
 - For 1-worker plans, use only Direction A or only Direction B.
 - For 3-worker plans, add a Direction C (Opponent Modeler) task as worker_id 3.
+- Avoid v29-like broad mixes such as "preflop rewrite + river rewrite + all-street sizing" unless you explicitly prove those changes are inseparable.
 
 # Git Commands (use Bash tool)
 Run these with the Bash tool:
@@ -142,3 +156,4 @@ Run these with the Bash tool:
 5. **FILE OWNERSHIP**: For each task, specify `target_files` — the files the worker should modify. Workers must NOT modify files outside their assigned `target_files`.
 6. **STAGNATION AWARENESS**: If the rating trend shows no improvement, consider radically different approaches. Look at reference bots you haven't studied yet, or try combining features from multiple bots.
 7. **MATCH ANALYSIS**: If match analysis data is provided, prioritize fixing the identified weaknesses. Don't ignore concrete loss patterns.
+8. **ATTRIBUTION**: Do not mix unrelated preflop, postflop, and sizing rewrites in one generation. The next evaluation must be able to attribute win/loss movement to this plan.

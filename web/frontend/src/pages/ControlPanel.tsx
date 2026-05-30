@@ -61,6 +61,7 @@ const TOOL_GROUPS: { label: string; tools: ToolDef[] }[] = [
       { name: "run_quality_gates", description: "运行编译、冒烟测试、决策测试、文件大小检查。", params: [{ name: "version", type: "int" }] },
       { name: "run_review", description: "运行首席代码审核员。返回通过/拒绝及评分。", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int" }, { name: "plan", type: "list", placeholder: "[]" }] },
       { name: "run_critic", description: "运行扑克策略评论家。评分 1-10；≥6 = 通过。", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int" }, { name: "plan", type: "list", placeholder: "[]" }, { name: "reviewer_feedback", type: "str", placeholder: "", optional: true }, { name: "force_advance", type: "bool", optional: true }] },
+      { name: "run_precommit_eval", description: "提交前最小镜像验证：父代、Top 对手、H2H 弱项。", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int" }, { name: "n_games", type: "int", placeholder: "1", optional: true }] },
     ],
   },
   {
