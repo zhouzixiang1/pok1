@@ -240,13 +240,14 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             "warn",
         )
 
+    from evolution_core import _BLOCKED_MCP_TOOLS
     options = ClaudeAgentOptions(
         model="sonnet",
         permission_mode="bypassPermissions",
         cwd=str(PROJECT_ROOT),
         mcp_servers={"evolution": evolution_server},
         strict_mcp_config=True,
-        disallowed_tools=["ToolSearch"],
+        disallowed_tools=_BLOCKED_MCP_TOOLS,
         setting_sources=[],
         hooks=_make_precompact_hook(),
         max_turns=max_turns or 80,

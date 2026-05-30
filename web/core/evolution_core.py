@@ -521,6 +521,15 @@ def git_get_stagnation_count(bot_name, ratings):
 # LLM & Code Tools
 # ──────────────────────────────────────────────
 
+# MCP servers to block for sub-agents (keep zai-mcp-server for vision, block the rest)
+_BLOCKED_MCP_TOOLS = [
+    "mcp__web-reader__webReader",
+    "mcp__web-search-prime__web_search_prime",
+    "mcp__zread__get_repo_structure",
+    "mcp__zread__read_file",
+    "mcp__zread__search_doc",
+]
+
 async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, is_text_ui, model="sonnet", tools=None):
     """Run a Claude query via the Agent SDK with cost tracking and typed streaming.
 
@@ -577,10 +586,7 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         permission_mode="bypassPermissions",
         cwd=str(PROJECT_ROOT),  # pok/ — workers use relative paths like bots/claude_vN/
         tools=tools,
-        strict_mcp_config=True,
-        mcp_servers={},
-        disallowed_tools=["ToolSearch"],
-        setting_sources=[],
+        disallowed_tools=_BLOCKED_MCP_TOOLS,
     )
 
     full_text = []
