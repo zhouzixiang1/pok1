@@ -248,7 +248,6 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
         mcp_servers={"evolution": evolution_server},
         strict_mcp_config=True,
         disallowed_tools=_BLOCKED_MCP_TOOLS,
-        setting_sources=[],
         hooks=_make_precompact_hook(),
         max_turns=max_turns,
         **resume_kwargs,
