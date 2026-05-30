@@ -1,0 +1,56 @@
+
+[MATCH ANALYST PROMPT]
+=============================
+You are a Poker Hand Analyst specializing in Texas Hold'em bot strategy.
+Analyze the following match replay summaries (losses and close wins) for weaknesses and patterns.
+
+## Recent Match Summaries (LOSS = bot lost, CLOSE WIN = bot won by ≤2 games)
+
+[CLOSE WIN] Match: claude_v19 vs claude_v28, Result: 6W/4L out of 10 games
+Chip delta: avg=2112, best=19984, worst=-19665
+Big losses (>-5000): 4 games
+  Game 1: -19155 chips
+  Game 5: -18989 chips
+  Game 6: -19665 chips
+Per-street actions (bot):
+  Preflop: fold=66%, raise=17%, call=12%, allin=3%, avg_raise=0.7x_pot
+  Flop: fold=0%, raise=31%, call=67%, allin=0%, avg_raise=0.5x_pot
+  Turn: fold=0%, raise=30%, call=65%, allin=3%, avg_raise=0.5x_pot
+  River: fold=0%, raise=0%, call=100%
+
+Based on the data above, identify:
+1. Key weaknesses (e.g., folding too much, not raising enough, poor all-in timing)
+2. Street-specific weaknesses from the Per-street actions data:
+   - River fold rate ≥40% → scared-money, consider expanding river calling range
+   - Flop raise rate ≤10% → too passive postflop, giving free cards
+   - Preflop raise rate ≤15% → limping too much, losing positional advantage
+   - avg_raise < 0.5x pot on river with big pot → underbetting strong hands
+3. Any detectable patterns (e.g., weak out-of-position, poor against aggressive opponents)
+4. What seems to be working (from close wins, if any)
+5. A concrete recommendation for improvement (be specific: which street, what change)
+
+Output ONLY a JSON block:
+```json
+{"weaknesses": ["..."], "street_weaknesses": {"river": "...", "flop": "..."}, "patterns": "...", "working": "...", "recommendation": "..."}
+```
+Keep it concise — 2-3 weaknesses, specific street observations, 1 recommendation.
+=============================
+[CLAUDE OUTPUT]
+```json
+{
+  "weaknesses": [
+    "Preflop overfolding at 66% — bleeding chips from blinds and conceding the small pot for free too often in a heads-up format where defending wide is critical",
+    "River is a pure calling station (0% raise, 0% fold, 100% call) — never extracting value with strong hands and never releasing weak ones, creating massive negative-EV river spots",
+    "4 of 10 games were big losses (>19,000 chips), suggesting poor pot control: the bot builds or calls into large pots it cannot win rather than shutting down early"
+  ],
+  "street_weaknesses": {
+    "preflop": "66% fold rate is catastrophically high for HU — optimal HU ranges defend ~70-80% of hands from the BB and open ~60%+ from the BTN. The bot is conceding roughly half the hands it should be playing, gifting the opponent a steady stream of uncontested pots.",
+    "flop": "Flop aggression is reasonable (31% raise) but avg_raise of 0.5x pot is undersized — giving correct odds for opponents to continue with draws rather than charging them properly.",
+    "turn": "Turn profile mirrors the flop (30% raise, 0.5x pot) — consistent but still underbetting. The 3% all-in rate is negligible; the bot rarely applies maximum pressure on semi-bluffs or value-shoving turns.",
+    "river": "0% raise / 0% fold / 100% call is the single biggest leak. The bot never value-bets strong river holdings and never hero-folds when beat — it is fully exploitable as an unconditionally passive river caller."
+  },
+  "patterns": "The bot plays a nitty-passive preflop game (overfold, under-raise) then transitions to a calling-station postflop. This creates a pattern where: (1) it wins small pots when the opponent gives up, (2) loses massive pots when the opponent barrels — exactly the skewed chip delta distribution seen here (best=+19,984, worst=-19,665). The big losses cluster around games where the bot called down all three streets with marginal holdings into aggressive opponent barrels.",
+  "working": "Flop and turn raise rates (30-31%) show the bot can be aggressive on earlier postflop streets, and the 6-4 win record suggests the strategy works against passive or predictable opponents who don't barrel aggressively enough to exploit the river calling station leak.",
+  "recommendation": "Two-part fix targeting the biggest leaks: (1) Reduce preflop fold rate from 66% to ≤35% — loosen the preflop hand evaluation to defend wider from BB and open wider from BTN. (2) On the river, introduce a value-raise threshold: when the bot's hand strength ≥ top-30% of its range, raise 60-75% pot; when hand strength ≤ bottom-15%, allow a fold. This breaks the 0/0/100 river profile and directly addresses both the missed value and the huge negative-river-call losses."
+}
+```

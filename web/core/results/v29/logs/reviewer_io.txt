@@ -1,0 +1,281 @@
+
+[LEAD CODE REVIEWER PROMPT]
+=============================
+# Role
+You are the strict Lead Code Reviewer (Critic) for a Texas Hold'em poker bot team.
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files.
+- **Use the Bash tool** to run git diff and other commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Task
+Worker Agents have modified the bot codebase based on the Master Architect's instructions.
+Your job is the final quality gate before production (the next evolution iteration).
+
+# Context
+1. **Master's Original Plan/Tasks:**
+[
+  {
+    "difficulty": "hard",
+    "role": "Algorithmic Logic Architect",
+    "target_files": [
+      "bots/claude_v28/main.py"
+    ],
+    "worker_id": 1,
+    "worker_prompt": "Rewrite preflop tier-based hand classification + add 3-branch river decision"
+  },
+  {
+    "difficulty": "easy",
+    "role": "Hyperparameter Tuner",
+    "target_files": [
+      "bots/claude_v28/main.py"
+    ],
+    "worker_id": 2,
+    "worker_prompt": "Increase bet sizing constants from 0.5x to 0.65-0.75x pot"
+  }
+]
+
+2. **Bot directory**: `bots/claude_v29/`
+3. **Parent version tag**: `bot-v28`
+
+# How to Review
+You have full access to git and file reading tools. Use them:
+
+1. **See all changes**: Run `git diff bot-v28 -- bots/claude_v29/`
+   This shows exactly what the workers changed vs the parent bot.
+2. **See change summary**: Run `git diff --stat bot-v28 -- bots/claude_v29/`
+3. **Read specific files**: Use the Read tool on any file in `bots/claude_v29/`
+4. **List all files**: Run `ls bots/claude_v29/` to see the full file list
+
+Focus your review on the diff, but read full files when you need more context.
+
+# Rules
+1. Verify the changes fulfill the Master's instructions without logical flaws or contradictions.
+2. ENFORCE THE DUAL-TRACK BOUNDARY:
+   - If a "Hyperparameter Tuner" was assigned, verify they ONLY changed constants/thresholds. If they injected complex new logic, REJECT.
+   - If an "Algorithmic Logic Architect" was assigned, verify their logic is sound.
+3. Ensure the code compiles conceptually and adheres to the `{"response": int}` JSON output format constraint.
+4. Output exactly ONE JSON block containing your decision. If you reject the code, you must provide a detailed "feedback" string explaining what the Developer Agents need to fix.
+5. FILE SIZE CONSTRAINT: No single .py file should exceed 1000 lines. If any file is too large, REJECT and instruct workers to split it into focused modules. Keep main.py as the slim entry point.
+
+# Correctness Criteria (MANDATORY CHECK)
+Before approving, verify the bot does NOT do any of the following:
+- Fold premium hands (AA, KK, QQ, AKs) preflop without extreme pressure
+- Call all-in with obviously dominated hands on the river
+- Return invalid JSON (must output `{"response": <int>}`)
+- Use `input()` or `print()` instead of stdin/stdout for game communication
+- Import unavailable modules (only stdlib + numpy if present)
+- Have obvious infinite loops or unbounded recursion
+
+# Output Format
+You MUST output your response containing exactly ONE JSON block formatted as follows:
+
+```json
+{
+  "approved": true or false,
+  "feedback": "If approved=false, provide detailed instructions on what needs to be fixed. If true, this can be empty.",
+  "quality_score": 7,
+  "change_summary": "A 1-2 sentence summary of the key changes made in this generation.",
+  "risk_areas": ["List of potential risks or concerns about the changes, if any"]
+}
+```
+
+# Quality Score Rubric
+- **9-10**: Clean, well-structured changes that clearly improve strategy. No risks. Code is concise and follows project conventions.
+- **7-8**: Good changes that address the plan. Minor concerns (e.g., slightly verbose code, a heuristic that might not generalize). Approve.
+- **5-6**: Changes work but are mediocre — copy-pasted code, brute-force approaches where elegant solutions exist, or unclear strategy. Approve with caution.
+- **3-4**: Changes introduce regression risk, violate role boundaries, or show fundamental misunderstanding of poker strategy. REJECT.
+- **1-2**: Broken code, catastrophic strategic errors (folding AA preflop), or complete failure to follow instructions. REJECT.
+
+- `change_summary`: Required even when approved=true. This is used to update the experience pool for future generations.
+- `risk_areas`: Optional. List potential issues that could cause regression.
+
+=============================
+[CLAUDE OUTPUT]
+Now let me read the full changed files and the main entry point:
+Now let me verify the code compiles and check for critical issues:
+This is a critical finding. Let me verify the import issue more thoroughly:
+Let me verify one more critical thing:
+I've found a critical bug. Let me verify the full scope:
+Now let me check one more strategic concern - the river 3-branch interaction with the overbet:
+I've completed my thorough review. Let me compile my findings.
+
+---
+
+## Code Review Summary
+
+### Files Changed (3 files, no new files)
+- **`betting.py`**: +270 lines (new functions + moved function + constant changes)
+- **`state.py`**: +79 lines (new `classify_preflop_tier` function)
+- **`strategy.py`**: restructured (imports updated, new call sites for tier/river logic, threshold adjustments)
+
+### What Was Done Well
+1. **Preflop tier system** (`classify_preflop_tier`): Well-structured 5-tier hand classification. Premium hands (AA/KK/QQ/AK) correctly locked to tier 1 — verified they can never fold preflop.
+2. **River 3-branch decision** (`river_3branch_decision`): Clean STRONG/MEDIUM/WEAK branching with reasonable pot-odds-based thresholds.
+3. **Bet sizing increases**: Constants bumped from ~0.55x to ~0.65-0.90x pot range — consistent with hyperparameter tuner role.
+4. **All files compile**, main.py remains slim (81 lines), no file exceeds 1000 lines.
+
+### Issues Found
+
+#### 🔴 CRITICAL BUG: Missing `TOTAL_HANDS` Import in `betting.py`
+The `choose_anti_lock_pressure_action` function was **moved** from `strategy.py` (v28) to `betting.py` (v29), but `TOTAL_HANDS` was not added to `betting.py`'s imports. Line 554 of `betting.py`:
+```python
+hands_left = remaining_hands if remaining_hands is not None else TOTAL_HANDS
+```
+`betting.py` only imports `BIG_BLIND` from constants — **`TOTAL_HANDS` is not in scope**. This will raise `NameError` at runtime when `remaining_hands=None` during anti-lock pressure situations (late-game tournament spots). This is a **crash bug** that would cause the bot to time out and lose.
+
+#### 🟡 STRATEGIC REGRESSION: River 3-Branch Preempts Nut Overbet
+The new `river_3branch_decision` (line 357 of strategy.py) executes **before** the existing nut overbet logic (line 377). For nut-tier hands, `classify_river_hand` returns "strong", and the strong branch bets 60-75% pot. The overbet code (1.5-2.2x pot with nuts) becomes **dead code** — it can never be reached on the river. This reduces maximum value extraction from the strongest hands on dry boards.
+
+```json
+{
+  "approved": false,
+  "feedback": "Two issues must be fixed before approval:\n\n1. **CRITICAL BUG** in `betting.py`: Add `TOTAL_HANDS` to the import from constants:\n   ```python\n   from constants import BIG_BLIND, TOTAL_HANDS\n   ```\n   The `choose_anti_lock_pressure_action` function (moved from strategy.py in v28) uses `TOTAL_HANDS` on line 554 but it is not imported. This causes a NameError crash when `remaining_hands=None` in anti-lock pressure situations.\n\n2. **STRATEGIC REGRESSION**: The river 3-branch decision (`river_3branch_decision` at strategy.py line 357) runs before the nut overbet logic (line 377). For nut-tier hands, `classify_river_hand` returns 'strong' and the strong branch bets only 60-75% pot, making the overbet code (1.5-2.2x pot) dead code. Fix: in `river_3branch_decision`'s STRONG branch, check if `value_profile['tier'] == 'nut'` and return `None` to defer to the existing overbet logic, OR integrate overbet sizing (1.5-2.2x pot) into the strong branch for nut hands specifically.",
+  "quality_score": 5,
+  "change_summary": "Added 5-tier preflop hand classification system (classify_preflop_tier) and a 3-branch river decision framework (strong/medium/weak) to fix river passivity leaks. Increased bet sizing constants from ~0.55x to ~0.65-0.90x pot. Restructured preflop BB defense to use tier-based widening.",
+  "risk_areas": [
+    "NameError crash in choose_anti_lock_pressure_action due to missing TOTAL_HANDS import in betting.py — will crash in late-game anti-lock situations if remaining_hands is None",
+    "River 3-branch system preempts nut overbet logic, capping nut hand extraction at 60-75% pot instead of 1.5-2.2x pot — significant EV loss on dry river boards",
+    "Preflop BB-vs-raise tier-based defense (strategy.py lines 286-313) bypasses the full opponent modeling pipeline for tier 1-2 hands, potentially missing important exploit adjustments",
+    "Anti-bot4 bluff bonus in river weak branch (betting.py line 527) is a no-op — 'pass' statement does nothing, making the anti-bot4 adjustment ineffective"
+  ]
+}
+```
+
+[LEAD CODE REVIEWER PROMPT]
+=============================
+# Role
+You are the strict Lead Code Reviewer (Critic) for a Texas Hold'em poker bot team.
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files.
+- **Use the Bash tool** to run git diff and other commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Task
+Worker Agents have modified the bot codebase based on the Master Architect's instructions.
+Your job is the final quality gate before production (the next evolution iteration).
+
+# Context
+1. **Master's Original Plan/Tasks:**
+[
+  {
+    "difficulty": "easy",
+    "role": "Algorithmic Logic Architect",
+    "target_files": [
+      "main.py"
+    ],
+    "worker_id": 1,
+    "worker_prompt": "Fix 2 bugs: (1) add TOTAL_HANDS import to betting.py, (2) defer nut hands to overbet logic in river 3-branch"
+  }
+]
+
+2. **Bot directory**: `bots/claude_v29/`
+3. **Parent version tag**: `bot-v28`
+
+# How to Review
+You have full access to git and file reading tools. Use them:
+
+1. **See all changes**: Run `git diff bot-v28 -- bots/claude_v29/`
+   This shows exactly what the workers changed vs the parent bot.
+2. **See change summary**: Run `git diff --stat bot-v28 -- bots/claude_v29/`
+3. **Read specific files**: Use the Read tool on any file in `bots/claude_v29/`
+4. **List all files**: Run `ls bots/claude_v29/` to see the full file list
+
+Focus your review on the diff, but read full files when you need more context.
+
+# Rules
+1. Verify the changes fulfill the Master's instructions without logical flaws or contradictions.
+2. ENFORCE THE DUAL-TRACK BOUNDARY:
+   - If a "Hyperparameter Tuner" was assigned, verify they ONLY changed constants/thresholds. If they injected complex new logic, REJECT.
+   - If an "Algorithmic Logic Architect" was assigned, verify their logic is sound.
+3. Ensure the code compiles conceptually and adheres to the `{"response": int}` JSON output format constraint.
+4. Output exactly ONE JSON block containing your decision. If you reject the code, you must provide a detailed "feedback" string explaining what the Developer Agents need to fix.
+5. FILE SIZE CONSTRAINT: No single .py file should exceed 1000 lines. If any file is too large, REJECT and instruct workers to split it into focused modules. Keep main.py as the slim entry point.
+
+# Correctness Criteria (MANDATORY CHECK)
+Before approving, verify the bot does NOT do any of the following:
+- Fold premium hands (AA, KK, QQ, AKs) preflop without extreme pressure
+- Call all-in with obviously dominated hands on the river
+- Return invalid JSON (must output `{"response": <int>}`)
+- Use `input()` or `print()` instead of stdin/stdout for game communication
+- Import unavailable modules (only stdlib + numpy if present)
+- Have obvious infinite loops or unbounded recursion
+
+# Output Format
+You MUST output your response containing exactly ONE JSON block formatted as follows:
+
+```json
+{
+  "approved": true or false,
+  "feedback": "If approved=false, provide detailed instructions on what needs to be fixed. If true, this can be empty.",
+  "quality_score": 7,
+  "change_summary": "A 1-2 sentence summary of the key changes made in this generation.",
+  "risk_areas": ["List of potential risks or concerns about the changes, if any"]
+}
+```
+
+# Quality Score Rubric
+- **9-10**: Clean, well-structured changes that clearly improve strategy. No risks. Code is concise and follows project conventions.
+- **7-8**: Good changes that address the plan. Minor concerns (e.g., slightly verbose code, a heuristic that might not generalize). Approve.
+- **5-6**: Changes work but are mediocre — copy-pasted code, brute-force approaches where elegant solutions exist, or unclear strategy. Approve with caution.
+- **3-4**: Changes introduce regression risk, violate role boundaries, or show fundamental misunderstanding of poker strategy. REJECT.
+- **1-2**: Broken code, catastrophic strategic errors (folding AA preflop), or complete failure to follow instructions. REJECT.
+
+- `change_summary`: Required even when approved=true. This is used to update the experience pool for future generations.
+- `risk_areas`: Optional. List potential issues that could cause regression.
+
+=============================
+[CLAUDE OUTPUT]
+Let me read the key files to understand the full scope of changes:
+Now let me check file sizes and verify the import issue:
+Let me check a few more things:
+I've completed my thorough review. Let me compile my findings.
+
+## Review Summary
+
+### Critical Runtime Bug — NameError on `TOTAL_HANDS`
+
+The Master's Bug Fix #1 was literally: **"add TOTAL_HANDS import to betting.py"**. The worker moved `choose_anti_lock_pressure_action` from `strategy.py` (where `TOTAL_HANDS` is imported) to `betting.py` but **did NOT add the import**. I confirmed this crashes at runtime:
+
+```
+NameError: name 'TOTAL_HANDS' is not defined
+```
+
+This occurs on line 554 of `betting.py` whenever `choose_anti_lock_pressure_action` is called with `remaining_hands=None`.
+
+### Bug Fix #2 Not Implemented Correctly
+
+The task was to **"defer nut hands to overbet logic in river 3-branch"**. Instead, `classify_river_hand()` classifies nut tier as `"strong"` (line 357-358), and `river_3branch_decision()` handles them with 65-80% pot raises — **intercepting them BEFORE they can reach the overbet logic** (1.5-2.2x pot) which comes later in strategy.py (line 378). The correct fix should have returned `None` for nut hands to let them fall through to the overbet logic.
+
+### Massive Scope Creep
+
+The Master assigned an **"easy"** task with 2 bug fixes. The worker instead made ~300 lines of new code:
+- Entire `classify_preflop_tier()` system (78 lines in state.py)
+- Complete rewrite of `choose_preflop_spot_action()` with tier-based logic
+- New `classify_river_hand()` + `river_3branch_decision()` (~200 lines)
+- Preflop BB defense tier-based widening (30 lines in strategy.py)
+- ~15 constant/threshold changes (Hyperparameter Tuner territory)
+
+### Dual-Track Boundary Violation
+
+As an **"Algorithmic Logic Architect"**, the worker should not have tuned constants. Changes like `0.55→0.65`, `0.75→0.85`, `0.69→0.71`, `0.54→0.56`, `2.5→3.5`, `5.5→7.0`, `0.04→0.06`, `0.05→0.07` are pure hyperparameter tuning.
+
+```json
+{
+  "approved": false,
+  "feedback": "REJECT — Two critical issues and significant scope creep:\n\n1. **TOTAL_HANDS NameError (BLOCKING RUNTIME BUG)**: betting.py line 554 uses TOTAL_HANDS but it is NOT imported. The function choose_anti_lock_pressure_action was moved from strategy.py (where TOTAL_HANDS is imported) to betting.py (where only BIG_BLIND is imported). Fix: Add TOTAL_HANDS to the import on line 2: `from constants import BIG_BLIND, TOTAL_HANDS`. This was literally Bug Fix #1 in the Master's task.\n\n2. **Nut hands NOT deferred to overbet logic**: classify_river_hand() classifies nut hands as 'strong' (line 357), and river_3branch_decision() handles them with 65-80% pot raises. Since the 3-branch system is called BEFORE the overbet logic in strategy.py (line 356 vs line 378), nut hands are intercepted and never reach the 1.5-2.2x pot overbet. Fix: In classify_river_hand(), return 'none' (or a special flag) for nut-tier hands so river_3branch_decision() returns None, allowing the existing overbet logic to handle them. Alternatively, check for nut tier early in river_3branch_decision() and return None.\n\n3. **Scope creep**: Master assigned 2 easy bug fixes but ~300 lines of new structural code were added (preflop tier system, river 3-branch system, preflop BB defense widening, function relocations). Revert all changes not directly related to the 2 bug fixes.\n\n4. **Dual-track boundary violation**: As Algorithmic Logic Architect, do NOT change constants/thresholds. The ratio changes (0.55→0.65, 0.69→0.71, etc.), preflop sizing formula changes (2.5→3.5, 5.5→7.0), and call margin changes (0.04→0.06) are Hyperparameter Tuner territory. Revert all constant changes.\n\nREQUIRED FIXES:\n- Add `from constants import BIG_BLIND, TOTAL_HANDS` to betting.py line 2\n- In river_3branch_decision (or classify_river_hand), defer nut-tier hands by returning None so they reach the overbet logic\n- Revert all constant/threshold changes that are not directly related to the 2 bug fixes\n- Revert the preflop tier system, river 3-branch system, and BB defense widening — these are new features, not bug fixes",
+  "quality_score": 2,
+  "change_summary": "Worker attempted 2 bug fixes but failed both: (1) TOTAL_HANDS is still not imported in betting.py causing a runtime NameError, (2) nut hands are intercepted by the new 3-branch system instead of being deferred to overbet logic. Additionally, ~300 lines of unrequested new code were added (preflop tier system, river 3-branch system, constant tuning) far exceeding the 'easy' 2-bug-fix scope.",
+  "risk_areas": [
+    "Runtime NameError on TOTAL_HANDS in betting.py will crash the bot in games",
+    "Nut hands get suboptimal 65-80% pot sizing instead of 1.5-2.2x overbet",
+    "New preflop tier system is untested and changes opening/defending ranges significantly",
+    "River 3-branch system completely replaces existing river decision flow, creating a large regression surface",
+    "Constant changes across betting.py and strategy.py may interact unpredictably"
+  ]
+}
+```

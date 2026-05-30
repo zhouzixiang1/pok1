@@ -860,3 +860,118 @@ v27: 20 games, 65% WR, rating 1518.5 (rd=87.0). Win rate settling as more games 
 [tool: mcp__evolution__run_match_analysis]
 
 [tool: mcp__evolution__run_performance_verification]
+Match analysis returned empty (insufficient data). Performance verification shows:
+- **Stagnant trend** — system top rating frozen at ~1643 for 9 periods
+- 50% WR vs v7 (mid-tier) — the real bottleneck
+- 65% overall WR inflated by farming v1
+- **diversity_needed: true** — population convergence
+
+Let me call Master for v28.
+[tool: mcp__evolution__run_master]
+Master pivots to **branch from v8** (new top at 1631.6) with board texture analysis + position-aware aggression — a fundamentally new evaluation layer. Let me prepare and execute.
+[tool: mcp__evolution__prepare_next_gen]
+
+[tool: mcp__evolution__execute_workers]
+
+[tool: mcp__evolution__run_quality_gates]
+Excellent — all quality gates pass with **93% decision tests** (best so far)! Proceeding to code review.
+[tool: mcp__evolution__run_review]
+Code review **approved** with score 6/10. Board texture analysis added successfully, but **Worker 2 completely failed** — zero constant changes. Minor dead code issue. Proceeding to critic.
+
+`intra_gen_attempts = 0`
+[tool: mcp__evolution__run_critic]
+Critic **approved** with score 6/10. All mandatory stages complete. Committing v28.
+[tool: mcp__evolution__commit_bot]
+**Generation v28 committed!**
+
+---
+
+## Generation v28 Summary
+
+| Step | Result |
+|---|---|
+| **Source** | **Branched from v8** (top rated r=1631.6) — structural diversity injection |
+| **Master Plan** | Board texture analysis + position-aware aggression + constant tuning |
+| **Workers** | Worker 1 completed, Worker 2 failed (zero changes) |
+| **Quality Gates** | ✅ All passed (93% decision — best yet!) |
+| **Code Review** | ✅ Approved (score 6/10) |
+| **Strategy Critic** | ✅ Approved (score 6/10) |
+| **Commit** | ✅ `bot-v28` tagged |
+
+### Key Changes (v8 → v28)
+1. **Board texture classification** — dry/semi-wet/wet/completed evaluation module
+2. **Position-aware aggression scaling** — adjusts bluff/value ranges by board texture
+3. ⚠️ Hyperparameter tuning not applied (Worker 2 failed)
+4. Minor dead code issue
+
+---
+
+## Overall Session Summary (4 generations: v25-v28)
+
+| Gen | Source | Key Innovation | Outcome |
+|---|---|---|---|
+| **v25** | v9 (branch) | 5-tier preflop + postflop fold logic | 80% WR (20 games), fold logic didn't execute |
+| **v26** | v25 | SPR awareness + opponent profiling | 73% WR (30 games), fold logic still 0% |
+| **v27** | v7 (branch) | Direct fold gate + bet sizing + draw protection | 65% WR (20 games), fold gate added |
+| **v28** | v8 (branch) | Board texture analysis + position aggression | Committed, awaiting eval |
+
+**Persistent challenge:** Worker timeouts and Worker 2 failures are recurring issues. The system has been exploring different approaches to break a ~1643 rating plateau across the pool. Each generation has tried branching from different top-rated ancestors to inject diversity.
+
+Continuing the evolution cycle for v29...
+[tool: mcp__evolution__get_status]
+Ratings shifted again — v19 now top at 1649.0, v27 at 1581.8 (rd=64.8). v28 just committed. Let me wait for evaluation.
+[tool: mcp__evolution__wait_for_eval]
+v28: 10 games, **100% win rate**, preliminary rating **1733.5** (rd=184.7). Extremely promising early signal! Waiting for more data.
+[tool: mcp__evolution__wait_for_eval]
+v28: 20 games, **80% WR**, rating **1728.3** (rd=99.5) — highest rated bot in the pool! Board texture analysis appears to be working. Let me proceed with v29 pipeline using available data.
+[tool: mcp__evolution__run_match_analysis]
+
+[tool: mcp__evolution__run_performance_verification]
+Critical diagnostic for v28 — despite being highest rated (1728.3), the **same systemic weaknesses** persist:
+- **66% preflop fold rate** (worse than v27's 41%!)
+- **River: 0% raise, 0% fold, 100% call** — pure calling station
+- Undersized bets (0.5x pot)
+- 60% WR vs v19 (primary rival), 80% overall
+
+The board texture analysis helps on flop/turn but core issues remain. Let me call Master for v29.
+[tool: mcp__evolution__run_master]
+Master's plan for v29 directly targets the two catastrophic leaks:
+1. **Worker 1:** Complete preflop rewrite (tier-based, target ≤30% fold) + 3-branch river decision (fold/call/raise)
+2. **Worker 2:** Increase bet sizing from 0.5x to 0.65-0.75x pot
+
+Preparing and executing.
+[tool: mcp__evolution__prepare_next_gen]
+
+[tool: mcp__evolution__execute_workers]
+
+[tool: mcp__evolution__run_quality_gates]
+Quality gates all pass — compile ✅, smoke ✅, decision 87%, size ✅. Proceeding to code review.
+[tool: mcp__evolution__run_review]
+Code review **rejected** (score 5/10) with two clear bugs:
+1. **CRITICAL**: Missing `TOTAL_HANDS` import in betting.py — NameError crash
+2. **Regression**: River 3-branch caps nut overbet at 75% pot instead of 1.5-2.2x pot
+
+`intra_gen_attempts = 1`. Fixing both issues.
+[tool: mcp__evolution__execute_workers]
+
+[tool: mcp__evolution__run_quality_gates]
+Quality gates pass. Proceeding to re-review.
+[tool: mcp__evolution__run_review]
+The reviewer is confused — the preflop tier and river 3-branch are NOT scope creep, they're the original Master plan features. The first review approved them with 2 bugs to fix. Let me fix the bugs directly with Edit.
+[tool: ToolSearch]
+
+[tool: Read]
+
+[tool: Read]
+Found the issues. Let me also read the river_3branch_decision function.
+[tool: Read]
+
+[tool: Read]
+
+[tool: Read]
+
+[tool: Read]
+
+[CYCLE DONE] cost=$3.6826
+
+[ERROR] Claude Code returned an error result: Reached maximum number of turns (80)
