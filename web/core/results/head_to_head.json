@@ -210,11 +210,11 @@
     "win_rate": 0.6
   },
   "claude_v2 vs claude_v7": {
-    "games": 40,
-    "a_wins": 17,
-    "b_wins": 22,
+    "games": 50,
+    "a_wins": 21,
+    "b_wins": 28,
     "draws": 1,
-    "win_rate": 0.425
+    "win_rate": 0.42
   },
   "claude_v11 vs claude_v13": {
     "games": 30,
@@ -1330,11 +1330,11 @@
     "win_rate": 0.45
   },
   "claude_v1 vs claude_v9": {
-    "games": 30,
-    "a_wins": 1,
-    "b_wins": 29,
+    "games": 40,
+    "a_wins": 2,
+    "b_wins": 38,
     "draws": 0,
-    "win_rate": 0.0333
+    "win_rate": 0.05
   },
   "claude_v10 vs claude_v21": {
     "games": 40,
@@ -1421,11 +1421,11 @@
     "win_rate": 0.55
   },
   "claude_v2 vs claude_v23": {
-    "games": 30,
-    "a_wins": 16,
-    "b_wins": 14,
+    "games": 40,
+    "a_wins": 19,
+    "b_wins": 21,
     "draws": 0,
-    "win_rate": 0.5333
+    "win_rate": 0.475
   },
   "claude_v12 vs claude_v14": {
     "games": 40,
