@@ -15,7 +15,7 @@ Read these files FIRST using the Read tool to understand the current state:
 - `web/core/results/bot_stats.json` — Per-bot stats: wins, losses, games, win_rate (games-weighted, biased by opponent frequency — use H2H average for equal weighting)
 - `web/core/results/rating_history.jsonl` — Performance snapshots over time (includes both ratings and win_rates for recent periods)
 - `web/core/experience_pool.md` — Accumulated strategic lessons from past generations (**THIS is the active pool, not evolution_workspace/experience_pool.md**)
-- `bots/claude_v<source_v>/` — Current source bot code (actual version number given in the context appended below)
+- `bots/claude_v{source_v}/` — Current source bot code
 - `web/core/reference_bots/bot1/` … `web/core/reference_bots/bot6/` — 6 strong reference bots. Read whichever is relevant.
 
 **H2H Matrix Usage:** The head_to_head.json file is the most important data for identifying weaknesses. For each bot, check which opponents it loses to (< 40% WR = WEAKNESS) and which it beats (> 60% WR = STRENGTH). Focus improvements on closing weakness gaps.

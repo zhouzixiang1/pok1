@@ -37,6 +37,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         "stagnation_info": stagnation_info,
         "match_analysis": match_analysis_trimmed,
         "performance_verification": perf_trimmed,
+        "source_v": str(source_v),
     })
     master_ctx = (
         f"Current evolution: v{source_v} → v{next_v}\n"

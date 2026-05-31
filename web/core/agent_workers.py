@@ -11,6 +11,7 @@ import asyncio
 from evolution_infra import (
     run_claude_query, substitute_template, verify_code, run_smoke_test,
     locked_file, get_bot_dir, get_logs_dir, _get_worker_semaphore,
+    find_current_v,
     WORKER_FAILURES_FILE, MAX_WORKER_RETRIES, WORKER_TIMEOUT, MAX_PARALLEL_WORKERS, _COPY_IGNORE,
 )
 
@@ -142,7 +143,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
 
     # Parallel had issues — fall back to serial with fresh copy
     ui.log_history("Parallel execution had issues, retrying serially...", "warn")
-    _source = source_v if source_v is not None else (next_v - 1 if next_v > 1 else 1)
+    _source = source_v if source_v is not None else find_current_v()
     src_dir = get_bot_dir(_source)
     if next_dir.exists():
         shutil.rmtree(next_dir)

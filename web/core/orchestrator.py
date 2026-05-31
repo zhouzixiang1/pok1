@@ -69,10 +69,10 @@ def _clear_orchestrator_session():
 def _make_precompact_hook():
     """Return hooks dict that injects evolution state before Claude compacts context."""
     async def handler(hook_input, tool_use_id, context) -> SyncHookJSONOutput:
-        from evolution_core import read_pipeline_checkpoint
+        from evolution_core import read_pipeline_checkpoint, find_current_v
         lines = ["=== EVOLUTION STATE — PRESERVE DURING COMPACTION ==="]
         try:
-            current_v = _find_current_v()  # defined in this module
+            current_v = find_current_v()
             lines.append(f"Current completed bot: claude_v{current_v}")
             checkpoint = read_pipeline_checkpoint()
             if checkpoint:
@@ -97,32 +97,18 @@ def _make_precompact_hook():
     return {"PreCompact": [HookMatcher(matcher="*", hooks=[handler])]}
 
 
-def _find_current_v():
-    """Find the latest completed bot version from git tags (authoritative)."""
-    from evolution_core import _git
-    tags = _git("tag", "-l", "bot-v*", check=False).strip().splitlines()
-    if not tags:
-        return 6  # seeded bots v1-v6 have no tags
-    versions = []
-    for tag in tags:
-        try:
-            versions.append(int(tag.replace("bot-v", "")))
-        except ValueError:
-            pass
-    return max(versions) if versions else 6
-
-
 def _build_context(one_gen=False, dry_run=False):
     """Build context string injected into the orchestrator prompt."""
     from evolution_core import (
         get_active_bots, load_ratings,
         get_bot_dir, git_has_tag, _load_recent_failures, _git,
+        find_current_v,
     )
     from glicko2 import Glicko2Player
 
     active_bots = get_active_bots()
     ratings = load_ratings()
-    current_v = _find_current_v()
+    current_v = find_current_v()
 
     lines = [
         f"Current generation: v{current_v}",

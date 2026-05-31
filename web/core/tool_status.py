@@ -25,6 +25,7 @@ from evolution_core import (
     wait_for_daemon_eval,
     seed_initial_bots,
     trim_experience_pool,
+    find_current_v,
     _analyze_recent_matches,
     _analyze_stagnation,
     RATINGS_FILE, BOT_STATS_FILE, H2H_FILE,
@@ -48,18 +49,7 @@ async def get_status(args):
     """Get full system status."""
     active_bots = get_active_bots()
 
-    # Find current_v from completed bots + git tags
-    current_v = 1
-    while True:
-        d = get_bot_dir(current_v)
-        if d.exists() and (d / ".completed").exists():
-            if current_v <= 6 or git_has_tag(current_v):
-                current_v += 1
-            else:
-                break
-        else:
-            break
-    current_v -= 1
+    current_v = find_current_v()
 
     ratings = load_ratings()
     daemon_stats = load_daemon_stats()

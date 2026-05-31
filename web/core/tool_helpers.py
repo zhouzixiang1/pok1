@@ -199,7 +199,12 @@ def _critic_gate_ok(checkpoint):
 
 
 def _bot_main(bot_name):
-    return PROJECT_ROOT / "bots" / bot_name / "main.py"
+    v_str = bot_name.replace("claude_v", "")
+    try:
+        v = int(v_str)
+    except ValueError:
+        return PROJECT_ROOT / "bots" / bot_name / "main.py"
+    return get_bot_dir(v) / "main.py"
 
 
 def _load_h2h_data():

@@ -232,7 +232,13 @@ class BaseUI:
 # ──────────────────────────────────────────────
 
 def get_bot_dir(version):
-    return BOTS_DIR / f"claude_v{version}"
+    primary = BOTS_DIR / f"claude_v{version}"
+    if primary.exists():
+        return primary
+    graveyard = GRAVEYARD_DIR / f"claude_v{version}"
+    if graveyard.exists():
+        return graveyard
+    return primary
 
 
 def get_logs_dir(version):
@@ -249,6 +255,20 @@ def get_active_bots():
                 if (BOTS_DIR / d / ".completed").exists():
                     bots.append(d)
     return sorted(bots, key=lambda x: int(x.split("_v")[1]))
+
+
+def find_current_v():
+    """Find the latest completed bot version from git tags (authoritative)."""
+    tags = _git("tag", "-l", "bot-v*", check=False).strip().splitlines()
+    if not tags:
+        return 6  # seeded bots v1-v6 have no tags
+    versions = []
+    for tag in tags:
+        try:
+            versions.append(int(tag.replace("bot-v", "")))
+        except ValueError:
+            pass
+    return max(versions) if versions else 6
 
 
 # ──────────────────────────────────────────────
