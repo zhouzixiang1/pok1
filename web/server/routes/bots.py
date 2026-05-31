@@ -31,7 +31,8 @@ def _load_ratings() -> dict:
 
 def _count_lines(path: Path) -> int:
     try:
-        return sum(1 for _ in open(path, "r", errors="ignore"))
+        with open(path, "r", errors="ignore") as f:
+            return sum(1 for _ in f)
     except Exception:
         return 0
 

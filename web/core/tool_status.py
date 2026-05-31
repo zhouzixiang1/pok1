@@ -40,6 +40,14 @@ from tool_helpers import (
 )
 
 
+def _count_lines(path: Path) -> int:
+    try:
+        with open(path, "r", errors="ignore") as f:
+            return sum(1 for _ in f)
+    except Exception:
+        return 0
+
+
 class GetStatusInput(TypedDict):
     pass
 
@@ -124,10 +132,10 @@ async def get_bot_info(args):
 
     # Code size info
     if bot_dir.exists():
-        total_lines, oversized = check_code_size(bot_dir)
-        files = [f.name for f in bot_dir.glob("*.py")]
-        result["files"] = files
-        result["total_lines"] = total_lines
+        py_files = list(bot_dir.glob("*.py"))
+        result["files"] = [f.name for f in py_files]
+        result["total_lines"] = sum(_count_lines(f) for f in py_files)
+        _, oversized = check_code_size(bot_dir)
         if oversized:
             result["oversized_files"] = {name: lines for name, lines in oversized}
 
