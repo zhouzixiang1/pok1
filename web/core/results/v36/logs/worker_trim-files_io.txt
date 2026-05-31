@@ -1,0 +1,302 @@
+
+[WORKER trim-files (Algorithmic Logic Architect) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Algorithmic Logic Architect**.
+You must directly edit the source files in `bots/claude_v36/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v36/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, remove only your own accidental edits before finishing.
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+## If you are an "Opponent Modeler":
+- **ALLOWED**: Adding/modifying opponent tracking data structures and statistics
+- **ALLOWED**: Per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']`
+- **ALLOWED**: Bet sizing pattern detection: `opp_bet_sizes[street]` as rolling list (cap at 20), `statistics.median()`
+- **ALLOWED**: Exploitative adjustments based on detected opponent tendencies
+- **FORBIDDEN**: Changing overall decision flow or non-opponent-model logic
+- **FORBIDDEN**: Modifying any constant that is not opponent-model related
+
+You have access to `web/core/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+
+**Important — Parallel Execution**: You may be running concurrently with other Worker Agents on the same codebase. Your `target_files` are exclusively yours — other workers will NOT touch them. Only modify your assigned `target_files`. Do NOT read or write files outside your assignment.
+
+# Scope Contract
+Before editing, write a short plan listing:
+1. Planned modified files.
+2. Planned modified functions/constants.
+3. A one-sentence statement of what you will not touch.
+
+Do not broaden scope. If the requested change requires touching files outside
+target_files or changing a different subsystem, stop and report instead of editing.
+
+# Poker Engineering Best Practices
+Apply these when implementing changes:
+
+**Opponent Modeling:**
+- Use per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']` where `street ∈ {'preflop', 'flop', 'turn', 'river'}`
+- Track bet sizing: `opp_bet_sizes[street]` as a rolling list (cap at last 20), use `statistics.median()` for typical size
+- Exploit detected tendencies: if `opp_stats['river']['bet_freq'] > 0.65` → opponent bluffs river heavily → widen call range
+
+**Postflop Decision Making:**
+- EV-based fold/call: `EV_call = equity * pot_after_call - (1 - equity) * call_amount`. Call when EV > 0
+- River value bet sizing: if equity > 70%, bet 60-80% of pot for value; if equity 50-70%, bet 40-50% pot
+- Avoid "fear thresholds" — don't fold based on hand rank alone; compute EV against opponent range
+
+**Anti-Regression Checklist (verify before finishing):**
+- [ ] AA/KK/QQ preflop: still raises/3-bets aggressively (no passive limping)?
+- [ ] Nut flush/straight/full house on river: still places a value bet?
+- [ ] New code doesn't import modules not in stdlib + numpy?
+- [ ] `{"response": int}` JSON output format still correct?
+- [ ] No infinite loops or recursion in new functions?
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+QUALITY GATE FAILURE: strategy.py is 1168 lines and postflop.py is 1015 lines. Both exceed the 1000-line limit. Reduce both to ≤1000 lines without changing any poker logic.
+
+ORIGINAL:
+QUALITY GATE FIX: Two files exceed the 1000-line limit. You MUST reduce them without changing any poker logic. ONLY edit strategy.py and postflop.py.
+
+1. bots/claude_v36/strategy.py (1168 lines → must be ≤1000)
+2. bots/claude_v36/postflop.py (1015 lines → must be ≤1000)
+
+Techniques (use ALL of these):
+- Remove ALL extra blank lines between functions (double blank → single blank)
+- Remove trailing blank lines at end of file
+- Collapse short if/return statements onto one line: `if x: return y`
+- Use semicolons for trivially related one-liners: `active = True; count += 1`
+- Merge trivial helper functions that are only called once (inline them)
+- Remove any dead code or commented-out blocks
+- Consolidate repetitive elif chains with dict lookups
+- Use shorter variable names in local scopes only
+
+CRITICAL RULES:
+- Do NOT change any poker logic, hand evaluation, or decision-making
+- All 15 decision test scenarios must still pass identically
+- The classify_opponent_style function and style delta propagation must be preserved
+- The AKs all-in fix (preflop_strength >= 0.70) must be preserved
+- The EQR recalibration changes must be preserved
+- The widened preflop ranges must be preserved
+
+After editing, verify: wc -l bots/claude_v36/strategy.py bots/claude_v36/postflop.py (both must be ≤1000)
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v36/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v36/main.py` (and other .py files you changed)
+   - Smoke test: `python web/core/smoke_tester.py bots/claude_v36/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v36/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, undo only your own accidental edits in those files; if unsure, stop and report the violation.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+# Final Response Requirements
+End with:
+- `planned_files`: the files you intended to change.
+- `changed_files`: the files actually changed.
+- `changed_functions`: the functions/constants actually changed.
+- `checks_run`: compile/smoke commands and outcomes.
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading both files to understand their current state and identify opportunities for line reduction.
+Now I have a clear picture. I need to cut ~168 lines from strategy.py and ~15 from postflop.py. My plan:
+
+## Plan
+1. **Planned modified files**: `strategy.py` and `postflop.py` only
+2. **Planned changes**: Remove double blank lines between functions, collapse single-line if/return into one-liners, inline `choose_overbet_bluff_river` (returns None, called once), combine trivial one-liners with semicolons, remove docstrings from trivial functions, consolidate short conditional blocks
+3. **Will NOT touch**: Any poker logic, hand evaluation, decision-making, constants, or other files
+
+Let me start with strategy.py. I'll make edits to reduce line count significantly:
+This is going to be many small edits. Let me be strategic and focus on the highest-impact changes. I'll start by removing all double blank lines between functions and collapsing simple blocks.
+The one-at-a-time approach is too slow for ~30 edits. Let me write the complete optimized file instead.
+I need to use Edit tool. Let me make targeted high-impact edits. Starting with strategy.py - I'll inline `choose_overbet_bluff_river` (disabled function, called once) and remove all double blank lines, collapse if/returns.
+Now remove the call to the removed function and replace with a comment:
+Now let me check current line count and remove double blank lines throughout:
+8 double blank lines found. Let me remove them all and then collapse many if/return blocks. Let me read the file to make targeted edits:
+Now I need to make many more edits. Let me be very systematic and batch related changes. Starting from top of file:
+Now let me compress the get_action function body:
+
+[WORKER trim-files (Algorithmic Logic Architect) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Algorithmic Logic Architect**.
+You must directly edit the source files in `bots/claude_v36/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v36/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, remove only your own accidental edits before finishing.
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+## If you are an "Opponent Modeler":
+- **ALLOWED**: Adding/modifying opponent tracking data structures and statistics
+- **ALLOWED**: Per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']`
+- **ALLOWED**: Bet sizing pattern detection: `opp_bet_sizes[street]` as rolling list (cap at 20), `statistics.median()`
+- **ALLOWED**: Exploitative adjustments based on detected opponent tendencies
+- **FORBIDDEN**: Changing overall decision flow or non-opponent-model logic
+- **FORBIDDEN**: Modifying any constant that is not opponent-model related
+
+You have access to `web/core/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+
+**Important — Parallel Execution**: You may be running concurrently with other Worker Agents on the same codebase. Your `target_files` are exclusively yours — other workers will NOT touch them. Only modify your assigned `target_files`. Do NOT read or write files outside your assignment.
+
+# Scope Contract
+Before editing, write a short plan listing:
+1. Planned modified files.
+2. Planned modified functions/constants.
+3. A one-sentence statement of what you will not touch.
+
+Do not broaden scope. If the requested change requires touching files outside
+target_files or changing a different subsystem, stop and report instead of editing.
+
+# Poker Engineering Best Practices
+Apply these when implementing changes:
+
+**Opponent Modeling:**
+- Use per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']` where `street ∈ {'preflop', 'flop', 'turn', 'river'}`
+- Track bet sizing: `opp_bet_sizes[street]` as a rolling list (cap at last 20), use `statistics.median()` for typical size
+- Exploit detected tendencies: if `opp_stats['river']['bet_freq'] > 0.65` → opponent bluffs river heavily → widen call range
+
+**Postflop Decision Making:**
+- EV-based fold/call: `EV_call = equity * pot_after_call - (1 - equity) * call_amount`. Call when EV > 0
+- River value bet sizing: if equity > 70%, bet 60-80% of pot for value; if equity 50-70%, bet 40-50% pot
+- Avoid "fear thresholds" — don't fold based on hand rank alone; compute EV against opponent range
+
+**Anti-Regression Checklist (verify before finishing):**
+- [ ] AA/KK/QQ preflop: still raises/3-bets aggressively (no passive limping)?
+- [ ] Nut flush/straight/full house on river: still places a value bet?
+- [ ] New code doesn't import modules not in stdlib + numpy?
+- [ ] `{"response": int}` JSON output format still correct?
+- [ ] No infinite loops or recursion in new functions?
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+QUALITY GATE FAILURE: strategy.py is 1168 lines and postflop.py is 1015 lines. Both exceed the 1000-line limit. Reduce both to ≤1000 lines without changing any poker logic.
+
+ORIGINAL:
+QUALITY GATE FIX: Two files exceed the 1000-line limit. You MUST reduce them without changing any poker logic. ONLY edit strategy.py and postflop.py.
+
+1. bots/claude_v36/strategy.py (1168 lines → must be ≤1000)
+2. bots/claude_v36/postflop.py (1015 lines → must be ≤1000)
+
+Techniques (use ALL of these):
+- Remove ALL extra blank lines between functions (double blank → single blank)
+- Remove trailing blank lines at end of file
+- Collapse short if/return statements onto one line: `if x: return y`
+- Use semicolons for trivially related one-liners: `active = True; count += 1`
+- Merge trivial helper functions that are only called once (inline them)
+- Remove any dead code or commented-out blocks
+- Consolidate repetitive elif chains with dict lookups
+- Use shorter variable names in local scopes only
+
+CRITICAL RULES:
+- Do NOT change any poker logic, hand evaluation, or decision-making
+- All 15 decision test scenarios must still pass identically
+- The classify_opponent_style function and style delta propagation must be preserved
+- The AKs all-in fix (preflop_strength >= 0.70) must be preserved
+- The EQR recalibration changes must be preserved
+- The widened preflop ranges must be preserved
+
+After editing, verify: wc -l bots/claude_v36/strategy.py bots/claude_v36/postflop.py (both must be ≤1000)
+
+PREVIOUS ATTEMPT TIMED OUT. Start fresh with a minimal, focused implementation. Implement only the single most impactful change — do NOT try to do everything at once.
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v36/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v36/main.py` (and other .py files you changed)
+   - Smoke test: `python web/core/smoke_tester.py bots/claude_v36/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v36/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, undo only your own accidental edits in those files; if unsure, stop and report the violation.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+# Final Response Requirements
+End with:
+- `planned_files`: the files you intended to change.
+- `changed_files`: the files actually changed.
+- `changed_functions`: the functions/constants actually changed.
+- `checks_run`: compile/smoke commands and outcomes.
+
+=============================
+[CLAUDE OUTPUT]
+Strategy.py is already 764 lines (under 1000). Postflop.py is 1015 lines (15 over). I need to trim postflop.py only. Let me apply aggressive blank-line removal and one-liner collapses.
+
+**Plan:**
+1. **Planned modified files**: `bots/claude_v36/postflop.py` only
+2. **Planned modified functions**: No logic changes — only whitespace/formatting compression
+3. **Will NOT touch**: strategy.py, any poker logic, hand evaluation, or decision-making
+
+Let me first remove all double blank lines between functions and collapse short if/return statements:
+API Error: 400 [1211][模型不存在，请检查模型代码。][20260531213936bfb88f290f78463d]

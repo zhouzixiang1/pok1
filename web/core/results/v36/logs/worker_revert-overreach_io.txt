@@ -1,0 +1,197 @@
+
+[WORKER revert-overreach (Algorithmic Logic Architect) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Algorithmic Logic Architect**.
+You must directly edit the source files in `bots/claude_v36/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v36/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, remove only your own accidental edits before finishing.
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+## If you are an "Opponent Modeler":
+- **ALLOWED**: Adding/modifying opponent tracking data structures and statistics
+- **ALLOWED**: Per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']`
+- **ALLOWED**: Bet sizing pattern detection: `opp_bet_sizes[street]` as rolling list (cap at 20), `statistics.median()`
+- **ALLOWED**: Exploitative adjustments based on detected opponent tendencies
+- **FORBIDDEN**: Changing overall decision flow or non-opponent-model logic
+- **FORBIDDEN**: Modifying any constant that is not opponent-model related
+
+You have access to `web/core/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+
+**Important — Parallel Execution**: You may be running concurrently with other Worker Agents on the same codebase. Your `target_files` are exclusively yours — other workers will NOT touch them. Only modify your assigned `target_files`. Do NOT read or write files outside your assignment.
+
+# Scope Contract
+Before editing, write a short plan listing:
+1. Planned modified files.
+2. Planned modified functions/constants.
+3. A one-sentence statement of what you will not touch.
+
+Do not broaden scope. If the requested change requires touching files outside
+target_files or changing a different subsystem, stop and report instead of editing.
+
+# Poker Engineering Best Practices
+Apply these when implementing changes:
+
+**Opponent Modeling:**
+- Use per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']` where `street ∈ {'preflop', 'flop', 'turn', 'river'}`
+- Track bet sizing: `opp_bet_sizes[street]` as a rolling list (cap at last 20), use `statistics.median()` for typical size
+- Exploit detected tendencies: if `opp_stats['river']['bet_freq'] > 0.65` → opponent bluffs river heavily → widen call range
+
+**Postflop Decision Making:**
+- EV-based fold/call: `EV_call = equity * pot_after_call - (1 - equity) * call_amount`. Call when EV > 0
+- River value bet sizing: if equity > 70%, bet 60-80% of pot for value; if equity 50-70%, bet 40-50% pot
+- Avoid "fear thresholds" — don't fold based on hand rank alone; compute EV against opponent range
+
+**Anti-Regression Checklist (verify before finishing):**
+- [ ] AA/KK/QQ preflop: still raises/3-bets aggressively (no passive limping)?
+- [ ] Nut flush/straight/full house on river: still places a value bet?
+- [ ] New code doesn't import modules not in stdlib + numpy?
+- [ ] `{"response": int}` JSON output format still correct?
+- [ ] No infinite loops or recursion in new functions?
+
+# Master Architect's Specific Prompt For You
+CRITICAL REVISION NEEDED:
+PRECOMMIT FAILED 0-3-0: Lost to parent (v7) and both top opponents. Root cause: workers introduced EXP3 meta-learning, style-dependent thresholds, opponent classification, and bb_vs_raise bluff logic that went FAR beyond the task scope (which was only line count reduction + AKs fix). The critic flagged: (1) EXP3 reward signal too noisy for 50-hand matches, (2) bb_vs_raise bluff contradicts experience pool, (3) unified all-in block loses thin value buffer. REVERT all EXP3/meta-learning/style-classification changes. Restore original strategy.py, constants.py, main.py, opponent.py to match v7 source EXCEPT: keep postflop.py line reduction (995 lines) and the AKs all-in fix in strategy.py.
+
+ORIGINAL:
+CRITICAL REVERT: Precommit eval failed 0-3-0. The previous workers introduced massive EXP3 meta-learning, style-dependent thresholds, opponent classification (classify_opponent_style), CBet tracking, concept drift detection, STYLE_NAMES/STYLE_PARAMS constants, bb_vs_raise bluff logic, unified all-in block, and EXP3MetaLearner class that were NOT part of the original task. These changes caused severe regression.
+
+YOUR TASK: Revert ALL changes that are not related to:
+1. postflop.py line reduction (currently 995 lines - KEEP this)
+2. AKs preflop all-in fix (AKs should call all-in when facing all-in)
+
+Steps:
+1. Copy bots/claude_v7/strategy.py → bots/claude_v36/strategy.py, then ONLY add back the AKs all-in fix (add a check: if facing all-in preflop and hand_strength >= 0.55, return -2 for all-in)
+2. Copy bots/claude_v7/constants.py → bots/claude_v36/constants.py (restore original, remove STYLE_NAMES, STYLE_PARAMS, SIZING_TABLE, SIZING_TIER_RATIOS)
+3. Copy bots/claude_v7/main.py → bots/claude_v36/main.py (restore original, remove EXP3MetaLearner class and EXP3 state serialization)
+4. Copy bots/claude_v7/opponent.py → bots/claude_v36/opponent.py (restore original, remove classify_opponent_style, _track_hand_stats, CBet tracking)
+5. Keep bots/claude_v36/postflop.py as-is (995 lines, correct)
+
+After reverting, verify:
+- postflop.py is still ≤1000 lines
+- strategy.py has only the AKs fix added to the v7 original
+- All other files match v7 originals exactly
+- Run: wc -l on each file to confirm reasonable sizes
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v36/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v36/main.py` (and other .py files you changed)
+   - Smoke test: `python web/core/smoke_tester.py bots/claude_v36/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v36/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, undo only your own accidental edits in those files; if unsure, stop and report the violation.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+# Final Response Requirements
+End with:
+- `planned_files`: the files you intended to change.
+- `changed_files`: the files actually changed.
+- `changed_functions`: the functions/constants actually changed.
+- `checks_run`: compile/smoke commands and outcomes.
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading the v7 source files and the current v36 files to understand the differences and plan the revert.
+Now let me read the current v36 files to see what was changed:
+Now I have a complete picture. Let me plan and execute the revert.
+
+**Plan:**
+1. **constants.py** — Copy v7 version exactly (remove STYLE_NAMES, N_STYLES, STYLE_PARAMS, SIZING_TIER_RATIOS, SIZING_TABLE)
+2. **main.py** — Copy v7 version exactly (remove EXP3MetaLearner, EXP3 state serialization)
+3. **opponent.py** — Copy v7 version exactly (remove _track_hand_stats, classify_opponent_style, CBet tracking, drift detection)
+4. **strategy.py** — Copy v7 version exactly, then add ONLY the AKs all-in fix (if facing all-in preflop and preflop_strength >= 0.55, return -2)
+5. **postflop.py** — Keep as-is (995 lines)
+
+I will NOT touch any files outside my target_files.
+
+Let me start by copying the v7 files:
+Now I need to add the AKs all-in fix to the copied v7 strategy.py. I'll add an early exit in `choose_preflop_spot_action` that handles facing all-in preflop with strong hands:
+Now I'll add the AKs all-in fix. This should go after the local variable setup but before the spot-specific logic:
+Now let me verify the changes by running git diff and compile checks:
+The v36 directory is untracked. Let me check if there's a committed version to diff against:
+No git history for v36 - it's a fresh untracked directory. Let me run the compile checks and smoke test:
+All compile checks pass. Now let me run the smoke test:
+Smoke test passed. Now let me do the final verification - compare v36 files against v7 to confirm the only difference is the AKs fix in strategy.py:
+All verification passes. Let me do the final self-review checks:
+All checks pass. Let me verify the final state of strategy.py around the AKs fix:
+The AKs fix is correctly placed and minimal. Let me provide the final summary:
+
+---
+
+## Summary
+
+### Task: Revert v36 to v7 source + AKs all-in fix
+
+**Changes Made:**
+
+1. **constants.py** — Copied from v7 exactly. Removed: `STYLE_NAMES`, `N_STYLES`, `STYLE_PARAMS`, `SIZING_TIER_RATIOS`, `SIZING_TABLE` (EXP3 meta-learning constants).
+
+2. **main.py** — Copied from v7 exactly. Removed: `EXP3MetaLearner` class, EXP3 state serialization, `math` import, `N_STYLES` import. Output format restored to `{"response": int}` (no `"data"` field).
+
+3. **opponent.py** — Copied from v7 exactly. Removed: `_track_hand_stats()`, `classify_opponent_style()`, CBet tracking (`cbet_rate`, `fold_to_cbet`), concept drift detection (`drift_detected`), per-hand VPIP/PFR/aggression tracking.
+
+4. **strategy.py** — Copied from v7 exactly, then added ONLY the AKs all-in fix (4 lines):
+   ```python
+   # AKs fix: facing all-in preflop with strong hands → call all-in
+   if state["opponent_allin"] and preflop_strength >= 0.55:
+       return -2
+   ```
+   This catches AKs (strength 0.74), AKo (0.66), AQs (0.69), and all pocket pairs down to 33 (0.55).
+
+5. **postflop.py** — Kept as-is (995 lines, ≤1000 ✓).
+
+### Verification Results:
+- ✅ `constants.py` — identical to v7 (no diff)
+- ✅ `main.py` — identical to v7 (no diff)
+- ✅ `opponent.py` — identical to v7 (no diff)
+- ✅ `strategy.py` — only diff is the 4-line AKs fix
+- ✅ `postflop.py` — 995 lines (≤1000)
+- ✅ All 5 `.py` files compile cleanly
+- ✅ Smoke test passed
+- ✅ No EXP3/STYLE/style_params references in strategy.py
+- ✅ Output format: `{"response": int}` (v7 original)
+
+---
+
+**planned_files**: `bots/claude_v36/strategy.py`, `bots/claude_v36/constants.py`, `bots/claude_v36/main.py`, `bots/claude_v36/opponent.py`
+**changed_files**: `bots/claude_v36/strategy.py`, `bots/claude_v36/constants.py`, `bots/claude_v36/main.py`, `bots/claude_v36/opponent.py`
+**changed_functions**: `choose_preflop_spot_action` (added AKs all-in early-exit); all other functions reverted to v7 originals
+**checks_run**: `python -m py_compile` on all 5 files (all OK), `python web/core/smoke_tester.py bots/claude_v36/main.py` (passed)

@@ -1,0 +1,5 @@
+{
+  "daemon_enabled": true,
+  "daemon_workers": 32,
+  "daemon_pairs": 20
+}

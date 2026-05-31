@@ -24,6 +24,16 @@ python web/core/orchestrator.py --one-gen    # One generation then stop
 python web/core/elo_daemon.py --workers 14 --pairs 5 -v
 ```
 
+### Testing
+
+```bash
+cd web && python -m pytest tests/ -v              # All backend tests
+cd web && python -m pytest tests/test_routes_*.py  # Route endpoint tests only
+cd web && python -m pytest tests/test_logic_*.py   # Pure logic tests only
+cd web && python -m pytest tests/test_mcp_*.py     # MCP tool tests only
+cd web && python -m pytest tests/test_logic_helpers.py -k "test_h2h"  # Single test
+```
+
 ### Frontend
 
 ```bash
@@ -58,20 +68,66 @@ Credentials via `BOTZONE_EMAIL` / `BOTZONE_PASSWORD` env vars.
 ### Per-Generation Pipeline
 
 1. **Master Architect** (`prompts/master_prompt.md`): Analyzes ratings, experience pool, match data. Produces JSON task plan with 2 worker assignments — one "Algorithmic Logic Architect" (structural changes) and one "Hyperparameter Tuner" (constants only). Can set `branch_from` to evolve from a different ancestor.
-2. **Workers** (`prompts/worker_prompt.md`): Execute tasks in parallel (max 3 via semaphore), 4 retries each. Workers directly edit bot source files.
-3. **Quality Gates** (automated): `py_compile` check, 1 mirror battle smoke test, decision tests (≥70% pass), file size ≤1000 lines.
+2. **Workers** (`prompts/worker_prompt.md`): Execute tasks in parallel (max 3 via semaphore), 4 retries each. Workers directly edit bot source files using Bash/Read/Edit tools.
+3. **Quality Gates** (automated, no LLM): `py_compile` check, 1 mirror battle smoke test, decision tests (≥70% pass), file size ≤1000 lines.
 4. **Code Reviewer** (`prompts/reviewer_prompt.md`): LLM reviews diff, enforces role boundaries, scores 1-10. Up to 3 retries.
 5. **Critic** (`prompts/critic_prompt.md`): Independent strategic quality gate. Score ≥6 to approve. Up to 2 intra-generation retries feeding feedback back to workers.
 6. **Commit**: Git commit + `bot-v{N}` annotated tag. Tags are authoritative completion proof.
 
+### LLM Integration
+
+Uses `claude_agent_sdk` (not the Anthropic SDK directly). Two distinct patterns:
+
+**Pattern 1 — MCP Tool Server (Orchestrator only):**
+`orchestrator.py` → `create_sdk_mcp_server()` registers `@tool()` decorated functions from `tool_pipeline.py` + `tool_status.py`. The Orchestrator agent calls these tools (run_master, execute_workers, run_quality_gates, run_review, run_critic, commit_bot, etc.) to drive evolution. Each tool function receives `args` dict, runs business logic (often calling `run_claude_query()` for sub-agents), and returns MCP-formatted results. Session ID persisted for crash recovery (`orchestrator_session.json`). PreCompact hook injects pipeline state to survive LLM context compaction.
+
+**Pattern 2 — Direct `run_claude_query()` (Master, Workers, Reviewer, Critic, Analysts):**
+`evolution_infra.py:run_claude_query()` sends a prompt + context files to Claude. Streaming via `AssistantMessage`/`ResultMessage` types. Output captured as text, cost tracked per role. Each agent gets specific tool access: Workers get Bash/Read/Edit, Reviewer/Critic get Bash/Read, Analysts get no tools. API rate limit (529) handled with automatic retry + exponential backoff (30s, 60s, 120s).
+
+**LLM agent roles and their tools:**
+
+| Agent | Tools | Purpose |
+|---|---|---|
+| Orchestrator | MCP tools only | Drives pipeline, decides evolution flow |
+| Master | Bash, Read | Analyzes state, plans worker tasks |
+| Workers | Bash, Read, Edit | Modify bot source code |
+| Reviewer | Bash, Read | Reviews diff, scores quality |
+| Critic | Bash, Read | Strategic assessment, score 1-10 |
+| Stagnation Analyst | None | JSON-only rating trend analysis |
+| Match Analyst | None | Analyzes replay summaries |
+| Performance Analyst | None | Synthesizes rating/win-rate trends |
+| Experience Consolidator | None | Deduplicates experience pool |
+
 ### Data Flow
 
 ```
-Workers edit bots/claude_v{N}/
-  → elo_daemon.py runs mirror battles via engine/battle.py
-  → results/glicko_ratings.json (fcntl-locked)
-  → results/rating_history.jsonl, match_history.jsonl, match_replay/
-  → Master reads ratings + experience_pool.md → plans next generation
+Workers edit bots/claude_v{N}/  (LLM-driven code changes)
+        ↓
+elo_daemon.py  ← Background subprocess, runs mirror battles via engine/battle.py
+        ↓           ProcessPoolExecutor, per-game Glicko-2 updates
+        ↓
+web/core/results/
+  ├── glicko_ratings.json    ← Glicko-2 ratings (fcntl-locked, daemon writes)
+  ├── rating_history.jsonl   ← Periodic rating snapshots (daemon writes on save cycle)
+  ├── head_to_head.json      ← Win/loss matrix per pair (daemon writes)
+  ├── bot_stats.json         ← Per-bot aggregated stats (daemon writes)
+  ├── match_history.jsonl    ← Match summaries as JSONL (daemon writes per match)
+  ├── match_replay/          ← Full replay JSONs (daemon writes, capped at 200)
+  ├── pipeline_state.json    ← Pipeline checkpoint for crash recovery (tools write)
+  ├── worker_failures.jsonl  ← Worker failure records (agent_workers writes)
+  ├── app_config.json        ← Daemon config persisted across restarts (state.py writes)
+  └── llm_costs.jsonl        ← Cumulative LLM cost log (WebUI writes)
+        ↓
+FastAPI backend reads these files (fcntl.LOCK_SH + 2s TTL cache)
+        ↓
+Two SSE streams push to frontend:
+  /api/data/stream      ← Periodic polling (3s/10s/15s intervals): ratings, bots, matches, matrix, history
+  /api/evolution/stream ← Event-driven (EventBroadcaster): LLM output, tool calls, cost, status
+        ↓
+React frontend:
+  DataProvider context   ← Subscribes to /api/data/stream, exposes useRatings(), useBots(), etc.
+  EvolutionMonitor page  ← Owns separate SSE to /api/evolution/stream for real-time LLM streaming
+  Other pages            ← REST calls for page-specific data (replay details, log content, prompts)
 ```
 
 ### Backend (FastAPI)
@@ -80,14 +136,15 @@ Entry point: `web/main.py` → `web/server/app.py`. Nine route modules in `serve
 
 - `/api/data/stream` — Periodic SSE pushing dashboard data (ratings, bots, matches, history, etc.) at 3s/10s/15s intervals. Frontend's `DataProvider` context subscribes to this.
 - `/api/evolution/stream` — Event-driven SSE from `EventBroadcaster` (ring buffer 500 events, per-client asyncio.Queue). Used by EvolutionMonitor for real-time LLM output streaming. Events: `history`, `status`, `io`, `clear_io`, `eval_table`, `daemon`, `header`, `cost`, `metrics`, `tool_call`.
-- `/api/control/tool/{name}` — Invokes any of the MCP tools manually. Records decisions in `app_state`.
+- `/api/control/tool/{name}` — Invokes any of the MCP tools manually via the tool map. Records decisions in `app_state`.
+- `/api/control/start|stop` — Start/stop the orchestrator loop as asyncio tasks.
 - REST endpoints for ratings, bots, matches, logs, prompts, experience pool, pipeline state.
 
-All shared file reads use `fcntl.LOCK_SH` (shared) / `fcntl.LOCK_EX` (exclusive) with a 2-second TTL cache.
+All shared file reads use `fcntl.LOCK_SH` (shared) / `fcntl.LOCK_EX` (exclusive) with a 2-second TTL cache (`server/cache.py`).
 
 ### Frontend (React 19 + Vite + Tailwind 4)
 
-`DataProvider` context in `App.tsx` opens a single `EventSource` to `/api/data/stream`. Pages consume typed hooks (`useRatings()`, `useBots()`, etc.) for auto-refreshing data. Page-specific data (replay details, log content, prompt editing) uses direct REST calls. EvolutionMonitor has its own dedicated SSE connection to `/api/evolution/stream` for real-time LLM streaming.
+`DataProvider` context in `App.tsx` opens a single `EventSource` to `/api/data/stream`. Pages consume typed hooks (`useRatings()`, `useBots()`, etc.) for auto-refreshing data. Page-specific data (replay details, log content, prompt editing) uses direct REST calls via `api/client.ts`. EvolutionMonitor has its own dedicated SSE connection to `/api/evolution/stream` for real-time LLM streaming.
 
 ### Bot Versioning & Conventions
 
@@ -111,25 +168,27 @@ All shared file reads use `fcntl.LOCK_SH` (shared) / `fcntl.LOCK_EX` (exclusive)
 | `DAEMON_EVAL_TIMEOUT` | 600s | Wait for sufficient matches |
 | `MIN_GAMES_FOR_EVAL` | 100 | Min games for reliable rating |
 
-### LLM Integration
-
-Uses `claude_agent_sdk` (not the Anthropic SDK directly). Two patterns:
-- **Direct `claude_query()`** for Master, Workers, Reviewer, Critic — streaming via `AssistantMessage`/`ResultMessage`.
-- **MCP tool server** for Orchestrator — `create_sdk_mcp_server()` registers `@tool()` decorated functions from `tools.py`.
-
-API rate limit (529) handled with automatic retry + exponential backoff (30s, 60s, 120s).
-
 ### Glicko-2 Daemon (`elo_daemon.py`)
 
-Background subprocess continuously running mirror battles. Match selection: 60% under-evaluated pairs + 40% rating-diverse pairs. Batch-updates ratings after each period. Writes to `glicko_ratings.json` with `fcntl` locking. Replay files capped at 200.
+Background subprocess continuously running mirror battles. Match selection: 60% under-evaluated pairs + 40% rating-diverse pairs. Per-game Glicko-2 updates (not batch). Writes to all result files with `fcntl` locking. Continuous scheduling via `ProcessPoolExecutor` — replenishes match queue when empty. Replay files capped at 200. Responds to `.reap_signal` for immediate bot list refresh after commit.
 
 Defaults: `r=1500`, `rd=350`, `sigma=0.06`, `tau=0.5`. Confidence levels: rd<50 green, 50-100 yellow, 100-200 orange, >200 red.
 
+### Process Recovery
+
+The system survives crashes via two mechanisms:
+- **Orchestrator session persistence**: `orchestrator_session.json` stores the session ID. On restart, the Orchestrator resumes the exact LLM conversation. Cleared on natural cycle completion.
+- **Pipeline checkpoint**: `pipeline_state.json` tracks stage (`prepared` → `workers_done` → `quality_passed` → `reviewed` → `critic_checked` → `verified`), gate results, and master plan. Tools enforce stage ordering — `run_review` blocks if quality gates haven't passed, `commit_bot` blocks if any gate is missing.
+
 ## Post-Task Workflow
 
-After completing each task, always commit and push changes:
+After completing each task, you MUST do both of the following:
+
+1. **Git commit and push** all changes:
 ```bash
 git add -A
 git commit -m "<descriptive message>"
 git push
 ```
+
+2. **Update memory** in `~/.claude/projects/-Users-zhouzixiang-Documents-pok/memory/`. Save what you learned during the task — surprising findings, user corrections, non-obvious constraints, or validated approaches. Check existing memories first to avoid duplicates; update stale ones rather than creating new ones.
