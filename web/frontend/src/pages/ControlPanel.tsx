@@ -106,14 +106,25 @@ function ToolForm({
   const [boolValues, setBoolValues] = useState<Record<string, boolean>>({});
   const [parseErrors, setParseErrors] = useState<Record<string, string>>({});
 
-  const buildArgs = () => {
+  const buildArgs = (): Record<string, unknown> | null => {
     const args: Record<string, unknown> = {};
     for (const p of tool.params) {
       const raw = values[p.name]?.trim();
       if (!raw && p.optional) continue;
+      if (!raw && !p.optional) {
+        setParseErrors((prev) => ({ ...prev, [p.name]: "必填" }));
+        return null;
+      }
       if (p.type === "int") {
         const n = parseInt(raw || "");
-        if (!isNaN(n)) args[p.name] = n;
+        if (isNaN(n)) {
+          if (!p.optional) {
+            setParseErrors((prev) => ({ ...prev, [p.name]: "无效数字" }));
+            return null;
+          }
+          continue;
+        }
+        args[p.name] = n;
       } else if (p.type === "bool") {
         args[p.name] = boolValues[p.name] ?? false;
       } else if (p.type === "list" || p.type === "dict") {
@@ -122,6 +133,7 @@ function ToolForm({
           setParseErrors((prev) => ({ ...prev, [p.name]: "" }));
         } catch {
           setParseErrors((prev) => ({ ...prev, [p.name]: "JSON 格式错误" }));
+          if (!p.optional) return null;
         }
       } else {
         if (raw !== undefined) args[p.name] = raw;
@@ -183,7 +195,7 @@ function ToolForm({
         ))}
       </div>
       <button
-        onClick={() => onCall(tool.name, buildArgs())}
+        onClick={() => { const a = buildArgs(); if (a !== null) onCall(tool.name, a); }}
         disabled={loading}
         className="px-3 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"
       >

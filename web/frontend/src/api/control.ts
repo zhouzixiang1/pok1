@@ -30,10 +30,20 @@ export interface AppConfig {
 }
 
 const BASE = "/api/control";
+const CONTROL_TIMEOUT = 30_000;
+
+async function extractError(res: Response): Promise<never> {
+  let msg = `HTTP ${res.status}`;
+  try {
+    const b = await res.json();
+    if (b.detail) msg += `: ${b.detail}`;
+  } catch {}
+  throw new Error(msg);
+}
 
 async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const res = await fetch(url, { ...init, signal: init?.signal ?? AbortSignal.timeout(CONTROL_TIMEOUT) });
+  if (!res.ok) return extractError(res);
   return res.json();
 }
 

@@ -237,17 +237,17 @@ export default function Overview() {
   const [checkpoint, setCheckpoint] = useState<PipelineCheckpoint | null>(null);
 
   useEffect(() => {
-    api.historySummary().then(setSummary).catch(() => {});
+    api.historySummary().then(setSummary).catch((e) => console.error("[Overview] API error:", e));
     const id = setInterval(() => {
-      api.historySummary().then(setSummary).catch(() => {});
+      api.historySummary().then(setSummary).catch((e) => console.error("[Overview] API error:", e));
     }, 15000);
     return () => clearInterval(id);
   }, []);
 
   useEffect(() => {
     const refresh = () => {
-      controlApi.status().then(setControlStatus).catch(() => {});
-      api.pipelineCheckpoint().then(setCheckpoint).catch(() => {});
+      controlApi.status().then(setControlStatus).catch((e) => console.error("[Overview] API error:", e));
+      api.pipelineCheckpoint().then(setCheckpoint).catch((e) => console.error("[Overview] API error:", e));
     };
     refresh();
     const id = setInterval(refresh, 5000);

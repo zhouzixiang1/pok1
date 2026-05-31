@@ -73,6 +73,8 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
     try {
       const r = await controlApi.callTool("run_inline_eval", { version: bot.version, n_games: 5 });
       onAction(r.result || r.error || "完成");
+    } catch (e) {
+      onAction(`错误: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setToolLoading(null);
     }
@@ -87,8 +89,10 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
         const ckpt = await api.pipelineCheckpoint();
         if (ckpt && ckpt.next_v === bot.version) sourceV = ckpt.source_v;
       } catch {}
-      const r = await controlApi.callTool("commit_bot", { version: bot.version, source_v: sourceV, strategy: "" });
+      const r = await controlApi.callTool("commit_bot", { version: bot.version, source_v: sourceV, strategy: "", review_approved: true });
       onAction(r.result || r.error || "完成");
+    } catch (e) {
+      onAction(`错误: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setToolLoading(null);
     }

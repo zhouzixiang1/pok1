@@ -7,25 +7,25 @@
     "win_rate": 0.5198
   },
   "claude_v2": {
-    "wins": 1177,
-    "losses": 1238,
+    "wins": 1249,
+    "losses": 1326,
     "draws": 1,
-    "games": 2416,
-    "win_rate": 0.4872
+    "games": 2576,
+    "win_rate": 0.4849
   },
   "claude_v14": {
-    "wins": 1208,
-    "losses": 1136,
+    "wins": 1298,
+    "losses": 1206,
     "draws": 2,
-    "games": 2346,
-    "win_rate": 0.5149
+    "games": 2506,
+    "win_rate": 0.518
   },
   "claude_v9": {
-    "wins": 1243,
-    "losses": 1132,
+    "wins": 1302,
+    "losses": 1193,
     "draws": 1,
-    "games": 2376,
-    "win_rate": 0.5231
+    "games": 2496,
+    "win_rate": 0.5216
   },
   "claude_v1": {
     "wins": 263,
@@ -42,25 +42,25 @@
     "win_rate": 0.5081
   },
   "claude_v16": {
-    "wins": 1258,
-    "losses": 1163,
+    "wins": 1279,
+    "losses": 1182,
     "draws": 5,
-    "games": 2426,
-    "win_rate": 0.5185
+    "games": 2466,
+    "win_rate": 0.5187
   },
   "claude_v19": {
-    "wins": 1290,
-    "losses": 1105,
+    "wins": 1309,
+    "losses": 1126,
     "draws": 1,
-    "games": 2396,
-    "win_rate": 0.5384
+    "games": 2436,
+    "win_rate": 0.5374
   },
   "claude_v12": {
-    "wins": 1235,
-    "losses": 1175,
+    "wins": 1315,
+    "losses": 1255,
     "draws": 0,
-    "games": 2410,
-    "win_rate": 0.5124
+    "games": 2570,
+    "win_rate": 0.5117
   },
   "claude_v11": {
     "wins": 1225,
@@ -70,46 +70,46 @@
     "win_rate": 0.5126
   },
   "claude_v13": {
-    "wins": 1255,
-    "losses": 1134,
+    "wins": 1294,
+    "losses": 1175,
     "draws": 1,
-    "games": 2390,
-    "win_rate": 0.5251
+    "games": 2470,
+    "win_rate": 0.5239
   },
   "claude_v21": {
-    "wins": 1228,
-    "losses": 1121,
+    "wins": 1301,
+    "losses": 1208,
     "draws": 1,
-    "games": 2350,
-    "win_rate": 0.5226
+    "games": 2510,
+    "win_rate": 0.5183
   },
   "claude_v5": {
-    "wins": 1265,
-    "losses": 1133,
+    "wins": 1330,
+    "losses": 1188,
     "draws": 2,
-    "games": 2400,
-    "win_rate": 0.5271
+    "games": 2520,
+    "win_rate": 0.5278
   },
   "claude_v7": {
-    "wins": 1359,
-    "losses": 1058,
+    "wins": 1439,
+    "losses": 1138,
     "draws": 3,
-    "games": 2420,
-    "win_rate": 0.5616
+    "games": 2580,
+    "win_rate": 0.5578
   },
   "claude_v15": {
-    "wins": 1259,
-    "losses": 1168,
+    "wins": 1329,
+    "losses": 1218,
     "draws": 3,
-    "games": 2430,
-    "win_rate": 0.5181
+    "games": 2550,
+    "win_rate": 0.5212
   },
   "claude_v17": {
-    "wins": 1243,
-    "losses": 1136,
+    "wins": 1292,
+    "losses": 1167,
     "draws": 1,
-    "games": 2380,
-    "win_rate": 0.5223
+    "games": 2460,
+    "win_rate": 0.5252
   },
   "claude_v3": {
     "wins": 1120,
@@ -119,18 +119,18 @@
     "win_rate": 0.4828
   },
   "claude_v4": {
-    "wins": 1284,
-    "losses": 1086,
+    "wins": 1327,
+    "losses": 1123,
     "draws": 0,
-    "games": 2370,
-    "win_rate": 0.5418
+    "games": 2450,
+    "win_rate": 0.5416
   },
   "claude_v6": {
-    "wins": 1184,
-    "losses": 1226,
+    "wins": 1264,
+    "losses": 1306,
     "draws": 0,
-    "games": 2410,
-    "win_rate": 0.4913
+    "games": 2570,
+    "win_rate": 0.4918
   },
   "claude_v8": {
     "wins": 1286,
@@ -140,67 +140,67 @@
     "win_rate": 0.5336
   },
   "claude_v20": {
-    "wins": 1147,
-    "losses": 1093,
+    "wins": 1164,
+    "losses": 1116,
     "draws": 0,
-    "games": 2240,
-    "win_rate": 0.5121
+    "games": 2280,
+    "win_rate": 0.5105
   },
   "claude_v22": {
-    "wins": 1216,
-    "losses": 1111,
+    "wins": 1254,
+    "losses": 1153,
     "draws": 3,
-    "games": 2330,
-    "win_rate": 0.5219
+    "games": 2410,
+    "win_rate": 0.5203
   },
   "claude_v23": {
-    "wins": 1236,
-    "losses": 1070,
+    "wins": 1299,
+    "losses": 1127,
     "draws": 4,
-    "games": 2310,
-    "win_rate": 0.5351
+    "games": 2430,
+    "win_rate": 0.5346
   },
   "claude_v24": {
-    "wins": 1119,
-    "losses": 1070,
+    "wins": 1186,
+    "losses": 1123,
     "draws": 1,
-    "games": 2190,
-    "win_rate": 0.511
+    "games": 2310,
+    "win_rate": 0.5134
   },
   "claude_v25": {
-    "wins": 945,
-    "losses": 1052,
+    "wins": 1012,
+    "losses": 1145,
     "draws": 3,
-    "games": 2000,
-    "win_rate": 0.4725
+    "games": 2160,
+    "win_rate": 0.4685
   },
   "claude_v26": {
-    "wins": 816,
-    "losses": 924,
+    "wins": 892,
+    "losses": 1008,
     "draws": 0,
-    "games": 1740,
-    "win_rate": 0.469
+    "games": 1900,
+    "win_rate": 0.4695
   },
   "claude_v27": {
-    "wins": 911,
-    "losses": 756,
+    "wins": 970,
+    "losses": 817,
     "draws": 3,
-    "games": 1670,
-    "win_rate": 0.5455
+    "games": 1790,
+    "win_rate": 0.5419
   },
   "claude_v28": {
-    "wins": 887,
-    "losses": 731,
+    "wins": 951,
+    "losses": 787,
     "draws": 2,
-    "games": 1620,
-    "win_rate": 0.5475
+    "games": 1740,
+    "win_rate": 0.5466
   },
   "claude_v29": {
-    "wins": 602,
-    "losses": 738,
+    "wins": 671,
+    "losses": 829,
     "draws": 0,
-    "games": 1340,
-    "win_rate": 0.4493
+    "games": 1500,
+    "win_rate": 0.4473
   },
   "claude_v30": {
     "wins": 568,

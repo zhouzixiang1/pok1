@@ -12,9 +12,18 @@ function abortSignal(): AbortSignal {
   return AbortSignal.timeout(FETCH_TIMEOUT);
 }
 
+async function extractError(res: Response): Promise<never> {
+  let msg = `HTTP ${res.status}`;
+  try {
+    const b = await res.json();
+    if (b.detail) msg += `: ${b.detail}`;
+  } catch {}
+  throw new Error(msg);
+}
+
 async function fetchJSON<T>(url: string): Promise<T> {
   const res = await fetch(url, { signal: abortSignal() });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) return extractError(res);
   return res.json();
 }
 
@@ -31,7 +40,7 @@ async function putJSON<T>(url: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
     signal: abortSignal(),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) return extractError(res);
   return res.json();
 }
 
@@ -42,13 +51,13 @@ async function postJSON<T>(url: string, body?: unknown): Promise<T> {
     body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: abortSignal(),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) return extractError(res);
   return res.json();
 }
 
 async function deleteReq<T>(url: string): Promise<T> {
   const res = await fetch(url, { method: "DELETE", signal: abortSignal() });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) return extractError(res);
   return res.json();
 }
 

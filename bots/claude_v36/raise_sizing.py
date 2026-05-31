@@ -1,9 +1,10 @@
-"""Raise sizing logic extracted from strategy.py for modularity."""
+"""Raise sizing and preflop spot logic extracted from strategy.py."""
 
 from card_utils import clamp
 from constants import BIG_BLIND
 from postflop import empty_draw_profile
-
+from state import get_remaining_hands, is_preflop_trash_hand, is_preflop_3bet_candidate
+from tournament import match_risk_adjustment
 
 def choose_raise(
     min_raise,
@@ -131,7 +132,6 @@ def choose_raise(
         return None
     return amount
 
-
 def choose_overbet_river(
     min_raise, my_chips, my_round_bet, to_call, pot,
     win_rate, value_profile, board_texture, spot_info, opponent_model
@@ -158,10 +158,103 @@ def choose_overbet_river(
         return None
     return amount
 
-
 def choose_overbet_bluff_river(
     min_raise, my_chips, my_round_bet, to_call, pot,
     blocker_profile, board_texture, spot_info, opponent_model
 ):
     """River overbet bluff - disabled for safety."""
+    return None
+
+def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_strength, win_rate, match_profile):
+    my_chips = req["my_chips"]
+    to_call = state["to_call"]
+    match_adjust = match_risk_adjustment(req, req["my_id"], get_remaining_hands(req))
+    confidence = opponent_model["confidence"]
+    loose_bonus = confidence * max(0.0, opponent_model["vpip"] - 0.55) * 0.03
+    trash_hand = is_preflop_trash_hand(req["my_cards"], preflop_strength)
+
+    if spot_info["preflop_spot"] == "sb_open":
+        open_threshold = 0.40 + match_adjust + 0.02 + match_profile["open_delta"]
+        limp_threshold = 0.28 + match_adjust
+        raise_amount = choose_raise(
+            state.get("min_raise_action", state["round_raise"]),
+            my_chips,
+            state["my_round_bet"],
+            to_call,
+            state["pot"],
+            max(win_rate, preflop_strength),
+            0,
+            spot_info["preflop_spot"],
+            preflop_strength,
+            spot_info["has_position"],
+            opponent_model,
+            match_sizing_delta=match_profile["sizing_delta"],
+        )
+        if not trash_hand and preflop_strength >= open_threshold and raise_amount is not None:
+            return raise_amount
+        if preflop_strength <= limp_threshold - loose_bonus:
+            return -1
+        return 0
+
+    if spot_info["preflop_spot"] == "bb_vs_limp":
+        iso_threshold = 0.48 + match_adjust - loose_bonus + match_profile["open_delta"]
+        iso_threshold -= confidence * max(0.0, opponent_model["vpip"] - 0.58) * 0.08
+        iso_threshold -= confidence * max(0.0, opponent_model["fold_to_raise"] - 0.52) * 0.05
+        raise_amount = choose_raise(
+            state.get("min_raise_action", state["round_raise"]),
+            my_chips,
+            state["my_round_bet"],
+            to_call,
+            state["pot"],
+            max(win_rate, preflop_strength),
+            0,
+            spot_info["preflop_spot"],
+            preflop_strength,
+            spot_info["has_position"],
+            opponent_model,
+            match_sizing_delta=match_profile["sizing_delta"],
+        )
+        if not trash_hand and preflop_strength >= iso_threshold and raise_amount is not None:
+            return raise_amount
+        return 0
+
+    if spot_info['preflop_spot'] == 'bb_vs_raise':
+        defense_threshold = 0.35 + match_adjust - loose_bonus
+        threebet_threshold = 0.62 + match_adjust
+        if preflop_strength < defense_threshold and not is_preflop_3bet_candidate(req['my_cards']):
+            if trash_hand:
+                return -1
+            pot_odds_pf = to_call / (state['pot'] + to_call) if to_call > 0 else 0
+            if preflop_strength < pot_odds_pf - 0.08:
+                return -1
+        if preflop_strength >= threebet_threshold or is_preflop_3bet_candidate(req['my_cards']):
+            raise_amount = choose_raise(
+                state.get('min_raise_action', state['round_raise']),
+                my_chips, state['my_round_bet'], to_call, state['pot'],
+                max(win_rate, preflop_strength), 0,
+                spot_info['preflop_spot'], preflop_strength,
+                spot_info['has_position'], opponent_model,
+                match_sizing_delta=match_profile['sizing_delta'],
+            )
+            if raise_amount is not None:
+                return raise_amount
+        return 0
+
+    if spot_info['preflop_spot'] == 'sb_vs_reraise':
+        defend_threshold = 0.48 + match_adjust
+        if preflop_strength < defend_threshold and not is_preflop_3bet_candidate(req['my_cards']):
+            return -1
+        if preflop_strength >= 0.65 + match_adjust:
+            raise_amount = choose_raise(
+                state.get('min_raise_action', state['round_raise']),
+                my_chips, state['my_round_bet'], to_call, state['pot'],
+                max(win_rate, preflop_strength), 0,
+                spot_info['preflop_spot'], preflop_strength,
+                spot_info['has_position'], opponent_model,
+                match_sizing_delta=match_profile['sizing_delta'],
+            )
+            if raise_amount is not None:
+                return raise_amount
+        return 0
+
     return None

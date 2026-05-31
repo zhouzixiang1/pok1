@@ -91,6 +91,7 @@ export default function RatingTrends() {
         type: "line",
         toolbar: { show: true },
         background: "transparent",
+        animations: { enabled: false },
       },
       stroke: {
         width: metric === "glicko" && showConfidence ? [...names.map(() => 0), ...names.map(() => 2)] : 2,
@@ -134,7 +135,7 @@ export default function RatingTrends() {
       },
       theme: { mode: "light" },
     }),
-    [categories, showConfidence, metric, yTitle, yFormatter, names.length]
+    [categories, showConfidence, metric, yTitle, yFormatter, JSON.stringify(names)]
   );
 
   if (history.length === 0) {

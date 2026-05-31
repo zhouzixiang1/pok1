@@ -69,7 +69,7 @@ export default function MatchReplay() {
       } else {
         setFrames([]);
       }
-      api.matchCommentary(id).then(setCommentary).catch(() => {});
+      api.matchCommentary(id).then(setCommentary).catch((e) => console.error("[MatchReplay] API error:", e));
     } catch {
       setSelectedMatch(null);
       setFrames([]);

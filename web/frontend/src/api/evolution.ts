@@ -70,7 +70,9 @@ export function useEvolutionSSE(
 
     const doConnect = () => {
       currentSource = new EventSource(`${BASE}/evolution/stream`);
-      handlers.onConnect?.();
+      currentSource.onopen = () => {
+        handlers.onConnect?.();
+      };
 
       const eventTypes: EvolutionEventType[] = [
         "history", "status", "io", "clear_io",
@@ -137,7 +139,7 @@ export function useEvolutionSSE(
 }
 
 export async function fetchEvolutionState(): Promise<EvolutionState> {
-  const res = await fetch(`${BASE}/evolution/state`);
+  const res = await fetch(`${BASE}/evolution/state`, { signal: AbortSignal.timeout(30_000) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }

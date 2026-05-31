@@ -468,12 +468,16 @@ export default function EvolutionMonitor() {
     onDaemon: (data) => setDaemonInfo(data),
     onConnect: () => {
       setRoleCosts([]);
+      setMessages([]);
+      setHistoryLines([]);
+      setWorkers([]);
+      openToolId.current = null;
       fetchEvolutionState().then((state) => {
         if (state) {
           setGrand(state.grand_cost_total ?? 0);
           setGen(state.gen_cost_total ?? 0);
         }
-      }).catch(() => {});
+      }).catch((e) => console.error("[EvolutionMonitor] fetchEvolutionState error:", e));
     },
   });
 
@@ -484,15 +488,15 @@ export default function EvolutionMonitor() {
         setIsWorking(state.is_working);
         if (state.header) setHeader(state.header);
       }
-    }).catch(() => {});
-    const refreshLeaderboard = () => api.ratings().then(setLeaderboard).catch(() => {});
+    }).catch((e) => console.error("[EvolutionMonitor] API error:", e));
+    const refreshLeaderboard = () => api.ratings().then(setLeaderboard).catch((e) => console.error("[EvolutionMonitor] API error:", e));
     refreshLeaderboard();
 
-    const refreshPipeline = () => api.pipelineCheckpoint().then(setCheckpoint).catch(() => {});
+    const refreshPipeline = () => api.pipelineCheckpoint().then(setCheckpoint).catch((e) => console.error("[EvolutionMonitor] API error:", e));
     refreshPipeline();
     const pipeInterval = setInterval(refreshPipeline, 5000);
 
-    const refreshFailures = () => api.pipelineFailures(3).then(setFailures).catch(() => {});
+    const refreshFailures = () => api.pipelineFailures(3).then(setFailures).catch((e) => console.error("[EvolutionMonitor] API error:", e));
     refreshFailures();
     const failInterval = setInterval(refreshFailures, 30000);
 

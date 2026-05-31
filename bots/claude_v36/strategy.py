@@ -23,8 +23,7 @@ from postflop import (
     must_continue_vs_raise,
 )
 from simulation import build_opponent_range, estimate_weighted_win_rate
-from raise_sizing import choose_raise, choose_overbet_river, choose_overbet_bluff_river
-
+from raise_sizing import choose_raise, choose_overbet_river, choose_overbet_bluff_river, choose_preflop_spot_action
 
 def opponent_pressure_adjustment(opponent_model, spot_info, round_idx):
     confidence = opponent_model["confidence"]
@@ -40,7 +39,6 @@ def opponent_pressure_adjustment(opponent_model, spot_info, round_idx):
 
     return clamp(adjustment, -0.05, 0.07)
 
-
 def aggressive_line_strength(spot_info, board_texture):
     strength = 0.0
     if spot_info.get("opp_postflop_bet_count", 0) >= 2:
@@ -50,7 +48,6 @@ def aggressive_line_strength(spot_info, board_texture):
     if spot_info.get("opp_current_round_bet_count", 0) >= 3:
         strength += 0.03
     return clamp(strength, 0.0, 0.15)
-
 
 def choose_anti_lock_pressure_action(
     state,
@@ -125,7 +122,6 @@ def choose_anti_lock_pressure_action(
         return -2 if hands_left <= 4 else None
     return amount
 
-
 def paired_board_stackoff_profile(pair_profile, paired_board_profile, board_texture, spot_info, round_idx):
     info = {
         "active": False,
@@ -170,7 +166,6 @@ def paired_board_stackoff_profile(pair_profile, paired_board_profile, board_text
     info["size_bucket"] = size_bucket
     return info
 
-
 def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength, round_idx, has_position):
     if round_idx <= 0:
         return 0.0
@@ -211,7 +206,6 @@ def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength
         margin -= confidence * max(0.0, opponent_model["postflop_aggr"] - 0.50) * 0.008
 
     return clamp(margin, -0.02, 0.06)
-
 
 def realized_postflop_equity(
     win_rate,
@@ -266,102 +260,6 @@ def realized_postflop_equity(
 
     return win_rate
 
-
-def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_strength, win_rate, match_profile):
-    my_chips = req["my_chips"]
-    to_call = state["to_call"]
-    match_adjust = match_risk_adjustment(req, req["my_id"], get_remaining_hands(req))
-    confidence = opponent_model["confidence"]
-    loose_bonus = confidence * max(0.0, opponent_model["vpip"] - 0.55) * 0.03
-    trash_hand = is_preflop_trash_hand(req["my_cards"], preflop_strength)
-
-    if spot_info["preflop_spot"] == "sb_open":
-        open_threshold = 0.40 + match_adjust + 0.02 + match_profile["open_delta"]
-        limp_threshold = 0.28 + match_adjust
-        raise_amount = choose_raise(
-            state.get("min_raise_action", state["round_raise"]),
-            my_chips,
-            state["my_round_bet"],
-            to_call,
-            state["pot"],
-            max(win_rate, preflop_strength),
-            0,
-            spot_info["preflop_spot"],
-            preflop_strength,
-            spot_info["has_position"],
-            opponent_model,
-            match_sizing_delta=match_profile["sizing_delta"],
-        )
-        if not trash_hand and preflop_strength >= open_threshold and raise_amount is not None:
-            return raise_amount
-        if preflop_strength <= limp_threshold - loose_bonus:
-            return -1
-        return 0
-
-    if spot_info["preflop_spot"] == "bb_vs_limp":
-        iso_threshold = 0.48 + match_adjust - loose_bonus + match_profile["open_delta"]
-        iso_threshold -= confidence * max(0.0, opponent_model["vpip"] - 0.58) * 0.08
-        iso_threshold -= confidence * max(0.0, opponent_model["fold_to_raise"] - 0.52) * 0.05
-        raise_amount = choose_raise(
-            state.get("min_raise_action", state["round_raise"]),
-            my_chips,
-            state["my_round_bet"],
-            to_call,
-            state["pot"],
-            max(win_rate, preflop_strength),
-            0,
-            spot_info["preflop_spot"],
-            preflop_strength,
-            spot_info["has_position"],
-            opponent_model,
-            match_sizing_delta=match_profile["sizing_delta"],
-        )
-        if not trash_hand and preflop_strength >= iso_threshold and raise_amount is not None:
-            return raise_amount
-        return 0
-
-    if spot_info['preflop_spot'] == 'bb_vs_raise':
-        defense_threshold = 0.35 + match_adjust - loose_bonus
-        threebet_threshold = 0.62 + match_adjust
-        if preflop_strength < defense_threshold and not is_preflop_3bet_candidate(req['my_cards']):
-            if trash_hand:
-                return -1
-            pot_odds_pf = to_call / (state['pot'] + to_call) if to_call > 0 else 0
-            if preflop_strength < pot_odds_pf - 0.08:
-                return -1
-        if preflop_strength >= threebet_threshold or is_preflop_3bet_candidate(req['my_cards']):
-            raise_amount = choose_raise(
-                state.get('min_raise_action', state['round_raise']),
-                my_chips, state['my_round_bet'], to_call, state['pot'],
-                max(win_rate, preflop_strength), 0,
-                spot_info['preflop_spot'], preflop_strength,
-                spot_info['has_position'], opponent_model,
-                match_sizing_delta=match_profile['sizing_delta'],
-            )
-            if raise_amount is not None:
-                return raise_amount
-        return 0
-
-    if spot_info['preflop_spot'] == 'sb_vs_reraise':
-        defend_threshold = 0.48 + match_adjust
-        if preflop_strength < defend_threshold and not is_preflop_3bet_candidate(req['my_cards']):
-            return -1
-        if preflop_strength >= 0.65 + match_adjust:
-            raise_amount = choose_raise(
-                state.get('min_raise_action', state['round_raise']),
-                my_chips, state['my_round_bet'], to_call, state['pot'],
-                max(win_rate, preflop_strength), 0,
-                spot_info['preflop_spot'], preflop_strength,
-                spot_info['has_position'], opponent_model,
-                match_sizing_delta=match_profile['sizing_delta'],
-            )
-            if raise_amount is not None:
-                return raise_amount
-        return 0
-
-    return None
-
-
 def get_action(req, requests):
     my_id = req["my_id"]
     my_chips = req["my_chips"]
@@ -391,9 +289,7 @@ def get_action(req, requests):
     n_hands = len(collect_latest_requests_by_hand(requests))
     is_bot4, bot4_score = detect_bot4_profile(opponent_model, n_hands)
     anti_bot4 = None
-
     simulations = SIMULATIONS_BY_PUBLIC_COUNT.get(len(public_cards), 700)
-
     win_rate = estimate_weighted_win_rate(my_cards, public_cards, combos, weights, simulations)
 
     critical_spot = to_call > 0 and (
@@ -592,7 +488,12 @@ def get_action(req, requests):
             if not anti_lock_jam_continue:
                 return -1
         jam_buffer = clamp(jam_buffer, -0.05 if anti_lock_pressure else 0.0, 0.14)
-        return -2 if win_rate >= jam_odds + jam_buffer or anti_lock_jam_continue else -1
+        if win_rate >= jam_odds + jam_buffer or anti_lock_jam_continue:
+            return -2
+        # Never fold premium hands preflop
+        if round_idx == 0 and preflop_strength is not None and preflop_strength >= 0.65:
+            return -2
+        return -1
 
     if to_call >= my_chips:
         shove_odds = my_chips / (pot + my_chips)
@@ -618,7 +519,12 @@ def get_action(req, requests):
             if not anti_lock_shove_continue:
                 return -1
         shove_buffer = clamp(shove_buffer, -0.05 if anti_lock_pressure else 0.0, 0.14)
-        return -2 if win_rate >= shove_odds + shove_buffer or anti_lock_shove_continue else -1
+        if win_rate >= shove_odds + shove_buffer or anti_lock_shove_continue:
+            return -2
+        # Never fold premium hands preflop
+        if round_idx == 0 and preflop_strength is not None and preflop_strength >= 0.65:
+            return -2
+        return -1
 
     if to_call > 0:
         if round_idx == 0:
@@ -735,7 +641,11 @@ def get_action(req, requests):
                 return -1
         if realized_rate < pot_odds + call_margin:
             if not anti_lock_call_continue and not strong_made_continue:
-                return -1
+                # Never fold premium hands preflop
+                if round_idx == 0 and preflop_strength is not None and preflop_strength >= 0.65:
+                    pass  # fall through to call/raise
+                else:
+                    return -1
         if repeated_raise_trap and (value_profile is None or value_profile["tier"] != "nut"):
             return 0
 

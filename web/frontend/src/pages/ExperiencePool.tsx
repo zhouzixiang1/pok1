@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { api } from "../api/client";
 import { controlApi } from "../api/control";
 import PageMeta from "../components/common/PageMeta";
@@ -24,6 +24,8 @@ export default function ExperiencePool() {
   const [content, setContent] = useState("");
   const [editContent, setEditContent] = useState("");
   const [isEditing, setIsEditing] = useState(false);
+  const isEditingRef = useRef(false);
+  isEditingRef.current = isEditing;
   const [appendLesson, setAppendLesson] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -34,9 +36,9 @@ export default function ExperiencePool() {
     try {
       const text = await api.experience();
       setContent(text);
-      if (!isEditing) setEditContent(text);
+      if (!isEditingRef.current) setEditContent(text);
     } catch {}
-  }, [isEditing]);
+  }, []);
 
   useEffect(() => {
     refresh().finally(() => setLoading(false));
