@@ -170,37 +170,50 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
     """Write pipeline stage checkpoint so a killed process can resume."""
     existing_gate_results = {}
     existing_invocation_count = 0
-    try:
-        if PIPELINE_STATE_FILE.exists():
-            with locked_file(PIPELINE_STATE_FILE) as f:
-                existing = json.load(f)
-            if existing.get("next_v") == next_v and existing.get("source_v") == source_v:
-                existing_gate_results = existing.get("gate_results", {}) or {}
-                existing_invocation_count = existing.get("worker_invocation_count", 0)
-    except Exception:
-        existing_gate_results = {}
-    allowed_gates = STAGE_GATE_ALLOWLIST.get(stage)
-    if allowed_gates is not None:
-        existing_gate_results = {
-            name: data
-            for name, data in existing_gate_results.items()
-            if name in allowed_gates
+    existing_master_plan = master_plan
+    existing_reviewer_feedback = reviewer_feedback
+    existing_generation_attempt = generation_attempt
+    # Read-modify-write under a single exclusive lock to prevent TOCTOU races
+    with locked_file(PIPELINE_STATE_FILE, "a+") as f:
+        f.seek(0)
+        try:
+            raw = f.read()
+            if raw.strip():
+                existing = json.loads(raw)
+                if existing.get("next_v") == next_v and existing.get("source_v") == source_v:
+                    existing_gate_results = existing.get("gate_results", {}) or {}
+                    existing_invocation_count = existing.get("worker_invocation_count", 0)
+                    if master_plan is None:
+                        existing_master_plan = existing.get("master_plan")
+                    if not reviewer_feedback:
+                        existing_reviewer_feedback = existing.get("reviewer_feedback", "")
+                    if generation_attempt == 0:
+                        existing_generation_attempt = existing.get("generation_attempt", 0)
+        except Exception:
+            existing_gate_results = {}
+        allowed_gates = STAGE_GATE_ALLOWLIST.get(stage)
+        if allowed_gates is not None:
+            existing_gate_results = {
+                name: data
+                for name, data in existing_gate_results.items()
+                if name in allowed_gates
+            }
+        if gate_results:
+            existing_gate_results.update(gate_results)
+
+        if worker_invocation_count is not None:
+            existing_invocation_count = worker_invocation_count
+
+        state = {
+            "next_v": next_v, "source_v": source_v, "stage": stage,
+            "master_plan": existing_master_plan, "reviewer_feedback": existing_reviewer_feedback,
+            "generation_attempt": existing_generation_attempt,
+            "worker_invocation_count": existing_invocation_count,
+            "gate_results": existing_gate_results,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
-    if gate_results:
-        existing_gate_results.update(gate_results)
-
-    if worker_invocation_count is not None:
-        existing_invocation_count = worker_invocation_count
-
-    state = {
-        "next_v": next_v, "source_v": source_v, "stage": stage,
-        "master_plan": master_plan, "reviewer_feedback": reviewer_feedback,
-        "generation_attempt": generation_attempt,
-        "worker_invocation_count": existing_invocation_count,
-        "gate_results": existing_gate_results,
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-    }
-    with locked_file(PIPELINE_STATE_FILE, "w") as f:
+        f.seek(0)
+        f.truncate()
         json.dump(state, f, indent=2)
 
 
@@ -596,6 +609,11 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
                 usage = message.usage
     except (CLINotFoundError, ProcessError) as e:
         ui.log_io(f"[ERROR] {e}", "error")
+        if query_gen is not None:
+            try:
+                await query_gen.aclose()
+            except Exception:
+                pass
     except asyncio.CancelledError:
         ui.log_io(f"\n[{role_name} CANCELLED]", "error")
         if query_gen is not None:
@@ -634,6 +652,11 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
                         usage = message.usage
             except (CLINotFoundError, ProcessError) as e:
                 ui.log_io(f"[ERROR] {e}", "error")
+                if retry_gen is not None:
+                    try:
+                        await retry_gen.aclose()
+                    except Exception:
+                        pass
             except asyncio.CancelledError:
                 if retry_gen is not None:
                     try:

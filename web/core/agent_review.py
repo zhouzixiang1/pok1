@@ -48,7 +48,7 @@ async def _run_critic(next_v, source_v, master_plan_str, ui):
             data.setdefault("approved", data["score"] >= 6)
             return data
     except Exception as e:
-        ui.log_history(f"Critic error: {e}. Defaulting to approved.", "warn")
+        ui.log_history(f"Critic error: {e}. Defaulting to rejected.", "warn")
 
     return {"score": 0, "approved": False, "feedback": "Critic unavailable — defaulting to rejected.", "local_optima_warning": False}
 

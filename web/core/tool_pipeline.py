@@ -100,6 +100,12 @@ async def run_master(args):
     if plan_errors:
         return {"content": [{"type": "text", "text": json.dumps({"error": "Master plan validation failed", "validation_errors": plan_errors, "plan": data, "logs": ui.get_output()})}]}
 
+    # Persist master plan to checkpoint so it survives crashes between master and workers
+    _ckpt = _matching_checkpoint(next_v, source_v)
+    if _ckpt:
+        from evolution_infra import write_pipeline_checkpoint
+        write_pipeline_checkpoint(next_v, source_v, "prepared", master_plan=data)
+
     result = {"plan": data, "logs": ui.get_output()}
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
 
@@ -165,9 +171,12 @@ async def execute_workers(args):
             success = False
 
     if success:
-        from evolution_core import write_pipeline_checkpoint
+        from evolution_infra import write_pipeline_checkpoint
+        # Preserve the master plan structure (with analysis) from checkpoint,
+        # rather than replacing it with the raw tasks list
+        plan = ckpt.get("master_plan", tasks) if ckpt else tasks
         write_pipeline_checkpoint(next_v, source_v, "workers_done",
-                                  master_plan=tasks, reviewer_feedback=reviewer_feedback,
+                                  master_plan=plan, reviewer_feedback=reviewer_feedback,
                                   worker_invocation_count=invocation_count + len(tasks))
 
     result = {
@@ -181,11 +190,13 @@ async def execute_workers(args):
 
 class RunQualityGatesInput(TypedDict):
     version: Annotated[int, "Bot version to test"]
+    source_v: Annotated[int, "Source version this bot was derived from"]
 
 
-@tool("run_quality_gates", "Run all quality gates on a bot: compile check, smoke test, decision tests, and file size check.", {"version": int})
+@tool("run_quality_gates", "Run all quality gates on a bot: compile check, smoke test, decision tests, and file size check.", {"version": int, "source_v": int})
 async def run_quality_gates(args):
     v = args["version"]
+    source_v = args.get("source_v")
     bot_dir = get_bot_dir(v)
 
     compile_errors = verify_code(bot_dir)
@@ -224,7 +235,7 @@ async def run_quality_gates(args):
         "all_passed": all_passed,
     }
 
-    _ckpt = _matching_checkpoint(v)
+    _ckpt = _matching_checkpoint(v, source_v) if source_v is not None else _matching_checkpoint(v)
     if _ckpt:
         source_v = _ckpt["source_v"]
         gate = _gate_payload(
@@ -270,9 +281,18 @@ async def prepare_next_gen(args):
     if not source_dir.exists():
         return {"content": [{"type": "text", "text": json.dumps({"error": f"Source bot v{source_v} not found"})}]}
 
+    # Guard: warn if source bot is not completed (may be broken)
+    if not (source_dir / ".completed").exists():
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"Source bot v{source_v} is not marked completed. Cannot use incomplete code as source."})}]}
+
     # Guard: refuse to overwrite a completed bot
     if next_dir.exists() and (next_dir / ".completed").exists():
         return {"content": [{"type": "text", "text": json.dumps({"error": f"Target v{next_v} already exists and is completed. Refusing to overwrite."})}]}
+
+    # Guard: refuse to re-prepare if pipeline has already progressed past "prepared"
+    _ckpt = _matching_checkpoint(next_v, source_v)
+    if _ckpt and _ckpt.get("stage") not in (None, "prepared"):
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"Pipeline for v{next_v} already at stage '{_ckpt['stage']}'. Refusing to overwrite worker output. Call abandon_generation first if you want to restart."})}]}
 
     if next_dir.exists():
         shutil.rmtree(next_dir)
@@ -280,7 +300,7 @@ async def prepare_next_gen(args):
     (next_dir / ".completed").unlink(missing_ok=True)
 
     # Write "prepared" checkpoint so a kill+restart shows "Workers not yet run → call execute_workers"
-    from evolution_core import write_pipeline_checkpoint
+    from evolution_infra import write_pipeline_checkpoint
     write_pipeline_checkpoint(next_v, source_v, "prepared", worker_invocation_count=0)
 
     return {"content": [{"type": "text", "text": json.dumps({"prepared": True, "next_v": next_v, "source_v": source_v})}]}
@@ -738,8 +758,8 @@ async def run_inline_eval(args):
 
     # Save H2H with win_rate computed
     h2h_out = {}
-    for k, v in h2h.items():
-        entry = dict(v)
+    for k, h2h_entry in h2h.items():
+        entry = dict(h2h_entry)
         g = entry.get("games", 0)
         entry["win_rate"] = round(entry.get("a_wins", 0) / g, 4) if g > 0 else 0.5
         h2h_out[k] = entry

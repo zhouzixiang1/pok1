@@ -444,7 +444,8 @@ async def get_h2h(args):
         return {"content": [{"type": "text", "text": json.dumps({"error": "No H2H data yet", "bot_name": bot_name})}]}
 
     try:
-        with open(h2h_file, "r") as f:
+        from evolution_infra import locked_file
+        with locked_file(h2h_file, "r") as f:
             h2h = json.load(f)
     except Exception:
         return {"content": [{"type": "text", "text": json.dumps({"error": "Failed to read H2H data"})}]}

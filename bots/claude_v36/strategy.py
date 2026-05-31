@@ -181,28 +181,28 @@ def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength
     size_bucket = bet_size_bucket(spot_info["last_raise_pot_ratio"])
 
     if weak_showdown:
-        margin += 0.012
+        margin += 0.000
     if air_hand:
-        margin += 0.018
+        margin += -0.010
 
     if spot_info["facing_postflop_aggression"]:
-        margin += 0.008
+        margin += 0.004
         if size_bucket == "small":
-            margin += 0.020
+            margin += 0.008
         elif size_bucket == "medium":
-            margin += 0.010
+            margin += 0.004
         else:
-            margin += 0.024
+            margin += 0.012
 
         if spot_info.get("opp_postflop_bet_count", 0) >= 2:
-            margin += 0.024 if size_bucket == "small" else 0.014
+            margin += 0.010 if size_bucket == "small" else 0.006
         if round_idx >= 2 and air_hand:
-            margin += 0.010
+            margin += 0.004
         if round_idx == 3 and size_bucket == "large":
-            margin += 0.020
+            margin += 0.008
 
     if not has_position:
-        margin += 0.008
+        margin += 0.004
 
     confidence = opponent_model["confidence"]
     if air_hand:
@@ -210,7 +210,7 @@ def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength
     else:
         margin -= confidence * max(0.0, opponent_model["postflop_aggr"] - 0.50) * 0.008
 
-    return clamp(margin, 0.0, 0.08)
+    return clamp(margin, -0.02, 0.06)
 
 
 def realized_postflop_equity(

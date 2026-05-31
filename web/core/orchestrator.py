@@ -315,17 +315,29 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     print(f"\n[ERROR] {e}")
             return "".join(texts), cost, ok, gen, auth_err
 
+        query_gen = None
         try:
             full_output, total_cost, cycle_completed, query_gen, auth_error = await _stream_response(options)
 
             # 529 rate-limit retry with exponential backoff
             if _is_rate_limited(full_output):
+                _clear_orchestrator_session()
+                retry_opts = ClaudeAgentOptions(
+                    model="sonnet",
+                    permission_mode="bypassPermissions",
+                    cwd=str(PROJECT_ROOT),
+                    mcp_servers={"evolution": evolution_server},
+                    strict_mcp_config=True,
+                    disallowed_tools=_BLOCKED_MCP_TOOLS,
+                    hooks=_make_precompact_hook(),
+                    max_turns=max_turns,
+                )
                 for backoff in [30, 60, 120]:
                     if ui:
                         ui.log_history(f"Orchestrator rate limited (529). Retrying in {backoff}s...", "warn")
                     lf.write(f"\n[529 RETRY] backing off {backoff}s\n")
                     await asyncio.sleep(backoff)
-                    full_output, total_cost, cycle_completed, query_gen, auth_error = await _stream_response(options)
+                    full_output, total_cost, cycle_completed, query_gen, auth_error = await _stream_response(retry_opts)
                     if not _is_rate_limited(full_output):
                         break
 
@@ -469,7 +481,6 @@ async def orchestrator_loop(ui, no_daemon=False, daemon_workers=14, daemon_pairs
             if ui:
                 ui.log_history(f"Orchestrator cycle {gen_count} complete. Cost: ${cost:.4f}", "info")
 
-            consecutive_zero_cost = 0
             # Brief pause between cycles
             await asyncio.sleep(5)
 

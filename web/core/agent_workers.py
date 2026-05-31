@@ -74,12 +74,12 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
 
         # ── Timeout isolation: abort and retry if worker hangs for >WORKER_TIMEOUT sec ──
         try:
-            task = asyncio.create_task(run_claude_query(
+            llm_task = asyncio.create_task(run_claude_query(
                 worker_prompt, context_files, ui,
                 f"WORKER {w_id} ({role})", worker_log_file,
                 tools=["Bash", "Read", "Edit"],
             ))
-            await asyncio.wait_for(task, timeout=WORKER_TIMEOUT)
+            await asyncio.wait_for(llm_task, timeout=WORKER_TIMEOUT)
         except asyncio.TimeoutError:
             _last_reason = f"timed out after {WORKER_TIMEOUT}s (attempt {attempt+1}/{MAX_WORKER_RETRIES})"
             ui.log_history(
@@ -114,13 +114,28 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
 async def _execute_workers(tasks, worker_template, next_dir, next_v,
                             context_files, ui, reviewer_feedback,
                             source_v=None):
-    """Execute worker tasks. Tries parallel first, falls back to serial on failure."""
+    """Execute worker tasks. Runs sequentially when Architect+Tuner roles coexist,
+    otherwise tries parallel first with serial fallback."""
     if len(tasks) <= 1:
         # Single task — run directly
         return await _run_single_worker(
             tasks[0], 0, worker_template, next_dir, next_v,
             context_files, ui, reviewer_feedback,
         )
+
+    # Check for Architect + Tuner dependency — Tuner needs Architect's output first
+    has_architect = any("Architect" in t.get("role", "") for t in tasks)
+    has_tuner = any("Tuner" in t.get("role", "") for t in tasks)
+    if has_architect and has_tuner:
+        ui.log_history("Architect + Tuner detected — running sequentially to respect dependencies.", "info")
+        for i, task in enumerate(tasks):
+            ok = await _run_single_worker(
+                task, i, worker_template, next_dir, next_v,
+                context_files, ui, reviewer_feedback,
+            )
+            if not ok:
+                return False
+        return True
 
     # Try parallel execution (capped at MAX_PARALLEL_WORKERS via semaphore)
     ui.log_history(f"Launching {len(tasks)} workers in parallel (max {MAX_PARALLEL_WORKERS} concurrent)...", "info")
