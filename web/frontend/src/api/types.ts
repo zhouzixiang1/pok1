@@ -9,6 +9,7 @@ export interface BotRating {
   last_period: string;
   win_rate?: number;
   games?: number;
+  h2h_avg_wr?: number;
 }
 
 export interface MatchStats {
@@ -45,6 +46,7 @@ export interface HistoryEntry {
   period: number;
   timestamp: string;
   ratings: Record<string, { r: number; rd: number }>;
+  win_rates?: Record<string, { h2h_avg_wr?: number; games: number }>;
 }
 
 export interface GenerationLog {

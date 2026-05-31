@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { api } from "../api/client";
 import type { BotSummary, BotDetail, H2HEntry } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
@@ -222,10 +222,24 @@ const PlayIcon = ({ className }: { className?: string }) => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" className={className}><polygon points="5 3 19 12 5 21 5 3"/></svg>
 );
 
+type BotSortMode = "version" | "win_rate" | "rating";
+
 export default function BotManager() {
   const { active: rawBots, graveyard: rawGraveyard } = useBots();
   const h2hData = useH2H();
-  const bots = [...rawBots].sort((a, b) => b.version - a.version);
+  const [sortMode, setSortMode] = useState<BotSortMode>("win_rate");
+
+  const bots = useMemo(() => {
+    const sorted = [...rawBots];
+    if (sortMode === "win_rate") {
+      sorted.sort((a, b) => (b.win_rate ?? 0) - (a.win_rate ?? 0));
+    } else if (sortMode === "rating") {
+      sorted.sort((a, b) => (b.rating?.conservative ?? 0) - (a.rating?.conservative ?? 0));
+    } else {
+      sorted.sort((a, b) => b.version - a.version);
+    }
+    return sorted;
+  }, [rawBots, sortMode]);
   const graveyard = [...rawGraveyard].sort((a, b) => b.version - a.version);
   const [showGraveyard, setShowGraveyard] = useState(false);
   const [message, setMessage] = useState("");
@@ -289,7 +303,23 @@ export default function BotManager() {
 
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-bold text-gray-800 dark:text-white">Bot 管理</h1>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1 text-sm text-gray-600 dark:text-gray-400">
+            <span>排序:</span>
+            {(["win_rate", "rating", "version"] as BotSortMode[]).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => setSortMode(mode)}
+                className={`px-2 py-0.5 rounded text-xs ${
+                  sortMode === mode
+                    ? "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 font-medium"
+                    : "hover:bg-gray-100 dark:hover:bg-gray-700"
+                }`}
+              >
+                {mode === "win_rate" ? "胜率" : mode === "rating" ? "评分" : "版本"}
+              </button>
+            ))}
+          </div>
           <button onClick={refresh} className="px-3 py-1.5 text-sm rounded bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600">
             刷新
           </button>

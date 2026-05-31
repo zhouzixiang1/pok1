@@ -68,10 +68,26 @@ def _get_ratings() -> list[dict]:
     if not data:
         return []
     bot_stats_data = _cached_read("ds_bot_stats_ratings", BOT_STATS_FILE) or {}
+    h2h_data = _cached_read("ds_h2h_ratings", H2H_FILE) or {}
+
+    def _h2h_avg_wr(name):
+        rates = []
+        for k, v in h2h_data.items():
+            parts = k.split(" vs ")
+            if len(parts) != 2 or name not in parts:
+                continue
+            g = v.get("games", 0)
+            if g <= 0:
+                continue
+            wins = v.get("a_wins", 0) if parts[0] == name else v.get("b_wins", 0)
+            rates.append(wins / g)
+        return sum(rates) / len(rates) if rates else None
+
     rows = []
     for name, d in data.items():
         r, rd = d["r"], d["rd"]
         bs = bot_stats_data.get(name, {})
+        wr = _h2h_avg_wr(name)
         rows.append({
             "name": name,
             "rating": round(r, 1),
@@ -82,8 +98,9 @@ def _get_ratings() -> list[dict]:
             "last_period": d.get("last_period", ""),
             "win_rate": bs.get("win_rate"),
             "games": bs.get("games", 0),
+            "h2h_avg_wr": round(wr, 4) if wr is not None else None,
         })
-    rows.sort(key=lambda x: x["conservative_rating"], reverse=True)
+    rows.sort(key=lambda x: x.get("h2h_avg_wr") or 0.0, reverse=True)
     for i, row in enumerate(rows):
         row["rank"] = i + 1
     return rows

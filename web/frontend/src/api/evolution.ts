@@ -24,6 +24,7 @@ export interface EvolutionState {
     rating: number;
     rd: number;
     conservative: number;
+    h2h_avg_wr?: number;
   }>;
   active_bots: string[];
   grand_cost_total: number;

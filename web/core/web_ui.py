@@ -126,9 +126,11 @@ class WebUI(BaseUI):
         self._emit("clear_io", {})
 
     def update_eval_table(self, ratings, active_bots):
+        from tool_helpers import load_h2h_avg_winrates
+        h2h_winrates = load_h2h_avg_winrates()
         rows = []
         active_list = [(b, ratings.get(b, Glicko2Player())) for b in active_bots]
-        active_list.sort(key=lambda x: x[1].r, reverse=True)
+        active_list.sort(key=lambda x: h2h_winrates.get(x[0], 0.0), reverse=True)
         for i, (bot, p) in enumerate(active_list):
             rows.append({
                 "rank": i + 1,
@@ -136,6 +138,7 @@ class WebUI(BaseUI):
                 "rating": round(p.r, 1),
                 "rd": round(p.rd, 1),
                 "conservative": round(p.r - 2 * p.rd, 1),
+                "h2h_avg_wr": round(h2h_winrates.get(bot, 0.0), 4),
             })
         self._state["ratings"] = rows
         self._state["active_bots"] = list(active_bots)

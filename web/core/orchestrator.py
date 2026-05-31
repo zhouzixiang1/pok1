@@ -149,7 +149,19 @@ def _build_context(one_gen=False, dry_run=False):
             except Exception:
                 pass
         reliable = "RELIABLE" if games >= 100 else f"UNRELIABLE ({games}/100 games — wait for more matches)"
-        lines.append(f"Current bot {bot_name}: r={cur_p.r:.1f}, rd={cur_p.rd:.1f}, wr={wr:.0%} ({games} games) [{reliable}]")
+        # Compute H2H avg win rate for the current bot
+        h2h_wr = None
+        h2h_file = RESULTS_DIR / "head_to_head.json"
+        if h2h_file.exists():
+            try:
+                with open(h2h_file, "r") as f:
+                    h2h_data = json.load(f)
+                from tool_helpers import compute_h2h_avg_winrate
+                h2h_wr = compute_h2h_avg_winrate(bot_name, h2h_data)
+            except Exception:
+                pass
+        h2h_str = f"h2h_avg_wr={h2h_wr:.2%}" if h2h_wr is not None else "h2h_avg_wr=N/A"
+        lines.append(f"Current bot {bot_name}: {h2h_str}, r={cur_p.r:.1f}, rd={cur_p.rd:.1f}, wr={wr:.0%} ({games} games) [{reliable}]")
 
     # Incomplete bot detection — previous cycle may have been interrupted
     next_dir = get_bot_dir(current_v + 1)

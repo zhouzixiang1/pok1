@@ -453,7 +453,7 @@ export default function EvolutionMonitor() {
       addMsg(msg);
     },
     onEvalTable: (rows) => {
-      const mapped: BotRating[] = rows.map((r: { rank: number; name: string; rating: number; rd: number; conservative: number }) => ({
+      const mapped: BotRating[] = rows.map((r: { rank: number; name: string; rating: number; rd: number; conservative: number; h2h_avg_wr?: number }) => ({
         name: r.name,
         rank: r.rank,
         rating: r.rating,
@@ -462,6 +462,7 @@ export default function EvolutionMonitor() {
         conservative_rating: r.conservative,
         confidence: r.rd < 50 ? "very_confident" : r.rd < 100 ? "confident" : r.rd < 200 ? "uncertain" : "very_uncertain",
         last_period: "",
+        h2h_avg_wr: r.h2h_avg_wr,
       }));
       setLeaderboard(mapped);
     },
@@ -638,7 +639,9 @@ export default function EvolutionMonitor() {
                 {leaderboard.slice(0, 8).map((bot) => (
                   <div key={bot.name} className="flex justify-between text-xs">
                     <span className="text-gray-600 dark:text-gray-400">#{bot.rank} {bot.name.replace("claude_", "")}</span>
-                    <span className="font-mono text-gray-800 dark:text-gray-200">{bot.rating}</span>
+                    <span className="font-mono text-gray-800 dark:text-gray-200">
+                      {bot.h2h_avg_wr != null ? `${(bot.h2h_avg_wr * 100).toFixed(1)}%` : bot.rating}
+                    </span>
                   </div>
                 ))}
               </div>

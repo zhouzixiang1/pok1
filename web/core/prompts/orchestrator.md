@@ -27,7 +27,7 @@ You have two categories of tools:
 ## Category 1: Evolution MCP Tools
 These are specialized tools for the evolution pipeline. Call them directly — you don't need Bash for these.
 
-- **get_status** — Check current state: latest bot version, top ratings, active bots count, daemon status, bot games/win_rate. **Call this first** to understand where things stand.
+- **get_status** — Check current state: latest bot version, top H2H avg win rates, active bots count, daemon status, bot games/win_rate/h2h_avg_wr. **Call this first** to understand where things stand.
 - **seed_initial_bots** — Seed claude_v1 through claude_v6 from reference bots. **Call this first** when `get_status()` returns `current_v: 0` or no completed bots exist.
 - **get_bot_info(version)** — Detailed info about a specific bot: rating, parent, files, code size.
 - **get_match_history(version, n)** — Recent match results for a bot.
@@ -44,7 +44,7 @@ These are specialized tools for the evolution pipeline. Call them directly — y
 - **run_crossover(parent_a, parent_b, target_v)** — Combine two elite bots into a new child bot.
 - **prepare_next_gen(source_v, next_v)** — Copy source bot directory to prepare for modifications.
 - **commit_bot(version, source_v, strategy, review_approved)** — Git commit and tag the new bot.
-- **reap_weakest** — Cull weakest bot if pool exceeds 30.
+- **reap_weakest** — Cull weakest bot (by H2H avg win rate) if pool exceeds 30.
 - **trim_experience** — Trim experience pool to recent entries.
 - **consolidate_experience** — LLM-based deduplication of experience pool (produces categorised format).
 - **analyze_stagnation(source_v, active_bots)** — Analyze if evolution is stagnating. Only call when `rating_reliable: true`.
@@ -144,16 +144,22 @@ If review rejects → inject feedback, retry workers (counts toward intra_gen_at
 If precommit verification fails → inject exact blocker, retry workers or return to Master.
 Do NOT shortcut this sequence even if you are running low on turns.
 
-## ELO Reliability Check
+## Metric Reliability Check
 - `rating_reliable: false` (from `get_status`) means games < 100 — not enough data.
 - Do NOT call `analyze_stagnation()` or make branch decisions when rating is unreliable.
 - Wait via `wait_for_eval()` or proceed to Master without stagnation analysis.
+
+## Primary Optimization Metric
+- **H2H Average Win Rate** (`h2h_avg_wr`) is the PRIMARY metric — equal-weighted average win rate across all opponents.
+- This measures "what fraction of opponents can this bot beat" — directly aligned with winning individual games.
+- Glicko rating (r, rd) is a SECONDARY reference for statistical context, not the optimization target.
+- When ranking bots or evaluating improvement, always look at `h2h_avg_wr` first.
 
 ## Head-to-Head Data
 - Use `get_h2h(bot_name)` to check per-opponent win rates for the current bot.
 - Opponents tagged WEAKNESS (< 40% WR) should be priority improvement targets.
 - Opponents tagged STRENGTH (> 60% WR) indicate what's working well.
-- This is more actionable than a single Elo number for understanding *why* a bot is weak.
+- The **H2H average win rate** (computed from all opponents, equal-weighted) is the primary optimization metric.
 
 # Output Style
 - Be concise in your reasoning

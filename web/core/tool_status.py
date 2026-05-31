@@ -34,6 +34,7 @@ from glicko2 import Glicko2Player
 
 from tool_helpers import (
     _get_ui, _ratings_summary, _json_tool_result, _bot_main,
+    load_h2h_avg_winrates, compute_h2h_avg_winrate, _load_h2h_data,
     PROJECT_ROOT,
 )
 
@@ -98,6 +99,7 @@ async def get_status(args):
         "current_bot_rd": current_bot_rd,
         "current_bot_games": games_played,
         "current_bot_win_rate": cur_bs.get("win_rate", 0.0),
+        "current_bot_h2h_avg_wr": compute_h2h_avg_winrate(f"claude_v{current_v}", _load_h2h_data()),
         "rating_reliable": rating_reliable,
         "recent_worker_failures": recent_failures,
     }
@@ -263,15 +265,16 @@ class ReapWeakestInput(TypedDict):
     pass
 
 
-@tool("reap_weakest", "Check if bot pool exceeds 30 and cull the weakest bot by conservative rating.", {})
+@tool("reap_weakest", "Check if bot pool exceeds 30 and cull the weakest bot by H2H average win rate.", {})
 async def reap_weakest(args):
     active_bots = get_active_bots()
     if len(active_bots) <= 30:
         return {"content": [{"type": "text", "text": json.dumps({"reaped": False, "pool_size": len(active_bots)})}]}
 
     ratings = load_ratings()
+    h2h_winrates = load_h2h_avg_winrates()
     active_ratings = [(b, ratings.get(b, Glicko2Player())) for b in active_bots]
-    active_ratings.sort(key=lambda x: x[1].r - 2 * x[1].rd)
+    active_ratings.sort(key=lambda x: h2h_winrates.get(x[0], 0.0))
     weakest = active_ratings[0]
     culled_name = weakest[0]
 
@@ -315,6 +318,7 @@ async def reap_weakest(args):
     return {"content": [{"type": "text", "text": json.dumps({
         "reaped": True,
         "culled": culled_name,
+        "h2h_avg_wr": round(h2h_winrates.get(culled_name, 0.0), 4),
         "rating": {"r": round(weakest[1].r, 1), "rd": round(weakest[1].rd, 1)},
         "remaining": len(active_bots) - 1,
     })}]}

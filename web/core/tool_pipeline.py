@@ -733,7 +733,14 @@ async def commit_bot(args):
 
     ratings = load_ratings()
     p = ratings.get(f"claude_v{v}")
-    rating_info = f"rating: r={p.r:.1f} rd={p.rd:.1f}" if p else ""
+    h2h_wr = None
+    try:
+        from tool_helpers import compute_h2h_avg_winrate, _load_h2h_data
+        h2h_wr = compute_h2h_avg_winrate(f"claude_v{v}", _load_h2h_data())
+    except Exception:
+        pass
+    wr_str = f" h2h_avg_wr={h2h_wr:.2%}" if h2h_wr is not None else ""
+    rating_info = f"rating: r={p.r:.1f} rd={p.rd:.1f}{wr_str}" if p else ""
 
     git_commit_bot(v, source_v, strategy, rating_info=rating_info)
     clear_pipeline_checkpoint()

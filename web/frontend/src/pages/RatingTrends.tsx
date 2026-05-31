@@ -11,9 +11,17 @@ const COLORS = [
   "#FB923C", "#34D399",
 ];
 
+type MetricMode = "glicko" | "h2h_wr";
+
 export default function RatingTrends() {
   const history = useHistory();
   const [showConfidence, setShowConfidence] = useState(false);
+  const [metric, setMetric] = useState<MetricMode>("h2h_wr");
+
+  const hasWrData = useMemo(
+    () => history.some((e) => e.win_rates && Object.keys(e.win_rates).length > 0),
+    [history]
+  );
 
   const { series, categories, names } = useMemo(() => {
     if (!history.length) return { series: [] as ApexAxisChartSeries, categories: [] as string[], names: [] as string[] };
@@ -29,7 +37,8 @@ export default function RatingTrends() {
     const categories = history.map((e) => `周期${e.period}`);
 
     const series: ApexAxisChartSeries = [];
-    if (showConfidence) {
+
+    if (metric === "glicko" && showConfidence) {
       names.forEach((name, i) => {
         series.push({
           name: `${name} 区间`,
@@ -42,17 +51,37 @@ export default function RatingTrends() {
         });
       });
     }
-    names.forEach((name, i) => {
-      series.push({
-        name: name.replace("claude_", "v"),
-        type: "line" as const,
-        data: history.map((e) => e.ratings[name]?.r ?? null),
-        color: COLORS[i % COLORS.length],
+
+    if (metric === "glicko") {
+      names.forEach((name, i) => {
+        series.push({
+          name: name.replace("claude_", "v"),
+          type: "line" as const,
+          data: history.map((e) => e.ratings[name]?.r ?? null),
+          color: COLORS[i % COLORS.length],
+        });
       });
-    });
+    } else {
+      names.forEach((name, i) => {
+        series.push({
+          name: name.replace("claude_", "v"),
+          type: "line" as const,
+          data: history.map((e) => {
+            const wr = e.win_rates?.[name]?.h2h_avg_wr;
+            return wr != null ? wr : null;
+          }),
+          color: COLORS[i % COLORS.length],
+        });
+      });
+    }
 
     return { series, categories, names };
-  }, [history, showConfidence]);
+  }, [history, showConfidence, metric]);
+
+  const yTitle = metric === "glicko" ? "Glicko-2 评分" : "H2H 平均胜率";
+  const yFormatter = metric === "h2h_wr"
+    ? (val: number) => `${(val * 100).toFixed(1)}%`
+    : undefined;
 
   const options: ApexOptions = useMemo(
     () => ({
@@ -64,12 +93,12 @@ export default function RatingTrends() {
         background: "transparent",
       },
       stroke: {
-        width: showConfidence ? [...names.map(() => 0), ...names.map(() => 2)] : 2,
+        width: metric === "glicko" && showConfidence ? [...names.map(() => 0), ...names.map(() => 2)] : 2,
         curve: "smooth",
       },
       fill: {
-        type: showConfidence ? [...names.map(() => "solid"), ...names.map(() => "solid")] : "solid",
-        opacity: showConfidence ? [...names.map(() => 0.15), ...names.map(() => 1)] : 1,
+        type: metric === "glicko" && showConfidence ? [...names.map(() => "solid"), ...names.map(() => "solid")] : "solid",
+        opacity: metric === "glicko" && showConfidence ? [...names.map(() => 0.15), ...names.map(() => 1)] : 1,
       },
       markers: { size: 0, hover: { size: 4 } },
       dataLabels: { enabled: false },
@@ -99,12 +128,13 @@ export default function RatingTrends() {
       yaxis: {
         labels: {
           style: { fontSize: "12px", colors: ["#6B7280"] },
+          formatter: yFormatter as ((val: number) => string) | undefined,
         },
-        title: { text: "Glicko-2 评分", style: { fontSize: "12px" } },
+        title: { text: yTitle, style: { fontSize: "12px" } },
       },
       theme: { mode: "light" },
     }),
-    [categories, showConfidence]
+    [categories, showConfidence, metric, yTitle, yFormatter, names.length]
   );
 
   if (history.length === 0) {
@@ -117,18 +147,42 @@ export default function RatingTrends() {
       <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
           <h3 className="text-lg font-semibold text-gray-800 dark:text-white">评分趋势</h3>
-          <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={showConfidence}
-              onChange={(e) => setShowConfidence(e.target.checked)}
-              className="rounded"
-            />
-            置信带 (r ± 2×rd)
-          </label>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
+              <button
+                onClick={() => setMetric("h2h_wr")}
+                className={`px-2 py-0.5 rounded ${metric === "h2h_wr" ? "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 font-medium" : ""}`}
+              >
+                H2H 胜率
+              </button>
+              <button
+                onClick={() => setMetric("glicko")}
+                className={`px-2 py-0.5 rounded ${metric === "glicko" ? "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 font-medium" : ""}`}
+              >
+                Glicko 评分
+              </button>
+            </div>
+            {metric === "glicko" && (
+              <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showConfidence}
+                  onChange={(e) => setShowConfidence(e.target.checked)}
+                  className="rounded"
+                />
+                置信带 (r ± 2×rd)
+              </label>
+            )}
+          </div>
         </div>
         <div className="p-5">
-          <Chart options={options} series={series} type="line" height={500} />
+          {metric === "h2h_wr" && !hasWrData ? (
+            <div className="text-center py-20 text-gray-500 dark:text-gray-400">
+              暂无 H2H 胜率历史数据，需等待 daemon 写入新数据周期
+            </div>
+          ) : (
+            <Chart options={options} series={series} type="line" height={500} />
+          )}
         </div>
       </div>
     </>

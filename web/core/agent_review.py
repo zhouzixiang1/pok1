@@ -71,9 +71,14 @@ async def _run_performance_verification(source_v, ratings, ui):
             for line in raw_lines[-10:]:
                 try:
                     snap = json.loads(line.strip())
-                    bots_in_snap = snap.get("ratings", {})
-                    top_r = max((v.get("r", 1500) for v in bots_in_snap.values()), default=1500)
-                    gen_trend_lines.append(f"  Period {snap.get('period','?')}: top_r={top_r:.0f}")
+                    wr_data = snap.get("win_rates", {})
+                    wrs = [v["h2h_avg_wr"] for v in wr_data.values() if v.get("h2h_avg_wr") is not None]
+                    if wrs:
+                        gen_trend_lines.append(f"  Period {snap.get('period','?')}: top_h2h_wr={max(wrs):.4f}")
+                    else:
+                        bots_in_snap = snap.get("ratings", {})
+                        top_r = max((v.get("r", 1500) for v in bots_in_snap.values()), default=1500)
+                        gen_trend_lines.append(f"  Period {snap.get('period','?')}: top_r={top_r:.0f}")
                 except (json.JSONDecodeError, KeyError):
                     continue
         except Exception:
@@ -106,11 +111,13 @@ async def _run_performance_verification(source_v, ratings, ui):
 
     # ── Top-5 active bots for context ──
     active_bots = get_active_bots()
+    from tool_helpers import load_h2h_avg_winrates
+    h2h_winrates = load_h2h_avg_winrates()
     sorted_bots = sorted(
         [(b, ratings.get(b, Glicko2Player())) for b in active_bots],
-        key=lambda x: x[1].r, reverse=True
+        key=lambda x: h2h_winrates.get(x[0], 0.0), reverse=True
     )[:5]
-    ratings_lines = [f"  {b}: r={p.r:.0f} rd={p.rd:.0f}" for b, p in sorted_bots]
+    ratings_lines = [f"  {b}: h2h_avg_wr={h2h_winrates.get(b, 0.0):.2%} (r={p.r:.0f} rd={p.rd:.0f})" for b, p in sorted_bots]
 
     # ── Head-to-Head data ──
     h2h_lines = []
@@ -165,13 +172,13 @@ async def _run_performance_verification(source_v, ratings, ui):
         "You are a Performance Verification Analyst for a self-evolving poker bot system.\n"
         "Your job: synthesise the quantitative data below into actionable LLM-readable insight.\n\n"
         f"Current bot under analysis: {bot_name}\n\n"
-        "## Rating History (last 10 periods, top rating)\n"
+        "## Performance History (last 10 periods)\n"
         + ("\n".join(gen_trend_lines) if gen_trend_lines else "  No history available") + "\n\n"
         "## Overall Win Rate\n"
         + (bot_stats_line if bot_stats_line else "  No stats available") + "\n\n"
         "## Head-to-Head Results (per-opponent)\n"
         + ("\n".join(l for _, l in h2h_lines) if h2h_lines else "  No H2H data available") + "\n\n"
-        "## Top Active Bots\n"
+        "## Top Active Bots (by H2H avg win rate)\n"
         + "\n".join(ratings_lines) + "\n\n"
         "Produce a JSON block answering:\n"
         "```json\n"

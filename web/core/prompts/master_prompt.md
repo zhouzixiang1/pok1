@@ -10,10 +10,10 @@ You have Read and Bash tools available. When you need to read files or run comma
 
 # Essential Data Files
 Read these files FIRST using the Read tool to understand the current state:
-- `web/core/results/glicko_ratings.json` — All bot Elo ratings (r, rd) for overall ranking
-- `web/core/results/head_to_head.json` — **Head-to-Head matrix**: per-opponent W/L data. Shows who beats whom.
-- `web/core/results/bot_stats.json` — Per-bot stats: wins, losses, games, win_rate
-- `web/core/results/rating_history.jsonl` — Rating snapshots over time (trend analysis)
+- `web/core/results/head_to_head.json` — **PRIMARY DATA**: Head-to-Head matrix. Use this to compute H2H average win rate per bot (equal-weighted across all opponents). This is the **primary optimization metric**.
+- `web/core/results/glicko_ratings.json` — Glicko-2 ratings (r, rd) as secondary reference for statistical context
+- `web/core/results/bot_stats.json` — Per-bot stats: wins, losses, games, win_rate (games-weighted, biased by opponent frequency — use H2H average for equal weighting)
+- `web/core/results/rating_history.jsonl` — Performance snapshots over time (includes both ratings and win_rates for recent periods)
 - `web/core/experience_pool.md` — Accumulated strategic lessons from past generations (**THIS is the active pool, not evolution_workspace/experience_pool.md**)
 - `bots/claude_v<source_v>/` — Current source bot code (actual version number given in the context appended below)
 - `web/core/reference_bots/bot1/` … `web/core/reference_bots/bot6/` — 6 strong reference bots. Read whichever is relevant.
@@ -29,7 +29,7 @@ Use Bash tool with `git log` and `git diff` to understand evolution history.
 
 # Task
 Your goal is to:
-1. Read the ratings data and analyze the current bot's performance. Understand the rating trend.
+1. Read the H2H data and analyze the current bot's per-opponent performance. Compute and track H2H average win rate — this is the **primary metric**.
 2. Read the performance verification report (provided below) for objective trend analysis.
 3. Read the experience pool to learn from past iterations.
 4. Read the current bot's source code and reference bots' code to identify weaknesses.
@@ -154,6 +154,6 @@ Run these with the Bash tool:
 3. Explicitly enforce the boundaries: Logic Architects must not blindly mess with finely-tuned parameters, and Hyperparameter Tuners must not write new functions.
 4. **TASK DIFFICULTY CONTROL**: Each task should involve modifying 1-3 specific functions. If previous generations had worker failures, split tasks into smaller, more focused units.
 5. **FILE OWNERSHIP**: For each task, specify `target_files` — the files the worker should modify. Workers must NOT modify files outside their assigned `target_files`.
-6. **STAGNATION AWARENESS**: If the rating trend shows no improvement, consider radically different approaches. Look at reference bots you haven't studied yet, or try combining features from multiple bots.
+6. **STAGNATION AWARENESS**: If the H2H average win rate trend shows no improvement, consider radically different approaches. Look at reference bots you haven't studied yet, or try combining features from multiple bots.
 7. **MATCH ANALYSIS**: If match analysis data is provided, prioritize fixing the identified weaknesses. Don't ignore concrete loss patterns.
 8. **ATTRIBUTION**: Do not mix unrelated preflop, postflop, and sizing rewrites in one generation. The next evaluation must be able to attribute win/loss movement to this plan.

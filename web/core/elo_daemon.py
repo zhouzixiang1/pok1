@@ -117,10 +117,37 @@ def save_ratings(ratings, save_num=None):
 
     if save_num is not None:
         history_file = RESULTS_DIR / "rating_history.jsonl"
+        # Compute H2H avg win rates for history snapshot
+        h2h = load_h2h()
+        bot_stats = load_bot_stats()
+        win_rates = {}
+        for name in ratings:
+            rates = []
+            for k, v in h2h.items():
+                parts = k.split(" vs ")
+                if len(parts) != 2 or name not in parts:
+                    continue
+                g = v.get("games", 0)
+                if g <= 0:
+                    continue
+                wins = v.get("a_wins", 0) if parts[0] == name else v.get("b_wins", 0)
+                rates.append(wins / g)
+            wr = sum(rates) / len(rates) if rates else None
+            bs = bot_stats.get(name, {})
+            games = bs.get("games", 0)
+            if wr is not None:
+                win_rates[name] = {"h2h_avg_wr": round(wr, 4), "games": games}
+            else:
+                wr_fb = bs.get("win_rate", None)
+                if wr_fb is not None:
+                    win_rates[name] = {"h2h_avg_wr": round(wr_fb, 4), "games": games}
+                elif games > 0:
+                    win_rates[name] = {"games": games}
         snapshot = {
             "period": save_num,
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "ratings": {name: {"r": p.r, "rd": p.rd} for name, p in ratings.items()},
+            "win_rates": win_rates,
         }
         with locked_file(history_file, "a+") as f:
             f.write(json.dumps(snapshot) + "\n")
@@ -368,14 +395,18 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots, verbose=Fa
     cleanup_old_replays()
 
     if verbose:
-        sorted_bots = sorted(active_bots, key=lambda b: ratings[b].r, reverse=True)
+        # Compute H2H avg win rates for leaderboard
+        from tool_helpers import compute_h2h_avg_winrate
+        bot_wr_map = {b: compute_h2h_avg_winrate(b, h2h_out) or 0.0 for b in active_bots}
+        sorted_bots = sorted(active_bots, key=lambda b: bot_wr_map.get(b, 0.0), reverse=True)
         print(f"\n[DAEMON] Leaderboard (save #{save_num}):")
         for i, b in enumerate(sorted_bots):
             p = ratings[b]
             bs = bot_stats.get(b, {})
             wr = bs.get("win_rate", 0.0)
             g = bs.get("games", 0)
-            print(f"  {i+1}. {b}: r={p.r:.1f} rd={p.rd:.1f} wr={wr:.2%} ({g} games)")
+            hwr = bot_wr_map.get(b, 0.0)
+            print(f"  {i+1}. {b}: h2h_avg_wr={hwr:.2%} r={p.r:.1f} rd={p.rd:.1f} wr={wr:.2%} ({g} games)")
         print()
 
 

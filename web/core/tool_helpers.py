@@ -89,13 +89,19 @@ class ToolUI(BaseUI):
 # ──────────────────────────────────────────────
 
 def _ratings_summary(ratings, n=10):
-    """Get top N bots as a compact summary."""
+    """Get top N bots as a compact summary, sorted by H2H avg win rate."""
+    h2h_winrates = load_h2h_avg_winrates()
     sorted_bots = sorted(
         [(name, p) for name, p in ratings.items()],
-        key=lambda x: x[1].r, reverse=True,
+        key=lambda x: h2h_winrates.get(x[0], 0.0), reverse=True,
     )[:n]
     return [
-        {"name": name, "r": round(p.r, 1), "rd": round(p.rd, 1)}
+        {
+            "name": name,
+            "r": round(p.r, 1),
+            "rd": round(p.rd, 1),
+            "h2h_avg_wr": round(h2h_winrates.get(name, 0.0), 4),
+        }
         for name, p in sorted_bots
     ]
 
@@ -216,6 +222,56 @@ def _h2h_stats(bot_name, opponent, h2h):
     return None
 
 
+def compute_h2h_avg_winrate(bot_name, h2h_data):
+    """Equal-weighted average win rate across all H2H opponents."""
+    opponent_rates = []
+    for key, value in h2h_data.items():
+        parts = key.split(" vs ")
+        if len(parts) != 2 or bot_name not in parts:
+            continue
+        games = value.get("games", 0)
+        if games <= 0:
+            continue
+        bot_wins = value.get("a_wins", 0) if parts[0] == bot_name else value.get("b_wins", 0)
+        opponent_rates.append(bot_wins / games)
+    if not opponent_rates:
+        return None
+    return sum(opponent_rates) / len(opponent_rates)
+
+
+def load_h2h_avg_winrates():
+    """Load H2H avg win rates for all bots. Falls back to bot_stats then Glicko r."""
+    from evolution_core import BOT_STATS_FILE
+    h2h_data = _load_h2h_data()
+    bot_stats_data = _read_json(PROJECT_ROOT / "web" / "core" / "results" / "bot_stats.json", {})
+    ratings = load_ratings()
+
+    all_bots = set()
+    for key in h2h_data:
+        parts = key.split(" vs ")
+        if len(parts) == 2:
+            all_bots.update(parts)
+    all_bots.update(bot_stats_data.keys())
+    all_bots.update(ratings.keys())
+
+    result = {}
+    for bot_name in all_bots:
+        wr = compute_h2h_avg_winrate(bot_name, h2h_data)
+        if wr is not None:
+            result[bot_name] = wr
+        else:
+            bs = bot_stats_data.get(bot_name, {})
+            if bs.get("games", 0) > 0:
+                result[bot_name] = bs.get("win_rate", 0.5)
+            else:
+                p = ratings.get(bot_name)
+                if p:
+                    result[bot_name] = max(0.0, min(1.0, 0.5 + (p.r - 1500) / 1000.0))
+                else:
+                    result[bot_name] = 0.5
+    return result
+
+
 def _select_precommit_opponents(version, source_v, max_top=3, max_weak=2):
     candidate = f"claude_v{version}"
     parent = f"claude_v{source_v}"
@@ -234,13 +290,14 @@ def _select_precommit_opponents(version, source_v, max_top=3, max_weak=2):
 
     add(parent, "parent")
 
+    h2h_winrates = load_h2h_avg_winrates()
     top = sorted(
         active,
-        key=lambda name: ratings.get(name, Glicko2Player()).r,
+        key=lambda name: h2h_winrates.get(name, 0.0),
         reverse=True,
     )
     for name in top[:max_top]:
-        add(name, "top_rating")
+        add(name, "top_h2h_wr")
 
     source_name = parent
     weak = []

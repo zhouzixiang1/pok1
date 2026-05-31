@@ -152,25 +152,33 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui):
         for line in lines[-10:]:
             try:
                 snap = json.loads(line.strip())
-                top = max(p["r"] for p in snap["ratings"].values())
-                history_ctx += f"  Period {snap['period']}: top_r={top:.0f}\n"
+                wr_data = snap.get("win_rates", {})
+                wrs = [v["h2h_avg_wr"] for v in wr_data.values() if v.get("h2h_avg_wr") is not None]
+                if wrs:
+                    history_ctx += f"  Period {snap['period']}: top_h2h_wr={max(wrs):.4f}\n"
+                else:
+                    top = max(p["r"] for p in snap["ratings"].values())
+                    history_ctx += f"  Period {snap['period']}: top_r={top:.0f}\n"
             except (json.JSONDecodeError, KeyError):
                 continue
 
-    sorted_bots = sorted(active_bots, key=lambda b: ratings.get(b, Glicko2Player()).r, reverse=True)[:5]
+    from tool_helpers import load_h2h_avg_winrates
+    h2h_winrates = load_h2h_avg_winrates()
+    sorted_bots = sorted(active_bots, key=lambda b: h2h_winrates.get(b, 0.0), reverse=True)[:5]
 
     prompt = (
         "You are a rating trend analyst for a poker bot evolution system.\n"
-        "Analyze whether the evolution is truly stagnating or if rating changes are just Glicko variance.\n\n"
+        "Analyze whether the evolution is truly stagnating.\n\n"
         f"Current bot: claude_v{source_v}\n"
-        f"Top 5 bots by rating:\n"
+        f"Top 5 bots by H2H avg win rate:\n"
     )
     for b in sorted_bots:
         p = ratings.get(b, Glicko2Player())
-        prompt += f"  {b}: r={p.r:.0f} rd={p.rd:.0f}\n"
-    prompt += f"\nRating history (last 10 periods):\n{history_ctx}\n"
+        wr = h2h_winrates.get(b, 0.0)
+        prompt += f"  {b}: h2h_avg_wr={wr:.2%} (r={p.r:.0f} rd={p.rd:.0f})\n"
+    prompt += f"\nPerformance history (last 10 periods):\n{history_ctx}\n"
     prompt += (
-        "Is this real stagnation or Glicko variance? Answer in JSON only:\n"
+        "Is this real stagnation? Answer in JSON only:\n"
         '```json\n'
         '{"is_stagnant": true/false, "confidence": "high/medium/low", '
         '"recommendation": "continue|branch|crossover", '

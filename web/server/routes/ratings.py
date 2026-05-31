@@ -60,12 +60,30 @@ def _confidence(rd: float) -> str:
 async def get_ratings():
     data = _cached_read("ratings", RATINGS_FILE)
     bot_stats_data = _cached_read("bot_stats", BOT_STATS_FILE) or {}
+    h2h_data = _cached_read("h2h", H2H_FILE) or {}
     if not data:
         return []
+
+    def _h2h_avg_wr(name):
+        rates = []
+        for k, v in h2h_data.items():
+            parts = k.split(" vs ")
+            if len(parts) != 2 or name not in parts:
+                continue
+            g = v.get("games", 0)
+            if g <= 0:
+                continue
+            wins = v.get("a_wins", 0) if parts[0] == name else v.get("b_wins", 0)
+            rates.append(wins / g)
+        if rates:
+            return sum(rates) / len(rates)
+        return None
+
     rows = []
     for name, d in data.items():
         r, rd = d["r"], d["rd"]
         bs = bot_stats_data.get(name, {})
+        wr = _h2h_avg_wr(name)
         rows.append({
             "name": name,
             "rating": round(r, 1),
@@ -76,8 +94,9 @@ async def get_ratings():
             "last_period": d.get("last_period", ""),
             "win_rate": bs.get("win_rate"),
             "games": bs.get("games", 0),
+            "h2h_avg_wr": round(wr, 4) if wr is not None else None,
         })
-    rows.sort(key=lambda x: x["conservative_rating"], reverse=True)
+    rows.sort(key=lambda x: x.get("h2h_avg_wr") or 0.0, reverse=True)
     for i, row in enumerate(rows):
         row["rank"] = i + 1
     return rows
@@ -87,11 +106,27 @@ async def get_ratings():
 async def get_rating_detail(bot_name: str):
     data = _cached_read("ratings", RATINGS_FILE)
     bot_stats_data = _cached_read("bot_stats", BOT_STATS_FILE) or {}
+    h2h_data = _cached_read("h2h", H2H_FILE) or {}
     if not data or bot_name not in data:
         return {"error": "Bot not found"}
     d = data[bot_name]
     r, rd = d["r"], d["rd"]
     bs = bot_stats_data.get(bot_name, {})
+
+    def _h2h_avg_wr(name):
+        rates = []
+        for k, v in h2h_data.items():
+            parts = k.split(" vs ")
+            if len(parts) != 2 or name not in parts:
+                continue
+            g = v.get("games", 0)
+            if g <= 0:
+                continue
+            wins = v.get("a_wins", 0) if parts[0] == name else v.get("b_wins", 0)
+            rates.append(wins / g)
+        return sum(rates) / len(rates) if rates else None
+
+    wr = _h2h_avg_wr(bot_name)
     return {
         "name": bot_name,
         "rating": round(r, 1),
@@ -102,6 +137,7 @@ async def get_rating_detail(bot_name: str):
         "last_period": d.get("last_period", ""),
         "win_rate": bs.get("win_rate"),
         "games": bs.get("games", 0),
+        "h2h_avg_wr": round(wr, 4) if wr is not None else None,
     }
 
 
@@ -144,12 +180,15 @@ async def history(
     result = []
     for entry in entries:
         ratings = entry.get("ratings", {})
+        win_rates = entry.get("win_rates", {})
         if bot_filter:
             ratings = {k: v for k, v in ratings.items() if k in bot_filter}
+            win_rates = {k: v for k, v in win_rates.items() if k in bot_filter}
         result.append({
             "period": entry.get("period", 0),
             "timestamp": entry.get("timestamp", ""),
             "ratings": ratings,
+            "win_rates": win_rates,
         })
     return result
 
@@ -164,14 +203,24 @@ async def history_summary():
         all_bots.update(e.get("ratings", {}).keys())
     summary = {}
     for bot in sorted(all_bots):
+        s = {}
         ratings = [e["ratings"][bot]["r"] for e in entries if bot in e.get("ratings", {})]
         if ratings:
-            summary[bot] = {
-                "peak_rating": round(max(ratings), 1),
-                "current_rating": round(ratings[-1], 1),
-                "trend": round(ratings[-1] - ratings[0], 1) if len(ratings) > 1 else 0,
-                "periods": len(ratings),
-            }
+            s["peak_rating"] = round(max(ratings), 1)
+            s["current_rating"] = round(ratings[-1], 1)
+            s["trend"] = round(ratings[-1] - ratings[0], 1) if len(ratings) > 1 else 0
+            s["periods"] = len(ratings)
+        wr_list = [
+            e["win_rates"][bot]["h2h_avg_wr"]
+            for e in entries
+            if bot in e.get("win_rates", {}) and e["win_rates"][bot].get("h2h_avg_wr") is not None
+        ]
+        if wr_list:
+            s["peak_h2h_avg_wr"] = round(max(wr_list), 4)
+            s["current_h2h_avg_wr"] = round(wr_list[-1], 4)
+            s["wr_trend"] = round(wr_list[-1] - wr_list[0], 4) if len(wr_list) > 1 else 0
+        if s:
+            summary[bot] = s
     return summary
 
 
