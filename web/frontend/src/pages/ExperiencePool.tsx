@@ -2,6 +2,8 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { api } from "../api/client";
 import { controlApi } from "../api/control";
 import PageMeta from "../components/common/PageMeta";
+import { Skeleton } from "../components/shared/Skeleton";
+import { Badge } from "../components/shared/Badge";
 
 // ── Inline SVG helpers ─────────────────────────────────────────────────────────
 const ScissorsIcon = ({ className }: { className?: string }) => (
@@ -93,7 +95,7 @@ export default function ExperiencePool() {
   const entryCount = content.split("\n").filter((l) => l.trim().startsWith("-") || l.trim().startsWith("##")).length;
   const charCount = content.length;
 
-  if (loading) return <div className="p-6 text-gray-500">加载中...</div>;
+  if (loading) return <div className="p-6 space-y-4"><Skeleton className="h-8 w-48" /><Skeleton.Card count={1} /></div>;
 
   return (
     <>
@@ -117,9 +119,11 @@ export default function ExperiencePool() {
       </div>
 
       {message && (
-        <div className={`mb-4 px-4 py-2 rounded-lg text-sm ${message.type === "success" ? "bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-300" : "bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-300"}`}>
-          {message.text}
-          <button onClick={() => setMessage(null)} className="ml-2 text-xs underline">关闭</button>
+        <div className="mb-4">
+          <Badge variant={message.type === "success" ? "success" : "error"} size="md">
+            {message.text}
+            <button onClick={() => setMessage(null)} className="ml-2 text-xs underline opacity-70">关闭</button>
+          </Badge>
         </div>
       )}
 

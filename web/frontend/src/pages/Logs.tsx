@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import type { OrchestratorLogFile } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
 import { useGenerations } from "../context/DataProvider";
+import { Skeleton } from "../components/shared/Skeleton";
 
 type Tab = "generation" | "orchestrator" | "conversation";
 
@@ -340,7 +341,7 @@ export default function Logs() {
             <h3 className="text-lg font-semibold text-gray-800 dark:text-white">迭代日志</h3>
           </div>
           {generations.length === 0 ? (
-            <div className="p-6 text-gray-500">加载中...</div>
+            <div className="p-6"><Skeleton.Card count={2} /></div>
           ) : (
             <div className="flex">
               <div className="w-48 border-r border-gray-100 dark:border-gray-800 overflow-y-auto max-h-[600px]">
@@ -405,7 +406,7 @@ export default function Logs() {
           </div>
           <div className="p-4">
             {orchLoading ? (
-              <div className="text-gray-400 text-sm">加载中...</div>
+              <div className="space-y-2"><Skeleton.Line /><Skeleton.Line className="w-2/3" /><Skeleton.Line className="w-1/2" /></div>
             ) : (
               <pre className="text-xs text-gray-700 dark:text-gray-300 overflow-auto max-h-[600px] whitespace-pre-wrap font-mono leading-relaxed bg-gray-50 dark:bg-gray-900 rounded-lg p-4">
                 {orchContent || "无日志内容"}

@@ -3,6 +3,8 @@ import Chart from "react-apexcharts";
 import type { ApexOptions } from "apexcharts";
 import { useHistory } from "../context/DataProvider";
 import PageMeta from "../components/common/PageMeta";
+import { SegmentedControl } from "../components/shared/SegmentedControl";
+import { Skeleton } from "../components/shared/Skeleton";
 
 const COLORS = [
   "#465FFF", "#9CB9FF", "#F59E0B", "#10B981", "#EF4444",
@@ -139,7 +141,7 @@ export default function RatingTrends() {
   );
 
   if (history.length === 0) {
-    return <div className="p-6 text-gray-500 dark:text-gray-400">加载中...</div>;
+    return <div className="p-6 space-y-4"><Skeleton className="h-8 w-48" /><Skeleton className="h-[500px] rounded-2xl" /></div>;
   }
 
   return (
@@ -149,20 +151,11 @@ export default function RatingTrends() {
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
           <h3 className="text-lg font-semibold text-gray-800 dark:text-white">评分趋势</h3>
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
-              <button
-                onClick={() => setMetric("h2h_wr")}
-                className={`px-2 py-0.5 rounded ${metric === "h2h_wr" ? "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 font-medium" : ""}`}
-              >
-                H2H 胜率
-              </button>
-              <button
-                onClick={() => setMetric("glicko")}
-                className={`px-2 py-0.5 rounded ${metric === "glicko" ? "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 font-medium" : ""}`}
-              >
-                Glicko 评分
-              </button>
-            </div>
+            <SegmentedControl
+              value={metric}
+              onChange={(v) => setMetric(v as MetricMode)}
+              options={[{ value: "h2h_wr", label: "H2H 胜率" }, { value: "glicko", label: "Glicko 评分" }]}
+            />
             {metric === "glicko" && (
               <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 cursor-pointer">
                 <input

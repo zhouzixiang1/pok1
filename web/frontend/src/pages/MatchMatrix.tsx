@@ -3,6 +3,8 @@ import Chart from "react-apexcharts";
 import type { ApexOptions } from "apexcharts";
 import { useMatchMatrix, useH2H } from "../context/DataProvider";
 import PageMeta from "../components/common/PageMeta";
+import { SegmentedControl } from "../components/shared/SegmentedControl";
+import { Skeleton } from "../components/shared/Skeleton";
 
 type ViewMode = "winrate" | "count";
 
@@ -156,7 +158,7 @@ export default function MatchMatrix() {
   }, [data, h2hRaw, viewMode]);
 
   if (!data || !data.bots.length) {
-    return <div className="p-6 text-gray-500 dark:text-gray-400">加载中...</div>;
+    return <div className="p-6 space-y-4"><Skeleton className="h-8 w-64" /><Skeleton className="h-[400px] rounded-2xl" /></div>;
   }
 
   return (
@@ -173,20 +175,11 @@ export default function MatchMatrix() {
                   : "每格表示行 Bot 与列 Bot 之间的对局总数"}
               </p>
             </div>
-            <div className="flex gap-1">
-              <button
-                onClick={() => setViewMode("winrate")}
-                className={`px-3 py-1 text-xs rounded-l border ${viewMode === "winrate" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-300 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-600"}`}
-              >
-                胜率
-              </button>
-              <button
-                onClick={() => setViewMode("count")}
-                className={`px-3 py-1 text-xs rounded-r border ${viewMode === "count" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-300 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-600"}`}
-              >
-                对局数
-              </button>
-            </div>
+            <SegmentedControl
+              value={viewMode}
+              onChange={(v) => setViewMode(v as ViewMode)}
+              options={[{ value: "winrate", label: "胜率" }, { value: "count", label: "对局数" }]}
+            />
           </div>
         </div>
         <div className="p-5">

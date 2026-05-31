@@ -255,6 +255,58 @@ layer(base);
 @utility menu-dropdown-badge-inactive {
   @apply bg-brand-50 group-hover:bg-brand-100 dark:bg-brand-500/15 dark:group-hover:bg-brand-500/20;
 }
+/* ── Animation Keyframes ────────────────────────────────── */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(0.8); opacity: 1; }
+  100% { transform: scale(2); opacity: 0; }
+}
+
+@utility animate-shimmer {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 2s ease-in-out infinite;
+}
+
+@utility animate-cursor-blink {
+  animation: cursor-blink 1s step-end infinite;
+}
+
+@utility animate-fade-in-up {
+  animation: fade-in-up 0.3s ease-out forwards;
+}
+
+@utility animate-pulse-ring {
+  animation: pulse-ring 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* ── Card Utilities ────────────────────────────────────── */
+@utility card {
+  @apply rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.04];
+}
+
+@utility card-glass {
+  @apply rounded-2xl border border-white/[0.08] bg-white/[0.04] backdrop-blur-xl dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)];
+}
+
+@utility card-header {
+  @apply px-5 py-4 border-b border-gray-100 dark:border-gray-800;
+}
+
 @utility no-scrollbar {
   /* Chrome, Safari and Opera */
   &::-webkit-scrollbar {

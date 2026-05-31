@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { api } from "../api/client";
 import type { PromptInfo } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
+import { Skeleton } from "../components/shared/Skeleton";
 
 // ── Inline SVG helpers ─────────────────────────────────────────────────────────
 const WarnIcon = ({ className }: { className?: string }) => (
@@ -203,7 +204,12 @@ export default function PromptEditor() {
           {/* Editor */}
           <div className="flex-1 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-950 overflow-hidden">
             {loading ? (
-              <div className="p-4 text-gray-500 text-sm">加载中...</div>
+              <div className="p-4 space-y-3">
+                <Skeleton className="h-4 w-1/3" />
+                <Skeleton className="h-4 w-2/3" />
+                <Skeleton className="h-4 w-1/2" />
+                <Skeleton className="h-4 w-3/4" />
+              </div>
             ) : (
               <textarea
                 value={editContent}

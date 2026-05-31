@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import type { BotSummary, BotDetail, H2HEntry } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
 import { controlApi } from "../api/control";
+import { Skeleton } from "../components/shared/Skeleton";
 import { useBots, useH2H } from "../context/DataProvider";
 
 // ── Inline SVG helpers ─────────────────────────────────────────────────────────
@@ -147,7 +148,7 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
                   ))}
                 </div>
                 {loading
-                  ? <div className="text-xs text-gray-400 p-3">加载中...</div>
+                  ? <div className="p-3 space-y-2"><Skeleton.Line /><Skeleton.Line className="w-1/2" /></div>
                   : (
                     <pre className="text-[11px] font-mono bg-gray-950 text-gray-200 rounded p-3 overflow-auto max-h-80 leading-relaxed whitespace-pre">
                       {code || "无内容"}
@@ -304,7 +305,7 @@ export default function BotManager() {
     }
   };
 
-  if (bots.length === 0 && graveyard.length === 0) return <div className="p-6 text-gray-500">加载中...</div>;
+  if (bots.length === 0 && graveyard.length === 0) return <div className="p-6"><Skeleton.Card count={3} /></div>;
 
   return (
     <>
