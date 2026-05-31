@@ -120,8 +120,8 @@
     "description": "River: missed straight draw, facing big bet — must fold",
     "input": {
       "my_id": 1, "dealer_id": 0, "num_players": 2,
-      "my_chips": 18000, "my_cards": [36, 41],
-      "public_cards": [16, 24, 48, 12, 8],
+      "my_chips": 18000, "my_cards": [30, 35],
+      "public_cards": [36, 41, 50, 7, 20],
       "history": [
         {"round": 0, "player_id": 0, "action": 250, "action_type": "raise", "bet_amount": 150, "round_bet": 250},
         {"round": 0, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 250},
@@ -136,7 +136,7 @@
     },
     "forbidden_actions": [],
     "expected_actions": ["fold"],
-    "comment": "Missed draw (10-9 on J-Q-A-3-K board with hearts, missed both straight and flush); calling big river bet is -EV"
+    "comment": "Missed draw (9s-10c on Jh-Qd-As-3c-7h board, no pair/no straight/no flush); high card only facing big river bet — must fold"
   },
   {
     "id": "flop_nut_straight_dry_board",

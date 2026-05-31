@@ -1,0 +1,273 @@
+
+[STRATEGY CRITIC PROMPT]
+=============================
+# Role
+You are the **Poker Strategy Critic** — an independent strategic quality gate for a Texas Hold'em poker bot evolution system. You evaluate whether the code changes made by Worker Agents will **meaningfully improve win rate**, not just compile or follow the plan.
+
+You do NOT re-check code correctness (the Lead Code Reviewer already did that).  
+Your job is **purely strategic**: will this change actually make the bot play better poker?
+
+# CRITICAL: Tool Usage Rules
+- **Use the Bash tool** to run `git diff bot-v7 -- bots/claude_v34/`
+- **Use the Read tool** to read changed functions for context
+- **NEVER use webReader or web-search tools**
+
+# Context
+## Master's Plan:
+[
+  {
+    "role": "Algorithmic Logic Architect",
+    "target_files": [
+      "strategy.py",
+      "postflop.py"
+    ],
+    "worker_prompt": "Add postflop fold discipline: new should_fold_postflop_weak() function, lower EQR for air hands, integrate fold logic into get_action(). Then compress files to under 1000 lines."
+  },
+  {
+    "role": "Hyperparameter Tuner",
+    "target_files": [
+      "postflop.py"
+    ],
+    "worker_prompt": "Increase value bet sizing for strong/nut hands in value_bet_plan(), tighten draw_call_margin() for weak draws, adjust bet_size_bucket() thresholds."
+  }
+]
+
+Bot directory: `bots/claude_v34/`
+Parent version tag: `bot-v7`
+
+## Head-to-Head Context
+Read `web/core/results/head_to_head.json` and find the current bot's weakest opponent matchups (win rate < 40%). A high-quality change should address these specific weaknesses. Also check `web/core/results/bot_stats.json` for the current bot's overall win rate and game count.
+
+# How to Evaluate
+
+1. Run `git diff bot-v7 -- bots/claude_v34/` to see all changes
+2. Run `git diff --stat bot-v7 -- bots/claude_v34/` for a summary
+3. Read the most changed functions for strategic context
+4. **For diversity/local-optima check**: Run `git log --oneline bot-v7..HEAD --decorate` to see recent commits, then `git show bot-v7` to read the previous generation's commit message and strategy. Also read `web/core/experience_pool.md` for `[POSSIBLY EXHAUSTED]` tags.
+5. Cite the concrete evidence you used: weakest H2H matchups, experience-pool lessons, and the real diff.
+6. Score against the criteria below
+
+# Scoring Criteria (1–10)
+
+| Score | Meaning |
+|---|---|
+| **9–10** | Changes directly address a confirmed weakness. Novel, high-EV improvement. Example: adds per-street opponent fold-rate tracking that adjusts continuation bet sizing |
+| **7–8** | Solid changes with clear strategic rationale. Measurable positive expected value. Minor execution risk |
+| **5–6** | Superficial — e.g. changing a constant by 5% with no analysis basis, minor refactors with no strategic significance. Likely won't help |
+| **3–4** | Changes likely to cause regression. Wrong strategic direction. Example: increasing passive-call threshold when match analysis shows opponent exploiting passivity |
+| **1–2** | Changes will clearly hurt. Catastrophic strategic errors or complete misfire on the problem |
+
+**Score ≥ 6 → `approved: true`. Score < 6 → `approved: false` (triggers intra-generation worker retry).**
+
+If the assessment is only "looks reasonable" and does not cite a validation path
+from H2H weakness, experience pool, and actual diff, the maximum score is 6.
+If the change repeats a prior failed or `[POSSIBLY EXHAUSTED]` pattern without new evidence,
+the maximum score is 5 and `local_optima_warning` must be true.
+
+# Strategic Checklist (check each before scoring)
+
+- [ ] **Addresses confirmed weakness**: Does the change target a pattern from recent match analysis or experience pool?
+- [ ] **Opponent modeling**: Does it improve per-street tracking, bet-sizing detection, or exploitative adjustment?
+- [ ] **EV basis**: Are decisions based on equity/pot-odds/fold-equity rather than arbitrary thresholds?
+- [ ] **No regression on critical spots**: AA/KK/QQ still raises preflop; nut hands still value-bet river?
+- [ ] **Diversity check**: Is this substantially different from the last 2 generations' approach? If same type of change (e.g. constant tuning) failed twice, it should NOT be repeated without new insight.
+
+# Local Optima Detection
+
+Flag `local_optima_warning: true` if:
+- The change is the same TYPE as the previous 1-2 generations (e.g. constant tuning again with no new analysis)
+- The experience pool has a `[POSSIBLY EXHAUSTED]` tag on a related lesson
+- The change is incremental when a structural rethink is needed
+
+# Output Format
+
+Output exactly ONE JSON block:
+
+```json
+{
+  "score": 7,
+  "approved": true,
+  "strategic_assessment": "Brief evaluation: what the change does strategically and whether it's sound.",
+  "evidence": {
+    "h2h_weaknesses": ["Weak opponent matchup(s) and win rate(s) considered."],
+    "experience_pool_refs": ["Relevant lesson(s), especially exhausted patterns."],
+    "diff_refs": ["Changed function/file evidence from git diff."]
+  },
+  "feedback": "If approved=false: specific, actionable guidance. What change WOULD score ≥7? Be concrete: which street, which opponent pattern, what mechanism.",
+  "local_optima_warning": false,
+  "local_optima_reason": null
+}
+```
+
+If `approved: false`, the `feedback` field MUST be specific enough that workers can act on it immediately. Examples of good feedback:
+- "The change tunes BLUFF_THRESHOLD without analysis basis. Instead, add per-street fold-to-cbet tracking: if opponent folds flop cbets >60%, increase flop cbet frequency to 75%."
+- "Constant tuning has been tried 2 generations with no gain. This generation needs a structural change: add opponent bet-size profiling to detect polarised vs merged betting ranges."
+
+=============================
+[CLAUDE OUTPUT]
+The diff returned empty. Let me check whether `claude_v34` actually exists and what's going on.
+The directory exists but the diff was empty — likely the changes are uncommitted. Let me check git status and diff properly.
+The files are untracked. I need to compare directly with the parent version's files.
+Let me read the full diff output and the key changed functions.
+Now let me extract v7's H2H matchups and read the key changed functions for full context.
+Let me read the key functions in v7 for comparison and check the integration point in v34's get_action.
+Let me check if any other files changed between v7 and v34.
+Now I have a comprehensive picture. Let me verify the v7's actual weak matchups (checking which opponent v7 loses to).
+Now I have all the information needed for a comprehensive evaluation. Let me synthesize the analysis.
+
+```json
+{
+  "score": 7,
+  "approved": true,
+  "strategic_assessment": "This generation makes four substantive strategic changes to v7 (the top-rated bot at 56.85% WR): (1) Reduces air-hand EQR from 0.72/0.62 to 0.66/0.55 (IP/OOP) plus adds OOP penalty (-0.05) and big-pot penalty (-0.03), directly implementing the experience pool lesson that v9's lower EQR outperforms. (2) Adds a new should_fold_postflop_weak() function providing turn/river fold discipline for air and weak pairs facing aggression, with proper safety valves protecting strong/nut/top-pair hands and draws. (3) Introduces flop cbet-rate exploitation (±0.02 call margin adjustment when opponent cbets >65% or <40%). (4) Increases value bet sizing for strong/nut hands and tightens draw_call_margin across all draw types. The EQR reduction and fold discipline are well-grounded in experience pool evidence and represent structural improvements rather than arbitrary constant tuning. The main risks are the draw_call_margin tightening (could fold profitable draws) and the bet_size_bucket reclassification (0.30→0.33, 0.75→0.70) which cascades through all decision paths. Overall, a sound strategic direction with clear EV rationale.",
+  "evidence": {
+    "h2h_weaknesses": ["v7 loses only to v6 (46.7% WR, 28W/32L in 60 games). Several close matchups near 50-53% vs v8/v21/v19/v22 suggest marginal postflop calling leaks that fold discipline could address."],
+    "experience_pool_refs": ["EQR lesson: 'v9's LOWER values outperform (air: 0.65/0.53 vs v17's 0.72/0.62). Higher EQR over-realizes weak hands → calls too light. Apply pot>3000 (-0.03) and OOP (-0.05) penalties.' — Directly implemented. Also: 'Safety guards are mandatory when adding aggressive features' — fold function has 6 safety checks."],
+    "diff_refs": ["realized_postflop_equity(): EQR 0.72→0.66/0.62→0.55, new OOP penalty line 175-176, new pot>3000 penalty line 181-182 (strategy.py). New should_fold_postflop_weak() function lines 367-409 with 3-tier fold logic (air/weak-pair/medium-strength). Cbet exploitation lines 602-606 in get_action(). postflop.py: draw_call_margin increases ~25-50% across all draw types, bet_size_bucket thresholds shifted 0.30→0.33/0.75→0.70, value_bet_plan sizing for strong hands increased +0.02-0.03 delta."]
+  },
+  "feedback": null,
+  "local_optima_warning": false,
+  "local_optima_reason": null
+}
+```
+
+[STRATEGY CRITIC PROMPT]
+=============================
+# Role
+You are the **Poker Strategy Critic** — an independent strategic quality gate for a Texas Hold'em poker bot evolution system. You evaluate whether the code changes made by Worker Agents will **meaningfully improve win rate**, not just compile or follow the plan.
+
+You do NOT re-check code correctness (the Lead Code Reviewer already did that).  
+Your job is **purely strategic**: will this change actually make the bot play better poker?
+
+# CRITICAL: Tool Usage Rules
+- **Use the Bash tool** to run `git diff bot-v7 -- bots/claude_v34/`
+- **Use the Read tool** to read changed functions for context
+- **NEVER use webReader or web-search tools**
+
+# Context
+## Master's Plan:
+[
+  {
+    "role": "Algorithmic Logic Architect",
+    "target_files": [
+      "strategy.py",
+      "postflop.py"
+    ],
+    "worker_prompt": "Add postflop fold discipline with conservative thresholds + EQR reduction + code compression"
+  },
+  {
+    "role": "Hyperparameter Tuner",
+    "target_files": [
+      "postflop.py"
+    ],
+    "worker_prompt": "Increase value bet sizing for strong/nut hands, conservative draw margin tightening"
+  }
+]
+
+Bot directory: `bots/claude_v34/`
+Parent version tag: `bot-v7`
+
+## Head-to-Head Context
+Read `web/core/results/head_to_head.json` and find the current bot's weakest opponent matchups (win rate < 40%). A high-quality change should address these specific weaknesses. Also check `web/core/results/bot_stats.json` for the current bot's overall win rate and game count.
+
+# How to Evaluate
+
+1. Run `git diff bot-v7 -- bots/claude_v34/` to see all changes
+2. Run `git diff --stat bot-v7 -- bots/claude_v34/` for a summary
+3. Read the most changed functions for strategic context
+4. **For diversity/local-optima check**: Run `git log --oneline bot-v7..HEAD --decorate` to see recent commits, then `git show bot-v7` to read the previous generation's commit message and strategy. Also read `web/core/experience_pool.md` for `[POSSIBLY EXHAUSTED]` tags.
+5. Cite the concrete evidence you used: weakest H2H matchups, experience-pool lessons, and the real diff.
+6. Score against the criteria below
+
+# Scoring Criteria (1–10)
+
+| Score | Meaning |
+|---|---|
+| **9–10** | Changes directly address a confirmed weakness. Novel, high-EV improvement. Example: adds per-street opponent fold-rate tracking that adjusts continuation bet sizing |
+| **7–8** | Solid changes with clear strategic rationale. Measurable positive expected value. Minor execution risk |
+| **5–6** | Superficial — e.g. changing a constant by 5% with no analysis basis, minor refactors with no strategic significance. Likely won't help |
+| **3–4** | Changes likely to cause regression. Wrong strategic direction. Example: increasing passive-call threshold when match analysis shows opponent exploiting passivity |
+| **1–2** | Changes will clearly hurt. Catastrophic strategic errors or complete misfire on the problem |
+
+**Score ≥ 6 → `approved: true`. Score < 6 → `approved: false` (triggers intra-generation worker retry).**
+
+If the assessment is only "looks reasonable" and does not cite a validation path
+from H2H weakness, experience pool, and actual diff, the maximum score is 6.
+If the change repeats a prior failed or `[POSSIBLY EXHAUSTED]` pattern without new evidence,
+the maximum score is 5 and `local_optima_warning` must be true.
+
+# Strategic Checklist (check each before scoring)
+
+- [ ] **Addresses confirmed weakness**: Does the change target a pattern from recent match analysis or experience pool?
+- [ ] **Opponent modeling**: Does it improve per-street tracking, bet-sizing detection, or exploitative adjustment?
+- [ ] **EV basis**: Are decisions based on equity/pot-odds/fold-equity rather than arbitrary thresholds?
+- [ ] **No regression on critical spots**: AA/KK/QQ still raises preflop; nut hands still value-bet river?
+- [ ] **Diversity check**: Is this substantially different from the last 2 generations' approach? If same type of change (e.g. constant tuning) failed twice, it should NOT be repeated without new insight.
+
+# Local Optima Detection
+
+Flag `local_optima_warning: true` if:
+- The change is the same TYPE as the previous 1-2 generations (e.g. constant tuning again with no new analysis)
+- The experience pool has a `[POSSIBLY EXHAUSTED]` tag on a related lesson
+- The change is incremental when a structural rethink is needed
+
+# Output Format
+
+Output exactly ONE JSON block:
+
+```json
+{
+  "score": 7,
+  "approved": true,
+  "strategic_assessment": "Brief evaluation: what the change does strategically and whether it's sound.",
+  "evidence": {
+    "h2h_weaknesses": ["Weak opponent matchup(s) and win rate(s) considered."],
+    "experience_pool_refs": ["Relevant lesson(s), especially exhausted patterns."],
+    "diff_refs": ["Changed function/file evidence from git diff."]
+  },
+  "feedback": "If approved=false: specific, actionable guidance. What change WOULD score ≥7? Be concrete: which street, which opponent pattern, what mechanism.",
+  "local_optima_warning": false,
+  "local_optima_reason": null
+}
+```
+
+If `approved: false`, the `feedback` field MUST be specific enough that workers can act on it immediately. Examples of good feedback:
+- "The change tunes BLUFF_THRESHOLD without analysis basis. Instead, add per-street fold-to-cbet tracking: if opponent folds flop cbets >60%, increase flop cbet frequency to 75%."
+- "Constant tuning has been tried 2 generations with no gain. This generation needs a structural change: add opponent bet-size profiling to detect polarised vs merged betting ranges."
+
+=============================
+[CLAUDE OUTPUT]
+Now let me read the key changed functions in detail for strategic context:
+Now let me read the call site for the fold function and the cbet_rate modeling:
+Let me check the previous generation's strategy and compare with recent evolution patterns:
+Now I have all the information I need for a comprehensive strategic evaluation. Let me compile my assessment.
+
+```json
+{
+  "score": 7,
+  "approved": true,
+  "strategic_assessment": "This generation introduces three meaningful strategic changes plus constant tuning. (1) EQR reduction in realized_postflop_equity: air-hand EQR drops from 0.72/0.62 to 0.66/0.55 (IP/OOP), with OOP penalty (-0.05) and pot>3000 penalty (-0.03) added — directly implementing experience pool lesson #27. (2) New should_fold_postflop_weak() function adds turn/river fold discipline for weak pairs facing aggression, with proper guards (won't fold strong/nut, top pair, overpair, or hands with draws). (3) cbet_rate opponent modeling adjusts flop call margin by ±0.02 based on opponent's cbet frequency — a genuine exploitative improvement. The postflop.py value sizing increases (nut/strong on dynamic boards: +0.02-0.03 sizing delta) and draw margin tightening (~0.005-0.007 bumps) are directionally correct but lack specific H2H match analysis grounding. Code compression collapses multi-line formatting to single lines, saving ~450 lines in strategy.py (1158→704) which keeps room for future additions. Overall: the EQR and fold discipline changes are evidence-backed and structurally sound; the cbet_rate modeling is a new exploitative mechanism; the constant tuning is sensible but incremental.",
+  "evidence": {
+    "h2h_weaknesses": [
+      "v7 overall win_rate=0.570 across 1670 games. Weakest H2H: v7 vs claude_v6 at 46.7% (60 games). Several matchups at 50% (v20, v25, v29). The fold discipline and EQR reduction target close-loss spots where calling too light on turn/river bleeds chips.",
+      "v7's matchup profile is relatively balanced — no catastrophic mismatches, but many 50-55% margins where the fold discipline and opponent modeling could tilt games."
+    ],
+    "experience_pool_refs": [
+      "Lesson #27 (PARAMETER_TUNING): 'EQR: v9's LOWER values outperform (air: 0.65/0.53 vs v17's 0.72/0.62). Higher EQR over-realizes weak hands → calls too light. Apply pot>3000 (-0.03) and OOP (-0.05) penalties.' — This change implements both penalties and moves EQR toward v9's proven values (0.66/0.55 vs target 0.65/0.53).",
+      "Lesson #23 (BLUFF_CALIBRATION): 'Safety guards are mandatory when adding aggressive features' — the fold discipline function includes proper guards (no fold on strong/nut, top pair, overpair, or with draws ≥0.10).",
+      "Lesson #6 (OPPONENT_MODELING): 'classify_opponent_style returns threshold deltas — +2-3 pts adaptation' — the cbet_rate modeling follows this philosophy of opponent-dependent threshold adjustment."
+    ],
+    "diff_refs": [
+      "strategy.py: realized_postflop_equity() — EQR air-hand values 0.72/0.62→0.66/0.55, added OOP -0.05 penalty (line 175-176) and pot>3000 -0.03 penalty (line 181-182), lower clamp 0.45→0.40.",
+      "strategy.py: New should_fold_postflop_weak() function (lines 367-409) — fold discipline for turn/river weak holdings vs medium/large bets. Called at line 607-610 before call decision.",
+      "strategy.py: cbet_rate opponent modeling (lines 602-606) — adjusts call_margin by -0.02 if opponent cbet_rate>0.65, +0.02 if <0.40.",
+      "postflop.py: value_bet_plan() — nut dynamic sizing 0.03+0.04*wetness→0.05+0.05*wetness, nut induce penalty -0.12/-0.16→-0.08/-0.10, strong dynamic 0.07+0.05*wetness→0.09+0.06*wetness, clamp (-0.18,0.16)→(-0.15,0.20).",
+      "postflop.py: draw_call_margin() — various small increases (0.040→0.047, 0.020→0.025, 0.050→0.055, 0.018→0.022).",
+      "strategy.py: Code compression saves ~454 lines (1158→704) via single-line formatting of function signatures, conditionals, and dict literals."
+    ]
+  },
+  "feedback": "Approved. The EQR change directly implements a proven experience pool lesson with the exact recommended penalties. The fold discipline function is a structural improvement with sensible guards. The cbet_rate modeling is a new exploitative mechanism. For future generations: the postflop constant tuning (value sizing, draw margins) would benefit from specific match replay analysis showing where the current sizing leaves value on the table. Consider profiling opponent bet-size patterns to detect polarized vs merged ranges for more sophisticated sizing adjustments.",
+  "local_optima_warning": false,
+  "local_optima_reason": null
+}
+```

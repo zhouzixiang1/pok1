@@ -1,9 +1,10 @@
 {
-  "next_v": 30,
-  "source_v": 28,
+  "next_v": 31,
+  "source_v": 30,
   "stage": "prepared",
   "master_plan": null,
   "reviewer_feedback": "",
   "generation_attempt": 0,
-  "timestamp": "2026-05-30T16:18:44"
+  "gate_results": {},
+  "timestamp": "2026-05-31T13:04:28"
 }

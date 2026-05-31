@@ -15,6 +15,7 @@ from claude_agent_sdk import tool
 
 from evolution_core import (
     get_bot_dir,
+    get_active_bots,
     get_logs_dir,
     load_ratings,
     verify_code,
@@ -25,6 +26,7 @@ from evolution_core import (
     run_claude_query,
     git_commit_bot,
     clear_pipeline_checkpoint,
+    MAX_ACTIVE_BOTS,
     _run_master_analysis,
     _execute_workers,
     _run_crossover,
@@ -751,7 +753,16 @@ async def commit_bot(args):
     except Exception:
         pass
 
-    return _json_tool_result({"committed": True, "version": v, "source_v": source_v})
+    # Signal daemon to pick up the new bot
+    reap_signal = Path(__file__).parent / "results" / ".reap_signal"
+    reap_signal.touch()
+
+    result = {"committed": True, "version": v, "source_v": source_v}
+    active_bots = get_active_bots()
+    if len(active_bots) > MAX_ACTIVE_BOTS:
+        result["needs_reap"] = True
+        result["pool_size"] = len(active_bots)
+    return _json_tool_result(result)
 
 
 # ──────────────────────────────────────────────

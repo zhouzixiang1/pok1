@@ -1,0 +1,246 @@
+
+[MATCH ANALYST PROMPT]
+=============================
+You are a Poker Hand Analyst specializing in Texas Hold'em bot strategy.
+Analyze the following match replay summaries (losses and close wins) for weaknesses and patterns.
+
+## Recent Match Summaries (LOSS = bot lost, CLOSE WIN = bot won by ≤2 games)
+
+[LOSS] Match: claude_v23 vs claude_v30, Result: 3W/7L out of 10 games
+Chip delta: avg=-4157, best=19531, worst=-20174
+Big losses (>-5000): 4 games
+  Game 3: -19929 chips
+  Game 6: -19909 chips
+  Game 8: -20174 chips
+Per-street actions (bot):
+  Preflop: fold=65%, raise=21%, call=11%, allin=2%, avg_raise=0.7x_pot
+  Flop: fold=0%, raise=28%, call=70%, allin=0%, avg_raise=0.5x_pot
+  Turn: fold=0%, raise=24%, call=72%, allin=3%, avg_raise=0.5x_pot
+  River: fold=0%, raise=17%, call=82%, avg_raise=0.5x_pot
+
+[LOSS] Match: claude_v30 vs claude_v8, Result: 4W/6L out of 10 games
+Chip delta: avg=-1954, best=17160, worst=-19700
+Big losses (>-5000): 3 games
+  Game 2: -19700 chips
+  Game 4: -17160 chips
+  Game 9: -16450 chips
+Per-street actions (bot):
+  Preflop: fold=69%, raise=20%, call=7%, allin=2%, avg_raise=0.7x_pot
+  Flop: fold=0%, raise=31%, call=67%, allin=1%, avg_raise=0.5x_pot
+  Turn: fold=0%, raise=30%, call=65%, allin=5%, avg_raise=0.4x_pot
+  River: fold=0%, raise=28%, call=71%, avg_raise=0.5x_pot
+
+[CLOSE WIN] Match: claude_v22 vs claude_v30, Result: 6W/4L out of 10 games
+Chip delta: avg=1899, best=19526, worst=-19236
+Big losses (>-5000): 3 games
+  Game 1: -6688 chips
+  Game 2: -18255 chips
+  Game 3: -19236 chips
+Per-street actions (bot):
+  Preflop: fold=57%, raise=25%, call=15%, allin=1%, avg_raise=0.7x_pot
+  Flop: fold=0%, raise=37%, call=61%, allin=0%, avg_raise=0.5x_pot
+  Turn: fold=0%, raise=30%, call=67%, allin=2%, avg_raise=0.4x_pot
+  River: fold=0%, raise=15%, call=84%, avg_raise=0.5x_pot
+
+[CLOSE WIN] Match: claude_v24 vs claude_v30, Result: 6W/4L out of 10 games
+Chip delta: avg=3989, best=20056, worst=-20089
+Big losses (>-5000): 4 games
+  Game 0: -20089 chips
+  Game 2: -18886 chips
+  Game 5: -16350 chips
+Per-street actions (bot):
+  Preflop: fold=67%, raise=19%, call=10%, allin=2%, avg_raise=0.7x_pot
+  Flop: fold=0%, raise=32%, call=67%, avg_raise=0.5x_pot
+  Turn: fold=0%, raise=39%, call=59%, allin=1%, avg_raise=0.5x_pot
+  River: fold=0%, raise=15%, call=76%, allin=7%, avg_raise=0.4x_pot
+
+[CLOSE WIN] Match: claude_v17 vs claude_v30, Result: 6W/4L out of 10 games
+Chip delta: avg=-1533, best=19828, worst=-20043
+Big losses (>-5000): 3 games
+  Game 4: -19991 chips
+  Game 7: -20043 chips
+  Game 9: -19997 chips
+Per-street actions (bot):
+  Preflop: fold=68%, raise=12%, call=17%, allin=2%, avg_raise=0.6x_pot
+  Flop: fold=0%, raise=34%, call=64%, allin=0%, avg_raise=0.5x_pot
+  Turn: fold=0%, raise=25%, call=74%, avg_raise=0.4x_pot
+  River: fold=0%, raise=27%, call=72%, avg_raise=0.6x_pot
+
+[CLOSE WIN] Match: claude_v14 vs claude_v30, Result: 6W/4L out of 10 games
+Chip delta: avg=-3928, best=322, worst=-20088
+Big losses (>-5000): 2 games
+  Game 1: -20088 chips
+  Game 9: -19893 chips
+Per-street actions (bot):
+  Preflop: fold=67%, raise=15%, call=15%, allin=1%, avg_raise=0.6x_pot
+  Flop: fold=0%, raise=29%, call=68%, allin=1%, avg_raise=0.5x_pot
+  Turn: fold=0%, raise=21%, call=76%, allin=1%, avg_raise=0.4x_pot
+  River: fold=0%, raise=21%, call=78%, avg_raise=0.5x_pot
+
+Based on the data above, identify:
+1. Key weaknesses (e.g., folding too much, not raising enough, poor all-in timing)
+2. Street-specific weaknesses from the Per-street actions data:
+   - River fold rate ≥40% → scared-money, consider expanding river calling range
+   - Flop raise rate ≤10% → too passive postflop, giving free cards
+   - Preflop raise rate ≤15% → limping too much, losing positional advantage
+   - avg_raise < 0.5x pot on river with big pot → underbetting strong hands
+3. Any detectable patterns (e.g., weak out-of-position, poor against aggressive opponents)
+4. What seems to be working (from close wins, if any)
+5. A concrete recommendation for improvement (be specific: which street, what change)
+
+Output ONLY a JSON block:
+```json
+{"weaknesses": ["..."], "street_weaknesses": {"river": "...", "flop": "..."}, "patterns": "...", "working": "...", "recommendation": "..."}
+```
+Keep it concise — 2-3 weaknesses, specific street observations, 1 recommendation.
+=============================
+[CLAUDE OUTPUT]
+```json
+{
+  "weaknesses": [
+    "Catastrophic big-pot losses: 19 of 60 games lost >5000 chips, many near -20000 (full buy-in), meaning the bot is frequently losing entire stacks — suggests poor risk management when facing aggression or holding marginal hands in big pots.",
+    "Excessive preflop folding (65-69% across all matches) with very low preflop raise sizing (0.6-0.7x pot average raise is actually a small open sizing) — the bot is playing too tight preflop and not capitalizing on position or initiative, allowing opponents to steal blinds cheaply.",
+    "Extreme passivity on later streets: raise rates drop from ~30% on flop/turn to only 15-28% on river, while call rates balloon to 72-84%. The bot is rarely folding postflop (0% fold on every postflop street) yet not raising enough for value, making it highly exploitable as a calling station."
+  ],
+  "street_weaknesses": {
+    "preflop": "Fold rate of 65-69% is extremely high for heads-up No-Limit Hold'em — typical HU ranges should fold ~40-50% from BB. Combined with only 12-25% raise rate and 1-2% all-in, the bot is surrendering too many pots preflop. It's not 3-betting enough to punish aggressive open-raises.",
+    "flop": "Raise rate of 28-37% is decent but 0% fold rate means the bot never gives up on the flop, even with air. This creates a predictable pattern where opponents know the bot will always continue, allowing them to value-bet freely. The ~0.5x pot raise sizing is too small to deny equity.",
+    "turn": "Similar pattern — 0% fold, 21-39% raise, 59-76% call. The bot is calling too wide on the turn, setting up expensive river decisions with weak holdings. avg_raise of 0.4-0.5x pot is underbetting strong hands.",
+    "river": "Raise rate drops to 15-28% while call rate hits 71-84%. The bot is almost never folding the river (0% fold) and rarely raising — it's a pure payoff station on the river. The 0.4-0.6x pot raise sizing on the rare raises suggests it's not maximizing value with strong river hands. Opponents can confidently overbet bluff or value-shove knowing the bot will call."
+  },
+  "patterns": {
+    "big_loss_frequency": "The bot consistently loses 3-4 full stack (-18000 to -20000) games per 10-game match. This happens whether it wins or loses the overall match, indicating a systemic leak in big-pot play — likely calling down too light when facing heavy aggression.",
+    "win_narrow_margins": "Even in wins (6W/4L), the avg chip delta is tiny or negative (-1533, -3928), meaning wins are by small margins while losses are catastrophic. The bot lacks a big-pot winning strategy to offset its big-pot losses.",
+    "postflop_call_station": "Across ALL 6 matches, postflop fold rate is literally 0% on every street. This is the most glaring pattern — the bot literally never folds postflop, making it maximally exploitable by any opponent that recognizes this.",
+    "sizing_leak": "Average raise sizing of 0.4-0.7x pot across all streets is consistently below pot-size, meaning the bot never makes a pot-sized or overbet raise. This underbetting pattern leaves value on the table with strong hands and doesn't charge opponents enough to draw."
+  },
+  "working": {
+    "close_wins": "In close wins, the bot's slightly higher preflop raise rate (25% vs 20%) correlates with better outcomes. The flop raise rate of 34-37% in wins vs 28% in losses suggests that more aggressive flop play helps. Against older/weaker bots (v14, v17, v22), the bot's passive call-heavy style still grinds out wins — it's not getting blown out by every opponent, just by ones that can exploit its calling station tendencies.",
+    "survival": "The bot does occasionally win big pots (best chip deltas of +19k-20k), meaning its hand evaluation isn't terrible — it can identify strong hands. The issue is that it plays weak and strong hands the same way (call-call-call)."
+  },
+  "recommendation": {
+    "priority": "CRITICAL — Add postflop fold logic: the 0% postflop fold rate is the single biggest leak.",
+    "specific_changes": [
+      "Implement a fold threshold on each postflop street. On the flop, fold ~15-20% of the time when holding weak no-pair no-draw hands facing a bet ≥ 0.5x pot. On the turn, fold ~20-25% when equity drops below ~25% vs estimated opponent range. On the river, fold ~15-20% when holding bluff-catchers facing ≥ pot-sized bets.",
+      "Increase river raise sizing to 0.7-1.0x pot for value raises (currently 0.4-0.5x) to extract maximum value from strong hands. Consider overbet shoving (~1.5x pot) on the river with nutted hands.",
+      "Reduce preflop fold rate from ~67% to ~50% by widening the defending range from the big blind, and increase preflop raise sizing from the small blind to 2.5-3x instead of the current small sizing."
+    ],
+    "expected_impact": "Adding even a 15% postflop fold rate would reduce the frequency of -20000 chip losses where the bot calls down three streets with a marginal hand. Bigger raise sizing on strong hands should increase average win in winning pots from ~19k toward the full 20k, while tighter postflop calling should reduce losses from -20k to more manageable -10k levels."
+  }
+}
+```
+
+[MATCH ANALYST PROMPT]
+=============================
+You are a Poker Hand Analyst specializing in Texas Hold'em bot strategy.
+Analyze the following match replay summaries (losses and close wins) for weaknesses and patterns.
+
+## Recent Match Summaries (LOSS = bot lost, CLOSE WIN = bot won by ≤2 games)
+
+[LOSS] Match: claude_v30 vs claude_v8, Result: 4W/6L out of 10 games
+Chip delta: avg=-1954, best=17160, worst=-19700
+Big losses (>-5000): 3 games
+  Game 2: -19700 chips
+  Game 4: -17160 chips
+  Game 9: -16450 chips
+Per-street actions (bot):
+  Preflop: fold=69%, raise=20%, call=7%, allin=2%, avg_raise=0.7x_pot
+  Flop: fold=0%, raise=31%, call=67%, allin=1%, avg_raise=0.5x_pot
+  Turn: fold=0%, raise=30%, call=65%, allin=5%, avg_raise=0.4x_pot
+  River: fold=0%, raise=28%, call=71%, avg_raise=0.5x_pot
+
+[LOSS] Match: claude_v16 vs claude_v30, Result: 4W/6L out of 10 games
+Chip delta: avg=-5642, best=20020, worst=-20199
+Big losses (>-5000): 5 games
+  Game 0: -20199 chips
+  Game 1: -19828 chips
+  Game 4: -19999 chips
+Per-street actions (bot):
+  Preflop: fold=65%, raise=21%, call=10%, allin=2%, avg_raise=0.7x_pot
+  Flop: fold=0%, raise=34%, call=62%, allin=2%, avg_raise=0.5x_pot
+  Turn: fold=0%, raise=27%, call=72%, avg_raise=0.5x_pot
+  River: fold=0%, raise=29%, call=62%, allin=8%, avg_raise=0.6x_pot
+
+[CLOSE WIN] Match: claude_v22 vs claude_v30, Result: 6W/4L out of 10 games
+Chip delta: avg=1899, best=19526, worst=-19236
+Big losses (>-5000): 3 games
+  Game 1: -6688 chips
+  Game 2: -18255 chips
+  Game 3: -19236 chips
+Per-street actions (bot):
+  Preflop: fold=57%, raise=25%, call=15%, allin=1%, avg_raise=0.7x_pot
+  Flop: fold=0%, raise=37%, call=61%, allin=0%, avg_raise=0.5x_pot
+  Turn: fold=0%, raise=30%, call=67%, allin=2%, avg_raise=0.4x_pot
+  River: fold=0%, raise=15%, call=84%, avg_raise=0.5x_pot
+
+[CLOSE WIN] Match: claude_v24 vs claude_v30, Result: 6W/4L out of 10 games
+Chip delta: avg=3989, best=20056, worst=-20089
+Big losses (>-5000): 4 games
+  Game 0: -20089 chips
+  Game 2: -18886 chips
+  Game 5: -16350 chips
+Per-street actions (bot):
+  Preflop: fold=67%, raise=19%, call=10%, allin=2%, avg_raise=0.7x_pot
+  Flop: fold=0%, raise=32%, call=67%, avg_raise=0.5x_pot
+  Turn: fold=0%, raise=39%, call=59%, allin=1%, avg_raise=0.5x_pot
+  River: fold=0%, raise=15%, call=76%, allin=7%, avg_raise=0.4x_pot
+
+[CLOSE WIN] Match: claude_v17 vs claude_v30, Result: 6W/4L out of 10 games
+Chip delta: avg=-1533, best=19828, worst=-20043
+Big losses (>-5000): 3 games
+  Game 4: -19991 chips
+  Game 7: -20043 chips
+  Game 9: -19997 chips
+Per-street actions (bot):
+  Preflop: fold=68%, raise=12%, call=17%, allin=2%, avg_raise=0.6x_pot
+  Flop: fold=0%, raise=34%, call=64%, allin=0%, avg_raise=0.5x_pot
+  Turn: fold=0%, raise=25%, call=74%, avg_raise=0.4x_pot
+  River: fold=0%, raise=27%, call=72%, avg_raise=0.6x_pot
+
+[CLOSE WIN] Match: claude_v14 vs claude_v30, Result: 6W/4L out of 10 games
+Chip delta: avg=-3928, best=322, worst=-20088
+Big losses (>-5000): 2 games
+  Game 1: -20088 chips
+  Game 9: -19893 chips
+Per-street actions (bot):
+  Preflop: fold=67%, raise=15%, call=15%, allin=1%, avg_raise=0.6x_pot
+  Flop: fold=0%, raise=29%, call=68%, allin=1%, avg_raise=0.5x_pot
+  Turn: fold=0%, raise=21%, call=76%, allin=1%, avg_raise=0.4x_pot
+  River: fold=0%, raise=21%, call=78%, avg_raise=0.5x_pot
+
+Based on the data above, identify:
+1. Key weaknesses (e.g., folding too much, not raising enough, poor all-in timing)
+2. Street-specific weaknesses from the Per-street actions data:
+   - River fold rate ≥40% → scared-money, consider expanding river calling range
+   - Flop raise rate ≤10% → too passive postflop, giving free cards
+   - Preflop raise rate ≤15% → limping too much, losing positional advantage
+   - avg_raise < 0.5x pot on river with big pot → underbetting strong hands
+3. Any detectable patterns (e.g., weak out-of-position, poor against aggressive opponents)
+4. What seems to be working (from close wins, if any)
+5. A concrete recommendation for improvement (be specific: which street, what change)
+
+Output ONLY a JSON block:
+```json
+{"weaknesses": ["..."], "street_weaknesses": {"river": "...", "flop": "..."}, "patterns": "...", "working": "...", "recommendation": "..."}
+```
+Keep it concise — 2-3 weaknesses, specific street observations, 1 recommendation.
+=============================
+[CLAUDE OUTPUT]
+```json
+{
+  "weaknesses": [
+    "Catastrophic preflop overfolding (57-69% fold rate across all matches) — in heads-up play this bleeds chips from both blinds and surrenders the initiative to opponents almost every hand",
+    "Zero postflop fold discipline (0% fold on flop, turn, AND river in every match) — the bot is a pure calling station once it sees the flop, paying off stronger hands to showdown with weak holdings, which explains the recurring -16k to -20k stack-off losses",
+    "Chronic underbetting (avg_raise 0.4-0.5x pot on turn/river) — not extracting sufficient value from strong made hands, allowing opponents to realize equity cheaply"
+  ],
+  "street_weaknesses": {
+    "preflop": "Fold rate 57-69% (4 matches above 65%) is far too high for HU play. The bot is folding ~2 out of 3 hands preflop, giving opponents a free ride to steal blinds. Raise rate only 12-25% means it's limp-calling or limp-folding the remaining hands instead of opening aggressively.",
+    "flop": "0% fold rate means the bot NEVER gives up on any board texture. Combined with 61-68% call rate, it's calling c-bets with total air or weak pairs instead of folding bad textures. Raise rate of 29-37% with only 0.5x pot sizing means it's not building the pot with strong hands.",
+    "turn": "0% fold, 59-76% call rate, avg_raise 0.4x pot — the bot is passively calling down on the most critical street for pot control. When it does raise (21-39%), the tiny sizing fails to protect against draws or charge weaker hands.",
+    "river": "Call-heavy with 62-84% call rate and only 15-29% raise rate. The bot is paying off value bets with marginal holdings (explaining the huge chip losses) while failing to raise for value with strong hands. avg_raise 0.4-0.6x pot is well below optimal river sizing."
+  },
+  "patterns": "A consistent 'tight preflop, loose passive postflop' profile: the bot folds too many hands preflop but then refuses to fold postflop regardless of board texture. This creates the worst of both worlds — it loses chips by overfolding preflop AND loses chips by calling down with weak hands postflop. The catastrophic -16k to -20k single-game losses occur when the bot finally plays a hand, then calls down multiple streets against a stronger holding. In close wins, the bot's higher preflop raise rate (25% vs 19-21% in losses) and slightly more aggressive turn play suggest that when it plays back, opponents struggle.",
+  "working": "In the close wins, the bot shows a slightly higher preflop raise rate (up to 25%) and more aggressive flop raising (37%). The best single-game results (+17k to +20k) suggest that when the bot does play hands aggressively preflop, it wins decisively. The all-in frequency on river in close wins (7-8%) also correlates with better outcomes — the bot is correctly getting the rest in with strong hands in those matches.",
+  "recommendation": "Three-part fix targeting the tight-passive leak: (1) Reduce preflop fold rate from ~65% to ~40-45% by widening the opening range in position and defending the BB with ~80%+ of hands. Increase preflop raise rate to 35-40%. (2) Add postflop fold logic: fold ~15-20% on flop when facing aggression with air/weak pairs on coordinated boards, and ~10-15% on turn when equity drops. The 'never fold' postflop policy is the single biggest chip leak. (3) Increase bet sizing to 0.6-0.8x pot on turn and river with strong hands (two pair+) to extract maximum value, while maintaining 0.4-0.5x pot for bluffs/semi-bluffs. Priority: the postflop calling station behavior is causing the catastrophic stack-off losses and should be addressed first."
+}
+```

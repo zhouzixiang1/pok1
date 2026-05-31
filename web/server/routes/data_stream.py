@@ -146,7 +146,8 @@ def _get_bots() -> dict:
     if BOTS_DIR.exists():
         for d in sorted(BOTS_DIR.iterdir(), key=_version_key):
             if d.is_dir() and d.name.startswith("claude_v") and d.name != "claude_v0":
-                active.append(_bot_summary(d, d.name))
+                if (d / ".completed").exists():
+                    active.append(_bot_summary(d, d.name))
     graveyard_dir = BOTS_DIR / "graveyard"
     if graveyard_dir.exists():
         for d in sorted(graveyard_dir.iterdir(), key=_version_key):

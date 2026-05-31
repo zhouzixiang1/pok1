@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -113,7 +113,7 @@ async def list_bots(include_graveyard: bool = Query(False)):
     active = []
     graveyard = []
 
-    # Active bots (numeric sort so v10 comes after v9, not after v1)
+    # Active bots — only include directories with .completed
     def _version_key(p: Path) -> int:
         m = re.search(r'\d+', p.name)
         return int(m.group()) if m else 0
@@ -121,7 +121,8 @@ async def list_bots(include_graveyard: bool = Query(False)):
     if BOTS_DIR.exists():
         for d in sorted(BOTS_DIR.iterdir(), key=_version_key):
             if d.is_dir() and d.name.startswith("claude_v") and d.name != "claude_v0":
-                active.append(_bot_summary(d, d.name, ratings, bot_stats_data, h2h_data))
+                if (d / ".completed").exists():
+                    active.append(_bot_summary(d, d.name, ratings, bot_stats_data, h2h_data))
 
     # Graveyard bots
     if include_graveyard:
@@ -140,13 +141,20 @@ async def list_bots(include_graveyard: bool = Query(False)):
 async def bot_detail(version: int):
     """Get detailed info about a specific bot version."""
     bot_name = f"claude_v{version}"
-    bot_dir = BOTS_DIR / bot_name
+    active_dir = BOTS_DIR / bot_name
+    graveyard_dir = BOTS_DIR / "graveyard" / bot_name
 
-    # Check graveyard too
-    if not bot_dir.exists():
-        bot_dir = BOTS_DIR / "graveyard" / bot_name
-        if not bot_dir.exists():
-            return {"error": f"Bot v{version} not found"}
+    # Prefer completed version (graveyard) over incomplete active version
+    if active_dir.exists() and (active_dir / ".completed").exists():
+        bot_dir = active_dir
+    elif graveyard_dir.exists() and (graveyard_dir / ".completed").exists():
+        bot_dir = graveyard_dir
+    elif active_dir.exists():
+        bot_dir = active_dir
+    elif graveyard_dir.exists():
+        bot_dir = graveyard_dir
+    else:
+        raise HTTPException(status_code=404, detail=f"Bot v{version} not found")
 
     ratings = _load_ratings()
     bot_stats_data = _cached_read("bot_stats_detail", BOT_STATS_FILE) or {}

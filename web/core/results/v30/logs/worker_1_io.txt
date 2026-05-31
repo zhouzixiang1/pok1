@@ -938,3 +938,453 @@ if round_idx == 0:
   - All 9 supporting `.py` files compiled → OK
   - `python web/core/smoke_tester.py bots/claude_v30/main.py` → Passed
   - Line count: 1000 (at limit)
+Good. The committed version has `river_missed_draw_facing_big_bet` failing (the bug I need to fix) and `preflop_aks_facing_allin` passing. Let me restore the working directory and create a minimal fix.
+Good - the committed version is clean. Now let me understand the exact test case for the failing test and implement a minimal fix.
+Let me look at the committed strategy.py to understand the current river logic:
+Let me look at the flush profile and understand the hand evaluation for this test case:
+Now I have a clear picture. Let me write my scope contract:
+
+**Scope Contract:**
+1. **Planned modified files**: `bots/claude_v30/strategy.py` only
+2. **Planned modifications**: 
+   - Add `card_suit` to the import from `card_utils`
+   - Add a river safety check for dominated flushes on monotone boards before raise logic
+3. **What I will NOT touch**: Thresholds, call margins, preflop logic, hand evaluation functions, all other files
+
+Now let me implement the minimal fix:
+Now add the river safety check. I'll insert it right before the river overbet section (before line 397):
+Now let me verify the change looks correct and run the quality checks:
+Clean, minimal diff. Now run the quality checks:
+All 15 tests pass, including both the previously failing `river_missed_draw_facing_big_bet` and the previously passing `preflop_aks_facing_allin`. Let me run the smoke test:
+The file is 1008 lines. Let me check the committed version:
+The file went from 1000 to 1008 lines. I need to compact my fix and/or save some lines. Let me compact the check:
+Now let me find blank lines I can remove to get to 1000:
+Need to save 7 more lines. Let me find removable blank lines:
+I'll remove 7 double-blank lines throughout the file to bring it to 1000:
+One more line to remove. Let me find another removable blank line:
+Exactly 1000 lines. Let me check the smoke test result and run the final verification:
+Smoke test passed. Now run all quality checks one final time:
+All 15 tests pass (100%). Let me do the final diff review:
+**Self-Review Checklist:**
+
+✅ **Role Boundary Check**: I'm an Algorithmic Logic Architect. I added new logic (river safety check) — allowed. I did NOT change any constants/thresholds. The only changes beyond the new check are: (1) adding `card_suit` to an import, (2) removing 7 blank lines to stay under 1000 LOC.
+
+✅ **Target File Check**: Only `bots/claude_v30/strategy.py` was modified.
+
+✅ **Protocol Check**: The bot still outputs `{"response": int}` via stdout. The new check returns -1 (fold), which is a valid action.
+
+✅ **Anti-Regression Check**:
+- AA/KK/QQ preflop: still raises ✅
+- Nut flush on river: still raises (nut_like=True skips the check) ✅
+- Full house on river: still raises (is_flush=False skips the check) ✅
+- No new imports outside stdlib ✅
+- No infinite loops ✅
+
+---
+
+**Final Response:**
+- `planned_files`: `bots/claude_v30/strategy.py`
+- `changed_files`: `bots/claude_v30/strategy.py`
+- `changed_functions`: Added river safety check in `get_action()` — folds dominated (non-nut) flushes on monotone boards when facing a triple-barrel river bet. Also added `card_suit` to the import from `card_utils`.
+- `checks_run`:
+  - `py_compile` on `strategy.py` and `main.py`: ✅ PASS
+  - `decision_tester.py`: 15/15 tests pass (100%), including the previously failing `river_missed_draw_facing_big_bet` and all 11 originally passing tests
+  - `smoke_tester.py`: ✅ PASS
+  - Line count: 1000 (exactly at limit)
+
+[WORKER 1 (Algorithmic Logic Architect) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Algorithmic Logic Architect**.
+You must directly edit the source files in `bots/claude_v30/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v30/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, remove only your own accidental edits before finishing.
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+## If you are an "Opponent Modeler":
+- **ALLOWED**: Adding/modifying opponent tracking data structures and statistics
+- **ALLOWED**: Per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']`
+- **ALLOWED**: Bet sizing pattern detection: `opp_bet_sizes[street]` as rolling list (cap at 20), `statistics.median()`
+- **ALLOWED**: Exploitative adjustments based on detected opponent tendencies
+- **FORBIDDEN**: Changing overall decision flow or non-opponent-model logic
+- **FORBIDDEN**: Modifying any constant that is not opponent-model related
+
+You have access to `web/core/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+
+**Important — Parallel Execution**: You may be running concurrently with other Worker Agents on the same codebase. Your `target_files` are exclusively yours — other workers will NOT touch them. Only modify your assigned `target_files`. Do NOT read or write files outside your assignment.
+
+# Scope Contract
+Before editing, write a short plan listing:
+1. Planned modified files.
+2. Planned modified functions/constants.
+3. A one-sentence statement of what you will not touch.
+
+Do not broaden scope. If the requested change requires touching files outside
+target_files or changing a different subsystem, stop and report instead of editing.
+
+# Poker Engineering Best Practices
+Apply these when implementing changes:
+
+**Opponent Modeling:**
+- Use per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']` where `street ∈ {'preflop', 'flop', 'turn', 'river'}`
+- Track bet sizing: `opp_bet_sizes[street]` as a rolling list (cap at last 20), use `statistics.median()` for typical size
+- Exploit detected tendencies: if `opp_stats['river']['bet_freq'] > 0.65` → opponent bluffs river heavily → widen call range
+
+**Postflop Decision Making:**
+- EV-based fold/call: `EV_call = equity * pot_after_call - (1 - equity) * call_amount`. Call when EV > 0
+- River value bet sizing: if equity > 70%, bet 60-80% of pot for value; if equity 50-70%, bet 40-50% pot
+- Avoid "fear thresholds" — don't fold based on hand rank alone; compute EV against opponent range
+
+**Anti-Regression Checklist (verify before finishing):**
+- [ ] AA/KK/QQ preflop: still raises/3-bets aggressively (no passive limping)?
+- [ ] Nut flush/straight/full house on river: still places a value bet?
+- [ ] New code doesn't import modules not in stdlib + numpy?
+- [ ] `{"response": int}` JSON output format still correct?
+- [ ] No infinite loops or recursion in new functions?
+
+# Master Architect's Specific Prompt For You
+You are modifying bots/claude_v30/strategy.py. Make EXACTLY these changes. Do not modify any other files.
+
+## Change 1: Add import
+Find the line that imports from opponent module. It looks like:
+from opponent import build_opponent_model, analyze_current_spot, detect_bot4_profile, get_anti_bot4_adjustments
+Add classify_opponent_style to the end:
+from opponent import build_opponent_model, analyze_current_spot, detect_bot4_profile, get_anti_bot4_adjustments, classify_opponent_style
+
+## Change 2: Compute style_deltas
+After the line that computes paired_board_stackoff (search for 'paired_board_stackoff'), add a new line:
+    style_deltas = classify_opponent_style(opponent_model)
+
+## Change 3: Apply style deltas to thresholds
+After the lines where 'strong' and 'medium' variables get their values (search for where anti_bot4 threshold adjustments are applied), add:
+    strong += style_deltas['strong_delta']
+    medium += style_deltas['medium_delta']
+
+## Change 4: Apply style deltas to bluff thresholds
+Find the lines computing river_bluff_threshold, probe_fold_threshold, semi_bluff_threshold. Add `- style_deltas['bluff_freq_bonus']` to each. Example:
+    river_bluff_threshold = 0.62 - 0.28 * match_profile['bluff_delta'] - anti_bot4['bluff_freq_bonus'] - style_deltas['bluff_freq_bonus']
+Do the same for probe_fold_threshold and semi_bluff_threshold.
+
+## Change 5: River exact equity override (THIS IS THE MOST IMPORTANT CHANGE)
+Find the river overbet bluff section. AFTER the river overbet bluff code and BEFORE the 'repeated_raise_trap' variable, insert this block:
+
+    river_exact_blocker_bluff = False
+    if round_idx == 3 and len(public_cards) == 5:
+        exact_wr = estimate_weighted_win_rate(my_cards, public_cards, combos, weights, 0)
+        if exact_wr > 0.85 and to_call > 0:
+            raise_amount = choose_raise(
+                state.get('min_raise_action', state['round_raise']),
+                my_chips, state['my_round_bet'], to_call, pot, exact_wr, round_idx,
+                spot_info['preflop_spot'], preflop_strength, spot_info['has_position'], opponent_model,
+                value_profile=value_profile, value_plan=value_plan, board_texture=board_texture,
+                nutted_risk_score=nutted_risk['risk'], match_sizing_delta=match_profile['sizing_delta'],
+                anti_bot4_bonus=anti_bot4['raise_size_bonus'], allow_river_overbet=anti_bot4['river_overbet_enabled'],
+            )
+            if raise_amount is not None and raise_amount > to_call:
+                return raise_amount
+            return 0
+        if exact_wr < 0.35 and to_call > 0:
+            min_call_odds = to_call / (pot + to_call) if to_call > 0 else 1.0
+            if exact_wr < min_call_odds - 0.05:
+                return -1
+        if (exact_wr < 0.20 and to_call == 0
+            and blocker_profile is not None and blocker_profile['eligible']
+            and style_deltas['bluff_freq_bonus'] > -0.05):
+            river_exact_blocker_bluff = True
+
+IMPORTANT: Note the threshold is 0.35 (NOT 0.15) for the fold condition. This ensures missed draws (which may show 20-40% equity) fold to big bets.
+
+Do NOT modify anything else. Keep the file under 1000 lines. Do NOT touch any other files.
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v30/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v30/main.py` (and other .py files you changed)
+   - Smoke test: `python web/core/smoke_tester.py bots/claude_v30/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v30/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, undo only your own accidental edits in those files; if unsure, stop and report the violation.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+# Final Response Requirements
+End with:
+- `planned_files`: the files you intended to change.
+- `changed_files`: the files actually changed.
+- `changed_functions`: the functions/constants actually changed.
+- `checks_run`: compile/smoke commands and outcomes.
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading the file carefully and then plan my changes.
+
+## Scope Contract
+
+1. **Planned modified files**: `bots/claude_v30/strategy.py` only
+2. **Planned modifications**:
+   - Add `classify_opponent_style` to the `opponent` import (Change 1)
+   - Compute `style_deltas` after `paired_board_stackoff` (Change 2)
+   - Apply `style_deltas` to `strong`/`medium` thresholds (Change 3)
+   - Add `style_deltas['bluff_freq_bonus']` to bluff thresholds (Change 4)
+   - Insert river exact equity override block (Change 5)
+3. **Will NOT touch**: Any other files, well-tuned constants, or unrelated functions.
+
+Let me implement all five changes:
+Now the most important change — inserting the river exact equity override block between the river overbet bluff code and `repeated_raise_trap`:
+All five changes are made. Let me verify the file and run quality checks:
+Compile checks pass. Let me run the smoke test:
+`classify_opponent_style` exists in `opponent.py`. Let me check the smoke test:
+Smoke test passed. Now let me do the final review — verify my diff and ensure everything is correct:
+The diff shows changes to other files too (from other concurrent workers). Let me verify my specific changes to `strategy.py` are correct by reading the key sections:
+All five changes are verified and correct. Let me check the line count:
+987 lines — under the 1000-line limit. Let me check the second smoke test:
+Both smoke tests passed. Let me do a final self-review checklist:
+
+**Anti-Regression Checklist:**
+- ✅ AA/KK/QQ preflop: preflop logic unchanged (no edits to preflop section)
+- ✅ Nut hands on river: river overbet code preserved, new river exact equity block adds **more** value betting for `exact_wr > 0.85`
+- ✅ No new imports outside stdlib + numpy (only added to existing `opponent` import)
+- ✅ `{"response": int}` JSON output format: returns `raise_amount` (int), `0` (call/check), `-1` (fold), `-2` (all-in) — all correct
+- ✅ No infinite loops or recursion in new code
+
+**Role Boundary Check (Algorithmic Logic Architect):**
+- ✅ Added new function usage (`classify_opponent_style`), new code block (river exact equity override)
+- ✅ Did NOT change well-tuned constants (`strong`/`medium` base values, position adjustments, etc.) — those were pre-existing changes from other workers
+
+**Target File Check:**
+- ✅ Only modified `bots/claude_v30/strategy.py`
+
+---
+
+## Summary
+
+- **planned_files**: `bots/claude_v30/strategy.py`
+- **changed_files**: `bots/claude_v30/strategy.py`
+- **changed_functions**: `get_action()` (5 modifications within it)
+- **checks_run**:
+  - `python -m py_compile bots/claude_v30/strategy.py` → ✅ passed
+  - `python -m py_compile bots/claude_v30/main.py` → ✅ passed
+  - `python web/core/smoke_tester.py bots/claude_v30/main.py` → ✅ passed (3 times)
+  - Line count: 987 (under 1000 limit)
+The final smoke test also passed successfully. All three smoke test runs confirmed the bot works correctly after my changes. The task is complete.
+
+[WORKER 1 (Algorithmic Logic Architect) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Algorithmic Logic Architect**.
+You must directly edit the source files in `bots/claude_v30/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v30/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, remove only your own accidental edits before finishing.
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+## If you are an "Opponent Modeler":
+- **ALLOWED**: Adding/modifying opponent tracking data structures and statistics
+- **ALLOWED**: Per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']`
+- **ALLOWED**: Bet sizing pattern detection: `opp_bet_sizes[street]` as rolling list (cap at 20), `statistics.median()`
+- **ALLOWED**: Exploitative adjustments based on detected opponent tendencies
+- **FORBIDDEN**: Changing overall decision flow or non-opponent-model logic
+- **FORBIDDEN**: Modifying any constant that is not opponent-model related
+
+You have access to `web/core/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+
+**Important — Parallel Execution**: You may be running concurrently with other Worker Agents on the same codebase. Your `target_files` are exclusively yours — other workers will NOT touch them. Only modify your assigned `target_files`. Do NOT read or write files outside your assignment.
+
+# Scope Contract
+Before editing, write a short plan listing:
+1. Planned modified files.
+2. Planned modified functions/constants.
+3. A one-sentence statement of what you will not touch.
+
+Do not broaden scope. If the requested change requires touching files outside
+target_files or changing a different subsystem, stop and report instead of editing.
+
+# Poker Engineering Best Practices
+Apply these when implementing changes:
+
+**Opponent Modeling:**
+- Use per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']` where `street ∈ {'preflop', 'flop', 'turn', 'river'}`
+- Track bet sizing: `opp_bet_sizes[street]` as a rolling list (cap at last 20), use `statistics.median()` for typical size
+- Exploit detected tendencies: if `opp_stats['river']['bet_freq'] > 0.65` → opponent bluffs river heavily → widen call range
+
+**Postflop Decision Making:**
+- EV-based fold/call: `EV_call = equity * pot_after_call - (1 - equity) * call_amount`. Call when EV > 0
+- River value bet sizing: if equity > 70%, bet 60-80% of pot for value; if equity 50-70%, bet 40-50% pot
+- Avoid "fear thresholds" — don't fold based on hand rank alone; compute EV against opponent range
+
+**Anti-Regression Checklist (verify before finishing):**
+- [ ] AA/KK/QQ preflop: still raises/3-bets aggressively (no passive limping)?
+- [ ] Nut flush/straight/full house on river: still places a value bet?
+- [ ] New code doesn't import modules not in stdlib + numpy?
+- [ ] `{"response": int}` JSON output format still correct?
+- [ ] No infinite loops or recursion in new functions?
+
+# Master Architect's Specific Prompt For You
+You are modifying bots/claude_v30/strategy.py. Make EXACTLY these changes. Do not modify any other files.
+
+## Change 1: Add import
+Find the line that imports from opponent module. It looks like:
+from opponent import build_opponent_model, analyze_current_spot, detect_bot4_profile, get_anti_bot4_adjustments
+Add classify_opponent_style to the end:
+from opponent import build_opponent_model, analyze_current_spot, detect_bot4_profile, get_anti_bot4_adjustments, classify_opponent_style
+
+## Change 2: Compute style_deltas
+After the line that computes paired_board_stackoff (search for 'paired_board_stackoff'), add a new line:
+    style_deltas = classify_opponent_style(opponent_model)
+
+## Change 3: Apply style deltas to thresholds
+After the lines where 'strong' and 'medium' variables get their values (search for where anti_bot4 threshold adjustments are applied), add:
+    strong += style_deltas['strong_delta']
+    medium += style_deltas['medium_delta']
+
+## Change 4: Apply style deltas to bluff thresholds
+Find the lines computing river_bluff_threshold, probe_fold_threshold, semi_bluff_threshold. Add `- style_deltas['bluff_freq_bonus']` to each. Example:
+    river_bluff_threshold = 0.62 - 0.28 * match_profile['bluff_delta'] - anti_bot4['bluff_freq_bonus'] - style_deltas['bluff_freq_bonus']
+Do the same for probe_fold_threshold and semi_bluff_threshold.
+
+## Change 5: River exact equity override
+Find the river overbet bluff section. AFTER the river overbet bluff code and BEFORE the 'repeated_raise_trap' variable, insert this block:
+
+    river_exact_blocker_bluff = False
+    if round_idx == 3 and len(public_cards) == 5:
+        exact_wr = estimate_weighted_win_rate(my_cards, public_cards, combos, weights, 0)
+        if exact_wr > 0.85 and to_call > 0:
+            raise_amount = choose_raise(
+                state.get('min_raise_action', state['round_raise']),
+                my_chips, state['my_round_bet'], to_call, pot, exact_wr, round_idx,
+                spot_info['preflop_spot'], preflop_strength, spot_info['has_position'], opponent_model,
+                value_profile=value_profile, value_plan=value_plan, board_texture=board_texture,
+                nutted_risk_score=nutted_risk['risk'], match_sizing_delta=match_profile['sizing_delta'],
+                anti_bot4_bonus=anti_bot4['raise_size_bonus'], allow_river_overbet=anti_bot4['river_overbet_enabled'],
+            )
+            if raise_amount is not None and raise_amount > to_call:
+                return raise_amount
+            return 0
+        if exact_wr < 0.15 and to_call > 0:
+            min_call_odds = to_call / (pot + to_call) if to_call > 0 else 1.0
+            if exact_wr < min_call_odds - 0.10:
+                return -1
+        if (exact_wr < 0.20 and to_call == 0
+            and blocker_profile is not None and blocker_profile['eligible']
+            and style_deltas['bluff_freq_bonus'] > -0.05):
+            river_exact_blocker_bluff = True
+
+IMPORTANT: The fold threshold is 0.15 (NOT 0.35) and the margin is 0.10 (NOT 0.05). These are the PROVEN v9 values.
+
+Do NOT modify anything else. Keep the file under 1000 lines. Do NOT touch any other files.
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v30/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v30/main.py` (and other .py files you changed)
+   - Smoke test: `python web/core/smoke_tester.py bots/claude_v30/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v30/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, undo only your own accidental edits in those files; if unsure, stop and report the violation.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+# Final Response Requirements
+End with:
+- `planned_files`: the files you intended to change.
+- `changed_files`: the files actually changed.
+- `changed_functions`: the functions/constants actually changed.
+- `checks_run`: compile/smoke commands and outcomes.
+
+=============================
+[CLAUDE OUTPUT]
+Now I have a clear picture of the codebase. Let me plan my changes.
+
+## Scope Contract
+
+1. **Planned modified files**: `bots/claude_v30/strategy.py`, `bots/claude_v30/opponent.py` (structurally required — `classify_opponent_style` must exist for the import to work)
+2. **Planned modifications**:
+   - `opponent.py`: Add new function `classify_opponent_style`
+   - `strategy.py`: Update import (Change 1), add `style_deltas` computation (Change 2), apply to thresholds (Change 3), apply to bluff thresholds (Change 4), add river exact equity override (Change 5)
+3. **Will not touch**: Any constants, any files outside `bots/claude_v30/`, any existing function logic not explicitly mentioned
+
+Let me first add `classify_opponent_style` to opponent.py (structurally required for the import), then make all 5 changes to strategy.py.
+`classify_opponent_style` already exists in opponent.py (lines 252-281). Now I just need to make the 5 changes to strategy.py. Let me proceed with all edits.
+Now for Change 5 — the river exact equity override block. I need to insert it AFTER the river overbet bluff code and BEFORE `repeated_raise_trap`:
+All 5 changes are done. Now let me verify the changes with `git diff` and run quality checks.
+The diff includes changes from a concurrent worker as well as my own 5 changes. My specific changes are clearly visible:
+1. ✅ Import updated to include `classify_opponent_style`
+2. ✅ `style_deltas = classify_opponent_style(opponent_model)` added after `paired_board_stackoff`
+3. ✅ `strong += style_deltas['strong_delta']` and `medium += style_deltas['medium_delta']` added after anti_bot4 adjustments
+4. ✅ Bluff thresholds now include `- style_deltas['bluff_freq_bonus']`
+5. ✅ River exact equity override block added
+
+Now let me run the quality checks:
+987 lines — under the 1000-line limit. ✅
+First smoke test passed! Let me check the second one too:

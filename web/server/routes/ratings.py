@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
@@ -95,7 +95,7 @@ async def get_rating_detail(bot_name: str):
     bot_stats_data = _cached_read("bot_stats", BOT_STATS_FILE) or {}
     h2h_data = _cached_read("h2h", H2H_FILE) or {}
     if not data or bot_name not in data:
-        return {"error": "Bot not found"}
+        raise HTTPException(status_code=404, detail="Bot not found")
     d = data[bot_name]
     r, rd = d["r"], d["rd"]
     bs = bot_stats_data.get(bot_name, {})
@@ -222,7 +222,7 @@ async def update_experience(req: ExperienceUpdateRequest):
         lines = req.content.count("\n") + 1
         return {"saved": True, "lines": lines, "chars": len(req.content)}
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/experience/append")
@@ -230,7 +230,7 @@ async def append_experience(req: ExperienceAppendRequest):
     """Append a new lesson to experience_pool.md."""
     lesson = req.lesson.strip()
     if not lesson:
-        return {"error": "lesson is empty"}
+        raise HTTPException(status_code=400, detail="lesson is empty")
     try:
         existing = EXPERIENCE_FILE.read_text(encoding="utf-8") if EXPERIENCE_FILE.exists() else ""
         separator = "\n\n" if existing and not existing.endswith("\n\n") else ""
@@ -238,7 +238,7 @@ async def append_experience(req: ExperienceAppendRequest):
         EXPERIENCE_FILE.write_text(new_content, encoding="utf-8")
         return {"appended": True, "lesson": lesson, "total_chars": len(new_content)}
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/daemon/status")

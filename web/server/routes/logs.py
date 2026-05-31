@@ -3,7 +3,7 @@
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -34,7 +34,7 @@ async def get_log(version: str, filename: str, tail: int = Query(0)):
     # Resolve to prevent path traversal (e.g. version="../../etc")
     resolved = (RESULTS_DIR / version / "logs" / filename).resolve()
     if not resolved.is_relative_to(RESULTS_DIR.resolve()):
-        return {"error": "Invalid path", "content": ""}
+        raise HTTPException(status_code=400, detail="Invalid path")
     path = resolved
     if not path.is_file():
         return {"version": version, "filename": filename, "content": ""}

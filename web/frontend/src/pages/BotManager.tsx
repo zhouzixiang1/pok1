@@ -385,7 +385,7 @@ export default function BotManager() {
               className="w-24 px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-gray-700 rounded"
             >
               <option value="">选择</option>
-              {bots.map((b) => <option key={b.version} value={String(b.version)}>v{b.version}</option>)}
+              {bots.filter((b) => b.completed).map((b) => <option key={b.version} value={String(b.version)}>v{b.version}</option>)}
             </select>
           </div>
           <div>
@@ -396,7 +396,7 @@ export default function BotManager() {
               className="w-24 px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-gray-700 rounded"
             >
               <option value="">选择</option>
-              {bots.map((b) => <option key={b.version} value={String(b.version)}>v{b.version}</option>)}
+              {bots.filter((b) => b.completed).map((b) => <option key={b.version} value={String(b.version)}>v{b.version}</option>)}
             </select>
           </div>
           <div>

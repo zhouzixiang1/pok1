@@ -1,0 +1,385 @@
+
+[LEAD CODE REVIEWER PROMPT]
+=============================
+# Role
+You are the strict Lead Code Reviewer (Critic) for a Texas Hold'em poker bot team.
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files.
+- **Use the Bash tool** to run git diff and other commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Task
+Worker Agents have modified the bot codebase based on the Master Architect's instructions.
+Your job is the final quality gate before production (the next evolution iteration).
+
+# Context
+1. **Master's Original Plan/Tasks:**
+[
+  {
+    "role": "test",
+    "target_files": [
+      "strategy.py"
+    ]
+  }
+]
+
+2. **Bot directory**: `bots/claude_v30/`
+3. **Parent version tag**: `bot-v8`
+
+# How to Review
+You have full access to git and file reading tools. Use them:
+
+1. **See all changes**: Run `git diff bot-v8 -- bots/claude_v30/`
+   This shows exactly what the workers changed vs the parent bot.
+2. **See change summary**: Run `git diff --stat bot-v8 -- bots/claude_v30/`
+3. **Read specific files**: Use the Read tool on any file in `bots/claude_v30/`
+4. **List all files**: Run `ls bots/claude_v30/` to see the full file list
+5. **Inspect gate context if present**: Read `web/core/results/pipeline_state.json` and check `gate_results.quality`, especially `critical_failures`.
+
+Focus your review on the diff, but read full files when you need more context.
+
+# Rules
+1. Verify the changes fulfill the Master's instructions without logical flaws or contradictions.
+2. ENFORCE THE DUAL-TRACK BOUNDARY:
+   - If a "Hyperparameter Tuner" was assigned, verify they ONLY changed constants/thresholds. If they injected complex new logic, REJECT.
+   - If an "Algorithmic Logic Architect" was assigned, verify their logic is sound.
+3. Ensure the code compiles conceptually and adheres to the `{"response": int}` JSON output format constraint.
+4. Output exactly ONE JSON block containing your decision. If you reject the code, you must provide a detailed "feedback" string explaining what the Developer Agents need to fix.
+5. FILE SIZE CONSTRAINT: No single .py file should exceed 1000 lines. If any file is too large, REJECT and instruct workers to split it into focused modules. Keep main.py as the slim entry point.
+6. Reject if the implementation passes aggregate tests but fails a critical scenario,
+   or if the diff makes attribution impossible for the stated generation objective.
+7. Reject if a Hyperparameter Tuner changed non-numeric text, added functions/classes/imports, or added control flow.
+
+# Correctness Criteria (MANDATORY CHECK)
+Before approving, verify the bot does NOT do any of the following:
+- Fold premium hands (AA, KK, QQ, AKs) preflop without extreme pressure
+- Call all-in with obviously dominated hands on the river
+- Return invalid JSON (must output `{"response": <int>}`)
+- Use `input()` or `print()` instead of stdin/stdout for game communication
+- Import unavailable modules (only stdlib + numpy if present)
+- Have obvious infinite loops or unbounded recursion
+- Mix unrelated subsystem rewrites in a way that prevents attribution to the Master's `targeted_failure`
+
+# Output Format
+You MUST output your response containing exactly ONE JSON block formatted as follows:
+
+```json
+{
+  "approved": true or false,
+  "feedback": "If approved=false, provide detailed instructions on what needs to be fixed. If true, this can be empty.",
+  "quality_score": 7,
+  "change_summary": "A 1-2 sentence summary of the key changes made in this generation.",
+  "risk_areas": ["List of potential risks or concerns about the changes, if any"]
+}
+```
+
+# Quality Score Rubric
+- **9-10**: Clean, well-structured changes that clearly improve strategy. No risks. Code is concise and follows project conventions.
+- **7-8**: Good changes that address the plan. Minor concerns (e.g., slightly verbose code, a heuristic that might not generalize). Approve.
+- **5-6**: Changes work but are mediocre — copy-pasted code, brute-force approaches where elegant solutions exist, or unclear strategy. Approve with caution.
+- **3-4**: Changes introduce regression risk, violate role boundaries, or show fundamental misunderstanding of poker strategy. REJECT.
+- **1-2**: Broken code, catastrophic strategic errors (folding AA preflop), or complete failure to follow instructions. REJECT.
+
+- `change_summary`: Required even when approved=true. This is used to update the experience pool for future generations.
+- `risk_areas`: Optional. List potential issues that could cause regression.
+
+=============================
+[CLAUDE OUTPUT]
+Critical findings already: `main_backup.py` is 3268 lines (exceeds 1000-line limit), and the entire directory is new (6640 insertions) while the Master only targeted `strategy.py`. Let me dig deeper.
+Now I have a complete picture. Let me verify the file size constraint violation and check for any pipeline state.
+I've completed my comprehensive review. Here is my verdict:
+
+```json
+{
+  "approved": false,
+  "feedback": "REJECT: `main_backup.py` is 3268 lines — 3x over the 1000-line hard limit (MAX_LINES_PER_FILE=1000). This file is dead code: it is never imported or referenced by any other module in the bot. It appears to be an old monolithic backup left behind during the modular refactoring. The workers MUST delete `main_backup.py` entirely — it serves no purpose and cannot be split into 'focused modules' since it's just an obsolete artifact.\n\nAdditionally, the Master's plan specified only `strategy.py` as the target file with role 'test', yet all 11 files in `bots/claude_v30/` are new. While new-version directory copies are expected, the workers failed to clean up the unnecessary backup file. After deleting `main_backup.py`, verify all remaining files stay under 1000 lines (postflop.py at 999 lines and strategy.py at 987 lines are dangerously close and should be monitored).\n\nAside from the dead backup file, the code quality is reasonable: clean modular architecture, correct JSON protocol (`{\"response\": int}`), proper stdlib-only imports, sound preflop strength tables, and well-structured opponent modeling. Fix the file size violation and resubmit.",
+  "quality_score": 5,
+  "change_summary": "Complete bot creation for claude_v30 with modular architecture (betting, postflop, opponent, simulation, state, strategy, tournament, constants, card_utils modules). Includes preflop 169-hand lookup table, opponent modeling with bot4 exploitation, equity realization adjustments, river overbet/bluff logic, anti-lock pressure, and match risk profiles. Marred by an unneeded 3268-line backup file violating the 1000-line limit.",
+  "risk_areas": [
+    "main_backup.py at 3268 lines is a hard file-size violation and must be deleted",
+    "postflop.py (999 lines) and strategy.py (987 lines) are at the razor's edge of the 1000-line limit — any future additions will breach it",
+    "Master's task role was 'test' targeting only strategy.py, but the entire 11-file bot was created — scope attribution is unclear",
+    "simulation.py uses random.random()/random.sample() for Monte Carlo which is nondeterministic — acceptable for simulation but could cause reproducibility issues"
+  ]
+}
+```
+
+[LEAD CODE REVIEWER PROMPT]
+=============================
+# Role
+You are the strict Lead Code Reviewer (Critic) for a Texas Hold'em poker bot team.
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files.
+- **Use the Bash tool** to run git diff and other commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Task
+Worker Agents have modified the bot codebase based on the Master Architect's instructions.
+Your job is the final quality gate before production (the next evolution iteration).
+
+# Context
+1. **Master's Original Plan/Tasks:**
+[
+  {
+    "role": "Algorithmic Logic Architect",
+    "target_files": [
+      "strategy.py"
+    ],
+    "description": "Port river exact equity override and style deltas from v9"
+  },
+  {
+    "role": "Algorithmic Logic Architect",
+    "target_files": [
+      "opponent.py"
+    ],
+    "description": "Add classify_opponent_style function"
+  }
+]
+
+2. **Bot directory**: `bots/claude_v30/`
+3. **Parent version tag**: `bot-v8`
+
+# How to Review
+You have full access to git and file reading tools. Use them:
+
+1. **See all changes**: Run `git diff bot-v8 -- bots/claude_v30/`
+   This shows exactly what the workers changed vs the parent bot.
+2. **See change summary**: Run `git diff --stat bot-v8 -- bots/claude_v30/`
+3. **Read specific files**: Use the Read tool on any file in `bots/claude_v30/`
+4. **List all files**: Run `ls bots/claude_v30/` to see the full file list
+5. **Inspect gate context if present**: Read `web/core/results/pipeline_state.json` and check `gate_results.quality`, especially `critical_failures`.
+
+Focus your review on the diff, but read full files when you need more context.
+
+# Rules
+1. Verify the changes fulfill the Master's instructions without logical flaws or contradictions.
+2. ENFORCE THE DUAL-TRACK BOUNDARY:
+   - If a "Hyperparameter Tuner" was assigned, verify they ONLY changed constants/thresholds. If they injected complex new logic, REJECT.
+   - If an "Algorithmic Logic Architect" was assigned, verify their logic is sound.
+3. Ensure the code compiles conceptually and adheres to the `{"response": int}` JSON output format constraint.
+4. Output exactly ONE JSON block containing your decision. If you reject the code, you must provide a detailed "feedback" string explaining what the Developer Agents need to fix.
+5. FILE SIZE CONSTRAINT: No single .py file should exceed 1000 lines. If any file is too large, REJECT and instruct workers to split it into focused modules. Keep main.py as the slim entry point.
+6. Reject if the implementation passes aggregate tests but fails a critical scenario,
+   or if the diff makes attribution impossible for the stated generation objective.
+7. Reject if a Hyperparameter Tuner changed non-numeric text, added functions/classes/imports, or added control flow.
+
+# Correctness Criteria (MANDATORY CHECK)
+Before approving, verify the bot does NOT do any of the following:
+- Fold premium hands (AA, KK, QQ, AKs) preflop without extreme pressure
+- Call all-in with obviously dominated hands on the river
+- Return invalid JSON (must output `{"response": <int>}`)
+- Use `input()` or `print()` instead of stdin/stdout for game communication
+- Import unavailable modules (only stdlib + numpy if present)
+- Have obvious infinite loops or unbounded recursion
+- Mix unrelated subsystem rewrites in a way that prevents attribution to the Master's `targeted_failure`
+
+# Output Format
+You MUST output your response containing exactly ONE JSON block formatted as follows:
+
+```json
+{
+  "approved": true or false,
+  "feedback": "If approved=false, provide detailed instructions on what needs to be fixed. If true, this can be empty.",
+  "quality_score": 7,
+  "change_summary": "A 1-2 sentence summary of the key changes made in this generation.",
+  "risk_areas": ["List of potential risks or concerns about the changes, if any"]
+}
+```
+
+# Quality Score Rubric
+- **9-10**: Clean, well-structured changes that clearly improve strategy. No risks. Code is concise and follows project conventions.
+- **7-8**: Good changes that address the plan. Minor concerns (e.g., slightly verbose code, a heuristic that might not generalize). Approve.
+- **5-6**: Changes work but are mediocre — copy-pasted code, brute-force approaches where elegant solutions exist, or unclear strategy. Approve with caution.
+- **3-4**: Changes introduce regression risk, violate role boundaries, or show fundamental misunderstanding of poker strategy. REJECT.
+- **1-2**: Broken code, catastrophic strategic errors (folding AA preflop), or complete failure to follow instructions. REJECT.
+
+- `change_summary`: Required even when approved=true. This is used to update the experience pool for future generations.
+- `risk_areas`: Optional. List potential issues that could cause regression.
+
+=============================
+[CLAUDE OUTPUT]
+Let me read the target files and check for critical issues:
+Now let me check the parent v8 to understand what was ported, and verify line counts:
+Let me check the v9 source for the river exact equity logic to verify the port:
+Now I have a complete picture. Let me do a final verification of the critical correctness criteria:
+All verification complete. Here is my review:
+
+---
+
+## Code Review: v8 → v30
+
+### Changes Verified
+
+**Only two files modified** (strategy.py, opponent.py) — all other 9 files are byte-identical to v8. Excellent attribution.
+
+**Task 1 — River exact equity override (strategy.py):**
+- Correctly ported from v9 with deliberate adjustments: fold consideration threshold widened from 0.15→0.35, fold margin tightened from 0.10→0.05
+- Uses `estimate_weighted_win_rate(..., 0)` for exact equity on river (5 community cards)
+- Three branches: value raise (>0.85), fold (<pot_odds - 0.05), blocker bluff enablement (<0.20)
+- Logic is sound — fold only triggers when equity is meaningfully below pot odds
+
+**Task 2 — classify_opponent_style (opponent.py + strategy.py integration):**
+- Clean 4-archetype classifier: Nit, Maniac, Calling Station, Fold-heavy
+- Confidence gate at 0.15 prevents bad adjustments with sparse data
+- Deltas correctly applied to strong/medium thresholds and all three bluff thresholds
+
+**River fold threshold divergence from v9 (0.35 vs 0.15):** This is a meaningful strategic adjustment but is defensible — the actual fold decision still depends on pot odds (`exact_wr < min_call_odds - 0.05`), so the bot won't fold hands getting correct odds. The wider threshold simply evaluates more marginal spots for potential folds.
+
+**Unused variables:** `river_exact_blocker_bluff`, `call_aggression_bonus`, `fold_vs_passive_bonus` are set but never consumed — faithful to v9's implementation. Minor dead code, not harmful.
+
+```json
+{
+  "approved": true,
+  "feedback": "",
+  "quality_score": 8,
+  "change_summary": "Ported river exact equity override from v9 (computes exact win rate on river with 5 community cards for value-raise/fold/bluff decisions with widened fold threshold 0.35) and added opponent style classification (Nit/Maniac/Calling Station/Fold-heavy archetypes) that adjusts strong/medium/bluff thresholds based on observed opponent tendencies.",
+  "risk_areas": [
+    "River fold consideration threshold widened from v9's 0.15 to 0.35 — could fold some marginal river hands that v8 would have called with; needs regression testing",
+    "postflop.py is at 999 lines — any future additions will exceed the 1000-line limit and require splitting",
+    "Three delta fields (river_exact_blocker_bluff, call_aggression_bonus, fold_vs_passive_bonus) are computed but never consumed — dead code that could confuse future workers"
+  ]
+}
+```
+
+[LEAD CODE REVIEWER PROMPT]
+=============================
+# Role
+You are the strict Lead Code Reviewer (Critic) for a Texas Hold'em poker bot team.
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files.
+- **Use the Bash tool** to run git diff and other commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Task
+Worker Agents have modified the bot codebase based on the Master Architect's instructions.
+Your job is the final quality gate before production (the next evolution iteration).
+
+# Context
+1. **Master's Original Plan/Tasks:**
+[
+  {
+    "role": "Algorithmic Logic Architect",
+    "target_files": [
+      "strategy.py"
+    ]
+  },
+  {
+    "role": "Algorithmic Logic Architect",
+    "target_files": [
+      "opponent.py"
+    ]
+  }
+]
+
+2. **Bot directory**: `bots/claude_v30/`
+3. **Parent version tag**: `bot-v8`
+
+# How to Review
+You have full access to git and file reading tools. Use them:
+
+1. **See all changes**: Run `git diff bot-v8 -- bots/claude_v30/`
+   This shows exactly what the workers changed vs the parent bot.
+2. **See change summary**: Run `git diff --stat bot-v8 -- bots/claude_v30/`
+3. **Read specific files**: Use the Read tool on any file in `bots/claude_v30/`
+4. **List all files**: Run `ls bots/claude_v30/` to see the full file list
+5. **Inspect gate context if present**: Read `web/core/results/pipeline_state.json` and check `gate_results.quality`, especially `critical_failures`.
+
+Focus your review on the diff, but read full files when you need more context.
+
+# Rules
+1. Verify the changes fulfill the Master's instructions without logical flaws or contradictions.
+2. ENFORCE THE DUAL-TRACK BOUNDARY:
+   - If a "Hyperparameter Tuner" was assigned, verify they ONLY changed constants/thresholds. If they injected complex new logic, REJECT.
+   - If an "Algorithmic Logic Architect" was assigned, verify their logic is sound.
+3. Ensure the code compiles conceptually and adheres to the `{"response": int}` JSON output format constraint.
+4. Output exactly ONE JSON block containing your decision. If you reject the code, you must provide a detailed "feedback" string explaining what the Developer Agents need to fix.
+5. FILE SIZE CONSTRAINT: No single .py file should exceed 1000 lines. If any file is too large, REJECT and instruct workers to split it into focused modules. Keep main.py as the slim entry point.
+6. Reject if the implementation passes aggregate tests but fails a critical scenario,
+   or if the diff makes attribution impossible for the stated generation objective.
+7. Reject if a Hyperparameter Tuner changed non-numeric text, added functions/classes/imports, or added control flow.
+
+# Correctness Criteria (MANDATORY CHECK)
+Before approving, verify the bot does NOT do any of the following:
+- Fold premium hands (AA, KK, QQ, AKs) preflop without extreme pressure
+- Call all-in with obviously dominated hands on the river
+- Return invalid JSON (must output `{"response": <int>}`)
+- Use `input()` or `print()` instead of stdin/stdout for game communication
+- Import unavailable modules (only stdlib + numpy if present)
+- Have obvious infinite loops or unbounded recursion
+- Mix unrelated subsystem rewrites in a way that prevents attribution to the Master's `targeted_failure`
+
+# Output Format
+You MUST output your response containing exactly ONE JSON block formatted as follows:
+
+```json
+{
+  "approved": true or false,
+  "feedback": "If approved=false, provide detailed instructions on what needs to be fixed. If true, this can be empty.",
+  "quality_score": 7,
+  "change_summary": "A 1-2 sentence summary of the key changes made in this generation.",
+  "risk_areas": ["List of potential risks or concerns about the changes, if any"]
+}
+```
+
+# Quality Score Rubric
+- **9-10**: Clean, well-structured changes that clearly improve strategy. No risks. Code is concise and follows project conventions.
+- **7-8**: Good changes that address the plan. Minor concerns (e.g., slightly verbose code, a heuristic that might not generalize). Approve.
+- **5-6**: Changes work but are mediocre — copy-pasted code, brute-force approaches where elegant solutions exist, or unclear strategy. Approve with caution.
+- **3-4**: Changes introduce regression risk, violate role boundaries, or show fundamental misunderstanding of poker strategy. REJECT.
+- **1-2**: Broken code, catastrophic strategic errors (folding AA preflop), or complete failure to follow instructions. REJECT.
+
+- `change_summary`: Required even when approved=true. This is used to update the experience pool for future generations.
+- `risk_areas`: Optional. List potential issues that could cause regression.
+
+=============================
+[CLAUDE OUTPUT]
+Let me examine the parent bot and understand the full context of changes.
+Now let me check if any other files were modified from the parent, and verify the file sizes.
+Good - only the two target files changed. Let me now read the new code in detail.
+Let me verify the simulation function handles 0 simulations correctly and check for the dead code variable.
+Let me verify the code compiles and check for the anti-lock concern.
+Now I have a complete picture. Let me compile my review findings.
+
+## Review Summary
+
+**Changes identified** (only 2 of 11 files modified from parent):
+1. **`opponent.py`** (249→281 lines): Added `classify_opponent_style()` function — classifies opponent into 4 archetypes (tight-passive, LAG, calling station, fit-or-fold) based on VPIP/PFR/fold_to_raise/postflop_aggr stats, returning adjustment deltas.
+2. **`strategy.py`** (960→987 lines): Integrated style deltas into threshold calculations, added river exact equity early-return block, and applied bluff frequency adjustments per opponent style.
+
+**Positive findings:**
+- ✅ Code compiles cleanly
+- ✅ Opponent style classification is directionally correct for all 4 archetypes (verified with test runs)
+- ✅ Delta magnitudes are conservative (max ±0.03 for thresholds, ±0.12 for bluff frequency)
+- ✅ Confidence gate (0.15) prevents acting on unreliable opponent data
+- ✅ Only target files were modified — no role boundary violations
+- ✅ All files under 1000-line limit (strategy.py at 987 is closest)
+- ✅ No JSON output format issues; returns valid integers
+- ✅ No use of `input()`/`print()` for game communication
+
+**Issues found:**
+1. **Dead code — `river_exact_blocker_bluff`** (lines 410/432): Variable is assigned but never referenced anywhere in the function. The intended river blocker bluff integration was never completed.
+2. **Unused deltas** — `call_aggression_bonus` and `fold_vs_passive_bonus` from `classify_opponent_style()` are computed but never consumed in strategy.py.
+3. **Redundant computation** — The river exact equity block at line 412 recomputes `estimate_weighted_win_rate` with 0 simulations, but `SIMULATIONS_BY_PUBLIC_COUNT[5]` is already 0, so the initial `win_rate` at line 313 already returns the exact same value.
+4. **Minor anti-lock bypass** — The early fold at line 428 (`return -1`) doesn't check `anti_lock_pressure`, potentially folding in a tournament-critical spot. However, the condition is extreme (<15% equity, 10%+ below pot odds), making this a negligible edge case.
+
+```json
+{
+  "approved": true,
+  "feedback": "",
+  "quality_score": 7,
+  "change_summary": "Added opponent style classification (tight-passive/LAG/calling-station/fit-or-fold) via new classify_opponent_style() in opponent.py, integrated into strategy.py thresholds and bluff frequency adjustments. Also added a river exact equity early-return block for value raises with >85% equity and folds with <15% equity.",
+  "risk_areas": [
+    "Dead code: river_exact_blocker_bluff variable assigned but never used — suggests incomplete blocker bluff integration on river",
+    "Two unused deltas (call_aggression_bonus, fold_vs_passive_bonus) computed but never consumed — wasted computation and suggests partial implementation",
+    "River exact equity block redundantly recomputes win_rate (already exact when len(public_cards)==5)",
+    "River early fold bypasses anti-lock pressure checks — negligible in practice but inconsistent with defensive pattern used elsewhere",
+    "strategy.py at 987 lines is very close to 1000-line limit — future additions will require splitting"
+  ]
+}
+```

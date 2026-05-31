@@ -45,6 +45,7 @@ These are specialized tools for the evolution pipeline. Call them directly — y
 - **prepare_next_gen(source_v, next_v)** — Copy source bot directory to prepare for modifications.
 - **commit_bot(version, source_v, strategy, review_approved)** — Git commit and tag the new bot.
 - **reap_weakest** — Cull weakest bot (by H2H avg win rate) if pool exceeds 30.
+- **cleanup_incomplete** — Remove orphaned bot directories that have no `.completed` and no git tag. Call during housekeeping if `get_status` reports incomplete directories.
 - **trim_experience** — Trim experience pool to recent entries.
 - **consolidate_experience** — LLM-based deduplication of experience pool (produces categorised format).
 - **analyze_stagnation(source_v, active_bots)** — Analyze if evolution is stagnating. Only call when `rating_reliable: true`.
@@ -63,7 +64,7 @@ A generation must follow this order. You may choose retry/branch/crossover detai
    - If `current_v: 0` or no completed bots, call `seed_initial_bots()` first to bootstrap v1–v6 from reference bots.
    - Check `incomplete_next_v`: if set, a previous cycle was interrupted. Decide: resume workers or clean up and restart.
    - Check `rating_reliable`: if false (games < 100), do NOT make stagnation/branch decisions.
-2. **Housekeeping** → `reap_weakest()` if needed, `trim_experience()`
+2. **Housekeeping** → `reap_weakest()` if needed, `cleanup_incomplete()` if incomplete directories exist, `trim_experience()`
 3. **Wait for evaluation** → `wait_for_eval(version=source_v, timeout=600, min_games=100)`
    - If `eval_completed: false`, ratings are preliminary — skip stagnation analysis.
 3.5. **Stagnation analysis** → `analyze_stagnation(source_v, active_bots)` (only when `rating_reliable: true`)

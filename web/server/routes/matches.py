@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RESULTS_DIR = PROJECT_ROOT / "web" / "core" / "results"
@@ -134,7 +134,7 @@ async def recent_matches(limit: int = Query(50, le=200)):
 async def match_replay(match_id: str):
     path = (REPLAY_DIR / match_id).resolve()
     if not path.is_relative_to(REPLAY_DIR.resolve()) or not path.is_file():
-        return {"error": "Match not found"}
+        raise HTTPException(status_code=404, detail="Match not found")
     return _read_locked(path)
 
 
@@ -142,7 +142,7 @@ async def match_replay(match_id: str):
 async def match_commentary(match_id: str):
     path = (REPLAY_DIR / match_id).resolve()
     if not path.is_relative_to(REPLAY_DIR.resolve()) or not path.is_file():
-        return {"error": "Match not found"}
+        raise HTTPException(status_code=404, detail="Match not found")
 
     COMMENTARY_DIR = RESULTS_DIR / "commentary"
     cache_path = (COMMENTARY_DIR / match_id).resolve()

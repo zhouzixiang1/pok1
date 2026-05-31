@@ -55,6 +55,13 @@ class AppState:
         with self._lock:
             self.running = running
 
+    def try_set_running(self, running: bool) -> bool:
+        with self._lock:
+            if self.running == running:
+                return False
+            self.running = running
+            return True
+
     def set_generation(self, current_v: int, next_v: int):
         with self._lock:
             self.current_v = current_v

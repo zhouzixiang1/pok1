@@ -280,14 +280,18 @@ async def reap_weakest(args):
 
     graveyard = PROJECT_ROOT / "bots" / "graveyard"
     graveyard.mkdir(exist_ok=True)
-    shutil.move(PROJECT_ROOT / "bots" / culled_name, graveyard / culled_name)
+    target = graveyard / culled_name
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.move(PROJECT_ROOT / "bots" / culled_name, target)
 
-    # Clean up ratings, bot_stats, and h2h data
+    # Clean up ratings
     if culled_name in ratings:
         del ratings[culled_name]
-    from elo_daemon import save_ratings
-    save_ratings(ratings)
+    with locked_file(RATINGS_FILE, "w") as f:
+        json.dump({k: v.to_dict() for k, v in ratings.items()}, f, indent=2)
 
+    # Clean up bot_stats
     if BOT_STATS_FILE.exists():
         try:
             with locked_file(BOT_STATS_FILE, "r+") as f:
@@ -299,6 +303,7 @@ async def reap_weakest(args):
                     json.dump(bs, f, indent=2)
         except Exception:
             pass
+    # Clean up H2H data
     if H2H_FILE.exists():
         try:
             with locked_file(H2H_FILE, "r+") as f:
@@ -315,6 +320,10 @@ async def reap_weakest(args):
         except Exception:
             pass
 
+    # Signal daemon to immediately refresh bot list
+    reap_signal = Path(__file__).parent / "results" / ".reap_signal"
+    reap_signal.touch()
+
     return {"content": [{"type": "text", "text": json.dumps({
         "reaped": True,
         "culled": culled_name,
@@ -322,6 +331,25 @@ async def reap_weakest(args):
         "rating": {"r": round(weakest[1].r, 1), "rd": round(weakest[1].rd, 1)},
         "remaining": len(active_bots) - 1,
     })}]}
+
+
+class CleanupIncompleteInput(TypedDict):
+    pass
+
+
+@tool("cleanup_incomplete", "Remove bot directories without .completed that have no git tag.", {})
+async def cleanup_incomplete(args):
+    cleaned = []
+    bots_dir = PROJECT_ROOT / "bots"
+    if bots_dir.exists():
+        for d in sorted(bots_dir.iterdir()):
+            if d.is_dir() and d.name.startswith("claude_v"):
+                if not (d / ".completed").exists():
+                    v = int(d.name.split("_v")[1])
+                    if not git_has_tag(v):
+                        shutil.rmtree(d)
+                        cleaned.append(d.name)
+    return {"content": [{"type": "text", "text": json.dumps({"cleaned": cleaned, "count": len(cleaned)})}]}
 
 
 class TrimExperienceInput(TypedDict):

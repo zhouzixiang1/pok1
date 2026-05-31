@@ -92,7 +92,7 @@ All shared file reads use `fcntl.LOCK_SH` (shared) / `fcntl.LOCK_EX` (exclusive)
 ### Bot Versioning & Conventions
 
 - Bots: `bots/claude_v{N}/` (N monotonically increasing). `.completed` sentinel + `bot-v{N}` git tag.
-- Pool capped at 30 active; weakest culled by conservative rating (`r - 2*rd`) to `bots/graveyard/`.
+- Pool capped at 30 active; weakest culled by H2H average win rate to `bots/graveyard/`.
 - Cards: integers 0-51. `number = card // 4 + 2` (2-14 = 2-A), `suit = card % 4` (0=♥, 1=♦, 2=♠, 3=♣).
 - Bot protocol: JSON on stdin/stdout. `0`=check/call, `-1`=fold, `-2`=all-in, `>0`=raise. 30s timeout per decision.
 - Each game = 50 hands, 20000 chips, blinds 50/100. Botzone game ID: `63dcfaddee1bce5e6c8f4b53`.

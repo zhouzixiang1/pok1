@@ -1,0 +1,91 @@
+
+[PERFORMANCE ANALYST PROMPT]
+=============================
+You are a Performance Verification Analyst for a self-evolving poker bot system.
+Your job: synthesise the quantitative data below into actionable LLM-readable insight.
+
+Current bot under analysis: claude_v3
+
+## Rating History (last 10 periods, top rating)
+  Period 1297: top_r=1630
+  Period 1298: top_r=1630
+  Period 1299: top_r=1630
+  Period 1300: top_r=1630
+  Period 1301: top_r=1661
+  Period 1302: top_r=1661
+  Period 1303: top_r=1661
+  Period 1304: top_r=1661
+  Period 1305: top_r=1661
+  Period 1306: top_r=1661
+
+## Overall Win Rate
+  claude_v3: 49% overall (1680 games)
+
+## Head-to-Head Results (per-opponent)
+  vs claude_v6: 23W-37L (38%) ← WEAKNESS
+  vs claude_v28: 12W-18L (40%)
+  vs claude_v30: 4W-6L (40%)
+  vs claude_v7: 29W-41L (41%)
+  vs claude_v2: 25W-35L (42%)
+  vs claude_v9: 25W-35L (42%)
+  vs claude_v19: 30W-40L (43%)
+  vs claude_v13: 30W-40L (43%)
+  vs claude_v24: 30W-40L (43%)
+  vs claude_v4: 26W-34L (43%)
+  vs claude_v21: 22W-28L (44%)
+  vs claude_v8: 31W-39L (44%)
+  vs claude_v5: 27W-33L (45%)
+  vs claude_v11: 27W-33L (45%)
+  vs claude_v22: 32W-38L (46%)
+  vs claude_v15: 28W-32L (47%)
+  vs claude_v25: 24W-26L (48%)
+  vs claude_v17: 34W-36L (49%)
+  vs claude_v12: 34W-36L (49%)
+  vs claude_v16: 30W-30L (50%)
+  vs claude_v10: 30W-30L (50%)
+  vs claude_v23: 30W-30L (50%)
+  vs claude_v14: 41W-38L (51%)
+  vs claude_v20: 37W-33L (53%)
+  vs claude_v18: 32W-28L (53%)
+  vs claude_v26: 22W-18L (55%)
+  vs claude_v27: 18W-12L (60%)
+  vs claude_v29: 20W-10L (67%) ← STRENGTH
+  vs claude_v1: 63W-7L (90%) ← STRENGTH
+
+## Top Active Bots
+  claude_v3: r=1661 rd=61
+  claude_v11: r=1630 rd=61
+  claude_v23: r=1630 rd=61
+  claude_v28: r=1611 rd=60
+  claude_v2: r=1608 rd=61
+
+Produce a JSON block answering:
+```json
+{"trend": "improving|stagnant|declining",
+ "verified_improvements": ["list of things that actually helped recent gens"],
+ "persistent_weaknesses": ["list of recurring problems not yet fixed"],
+ "diversity_needed": true|false,
+ "diversity_reason": "why diversity is needed (or null)",
+ "suggestion": "one concrete high-priority suggestion for next gen"}
+```
+Set `diversity_needed: true` if: trend is stagnant/declining for 2+ gens, OR the last 2 gens applied the same type of change. Be direct and concise.
+=============================
+[CLAUDE OUTPUT]
+```json
+{
+  "trend": "stagnant",
+  "verified_improvements": [
+    "Rating jumped +31 (1630→1661) around period 1300/1301, indicating a successful structural or parameter change at that generation",
+    "Maintained #1 position in the active pool despite rd=61 confidence level still converging"
+  ],
+  "persistent_weaknesses": [
+    "Losing record against v6 (38%), v7 (41%), v28 (40%) — a cluster of opponents that likely exploit a shared strategic blind spot (possibly aggressive pre-flop pressure or specific board-texture exploitation)",
+    "Sub-50% win rate against v2 (42%) and v9 (42%), both lower-rated bots — suggests v3 bleeds chips in certain matchup archetypes",
+    "Overall 49% win rate despite top Glicko rating — v3's edge is marginal and thin, not dominant; relies on crushing weak bots (v1: 90%) rather than beating peers",
+    "No rating movement for 6 consecutive periods (1301–1306) — the ceiling has been hit with the current strategic configuration"
+  ],
+  "diversity_needed": true,
+  "diversity_reason": "Rating completely flat at 1661 for 6 consecutive evaluation periods. Same strategic profile is being refined without breaking through. A qualitatively different approach is needed to escape the local optimum — particularly against the cluster of bots (v6, v7, v28) that consistently exploit v3.",
+  "suggestion": "Branch a new variant from v3 focused specifically on closing the v6/v7/v28 vulnerability cluster. These three bots likely share a style (possibly tighter pre-flop ranges with aggressive post-flop lines). Analyze replay data from those losses to identify the common leak — likely over-folding to pressure or mispricing certain hand classes — and implement a targeted counter-strategy (e.g., adjusted 3-bet/call ranges against aggressive lines). This is a high-leverage fix because improving from 38-41% to 50%+ against just those three opponents would meaningfully shift the overall win rate above 50%."
+}
+```

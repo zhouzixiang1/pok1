@@ -1,0 +1,76 @@
+
+[STAGNATION ANALYST PROMPT]
+=============================
+You are a rating trend analyst for a poker bot evolution system.
+Analyze whether the evolution is truly stagnating or if rating changes are just Glicko variance.
+
+Current bot: claude_v29
+Top 5 bots by rating:
+  claude_v4: r=1638 rd=68
+  claude_v9: r=1634 rd=61
+  claude_v18: r=1611 rd=61
+  claude_v5: r=1610 rd=63
+  claude_v8: r=1609 rd=61
+
+Rating history (last 10 periods):
+  Period 786: top_r=1638
+  Period 787: top_r=1638
+  Period 788: top_r=1638
+  Period 789: top_r=1638
+  Period 790: top_r=1638
+  Period 791: top_r=1638
+  Period 792: top_r=1638
+  Period 793: top_r=1638
+  Period 794: top_r=1638
+  Period 795: top_r=1638
+
+Is this real stagnation or Glicko variance? Answer in JSON only:
+```json
+{"is_stagnant": true/false, "confidence": "high/medium/low", "recommendation": "continue|branch|crossover", "branch_from": "claude_vN" or null, "reason": "brief explanation"}
+```
+=============================
+[CLAUDE OUTPUT]
+```json
+{"is_stagnant": true, "confidence": "high", "recommendation": "branch", "branch_from": "claude_v4", "reason": "Top rating locked at 1638 for 10 consecutive periods — Glicko variance would produce ±10-20 fluctuations at rd≈65, so a perfectly flat line is not variance but genuine stagnation. Worse: the current evolution path (v10–v29) has not produced a single bot in the top 5; v4 remains dominant after 25 generations of failed improvement. The evolutionary lineage has drifted into a local optimum. Hard-branching from claude_v4 (the proven peak) to explore a fundamentally different strategic direction is warranted. Crossover between v4 and v9 could also be attempted as a secondary strategy."}
+```
+
+[STAGNATION ANALYST PROMPT]
+=============================
+You are a rating trend analyst for a poker bot evolution system.
+Analyze whether the evolution is truly stagnating or if rating changes are just Glicko variance.
+
+Current bot: claude_v29
+Top 5 bots by rating:
+  claude_v8: r=1674 rd=61
+  claude_v5: r=1650 rd=62
+  claude_v7: r=1635 rd=67
+  claude_v9: r=1621 rd=61
+  claude_v21: r=1603 rd=61
+
+Rating history (last 10 periods):
+  Period 811: top_r=1673
+  Period 812: top_r=1673
+  Period 813: top_r=1673
+  Period 814: top_r=1666
+  Period 815: top_r=1666
+  Period 816: top_r=1666
+  Period 817: top_r=1666
+  Period 818: top_r=1650
+  Period 819: top_r=1674
+  Period 820: top_r=1674
+
+Is this real stagnation or Glicko variance? Answer in JSON only:
+```json
+{"is_stagnant": true/false, "confidence": "high/medium/low", "recommendation": "continue|branch|crossover", "branch_from": "claude_vN" or null, "reason": "brief explanation"}
+```
+=============================
+[CLAUDE OUTPUT]
+```json
+{
+  "is_stagnant": true,
+  "confidence": "high",
+  "recommendation": "crossover",
+  "branch_from": "claude_v8",
+  "reason": "The ~24pt range (1650-1674) over 10 periods is only 0.4σ relative to rd≈61, so the short-term fluctuation IS just Glicko noise. But the real stagnation signal is structural: v8 has held the #1 spot across 21 generations (v8→v29), and the current bot v29 isn't even in the top 5. None of v22-v29 have surpassed the v5/v7/v8/v9 generation cluster. This is genuine evolutionary stagnation—new mutations are regressing, not improving. Crossover combining v8 (highest ceiling at r=1674) with v21 (newest top-5 entrant, suggesting some novel strength) is the best path to break out. Branch from v8 as the proven strongest ancestor."
+}
+```

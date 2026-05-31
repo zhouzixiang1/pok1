@@ -44,6 +44,10 @@ class EventBroadcaster:
                     break
             return cid, q
 
+    def clear(self):
+        with self._lock:
+            self._ring_buffer.clear()
+
     def remove_client(self, cid: int):
         with self._lock:
             self._clients.pop(cid, None)

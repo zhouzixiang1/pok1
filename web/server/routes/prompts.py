@@ -5,7 +5,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
@@ -82,7 +82,7 @@ class PromptUpdateRequest(BaseModel):
 async def update_prompt(name: str, req: PromptUpdateRequest):
     """Write a prompt file. Changes take effect on the next LLM call."""
     if name not in ALLOWED_PROMPTS:
-        return {"error": f"Unknown prompt: {name}"}
+        raise HTTPException(status_code=404, detail=f"Unknown prompt: {name}")
     path = _prompt_path(name)
     try:
         path.write_text(req.content, encoding="utf-8")
@@ -93,14 +93,14 @@ async def update_prompt(name: str, req: PromptUpdateRequest):
             "lines": req.content.count("\n") + 1,
         }
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/{name}/reset")
 async def reset_prompt(name: str):
     """Reset a prompt file to the last git-committed version."""
     if name not in ALLOWED_PROMPTS:
-        return {"error": f"Unknown prompt: {name}"}
+        raise HTTPException(status_code=404, detail=f"Unknown prompt: {name}")
     path = _prompt_path(name)
     rel_path = path.relative_to(PROJECT_ROOT)
     try:
@@ -112,6 +112,8 @@ async def reset_prompt(name: str):
             info = _prompt_info(name)
             return {"reset": True, "name": name, **info}
         else:
-            return {"error": result.stderr.strip() or "git checkout failed"}
+            raise HTTPException(status_code=500, detail=result.stderr.strip() or "git checkout failed")
+    except HTTPException:
+        raise
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))

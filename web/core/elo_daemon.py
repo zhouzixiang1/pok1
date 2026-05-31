@@ -489,6 +489,27 @@ def main():
                     games_since_save = 0
                     last_save_time = now
 
+            # Check for reap signal — immediate bot list refresh
+            reap_signal = Path(__file__).parent / "results" / ".reap_signal"
+            if reap_signal.exists():
+                reap_signal.unlink(missing_ok=True)
+                new_bots = get_active_bots()
+                for b in set(active_bots) - set(new_bots):
+                    ratings.pop(b, None)
+                    bot_stats.pop(b, None)
+                    h2h = {k: v for k, v in h2h.items() if b not in k.split(" vs ")}
+                for b in set(new_bots) - set(active_bots):
+                    if b not in ratings:
+                        ratings[b] = Glicko2Player()
+                active_bots = new_bots
+                if games_since_save > 0:
+                    save_num += 1
+                    save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots, verbose=args.verbose)
+                    games_since_save = 0
+                    last_save_time = time.time()
+                if args.verbose:
+                    print(f"[DAEMON] Reap signal processed, active bots: {len(active_bots)}")
+
             # Refresh bot list periodically
             if total_matches % 50 == 0:
                 new_bots = get_active_bots()

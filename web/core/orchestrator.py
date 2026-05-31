@@ -98,19 +98,18 @@ def _make_precompact_hook():
 
 
 def _find_current_v():
-    """Find the latest completed bot version."""
-    from evolution_core import get_bot_dir, git_has_tag
-    current_v = 1
-    while True:
-        d = get_bot_dir(current_v)
-        if d.exists() and (d / ".completed").exists():
-            if current_v <= 6 or git_has_tag(current_v):
-                current_v += 1
-            else:
-                break
-        else:
-            break
-    return current_v - 1
+    """Find the latest completed bot version from git tags (authoritative)."""
+    from evolution_core import _git
+    tags = _git("tag", "-l", "bot-v*", check=False).strip().splitlines()
+    if not tags:
+        return 6  # seeded bots v1-v6 have no tags
+    versions = []
+    for tag in tags:
+        try:
+            versions.append(int(tag.replace("bot-v", "")))
+        except ValueError:
+            pass
+    return max(versions) if versions else 6
 
 
 def _build_context(one_gen=False, dry_run=False):

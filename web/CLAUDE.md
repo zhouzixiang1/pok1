@@ -93,7 +93,7 @@ Workers modify bot code → Reviewer validates → Git commit + tag
 - `.completed` sentinel file marks a finished bot
 - `bot-v{N}` git tags are the authoritative completion proof (dual validation: `.completed` + tag)
 - Parent tracking via git tag messages (`parent: claude_v{M}`)
-- Pool capped at 30 active bots; weakest culled by conservative rating (r - 2*rd)
+- Pool capped at 30 active bots; weakest culled by H2H average win rate
 - Retired bots moved to `bots/graveyard/`
 
 ### Stagnation Handling

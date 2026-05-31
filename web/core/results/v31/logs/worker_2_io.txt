@@ -1,0 +1,203 @@
+
+[WORKER 2 (Hyperparameter Tuner) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Hyperparameter Tuner**.
+You must directly edit the source files in `bots/claude_v31/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v31/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, remove only your own accidental edits before finishing.
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+## If you are an "Opponent Modeler":
+- **ALLOWED**: Adding/modifying opponent tracking data structures and statistics
+- **ALLOWED**: Per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']`
+- **ALLOWED**: Bet sizing pattern detection: `opp_bet_sizes[street]` as rolling list (cap at 20), `statistics.median()`
+- **ALLOWED**: Exploitative adjustments based on detected opponent tendencies
+- **FORBIDDEN**: Changing overall decision flow or non-opponent-model logic
+- **FORBIDDEN**: Modifying any constant that is not opponent-model related
+
+You have access to `web/core/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+
+**Important — Parallel Execution**: You may be running concurrently with other Worker Agents on the same codebase. Your `target_files` are exclusively yours — other workers will NOT touch them. Only modify your assigned `target_files`. Do NOT read or write files outside your assignment.
+
+# Scope Contract
+Before editing, write a short plan listing:
+1. Planned modified files.
+2. Planned modified functions/constants.
+3. A one-sentence statement of what you will not touch.
+
+Do not broaden scope. If the requested change requires touching files outside
+target_files or changing a different subsystem, stop and report instead of editing.
+
+# Poker Engineering Best Practices
+Apply these when implementing changes:
+
+**Opponent Modeling:**
+- Use per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']` where `street ∈ {'preflop', 'flop', 'turn', 'river'}`
+- Track bet sizing: `opp_bet_sizes[street]` as a rolling list (cap at last 20), use `statistics.median()` for typical size
+- Exploit detected tendencies: if `opp_stats['river']['bet_freq'] > 0.65` → opponent bluffs river heavily → widen call range
+
+**Postflop Decision Making:**
+- EV-based fold/call: `EV_call = equity * pot_after_call - (1 - equity) * call_amount`. Call when EV > 0
+- River value bet sizing: if equity > 70%, bet 60-80% of pot for value; if equity 50-70%, bet 40-50% pot
+- Avoid "fear thresholds" — don't fold based on hand rank alone; compute EV against opponent range
+
+**Anti-Regression Checklist (verify before finishing):**
+- [ ] AA/KK/QQ preflop: still raises/3-bets aggressively (no passive limping)?
+- [ ] Nut flush/straight/full house on river: still places a value bet?
+- [ ] New code doesn't import modules not in stdlib + numpy?
+- [ ] `{"response": int}` JSON output format still correct?
+- [ ] No infinite loops or recursion in new functions?
+
+# Master Architect's Specific Prompt For You
+You are a Hyperparameter Tuner. Your ONLY job is to adjust numeric constants and thresholds. DO NOT add new functions, classes, or change control flow. DO NOT modify any files other than constants.py and betting.py.
+
+## CONTEXT
+The poker bot has two secondary issues that compound the primary postflop fold leak:
+1. **Underbetting**: Average raise sizing is 0.4-0.7x pot across all streets — too small to deny equity or extract max value
+2. **Over-simulating**: 900/1200/1500 simulations per street is excessive and wastes computation; v13 (the top-rated bot) uses only 500/800/900
+
+## YOUR TASKS
+
+### Task 1: In constants.py — Reduce simulation counts
+Change SIMULATIONS_BY_PUBLIC_COUNT:
+- 0: 900 → 700
+- 3: 1200 → 900
+- 4: 1500 → 1000
+
+Change EXTRA_SIMULATIONS_BY_PUBLIC_COUNT:
+- 0: 300 → 200
+- 3: 350 → 250
+- 4: 300 → 200
+
+These are proven values from v13 (the highest-rated bot at r=1660) that work well with fewer sims.
+
+### Task 2: In betting.py `choose_raise()` — Increase postflop raise sizing
+In the `choose_raise()` function, increase the base ratios for postflop streets:
+- Flop (round_idx == 1): change ratio from 0.60 → 0.65
+- Turn (round_idx == 2): change ratio from 0.70 → 0.78
+- River (round_idx == 3): change ratio from 0.85 → 0.95
+
+These changes make value bets larger, which:
+- Extracts more value from calling stations (matches the meta of the opponent pool)
+- Makes bluffs more credible
+- Aligns with the match analysis recommendation of 0.7-1.0x pot for value raises
+
+### Task 3: In betting.py `choose_raise()` — Increase preflop open sizing
+In the `choose_raise()` function, for preflop (round_idx == 0):
+- When `to_call == 0` (SB open): change ratiofrom 0.55 → 0.62
+- When `to_call > 0` (3bet/raise): change ratio from 0.75 → 0.80
+
+In the SB open section of `choose_preflop_spot_action()` (in betting.py):
+- Change `desired_total` multiplier from 2.5 → 2.8: `(2.8 + max(0.0, preflop_strength - 0.58) * 1.8) * BIG_BLIND`
+
+This increases the preflop raise from ~2.5BB to ~2.8BB, which is closer to optimal HU sizing.
+
+### Task 4: In betting.py `choose_preflop_spot_action()` — Widen BB defending range
+In `choose_preflop_spot_action()`, for the `bb_vs_limp` case:
+- Change `iso_threshold` from `0.57 + match_adjust - loose_bonus + match_profile['open_delta']` to `0.52 + match_adjust - loose_bonus + match_profile['open_delta']`
+
+For the `sb_open` case:
+- Change `open_threshold` from `0.49 + match_adjust + 0.02 + match_profile['open_delta']` to `0.45 + match_adjust + 0.02 + match_profile['open_delta']`
+- Change `limp_threshold` from `0.36 + match_adjust` to `0.32 + match_adjust`
+
+These changes widen the opening range (play more hands preflop), reducing the preflop fold rate from ~67% toward ~50-55%.
+
+### IMPORTANT CONSTRAINTS
+- ONLY modify numeric values (constants, thresholds, ratios, multipliers)
+- DO NOT add any new functions, classes, or control flow statements
+- DO NOT modify strategy.py, postflop.py, opponent.py, or any other files
+- DO NOT change the clamp bounds in choose_raise (those are structural)
+- Ensure all changes are backward-compatible (same function signatures)
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v31/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v31/main.py` (and other .py files you changed)
+   - Smoke test: `python web/core/smoke_tester.py bots/claude_v31/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v31/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, undo only your own accidental edits in those files; if unsure, stop and report the violation.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+# Final Response Requirements
+End with:
+- `planned_files`: the files you intended to change.
+- `changed_files`: the files actually changed.
+- `changed_functions`: the functions/constants actually changed.
+- `checks_run`: compile/smoke commands and outcomes.
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading the target files to understand the current state of the code.
+Now I have a clear picture of both files. Let me write my scope contract and then make all the changes.
+
+## Scope Contract
+1. **Planned modified files**: `bots/claude_v31/constants.py`, `bots/claude_v31/betting.py`
+2. **Planned modified functions/constants**: `SIMULATIONS_BY_PUBLIC_COUNT`, `EXTRA_SIMULATIONS_BY_PUBLIC_COUNT`, `choose_raise()` base ratios, `choose_preflop_spot_action()` thresholds
+3. **I will NOT touch**: `strategy.py`, `postflop.py`, `opponent.py`, `main.py`, or any other files. No new functions, classes, or control flow.
+
+Now I'll apply all changes:
+Now the betting.py changes — Task 2 (postflop raise ratios) and Task 3 (preflop ratios and SB open sizing):
+Now Task 4 — widen BB defending range and SB opening range:
+All edits are done. Now let me verify the changes and run quality checks:
+All compile checks pass. I see changes from another worker in `postflop.py` and `strategy.py` — those are not mine. My changes are only in `constants.py` and `betting.py`. Now let me run the smoke test:
+Smoke test passed. Now let me do the final self-review — verify only my target files were modified by me, and all changes are numeric-only:
+All changes are verified. Every single change is a numeric constant adjustment — no new functions, no new control flow, no new imports. 
+
+## Final Self-Review
+
+**Role Boundary Check** ✅ — All changes are numeric constants/thresholds/ratios only. No new functions, classes, or control flow added.
+
+**Target File Check** ✅ — Only `constants.py` and `betting.py` modified (my assigned targets). Changes visible in `postflop.py` and `strategy.py` are from a concurrent worker.
+
+**Protocol Check** ✅ — No changes to the JSON `{"response": int}` output interface. The bot still compiles and passes the smoke test.
+
+## Summary
+
+| Item | Detail |
+|---|---|
+| **planned_files** | `bots/claude_v31/constants.py`, `bots/claude_v31/betting.py` |
+| **changed_files** | `bots/claude_v31/constants.py`, `bots/claude_v31/betting.py` |
+| **changed_functions/constants** | |
+| constants.py | `SIMULATIONS_BY_PUBLIC_COUNT` {0: 900→700, 3: 1200→900, 4: 1500→1000}; `EXTRA_SIMULATIONS_BY_PUBLIC_COUNT` {0: 300→200, 3: 350→250, 4: 300→200} |
+| betting.py `choose_raise()` | Preflop SB ratio 0.55→0.62; preflop raise ratio 0.75→0.80; flop ratio 0.60→0.65; turn ratio 0.70→0.78; river ratio 0.85→0.95; SB open desired_total multiplier 2.5→2.8 |
+| betting.py `choose_preflop_spot_action()` | `open_threshold` 0.49→0.45; `limp_threshold` 0.36→0.32; `iso_threshold` 0.57→0.52 |
+| **checks_run** | `py_compile` on constants.py ✅, betting.py ✅, main.py ✅; `smoke_tester.py` ✅ |

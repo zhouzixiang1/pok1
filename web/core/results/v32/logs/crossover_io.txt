@@ -1,0 +1,114 @@
+
+[CROSSOVER v6×v27→v32 PROMPT]
+=============================
+# Role
+You are the Supreme Genetic Orchestrator (Crossover & Mutation Engine) for an evolving Texas Hold'em AI population.
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files.
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Task
+You are tasked with generating a new poker bot (Child) to fill an empty ecological niche in the new generation.
+You are given the source code of TWO elite surviving bots from the previous generation:
+1. **Parent A (Alpha)**: The dominant logic structure.
+2. **Parent B (Beta)**: The secondary logic structure.
+
+Your goal is to produce the full Python code for the Child bot.
+
+# Data Context
+- Read `web/core/results/head_to_head.json` to understand each parent's strengths/weaknesses against specific opponents. Find matchups where one parent loses (WR < 40%) and the other wins (WR > 55%).
+- Read `web/core/results/bot_stats.json` for overall win rates of each parent.
+- If Parent B beats opponents that Parent A loses to, strongly consider importing Parent B's approach for those matchups.
+
+# Crossover Strategy
+1. **Analyze both parents**: Read all .py files from both parents. Identify each parent's strengths:
+   - Preflop strategy (hand ranges, opening ranges, 3-bet logic)
+   - Postflop strategy (board texture reading, bet sizing, draw evaluation)
+   - Opponent modeling (VPIP/PFR tracking, aggression detection)
+   - Special features (bluff profiles, tournament adjustments, position awareness)
+
+2. **Merge the best features**:
+   - Prefer features from the HIGHER-rated parent (Parent A) as the baseline.
+   - Integrate specific superior modules from Parent B.
+   - Good crossover patterns:
+     - Parent A's tight preflop ranges + Parent B's aggressive postflop play
+     - Parent A's opponent tracking + Parent B's pot odds calculation
+     - Parent A's position awareness + Parent B's bluff detection
+   - If both parents have similar features, keep the more sophisticated implementation.
+
+3. **Mutation**: Introduce EXACTLY ONE mutation:
+   - Parameter tweak: ±10-20% of an existing value (e.g., `BLUFF_FREQ *= 1.15`)
+   - Heuristic addition: Add one new rule (e.g., "fold to 3-bet with < JJ from early position")
+   - Feature removal: Remove one underperforming or redundant feature
+
+4. **Viability**: The Child MUST be a complete, running bot with `main.py` (and any other files you need). It must output `{"response": int}` via stdout. Action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+# Parents
+- **Parent A (Alpha)**: `bots/claude_v6/` — Read all .py files to understand the dominant strategy.
+- **Parent B (Beta)**: `bots/claude_v27/` — Read all .py files to understand the secondary strategy.
+
+# Action
+1. **Read both parent bots' source code** using the Read tool:
+   - Parent A: `bots/claude_v6/`
+   - Parent B: `bots/claude_v27/`
+2. Design the crossover + mutation strategy based on their code.
+3. Write the FULL Python code for the new Child bot directly into `bots/claude_v32/`.
+   You may split the code into `main.py`, `preflop.py`, `postflop.py`, etc., just like the parents.
+4. After editing, run quality checks:
+   - `python -m py_compile bots/claude_v32/main.py`
+   - `python web/core/smoke_tester.py bots/claude_v32/main.py`
+   - Fix any errors before finishing.
+
+DO NOT output conversational filler. Just think step by step, and then create the files.
+
+=============================
+[CLAUDE OUTPUT]
+Now let me read both parent bots' source code:
+Now let me read Parent B (claude_v27):
+Now I have a thorough understanding of both parents. Let me analyze the crossover strategy:
+
+**Parent A (v6)** strengths: Opponent drift detection, CBet tracking, exploitation framework (gift tracking), deterministic blocker bluffs, enhanced realized equity
+**Parent B (v27)** strengths: Higher sim counts (900/1200/1500), preflop 169-hand lookup table, river overbet, postflop fold gate, anti-bot4 detection, higher win rate (55.5%)
+
+**Crossover plan**: Use v27 as base, merge v6's drift detection, CBet tracking, exploitation framework, and enhanced realized equity.
+
+**Mutation**: Tighten opening threshold by +0.03 when protecting a lead in late game (remaining_hands ≤ 5).
+Now let me create all the child bot files:
+Now let me create state.py (from v27 — uses the lookup table):
+Now create the merged opponent.py — v27 base + v6's drift detection + cbet tracking:
+Now postflop.py (v27 base + deterministic blocker bluff from v6):
+Now replace the random-based blocker bluff with deterministic version from v6:
+Now simulation.py and tournament.py (same as v27):
+Now the main entry point (from v27 with normalize_payload):
+Now the critical merged strategy.py. This is v27's strategy + v6's exploitation framework + v6's cbet adjustments + v6's enhanced realized equity + mutation (tighter opening when protecting lead):
+Now let's run the quality checks:
+All files compile. Now check line counts:
+Wait — there's a main_backup.py from the copy. Let me remove it and check for any other stale files:
+Good — all files are under 1000 lines. Now run the smoke test:
+Smoke test passed. Let me also check the manual battle:
+The bot works correctly — it ran a full game against v6 without errors. Now let me verify the final file listing and line counts:
+All files are under 1000 lines. Let me do a final compile check to make sure everything is clean:
+Everything is working. Here's a summary of the crossover and mutation:
+
+## Crossover Summary — claude_v32
+
+### Base: Parent B (claude_v27, WR 55.5%)
+- **Constants**: 169-hand preflop lookup table, higher simulation counts (900/1200/1500)
+- **Postflop fold gate**: Early fold decision for weak hands facing bets (saves chips)
+- **River overbet**: 1.5–2.2x pot with nut hands
+- **Anti-bot4 detection**: Targets opponents with characteristic stats
+- **Interface**: `normalize_payload()` supporting 3 input formats
+- **Aggressive sizing**: Higher base bet ratios
+
+### Merged from Parent A (claude_v6, WR 50.45%)
+- **Opponent drift detection**: Detects when opponent changes VPIP/PFR over recent 10 hands, downgrades confidence
+- **CBet/fold-to-CBet tracking**: Tracks opponent cbet rate and fold-to-cbet, used to adjust call margins on flop
+- **Safe exploitation framework**: `track_opponent_gift()` + `safe_exploitation_lambda()` — blends GTO/exploitative play based on opponent chip-gifting patterns
+- **Enhanced realized equity**: Accounts for draw+OOP realization (separate from air hands), big pot adjustments, double-barrel with position penalties
+- **Deterministic blocker bluffs**: Uses deterministic hash instead of `random.random()` for reproducible bluff decisions
+
+### Mutation (EXACTLY ONE)
+- **Lead protection tightening**: When `match_profile["protect"] > 0.3` (ahead in late game), the SB opening threshold is raised by +0.03. This prevents opening marginal hands when protecting a lead — reduces variance when it matters most.

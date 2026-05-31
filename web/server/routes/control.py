@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -91,13 +91,12 @@ async def get_decisions(limit: int = 50):
 
 @router.post("/start")
 async def start_evolution():
-    if app_state.running:
-        return {"error": "Evolution is already running"}
+    if not app_state.try_set_running(True):
+        raise HTTPException(status_code=409, detail="Evolution is already running")
 
     from server.app import web_ui
+    web_ui._broadcaster.clear()
     config = app_state.get_config()
-
-    app_state.set_running(True)
 
     from orchestrator import orchestrator_loop
     task = asyncio.create_task(_run_with_cleanup(orchestrator_loop(
@@ -124,7 +123,7 @@ async def stop_evolution():
 async def call_tool(tool_name: str, req: ToolRequest = Body(default=None)):
     tools = _get_tool_map()
     if tool_name not in tools:
-        return {"error": f"Unknown tool: {tool_name}. Available: {list(tools.keys())}"}
+        raise HTTPException(status_code=404, detail=f"Unknown tool: {tool_name}. Available: {list(tools.keys())}")
 
     try:
         result = await tools[tool_name]((req.args if req else None) or {})
@@ -145,7 +144,7 @@ async def call_tool(tool_name: str, req: ToolRequest = Body(default=None)):
 
         return {"tool": tool_name, "result": text}
     except Exception as e:
-        return {"tool": tool_name, "error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/tools")
@@ -212,10 +211,12 @@ async def reset_evolution_endpoint():
 
     # Auto-restart
     config = app_state.get_config()
-    app_state.set_running(True)
 
     from server.app import web_ui
+    web_ui._broadcaster.clear()
     from orchestrator import orchestrator_loop
+
+    app_state.set_running(True)
     task = asyncio.create_task(_run_with_cleanup(orchestrator_loop(
         web_ui, no_daemon=not config["daemon_enabled"],
         daemon_workers=config["daemon_workers"], daemon_pairs=config["daemon_pairs"])))
