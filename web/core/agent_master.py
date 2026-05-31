@@ -129,7 +129,9 @@ async def _consolidate_experience_pool(ui):
             ).strip()
 
         if consolidated and len(consolidated) > 50:
-            with locked_file(EXPERIENCE_FILE, "w") as ef:
+            with locked_file(EXPERIENCE_FILE, "r+") as ef:
+                ef.truncate(0)
+                ef.seek(0)
                 ef.write(consolidated + "\n")
             ui.log_history("Experience pool consolidated and written back.", "success")
         else:

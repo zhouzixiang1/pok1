@@ -271,7 +271,11 @@ async def reap_weakest(args):
 
     ratings = load_ratings()
     h2h_winrates = load_h2h_avg_winrates()
-    active_ratings = [(b, ratings.get(b, Glicko2Player())) for b in active_bots]
+    # Exclude current production bot from reaping
+    current_bot = f"claude_v{find_current_v()}"
+    active_ratings = [(b, ratings.get(b, Glicko2Player())) for b in active_bots if b != current_bot]
+    if not active_ratings:
+        return {"content": [{"type": "text", "text": json.dumps({"reaped": False, "reason": "Only current bot in pool"})}]}
     active_ratings.sort(key=lambda x: h2h_winrates.get(x[0], 0.0))
     weakest = active_ratings[0]
     culled_name = weakest[0]
@@ -281,13 +285,22 @@ async def reap_weakest(args):
     target = graveyard / culled_name
     if target.exists():
         shutil.rmtree(target)
-    shutil.move(PROJECT_ROOT / "bots" / culled_name, target)
+    bot_src = PROJECT_ROOT / "bots" / culled_name
+    if not bot_src.exists():
+        return {"content": [{"type": "text", "text": json.dumps({"reaped": False, "reason": f"{culled_name} already moved"})}]}
+    shutil.move(str(bot_src), str(target))
 
-    # Clean up ratings
-    if culled_name in ratings:
-        del ratings[culled_name]
-    with locked_file(RATINGS_FILE, "w") as f:
-        json.dump({k: v.to_dict() for k, v in ratings.items()}, f, indent=2)
+    # Clean up ratings — atomic read-modify-write under single exclusive lock
+    try:
+        with locked_file(RATINGS_FILE, "r+") as f:
+            ratings_raw = json.load(f)
+            if culled_name in ratings_raw:
+                del ratings_raw[culled_name]
+            f.seek(0)
+            f.truncate()
+            json.dump(ratings_raw, f, indent=2)
+    except Exception:
+        pass
 
     # Clean up bot_stats
     if BOT_STATS_FILE.exists():
@@ -352,7 +365,10 @@ async def cleanup_incomplete(args):
         for d in sorted(bots_dir.iterdir()):
             if d.is_dir() and d.name.startswith("claude_v"):
                 if not (d / ".completed").exists():
-                    v = int(d.name.split("_v")[1])
+                    try:
+                        v = int(d.name.split("_v")[1])
+                    except (ValueError, IndexError):
+                        continue
                     if not git_has_tag(v):
                         shutil.rmtree(d)
                         cleaned.append(d.name)

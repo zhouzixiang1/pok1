@@ -40,7 +40,8 @@ def _load_recent_failures(n=3):
 
 
 async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
-                              context_files, ui, reviewer_feedback):
+                              context_files, ui, reviewer_feedback,
+                              source_v=None):
     """Run a single worker task with retries. Returns True on success."""
     w_id = task.get("worker_id", idx + 1)
     role = task.get("role", f"Expert Coder {w_id}")
@@ -86,10 +87,21 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 f"Worker {w_id} ({role}) timed out after {WORKER_TIMEOUT}s. Retrying with simpler task...",
                 "warn",
             )
+            # Reset code directory from source to avoid half-edited state
+            if source_v is not None:
+                src_dir = get_bot_dir(source_v)
+                if src_dir.exists() and next_dir.exists():
+                    shutil.rmtree(next_dir)
+                    shutil.copytree(src_dir, next_dir, ignore=_COPY_IGNORE)
+                    (next_dir / ".completed").unlink(missing_ok=True)
             base_worker_prompt += (
                 "\n\nPREVIOUS ATTEMPT TIMED OUT. Start fresh with a minimal, focused implementation. "
                 "Implement only the single most impactful change — do NOT try to do everything at once."
             )
+            continue
+        except Exception as e:
+            _last_reason = f"unexpected error: {type(e).__name__}: {str(e)[:200]}"
+            ui.log_history(f"Worker {w_id} ({role}) error: {e}", "error")
             continue
 
         compile_errors = verify_code(next_dir)
@@ -121,6 +133,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
         return await _run_single_worker(
             tasks[0], 0, worker_template, next_dir, next_v,
             context_files, ui, reviewer_feedback,
+            source_v=source_v,
         )
 
     # Check for Architect + Tuner dependency — Tuner needs Architect's output first
@@ -132,6 +145,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             ok = await _run_single_worker(
                 task, i, worker_template, next_dir, next_v,
                 context_files, ui, reviewer_feedback,
+                source_v=source_v,
             )
             if not ok:
                 return False
@@ -145,6 +159,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             return await _run_single_worker(
                 task, i, worker_template, next_dir, next_v,
                 context_files, ui, reviewer_feedback,
+                source_v=source_v,
             )
 
     coros = [_guarded_worker(task, i) for i, task in enumerate(tasks)]
@@ -173,6 +188,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
         ok = await _run_single_worker(
             task, i, worker_template, next_dir, next_v,
             context_files, ui, serial_reviewer_feedback,
+            source_v=source_v,
         )
         if not ok:
             return False

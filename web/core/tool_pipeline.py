@@ -346,7 +346,7 @@ async def run_review(args):
     data = parse_json_output(output)
 
     if data and "approved" in data:
-        approved = bool(data["approved"])
+        approved = data["approved"] is True
         feedback = data.get("feedback", "")
         gate = _gate_payload(
             v,
@@ -544,6 +544,18 @@ async def run_precommit_eval(args):
         blockers.append({"reason": "compile_errors", "details": compile_errors[:3]})
     if smoke_errors:
         blockers.append({"reason": "smoke_errors_or_timeout", "details": smoke_errors[:3]})
+    # Short-circuit: no point running battles if the bot can't even compile or run
+    if compile_errors or smoke_errors:
+        result = {
+            "version": v, "source_v": source_v, "n_games": n_games,
+            "opponents": [], "matchups": [],
+            "total_wins": 0, "total_losses": 0, "total_draws": 0,
+            "passed": False, "blockers": blockers,
+        }
+        _record_gate(v, source_v, "precommit_eval", _gate_payload(v, source_v, False, **{
+            k: val for k, val in result.items() if k not in {"version", "source_v", "passed"}
+        }), stage=None)
+        return _json_tool_result(result)
 
     opponents = _select_precommit_opponents(v, source_v)
     if not opponents:
@@ -945,10 +957,15 @@ async def run_crossover(args):
 
     # Prepare target directory from parent A
     target_dir = get_bot_dir(target_v)
-    if target_dir.exists():
-        shutil.rmtree(target_dir)
-    shutil.copytree(get_bot_dir(parent_a), target_dir, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
-    (target_dir / ".completed").unlink(missing_ok=True)
+
+    # Guard: refuse to overwrite a completed bot
+    if target_dir.exists() and (target_dir / ".completed").exists():
+        return _json_tool_result({"error": f"Target v{target_v} already exists and is completed. Refusing to overwrite."})
+
+    # Guard: parent must exist
+    parent_a_dir = get_bot_dir(parent_a)
+    if not parent_a_dir.exists():
+        return _json_tool_result({"error": f"Parent A bot v{parent_a} not found"})
 
     ui = _get_ui()
     success = await _run_crossover(parent_a, parent_b, target_v, ui)

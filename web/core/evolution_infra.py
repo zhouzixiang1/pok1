@@ -422,7 +422,9 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=14, daemon_pairs=5):
     """Background thread: reads daemon stats, updates UI, auto-restarts dead daemon."""
     while not stop_event.is_set():
         try:
-            if daemon_proc is not None and daemon_proc.poll() is not None:
+            with _daemon_lock:
+                proc = daemon_proc
+            if proc is not None and proc.poll() is not None:
                 ui.log_history("⚠️ Daemon 进程已退出，正在重启...", "warn")
                 start_daemon(workers=daemon_workers, pairs=daemon_pairs)
             stats = load_daemon_stats()
@@ -467,9 +469,12 @@ def _git_ensure_main_branch():
     print(f"[git] WARNING: on branch '{current}', expected '{EVOLUTION_BRANCH}'. "
           f"Switching back before commit.")
     # Stash any uncommitted changes, switch to main, pop stash
-    _git("stash", check=False)
+    stash_out = _git("stash", check=False)
     _git("checkout", EVOLUTION_BRANCH, check=False)
-    _git("stash", "pop", check=False)
+    if "No local changes to save" not in stash_out:
+        pop_out = _git("stash", "pop", check=False)
+        if "error" in pop_out.lower():
+            print(f"[git] WARNING: stash pop failed: {pop_out[:200]}")
 
 
 def git_has_tag(version):
@@ -648,7 +653,7 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
                             elif isinstance(block, ToolUseBlock):
                                 ui.log_io(f"[tool: {block.name}]", "tool")
                     elif isinstance(message, ResultMessage):
-                        cost_usd = message.total_cost_usd
+                        cost_usd = (cost_usd or 0) + (message.total_cost_usd or 0)
                         usage = message.usage
             except (CLINotFoundError, ProcessError) as e:
                 ui.log_io(f"[ERROR] {e}", "error")
@@ -675,7 +680,7 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
 
 
 def parse_json_output(output):
-    match = re.search(r'```json\s*(.*)\s*```', output, re.DOTALL)
+    match = re.search(r'```json\s*(.*?)\s*```', output, re.DOTALL)
     if match:
         try:
             return json.loads(match.group(1))

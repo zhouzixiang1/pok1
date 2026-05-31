@@ -46,6 +46,7 @@ async def _run_critic(next_v, source_v, master_plan_str, ui):
         if data and "score" in data:
             # Normalise: score >= 6 → approved
             data.setdefault("approved", data["score"] >= 6)
+            data.setdefault("local_optima_warning", False)
             return data
     except Exception as e:
         ui.log_history(f"Critic error: {e}. Defaulting to rejected.", "warn")
@@ -210,6 +211,7 @@ async def _run_performance_verification(source_v, ratings, ui):
 
 async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
     """Run crossover between two elite bots to create a new child bot."""
+    import shutil
     crossover_prompt = (PROMPTS_DIR / "crossover_prompt.md").read_text()
     crossover_prompt = substitute_template(crossover_prompt, {
         "parent_a_version": str(parent_a_v),
@@ -218,9 +220,16 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
     })
 
     target_dir = get_bot_dir(target_v)
+    parent_a_dir = get_bot_dir(parent_a_v)
     log_file = get_logs_dir(target_v) / "crossover_io.txt"
 
     for attempt in range(MAX_CROSSOVER_RETRIES):
+        # Reset target dir from parent A baseline to avoid corrupted state from previous attempt
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        shutil.copytree(parent_a_dir, target_dir, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+        (target_dir / ".completed").unlink(missing_ok=True)
+
         ui.clear_io()
         ui.set_status(f"Crossover v{parent_a_v}×v{parent_b_v}→v{target_v} (Try {attempt+1})", is_working=True)
         await run_claude_query(
