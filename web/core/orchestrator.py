@@ -91,6 +91,7 @@ def _make_precompact_hook():
                     "reviewed":       "run_critic",
                     "critic_checked": "run_precommit_eval",
                     "verified":       "commit_bot",
+                    "archived":       "run_archivist",
                 }
                 stage = checkpoint.get("stage", "unknown")
                 next_step = stage_hints.get(stage, "check get_status")
@@ -202,11 +203,10 @@ def _build_context(one_gen=False, dry_run=False):
                 "reviewed":       "Review passed → call run_critic",
                 "critic_checked": "Critic done → call run_precommit_eval",
                 "verified":       "Precommit eval passed → call commit_bot",
+                "archived":       "Committed & archived → start next generation",
             }
             stage = checkpoint.get("stage", "unknown")
             hint = stage_hints.get(stage, "call get_status to assess")
-            # master_plan is only persisted starting from workers_done; prepared checkpoint
-            # does NOT carry a plan (prepare_next_gen writes it without master_plan).
             if checkpoint.get("master_plan"):
                 plan_note = "Master plan is saved in session history — do NOT call run_master again."
             else:

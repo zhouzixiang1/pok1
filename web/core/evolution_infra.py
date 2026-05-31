@@ -53,6 +53,9 @@ WORKER_FAILURES_FILE = RESULTS_DIR / "worker_failures.jsonl"
 PIPELINE_STATE_FILE = RESULTS_DIR / "pipeline_state.json"
 REPLAY_DIR = RESULTS_DIR / "match_replay"
 MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
+ARCHIVE_DIR = RESULTS_DIR / "archive"
+LLM_COSTS_FILE = RESULTS_DIR / "llm_costs.jsonl"
+RATING_HISTORY_FILE = RESULTS_DIR / "rating_history.jsonl"
 
 MAX_ACTIVE_BOTS = 30
 
@@ -73,7 +76,7 @@ MAX_PARALLEL_WORKERS = 3      # Hard cap on simultaneous LLM worker calls (Semap
 MAX_PROMPT_CHARS = 700_000
 
 # Pipeline stage constants
-STAGE_ORDER = ["prepared", "workers_done", "quality_passed", "reviewed", "critic_checked", "verified"]
+STAGE_ORDER = ["prepared", "workers_done", "quality_passed", "reviewed", "critic_checked", "verified", "archived"]
 STAGE_GATE_ALLOWLIST = {
     "prepared": set(),
     "workers_done": set(),
@@ -81,6 +84,7 @@ STAGE_GATE_ALLOWLIST = {
     "reviewed": {"quality", "review"},
     "critic_checked": {"quality", "review", "critic"},
     "verified": {"quality", "review", "critic", "precommit_eval"},
+    "archived": {"quality", "review", "critic", "precommit_eval"},
 }
 
 EVOLUTION_BRANCH = "main"
@@ -551,9 +555,15 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
         _git("add", str(EXPERIENCE_FILE.relative_to(PROJECT_ROOT)), check=False)
     _git("commit", "-m", msg)
     tag = f"bot-v{version}"
-    # Delete existing tag if any (interrupted run), then create fresh
     _git("tag", "-d", tag, check=False)
     _git("tag", tag, "-m", f"Bot v{version}: {strategy_tag}")
+
+    push_ok = False
+    if os.environ.get("EVOLUTION_GIT_PUSH") == "1":
+        _git("push", "origin", "main", check=False)
+        _git("push", "origin", tag, check=False)
+        push_ok = True
+    return push_ok
 
 
 def git_get_parent(version):
@@ -573,6 +583,122 @@ def git_get_parent(version):
         if line.strip().startswith("parent:"):
             return line.split(":", 1)[1].strip()
     return None
+
+
+# ──────────────────────────────────────────────
+# Generation Archiving
+# ──────────────────────────────────────────────
+
+def archive_generation(version, source_v, ckpt):
+    """Create a structured archive snapshot for a completed generation.
+
+    Writes results/archive/v{N}.json with key metrics from the pipeline state.
+    """
+    os.makedirs(ARCHIVE_DIR, exist_ok=True)
+    snapshot = {
+        "version": version,
+        "source_v": source_v,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "git_tag": f"bot-v{version}",
+    }
+
+    try:
+        snapshot["git_commit"] = _git("rev-parse", "--short", f"bot-v{version}", check=False)
+    except Exception:
+        pass
+
+    ratings = load_ratings()
+    p = ratings.get(f"claude_v{version}")
+    if p:
+        snapshot["rating"] = {"r": round(p.r, 1), "rd": round(p.rd, 1)}
+
+    try:
+        from tool_helpers import compute_h2h_avg_winrate, _load_h2h_data
+        h2h_wr = compute_h2h_avg_winrate(f"claude_v{version}", _load_h2h_data())
+        snapshot["h2h_avg_wr"] = round(h2h_wr, 4)
+    except Exception:
+        pass
+
+    if ckpt:
+        gate_results = ckpt.get("gate_results", {})
+        if gate_results.get("review"):
+            snapshot["review_score"] = gate_results["review"].get("quality_score", 0)
+        if gate_results.get("critic"):
+            snapshot["critic_score"] = gate_results["critic"].get("score", 0)
+        precommit = gate_results.get("precommit_eval", {})
+        if precommit:
+            snapshot["precommit_eval"] = {"passed": precommit.get("passed", False)}
+
+    try:
+        diff_stat = _git("diff", "--stat", f"bot-v{source_v}..bot-v{version}",
+                         "--", f"bots/claude_v{version}/", check=False)
+        if diff_stat:
+            last_line = diff_stat.strip().split("\n")[-1]
+            snapshot["diff_stats_raw"] = last_line.strip()
+    except Exception:
+        pass
+
+    snapshot["pool_size"] = len(get_active_bots())
+
+    archive_path = ARCHIVE_DIR / f"v{version}.json"
+    with open(archive_path, "w") as f:
+        json.dump(snapshot, f, indent=2, ensure_ascii=False)
+    return snapshot
+
+
+def archive_rotate_files(version):
+    """Rotate append-only data files by archiving old entries to archive/."""
+    os.makedirs(ARCHIVE_DIR, exist_ok=True)
+
+    rotation_rules = [
+        (WORKER_FAILURES_FILE, 200),
+        (MATCH_HISTORY_FILE, 500),
+        (RATING_HISTORY_FILE, 100),
+    ]
+    if LLM_COSTS_FILE.exists():
+        rotation_rules.append((LLM_COSTS_FILE, 200))
+
+    for filepath, keep_lines in rotation_rules:
+        if not filepath.exists():
+            continue
+        with locked_file(filepath, "r") as f:
+            lines = f.readlines()
+        if len(lines) <= keep_lines:
+            continue
+        archived_lines = lines[:-keep_lines]
+        hot_lines = lines[-keep_lines:]
+        archive_name = f"{filepath.stem}_v{version}.jsonl"
+        archive_path = ARCHIVE_DIR / archive_name
+        with open(archive_path, "w") as f:
+            f.writelines(archived_lines)
+        with locked_file(filepath, "w") as f:
+            f.writelines(hot_lines)
+
+
+def archive_old_logs(keep_generations=5):
+    """Compress log directories older than keep_generations into .tar.gz."""
+    current_v = find_current_v()
+    cutoff_v = current_v - keep_generations
+    if cutoff_v <= 0:
+        return
+
+    os.makedirs(ARCHIVE_DIR, exist_ok=True)
+    for v in range(1, cutoff_v + 1):
+        log_dir = RESULTS_DIR / f"v{v}" / "logs"
+        if not log_dir.exists():
+            continue
+        archive_path = ARCHIVE_DIR / f"v{v}_logs.tar.gz"
+        if archive_path.exists():
+            shutil.rmtree(log_dir, ignore_errors=True)
+            continue
+        try:
+            import tarfile
+            parent_dir = RESULTS_DIR / f"v{v}"
+            with tarfile.open(str(archive_path), "w:gz") as tar:
+                tar.add(str(log_dir), arcname=f"v{v}/logs")
+            shutil.rmtree(parent_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 
 # ──────────────────────────────────────────────

@@ -29,6 +29,7 @@ from tool_pipeline import (  # noqa: F401
     run_precommit_eval,
     run_inline_eval,
     commit_bot,
+    run_archivist,
     run_crossover,
 )
 
@@ -65,6 +66,7 @@ all_tools = [
     run_crossover,
     prepare_next_gen,
     commit_bot,
+    run_archivist,
     start_eval_daemon,
     stop_eval_daemon,
     wait_for_eval,

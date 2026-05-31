@@ -13,6 +13,7 @@ from evolution_infra import (
     locked_file, get_bot_dir, get_logs_dir, load_ratings, get_active_bots,
     _trim_to_budget, RESULTS_DIR, PROMPTS_DIR, EXPERIENCE_FILE,
     MATCH_HISTORY_FILE, REPLAY_DIR, WORKER_FAILURES_FILE,
+    ARCHIVE_DIR,
     MAX_MASTER_RETRIES,
     Glicko2Player,
 )
@@ -479,3 +480,63 @@ async def _analyze_recent_matches(source_v, ui, max_matches=8):
         return output or ""
     except Exception:
         return ""
+
+
+# ──────────────────────────────────────────────
+# Archivist Analysis
+# ──────────────────────────────────────────────
+
+async def _run_archivist_analysis(version, source_v, snapshot, ui):
+    """Run Cycle Archivist LLM analysis on a completed generation.
+
+    Called conditionally (rating decline, experience pool growth, or forced).
+    Returns a JSON dict with assessment and strategic advice.
+    """
+    prompt_file = PROMPTS_DIR / "archivist.md"
+    if prompt_file.exists():
+        prompt = prompt_file.read_text()
+    else:
+        prompt = (
+            "You are the Cycle Archivist for a poker bot evolution system.\n"
+            "Analyze the completed generation and provide a strategic assessment.\n\n"
+            "## Archive Snapshot\n{snapshot}\n\n"
+            "Output ONLY a JSON block:\n"
+            "```json\n"
+            '{"generation_assessment": "improvement|neutral|regression", '
+            '"archive_notes": "brief summary of what this generation achieved", '
+            '"experience_updates": ["lesson to add to experience pool"], '
+            '"strategic_advice": "suggestion for next generation"}\n'
+            "```\n"
+        )
+
+    prompt = prompt.replace("{snapshot}", json.dumps(snapshot, indent=2, ensure_ascii=False))
+
+    # Build recent rating trend context
+    trend_lines = []
+    for check_v in range(max(1, version - 4), version + 1):
+        check_archive = ARCHIVE_DIR / f"v{check_v}.json"
+        if check_archive.exists():
+            try:
+                with open(check_archive, "r") as f:
+                    s = json.load(f)
+                r = s.get("rating", {}).get("r", "?")
+                wr = s.get("h2h_avg_wr", "?")
+                trend_lines.append(f"v{check_v}: r={r}, h2h_avg_wr={wr}")
+            except Exception:
+                pass
+    if trend_lines:
+        prompt += f"\n\n## Recent Rating Trend\n" + "\n".join(trend_lines)
+
+    log_file = get_logs_dir(version) / "archivist_io.txt"
+    try:
+        output, _, _ = await run_claude_query(
+            prompt, [], ui,
+            "CYCLE ARCHIVIST", log_file,
+            tools=["Bash", "Read"],
+        )
+        data = parse_json_output(output)
+        if data and isinstance(data, dict):
+            return data
+        return {"archive_notes": output[:300] if output else "No output"}
+    except Exception as e:
+        return {"error": str(e)}

@@ -25,6 +25,7 @@ from evolution_core import (
     parse_json_output,
     run_claude_query,
     git_commit_bot,
+    git_has_tag,
     clear_pipeline_checkpoint,
     MAX_ACTIVE_BOTS,
     _run_master_analysis,
@@ -916,8 +917,26 @@ async def commit_bot(args):
     rating_info = f"rating: r={p.r:.1f} rd={p.rd:.1f}{wr_str}" if p else ""
 
     parent2_v = ckpt.get("parent2_v") if ckpt else None
-    git_commit_bot(v, source_v, strategy, rating_info=rating_info, parent2_v=parent2_v)
+    push_ok = git_commit_bot(v, source_v, strategy, rating_info=rating_info, parent2_v=parent2_v)
+
+    # Verify tag was created
+    if not git_has_tag(v):
+        return _json_tool_result({
+            "error": f"Git tag bot-v{v} not found after commit. Git operations may have failed.",
+            "version": v,
+        })
+
     (bot_dir / ".completed").touch()
+
+    # Archive this generation's state snapshot
+    try:
+        from evolution_infra import archive_generation, archive_rotate_files, archive_old_logs
+        archive_generation(v, source_v, ckpt)
+        archive_rotate_files(v)
+        archive_old_logs()
+    except Exception:
+        pass
+
     clear_pipeline_checkpoint()
 
     try:
@@ -930,11 +949,109 @@ async def commit_bot(args):
     reap_signal = Path(__file__).parent / "results" / ".reap_signal"
     reap_signal.touch()
 
-    result = {"committed": True, "version": v, "source_v": source_v}
+    result = {"committed": True, "version": v, "source_v": source_v, "push_ok": push_ok}
     active_bots = get_active_bots()
     if len(active_bots) > MAX_ACTIVE_BOTS:
         result["needs_reap"] = True
         result["pool_size"] = len(active_bots)
+    return _json_tool_result(result)
+
+
+# ──────────────────────────────────────────────
+# Archivist Stage
+# ──────────────────────────────────────────────
+
+@tool("run_archivist", "Run post-commit archive audit for a completed generation. Verifies consistency, auto-reaps if needed, optionally calls LLM for strategic assessment.", {"version": int, "source_v": int})
+async def run_archivist(args):
+    v = args["version"]
+    source_v = args["source_v"]
+    ui = _get_ui()
+
+    # 1. Verify post-commit consistency
+    bot_dir = get_bot_dir(v)
+    consistency_issues = []
+    if not (bot_dir / ".completed").exists():
+        consistency_issues.append(f".completed missing for v{v}")
+    if not git_has_tag(v):
+        consistency_issues.append(f"git tag bot-v{v} missing")
+    ratings = load_ratings()
+    if f"claude_v{v}" not in ratings:
+        consistency_issues.append(f"v{v} not in glicko_ratings.json")
+
+    # 2. Auto-reap if pool exceeds limit
+    reap_result = None
+    active_bots = get_active_bots()
+    if len(active_bots) > MAX_ACTIVE_BOTS:
+        try:
+            from tool_status import reap_weakest as _reap_weakest
+            reap_result = await _reap_weakest({"quiet": True})
+        except Exception as e:
+            reap_result = {"error": str(e)}
+
+    # 3. Load archive snapshot for LLM context
+    from evolution_infra import ARCHIVE_DIR
+    archive_path = ARCHIVE_DIR / f"v{v}.json"
+    snapshot = {}
+    if archive_path.exists():
+        try:
+            with open(archive_path, "r") as f:
+                snapshot = json.load(f)
+        except Exception:
+            pass
+
+    # 4. Conditional LLM archivist analysis
+    llm_result = None
+    needs_llm = False
+    # Check if rating has been declining for 3+ gens
+    try:
+        rating_trend = []
+        for check_v in range(max(1, v - 4), v + 1):
+            check_archive = ARCHIVE_DIR / f"v{check_v}.json"
+            if check_archive.exists():
+                with open(check_archive, "r") as f:
+                    s = json.load(f)
+                r = s.get("rating", {}).get("r")
+                if r:
+                    rating_trend.append((check_v, r))
+        if len(rating_trend) >= 3:
+            declining = all(rating_trend[i][1] > rating_trend[i + 1][1] for i in range(len(rating_trend) - 1))
+            if declining:
+                needs_llm = True
+    except Exception:
+        pass
+
+    if needs_llm or os.environ.get("EVOLUTION_ALWAYS_ARCHIVE_LLM") == "1":
+        try:
+            from agent_master import _run_archivist_analysis
+            llm_result = await _run_archivist_analysis(v, source_v, snapshot, ui)
+            # Append LLM notes to archive snapshot
+            if llm_result and archive_path.exists():
+                snapshot["archivist_notes"] = llm_result
+                with open(archive_path, "w") as f:
+                    json.dump(snapshot, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            llm_result = {"error": str(e)}
+
+    result = {
+        "version": v,
+        "source_v": source_v,
+        "consistency_ok": len(consistency_issues) == 0,
+        "consistency_issues": consistency_issues if consistency_issues else None,
+        "reap_result": reap_result,
+        "pool_size": len(active_bots),
+        "snapshot": snapshot,
+        "llm_analysis": llm_result,
+    }
+
+    # Record archived stage in checkpoint (then clear)
+    _ckpt = _matching_checkpoint(v, source_v)
+    if _ckpt:
+        from evolution_infra import write_pipeline_checkpoint
+        write_pipeline_checkpoint(v, source_v, "archived",
+                                  master_plan=_ckpt.get("master_plan"),
+                                  gate_results=_ckpt.get("gate_results"))
+    clear_pipeline_checkpoint()
+
     return _json_tool_result(result)
 
 

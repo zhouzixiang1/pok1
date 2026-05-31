@@ -16,7 +16,7 @@ from evolution_infra import (  # noqa: F401
     CORE_DIR, PROJECT_ROOT, _COPY_IGNORE, PROMPTS_DIR, RESULTS_DIR, BOTS_DIR,
     EXPERIENCE_FILE, REFERENCE_DIR, GRAVEYARD_DIR, RATINGS_FILE, STATS_FILE,
     H2H_FILE, BOT_STATS_FILE, WORKER_FAILURES_FILE, PIPELINE_STATE_FILE,
-    REPLAY_DIR, MATCH_HISTORY_FILE,
+    REPLAY_DIR, MATCH_HISTORY_FILE, ARCHIVE_DIR, LLM_COSTS_FILE, RATING_HISTORY_FILE,
     MAX_ACTIVE_BOTS, DAEMON_EVAL_TIMEOUT, MIN_GAMES_FOR_EVAL, MAX_LINES_PER_FILE,
     MIN_DECISION_PASS_RATE, MIN_CROSSOVER_DECISION_RATE, MAX_WORKER_RETRIES,
     MAX_MASTER_RETRIES, MAX_CROSSOVER_RETRIES, MAX_GENESIS_RETRIES,
@@ -37,6 +37,8 @@ from evolution_infra import (  # noqa: F401
     _drain_stdout, start_daemon, stop_daemon, daemon_monitor_thread,
     # Git
     _git, _git_ensure_main_branch, git_has_tag, git_commit_bot, git_get_parent,
+    # Archiving
+    archive_generation, archive_rotate_files, archive_old_logs,
     # LLM
     run_claude_query, parse_json_output,
     # Code verification
