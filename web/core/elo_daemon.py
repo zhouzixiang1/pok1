@@ -12,12 +12,10 @@ Usage:
 import os
 import sys
 import json
-import fcntl
 import signal
 import argparse
 import time
 from collections import Counter, deque
-from contextlib import contextmanager
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 from datetime import datetime
@@ -30,6 +28,7 @@ sys.path.insert(0, str(CORE_DIR))
 
 from glicko2 import Glicko2Player, update_single_game, decay_rd
 from battle import mirror_battle
+from evolution_infra import locked_file
 
 BOTS_DIR = PROJECT_ROOT / "bots"
 RESULTS_DIR = CORE_DIR / "results"
@@ -56,29 +55,10 @@ POLL_TIMEOUT = 0.5
 running = True
 
 
-@contextmanager
-def locked_file(path, mode='r', lock_type=None, encoding=None):
-    if lock_type is None:
-        lock_type = fcntl.LOCK_EX if ('w' in mode or 'a' in mode or '+' in mode) else fcntl.LOCK_SH
-    open_kwargs = {}
-    if encoding is not None:
-        open_kwargs["encoding"] = encoding
-    with open(path, mode, **open_kwargs) as f:
-        fcntl.flock(f, lock_type)
-        try:
-            yield f
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
-
-
 def handle_signal(signum, frame):
     global running
     print(f"\n[DAEMON] Received signal {signum}, shutting down gracefully...")
     running = False
-    try:
-        os.killpg(os.getpgid(os.getpid()), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
 
 
 def get_active_bots():
@@ -500,8 +480,15 @@ def main():
 
             # Check for reap signal — immediate bot list refresh
             reap_signal = Path(__file__).parent / "results" / ".reap_signal"
+            reap_fresh = False
             if reap_signal.exists():
+                try:
+                    ts = float(reap_signal.read_text().strip())
+                    reap_fresh = time.time() - ts <= 300
+                except (ValueError, OSError):
+                    reap_fresh = True  # No timestamp = legacy signal, process anyway
                 reap_signal.unlink(missing_ok=True)
+            if reap_fresh:
                 new_bots = get_active_bots()
                 removed = set(active_bots) - set(new_bots)
                 for b in removed:

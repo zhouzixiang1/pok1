@@ -387,6 +387,19 @@ def start_daemon(workers=14, pairs=5):
     with _daemon_lock:
         if daemon_proc and daemon_proc.poll() is None:
             return daemon_proc  # Already running
+        # Kill orphaned daemon from a previous process
+        daemon_pid_file = RESULTS_DIR / ".daemon_pid"
+        if daemon_pid_file.exists():
+            try:
+                old_pid = int(daemon_pid_file.read_text().strip())
+                try:
+                    os.killpg(os.getpgid(old_pid), signal.SIGTERM)
+                    time.sleep(1)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+            except ValueError:
+                pass
+            daemon_pid_file.unlink(missing_ok=True)
         daemon_script = str(CORE_DIR / "elo_daemon.py")
         cmd = [sys.executable, daemon_script, "--workers", str(workers), "--pairs", str(pairs)]
         daemon_proc = subprocess.Popen(
@@ -394,6 +407,7 @@ def start_daemon(workers=14, pairs=5):
             text=True, bufsize=1,
             start_new_session=True,  # Independent process group for clean killpg
         )
+        daemon_pid_file.write_text(str(daemon_proc.pid))
     # Drain daemon stdout to prevent pipe buffer deadlock
     threading.Thread(target=_drain_stdout, args=(daemon_proc,), daemon=True).start()
     if not _atexit_registered:
@@ -435,17 +449,30 @@ def stop_daemon():
                 except subprocess.TimeoutExpired:
                     pass
         daemon_proc = None
+        # Clean up PID file
+        daemon_pid_file = RESULTS_DIR / ".daemon_pid"
+        daemon_pid_file.unlink(missing_ok=True)
 
 
 def daemon_monitor_thread(ui, stop_event, daemon_workers=14, daemon_pairs=5):
     """Background thread: reads daemon stats, updates UI, auto-restarts dead daemon."""
+    restart_count = 0
     while not stop_event.is_set():
         try:
             with _daemon_lock:
                 proc = daemon_proc
             if proc is not None and proc.poll() is not None:
-                ui.log_history("⚠️ Daemon 进程已退出，正在重启...", "warn")
+                restart_count += 1
+                if restart_count > 5:
+                    ui.log_history("Daemon failed 5x consecutively, stopping auto-restart", "error")
+                    break
+                backoff = min(3 * (2 ** (restart_count - 1)), 120)
+                ui.log_history(f"⚠️ Daemon exited, restarting in {backoff}s (attempt {restart_count})", "warn")
+                if stop_event.wait(backoff):
+                    break
                 start_daemon(workers=daemon_workers, pairs=daemon_pairs)
+            else:
+                restart_count = 0
             stats = load_daemon_stats()
             ratings = load_ratings()
             ui.update_daemon_status(stats, ratings)

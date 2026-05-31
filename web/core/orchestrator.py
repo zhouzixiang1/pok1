@@ -52,7 +52,9 @@ def _is_rate_limited(output: str) -> bool:
 
 def _save_orchestrator_session(session_id: str):
     """Persist session_id so a killed process can resume the exact conversation."""
-    ORCHESTRATOR_SESSION_FILE.write_text(json.dumps({"session_id": session_id}))
+    tmp = ORCHESTRATOR_SESSION_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"session_id": session_id}))
+    tmp.rename(ORCHESTRATOR_SESSION_FILE)
 
 
 def _load_orchestrator_session() -> "str | None":
@@ -97,6 +99,15 @@ def _make_precompact_hook():
                     f"stage={stage}. Next tool: {next_step}. "
                     "DO NOT restart this generation — continue from this stage."
                 )
+                if checkpoint.get("master_plan"):
+                    tasks = checkpoint["master_plan"].get("tasks", [])
+                    if tasks:
+                        lines.append("Master plan tasks:")
+                        for i, t in enumerate(tasks):
+                            lines.append(
+                                f"  Worker {t.get('worker_id', i)}: {t.get('role', '?')} "
+                                f"— {t.get('objective', '?')[:100]}"
+                            )
         except Exception:
             pass
         return SyncHookJSONOutput(reason="\n".join(lines))
@@ -490,6 +501,11 @@ async def orchestrator_loop(ui, no_daemon=False, daemon_workers=14, daemon_pairs
         if ui:
             ui.set_status("Stopped", is_working=False)
             ui.log_history("Orchestrator stopped.", "warn")
+        try:
+            from server.state import app_state
+            app_state.set_running(False)
+        except Exception:
+            pass
     except Exception as e:
         if ui:
             ui.log_history(f"Orchestrator crashed: {e}", "error")
@@ -501,6 +517,11 @@ async def orchestrator_loop(ui, no_daemon=False, daemon_workers=14, daemon_pairs
     finally:
         if _daemon_stop is not None:
             _daemon_stop.set()
+        try:
+            from evolution_infra import stop_daemon
+            stop_daemon()
+        except Exception:
+            pass
 
 
 async def run_orchestrator_cli(args):
@@ -514,26 +535,33 @@ async def run_orchestrator_cli(args):
     # In CLI mode, inject None (uses ToolUI fallback)
     inject_ui(None)
 
-    if args.one_gen or args.dry_run:
-        cost = await _run_one_cycle(
-            ui=None,
-            log_file=log_file,
-            one_gen=args.one_gen,
-            dry_run=args.dry_run,
-            max_turns=args.max_turns,
-        )
-        print(f"\n[Orchestrator] Done. Cost: ${cost:.4f}")
-    else:
-        gen_count = 0
-        while True:
-            gen_count += 1
+    try:
+        if args.one_gen or args.dry_run:
             cost = await _run_one_cycle(
-                ui=None, log_file=log_file,
-                one_gen=False, dry_run=False,
+                ui=None,
+                log_file=log_file,
+                one_gen=args.one_gen,
+                dry_run=args.dry_run,
                 max_turns=args.max_turns,
             )
-            print(f"\n[Orchestrator] Cycle {gen_count} done. Cost: ${cost:.4f}")
-            await asyncio.sleep(5)
+            print(f"\n[Orchestrator] Done. Cost: ${cost:.4f}")
+        else:
+            gen_count = 0
+            while True:
+                gen_count += 1
+                cost = await _run_one_cycle(
+                    ui=None, log_file=log_file,
+                    one_gen=False, dry_run=False,
+                    max_turns=args.max_turns,
+                )
+                print(f"\n[Orchestrator] Cycle {gen_count} done. Cost: ${cost:.4f}")
+                await asyncio.sleep(5)
+    finally:
+        try:
+            from evolution_infra import stop_daemon
+            stop_daemon()
+        except Exception:
+            pass
 
 
 def main():

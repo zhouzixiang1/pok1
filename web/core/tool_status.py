@@ -7,6 +7,7 @@ and handle bot lifecycle operations.
 import json
 import shutil
 import sys
+import time
 from pathlib import Path
 from typing import Annotated, TypedDict
 
@@ -343,7 +344,7 @@ async def reap_weakest(args):
 
     # Signal daemon to immediately refresh bot list
     reap_signal = Path(__file__).parent / "results" / ".reap_signal"
-    reap_signal.touch()
+    reap_signal.write_text(str(time.time()))
 
     return {"content": [{"type": "text", "text": json.dumps({
         "reaped": True,
