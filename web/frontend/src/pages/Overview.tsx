@@ -38,6 +38,7 @@ function StatCard({ title, value, subtitle }: { title: string; value: string | n
 
 function DaemonStatusWidget() {
   const daemon = useDaemonStatus();
+  const [toggling, setToggling] = useState(false);
 
   if (!daemon) return null;
 
@@ -63,6 +64,14 @@ function DaemonStatusWidget() {
   const age = daemon.last_update_age_seconds;
   const ageStr = age < 0 ? "从未" : age < 60 ? `${age}秒前` : `${Math.round(age / 60)}分钟前`;
 
+  const handleToggle = async () => {
+    setToggling(true);
+    try {
+      await controlApi.setConfig({ daemon_enabled: !daemon.daemon_enabled });
+    } catch {}
+    setToggling(false);
+  };
+
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03]">
       <div className="flex items-center justify-between">
@@ -72,9 +81,27 @@ function DaemonStatusWidget() {
           {statusLabels[daemon.status] || daemon.status}
         </span>
       </div>
-      <p className="mt-2 text-lg font-semibold text-gray-800 dark:text-white">
-        {daemon.daemon_enabled ? "已启用" : "已禁用"}
-      </p>
+      <div className="mt-2 flex items-center justify-between">
+        <p className="text-lg font-semibold text-gray-800 dark:text-white">
+          {daemon.daemon_enabled ? "已启用" : "已禁用"}
+        </p>
+        <button
+          onClick={handleToggle}
+          disabled={toggling}
+          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none disabled:opacity-50 ${
+            daemon.daemon_enabled
+              ? "bg-green-500 dark:bg-green-600"
+              : "bg-gray-300 dark:bg-gray-600"
+          }`}
+          title={daemon.daemon_enabled ? "关闭评分引擎" : "启动评分引擎"}
+        >
+          <span
+            className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+              daemon.daemon_enabled ? "translate-x-6" : "translate-x-1"
+            }`}
+          />
+        </button>
+      </div>
       <p className="mt-1 text-xs text-gray-400">最近更新: {ageStr}</p>
     </div>
   );

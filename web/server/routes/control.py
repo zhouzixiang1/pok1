@@ -74,7 +74,16 @@ async def set_config(req: ConfigRequest):
     updates = req.safe_updates
     if not updates:
         return app_state.get_config()
-    return app_state.update_config(**updates)
+    was_enabled = app_state.daemon_enabled
+    result = app_state.update_config(**updates)
+    if "daemon_enabled" in updates and updates["daemon_enabled"] != was_enabled:
+        if updates["daemon_enabled"]:
+            from evolution_core import start_daemon
+            start_daemon(workers=app_state.daemon_workers, pairs=app_state.daemon_pairs)
+        else:
+            from evolution_core import stop_daemon
+            stop_daemon()
+    return result
 
 
 @router.get("/status")

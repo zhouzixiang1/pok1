@@ -348,7 +348,9 @@ async def orchestrator_loop(ui, no_daemon=False, daemon_workers=14, daemon_pairs
         start_daemon(workers=daemon_workers, pairs=daemon_pairs)
         _daemon_stop = threading.Event()
         monitor = threading.Thread(
-            target=daemon_monitor_thread, args=(ui, _daemon_stop), daemon=True
+            target=daemon_monitor_thread,
+            args=(ui, _daemon_stop, daemon_workers, daemon_pairs),
+            daemon=True,
         )
         monitor.start()
         if ui:

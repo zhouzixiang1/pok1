@@ -451,3 +451,179 @@ This plan addresses the core weaknesses systematically:
    - Also removes the flawed unconditional AKs all-in at 0.55
 
 2. **Worker B (Hyperparameter Tuner)** targets the #2 gap: **preflop ranges too tight + EQR too high**. v23 opens SB at 0.43 while v7 opens at 0.49 — a massive gap. Lower EQR (per experience pool lesson: "v9's LOWER values outperform") prevents over-realizing weak hands.
+
+[MASTER (Try 1) PROMPT]
+=============================
+# Role
+You are the Master Bot Architect for a Texas Hold'em poker AI. You are a world-class Prompt Engineer, Strategist, and Team Orchestrator.
+
+# CRITICAL: Tool Usage Rules
+You have Read and Bash tools available. When you need to read files or run commands:
+- **Use the Read tool** to read local files. Example: Read `web/core/results/glicko_ratings.json`
+- **Use the Bash tool** to run git commands. Example: `git log --oneline -10`
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem, use Read tool directly.
+
+# Essential Data Files
+Read these files FIRST using the Read tool to understand the current state:
+- `web/core/results/head_to_head.json` — **PRIMARY DATA**: Head-to-Head matrix. Use this to compute H2H average win rate per bot (equal-weighted across all opponents). This is the **primary optimization metric**.
+- `web/core/results/glicko_ratings.json` — Glicko-2 ratings (r, rd) as secondary reference for statistical context
+- `web/core/results/bot_stats.json` — Per-bot stats: wins, losses, games, win_rate (games-weighted, biased by opponent frequency — use H2H average for equal weighting)
+- `web/core/results/rating_history.jsonl` — Performance snapshots over time (includes both ratings and win_rates for recent periods)
+- `web/core/experience_pool.md` — Accumulated strategic lessons from past generations (**THIS is the active pool, not evolution_workspace/experience_pool.md**)
+- `bots/claude_v7/` — Current source bot code
+- `web/core/reference_bots/bot1/` … `web/core/reference_bots/bot6/` — 6 strong reference bots. Read whichever is relevant.
+
+**H2H Matrix Usage:** The head_to_head.json file is the most important data for identifying weaknesses. For each bot, check which opponents it loses to (< 40% WR = WEAKNESS) and which it beats (> 60% WR = STRENGTH). Focus improvements on closing weakness gaps.
+
+Use Bash tool with `git log` and `git diff` to understand evolution history.
+
+**When reading `experience_pool.md`, prioritise in this order:**
+1. `## RECENT_LESSONS` — what just happened last 1-3 gens
+2. `## OPPONENT_MODELING` — opponent model improvements (often highest EV)
+3. Any entry with `[POSSIBLY EXHAUSTED]` — **avoid repeating these directions**
+
+# Task
+Your goal is to:
+1. Read the H2H data and analyze the current bot's per-opponent performance. Compute and track H2H average win rate — this is the **primary metric**.
+2. Read the performance verification report (provided below) for objective trend analysis.
+3. Read the experience pool to learn from past iterations.
+4. Read the current bot's source code and reference bots' code to identify weaknesses.
+5. Dynamically assign 1–3 Developer Sub-Agents (Workers) to implement your strategy.
+6. Write the exact, comprehensive prompt (`worker_prompt`) for each worker.
+
+Prefer one dominant hypothesis per generation. If changing multiple subsystems,
+explain why they are inseparable. Otherwise split into separate generations.
+
+Every plan must make attribution possible:
+- `targeted_failure`: the single failure pattern this generation targets, with H2H/replay/evidence if available.
+- `expected_behavior_change`: what concrete decisions should change at the table.
+- `do_not_touch`: files, functions, streets, or subsystems workers must avoid.
+- `measurement_plan`: how quality gates, critical scenarios, H2H, or precommit eval should prove the change is not a regression.
+
+# Worker Count Decision
+Choose 1–3 workers based on the current bot's total games played:
+- **games < 50** (very uncertain): **1 worker only** — conservative change, avoid big structural risk
+- **games 50–200** (moderate confidence): **2 workers** — standard plan (Direction A + Direction B)
+- **games ≥ 200** (well-evaluated): **up to 3 workers** — can explore bolder, parallel improvements
+
+# Worker Directions (assign to each worker)
+- **Direction A (Algorithmic Logic Architect):** Refactor methods, add new evaluation functions, fuse algorithms from reference bots. Examples: adding position-aware bluff detection, implementing GTO-inspired bet sizing, improving draw evaluation, opponent modeling.
+- **Direction B (Hyperparameter Tuner):** ONLY modify numeric constants, thresholds, and magic numbers. Examples: adjusting `BLUFF_THRESHOLD` from 0.15 → 0.20, `POT_ODDS_MULTIPLIER` from 1.5 → 1.8. FORBIDDEN from adding new functions, classes, or changing control flow.
+- **Direction C (Opponent Modeler):** *(Only use as 3rd worker when games ≥ 200)*
+  - ALLOWED: Adding/modifying opponent tracking data structures
+  - ALLOWED: Per-street statistics (preflop/flop/turn/river aggression separately): `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']`
+  - ALLOWED: Bet sizing pattern detection: `opp_bet_sizes[street]` as rolling list, use median
+  - FORBIDDEN: Changing overall decision flow or non-opponent-model logic
+
+# Dual-Track Boundary Examples
+## GOOD Direction A task (Logic Architect):
+- "Add a river pot-size-based bluff detection function that checks if the opponent's bet size exceeds 75% pot and adjusts calling range accordingly."
+- "Refactor preflop hand evaluation to use a weighted scoring system combining hand strength + position + opponent VPIP."
+
+## GOOD Direction B task (Hyperparameter Tuner):
+- "In constants.py, increase BLUFF_FREQUENCY from 0.12 to 0.18 and decrease CONTINUATION_BET_THRESHOLD from 0.55 to 0.45."
+- "Tune the following thresholds: RAISE_MULTIPLIER (try 2.0-2.5), FOLD_EQUITY_MIN (try 0.15-0.25)."
+
+## BAD Direction A task (too vague):
+- "Make the bot better at postflop play." (What specifically? Which functions?)
+- "Improve strategy." (Not actionable)
+
+## BAD Direction B task (violates boundary):
+- "Add a new function that calculates pot odds." (That's Direction A, not parameter tuning)
+
+# Performance Verification Report (SATLUTION-style objective analysis)
+{"trend": "stagnant", "verified_improvements": ["v7 holds #1 H2H avg win rate (57.47%) with stable Glicko rating (r=1661, rd=61)", "Dominates weak opponents decisively (v1: 97%, v4: 62%)", "Consistent 52-60% win rates against middle tier (v9-v19)"], "persistent_weaknesses": ["Loses to claude_v6 (47%) — likely overfitted to exploit weaker bots at cost of robustness against well-tuned opponents", "Dead even vs claude_v20 (50%) and barely positive vs v22 (51%) — no edge against newer evolved bots", "top_h2h_wr flat at ~57.4% for 10 straight periods — plateau reached with current approach"], "diversity_needed": true, "diversity_reason": "Performance stagnant for 10+ periods. v7 weaknesses cluster against newer evolved bots (v6, v20, v22) suggesting iterative incremental tuning cannot break through — structural paradigm shift needed.", "suggestion": "Branch from v6 instead of v7: v7 loses to v6 (47%), meaning v6 core approach is strategically sounder in peer matchups. Build on v6 base but harden against v7-style exploitation."}
+Use `verified_improvements` to avoid duplicating what already worked.
+Use `persistent_weaknesses` to prioritise what to fix next.
+**If `diversity_needed: true`, you MUST try a substantially different approach this generation.**
+
+# Diversity Injection (Anti-Local-Optima)
+If `performance_verification.diversity_needed: true` OR the same type of change has failed 2+ consecutive generations:
+- You MUST try a **substantially different approach** this generation
+- Examples of "substantially different":
+  - Last 2 gens tuned constants → this gen add new opponent model function (Direction A)
+  - Last 2 gens added preflop logic → this gen focus on river/showdown decisions
+  - Last 2 gens had Logic Architect fail → this gen try only HyperTuner (conservative, 1 worker)
+- Explicitly state in your `analysis` field: `"Diversity injection: trying X instead of Y"`
+- This prevents getting trapped in a local optimum where the same direction never improves
+
+# Stagnation Decision
+PERFORMANCE STAGNATION CONFIRMED. v7's top h2h_avg_wr has been flat at ~57.4% for 10+ evaluation periods (0.07pp total movement). diversity_needed: true. The performance verification suggests branching from v6 instead of v7, since v6 beats v7 head-to-head at 53%. However, v7 still has the best overall H2H avg WR across all opponents. Consider: (1) Continue from v7 but add postflop fold mechanism — the 0% postflop fold rate is the primary weakness causing -17000 to -20000 chip losses. (2) Branch from v6 and add anti-v7 exploitation hardening. The key structural change needed is a fold mechanism postflop — the bot NEVER folds on flop/turn/river, making it a calling station that pays off every value bet.
+
+# Recent Match Analysis
+{"weaknesses": ["Extremely passive preflop: all bots fold 61-69% preflop while raising only 16-24%, surrendering too many blinds without contest", "Catastrophic big-loss exposure: every match features 3-5 games with chip losses exceeding -17000, indicating the bot commits too many chips on weak-to-marginal hands and fails to fold early when dominated", "Near-zero postflop fold rate (0% on flop/turn/river across all matches) — the bot cannot disengage from pots it is losing, leading to huge river payoffs when behind"], "street_weaknesses": {"preflop": "Fold rate 61-69% reasonable but only 16-24% raises and 0.6-0.7x pot average raise size — under-aggro preflop, limps/calls too wide, raises too small", "flop": "0% fold rate — NEVER folds to a flop bet. 60-66% call rate is a calling station. 32-39% raise rate decent but 0.5x pot sizing too small to protect or deny equity", "turn": "0% fold rate continues. 25-36% raise with 0.4-0.5x pot sizing rarely applies real pressure", "river": "0% fold rate is fatal. 69-88% call rate pays off every value bet. Only 5-22% raise rate with 0.4-0.6x pot sizing fails to extract maximum value"}, "recommendation": "Implement postflop fold mechanism — fold on flop/turn/river when facing aggression with weak made hands (below top pair weak kicker) or whiffed draws. Increase average raise sizing from 0.5x pot to 0.75-1.0x pot on flop and turn to deny equity and extract value. On river, fold weak showdown hands (below mid-pair) to large bets instead of calling 88% of the time."}
+This is an automated analysis of the bot's recent losses. Use these insights to focus your improvement strategy on the identified weaknesses. If this section is empty, no replay analysis was available.
+
+If stagnation is detected, you can:
+1. Set `"branch_from": "claude_v{N}"` to branch evolution from a different ancestor.
+2. Choose the highest-rated non-stagnant bot, or a bot with a different strategy.
+3. If no `branch_from` is set, evolution continues from the latest version.
+
+# Output Format
+You MUST output your response containing exactly ONE JSON block formatted as follows.
+`tasks` array may contain **1, 2, or 3** items based on your Worker Count Decision above.
+
+```json
+{
+  "analysis": "Your strategic analysis. Which reference bot did you study? What weakness are you targeting? Are we failing due to bad logic or bad parameters? If diversity injection applies, explain: 'Diversity injection: trying X instead of Y'.",
+  "targeted_failure": "One dominant failure pattern this generation targets, with the strongest evidence source.",
+  "expected_behavior_change": "Specific table behavior that should change, e.g. call AKs all-in preflop more often but do not widen weak offsuit calls.",
+  "do_not_touch": ["List files/functions/subsystems that must remain unchanged for attribution."],
+  "measurement_plan": "How to verify this hypothesis: critical scenarios, H2H weak opponent, parent comparison, expected small-sample signal.",
+  "branch_from": "claude_v{N}",
+  "tasks": [
+    {
+      "worker_id": 1,
+      "role": "Algorithmic Logic Architect",
+      "target_files": ["strategy.py", "postflop.py"],
+      "difficulty": "medium",
+      "worker_prompt": "You are an [Algorithmic Logic Architect]. Your goal is to... [Provide detailed logic instructions, reference which bot to learn from]"
+    },
+    {
+      "worker_id": 2,
+      "role": "Hyperparameter Tuner",
+      "target_files": ["constants.py"],
+      "difficulty": "easy",
+      "worker_prompt": "You are a [Hyperparameter Tuner]. DO NOT change algorithmic flow. Your goal is to tweak the thresholds... [Provide specific constants to adjust and why]"
+    }
+  ]
+}
+```
+
+Notes:
+- `branch_from` is OPTIONAL. Only include it to override the default evolution source.
+- For 1-worker plans, use only Direction A or only Direction B.
+- For 3-worker plans, add a Direction C (Opponent Modeler) task as worker_id 3.
+- Avoid v29-like broad mixes such as "preflop rewrite + river rewrite + all-street sizing" unless you explicitly prove those changes are inseparable.
+
+# Git Commands (use Bash tool)
+Run these with the Bash tool:
+- `git log --oneline --decorate -20` — See recent evolution history and tags
+- `git tag -l "bot-v*"` — List all bot version tags
+- `git show bot-v{N}:bots/claude_v{N}/main.py` — Inspect specific past bot code
+- `git diff bot-v{A} bot-v{B} -- bots/` — Compare two bot versions
+
+# Critical Rules
+1. Output strictly valid JSON.
+2. The `worker_prompt` you write for each worker will be fed DIRECTLY to that worker's LLM.
+3. Explicitly enforce the boundaries: Logic Architects must not blindly mess with finely-tuned parameters, and Hyperparameter Tuners must not write new functions.
+4. **TASK DIFFICULTY CONTROL**: Each task should involve modifying 1-3 specific functions. If previous generations had worker failures, split tasks into smaller, more focused units.
+5. **FILE OWNERSHIP**: For each task, specify `target_files` — the files the worker should modify. Workers must NOT modify files outside their assigned `target_files`.
+6. **STAGNATION AWARENESS**: If the H2H average win rate trend shows no improvement, consider radically different approaches. Look at reference bots you haven't studied yet, or try combining features from multiple bots.
+7. **MATCH ANALYSIS**: If match analysis data is provided, prioritize fixing the identified weaknesses. Don't ignore concrete loss patterns.
+8. **ATTRIBUTION**: Do not mix unrelated preflop, postflop, and sizing rewrites in one generation. The next evaluation must be able to attribute win/loss movement to this plan.
+
+Current evolution: v7 → v36
+Bot directory: bots/claude_v7/
+Ratings file: web/core/results/glicko_ratings.json
+Rating history: web/core/results/rating_history.jsonl
+Head-to-Head data: web/core/results/head_to_head.json
+Bot stats: web/core/results/bot_stats.json
+Experience pool: web/core/experience_pool.md  ← READ THIS, not evolution_workspace/experience_pool.md
+
+=============================
+[CLAUDE OUTPUT]
+Now let me read the remaining H2H data and the current bot source code:
+Now let me read the current v7 bot source code and the v6 bot for comparison:
+Now let me read the remaining v7 files and look at v6 for comparison:

@@ -395,10 +395,13 @@ def stop_daemon():
         daemon_proc = None
 
 
-def daemon_monitor_thread(ui, stop_event):
-    """Background thread that periodically reads daemon stats and updates UI."""
+def daemon_monitor_thread(ui, stop_event, daemon_workers=14, daemon_pairs=5):
+    """Background thread: reads daemon stats, updates UI, auto-restarts dead daemon."""
     while not stop_event.is_set():
         try:
+            if daemon_proc is not None and daemon_proc.poll() is not None:
+                ui.log_history("⚠️ Daemon 进程已退出，正在重启...", "warn")
+                start_daemon(workers=daemon_workers, pairs=daemon_pairs)
             stats = load_daemon_stats()
             ratings = load_ratings()
             ui.update_daemon_status(stats, ratings)

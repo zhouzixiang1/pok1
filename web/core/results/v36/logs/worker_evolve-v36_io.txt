@@ -396,3 +396,49 @@ End with:
 
 =============================
 [CLAUDE OUTPUT]
+I'll start by reading the key files to understand the current code structure.
+Now I have a clear picture. Let me plan the changes:
+
+## Scope Contract
+
+1. **Planned modified files**: `bots/claude_v36/strategy.py` only.
+2. **Planned modifications**:
+   - **Calling thresholds** (after line 443): Add `style_deltas.get('call_threshold_delta', 0)` to `strong` and `medium` thresholds.
+   - **Bluff thresholds** (lines 682-684): Subtract `style_deltas.get('bluff_freq_bonus', 0)` from river/probe/semi-bluff thresholds.
+   - **Fold thresholds** (after line 503): Add `style_deltas.get('fold_threshold_delta', 0)` to `call_margin`.
+3. **Will NOT touch**: opponent.py, constants.py, main.py, or any other file. Will not change any numeric constants.
+
+Now let me make the three targeted edits:
+
+**Edit 1: Wire `style_deltas.call_threshold_delta` into calling thresholds**
+**Edit 2: Wire `style_deltas.fold_threshold_delta` into fold threshold (call_margin)**
+**Edit 3: Wire `style_deltas.bluff_freq_bonus` into bluff thresholds**
+All three edits are done. Now let me verify and run quality checks:
+Both compile checks pass. Now let me run the smoke test:
+Smoke test passes. Let me do a final self-review by checking the diff one more time and verifying the anti-regression checklist:
+Only `strategy.py` was modified. Let me verify the anti-regression checklist by reading the relevant sections:
+All checks pass. Let me verify the anti-regression checklist:
+
+- **AA/KK/QQ preflop**: `choose_preflop_spot_action` is untouched — still raises/3-bets aggressively ✓
+- **Nut hands on river**: `choose_overbet_river` is untouched — still places value bets ✓  
+- **No new imports**: Only referencing `style_deltas` which was already computed at line 321 ✓
+- **`{"response": int}` format**: No changes to output logic ✓
+- **No infinite loops/recursion**: Only simple arithmetic additions ✓
+
+---
+
+## Final Summary
+
+**`planned_files`**: `bots/claude_v36/strategy.py`
+
+**`changed_files`**: `bots/claude_v36/strategy.py` (1 file, 5 insertions, 3 deletions)
+
+**`changed_functions`**: `get_action()` — added 3 integration points for `style_deltas`:
+1. **Line 444**: `style_deltas.get('call_threshold_delta', 0)` added to `strong` and `medium` thresholds → calls more against nits/fold_heavy, less against maniacs/stations.
+2. **Line 505**: `style_deltas.get('fold_threshold_delta', 0)` added to `call_margin` → folds more against tight opponents who bet (nits), less against aggressive maniacs.
+3. **Lines 684–686**: `style_deltas.get('bluff_freq_bonus', 0)` subtracted from all three bluff thresholds → bluffs more against nits/fold_heavy, less against calling stations/maniacs.
+
+**`checks_run`**:
+- `python -m py_compile bots/claude_v36/strategy.py` → COMPILE OK
+- `python -m py_compile bots/claude_v36/main.py` → COMPILE OK  
+- `python web/core/smoke_tester.py bots/claude_v36/main.py` → Smoke test passed successfully
