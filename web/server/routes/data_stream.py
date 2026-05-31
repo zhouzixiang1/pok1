@@ -59,49 +59,23 @@ def _confidence(rd: float) -> str:
     return "very_uncertain"
 
 
-def _compute_h2h_wr(bot_name: str, h2h_data: dict) -> float | None:
-    rates = []
-    for k, v in h2h_data.items():
-        parts = k.split(" vs ")
-        if len(parts) != 2 or bot_name not in parts:
-            continue
-        g = v.get("games", 0)
-        if g <= 0:
-            continue
-        wins = v.get("a_wins", 0) if parts[0] == bot_name else v.get("b_wins", 0)
-        rates.append(wins / g)
-    return sum(rates) / len(rates) if rates else None
-
-
 def _event(event_type: str, data: Any) -> dict:
     return {"event": event_type, "data": json.dumps(data, default=str)}
 
 
 def _get_ratings() -> list[dict]:
+    from tool_helpers import compute_h2h_avg_winrate
     data = _cached_read("ds_ratings", RATINGS_FILE)
     if not data:
         return []
     bot_stats_data = _cached_read("ds_bot_stats_ratings", BOT_STATS_FILE) or {}
     h2h_data = _cached_read("ds_h2h_ratings", H2H_FILE) or {}
 
-    def _h2h_avg_wr(name):
-        rates = []
-        for k, v in h2h_data.items():
-            parts = k.split(" vs ")
-            if len(parts) != 2 or name not in parts:
-                continue
-            g = v.get("games", 0)
-            if g <= 0:
-                continue
-            wins = v.get("a_wins", 0) if parts[0] == name else v.get("b_wins", 0)
-            rates.append(wins / g)
-        return sum(rates) / len(rates) if rates else None
-
     rows = []
     for name, d in data.items():
         r, rd = d["r"], d["rd"]
         bs = bot_stats_data.get(name, {})
-        wr = _h2h_avg_wr(name)
+        wr = compute_h2h_avg_winrate(name, h2h_data)
         rows.append({
             "name": name,
             "rating": round(r, 1),
@@ -132,6 +106,7 @@ def _get_daemon_status() -> dict:
 
 
 def _get_bots() -> dict:
+    from tool_helpers import compute_h2h_avg_winrate
     ratings = _cached_read("ds_ratings_bots", RATINGS_FILE) or {}
     bot_stats_data = _cached_read("ds_bot_stats_bots", BOT_STATS_FILE) or {}
     h2h_data = _cached_read("ds_h2h_bots", H2H_FILE) or {}
@@ -154,7 +129,7 @@ def _get_bots() -> dict:
             r, rd = r_data.get("r", 1500), r_data.get("rd", 350)
             rating_info = {"r": round(r, 1), "rd": round(rd, 1), "conservative": round(r - 2 * rd, 1)}
         bs = bot_stats_data.get(bot_name, {})
-        wr = _compute_h2h_wr(bot_name, h2h_data)
+        wr = compute_h2h_avg_winrate(bot_name, h2h_data)
         return {
             "name": bot_name, "version": version, "completed": completed,
             "total_lines": total_lines, "files": [f.name for f in py_files], "rating": rating_info,

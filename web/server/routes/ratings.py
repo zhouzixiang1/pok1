@@ -58,32 +58,18 @@ def _confidence(rd: float) -> str:
 
 @router.get("/ratings")
 async def get_ratings():
+    from tool_helpers import compute_h2h_avg_winrate
     data = _cached_read("ratings", RATINGS_FILE)
     bot_stats_data = _cached_read("bot_stats", BOT_STATS_FILE) or {}
     h2h_data = _cached_read("h2h", H2H_FILE) or {}
     if not data:
         return []
 
-    def _h2h_avg_wr(name):
-        rates = []
-        for k, v in h2h_data.items():
-            parts = k.split(" vs ")
-            if len(parts) != 2 or name not in parts:
-                continue
-            g = v.get("games", 0)
-            if g <= 0:
-                continue
-            wins = v.get("a_wins", 0) if parts[0] == name else v.get("b_wins", 0)
-            rates.append(wins / g)
-        if rates:
-            return sum(rates) / len(rates)
-        return None
-
     rows = []
     for name, d in data.items():
         r, rd = d["r"], d["rd"]
         bs = bot_stats_data.get(name, {})
-        wr = _h2h_avg_wr(name)
+        wr = compute_h2h_avg_winrate(name, h2h_data)
         rows.append({
             "name": name,
             "rating": round(r, 1),
@@ -104,6 +90,7 @@ async def get_ratings():
 
 @router.get("/ratings/{bot_name}")
 async def get_rating_detail(bot_name: str):
+    from tool_helpers import compute_h2h_avg_winrate
     data = _cached_read("ratings", RATINGS_FILE)
     bot_stats_data = _cached_read("bot_stats", BOT_STATS_FILE) or {}
     h2h_data = _cached_read("h2h", H2H_FILE) or {}
@@ -113,20 +100,7 @@ async def get_rating_detail(bot_name: str):
     r, rd = d["r"], d["rd"]
     bs = bot_stats_data.get(bot_name, {})
 
-    def _h2h_avg_wr(name):
-        rates = []
-        for k, v in h2h_data.items():
-            parts = k.split(" vs ")
-            if len(parts) != 2 or name not in parts:
-                continue
-            g = v.get("games", 0)
-            if g <= 0:
-                continue
-            wins = v.get("a_wins", 0) if parts[0] == name else v.get("b_wins", 0)
-            rates.append(wins / g)
-        return sum(rates) / len(rates) if rates else None
-
-    wr = _h2h_avg_wr(bot_name)
+    wr = compute_h2h_avg_winrate(bot_name, h2h_data)
     return {
         "name": bot_name,
         "rating": round(r, 1),

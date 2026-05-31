@@ -68,6 +68,7 @@ H2H_FILE = RESULTS_DIR / "head_to_head.json"
 
 
 def _bot_summary(bot_dir: Path, bot_name: str, ratings: dict, bot_stats_data: dict, h2h_data: dict) -> dict:
+    from tool_helpers import compute_h2h_avg_winrate
     version_match = re.search(r"\d+", bot_name)
     version = int(version_match.group()) if version_match else 0
 
@@ -86,7 +87,7 @@ def _bot_summary(bot_dir: Path, bot_name: str, ratings: dict, bot_stats_data: di
         }
 
     bs = bot_stats_data.get(bot_name, {})
-    wr = _h2h_avg_wr(bot_name, h2h_data)
+    wr = compute_h2h_avg_winrate(bot_name, h2h_data)
 
     return {
         "name": bot_name,
@@ -99,20 +100,6 @@ def _bot_summary(bot_dir: Path, bot_name: str, ratings: dict, bot_stats_data: di
         "games": bs.get("games", 0),
         "h2h_avg_wr": round(wr, 4) if wr is not None else None,
     }
-
-
-def _h2h_avg_wr(bot_name: str, h2h_data: dict) -> float | None:
-    rates = []
-    for k, v in h2h_data.items():
-        parts = k.split(" vs ")
-        if len(parts) != 2 or bot_name not in parts:
-            continue
-        g = v.get("games", 0)
-        if g <= 0:
-            continue
-        wins = v.get("a_wins", 0) if parts[0] == bot_name else v.get("b_wins", 0)
-        rates.append(wins / g)
-    return sum(rates) / len(rates) if rates else None
 
 
 @router.get("")
@@ -160,7 +147,9 @@ async def bot_detail(version: int):
             return {"error": f"Bot v{version} not found"}
 
     ratings = _load_ratings()
-    summary = _bot_summary(bot_dir, bot_name, ratings)
+    bot_stats_data = _cached_read("bot_stats_detail", BOT_STATS_FILE) or {}
+    h2h_data = _cached_read("h2h_detail", H2H_FILE) or {}
+    summary = _bot_summary(bot_dir, bot_name, ratings, bot_stats_data, h2h_data)
 
     # Try to get git parent from tag
     try:
