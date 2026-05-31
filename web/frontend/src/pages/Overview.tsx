@@ -218,7 +218,11 @@ export default function Overview() {
 
   useEffect(() => {
     api.historySummary().then(setSummary).catch(() => {});
-  }, [ratings]);
+    const id = setInterval(() => {
+      api.historySummary().then(setSummary).catch(() => {});
+    }, 15000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     const refresh = () => {

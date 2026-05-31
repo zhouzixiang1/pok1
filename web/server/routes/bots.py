@@ -52,7 +52,9 @@ def _load_ratings() -> dict:
             fcntl.flock(f, fcntl.LOCK_UN)
         _cache["ratings"] = (now, data)
         return data
-    except Exception:
+    except Exception as e:
+        import logging
+        logging.getLogger("bots").warning("Failed to load ratings: %s", e)
         return {}
 
 

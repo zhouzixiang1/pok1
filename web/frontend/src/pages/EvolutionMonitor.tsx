@@ -475,6 +475,11 @@ export default function EvolutionMonitor() {
     },
     onMetrics: (m) => setMetrics(m),
     onDaemon: (data) => setDaemonInfo(data),
+    onConnect: () => {
+      setRoleCosts([]);
+      setGrand(0);
+      setGen(0);
+    },
   });
 
   useEffect(() => {

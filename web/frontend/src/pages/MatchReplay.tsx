@@ -52,18 +52,28 @@ export default function MatchReplay() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadMatch = useCallback(async (id: string) => {
-    const data = await api.matchReplay(id);
-    setSelectedMatch(data);
-    setCurrentHand(0);
-    setCurrentStep(0);
-    setIsPlaying(false);
-    setCommentary({});
-    if (data.games && data.games.length > 0) {
-      setFrames(extractFrames(data.games[0]));
-    } else {
+    try {
+      const data = await api.matchReplay(id);
+      if (!data || !data.games) {
+        setSelectedMatch(null);
+        setFrames([]);
+        return;
+      }
+      setSelectedMatch(data);
+      setCurrentHand(0);
+      setCurrentStep(0);
+      setIsPlaying(false);
+      setCommentary({});
+      if (data.games.length > 0) {
+        setFrames(extractFrames(data.games[0]));
+      } else {
+        setFrames([]);
+      }
+      api.matchCommentary(id).then(setCommentary).catch(() => {});
+    } catch {
+      setSelectedMatch(null);
       setFrames([]);
     }
-    api.matchCommentary(id).then(setCommentary).catch(() => {});
   }, []);
 
   const changeHand = useCallback((idx: number) => {

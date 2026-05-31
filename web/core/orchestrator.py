@@ -414,6 +414,7 @@ async def orchestrator_loop(ui, no_daemon=False, daemon_workers=14, daemon_pairs
 
     except asyncio.CancelledError:
         if ui:
+            ui.set_status("Stopped", is_working=False)
             ui.log_history("Orchestrator stopped.", "warn")
     except Exception as e:
         if ui:

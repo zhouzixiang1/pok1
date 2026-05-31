@@ -58,6 +58,7 @@ export function useEvolutionSSE(
     }) => void;
     onMetrics?: (metrics: Record<string, number>) => void;
     onToolCall?: (data: { tool_name: string; args: Record<string, unknown>; ts: number }) => void;
+    onConnect?: () => void;
   },
   enabled = true
 ) {
@@ -69,6 +70,7 @@ export function useEvolutionSSE(
 
     const doConnect = () => {
       currentSource = new EventSource(`${BASE}/evolution/stream`);
+      handlers.onConnect?.();
 
       const eventTypes: EvolutionEventType[] = [
         "history", "status", "io", "clear_io",

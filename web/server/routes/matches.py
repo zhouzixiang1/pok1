@@ -98,7 +98,7 @@ async def match_matrix():
 async def match_stats():
     stats = _cached_read("stats", STATS_FILE)
     if not stats:
-        return {"total_games": 0, "total_pairs": 0, "total_periods": 0, "most_active_pair": ""}
+        return {"total_games": 0, "total_pairs": 0, "total_periods": 0, "most_active_pair": "", "most_active_count": 0}
     pairs = stats.get("pairs", {})
     total_games = stats.get("total_games", sum(pairs.values()))
     most_active = max(pairs.items(), key=lambda x: x[1]) if pairs else ("", 0)
@@ -148,8 +148,7 @@ async def match_commentary(match_id: str):
     cache_path = (COMMENTARY_DIR / match_id).resolve()
     if cache_path.is_file() and cache_path.is_relative_to(COMMENTARY_DIR.resolve()):
         try:
-            with open(cache_path, "r") as f:
-                return json.load(f)
+            return _read_locked(cache_path)
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -160,7 +159,9 @@ async def match_commentary(match_id: str):
     try:
         COMMENTARY_DIR.mkdir(parents=True, exist_ok=True)
         with open(cache_path, "w") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
             json.dump(commentary, f)
+            fcntl.flock(f, fcntl.LOCK_UN)
     except OSError:
         pass
 

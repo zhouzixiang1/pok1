@@ -97,6 +97,7 @@ function ToolForm({
 }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [boolValues, setBoolValues] = useState<Record<string, boolean>>({});
+  const [parseErrors, setParseErrors] = useState<Record<string, string>>({});
 
   const buildArgs = () => {
     const args: Record<string, unknown> = {};
@@ -109,7 +110,12 @@ function ToolForm({
       } else if (p.type === "bool") {
         args[p.name] = boolValues[p.name] ?? false;
       } else if (p.type === "list" || p.type === "dict") {
-        try { args[p.name] = JSON.parse(raw || (p.type === "list" ? "[]" : "{}")); } catch {}
+        try {
+          args[p.name] = JSON.parse(raw || (p.type === "list" ? "[]" : "{}"));
+          setParseErrors((prev) => ({ ...prev, [p.name]: "" }));
+        } catch {
+          setParseErrors((prev) => ({ ...prev, [p.name]: "JSON 格式错误" }));
+        }
       } else {
         if (raw !== undefined) args[p.name] = raw;
       }
@@ -147,13 +153,16 @@ function ToolForm({
                 <span className="text-gray-600 dark:text-gray-300">{boolValues[p.name] ? "是" : "否"}</span>
               </label>
             ) : (p.type === "list" || p.type === "dict") ? (
+              <>
               <textarea
                 value={values[p.name] ?? ""}
                 onChange={(e) => setValues((v) => ({ ...v, [p.name]: e.target.value }))}
                 placeholder={p.placeholder || (p.type === "list" ? "[]" : "{}")}
                 rows={2}
-                className="w-full px-2 py-1 text-xs font-mono border border-gray-300 dark:border-gray-600 dark:bg-gray-700 rounded resize-none"
+                className={`w-full px-2 py-1 text-xs font-mono border ${parseErrors[p.name] ? "border-red-400" : "border-gray-300 dark:border-gray-600"} dark:bg-gray-700 rounded resize-none`}
               />
+              {parseErrors[p.name] && <p className="text-[10px] text-red-500 mt-0.5">{parseErrors[p.name]}</p>}
+              </>
             ) : (
               <input
                 type={p.type === "int" ? "number" : "text"}

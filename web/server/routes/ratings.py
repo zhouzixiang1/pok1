@@ -178,7 +178,8 @@ async def history_summary():
     summary = {}
     for bot in sorted(all_bots):
         s = {}
-        ratings = [e["ratings"][bot]["r"] for e in entries if bot in e.get("ratings", {})]
+        ratings = [v for e in entries if bot in e.get("ratings", {})
+                   if (v := e["ratings"][bot].get("r")) is not None]
         if ratings:
             s["peak_rating"] = round(max(ratings), 1)
             s["current_rating"] = round(ratings[-1], 1)
