@@ -6,15 +6,20 @@ import type {
 } from "./types";
 
 const BASE = "/api";
+const FETCH_TIMEOUT = 30_000;
+
+function abortSignal(): AbortSignal {
+  return AbortSignal.timeout(FETCH_TIMEOUT);
+}
 
 async function fetchJSON<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: abortSignal() });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
 async function fetchText(url: string): Promise<string> {
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: abortSignal() });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.text();
 }
@@ -24,6 +29,7 @@ async function putJSON<T>(url: string, body: unknown): Promise<T> {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal: abortSignal(),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
@@ -34,13 +40,14 @@ async function postJSON<T>(url: string, body?: unknown): Promise<T> {
     method: "POST",
     headers: body !== undefined ? { "Content-Type": "application/json" } : {},
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: abortSignal(),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
 async function deleteReq<T>(url: string): Promise<T> {
-  const res = await fetch(url, { method: "DELETE" });
+  const res = await fetch(url, { method: "DELETE", signal: abortSignal() });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
