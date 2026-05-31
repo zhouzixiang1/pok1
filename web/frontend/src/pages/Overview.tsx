@@ -5,6 +5,7 @@ import { api } from "../api/client";
 import { controlApi, type ControlStatus } from "../api/control";
 import type { PipelineCheckpoint } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
+import { STAGE_LABELS } from "../constants/pipeline";
 
 function ConfidenceBadge({ level }: { level: string }) {
   const colors: Record<string, string> = {
@@ -133,21 +134,13 @@ function EvolutionStatusWidget({ status }: { status: ControlStatus | null }) {
 
 function PipelineStageBadge({ checkpoint }: { checkpoint: PipelineCheckpoint | null }) {
   if (!checkpoint) return null;
-  const stageLabels: Record<string, string> = {
-    prepared: "环境就绪",
-    workers_done: "Worker 完成",
-    quality_passed: "质量通过",
-    reviewed: "审核通过",
-    critic_checked: "策略通过",
-    verified: "验证完成",
-  };
   return (
     <div className="flex items-center gap-2 text-xs">
       <span className="text-gray-500">流水线:</span>
       <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 font-medium">
         v{checkpoint.next_v} ← v{checkpoint.source_v}
       </span>
-      <span className="text-gray-600 dark:text-gray-300">{stageLabels[checkpoint.stage] || checkpoint.stage}</span>
+      <span className="text-gray-600 dark:text-gray-300">{STAGE_LABELS[checkpoint.stage] || checkpoint.stage}</span>
     </div>
   );
 }
@@ -319,7 +312,7 @@ export default function Overview() {
                     <td className="px-5 py-3 font-medium text-gray-800 dark:text-gray-200">#{bot.rank}</td>
                     <td className="px-5 py-3 font-medium">
                       <Link to="/bots" className="text-gray-800 dark:text-white hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
-                        {bot.name.replace("claude_", "v")}
+                        {bot.name.replace("claude_", "")}
                       </Link>
                     </td>
                     <td className="px-5 py-3 text-gray-600 dark:text-gray-300" title={s ? `峰值: ${s.peak_rating.toFixed(1)}` : undefined}>{bot.rating.toFixed(1)}</td>

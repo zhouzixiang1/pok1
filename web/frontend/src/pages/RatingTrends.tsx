@@ -55,7 +55,7 @@ export default function RatingTrends() {
     if (metric === "glicko") {
       names.forEach((name, i) => {
         series.push({
-          name: name.replace("claude_", "v"),
+          name: name.replace("claude_", ""),
           type: "line" as const,
           data: history.map((e) => e.ratings[name]?.r ?? null),
           color: COLORS[i % COLORS.length],
@@ -64,7 +64,7 @@ export default function RatingTrends() {
     } else {
       names.forEach((name, i) => {
         series.push({
-          name: name.replace("claude_", "v"),
+          name: name.replace("claude_", ""),
           type: "line" as const,
           data: history.map((e) => {
             const wr = e.win_rates?.[name]?.h2h_avg_wr;

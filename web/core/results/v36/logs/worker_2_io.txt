@@ -1252,3 +1252,42 @@ The HEAD version already has the **new** values! These changes were already comm
 So `strategy.py` still has the OLD values, but `postflop.py` already has the NEW values! This means the postflop.py changes were already applied in a previous generation. I only need to modify `strategy.py`.
 
 Let me now apply my changes to strategy.py:
+Now verify all changes:
+All 12 numeric changes in `postflop_call_margin` are correct and no other lines were modified. Now run quality checks:
+All quality checks pass. Let me do the final self-review:
+My changes are all intact. The diff was showing changes relative to HEAD, and my changes to `postflop_call_margin` are present in the working tree. The other worker's changes are also in the file but they are NOT my responsibility.
+
+Let me verify my changes are correct with a final cross-check:
+
+**postflop_call_margin changes (strategy.py):**
+| Location | Old | New | ✓ |
+|---|---|---|---|
+| weak_showdown | 0.012 | 0.000 | ✓ |
+| air_hand | 0.018 | -0.010 | ✓ |
+| facing_postflop_aggression | 0.008 | 0.004 | ✓ |
+| size_bucket small | 0.020 | 0.008 | ✓ |
+| size_bucket medium | 0.010 | 0.004 | ✓ |
+| size_bucket else | 0.024 | 0.012 | ✓ |
+| opp_postflop_bet_count >= 2 small | 0.024 | 0.010 | ✓ |
+| opp_postflop_bet_count >= 2 else | 0.014 | 0.006 | ✓ |
+| round_idx >= 2 air_hand | 0.010 | 0.004 | ✓ |
+| round_idx == 3 large | 0.020 | 0.008 | ✓ |
+| not has_position | 0.008 | 0.004 | ✓ |
+| clamp return | (0.0, 0.08) | (-0.02, 0.06) | ✓ |
+
+**pair_domination_margin and draw_call_margin changes (postflop.py):** Already applied in HEAD from a previous commit — no additional changes needed.
+
+All changes are numeric-only, no new functions/classes/control flow added. Role boundary respected. ✓
+
+---
+
+## Final Summary
+
+- **planned_files**: `bots/claude_v36/strategy.py`, `bots/claude_v36/postflop.py`
+- **changed_files**: `bots/claude_v36/strategy.py` (postflop.py changes were already in HEAD)
+- **changed_functions**: `postflop_call_margin` in strategy.py — 12 numeric constant adjustments
+- **checks_run**:
+  - `python -m py_compile bots/claude_v36/main.py` ✅
+  - `python -m py_compile bots/claude_v36/strategy.py` ✅
+  - `python -m py_compile bots/claude_v36/postflop.py` ✅
+  - `python web/core/smoke_tester.py bots/claude_v36/main.py` ✅ (Smoke test passed)

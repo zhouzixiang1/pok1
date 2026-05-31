@@ -14,7 +14,7 @@ export default function MatchMatrix() {
   const { series, options } = useMemo(() => {
     if (!data || !data.bots.length) return { series: [], options: {} };
 
-    const bots = data.bots.map((b) => b.replace("claude_", "v"));
+    const bots = data.bots.map((b) => b.replace("claude_", ""));
     const isH2H = data.source === "h2h";
 
     if (viewMode === "count" && Object.keys(h2hRaw).length > 0) {
@@ -29,7 +29,7 @@ export default function MatchMatrix() {
       );
 
       const series = data.bots.map((botName, i) => ({
-        name: botName.replace("claude_", "v"),
+        name: botName.replace("claude_", ""),
         data: data.bots.map((_, j) => ({ x: bots[j], y: gamesMatrix[i][j] })),
       }));
 
@@ -76,7 +76,7 @@ export default function MatchMatrix() {
 
     // Default: win rate view
     const series = data.bots.map((botName, i) => ({
-      name: botName.replace("claude_", "v"),
+      name: botName.replace("claude_", ""),
       data: data.bots.map((_, j) => ({
         x: bots[j],
         y: i === j ? null : data.matrix[i]?.[j] ?? null,

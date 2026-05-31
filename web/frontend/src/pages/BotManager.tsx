@@ -79,17 +79,22 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
   };
 
   const handleCommit = async () => {
-    if (!confirm(`确认提交 ${bot.name}？将创建 git commit 和 tag。`)) return;
+    if (!confirm(`确认提交 ${bot.name}？请确保已通过代码审核 (run_review)。将创建 git commit 和 tag。`)) return;
     setToolLoading("commit");
     try {
-      const r = await controlApi.callTool("commit_bot", { version: bot.version, source_v: bot.version - 1, strategy: "", review_approved: true });
+      let sourceV = bot.version - 1;
+      try {
+        const ckpt = await api.pipelineCheckpoint();
+        if (ckpt && ckpt.next_v === bot.version) sourceV = ckpt.source_v;
+      } catch {}
+      const r = await controlApi.callTool("commit_bot", { version: bot.version, source_v: sourceV, strategy: "" });
       onAction(r.result || r.error || "完成");
     } finally {
       setToolLoading(null);
     }
   };
 
-  const displayName = bot.name.replace("claude_", "v");
+  const displayName = bot.name.replace("claude_", "");
   const conserv = bot.rating ? bot.rating.conservative.toFixed(0) : "—";
 
   return (
@@ -189,7 +194,7 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
                     <div className="space-y-1">
                       {opponents.map((opp) => (
                         <div key={opp.name} className="flex items-center gap-2 text-xs">
-                          <span className="w-16 text-gray-600 dark:text-gray-400 truncate">{opp.name.replace("claude_", "v")}</span>
+                          <span className="w-16 text-gray-600 dark:text-gray-400 truncate">{opp.name.replace("claude_", "")}</span>
                           <div className="flex-1 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
                             <div
                               className={`h-full rounded-full ${opp.wr > 0.6 ? "bg-green-500" : opp.wr < 0.4 ? "bg-red-500" : "bg-gray-400"}`}

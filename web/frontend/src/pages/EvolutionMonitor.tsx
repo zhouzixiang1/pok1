@@ -4,6 +4,7 @@ import type { IOLine } from "../api/evolution";
 import { api } from "../api/client";
 import type { BotRating, PipelineCheckpoint, WorkerFailure } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
+import { PIPELINE_STAGES, STAGE_LABELS } from "../constants/pipeline";
 
 // ── Inline SVG helpers (replacing emoji) ──────────────────────────────────────
 
@@ -25,16 +26,6 @@ const ThoughtIcon = ({ className }: { className?: string }) => (
 
 // ── Pipeline ──────────────────────────────────────────────────────────────────
 
-const PIPELINE_STAGES = ["prepared", "workers_done", "quality_passed", "reviewed", "critic_checked", "verified"];
-const STAGE_LABELS: Record<string, string> = {
-  prepared: "环境就绪",
-  workers_done: "Worker 完成",
-  quality_passed: "质量检查通过",
-  reviewed: "代码审核通过",
-  critic_checked: "策略审核通过",
-  verified: "提交前验证",
-};
-
 function PipelineStatus({ checkpoint }: { checkpoint: PipelineCheckpoint | null }) {
   const [expanded, setExpanded] = useState(false);
   if (!checkpoint) {
@@ -45,7 +36,7 @@ function PipelineStatus({ checkpoint }: { checkpoint: PipelineCheckpoint | null 
       </div>
     );
   }
-  const currentIdx = PIPELINE_STAGES.indexOf(checkpoint.stage);
+  const currentIdx = PIPELINE_STAGES.indexOf(checkpoint.stage as typeof PIPELINE_STAGES[number]);
   const plan = Array.isArray(checkpoint.master_plan) ? checkpoint.master_plan : [];
 
   return (
@@ -156,7 +147,7 @@ function CostBreakdown({
     <div className="rounded-2xl border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-white/[0.03]">
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-xs font-semibold uppercase text-gray-500">LLM 成本</h3>
-        <button onClick={onReset} className="text-[10px] text-gray-400 hover:text-gray-600 underline">重置本代</button>
+        <button onClick={onReset} className="text-[10px] text-gray-400 hover:text-gray-600 underline">清空显示</button>
       </div>
       <div className="space-y-1">
         {costs.map((c) => (

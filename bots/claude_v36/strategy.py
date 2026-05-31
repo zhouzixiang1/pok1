@@ -320,6 +320,45 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
             return raise_amount
         return 0
 
+    if spot_info['preflop_spot'] == 'bb_vs_raise':
+        defense_threshold = 0.35 + match_adjust - loose_bonus
+        threebet_threshold = 0.62 + match_adjust
+        if preflop_strength < defense_threshold and not is_preflop_3bet_candidate(req['my_cards']):
+            if trash_hand:
+                return -1
+            pot_odds_pf = to_call / (state['pot'] + to_call) if to_call > 0 else 0
+            if preflop_strength < pot_odds_pf - 0.08:
+                return -1
+        if preflop_strength >= threebet_threshold or is_preflop_3bet_candidate(req['my_cards']):
+            raise_amount = choose_raise(
+                state.get('min_raise_action', state['round_raise']),
+                my_chips, state['my_round_bet'], to_call, state['pot'],
+                max(win_rate, preflop_strength), 0,
+                spot_info['preflop_spot'], preflop_strength,
+                spot_info['has_position'], opponent_model,
+                match_sizing_delta=match_profile['sizing_delta'],
+            )
+            if raise_amount is not None:
+                return raise_amount
+        return 0
+
+    if spot_info['preflop_spot'] == 'sb_vs_reraise':
+        defend_threshold = 0.48 + match_adjust
+        if preflop_strength < defend_threshold and not is_preflop_3bet_candidate(req['my_cards']):
+            return -1
+        if preflop_strength >= 0.65 + match_adjust:
+            raise_amount = choose_raise(
+                state.get('min_raise_action', state['round_raise']),
+                my_chips, state['my_round_bet'], to_call, state['pot'],
+                max(win_rate, preflop_strength), 0,
+                spot_info['preflop_spot'], preflop_strength,
+                spot_info['has_position'], opponent_model,
+                match_sizing_delta=match_profile['sizing_delta'],
+            )
+            if raise_amount is not None:
+                return raise_amount
+        return 0
+
     return None
 
 
@@ -479,8 +518,8 @@ def get_action(req, requests):
         )
     )
 
-    strong = 0.69 if round_idx == 0 else 0.65 if round_idx == 1 else 0.61 if round_idx == 2 else 0.59
-    medium = 0.54 if round_idx == 0 else 0.50 if round_idx == 1 else 0.48
+    strong = 0.58 if round_idx == 0 else 0.65 if round_idx == 1 else 0.61 if round_idx == 2 else 0.59
+    medium = 0.46 if round_idx == 0 else 0.50 if round_idx == 1 else 0.48
 
     if spot_info["has_position"]:
         strong -= 0.015

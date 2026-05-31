@@ -51,7 +51,7 @@ const TOOL_GROUPS: { label: string; tools: ToolDef[] }[] = [
     tools: [
       { name: "run_master", description: "运行主架构师，规划下一代任务分配。", params: [{ name: "source_v", type: "int" }, { name: "next_v", type: "int" }, { name: "stagnation_info", type: "str", placeholder: "无停滞", optional: true }, { name: "match_analysis", type: "str", placeholder: "", optional: true }, { name: "performance_verification", type: "str", placeholder: "", optional: true }] },
       { name: "execute_workers", description: "执行 Worker 任务以修改 Bot 代码。", params: [{ name: "tasks", type: "list", placeholder: "[]" }, { name: "next_v", type: "int" }, { name: "source_v", type: "int" }, { name: "reviewer_feedback", type: "str", placeholder: "", optional: true }] },
-      { name: "run_quality_gates", description: "运行编译、冒烟测试、决策测试、文件大小检查。", params: [{ name: "version", type: "int" }] },
+      { name: "run_quality_gates", description: "运行编译、冒烟测试、决策测试、文件大小检查。", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int", placeholder: "22" }] },
       { name: "run_review", description: "运行首席代码审核员。返回通过/拒绝及评分。", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int" }, { name: "plan", type: "list", placeholder: "[]" }] },
       { name: "run_critic", description: "运行扑克策略评论家。评分 1-10；≥6 = 通过。", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int" }, { name: "plan", type: "list", placeholder: "[]" }, { name: "reviewer_feedback", type: "str", placeholder: "", optional: true }, { name: "force_advance", type: "bool", optional: true }] },
       { name: "run_precommit_eval", description: "提交前最小镜像验证：父代、Top 对手、H2H 弱项。", params: [{ name: "version", type: "int" }, { name: "source_v", type: "int" }, { name: "n_games", type: "int", placeholder: "1", optional: true }] },
@@ -80,6 +80,13 @@ const TOOL_GROUPS: { label: string; tools: ToolDef[] }[] = [
       { name: "reap_weakest", description: "当 Bot 池超过 30 个时，淘汰保守评分最低的。", params: [] },
       { name: "trim_experience", description: "裁剪经验池，仅保留近期条目。", params: [] },
       { name: "consolidate_experience", description: "基于 LLM 的经验池整合与去重。", params: [] },
+    ],
+  },
+  {
+    label: "维护",
+    tools: [
+      { name: "cleanup_incomplete", description: "清理未完成的 Bot 目录（无 .completed 标记且无 git tag）。", params: [] },
+      { name: "seed_initial_bots", description: "如果当前无完成的 Bot，从参考 Bot 初始化 claude_v1 到 claude_v6。", params: [] },
     ],
   },
 ];
@@ -202,6 +209,7 @@ export default function ControlPanel() {
   const [checkpoint, setCheckpoint] = useState<PipelineCheckpoint | null>(null);
   const [sessionLoading, setSessionLoading] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
+  const [connError, setConnError] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -216,7 +224,8 @@ export default function ControlPanel() {
       setEditWorkers(c.daemon_workers);
       setEditPairs(c.daemon_pairs);
       setEditDaemon(c.daemon_enabled);
-    } catch {}
+      setConnError(false);
+    } catch { setConnError(true); }
   }, []);
 
   const refreshSession = useCallback(async () => {
@@ -227,7 +236,8 @@ export default function ControlPanel() {
       ]);
       setSession(sess);
       setCheckpoint(ckpt);
-    } catch {}
+      setConnError(false);
+    } catch { setConnError(true); }
   }, []);
 
   useEffect(() => {
@@ -328,6 +338,7 @@ export default function ControlPanel() {
               <span className={`w-2 h-2 rounded-full ${status?.running ? "bg-green-500 animate-pulse" : "bg-gray-400"}`} />
               {status?.running ? "运行中" : "已停止"}
             </span>
+            {connError && <span className="text-xs text-red-500">连接失败</span>}
           </div>
           {status && (
             <div className="text-sm text-gray-500">代 {status.generation_count} | v{status.current_v} → v{status.next_v}</div>
