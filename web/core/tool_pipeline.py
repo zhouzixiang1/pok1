@@ -589,6 +589,22 @@ async def run_inline_eval(args):
     results_summary = []
     all_results = []
 
+    from evolution_core import RATINGS_FILE, H2H_FILE, BOT_STATS_FILE, MATCH_HISTORY_FILE, locked_file
+    h2h = {}
+    if H2H_FILE.exists():
+        try:
+            with locked_file(H2H_FILE, "r") as f:
+                h2h = json.load(f)
+        except Exception:
+            pass
+    bot_stats_data = {}
+    if BOT_STATS_FILE.exists():
+        try:
+            with locked_file(BOT_STATS_FILE, "r") as f:
+                bot_stats_data = json.load(f)
+        except Exception:
+            pass
+
     for opp in opponents:
         if opp not in ratings:
             ratings[opp] = Glicko2Player()
@@ -598,7 +614,49 @@ async def run_inline_eval(args):
             n_games=n_games, verbose=False, save_log=False
         )
         w_a, w_b = match_wins[0], match_wins[1]
+        total = w_a + w_b + draws
         results_summary.append({"opponent": opp, "wins": w_a, "losses": w_b, "draws": draws})
+
+        # Update H2H
+        k = f"{bot_name} vs {opp}" if bot_name < opp else f"{opp} vs {bot_name}"
+        h2h.setdefault(k, {"games": 0, "a_wins": 0, "b_wins": 0, "draws": 0})
+        h2h[k]["games"] += total
+        if bot_name < opp:
+            h2h[k]["a_wins"] += w_a
+            h2h[k]["b_wins"] += w_b
+        else:
+            h2h[k]["a_wins"] += w_b
+            h2h[k]["b_wins"] += w_a
+        h2h[k]["draws"] += draws
+
+        # Update bot_stats
+        for name, w, l in [(bot_name, w_a, w_b), (opp, w_b, w_a)]:
+            if name not in bot_stats_data:
+                bot_stats_data[name] = {"wins": 0, "losses": 0, "draws": 0, "games": 0}
+            bot_stats_data[name]["wins"] += w
+            bot_stats_data[name]["losses"] += l
+            bot_stats_data[name]["draws"] += draws
+            bot_stats_data[name]["games"] += total
+            g = bot_stats_data[name]["games"]
+            bot_stats_data[name]["win_rate"] = round(bot_stats_data[name]["wins"] / g, 4) if g > 0 else 0.0
+
+        # Append to match_history
+        try:
+            from datetime import datetime
+            summary = {
+                "id": f"inline_v{v}_vs_{opp}",
+                "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
+                "bot0": bot_name,
+                "bot1": opp,
+                "bot0_wins": w_a,
+                "bot1_wins": w_b,
+                "draws": draws,
+            }
+            with locked_file(MATCH_HISTORY_FILE, "a") as f:
+                f.write(json.dumps(summary) + "\n")
+        except Exception:
+            pass
+
         for _ in range(w_a):
             all_results.append((ratings[opp], 1.0))
         for _ in range(w_b):
@@ -610,10 +668,23 @@ async def run_inline_eval(args):
         ratings[bot_name] = update_rating_period(ratings[bot_name], all_results)
 
     # Save updated ratings
-    from evolution_core import RATINGS_FILE, locked_file
     data = {name: p.to_dict() for name, p in ratings.items()}
     with locked_file(RATINGS_FILE, "w") as f:
         json.dump(data, f, indent=2)
+
+    # Save H2H with win_rate computed
+    h2h_out = {}
+    for k, v in h2h.items():
+        entry = dict(v)
+        g = entry.get("games", 0)
+        entry["win_rate"] = round(entry.get("a_wins", 0) / g, 4) if g > 0 else 0.5
+        h2h_out[k] = entry
+    with locked_file(H2H_FILE, "w") as f:
+        json.dump(h2h_out, f, indent=2)
+
+    # Save bot_stats
+    with locked_file(BOT_STATS_FILE, "w") as f:
+        json.dump(bot_stats_data, f, indent=2)
 
     result = {
         "version": v,

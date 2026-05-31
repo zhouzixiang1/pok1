@@ -557,3 +557,200 @@ All changes verified. The v36 directory is entirely untracked (new), so git diff
   - `python -m py_compile bots/claude_v36/strategy.py` → ✅ Compile OK
   - `python -m py_compile bots/claude_v36/main.py` → ✅ Compile OK
   - `python web/core/smoke_tester.py bots/claude_v36/main.py` → ✅ Smoke test passed
+
+[WORKER 2 (Hyperparameter Tuner) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Hyperparameter Tuner**.
+You must directly edit the source files in `bots/claude_v36/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v36/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, remove only your own accidental edits before finishing.
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+## If you are an "Opponent Modeler":
+- **ALLOWED**: Adding/modifying opponent tracking data structures and statistics
+- **ALLOWED**: Per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']`
+- **ALLOWED**: Bet sizing pattern detection: `opp_bet_sizes[street]` as rolling list (cap at 20), `statistics.median()`
+- **ALLOWED**: Exploitative adjustments based on detected opponent tendencies
+- **FORBIDDEN**: Changing overall decision flow or non-opponent-model logic
+- **FORBIDDEN**: Modifying any constant that is not opponent-model related
+
+You have access to `web/core/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+
+**Important — Parallel Execution**: You may be running concurrently with other Worker Agents on the same codebase. Your `target_files` are exclusively yours — other workers will NOT touch them. Only modify your assigned `target_files`. Do NOT read or write files outside your assignment.
+
+# Scope Contract
+Before editing, write a short plan listing:
+1. Planned modified files.
+2. Planned modified functions/constants.
+3. A one-sentence statement of what you will not touch.
+
+Do not broaden scope. If the requested change requires touching files outside
+target_files or changing a different subsystem, stop and report instead of editing.
+
+# Poker Engineering Best Practices
+Apply these when implementing changes:
+
+**Opponent Modeling:**
+- Use per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']` where `street ∈ {'preflop', 'flop', 'turn', 'river'}`
+- Track bet sizing: `opp_bet_sizes[street]` as a rolling list (cap at last 20), use `statistics.median()` for typical size
+- Exploit detected tendencies: if `opp_stats['river']['bet_freq'] > 0.65` → opponent bluffs river heavily → widen call range
+
+**Postflop Decision Making:**
+- EV-based fold/call: `EV_call = equity * pot_after_call - (1 - equity) * call_amount`. Call when EV > 0
+- River value bet sizing: if equity > 70%, bet 60-80% of pot for value; if equity 50-70%, bet 40-50% pot
+- Avoid "fear thresholds" — don't fold based on hand rank alone; compute EV against opponent range
+
+**Anti-Regression Checklist (verify before finishing):**
+- [ ] AA/KK/QQ preflop: still raises/3-bets aggressively (no passive limping)?
+- [ ] Nut flush/straight/full house on river: still places a value bet?
+- [ ] New code doesn't import modules not in stdlib + numpy?
+- [ ] `{"response": int}` JSON output format still correct?
+- [ ] No infinite loops or recursion in new functions?
+
+# Master Architect's Specific Prompt For You
+You are a Hyperparameter Tuner. DO NOT add new functions, classes, or change control flow. ONLY modify numeric constants, thresholds, and magic numbers in postflop.py.
+
+## PROBLEM
+v7 has 0% postflop fold rate — it NEVER folds on any postflop street. This is because postflop_call_margin, pair_domination_margin, and draw_call_margin all accumulate positive values that make the effective calling threshold too low. The bot calls with everything including pure garbage.
+
+## YOUR TASK: Reduce Postflop Call Margins
+
+All changes are in `postflop.py`. ONLY change the numeric literals. Do NOT add/remove lines or change control flow.
+
+### 1. postflop_call_margin function (around line 173)
+
+This function returns a margin added to pot_odds for the calling decision. Currently ALL margins are POSITIVE, meaning the bot calls WIDER than pot odds (never folds). Reduce these values:
+
+Current → New values:
+- `if weak_showdown: margin += 0.012` → `margin += 0.000` (no bonus for weak hands)
+- `if air_hand: margin += 0.018` → `margin += -0.010` (PENALTY for air — makes bot fold air)
+- `if spot_info['facing_postflop_aggression']: margin += 0.008` → `margin += 0.004`
+- `if size_bucket == 'small': margin += 0.020` → `margin += 0.008`
+- `elif size_bucket == 'medium': margin += 0.010` → `margin += 0.004`
+- `else: margin += 0.024` → `margin += 0.012`
+- `if opp_postflop_bet_count >= 2: 0.024 if small else 0.014` → `0.010 if small else 0.006`
+- `if round_idx >= 2 and air_hand: margin += 0.010` → `margin += 0.004`
+- `if round_idx == 3 and size_bucket == 'large': margin += 0.020` → `margin += 0.008`
+- `if not has_position: margin += 0.008` → `margin += 0.004`
+
+Also update the clamp range: `return clamp(margin, 0.0, 0.08)` → `return clamp(margin, -0.02, 0.06)` (allow negative margins so air hands can fold)
+
+### 2. pair_domination_margin function (around line 83)
+
+These margins are added when the bot has a pair that might be dominated. Reduce them:
+
+Current → New:
+- `top_pair weak_kicker: 0.012` → `0.006`
+- `top_pair good kicker: 0.004` → `0.002`
+- `middle_pair: 0.030` → `0.018`
+- `middle_pair weak_kicker: 0.012` → `0.006`
+- `bottom_pair: 0.050` → `0.032`
+- `bottom_pair weak_kicker: 0.012` → `0.006`
+- `underpair: 0.045` → `0.028`
+- `underpair board_overcards: 0.010` → `0.006`
+- `board_pair: 0.065` → `0.040`
+- `facing_postflop_aggression: 0.010` → `0.005`
+- `opp_postflop_bet_count >= 2: 0.012` → `0.006`
+- `river mid/bottom/under/board: 0.015` → `0.008`
+- clamp range: `(0.0, 0.10)` → `(0.0, 0.07)`
+
+### 3. draw_call_margin function (around line 664)
+
+These margins are added for draw hands. Gutshots and weak flush draws should not get big calling bonuses:
+
+Current → New:
+- `gutshot: 0.040` → `0.020`
+- `non-nut flush high: 0.004` → `0.000`
+- `non-nut flush other: 0.020` → `0.008`
+- `turn gutshot: 0.020` → `0.010`
+- `turn flush other: 0.020` → `0.008`
+- `river (all draws): 0.050` → `0.025`
+- `large bet gutshot: 0.018` → `0.008`
+- `large bet flush near_nut: 0.006` → `0.003`
+- `large bet flush high: 0.012` → `0.006`
+- `large bet flush other: 0.018` → `0.008`
+- clamp range: `(-0.04, 0.08)` → `(-0.04, 0.06)`
+
+## RATIONALE
+The current margins sum to ~0.10-0.15 for typical spots, meaning the bot calls with hands that have 25-35% equity when it needs 40%+. By reducing these margins by 40-50% overall and making air_hand margin NEGATIVE, the bot will:
+1. Fold pure air on turn/river (fix 0% fold rate)
+2. Call less with dominated pairs
+3. Be more selective with weak draw calls
+
+## IMPORTANT RULES
+- ONLY modify numeric literals in postflop.py
+- DO NOT add or remove any lines
+- DO NOT change any function signatures or control flow
+- DO NOT modify strategy.py or any other file
+- After changes, verify: `python -c 'import postflop'` compiles successfully
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v36/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v36/main.py` (and other .py files you changed)
+   - Smoke test: `python web/core/smoke_tester.py bots/claude_v36/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v36/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, undo only your own accidental edits in those files; if unsure, stop and report the violation.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+# Final Response Requirements
+End with:
+- `planned_files`: the files you intended to change.
+- `changed_files`: the files actually changed.
+- `changed_functions`: the functions/constants actually changed.
+- `checks_run`: compile/smoke commands and outcomes.
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading the target file to understand the current constants.
+I need to find the `postflop_call_margin` function. It's not in the portion I read. Let me search for it.
+The `postflop_call_margin` function is in `strategy.py` (line 173), NOT in `postflop.py`. The Master's instructions say "DO NOT modify strategy.py". I'll proceed with the two functions that ARE in `postflop.py` (`pair_domination_margin` and `draw_call_margin`) and report the issue.
+
+## Scope Plan
+1. **Planned files**: `bots/claude_v36/postflop.py` only
+2. **Planned modifications**:
+   - `pair_domination_margin()`: Reduce 11 numeric margins and tighten clamp range
+   - `draw_call_margin()`: Reduce 10 numeric margins and tighten clamp range
+3. **Will NOT touch**: `strategy.py`, `main.py`, or any file outside `postflop.py`. Will NOT touch `postflop_call_margin` (it's in strategy.py, outside my scope).
+
+Now let me apply all changes to `pair_domination_margin`:
+Now apply changes to `draw_call_margin`:

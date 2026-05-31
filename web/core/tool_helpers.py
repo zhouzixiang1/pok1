@@ -261,6 +261,9 @@ def load_h2h_avg_winrates():
     all_bots.update(bot_stats_data.keys())
     all_bots.update(ratings.keys())
 
+    active = set(get_active_bots())
+    all_bots &= active
+
     result = {}
     for bot_name in all_bots:
         wr = compute_h2h_avg_winrate(bot_name, h2h_data)

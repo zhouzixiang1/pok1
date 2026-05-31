@@ -199,6 +199,9 @@ def _get_match_matrix() -> dict:
     for k in h2h:
         parts = k.split(" vs ")
         all_bots.update(parts)
+    ratings = cached_read("ds_ratings_matrix", RATINGS_FILE) or {}
+    if ratings:
+        all_bots &= set(ratings.keys())
     bot_names = sorted(all_bots, key=lambda n: int(re.search(r"\d+", n).group()) if re.search(r"\d+", n) else 0)
     n = len(bot_names)
     # Matrix stores win rates (bot_i vs bot_j = bot_i's win rate)

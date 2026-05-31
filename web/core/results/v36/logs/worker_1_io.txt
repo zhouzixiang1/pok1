@@ -2061,3 +2061,518 @@ All checks pass. Here's my final summary:
 `changed_files`: `bots/claude_v36/opponent.py`, `bots/claude_v36/strategy.py`
 `changed_functions`: `build_opponent_model()` (enhanced), `classify_opponent_style()` (new), `get_action()` (style deltas propagation + premium all-in gate)
 `checks_run`: `python -m py_compile bots/claude_v36/opponent.py` ✅, `python -m py_compile bots/claude_v36/strategy.py` ✅, `python -m py_compile bots/claude_v36/main.py` ✅, `python web/core/smoke_tester.py bots/claude_v36/main.py` ✅
+
+[WORKER 1 (Algorithmic Logic Architect) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Algorithmic Logic Architect**.
+You must directly edit the source files in `bots/claude_v36/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v36/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, remove only your own accidental edits before finishing.
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+## If you are an "Opponent Modeler":
+- **ALLOWED**: Adding/modifying opponent tracking data structures and statistics
+- **ALLOWED**: Per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']`
+- **ALLOWED**: Bet sizing pattern detection: `opp_bet_sizes[street]` as rolling list (cap at 20), `statistics.median()`
+- **ALLOWED**: Exploitative adjustments based on detected opponent tendencies
+- **FORBIDDEN**: Changing overall decision flow or non-opponent-model logic
+- **FORBIDDEN**: Modifying any constant that is not opponent-model related
+
+You have access to `web/core/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+
+**Important — Parallel Execution**: You may be running concurrently with other Worker Agents on the same codebase. Your `target_files` are exclusively yours — other workers will NOT touch them. Only modify your assigned `target_files`. Do NOT read or write files outside your assignment.
+
+# Scope Contract
+Before editing, write a short plan listing:
+1. Planned modified files.
+2. Planned modified functions/constants.
+3. A one-sentence statement of what you will not touch.
+
+Do not broaden scope. If the requested change requires touching files outside
+target_files or changing a different subsystem, stop and report instead of editing.
+
+# Poker Engineering Best Practices
+Apply these when implementing changes:
+
+**Opponent Modeling:**
+- Use per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']` where `street ∈ {'preflop', 'flop', 'turn', 'river'}`
+- Track bet sizing: `opp_bet_sizes[street]` as a rolling list (cap at last 20), use `statistics.median()` for typical size
+- Exploit detected tendencies: if `opp_stats['river']['bet_freq'] > 0.65` → opponent bluffs river heavily → widen call range
+
+**Postflop Decision Making:**
+- EV-based fold/call: `EV_call = equity * pot_after_call - (1 - equity) * call_amount`. Call when EV > 0
+- River value bet sizing: if equity > 70%, bet 60-80% of pot for value; if equity 50-70%, bet 40-50% pot
+- Avoid "fear thresholds" — don't fold based on hand rank alone; compute EV against opponent range
+
+**Anti-Regression Checklist (verify before finishing):**
+- [ ] AA/KK/QQ preflop: still raises/3-bets aggressively (no passive limping)?
+- [ ] Nut flush/straight/full house on river: still places a value bet?
+- [ ] New code doesn't import modules not in stdlib + numpy?
+- [ ] `{"response": int}` JSON output format still correct?
+- [ ] No infinite loops or recursion in new functions?
+
+# Master Architect's Specific Prompt For You
+You are an Algorithmic Logic Architect. Your task is to add a POSTFLOP FOLD MECHANISM to the Texas Hold'em bot. This is the single most impactful structural change needed — the bot currently has a 0% postflop fold rate and pays off every value bet, causing catastrophic -17000+ chip losses.
+
+## CONTEXT
+Read the current bot code in bots/claude_v36/ first (it was copied from v7). Focus on strategy.py and postflop.py.
+
+The bot's decision flow in get_action() (strategy.py) for postflop spots with to_call > 0:
+1. Computes call_margin via postflop_call_margin()
+2. Computes realized_rate via realized_postflop_equity()
+3. Folds only if: realized_rate < pot_odds + call_margin AND not anti_lock_call_continue AND not strong_made_continue
+4. Otherwise defaults to return 0 (call)
+
+The problem: call_margin is tiny (0.01-0.08 range) and the realized equity for weak hands is often still above pot_odds + call_margin, so the bot never folds postflop.
+
+## TASK 1: Add `should_fold_postflop()` function in postflop.py
+
+Add a new function with this signature:
+```python
+def should_fold_postflop(
+    value_profile, made_strength, draw_strength, draw_info,
+    pair_profile, board_texture, spot_info, opponent_model,
+    round_idx, pot, to_call, win_rate, nutted_risk
+):
+```
+
+This function returns True when the bot should fold postflop. Logic:
+
+### Tier-based folding (highest priority):
+- If value_profile tier is 'none' (no made hand) AND draw_strength < 0.12 AND round_idx >= 2 AND facing aggression: FOLD if bet_size >= 0.5x pot
+- If value_profile tier is 'thin' AND round_idx == 3 (river) AND made_strength < 0.35 AND facing medium/large bet: FOLD
+- If pair_profile pair_type is 'bottom_pair' or 'underpair' or 'board_pair' AND round_idx >= 2 AND bet_size_bucket is 'large' AND draw_strength < 0.12: FOLD
+
+### Equity-based folding:
+- If win_rate < 0.28 AND round_idx >= 2 AND facing postflop aggression AND bet_size_bucket in ('medium', 'large'): FOLD
+- If realized equity (approximated as win_rate * EQR for weak hands) is less than pot_odds - 0.05 (i.e., even with a small positive margin, the hand is clearly behind): FOLD
+
+### Aggression-pattern folding:
+- If opp_postflop_bet_count >= 2 (multi-barrel) AND made_strength < 0.30 AND round_idx >= 2 AND draw_strength < 0.12: FOLD
+- If opp_current_round_bet_count >= 2 (same street re-raise) AND value_profile tier is not 'strong' or 'nut' AND bet_size_bucket in ('medium', 'large'): FOLD
+
+### Safety exceptions (do NOT fold):
+- NEVER fold if value_profile tier is 'nut'
+- NEVER fold if draw_info has combo_draw or nut_flush_draw
+- NEVER fold if made_strength >= 0.55 (strong made hand)
+- NEVER fold if anti_lock_pressure would apply (handled separately)
+- NEVER fold if opponent_model confidence < 0.10 (too little data)
+
+## TASK 2: Integrate should_fold_postflop() into strategy.py get_action()
+
+In the `to_call > 0` branch of get_action(), AFTER computing all the profiles but BEFORE the existing fold conditions, add:
+
+```python
+# New: postflop fold mechanism
+if round_idx > 0 and not anti_lock_pressure:
+    fold_decision = should_fold_postflop(
+        value_profile, made_strength, draw_strength, draw_info,
+        pair_profile, board_texture, spot_info, opponent_model,
+        round_idx, pot, to_call, win_rate, nutted_risk
+    )
+    if fold_decision:
+        return -1
+```
+
+Place this AFTER computing all profiles but BEFORE the `if anti_lock_pressure:` check. This ensures all profiles are computed before the fold decision.
+
+## TASK 3: Fix postflop_call_margin() for weak hands
+
+In the `postflop_call_margin()` function in strategy.py, the current logic ADDS margin for weak hands, making them call MORE. This is backwards. Change:
+
+```python
+# BEFORE (wrong — makes weak hands call more):
+if weak_showdown:
+    margin += 0.012
+if air_hand:
+    margin += 0.018
+
+# AFTER (correct — makes weak hands fold more):
+if weak_showdown:
+    margin += 0.035
+if air_hand:
+    margin += 0.055
+```
+
+Also increase the river-specific margins:
+```python
+# BEFORE:
+if round_idx == 3 and made_strength < 0.40 and not (...):
+    call_margin += 0.04
+
+# AFTER:
+if round_idx == 3 and made_strength < 0.40 and not (...):
+    call_margin += 0.065
+```
+
+And increase the postflop aggression margins:
+```python
+# BEFORE:
+if spot_info['facing_postflop_aggression']:
+    margin += 0.008
+
+# AFTER:
+if spot_info['facing_postflop_aggression']:
+    margin += 0.015
+```
+
+## TASK 4: Increase postflop raise sizing
+
+In the `choose_raise()` function, increase the base ratios for postflop streets:
+
+```python
+# BEFORE:
+elif round_idx == 1:
+    ratio = 0.60
+elif round_idx == 2:
+    ratio = 0.70
+else:
+    ratio = 0.85
+
+# AFTER:
+elif round_idx == 1:
+    ratio = 0.68
+elif round_idx == 2:
+    ratio = 0.78
+else:
+    ratio = 0.92
+```
+
+## CRITICAL RULES
+1. Do NOT touch any other files besides postflop.py and strategy.py
+2. Do NOT modify the preflop logic (choose_preflop_spot_action)
+3. Do NOT modify anti-lock pressure logic
+4. Do NOT change the opponent model or simulation
+5. The should_fold_postflop function must be conservative — fold CLEARLY dominated spots, not marginal ones. Target 15-25% fold rate, not 50%+.
+6. Import should_fold_postflop in strategy.py's imports from postflop
+7. Keep total line count under 1000 per file
+8. Verify the code compiles with py_compile before finishing
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v36/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v36/main.py` (and other .py files you changed)
+   - Smoke test: `python web/core/smoke_tester.py bots/claude_v36/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v36/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, undo only your own accidental edits in those files; if unsure, stop and report the violation.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+# Final Response Requirements
+End with:
+- `planned_files`: the files you intended to change.
+- `changed_files`: the files actually changed.
+- `changed_functions`: the functions/constants actually changed.
+- `checks_run`: compile/smoke commands and outcomes.
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading the current bot code to understand the structure before making changes.
+Now let me understand the full structure. I've read both files. Let me now implement all four tasks.
+
+## Scope Contract
+
+1. **Planned modified files**: `bots/claude_v36/postflop.py` and `bots/claude_v36/strategy.py`
+2. **Planned modified functions**:
+   - `postflop.py`: Add new `should_fold_postflop()` function
+   - `strategy.py`: Import `should_fold_postflop`, modify `postflop_call_margin()`, modify `choose_raise()`, integrate fold check in `get_action()`
+3. **I will not touch**: Preflop logic, anti-lock pressure logic, opponent model, simulation, tournament, or any other files.
+
+Let me implement all tasks now:
+
+**TASK 1: Add `should_fold_postflop()` in postflop.py**
+
+[WORKER 1 (Algorithmic Logic Architect) PROMPT]
+=============================
+# System Rule
+You are a highly skilled Coding Worker Agent playing the role of: **Algorithmic Logic Architect**.
+You must directly edit the source files in `bots/claude_v36/` to implement the Master's instructions.
+The bot MUST correctly interface with the game engine via `main.py` (reads JSON from stdin, writes JSON `{"response": int}` to stdout).
+
+# CRITICAL: Tool Usage Rules
+- **Use the Read tool** to read source files. Example: Read `bots/claude_v36/strategy.py`
+- **Use the Bash tool** to run compile checks, smoke tests, and git commands.
+- **NEVER use webReader or web-search tools** — they cannot access local files and will always fail.
+- **NEVER use file:// URLs or GitHub URLs** — all files are on the local filesystem.
+
+# Role Boundary Rules
+Your role determines what you CAN and CANNOT do:
+
+## If you are a "Hyperparameter Tuner":
+- **ALLOWED**: Changing numeric constants (e.g., `BLUFF_THRESHOLD = 0.15` → `0.20`)
+- **ALLOWED**: Adjusting float thresholds (e.g., `POT_ODDS_CUTOFF = 2.0` → `2.3`)
+- **ALLOWED**: Modifying integer conditions (e.g., `MIN_RAISE_HAND = 8` → `10`)
+- **FORBIDDEN**: Adding new functions, classes, or methods
+- **FORBIDDEN**: Adding new `if/for/while` blocks or changing control flow
+- **FORBIDDEN**: Importing new modules
+- If you accidentally add any non-numeric changes, remove only your own accidental edits before finishing.
+
+## If you are an "Algorithmic Logic Architect":
+- **ALLOWED**: Adding new functions and methods
+- **ALLOWED**: Refactoring existing logic and algorithms
+- **ALLOWED**: Adding imports and new modules
+- **FORBIDDEN**: Changing well-tuned constants unless structurally required
+- Example of "structurally required": If your new function changes how a constant is used, you may adjust it. But don't randomly tune `OPENING_RANGE_THRESHOLD` or `VPIP_PRIORS`.
+
+## If you are an "Opponent Modeler":
+- **ALLOWED**: Adding/modifying opponent tracking data structures and statistics
+- **ALLOWED**: Per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']`
+- **ALLOWED**: Bet sizing pattern detection: `opp_bet_sizes[street]` as rolling list (cap at 20), `statistics.median()`
+- **ALLOWED**: Exploitative adjustments based on detected opponent tendencies
+- **FORBIDDEN**: Changing overall decision flow or non-opponent-model logic
+- **FORBIDDEN**: Modifying any constant that is not opponent-model related
+
+You have access to `web/core/reference_bots/` containing 6 strong bots (`bot1` to `bot6`). You may read them as reference.
+
+**Important — Parallel Execution**: You may be running concurrently with other Worker Agents on the same codebase. Your `target_files` are exclusively yours — other workers will NOT touch them. Only modify your assigned `target_files`. Do NOT read or write files outside your assignment.
+
+# Scope Contract
+Before editing, write a short plan listing:
+1. Planned modified files.
+2. Planned modified functions/constants.
+3. A one-sentence statement of what you will not touch.
+
+Do not broaden scope. If the requested change requires touching files outside
+target_files or changing a different subsystem, stop and report instead of editing.
+
+# Poker Engineering Best Practices
+Apply these when implementing changes:
+
+**Opponent Modeling:**
+- Use per-street counters: `opp_stats[street]['vpip']`, `opp_stats[street]['aggression_factor']`, `opp_stats[street]['fold_to_cbet']` where `street ∈ {'preflop', 'flop', 'turn', 'river'}`
+- Track bet sizing: `opp_bet_sizes[street]` as a rolling list (cap at last 20), use `statistics.median()` for typical size
+- Exploit detected tendencies: if `opp_stats['river']['bet_freq'] > 0.65` → opponent bluffs river heavily → widen call range
+
+**Postflop Decision Making:**
+- EV-based fold/call: `EV_call = equity * pot_after_call - (1 - equity) * call_amount`. Call when EV > 0
+- River value bet sizing: if equity > 70%, bet 60-80% of pot for value; if equity 50-70%, bet 40-50% pot
+- Avoid "fear thresholds" — don't fold based on hand rank alone; compute EV against opponent range
+
+**Anti-Regression Checklist (verify before finishing):**
+- [ ] AA/KK/QQ preflop: still raises/3-bets aggressively (no passive limping)?
+- [ ] Nut flush/straight/full house on river: still places a value bet?
+- [ ] New code doesn't import modules not in stdlib + numpy?
+- [ ] `{"response": int}` JSON output format still correct?
+- [ ] No infinite loops or recursion in new functions?
+
+# Master Architect's Specific Prompt For You
+You are an Algorithmic Logic Architect fixing v7's critical preflop and postflop leaks. The bot folds 61-69% preflop (HU optimal is ~30%) and folds 0% postflop (calling station). Your job is to restructure the decision thresholds in strategy.py.
+
+## CRITICAL CONTEXT
+- strategy.py is currently 1158 lines. To add new logic without exceeding reasonable size, first extract the raise sizing functions into a new file:
+  - Extract `choose_raise` (lines ~269-393), `choose_overbet_river` (lines ~452-476), and `choose_overbet_bluff_river` (lines ~479-484) into a new file `raise_sizing.py`
+  - Add `from raise_sizing import choose_raise, choose_overbet_river, choose_overbet_bluff_river` at the top of strategy.py
+  - This removes ~130 lines from strategy.py, leaving ~1028 lines for your changes
+
+## TASK 1: Add BB Preflop Defense (choose_preflop_spot_action)
+
+The function `choose_preflop_spot_action` (line ~396) currently only handles `sb_open` and `bb_vs_limp`. It returns None for `bb_vs_raise` and `sb_vs_reraise`, causing these spots to fall through to general postflop logic with thresholds (strong=0.69, medium=0.54) that are WAY too tight for preflop.
+
+Add handling for `bb_vs_raise` spot AFTER the existing `bb_vs_limp` block:
+```python
+if spot_info['preflop_spot'] == 'bb_vs_raise':
+    # We're BB facing a raise from SB — defend wide in HU
+    # Pot odds typically ~33-40% for standard raises
+    defense_threshold = 0.35 + match_adjust - loose_bonus
+    threebet_threshold = 0.62 + match_adjust
+    
+    # Fold only worst hands
+    if preflop_strength < defense_threshold and not is_preflop_3bet_candidate(req['my_cards']):
+        if trash_hand:
+            return -1
+        # Even trash gets a chance if pot odds are good
+        pot_odds = to_call / (state['pot'] + to_call) if to_call > 0 else 0
+        if preflop_strength < pot_odds - 0.08:
+            return -1
+    
+    # 3bet with premium hands
+    if preflop_strength >= threebet_threshold or is_preflop_3bet_candidate(req['my_cards']):
+        raise_amount = choose_raise(
+            state.get('min_raise_action', state['round_raise']),
+            my_chips, state['my_round_bet'], to_call, state['pot'],
+            max(win_rate, preflop_strength), 0,
+            spot_info['preflop_spot'], preflop_strength,
+            spot_info['has_position'], opponent_model,
+            match_sizing_delta=match_profile['sizing_delta'],
+        )
+        if raise_amount is not None:
+            return raise_amount
+    
+    # Call with wide range
+    return 0
+```
+
+Also add `sb_vs_reraise` handling:
+```python
+if spot_info['preflop_spot'] == 'sb_vs_reraise':
+    # We opened SB and got 3bet — defend selectively
+    defend_threshold = 0.48 + match_adjust
+    if preflop_strength < defend_threshold and not is_preflop_3bet_candidate(req['my_cards']):
+        return -1
+    if preflop_strength >= 0.65 + match_adjust:
+        raise_amount = choose_raise(
+            state.get('min_raise_action', state['round_raise']),
+            my_chips, state['my_round_bet'], to_call, state['pot'],
+            max(win_rate, preflop_strength), 0,
+            spot_info['preflop_spot'], preflop_strength,
+            spot_info['has_position'], opponent_model,
+            match_sizing_delta=match_profile['sizing_delta'],
+        )
+        if raise_amount is not None:
+            return raise_amount
+    return 0
+```
+
+## TASK 2: Lower Preflop Thresholds in Existing Code
+
+In `choose_preflop_spot_action`:
+- Line with `open_threshold = 0.49 + ...`: Change `0.49` to `0.40`
+- Line with `limp_threshold = 0.36 + ...`: Change `0.36` to `0.28`
+- Line with `iso_threshold = 0.57 + ...`: Change `0.57` to `0.48`
+
+## TASK 3: Lower General Preflop Thresholds in get_action
+
+In the `get_action` function, find the lines (around line 643-644):
+```python
+strong = 0.69 if round_idx == 0 else 0.65 if round_idx == 1 else 0.61 if round_idx == 2 else 0.59
+medium = 0.54 if round_idx == 0 else 0.50 if round_idx == 1 else 0.48
+```
+Change to:
+```python
+strong = 0.58 if round_idx == 0 else 0.65 if round_idx == 1 else 0.61 if round_idx == 2 else 0.59
+medium = 0.46 if round_idx == 0 else 0.50 if round_idx == 1 else 0.48
+```
+This makes preflop calling/raising much more liberal without touching postflop behavior.
+
+## TASK 4: Fix Preflop Call Margin for Positional Defense
+
+Find the preflop call_margin section (around line 747):
+```python
+if round_idx == 0:
+    call_margin = 0.005 + (0.010 if not spot_info['has_position'] else 0.0)
+```
+Change to:
+```python
+if round_idx == 0:
+    # BB defends wider (has position), SB facing 3bet defends tighter
+    call_margin = -0.04 + (0.07 if spot_info['has_position'] else 0.0)
+```
+This gives BB a call_margin of +0.03 (defend wide) and SB facing 3bet a call_margin of -0.04 (fold more marginal hands). With pot_odds ~0.36 for a 3x raise, BB calls with win_rate >= 0.33, defending ~65% of hands.
+
+## TASK 5: Increase Base Raise Ratios in choose_raise (now in raise_sizing.py)
+
+After extracting choose_raise to raise_sizing.py, modify the base ratios:
+- Flop (round_idx == 1): `ratio = 0.60` → `ratio = 0.68`
+- Turn (round_idx == 2): `ratio = 0.70` → `ratio = 0.78`
+- River (round_idx >= 3): `ratio = 0.85` → `ratio = 0.92`
+- SB open (round_idx == 0, to_call == 0): `ratio = 0.55` → `ratio = 0.62`
+- SB facing action (round_idx == 0, to_call > 0): `ratio = 0.75` → `ratio = 0.80`
+
+## TASK 6: Add Air-Fold Early Exit in get_action
+
+In the `to_call > 0` section of get_action, BEFORE the existing fold logic (before `if realized_rate < pot_odds + call_margin`), add an air-fold check:
+```python
+# Air-fold: fold absolute garbage on turn/river to reasonable bets
+if round_idx >= 2 and made_strength < 0.15 and draw_strength < 0.08:
+    if not (draw_info and draw_info['semi_bluff']):
+        if not (blocker_profile and blocker_profile['eligible']):
+            bet_ratio = spot_info['last_raise_pot_ratio']
+            if bet_ratio >= 0.40 and not anti_lock_pressure:
+                if not strong_made_continue:
+                    return -1
+```
+This gives the bot a mechanism to fold hands with no pair, no draw, no blockers on turn/river to reasonable-sized bets. The conditions are strict: only pure air folds, never with draws/blockers/anti-lock situations.
+
+## IMPORTANT RULES
+- DO NOT modify postflop.py (Worker 2 owns that file)
+- DO NOT modify any files other than strategy.py and the new raise_sizing.py
+- Ensure all imports are correct after extraction
+- Keep the existing function signatures unchanged — other modules depend on them
+- Test that the code compiles with `python -c 'import strategy'`
+- The changes should make the bot MORE aggressive preflop (wider defense, lower thresholds) and MORE disciplined postflop (fold air on late streets)
+
+# Action
+Please write the Python code to fulfill your objective. After editing:
+
+1. **Verify your changes**: Run `git diff bots/claude_v36/` to review what you changed.
+   Ensure no unintended modifications to files outside your assigned `target_files`.
+2. If you see unexpected changes, fix them before finishing.
+3. **Run quality checks**:
+   - Compile check: `python -m py_compile bots/claude_v36/main.py` (and other .py files you changed)
+   - Smoke test: `python web/core/smoke_tester.py bots/claude_v36/main.py`
+   - If any check fails, fix the errors before finishing.
+
+# Self-Review Before Finishing
+After all quality checks pass, run these final checks:
+
+1. **Role Boundary Check**: Run `git diff bots/claude_v36/` one more time and review your changes carefully.
+   - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
+   - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
+
+2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, undo only your own accidental edits in those files; if unsure, stop and report the violation.
+
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+
+4. If you find any violations, fix them and re-run the quality checks.
+
+# Final Response Requirements
+End with:
+- `planned_files`: the files you intended to change.
+- `changed_files`: the files actually changed.
+- `changed_functions`: the functions/constants actually changed.
+- `checks_run`: compile/smoke commands and outcomes.
+
+=============================
+[CLAUDE OUTPUT]
+I'll start by reading the current source files to understand the codebase before making changes.
+Now let me read the `card_utils.py` and `constants.py` to understand imports needed for the extracted file:
+Good. I have a clear understanding of the codebase. Let me now plan and execute.
+
+## Scope Plan
+1. **Planned modified files**: `bots/claude_v36/strategy.py`, `bots/claude_v36/raise_sizing.py` (new)
+2. **Planned modified functions**: Extract `choose_raise`, `choose_overbet_river`, `choose_overbet_bluff_river` → `raise_sizing.py`. Modify `choose_preflop_spot_action` (add `bb_vs_raise`/`sb_vs_reraise`, lower thresholds). Modify `get_action` (lower preflop thresholds, fix call_margin, add air-fold). Modify base ratios in `choose_raise`.
+3. **I will NOT touch**: `postflop.py`, `opponent.py`, `state.py`, `tournament.py`, `simulation.py`, `card_utils.py`, `constants.py`, `main.py`, or any other file.
+
+Let me create the `raise_sizing.py` file first, then modify `strategy.py`:
+Now let me modify `strategy.py` — I'll apply all changes:
+Now remove the extracted `choose_raise` function from strategy.py (it's now in raise_sizing.py):
+Now remove `choose_overbet_river` and `choose_overbet_bluff_river` from strategy.py:
+Now let me apply TASK 2 — lower preflop thresholds in `choose_preflop_spot_action` and add `bb_vs_raise`/`sb_vs_reraise` handling:

@@ -28,7 +28,7 @@ from evolution_core import (
     find_current_v,
     _analyze_recent_matches,
     _analyze_stagnation,
-    RATINGS_FILE, BOT_STATS_FILE, H2H_FILE,
+    RATINGS_FILE, BOT_STATS_FILE, H2H_FILE, REPLAY_DIR,
     locked_file,
 )
 from glicko2 import Glicko2Player
@@ -317,6 +317,15 @@ async def reap_weakest(args):
                     json.dump(h2h, f, indent=2)
         except Exception:
             pass
+
+    # Clean up replay files referencing the reaped bot
+    try:
+        if REPLAY_DIR.exists():
+            for f in list(REPLAY_DIR.iterdir()):
+                if culled_name in f.name:
+                    f.unlink()
+    except Exception:
+        pass
 
     # Signal daemon to immediately refresh bot list
     reap_signal = Path(__file__).parent / "results" / ".reap_signal"

@@ -106,6 +106,8 @@ def build_match_matrix(h2h_data: dict | None, ratings_data: dict | None, stats_d
         for k in h2h_data:
             parts = k.split(" vs ")
             all_bots.update(parts)
+        if ratings_data:
+            all_bots &= set(ratings_data.keys())
         bot_names = sorted(all_bots, key=_bot_sort_key)
         n = len(bot_names)
         wr_matrix = [[None] * n for _ in range(n)]

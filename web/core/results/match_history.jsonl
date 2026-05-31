@@ -3641,3 +3641,7 @@
 {"id": "20260531_204704_076542_claude_v18_vs_claude_v2.json", "timestamp": "20260531_204704_076542", "bot0": "claude_v18", "bot1": "claude_v2", "bot0_wins": 4, "bot1_wins": 6, "draws": 0}
 {"id": "20260531_204708_523427_claude_v12_vs_claude_v7.json", "timestamp": "20260531_204708_523427", "bot0": "claude_v12", "bot1": "claude_v7", "bot0_wins": 2, "bot1_wins": 8, "draws": 0}
 {"id": "20260531_204716_701465_claude_v13_vs_claude_v15.json", "timestamp": "20260531_204716_701465", "bot0": "claude_v13", "bot1": "claude_v15", "bot0_wins": 4, "bot1_wins": 6, "draws": 0}
+{"id": "20260531_221513_428114_claude_v1_vs_claude_v15.json", "timestamp": "20260531_221513_428114", "bot0": "claude_v1", "bot1": "claude_v15", "bot0_wins": 4, "bot1_wins": 36, "draws": 0}
+{"id": "20260531_221522_605752_claude_v1_vs_claude_v12.json", "timestamp": "20260531_221522_605752", "bot0": "claude_v1", "bot1": "claude_v12", "bot0_wins": 3, "bot1_wins": 37, "draws": 0}
+{"id": "20260531_221630_840126_claude_v1_vs_claude_v14.json", "timestamp": "20260531_221630_840126", "bot0": "claude_v1", "bot1": "claude_v14", "bot0_wins": 5, "bot1_wins": 35, "draws": 0}
+{"id": "20260531_221730_876610_claude_v1_vs_claude_v13.json", "timestamp": "20260531_221730_876610", "bot0": "claude_v1", "bot1": "claude_v13", "bot0_wins": 6, "bot1_wins": 34, "draws": 0}

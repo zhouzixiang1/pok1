@@ -31,6 +31,8 @@ from claude_agent_sdk import (
     TextBlock,
     ToolUseBlock,
     ThinkingBlock,
+    CLINotFoundError,
+    ProcessError,
 )
 from claude_agent_sdk.types import HookMatcher, SyncHookJSONOutput
 from tools import evolution_server, inject_ui
@@ -254,57 +256,104 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
         lf.write(f"\n{'='*60}\n[ORCHESTRATOR CYCLE] {time.strftime('%Y-%m-%d %H:%M:%S')}\n{'='*60}\n")
         lf.write(f"[PROMPT]\n{prompt}\n\n[OUTPUT]\n")
 
-        try:
-            query_gen = claude_query(prompt=prompt, options=options)
-            async for message in query_gen:
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            text = block.text
-                            if ui:
-                                ui.log_io(text, "claude")
-                            else:
-                                print(text, end="", flush=True)
-                            lf.write(text)
-                        elif isinstance(block, ToolUseBlock):
-                            tool_name = block.name
-                            if ui:
-                                ui.log_history(f"[Orchestrator] Calling tool: {tool_name}", "info")
-                                ui.log_io(f"\n[tool: {tool_name}]", "tool")
-                                ui.emit_tool_call(tool_name, block.input)
-                            else:
-                                print(f"\n[tool: {tool_name}]", end=" ", flush=True)
-                            lf.write(f"\n[tool: {tool_name}]\n")
-                        elif isinstance(block, ThinkingBlock):
-                            if ui:
-                                ui.log_io("[thinking...]", "thinking")
-                            else:
-                                print("[thinking...]", end=" ", flush=True)
+        async def _stream_response(opts, max_retries=3):
+            """Run a single streaming query. Returns (full_text, cost, cycle_ok, gen)."""
+            texts = []
+            cost = 0.0
+            ok = False
+            gen = None
+            try:
+                gen = claude_query(prompt=prompt, options=opts)
+                async for message in gen:
+                    if isinstance(message, AssistantMessage):
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                texts.append(block.text)
+                                if ui:
+                                    ui.log_io(block.text, "claude")
+                                else:
+                                    print(block.text, end="", flush=True)
+                                lf.write(block.text)
+                            elif isinstance(block, ToolUseBlock):
+                                if ui:
+                                    ui.log_history(f"[Orchestrator] Calling tool: {block.name}", "info")
+                                    ui.log_io(f"\n[tool: {block.name}]", "tool")
+                                    ui.emit_tool_call(block.name, block.input)
+                                else:
+                                    print(f"\n[tool: {block.name}]", end=" ", flush=True)
+                                lf.write(f"\n[tool: {block.name}]\n")
+                            elif isinstance(block, ThinkingBlock):
+                                if ui:
+                                    ui.log_io("[thinking...]", "thinking")
+                                else:
+                                    print("[thinking...]", end=" ", flush=True)
+                    elif isinstance(message, ResultMessage):
+                        if message.total_cost_usd:
+                            cost += message.total_cost_usd
+                        if not message.is_error:
+                            ok = True
+                            if message.session_id:
+                                _save_orchestrator_session(message.session_id)
+                        else:
+                            _clear_orchestrator_session()
+            except (CLINotFoundError, ProcessError) as e:
+                if ui:
+                    ui.log_io(f"[ERROR] {e}", "error")
+                else:
+                    print(f"\n[ERROR] {e}")
+            return "".join(texts), cost, ok, gen
 
-                elif isinstance(message, ResultMessage):
-                    if message.total_cost_usd:
-                        total_cost += message.total_cost_usd
-                    if not message.is_error:
-                        cycle_completed = True
-                        # Only persist session on success — a failed session
-                        # (e.g. 401/403 auth error) is never valid to resume.
-                        if message.session_id:
-                            _save_orchestrator_session(message.session_id)
-                    else:
-                        # Auth-style errors leave a useless session; clear it
-                        # so the next cycle starts fresh instead of re-resuming.
-                        _clear_orchestrator_session()
+        try:
+            full_output, total_cost, cycle_completed, query_gen = await _stream_response(options)
+
+            # 529 rate-limit retry with exponential backoff
+            if _is_rate_limited(full_output):
+                for backoff in [30, 60, 120]:
                     if ui:
-                        ui.update_cost("Orchestrator", total_cost, getattr(message, 'usage', None))
-                    lf.write(f"\n[CYCLE DONE] cost=${total_cost:.4f}\n")
+                        ui.log_history(f"Orchestrator rate limited (529). Retrying in {backoff}s...", "warn")
+                    lf.write(f"\n[529 RETRY] backing off {backoff}s\n")
+                    await asyncio.sleep(backoff)
+                    full_output, total_cost, cycle_completed, query_gen = await _stream_response(options)
+                    if not _is_rate_limited(full_output):
+                        break
+
+            if ui:
+                ui.update_cost("Orchestrator", total_cost, None)
+            lf.write(f"\n[CYCLE DONE] cost=${total_cost:.4f}\n")
 
         except KeyboardInterrupt:
+            if query_gen is not None:
+                try:
+                    await query_gen.aclose()
+                except Exception:
+                    pass
             if ui:
                 ui.log_history("[Orchestrator] Interrupted by user.", "warn")
             else:
                 print("\n[Orchestrator] Interrupted by user.")
             lf.write("\n[INTERRUPTED]\n")
+
+        except asyncio.CancelledError:
+            if query_gen is not None:
+                try:
+                    await query_gen.aclose()
+                except Exception:
+                    pass
+            _clear_orchestrator_session()
+            if ui:
+                ui.log_history("[Orchestrator] Cancelled.", "warn")
+            else:
+                print("\n[Orchestrator] Cancelled.")
+            lf.write("\n[CANCELLED]\n")
+            raise
+
         except Exception as e:
+            if query_gen is not None:
+                try:
+                    await query_gen.aclose()
+                except Exception:
+                    pass
+            _clear_orchestrator_session()
             if ui:
                 ui.log_history(f"[Orchestrator] Error: {e}", "error")
             else:

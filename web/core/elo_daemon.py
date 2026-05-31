@@ -429,6 +429,8 @@ def main():
             del bot_stats[b]
         if args.verbose:
             print(f"[DAEMON] Retired: {b}")
+    for b in retired:
+        h2h = {k: v for k, v in h2h.items() if b not in k.split(" vs ")}
 
     if len(active_bots) < 2:
         print("[DAEMON] Less than 2 active bots, exiting.")
@@ -460,6 +462,13 @@ def main():
 
             for fut in done:
                 a, b = in_flight.pop(fut)
+                # Skip results for bots that have been reaped
+                if a not in active_bots or b not in active_bots:
+                    try:
+                        fut.result()
+                    except Exception:
+                        pass
+                    continue
                 result = fut.result()
                 n = process_result(result, ratings, h2h, bot_stats, verbose=args.verbose)
                 games_since_save += n
@@ -494,7 +503,8 @@ def main():
             if reap_signal.exists():
                 reap_signal.unlink(missing_ok=True)
                 new_bots = get_active_bots()
-                for b in set(active_bots) - set(new_bots):
+                removed = set(active_bots) - set(new_bots)
+                for b in removed:
                     ratings.pop(b, None)
                     bot_stats.pop(b, None)
                     h2h = {k: v for k, v in h2h.items() if b not in k.split(" vs ")}
@@ -502,6 +512,17 @@ def main():
                     if b not in ratings:
                         ratings[b] = Glicko2Player()
                 active_bots = new_bots
+                # Filter match_queue and cancel in-flight futures for reaped bots
+                if removed:
+                    match_queue = deque(
+                        m for m in match_queue
+                        if m[0] not in removed and m[1] not in removed
+                    )
+                    for fut in list(in_flight):
+                        a, b = in_flight[fut]
+                        if a in removed or b in removed:
+                            fut.cancel()
+                            del in_flight[fut]
                 if games_since_save > 0:
                     save_num += 1
                     save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots, verbose=args.verbose)
@@ -524,6 +545,8 @@ def main():
                     bot_stats.pop(b, None)
                     if args.verbose:
                         print(f"[DAEMON] Retired: {b}")
+                for b in removed:
+                    h2h = {k: v for k, v in h2h.items() if b not in k.split(" vs ")}
                 if added or removed:
                     active_bots = new_bots
 
