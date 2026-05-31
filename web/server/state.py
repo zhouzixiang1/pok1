@@ -1,7 +1,11 @@
 """Global state for the unified web app."""
 
 import asyncio
+import json
 import threading
+from pathlib import Path
+
+_CONFIG_FILE = Path(__file__).resolve().parents[1] / "core" / "results" / "app_config.json"
 
 
 class AppState:
@@ -17,6 +21,7 @@ class AppState:
         self.generation_count: int = 0
         self.decisions: list = []
         self._evolution_task: asyncio.Task | None = None
+        self._load_config()
 
     def to_dict(self) -> dict:
         with self._lock:
@@ -49,6 +54,7 @@ class AppState:
                 self.daemon_workers = max(1, min(32, kwargs["daemon_workers"]))
             if "daemon_pairs" in kwargs and isinstance(kwargs["daemon_pairs"], int) and not isinstance(kwargs["daemon_pairs"], bool):
                 self.daemon_pairs = max(1, min(20, kwargs["daemon_pairs"]))
+            self._save_config()
             return self.get_config()
 
     def set_running(self, running: bool):
@@ -61,6 +67,36 @@ class AppState:
                 return False
             self.running = running
             return True
+
+    def _load_config(self):
+        try:
+            if _CONFIG_FILE.exists():
+                data = json.loads(_CONFIG_FILE.read_text())
+                if "daemon_enabled" in data and isinstance(data["daemon_enabled"], bool):
+                    self.daemon_enabled = data["daemon_enabled"]
+                if "daemon_workers" in data and isinstance(data["daemon_workers"], int):
+                    self.daemon_workers = max(1, min(32, data["daemon_workers"]))
+                if "daemon_pairs" in data and isinstance(data["daemon_pairs"], int):
+                    self.daemon_pairs = max(1, min(20, data["daemon_pairs"]))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    def _save_config(self):
+        try:
+            _CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _CONFIG_FILE.write_text(json.dumps({
+                "daemon_enabled": self.daemon_enabled,
+                "daemon_workers": self.daemon_workers,
+                "daemon_pairs": self.daemon_pairs,
+            }, indent=2))
+        except OSError:
+            pass
+
+    def bootstrap(self, current_v: int):
+        with self._lock:
+            self.current_v = current_v
+            self.next_v = current_v + 1
+            self.generation_count = current_v
 
     def set_generation(self, current_v: int, next_v: int):
         with self._lock:

@@ -29,6 +29,9 @@ _evolution_task: asyncio.Task | None = None
 async def lifespan(app: FastAPI):
     global _evolution_task
 
+    from evolution_infra import find_current_v
+    app_state.bootstrap(find_current_v())
+
     config = app_state.get_config()
     daemon_enabled = config["daemon_enabled"]
 

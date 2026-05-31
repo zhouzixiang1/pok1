@@ -15,6 +15,8 @@ from pathlib import Path
 
 from evolution_core import BaseUI, Glicko2Player
 
+_COSTS_FILE = Path(__file__).resolve().parent / "results" / "llm_costs.jsonl"
+
 
 class EventBroadcaster:
     """
@@ -80,7 +82,7 @@ class WebUI(BaseUI):
 
     def __init__(self, broadcaster: EventBroadcaster):
         self._broadcaster = broadcaster
-        self.grand_cost_total = 0.0
+        self.grand_cost_total = self._load_grand_cost()
         self.gen_cost_total = 0.0
         self.costs = []
         self._messages = []
@@ -92,6 +94,20 @@ class WebUI(BaseUI):
             "ratings": [],
             "active_bots": [],
         }
+
+    @staticmethod
+    def _load_grand_cost() -> float:
+        total = 0.0
+        try:
+            if _COSTS_FILE.exists():
+                for line in _COSTS_FILE.read_text().splitlines():
+                    try:
+                        total += json.loads(line).get("cost_usd", 0)
+                    except json.JSONDecodeError:
+                        pass
+        except OSError:
+            pass
+        return total
 
     def _emit(self, event_type: str, payload: dict):
         self._broadcaster.broadcast(event_type, payload)
@@ -172,6 +188,12 @@ class WebUI(BaseUI):
                 self.costs = self.costs[-500:]
             self.gen_cost_total += cost_usd
             self.grand_cost_total += cost_usd
+            try:
+                _COSTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+                with open(_COSTS_FILE, "a") as f:
+                    f.write(json.dumps({"cost_usd": cost_usd, "grand_total": round(self.grand_cost_total, 6), "ts": time.time()}) + "\n")
+            except OSError:
+                pass
             in_tok = usage.get("input_tokens", 0) if usage else 0
             out_tok = usage.get("output_tokens", 0) if usage else 0
             print(f"[COST] {role}: ${cost_usd:.4f} (in={in_tok} out={out_tok})")
