@@ -31,10 +31,10 @@ from evolution_core import (
     locked_file,
 )
 from glicko2 import Glicko2Player
+from tool_helpers import load_h2h_avg_winrates
 
 from tool_helpers import (
     _get_ui, _ratings_summary, _json_tool_result, _bot_main,
-    load_h2h_avg_winrates, compute_h2h_avg_winrate, _load_h2h_data,
     PROJECT_ROOT,
 )
 
@@ -99,7 +99,7 @@ async def get_status(args):
         "current_bot_rd": current_bot_rd,
         "current_bot_games": games_played,
         "current_bot_win_rate": cur_bs.get("win_rate", 0.0),
-        "current_bot_h2h_avg_wr": compute_h2h_avg_winrate(f"claude_v{current_v}", _load_h2h_data()),
+        "current_bot_h2h_avg_wr": load_h2h_avg_winrates().get(f"claude_v{current_v}", 0.5),
         "rating_reliable": rating_reliable,
         "recent_worker_failures": recent_failures,
     }

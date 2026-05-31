@@ -212,7 +212,7 @@ export default function Overview() {
   const stats = useMatchStats();
   const bots = useBots();
   const botStats = useBotStats();
-  const [summary, setSummary] = useState<Record<string, { peak_rating: number; current_rating: number; trend: number; periods: number }>>({});
+  const [summary, setSummary] = useState<Record<string, { peak_rating: number; current_rating: number; trend: number; periods: number; peak_h2h_avg_wr?: number; current_h2h_avg_wr?: number; wr_trend?: number }>>({});
   const [controlStatus, setControlStatus] = useState<ControlStatus | null>(null);
   const [checkpoint, setCheckpoint] = useState<PipelineCheckpoint | null>(null);
 
@@ -272,7 +272,7 @@ export default function Overview() {
                 <th className="px-5 py-3 font-medium">RD</th>
                 <th className="px-5 py-3 font-medium">波动率</th>
                 <th className="px-5 py-3 font-medium">保守评分</th>
-                <th className="px-5 py-3 font-medium">胜率</th>
+                <th className="px-5 py-3 font-medium">H2H 胜率</th>
                 <th className="px-5 py-3 font-medium">场数</th>
                 <th className="px-5 py-3 font-medium">胜/负/平</th>
                 <th className="px-5 py-3 font-medium">趋势</th>
@@ -296,14 +296,18 @@ export default function Overview() {
                     <td className="px-5 py-3 text-gray-400 text-xs">{bot.sigma.toFixed(4)}</td>
                     <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{bot.conservative_rating.toFixed(1)}</td>
                     <td className="px-5 py-3 text-gray-600 dark:text-gray-300">
-                      {bot.win_rate != null ? `${(bot.win_rate * 100).toFixed(1)}%` : "—"}
+                      {bot.h2h_avg_wr != null ? `${(bot.h2h_avg_wr * 100).toFixed(1)}%` : "—"}
                     </td>
                     <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{bot.games ?? "—"}</td>
                     <td className="px-5 py-3 text-xs font-mono text-gray-500">
                       {(() => { const bs = botStats[bot.name]; return bs ? `${bs.wins}/${bs.losses}/${bs.draws}` : "—"; })()}
                     </td>
                     <td className="px-5 py-3 text-xs">
-                      {s ? (
+                      {s && s.wr_trend != null ? (
+                        <span className={s.wr_trend > 0 ? "text-green-600" : s.wr_trend < 0 ? "text-red-600" : "text-gray-400"}>
+                          {s.wr_trend > 0 ? "↑" : s.wr_trend < 0 ? "↓" : "→"} {(s.wr_trend * 100).toFixed(1)}pp
+                        </span>
+                      ) : s ? (
                         <span className={s.trend > 0 ? "text-green-600" : s.trend < 0 ? "text-red-600" : "text-gray-400"}>
                           {s.trend > 0 ? "↑" : s.trend < 0 ? "↓" : "→"} {s.trend > 0 ? "+" : ""}{s.trend.toFixed(1)}
                         </span>

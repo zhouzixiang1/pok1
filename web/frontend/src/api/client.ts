@@ -55,7 +55,7 @@ export const api = {
     params.set("resolution", resolution);
     return fetchJSON<HistoryEntry[]>(`${BASE}/history?${params}`);
   },
-  historySummary: () => fetchJSON<Record<string, { peak_rating: number; current_rating: number; trend: number; periods: number }>>(`${BASE}/history/summary`),
+  historySummary: () => fetchJSON<Record<string, { peak_rating: number; current_rating: number; trend: number; periods: number; peak_h2h_avg_wr?: number; current_h2h_avg_wr?: number; wr_trend?: number }>>(`${BASE}/history/summary`),
 
   // Matches
   matchMatrix: () => fetchJSON<MatchMatrix>(`${BASE}/matches/matrix`),

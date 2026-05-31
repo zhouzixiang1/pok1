@@ -640,7 +640,7 @@ export default function EvolutionMonitor() {
                   <div key={bot.name} className="flex justify-between text-xs">
                     <span className="text-gray-600 dark:text-gray-400">#{bot.rank} {bot.name.replace("claude_", "")}</span>
                     <span className="font-mono text-gray-800 dark:text-gray-200">
-                      {bot.h2h_avg_wr != null ? `${(bot.h2h_avg_wr * 100).toFixed(1)}%` : bot.rating}
+                      {bot.h2h_avg_wr != null ? `${(bot.h2h_avg_wr * 100).toFixed(1)}%` : "—"}
                     </span>
                   </div>
                 ))}

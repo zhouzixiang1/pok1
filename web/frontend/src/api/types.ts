@@ -120,6 +120,7 @@ export interface BotSummary {
   rating: { r: number; rd: number; conservative: number } | null;
   win_rate?: number;
   games?: number;
+  h2h_avg_wr?: number;
   graveyard?: boolean;
 }
 

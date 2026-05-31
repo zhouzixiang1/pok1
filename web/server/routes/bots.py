@@ -21,6 +21,22 @@ _cache: dict[str, tuple[float, Any]] = {}
 _CACHE_TTL = 3.0
 
 
+def _cached_read(key: str, path: Path) -> Any:
+    now = time.time()
+    if key in _cache:
+        mtime, data = _cache[key]
+        if now - mtime < _CACHE_TTL:
+            return data
+    if not path.exists():
+        return None
+    with open(path, "r") as f:
+        fcntl.flock(f, fcntl.LOCK_SH)
+        data = json.load(f)
+        fcntl.flock(f, fcntl.LOCK_UN)
+    _cache[key] = (now, data)
+    return data
+
+
 def _load_ratings() -> dict:
     now = time.time()
     if "ratings" in _cache:
@@ -47,7 +63,11 @@ def _count_lines(path: Path) -> int:
         return 0
 
 
-def _bot_summary(bot_dir: Path, bot_name: str, ratings: dict) -> dict:
+BOT_STATS_FILE = RESULTS_DIR / "bot_stats.json"
+H2H_FILE = RESULTS_DIR / "head_to_head.json"
+
+
+def _bot_summary(bot_dir: Path, bot_name: str, ratings: dict, bot_stats_data: dict, h2h_data: dict) -> dict:
     version_match = re.search(r"\d+", bot_name)
     version = int(version_match.group()) if version_match else 0
 
@@ -65,6 +85,9 @@ def _bot_summary(bot_dir: Path, bot_name: str, ratings: dict) -> dict:
             "conservative": round(r - 2 * rd, 1),
         }
 
+    bs = bot_stats_data.get(bot_name, {})
+    wr = _h2h_avg_wr(bot_name, h2h_data)
+
     return {
         "name": bot_name,
         "version": version,
@@ -72,13 +95,32 @@ def _bot_summary(bot_dir: Path, bot_name: str, ratings: dict) -> dict:
         "total_lines": total_lines,
         "files": [f.name for f in py_files],
         "rating": rating_info,
+        "win_rate": bs.get("win_rate"),
+        "games": bs.get("games", 0),
+        "h2h_avg_wr": round(wr, 4) if wr is not None else None,
     }
+
+
+def _h2h_avg_wr(bot_name: str, h2h_data: dict) -> float | None:
+    rates = []
+    for k, v in h2h_data.items():
+        parts = k.split(" vs ")
+        if len(parts) != 2 or bot_name not in parts:
+            continue
+        g = v.get("games", 0)
+        if g <= 0:
+            continue
+        wins = v.get("a_wins", 0) if parts[0] == bot_name else v.get("b_wins", 0)
+        rates.append(wins / g)
+    return sum(rates) / len(rates) if rates else None
 
 
 @router.get("")
 async def list_bots(include_graveyard: bool = Query(False)):
     """List all active bots and optionally graveyard bots."""
     ratings = _load_ratings()
+    bot_stats_data = _cached_read("bot_stats", BOT_STATS_FILE) or {}
+    h2h_data = _cached_read("h2h", H2H_FILE) or {}
     active = []
     graveyard = []
 
@@ -90,7 +132,7 @@ async def list_bots(include_graveyard: bool = Query(False)):
     if BOTS_DIR.exists():
         for d in sorted(BOTS_DIR.iterdir(), key=_version_key):
             if d.is_dir() and d.name.startswith("claude_v") and d.name != "claude_v0":
-                active.append(_bot_summary(d, d.name, ratings))
+                active.append(_bot_summary(d, d.name, ratings, bot_stats_data, h2h_data))
 
     # Graveyard bots
     if include_graveyard:
@@ -98,7 +140,7 @@ async def list_bots(include_graveyard: bool = Query(False)):
         if graveyard_dir.exists():
             for d in sorted(graveyard_dir.iterdir()):
                 if d.is_dir() and d.name.startswith("claude_v"):
-                    s = _bot_summary(d, d.name, ratings)
+                    s = _bot_summary(d, d.name, ratings, bot_stats_data, h2h_data)
                     s["graveyard"] = True
                     graveyard.append(s)
 

@@ -16,13 +16,13 @@ const CheckIcon = ({ className }: { className?: string }) => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="20 6 9 17 4 12"/></svg>
 );
 
-function RatingBadge({ r, rd, winRate, games }: { r: number; rd: number; winRate?: number; games?: number }) {
+function RatingBadge({ r, rd, h2hWr, games }: { r: number; rd: number; h2hWr?: number; games?: number }) {
   const conf = rd < 50 ? "text-green-600" : rd < 100 ? "text-yellow-600" : "text-orange-500";
   return (
     <span className="text-sm">
       <span className="font-mono font-semibold">{r.toFixed(0)}</span>
       <span className={`ml-1 text-xs ${conf}`}>±{(2 * rd).toFixed(0)}</span>
-      {winRate != null && <span className="ml-2 text-xs text-gray-500">WR {(winRate * 100).toFixed(0)}%{games ? ` (${games})` : ""}</span>}
+      {h2hWr != null && <span className="ml-2 text-xs text-gray-500">H2H {(h2hWr * 100).toFixed(1)}%{games ? ` (${games})` : ""}</span>}
     </span>
   );
 }
@@ -109,7 +109,7 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
           {bot.graveyard && <span className="px-1.5 py-0.5 text-[10px] rounded bg-gray-100 text-gray-400">已归档</span>}
         </div>
         <div className="flex items-center gap-4 text-sm text-gray-500">
-          {bot.rating && <RatingBadge r={bot.rating.r} rd={bot.rating.rd} winRate={bot.win_rate} games={bot.games} />}
+          {bot.rating && <RatingBadge r={bot.rating.r} rd={bot.rating.rd} h2hWr={bot.h2h_avg_wr} games={bot.games} />}
           <span className="text-xs text-gray-400">{bot.total_lines} 行</span>
           <span className="text-xs text-gray-400">保守 {conserv}</span>
           <span className="text-gray-400">{expanded ? "▲" : "▼"}</span>
@@ -222,17 +222,17 @@ const PlayIcon = ({ className }: { className?: string }) => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" className={className}><polygon points="5 3 19 12 5 21 5 3"/></svg>
 );
 
-type BotSortMode = "version" | "win_rate" | "rating";
+type BotSortMode = "version" | "h2h_wr" | "rating";
 
 export default function BotManager() {
   const { active: rawBots, graveyard: rawGraveyard } = useBots();
   const h2hData = useH2H();
-  const [sortMode, setSortMode] = useState<BotSortMode>("win_rate");
+  const [sortMode, setSortMode] = useState<BotSortMode>("h2h_wr");
 
   const bots = useMemo(() => {
     const sorted = [...rawBots];
-    if (sortMode === "win_rate") {
-      sorted.sort((a, b) => (b.win_rate ?? 0) - (a.win_rate ?? 0));
+    if (sortMode === "h2h_wr") {
+      sorted.sort((a, b) => (b.h2h_avg_wr ?? 0) - (a.h2h_avg_wr ?? 0));
     } else if (sortMode === "rating") {
       sorted.sort((a, b) => (b.rating?.conservative ?? 0) - (a.rating?.conservative ?? 0));
     } else {
@@ -306,7 +306,7 @@ export default function BotManager() {
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1 text-sm text-gray-600 dark:text-gray-400">
             <span>排序:</span>
-            {(["win_rate", "rating", "version"] as BotSortMode[]).map((mode) => (
+            {(["h2h_wr", "rating", "version"] as BotSortMode[]).map((mode) => (
               <button
                 key={mode}
                 onClick={() => setSortMode(mode)}
@@ -316,7 +316,7 @@ export default function BotManager() {
                     : "hover:bg-gray-100 dark:hover:bg-gray-700"
                 }`}
               >
-                {mode === "win_rate" ? "胜率" : mode === "rating" ? "评分" : "版本"}
+                {mode === "h2h_wr" ? "H2H 胜率" : mode === "rating" ? "评分" : "版本"}
               </button>
             ))}
           </div>
