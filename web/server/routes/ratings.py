@@ -138,10 +138,19 @@ async def append_experience(req: ExperienceAppendRequest):
     if not lesson:
         raise HTTPException(status_code=400, detail="lesson is empty")
     try:
-        existing = EXPERIENCE_FILE.read_text(encoding="utf-8") if EXPERIENCE_FILE.exists() else ""
-        separator = "\n\n" if existing and not existing.endswith("\n\n") else ""
-        new_content = existing + separator + f"- {lesson}\n"
-        EXPERIENCE_FILE.write_text(new_content, encoding="utf-8")
+        import fcntl
+        with open(EXPERIENCE_FILE, "a+", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                f.seek(0)
+                existing = f.read()
+                separator = "\n\n" if existing and not existing.endswith("\n\n") else ""
+                new_content = existing + separator + f"- {lesson}\n"
+                f.seek(0)
+                f.truncate()
+                f.write(new_content)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
         return {"appended": True, "lesson": lesson, "total_chars": len(new_content)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

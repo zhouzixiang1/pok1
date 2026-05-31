@@ -388,7 +388,10 @@ def stop_daemon():
                         daemon_proc.kill()
                 except (ProcessLookupError, PermissionError):
                     daemon_proc.kill()
-                daemon_proc.wait(timeout=3)
+                try:
+                    daemon_proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    pass
         daemon_proc = None
 
 
@@ -635,7 +638,7 @@ def parse_json_output(output):
     if match:
         try:
             return json.loads(match.group(1))
-        except:
+        except Exception:
             text = match.group(1)
             while '```' in text:
                 try:
@@ -644,11 +647,11 @@ def parse_json_output(output):
                     text = text.rsplit('```', 1)[0]
             try:
                 return json.loads(text)
-            except:
+            except Exception:
                 pass
     try:
         return json.loads(output)
-    except:
+    except Exception:
         pass
     return None
 

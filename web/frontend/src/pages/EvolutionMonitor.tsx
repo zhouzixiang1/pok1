@@ -477,8 +477,12 @@ export default function EvolutionMonitor() {
     onDaemon: (data) => setDaemonInfo(data),
     onConnect: () => {
       setRoleCosts([]);
-      setGrand(0);
-      setGen(0);
+      fetchEvolutionState().then((state) => {
+        if (state) {
+          setGrand(state.grand_cost_total ?? 0);
+          setGen(state.gen_cost_total ?? 0);
+        }
+      }).catch(() => {});
     },
   });
 

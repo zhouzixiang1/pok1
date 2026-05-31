@@ -86,6 +86,8 @@ async def control_status():
 async def get_decisions(limit: int = 50):
     state = app_state.to_dict()
     decisions = state.get("decisions", [])
+    if limit <= 0:
+        return []
     return decisions[-limit:]
 
 

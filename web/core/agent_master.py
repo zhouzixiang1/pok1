@@ -189,10 +189,14 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui):
     )
 
     log_file = get_logs_dir(source_v) / "stagnation_analysis.txt"
-    output, _, _ = await run_claude_query(
-        prompt, [], ui, "STAGNATION ANALYST", log_file,
-    )
-    return parse_json_output(output)
+    try:
+        output, _, _ = await run_claude_query(
+            prompt, [], ui, "STAGNATION ANALYST", log_file,
+        )
+        return parse_json_output(output)
+    except Exception as e:
+        ui.log_history(f"Stagnation analysis failed: {e}", "warn")
+        return None
 
 
 # ──────────────────────────────────────────────
@@ -423,7 +427,7 @@ async def _analyze_recent_matches(source_v, ui, max_matches=8):
             if not replay_path.exists():
                 continue
             try:
-                with open(replay_path, "r") as rf:
+                with locked_file(replay_path, "r") as rf:
                     replay_data = json.load(rf)
                 summary = summarize_replay_for_analysis(replay_data, bot_name)
                 if summary:

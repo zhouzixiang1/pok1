@@ -305,12 +305,17 @@ async def run_review(args):
             "logs": ui.get_output(),
         }
     else:
+        error_msg = (
+            "Reviewer returned valid JSON but missing 'approved' field"
+            if data and isinstance(data, dict)
+            else "Reviewer failed to produce valid JSON"
+        )
         gate = _gate_payload(
             v,
             source_v,
             False,
             approved=False,
-            error="Reviewer failed to produce valid JSON",
+            error=error_msg,
             raw_output=output[:500] if output else "",
         )
         checkpoint_recorded = _record_gate(
@@ -320,11 +325,11 @@ async def run_review(args):
             gate,
             stage=None,
             master_plan=plan,
-            reviewer_feedback="Reviewer failed to produce valid JSON",
+            reviewer_feedback=error_msg,
         )
         result = {
             "approved": False,
-            "error": "Reviewer failed to produce valid JSON",
+            "error": error_msg,
             "raw_output": output[:500] if output else "",
             "checkpoint_recorded": checkpoint_recorded,
             "logs": ui.get_output(),
@@ -731,8 +736,6 @@ async def commit_bot(args):
             "error": "COMMIT BLOCKED: review_approved=false. Call run_review() first; only pass review_approved=true if it returns approved:true.",
         })
 
-    (bot_dir / ".completed").touch()
-
     ratings = load_ratings()
     p = ratings.get(f"claude_v{v}")
     h2h_wr = None
@@ -745,6 +748,7 @@ async def commit_bot(args):
     rating_info = f"rating: r={p.r:.1f} rd={p.rd:.1f}{wr_str}" if p else ""
 
     git_commit_bot(v, source_v, strategy, rating_info=rating_info)
+    (bot_dir / ".completed").touch()
     clear_pipeline_checkpoint()
 
     try:

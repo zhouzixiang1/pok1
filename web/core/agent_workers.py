@@ -74,14 +74,12 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
 
         # ── Timeout isolation: abort and retry if worker hangs for >WORKER_TIMEOUT sec ──
         try:
-            await asyncio.wait_for(
-                run_claude_query(
-                    worker_prompt, context_files, ui,
-                    f"WORKER {w_id} ({role})", worker_log_file,
-                    tools=["Bash", "Read", "Edit"],
-                ),
-                timeout=WORKER_TIMEOUT,
-            )
+            task = asyncio.create_task(run_claude_query(
+                worker_prompt, context_files, ui,
+                f"WORKER {w_id} ({role})", worker_log_file,
+                tools=["Bash", "Read", "Edit"],
+            ))
+            await asyncio.wait_for(task, timeout=WORKER_TIMEOUT)
         except asyncio.TimeoutError:
             _last_reason = f"timed out after {WORKER_TIMEOUT}s (attempt {attempt+1}/{MAX_WORKER_RETRIES})"
             ui.log_history(

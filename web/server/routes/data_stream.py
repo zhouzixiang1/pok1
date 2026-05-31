@@ -92,7 +92,8 @@ def _get_bots() -> dict:
 
     def _count_lines(path: Path) -> int:
         try:
-            return sum(1 for _ in open(path, "r", errors="ignore"))
+            with open(path, "r", errors="ignore") as f:
+                return sum(1 for _ in f)
         except Exception:
             return 0
 
@@ -306,7 +307,7 @@ async def data_stream():
                             yield evt
                         except Exception as e:
                             _log.warning("SSE event error: %s", e)
-                if tick % 30 == 0 and tick % 3 != 0:
+                if tick % 30 == 0:
                     yield {"event": "ping", "data": "{}"}
                 await asyncio.sleep(1)
                 tick += 1

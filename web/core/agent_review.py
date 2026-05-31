@@ -26,7 +26,8 @@ async def _run_critic(next_v, source_v, master_plan_str, ui):
     """
     critic_prompt_path = PROMPTS_DIR / "critic_prompt.md"
     if not critic_prompt_path.exists():
-        return {"score": 7, "approved": True, "feedback": "Critic prompt not found — defaulting to approved."}
+        ui.log_history("Critic prompt not found — defaulting to REJECTED.", "error")
+        return {"score": 0, "approved": False, "feedback": "Critic prompt not found — defaulting to rejected."}
 
     critic_prompt = critic_prompt_path.read_text()
     critic_prompt = substitute_template(critic_prompt, {
@@ -49,7 +50,7 @@ async def _run_critic(next_v, source_v, master_plan_str, ui):
     except Exception as e:
         ui.log_history(f"Critic error: {e}. Defaulting to approved.", "warn")
 
-    return {"score": 6, "approved": True, "feedback": "Critic unavailable — proceeding.", "local_optima_warning": False}
+    return {"score": 0, "approved": False, "feedback": "Critic unavailable — defaulting to rejected.", "local_optima_warning": False}
 
 
 async def _run_performance_verification(source_v, ratings, ui):

@@ -112,14 +112,12 @@ def _json_tool_result(data):
 
 
 def _read_json(path, default):
+    from evolution_infra import locked_file
     try:
         if not Path(path).exists():
             return default
-        with open(path, "r") as f:
-            fcntl.flock(f, fcntl.LOCK_SH)
-            data = json.load(f)
-            fcntl.flock(f, fcntl.LOCK_UN)
-            return data
+        with locked_file(path, "r") as f:
+            return json.load(f)
     except Exception:
         return default
 
