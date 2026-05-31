@@ -1,281 +1,711 @@
-# LLM 多阶段使用说明
+# LLM 多阶段运行时数据流
 
-本文档整理了 `web/core/` 中所有 LLM 调用的阶段、角色、工具权限和调用方式。
-
----
-
-## 总览
-
-系统使用两种 LLM 调用模式：
-
-| 模式 | 入口 | 说明 |
-|---|---|---|
-| **MCP Tool Server** | `orchestrator.py` | 编排器作为 Claude Agent 运行，通过 MCP 工具驱动整个流水线 |
-| **Direct `run_claude_query()`** | `evolution_infra.py` | 子代理直接调用 SDK，用于 Master / Workers / Reviewer / Critic / Analysts |
-
-所有子代理统一使用 `claude_agent_sdk`，模型默认为 **Sonnet**。编排器也使用 **Sonnet** (`orchestrator.py:239`)。
+本文档以 **时间线** 视角，描述 `python web/main.py` 启动后系统内逐一发生的事件，聚焦每个 LLM 调用的数据流：谁发起、输入什么、输出什么、输出去向。
 
 ---
 
-## 1. 编排器 (Orchestrator)
-
-- **文件**: `orchestrator.py`
-- **模型**: Sonnet
-- **调用方式**: MCP Tool Server — `claude_query()` + `ClaudeAgentOptions`
-- **可用工具**: 通过 MCP Server 暴露的 `evolution` 工具集（来自 `tool_pipeline.py` + `tool_status.py`）
-- **特殊机制**:
-  - Session 持久化 (`orchestrator_session.json`) 支持崩溃恢复
-  - PreCompact Hook 在 LLM 上下文压缩时注入流水线状态
-  - 连续 5 次零花费循环时自动退避重试
-- **职责**: 自主决定调用哪些工具、以什么顺序驱动进化流水线
-
-### 编排器可调用的 MCP 工具列表
-
-| 工具名 | 所属模块 | 是否调用 LLM | 说明 |
-|---|---|---|---|
-| `prepare_next_gen` | `tool_pipeline.py` | 否 | 复制源 bot 目录，写入 `prepared` 检查点 |
-| `run_master` | `tool_pipeline.py` | **是** | 调用 Master Architect 分析并生成任务计划 |
-| `execute_workers` | `tool_pipeline.py` | **是** | 调用 Worker LLM 并行修改 bot 代码 |
-| `run_quality_gates` | `tool_pipeline.py` | 否 | 自动化检查：编译、冒烟测试、决策测试、文件大小 |
-| `run_review` | `tool_pipeline.py` | **是** | 调用 Code Reviewer LLM 评审 diff |
-| `run_critic` | `tool_pipeline.py` | **是** | 调用 Strategy Critic LLM 评估策略质量 |
-| `run_precommit_eval` | `tool_pipeline.py` | 否 | 提交前镜像对战回归测试 |
-| `commit_bot` | `tool_pipeline.py` | 否 | Git commit + tag |
-| `run_crossover` | `tool_pipeline.py` | **是** | 两精英 bot 交叉产生子代 |
-| `run_inline_eval` | `tool_pipeline.py` | 否 | 无守护进程时在线对战评估 |
-| `get_status` | `tool_status.py` | 否 | 查询系统当前状态 |
-| `get_bot_info` | `tool_status.py` | 否 | 查询单个 bot 详情 |
-| `get_match_history` | `tool_status.py` | 否 | 查询对战历史 |
-| `run_match_analysis` | `tool_status.py` | **是** | 分析近期对战录像 |
-| `get_h2h` | `tool_status.py` | 否 | 查询 H2H 对战数据 |
-| `get_bot_stats` | `tool_status.py` | 否 | 查询 bot 统计 |
-| `start_daemon` | `tool_status.py` | 否 | 启动 ELO 守护进程 |
-| `stop_daemon` | `tool_status.py` | 否 | 停止守护进程 |
-| `wait_for_eval` | `tool_status.py` | 否 | 等待守护进程完成评估 |
-| `reap_weakest` | `tool_status.py` | 否 | 淘汰最弱 bot |
-| `cleanup_incomplete` | `tool_status.py` | 否 | 清理未完成目录 |
-| `trim_experience` | `tool_status.py` | 否 | 裁剪经验池 |
-| `seed_initial_bots` | `tool_status.py` | 否 | 初始化种子 bot |
-| `consolidate_experience` | `tool_status.py` | **是** | LLM 去重合并经验池 |
-| `analyze_stagnation` | `tool_status.py` | **是** | LLM 分析停滞趋势 |
-| `run_performance_verification` | `tool_status.py` | **是** | LLM 综合性能分析 |
-
----
-
-## 2. Master Architect（主架构师）
-
-- **文件**: `agent_master.py` → `_run_master_analysis()`
-- **模型**: Sonnet（默认）
-- **工具**: `Bash`, `Read`
-- **Prompt**: `prompts/master_prompt.md`
-- **重试**: 最多 3 次 (`MAX_MASTER_RETRIES`)
-- **输入**: 停滞信息、对战分析、性能验证、rating 历史、H2H 数据、经验池
-- **输出**: JSON 任务计划，包含 2 个 worker 分配（Algorithmic Logic Architect + Hyperparameter Tuner）
-- **调用者**: `run_master` MCP 工具
-
----
-
-## 3. Workers（编码执行者）
-
-- **文件**: `agent_workers.py` → `_run_single_worker()` / `_execute_workers()`
-- **模型**: Sonnet（默认）
-- **工具**: `Bash`, `Read`, `Edit`
-- **Prompt**: `prompts/worker_prompt.md`
-- **并发**: 最多 3 个并行 (`MAX_PARALLEL_WORKERS`)，信号量控制
-- **重试**: 每个 worker 最多 4 次 (`MAX_WORKER_RETRIES`)
-- **超时**: 1000 秒 (`WORKER_TIMEOUT`)，超时后重试并简化任务
-- **失败记忆**: 失败记录写入 `worker_failures.jsonl`，注入后续 worker prompt
-- **质量自检**: 每次重试后自动执行编译检查和冒烟测试
-- **调用者**: `execute_workers` MCP 工具
-- **并行→串行回退**: 并行失败时回退到串行模式
-
----
-
-## 4. Code Reviewer（代码审查员）
-
-- **文件**: `tool_pipeline.py` → `run_review()` → 调用 `run_claude_query()`
-- **模型**: Sonnet（默认）
-- **工具**: `Bash`, `Read`
-- **Prompt**: `prompts/reviewer_prompt.md`
-- **输出**: JSON（`approved`, `quality_score`, `feedback`, `risk_areas`）
-- **前置条件**: 必须通过 quality gates
-- **调用者**: `run_review` MCP 工具
-
----
-
-## 5. Strategy Critic（策略评审员）
-
-- **文件**: `agent_review.py` → `_run_critic()`
-- **模型**: Sonnet（默认）
-- **工具**: `Bash`, `Read`
-- **Prompt**: `prompts/critic_prompt.md`
-- **输出**: JSON（`score` 1-10, `approved`, `strategic_assessment`, `feedback`, `local_optima_warning`）
-- **通过阈值**: score ≥ 6
-- **前置条件**: 必须通过 quality gates + reviewer 审批
-- **调用者**: `run_critic` MCP 工具
-
----
-
-## 6. Stagnation Analyst（停滞分析师）
-
-- **文件**: `agent_master.py` → `_analyze_stagnation()`
-- **模型**: Sonnet（默认）
-- **工具**: 无（纯 JSON 输出）
-- **输入**: Rating 历史趋势、Top 5 bot 的 H2H 胜率
-- **输出**: JSON（`is_stagnant`, `confidence`, `recommendation`, `branch_from`, `reason`）
-- **调用者**: `analyze_stagnation` MCP 工具
-
----
-
-## 7. Match Analyst（对战分析师）
-
-- **文件**: `agent_master.py` → `_analyze_recent_matches()`
-- **模型**: Sonnet（默认）
-- **工具**: 无（纯 JSON 输出）
-- **输入**: 近期失败对局和险胜对局的 replay 摘要（最多 8+4 场）
-- **输出**: JSON（`weaknesses`, `street_weaknesses`, `patterns`, `working`, `recommendation`）
-- **调用者**: `run_match_analysis` MCP 工具
-
----
-
-## 8. Performance Analyst（性能分析师）
-
-- **文件**: `agent_review.py` → `_run_performance_verification()`
-- **模型**: Sonnet（默认）
-- **工具**: 无（纯 JSON 输出）
-- **输入**: 10 个周期的 rating 历史、总体胜率、H2H 数据、Top 5 活跃 bot
-- **输出**: JSON（`trend`, `verified_improvements`, `persistent_weaknesses`, `diversity_needed`, `suggestion`）
-- **调用者**: `run_performance_verification` MCP 工具
-
----
-
-## 9. Experience Consolidator（经验池整合器）
-
-- **文件**: `agent_master.py` → `_consolidate_experience_pool()`
-- **模型**: Sonnet（默认）
-- **工具**: 无（纯文本输出，由代码写回文件）
-- **触发**: 每 3 代运行一次
-- **输出**: 合并去重后的 markdown 文本（固定分类头：OPPONENT_MODELING / POSTFLOP_STRATEGY 等）
-- **调用者**: `consolidate_experience` MCP 工具
-
----
-
-## 10. Crossover Agent（交叉代理）
-
-- **文件**: `agent_review.py` → `_run_crossover()`
-- **模型**: Sonnet（默认）
-- **工具**: `Bash`, `Read`, `Edit`
-- **Prompt**: `prompts/crossover_prompt.md`
-- **重试**: 最多 3 次 (`MAX_CROSSOVER_RETRIES`)
-- **功能**: 两个精英 bot 交叉产生子代，带编译和冒烟测试自检
-- **调用者**: `run_crossover` MCP 工具
-
----
-
-## 单代进化流水线完整流程
+## 一、启动序列（无 LLM）
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Orchestrator (Sonnet)                       │
-│              MCP Tool Server — 自主决定调用顺序                   │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │
-                      ▼
-    ┌─────────────────────────────────┐
-    │   prepare_next_gen (无 LLM)      │  复制 bot 目录
-    └────────────┬────────────────────┘
-                 │
-                 ▼
-    ┌─────────────────────────────────┐
-    │   run_master (LLM: Master)       │  分析 + 生成 2 个 worker 任务
-    │   工具: Bash, Read               │
-    └────────────┬────────────────────┘
-                 │
-                 ▼
-    ┌─────────────────────────────────┐
-    │   execute_workers (LLM: Workers) │  并行执行（≤3），修改代码
-    │   工具: Bash, Read, Edit         │  最多 4 次重试/worker
-    │   超时: 1000s                    │
-    └────────────┬────────────────────┘
-                 │
-                 ▼
-    ┌─────────────────────────────────┐
-    │   run_quality_gates (无 LLM)     │  编译 / 冒烟 / 决策测试 / 大小
-    └────────────┬────────────────────┘
-                 │
-                 ▼
-    ┌─────────────────────────────────┐
-    │   run_review (LLM: Reviewer)     │  代码审查，评分 1-10
-    │   工具: Bash, Read               │
-    └────────────┬────────────────────┘
-                 │
-                 ▼
-    ┌─────────────────────────────────┐
-    │   run_critic (LLM: Critic)       │  策略评审，≥6 通过
-    │   工具: Bash, Read               │  失败可重试 workers（≤2 次）
-    └────────────┬────────────────────┘
-                 │
-                 ▼
-    ┌─────────────────────────────────┐
-    │   run_precommit_eval (无 LLM)    │  镜像对战回归测试
-    └────────────┬────────────────────┘
-                 │
-                 ▼
-    ┌─────────────────────────────────┐
-    │   commit_bot (无 LLM)            │  Git commit + tag
-    └─────────────────────────────────┘
+python web/main.py
+        │
+        ▼
+  解析 CLI 参数 (--port, --no-daemon, --dev, --no-build)
+  构建前端 (npm run build → web/server/static/)
+  预填充 app_state (daemon_enabled, daemon_workers, daemon_pairs)
+        │
+        ▼
+  uvicorn.run("server.app:app", host, port)
+        │
+        ▼
+  FastAPI lifespan 启动:
+    ├── app_state.bootstrap(find_current_v())    ← 从 git tags 读取最新 bot 版本
+    ├── 创建 WebUI(broadcaster)                  ← SSE 事件广播器
+    ├── asyncio.create_task(orchestrator_loop()) ← 编排器作为后台协程启动
+    └── orchestrator_loop() 内部:
+          ├── inject_ui(web_ui)                  ← MCP 工具共享同一个 UI 实例
+          ├── start_daemon(workers=14, pairs=5)  ← 启动 Glicko-2 守护进程子进程
+          ├── daemon_monitor_thread 启动          ← 监控守护进程存活，自动重启
+          └── while True:
+                ├── gen_count += 1
+                ├── _run_one_cycle()             ← 一个 Orchestrator LLM 会话
+                ├── 连续 5 次零花费 → 指数退避 + 清除 session
+                └── asyncio.sleep(5)             ← 代际间隔
+```
+
+### `_run_one_cycle()` 内部
+
+1. `_build_context()` 构建上下文字符串：
+   - 当前 bot 版本、rating、H2H 平均胜率、可靠度（games ≥ 100）
+   - 未完成 bot 目录检测（上一轮中断）
+   - 最近 5 个 git tags
+   - 最近 3 条 worker 失败记录
+   - Pipeline checkpoint 阶段提示
+   - 模式标记（连续进化 / 单代 / dry-run）
+2. 将上下文注入 `orchestrator.md` 模板的 `{context}` 占位符
+3. 检查 `orchestrator_session.json`：若存在（上次中断），用 `resume=session_id` 恢复会话
+4. 以 `model="sonnet"` 启动 `claude_query()` 流式对话
+5. Orchestrator LLM 开始自主调用 MCP 工具
+
+**此后的一切 LLM 调用，都由 Orchestrator LLM 通过选择调用 MCP 工具来触发。**
+
+---
+
+## 二、一代进化的时间线
+
+下面按 FSM 阶段顺序记录每个步骤。LLM 调用以 **📎** 标记，标注完整数据流。
+
+---
+
+### 步骤 1：状态查询 `get_status()`
+
+- **触发者**: Orchestrator LLM
+- **有无 LLM**: 无
+- **做什么**: 读取 `glicko_ratings.json`、`bot_stats.json`、`elo_daemon_stats.json`、git tags，组装系统状态快照
+- **输出返回给**: Orchestrator LLM（决定下一步）
+- **输出内容**: `current_v`, `active_bots_count`, `top_ratings`, `daemon_total_games`, `incomplete_next_v`, `rating_reliable`, `current_bot_h2h_avg_wr`, `recent_worker_failures`
+
+> Orchestrator 据此判断：是否需要 `seed_initial_bots`、是否有未完成的 bot、rating 是否可靠、是否可以进入进化流程。
+
+---
+
+### 步骤 2：家政维护（无 LLM）
+
+Orchestrator 按需调用：
+- `reap_weakest()` — 若活跃 bot > 30，按 H2H 平均胜率淘汰最弱，移入 `bots/graveyard/`，清理相关数据
+- `cleanup_incomplete()` — 删除无 `.completed` 且无 git tag 的残留目录
+- `trim_experience()` — 裁剪 `experience_pool.md` 保留最近条目
+
+---
+
+### 步骤 3：等待评估 `wait_for_eval(version=source_v)`
+
+- **触发者**: Orchestrator LLM
+- **有无 LLM**: 无
+- **做什么**: 异步轮询 `bot_stats.json`，等待守护进程为当前 bot 积累足够对局（默认 ≥ 100 局，超时 600s）
+- **输出**: `eval_completed`, `current_rating`, `bot_stats`
+
+> Orchestrator 据此判断 rating 是否可靠。`eval_completed: false` → 跳过停滞分析，直接进入 Master。
+
+---
+
+### 步骤 4：停滞分析 📎 `analyze_stagnation(source_v, active_bots)`
+
+| 项目 | 内容 |
+|---|---|
+| **触发者** | Orchestrator LLM 调用 MCP 工具 `analyze_stagnation` |
+| **调用链** | `tool_status.py:analyze_stagnation()` → `agent_master.py:_analyze_stagnation()` → `run_claude_query()` |
+| **LLM 角色** | STAGNATION ANALYST |
+| **模型** | Sonnet |
+| **工具** | 无（纯 JSON 输出） |
+
+**输入构建** (`agent_master.py:141-189`):
+1. 读取 `rating_history.jsonl` 最近 10 个周期，提取每个周期的 top H2H 胜率或 top rating
+2. 计算 Top 5 活跃 bot 的 H2H 平均胜率 + rating + rd
+3. 拼装 prompt："You are a rating trend analyst..." + 趋势数据 + Top 5 bot 列表
+4. 要求 JSON 输出
+
+**输入数据来源**:
+- `web/core/results/rating_history.jsonl` — Rating 历史快照
+- `web/core/results/head_to_head.json` → `load_h2h_avg_winrates()` — H2H 胜率
+- `web/core/results/glicko_ratings.json` — 当前 ratings
+
+**LLM 输出**: JSON
+```json
+{
+  "is_stagnant": true/false,
+  "confidence": "high/medium/low",
+  "recommendation": "continue|branch|crossover",
+  "branch_from": "claude_vN" 或 null,
+  "reason": "简短解释"
+}
+```
+
+**输出去向**: 返回给 Orchestrator LLM → Orchestrator 据此决定 `stagnation_info` 字符串（传给 Master），或选择 crossover 替代正常流水线。
+
+---
+
+### 步骤 5：对战分析 📎 `run_match_analysis(source_v)`
+
+| 项目 | 内容 |
+|---|---|
+| **触发者** | Orchestrator LLM 调用 MCP 工具 `run_match_analysis` |
+| **调用链** | `tool_status.py:run_match_analysis()` → `agent_master.py:_analyze_recent_matches()` → `run_claude_query()` |
+| **LLM 角色** | MATCH ANALYST |
+| **模型** | Sonnet |
+| **工具** | 无（纯 JSON 输出） |
+
+**输入构建** (`agent_master.py:374-469`):
+1. 读取 `match_history.jsonl`，筛选当前 bot 的对局
+2. 收集最近 8 场失败 + 4 场险胜（胜分差 ≤ 2）
+3. 对每场对局加载 `match_replay/{id}` 完整录像
+4. 调用 `summarize_replay_for_analysis()` 压缩为结构化摘要：胜率、筹码变化、行动分布、per-street 统计（fold/raise/call/allin 百分比、平均加注倍数）
+5. 拼装 prompt："You are a Poker Hand Analyst..." + 摘要文本 + 分析指令
+
+**输入数据来源**:
+- `web/core/results/match_history.jsonl` — 对局历史索引
+- `web/core/results/match_replay/{id}` — 完整对局录像 JSON
+
+**LLM 输出**: JSON
+```json
+{
+  "weaknesses": ["..."],
+  "street_weaknesses": {"river": "...", "flop": "..."},
+  "patterns": "...",
+  "working": "...",
+  "recommendation": "..."
+}
+```
+
+**输出去向**: 返回给 Orchestrator LLM → 作为 `match_analysis` 参数传给 `run_master()`。
+
+---
+
+### 步骤 6：性能验证 📎 `run_performance_verification(source_v)`
+
+| 项目 | 内容 |
+|---|---|
+| **触发者** | Orchestrator LLM 调用 MCP 工具 `run_performance_verification` |
+| **调用链** | `tool_status.py:run_performance_verification()` → `agent_review.py:_run_performance_verification()` → `run_claude_query()` |
+| **LLM 角色** | PERFORMANCE ANALYST |
+| **模型** | Sonnet |
+| **工具** | 无（纯 JSON 输出） |
+
+**输入构建** (`agent_review.py:56-195`):
+1. 读取 `rating_history.jsonl` 最近 10 个周期的 top H2H 胜率或 top rating
+2. 读取 `match_history.jsonl` 最近 100 条计算当前 bot 近期胜率
+3. 读取 `head_to_head.json` 提取每对手胜负，标注 STRENGTH/WEAKNESS
+4. 读取 `bot_stats.json` 获取总体胜率和场次
+5. 计算 Top 5 活跃 bot 列表
+6. 拼装 prompt："You are a Performance Verification Analyst..." + 全部数据
+
+**输入数据来源**:
+- `rating_history.jsonl`, `match_history.jsonl`, `head_to_head.json`, `bot_stats.json`
+
+**LLM 输出**: JSON
+```json
+{
+  "trend": "improving|stagnant|declining",
+  "verified_improvements": ["..."],
+  "persistent_weaknesses": ["..."],
+  "diversity_needed": true/false,
+  "diversity_reason": "...",
+  "suggestion": "..."
+}
+```
+
+**输出去向**: 返回给 Orchestrator LLM → 作为 `performance_verification` 参数传给 `run_master()`。若 `diversity_needed: true`，Orchestrator 会在 `stagnation_info` 中注明。
+
+---
+
+### 步骤 7：主架构师规划 📎 `run_master(source_v, next_v, stagnation_info, match_analysis, performance_verification)`
+
+| 项目 | 内容 |
+|---|---|
+| **触发者** | Orchestrator LLM 调用 MCP 工具 `run_master` |
+| **调用链** | `tool_pipeline.py:run_master()` → `agent_master.py:_run_master_analysis()` → `run_claude_query()` |
+| **LLM 角色** | MASTER |
+| **模型** | Sonnet |
+| **工具** | Bash, Read |
+| **Prompt 模板** | `prompts/master_prompt.md` |
+| **重试** | 最多 3 次 (`MAX_MASTER_RETRIES`)，每次需返回含 `tasks` 的 JSON |
+
+**输入构建** (`agent_master.py:25-68`):
+1. 读取 `prompts/master_prompt.md` 模板
+2. 替换占位符：`{stagnation_info}`、`{match_analysis}`（裁剪至 10K 字符）、`{performance_verification}`（裁剪至 4K 字符）、`{source_v}`
+3. 附加上下文文件路径列表：`glicko_ratings.json`、`rating_history.jsonl`、`head_to_head.json`、`bot_stats.json`、`experience_pool.md`
+4. `run_claude_query()` 会读取这些文件内容附加到 prompt（受 `MAX_PROMPT_CHARS = 700K` 限制，超限时按文件均分压缩）
+
+**LLM 能做的事**: 用 Bash/Read 读取上述文件，分析 rating 趋势、经验池、H2H 数据
+
+**LLM 输出**: JSON（必须包含 `tasks` 数组）
+```json
+{
+  "tasks": [
+    {
+      "worker_id": 1,
+      "role": "Algorithmic Logic Architect",
+      "target_files": ["strategy.py"],
+      "worker_prompt": "..."
+    },
+    {
+      "worker_id": 2,
+      "role": "Hyperparameter Tuner",
+      "target_files": ["constants.py"],
+      "worker_prompt": "..."
+    }
+  ],
+  "branch_from": "claude_vN" 或 null,
+  "analysis": "..."
+}
+```
+
+**校验** (`tool_pipeline.py:_validate_master_plan()`):
+- tasks 数量 ≤ 3
+- 每个 task 的 target_files ≤ 3
+- 每个 task 的 worker_prompt ≤ 3000 字符
+
+**输出去向**: 返回给 Orchestrator LLM → Orchestrator 用 `plan["tasks"]` 调用 `execute_workers()`。
+
+---
+
+### 步骤 8：准备下一代 `prepare_next_gen(source_v, next_v)`
+
+- **触发者**: Orchestrator LLM
+- **有无 LLM**: 无
+- **做什么**:
+  1. 拒绝覆盖已完成的 bot（有 `.completed`）
+  2. `shutil.copytree()` 将 `bots/claude_v{source_v}/` 复制为 `bots/claude_v{next_v}/`
+  3. 删除 `.completed` 标记文件
+  4. 写入 pipeline checkpoint：`stage="prepared"`
+- **输出**: `{prepared: true, next_v, source_v}`
+
+---
+
+### 步骤 9：Worker 并行编码 📎 `execute_workers(tasks, next_v, source_v, reviewer_feedback)`
+
+| 项目 | 内容 |
+|---|---|
+| **触发者** | Orchestrator LLM 调用 MCP 工具 `execute_workers` |
+| **调用链** | `tool_pipeline.py:execute_workers()` → `agent_workers.py:_execute_workers()` → `_run_single_worker()` × N → `run_claude_query()` |
+| **LLM 角色** | WORKER {id} ({role}) |
+| **模型** | Sonnet |
+| **工具** | Bash, Read, Edit |
+| **Prompt 模板** | `prompts/worker_prompt.md` |
+| **并发** | 最多 3 个并行（`asyncio.Semaphore(3)`） |
+| **重试** | 每个 worker 最多 4 次 (`MAX_WORKER_RETRIES`) |
+| **超时** | 1000 秒 (`WORKER_TIMEOUT`) |
+
+**单个 Worker 的输入构建** (`agent_workers.py:42-107`):
+1. 读取 `prompts/worker_prompt.md` 模板
+2. 替换占位符：`{role}`、`{worker_prompt}`（来自 Master 的任务描述）、`{version}`
+3. 注入 reviewer_feedback（若有，前置 "CRITICAL REVISION NEEDED:" 标记）
+4. 注入最近 3 条 worker 失败记忆（从 `worker_failures.jsonl` 读取）
+5. 重试时注入前次错误（编译错误 / 冒烟错误 / 超时简化提示）
+6. 附加上下文文件：源 bot 目录中的 `.py` 文件
+
+**LLM 能做的事**: 用 Bash 运行测试、Read 读取代码、Edit 修改 bot 源文件
+
+**LLM 输出**: 自由文本（代码修改通过 Edit 工具直接写入文件系统）
+
+**每次尝试后的自动检查**（无 LLM）:
+- `verify_code()` — `py_compile` 编译检查，失败则注入错误信息重试
+- `run_smoke_test()` — 运行 1 局冒烟对战，失败则注入错误信息重试
+
+**并行→串行回退**: 若并行中任一 worker 失败，清除目标目录，从源 bot 重新复制，串行重试全部 tasks。
+
+**输出**: `{success: bool, boundary_errors: [], logs, costs}`
+
+**输出去向**:
+- 返回给 Orchestrator LLM
+- 代码变更已写入 `bots/claude_v{next_v}/` 文件系统
+- 成功 → 写入 checkpoint `stage="workers_done"`
+
+---
+
+### 步骤 10：质量门禁 `run_quality_gates(version)`
+
+- **触发者**: Orchestrator LLM
+- **有无 LLM**: 无
+- **做什么** (`tool_pipeline.py:run_quality_gates()`):
+  1. `verify_code()` — 编译检查
+  2. `run_smoke_test()` — 冒烟对战
+  3. `run_decision_test_details()` — 决策测试（≥70% 通过率 + 关键场景全部通过）
+  4. `check_code_size()` — 文件行数检查（每文件 ≤ 1000 行）
+- **前置**: checkpoint `stage` ≥ `workers_done`
+- **输出**: `{compile_ok, smoke_ok, decision_pass_rate, decision_ok, critical_scenarios_passed, size_ok, all_passed}`
+- **输出去向**: 全部通过 → 写入 checkpoint `stage="quality_passed"` + gate `quality`
+
+---
+
+### 步骤 11：代码审查 📎 `run_review(version, source_v, plan)`
+
+| 项目 | 内容 |
+|---|---|
+| **触发者** | Orchestrator LLM 调用 MCP 工具 `run_review` |
+| **调用链** | `tool_pipeline.py:run_review()` → `run_claude_query()` |
+| **LLM 角色** | LEAD CODE REVIEWER |
+| **模型** | Sonnet |
+| **工具** | Bash, Read |
+| **Prompt 模板** | `prompts/reviewer_prompt.md` |
+| **前置条件** | checkpoint 中 quality gate 必须通过 |
+
+**输入构建** (`tool_pipeline.py:280-298`):
+1. 读取 `prompts/reviewer_prompt.md` 模板
+2. 替换占位符：`{master_plan}` = `json.dumps(plan)`、`{version}`、`{parent_version}`
+3. 无附加上下文文件 — Reviewer 通过 Bash/Read 自行查看 diff 和代码
+
+**LLM 能做的事**: 用 Bash 运行 `git diff`、Read 读取新旧代码
+
+**LLM 输出**: JSON
+```json
+{
+  "approved": true/false,
+  "quality_score": 1-10,
+  "change_summary": "...",
+  "feedback": "...",
+  "risk_areas": ["..."]
+}
+```
+
+**输出去向**:
+- 返回给 Orchestrator LLM
+- 审批 → 写入 checkpoint `stage="reviewed"` + gate `review`
+- 拒绝 → Orchestrator 可用 feedback 作为 `reviewer_feedback` 重试 workers
+
+---
+
+### 步骤 12：策略评审 📎 `run_critic(version, source_v, plan, reviewer_feedback, force_advance)`
+
+| 项目 | 内容 |
+|---|---|
+| **触发者** | Orchestrator LLM 调用 MCP 工具 `run_critic` |
+| **调用链** | `tool_pipeline.py:run_critic()` → `agent_review.py:_run_critic()` → `run_claude_query()` |
+| **LLM 角色** | STRATEGY CRITIC |
+| **模型** | Sonnet |
+| **工具** | Bash, Read |
+| **Prompt 模板** | `prompts/critic_prompt.md` |
+| **前置条件** | checkpoint 中 quality + review gate 必须通过 |
+
+**输入构建** (`agent_review.py:18-43`):
+1. 读取 `prompts/critic_prompt.md` 模板
+2. 替换占位符：`{master_plan}`、`{version}`、`{parent_version}`
+3. 无附加上下文文件 — Critic 通过 Bash/Read 自行查看 diff
+
+**LLM 输出**: JSON
+```json
+{
+  "score": 1-10,
+  "approved": true/false,
+  "strategic_assessment": "...",
+  "feedback": "...",
+  "local_optima_warning": true/false
+}
+```
+
+**通过逻辑** (`tool_pipeline.py:414`): `score ≥ 6` 且 `approved == true`
+
+**输出去向**:
+- 返回给 Orchestrator LLM
+- `action: "approve"` → 写入 checkpoint `stage="critic_checked"` + gate `critic`
+- `action: "retry_workers"` → Orchestrator 注入 critic feedback 重试 workers（计入 `intra_gen_attempts`，最多 2 次）
+- `action: "force_commit"` → `force_advance=true` 时强制推进 checkpoint（但不是提交许可）
+
+---
+
+### 步骤 13：提交前验证 `run_precommit_eval(version, source_v, n_games)`
+
+- **触发者**: Orchestrator LLM
+- **有无 LLM**: 无
+- **前置**: checkpoint 中 quality + review + critic gate 全部通过
+- **做什么** (`tool_pipeline.py:run_precommit_eval()`):
+  1. 重新编译检查 + 冒烟测试
+  2. 选择对手：父版本 bot + 当前 Top 3 + H2H 弱点对手（最多 2 个）
+  3. 与每个对手运行 `mirror_battle(n_games=1)`
+  4. 阻断条件：编译/冒烟失败、输给父版本、总输≥赢+2、对局超时
+- **输出**: `{passed, blockers, matchups, total_wins/losses/draws}`
+- **输出去向**: 通过 → checkpoint `stage="verified"` + gate `precommit_eval`
+
+---
+
+### 步骤 14：提交 `commit_bot(version, source_v, strategy, review_approved=true)`
+
+- **触发者**: Orchestrator LLM
+- **有无 LLM**: 无
+- **前置**: checkpoint 中所有 gates 必须存在且通过
+- **做什么** (`tool_pipeline.py:commit_bot()`):
+  1. 验证 gate ledger 完整性（quality + review + critic + precommit_eval）
+  2. 写入 `.completed` 标记文件
+  3. `git add` + `git commit` + `git tag bot-v{N}`
+  4. 清除 pipeline checkpoint
+  5. 发送 `.reap_signal` 通知守护进程刷新 bot 列表
+- **输出**: `{committed: true, tag, sha}`
+
+---
+
+### 代际结束
+
+`_run_one_cycle()` 检测到 `cycle_completed`:
+- 清除 `orchestrator_session.json`
+- 返回花费给 `orchestrator_loop()`
+- `orchestrator_loop()` 记录花费，`sleep(5)` 后进入下一代
+
+---
+
+## 三、重试与恢复流程
+
+### 3.1 代内重试循环（Critic 驱动）
+
+由 Orchestrator LLM 手动管理（非自动），规则来自 `prompts/orchestrator.md`：
+
+```
+intra_gen_attempts = 0
+
+Critic 返回 score < 6:
+  └── intra_gen_attempts < 2 ?
+        ├── 是: intra_gen_attempts++
+        │     注入 critic feedback 到 reviewer_feedback
+        │     重新调用 execute_workers (从源 bot 重新复制)
+        │     → run_quality_gates → run_review → run_critic (再次判断)
+        └── 否: force_advance=true 记录到 checkpoint
+              但不提交。返回 Master 重新规划 或 尝试 crossover
+```
+
+### 3.2 Worker 自修复
+
+每个 worker 的每次尝试后自动执行（在 `_run_single_worker` 内）：
+
+```
+尝试 N (1-4):
+  run_claude_query(prompt + 失败记忆 + reviewer_feedback)
+      │
+      ├── 超时 (>1000s) → 简化 prompt，重试
+      ├── 编译失败     → 注入编译错误，重试
+      ├── 冒烟失败     → 注入运行时错误，重试
+      └── 成功         → 返回 True
+      
+全部 4 次失败 → 记录到 worker_failures.jsonl → 返回 False
+```
+
+### 3.3 并行→串行回退
+
+```
+_execute_workers():
+  并行运行所有 tasks (Semaphore(3))
+      │
+      ├── 全部成功 → 返回 True
+      └── 任一失败 → 清除目标目录，从源 bot 重新复制
+                      串行逐个执行 tasks → 返回结果
+```
+
+### 3.4 崩溃恢复
+
+```
+Orchestrator 进程被 kill:
+  └── orchestrator_session.json 保留 (含 session_id)
+      └── pipeline_state.json 保留 (含 stage, gate_results)
+            │
+            ▼ 下次启动
+  _run_one_cycle():
+    ├── 读取 session_id → resume 参数恢复对话
+    ├── _build_context() 检测 checkpoint → 告知 Orchestrator 从哪步继续
+    └── Orchestrator LLM 恢复后调用对应的下一个工具
+```
+
+### 3.5 PreCompact Hook
+
+当 Orchestrator LLM 的上下文即将被压缩时：
+
+```python
+# orchestrator.py:75-103
+# PreCompact hook 注入:
+"=== EVOLUTION STATE — PRESERVE DURING COMPACTION ==="
+f"Current completed bot: claude_v{current_v}"
+f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {next_step}."
+"DO NOT restart this generation — continue from this stage."
+```
+
+确保上下文压缩后 Orchestrator 不丢失进化进度。
+
+---
+
+## 四、辅助 LLM 调用（按需触发）
+
+### 4.1 经验池整合 📎 `consolidate_experience()`
+
+| 项目 | 内容 |
+|---|---|
+| **触发者** | Orchestrator LLM 调用 `consolidate_experience`（通常每 3 代） |
+| **调用链** | `tool_status.py:consolidate_experience()` → `agent_master.py:_consolidate_experience_pool()` → `run_claude_query()` |
+| **LLM 角色** | EXPERIENCE CONSOLIDATOR |
+| **模型** | Sonnet |
+| **工具** | 无 |
+
+**输入**: 读取当前 `experience_pool.md` 全文，嵌入 prompt
+
+**LLM 输出**: 纯 Markdown 文本（去重合并后），要求使用固定分类头：
+`## OPPONENT_MODELING` / `## POSTFLOP_STRATEGY` / `## BLUFF_CALIBRATION` / `## PARAMETER_TUNING` / `## GENERAL` / `## RECENT_LESSONS`
+
+**输出去向**: 代码直接 `write()` 回 `experience_pool.md`（不依赖 LLM 的 Edit 工具）。连续 3+ 代重复同类型条目会被标记 `[POSSIBLY EXHAUSTED]`。
+
+---
+
+### 4.2 交叉代理 📎 `run_crossover(parent_a, parent_b, target_v)`
+
+| 项目 | 内容 |
+|---|---|
+| **触发者** | Orchestrator LLM 调用 `run_crossover`（停滞严重时替代正常流水线） |
+| **调用链** | `tool_pipeline.py:run_crossover()` → `agent_review.py:_run_crossover()` → `run_claude_query()` |
+| **LLM 角色** | CROSSOVER v{A}×v{B}→v{target} |
+| **模型** | Sonnet |
+| **工具** | Bash, Read, Edit |
+| **Prompt 模板** | `prompts/crossover_prompt.md` |
+| **重试** | 最多 3 次 (`MAX_CROSSOVER_RETRIES`) |
+
+**输入构建**:
+1. 从 `parent_a` 复制目录作为起点
+2. 读取 `prompts/crossover_prompt.md` 模板
+3. 替换占位符：`{parent_a_version}`、`{parent_b_version}`、`{version}`
+
+**LLM 能做的事**: 读取两个父 bot 的代码，Edit 合并到目标 bot
+
+**每次尝试后的自动检查**: 编译检查 + 冒烟测试
+
+**输出去向**: 代码写入 `bots/claude_v{target}/`，成功后由 Orchestrator 决定是否提交
+
+---
+
+## 五、数据流全景图
+
+```
+                    ┌─────────────────────────────────────────────┐
+                    │         orchestrator_loop() 启动            │
+                    │    (后台 asyncio Task, 由 app.py 创建)       │
+                    └──────────────────┬──────────────────────────┘
+                                       │
+                    ┌──────────────────▼──────────────────────────┐
+                    │    _run_one_cycle() — Orchestrator LLM 会话  │
+                    │    输入: _build_context() → ratings/tags/    │
+                    │          checkpoint/failures 注入 prompt     │
+                    │    工具: 26 个 MCP tools + Bash + Read       │
+                    │    输出: 工具调用序列                         │
+                    └──────────────────┬──────────────────────────┘
+                                       │
+         ┌─────────────────────────────┼─────────────────────────────┐
+         │                             │                              │
+    ┌────▼─────┐              ┌────────▼────────┐           ┌────────▼────────┐
+    │get_status │              │wait_for_eval     │           │housekeeping     │
+    │(无 LLM)   │              │(无 LLM, 轮询)    │           │(无 LLM)         │
+    │读取:      │              │读取:             │           │reap/cleanup/trim│
+    │ratings,   │              │bot_stats.json    │           └─────────────────┘
+    │bot_stats, │              │                  │
+    │daemon_stats│             └────────┬─────────┘
+    └───────────┘                       │
+         │                     ┌────────▼─────────┐
+         │                     │rating_reliable?   │
+         │                     └──┬─────────────┬──┘
+         │                  false │             │ true
+         │                     ┌──▼───┐   ┌─────▼──────────┐
+         │                     │跳过  │   │analyze_stagnation│
+         │                     │停滞  │   │📎 STAGNATION     │
+         │                     │分析  │   │  ANALYST         │
+         │                     └──┬───┘   │输入: history×10  │
+         │                        │       │      + h2h_top5   │
+         │                        │       │输出: is_stagnant  │
+         │                        │       │      + recommend  │
+         │                        │       └──────┬───────────┘
+         │                        │              │
+         │              ┌─────────▼──────────────▼───────────────┐
+         │              │                                        │
+         │         ┌────▼──────────────┐  ┌──────────────────────▼───┐
+         │         │run_match_analysis │  │run_performance_verification│
+         │         │📎 MATCH ANALYST   │  │📎 PERFORMANCE ANALYST     │
+         │         │输入: replay 摘要   │  │输入: history+wr+h2h+stats│
+         │         │      (8败+4险胜)  │  │      ×10周期              │
+         │         │输出: weaknesses   │  │输出: trend+weaknesses     │
+         │         │      +street_wk   │  │      +diversity+suggestion│
+         │         └────┬──────────────┘  └──────────┬───────────────┘
+         │              │ match_analysis              │ performance_verification
+         │              └─────────────┬──────────────┘
+         │                            │
+         │               ┌────────────▼────────────┐
+         │               │run_master               │
+         │               │📎 MASTER                │
+         │               │工具: Bash, Read          │
+         │               │输入: stagnation_info     │
+         │               │      + match_analysis   │
+         │               │      + perf_verification│
+         │               │      + context_files:   │
+         │               │        ratings, h2h,    │
+         │               │        experience_pool   │
+         │               │输出: JSON tasks[]        │
+         │               │      (1-3 个 worker 任务) │
+         │               └────────────┬─────────────┘
+         │                            │ plan["tasks"]
+         │               ┌────────────▼────────────┐
+         │               │prepare_next_gen (无 LLM) │
+         │               │复制 bots/claude_v{N}/    │
+         │               │写入 checkpoint=prepared  │
+         │               └────────────┬─────────────┘
+         │                            │
+         │               ┌────────────▼────────────┐
+         │               │execute_workers          │
+         │               │📎 WORKERS (并行≤3)      │
+         │               │工具: Bash, Read, Edit   │
+         │               │输入: worker_prompt.md   │
+         │               │      + task instructions│
+         │               │      + failure_memory   │
+         │               │      + reviewer_feedback│
+         │               │输出: 代码写入文件系统    │
+         │               │自检: compile+smoke/重试  │
+         │               │回退: parallel→serial    │
+         │               └────────────┬─────────────┘
+         │                            │
+         │               ┌────────────▼────────────┐
+         │               │run_quality_gates (无LLM)│
+         │               │compile+smoke+decision   │
+         │               │+size (≤1000行/文件)      │
+         │               │pass_rate ≥ 70%           │
+         │               └────────────┬─────────────┘
+         │                            │
+         │               ┌────────────▼────────────┐
+         │               │run_review               │
+         │               │📎 LEAD CODE REVIEWER    │
+         │               │工具: Bash, Read          │
+         │               │输入: reviewer_prompt.md │
+         │               │      + master_plan JSON  │
+         │               │输出: approved+score      │
+         │               │      +feedback+risk_areas│
+         │               └────────────┬─────────────┘
+         │                            │
+         │               ┌────────────▼────────────┐
+         │               │run_critic               │
+         │               │📎 STRATEGY CRITIC       │
+         │               │工具: Bash, Read          │
+         │               │输入: critic_prompt.md   │
+         │               │      + master_plan       │
+         │               │输出: score(1-10)+approved│
+         │               │阈值: ≥6 通过             │
+         │               │失败→重试workers(≤2次)    │
+         │               └────────────┬─────────────┘
+         │                            │
+         │               ┌────────────▼────────────┐
+         │               │run_precommit_eval(无LLM)│
+         │               │镜像对战: vs父+Top+弱点    │
+         │               │阻断: 输父版/崩溃/退化     │
+         │               └────────────┬─────────────┘
+         │                            │
+         │               ┌────────────▼────────────┐
+         │               │commit_bot (无 LLM)      │
+         │               │验证 gate ledger 完整     │
+         │               │git commit + tag          │
+         │               │清除 checkpoint           │
+         │               └────────────┬─────────────┘
+         │                            │
+         │               ┌────────────▼────────────┐
+         │               │新一代完成, sleep(5)       │
+         │               │回到 get_status()         │
+         │               └─────────────────────────┘
+         │
+    ┌────▼──────────────────────────────────────────────┐
+    │后台并行运行:                                        │
+    │  elo_daemon.py (子进程)                            │
+    │    ├── ProcessPoolExecutor 并行对战               │
+    │    ├── 每 game 实时更新 Glicko-2 rating           │
+    │    ├── 写入: ratings, h2h, bot_stats, history,    │
+    │    │         replay (≤200), daemon_stats          │
+    │    └── 响应 .reap_signal 刷新 bot 列表            │
+    └────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 辅助分析阶段（按需调用）
+## 六、全局约束
 
-```
-┌──────────────────────┐
-│ analyze_stagnation    │  停滞分析 → 无工具，JSON 输出
-│ (LLM, 无工具)         │  判断是否真正停滞，建议 branch/crossover
-└──────────────────────┘
-
-┌──────────────────────┐
-│ run_match_analysis    │  对战分析 → 无工具，JSON 输出
-│ (LLM, 无工具)         │  从 replay 摘要提取弱点和建议
-└──────────────────────┘
-
-┌──────────────────────┐
-│ run_performance_      │  性能分析 → 无工具，JSON 输出
-│ verification (LLM)    │  综合 rating/wr/H2H 趋势
-└──────────────────────┘
-
-┌──────────────────────┐
-│ consolidate_          │  经验池整合 → 无工具，文本输出
-│ experience (LLM)      │  每 3 代去重合并
-└──────────────────────┘
-```
-
----
-
-## 各阶段工具权限汇总
-
-| 阶段 | 工具 | 输出格式 |
-|---|---|---|
-| Orchestrator | MCP tools | 工具调用序列 |
-| Master | Bash, Read | JSON（任务计划） |
-| Worker | Bash, Read, Edit | 代码修改 |
-| Reviewer | Bash, Read | JSON（评分 + 反馈） |
-| Critic | Bash, Read | JSON（评分 + 策略评估） |
-| Crossover | Bash, Read, Edit | 代码修改 |
-| Stagnation Analyst | 无 | JSON |
-| Match Analyst | 无 | JSON |
-| Performance Analyst | 无 | JSON |
-| Experience Consolidator | 无 | Markdown 文本 |
-
----
-
-## 关键约束
-
-- **所有 LLM 调用默认使用 Sonnet 模型**
-- **API 限流 (529)**: 自动指数退避重试（30s → 60s → 120s）
-- **Prompt 大小限制**: 最大 700K 字符 (`MAX_PROMPT_CHARS`)，超限时自动压缩上下文文件
-- **子代理统一屏蔽**: `_BLOCKED_MCP_TOOLS` 屏蔽外部 MCP 工具（web-reader、web-search、zread）
-- **角色边界**: Worker 角色受 prompt + reviewer 约束 — Logic Architect 不能调常数，Hyperparameter Tuner 不能加函数
-- **Gate Ledger**: Pipeline checkpoint 强制阶段顺序 — 后续阶段验证前置 gates 是否通过
+- **所有 LLM 调用统一使用 Sonnet 模型**，通过 `claude_agent_sdk` 的 `query()` 函数
+- **API 限流 (529)**: `run_claude_query()` 内自动指数退避重试（30s → 60s → 120s）
+- **Prompt 预算**: `MAX_PROMPT_CHARS = 700_000`，超限时按文件均分压缩上下文
+- **子代理 MCP 屏蔽**: `_BLOCKED_MCP_TOOLS` 屏蔽 web-reader、web-search、zread
+- **角色边界**: Worker 受 prompt + reviewer 双重约束 — Logic Architect 不改常数，Tuner 不加函数
+- **Gate Ledger**: Pipeline checkpoint 强制阶段顺序 — 每个阶段写入 gate 记录，后续阶段验证前置 gates 完整
+- **阶段常量**: `STAGE_ORDER = [prepared, workers_done, quality_passed, reviewed, critic_checked, verified]`
