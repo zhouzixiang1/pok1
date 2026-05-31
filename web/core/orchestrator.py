@@ -218,6 +218,29 @@ def _build_context(one_gen=False, dry_run=False):
     except Exception:
         pass
 
+    # Environment anomaly detection — prompt Orchestrator to diagnose before proceeding
+    anomalies = []
+    if next_dir.exists() and not (next_dir / ".completed").exists():
+        anomalies.append("incomplete bot directory")
+    try:
+        if RESULTS_DIR.joinpath("pipeline_state.json").exists():
+            anomalies.append("stale pipeline checkpoint")
+    except Exception:
+        pass
+    if ORCHESTRATOR_SESSION_FILE.exists():
+        anomalies.append("session residue from interrupted cycle")
+    try:
+        from evolution_core import _load_recent_failures
+        if _load_recent_failures(1):
+            anomalies.append("recent worker failures")
+    except Exception:
+        pass
+    if anomalies:
+        lines.append(
+            f"ENVIRONMENT ANOMALIES DETECTED: {', '.join(anomalies)}. "
+            f"Consider calling diagnose_environment() before starting pipeline operations."
+        )
+
     if one_gen:
         lines.append("MODE: Run exactly ONE generation, then stop.")
     elif dry_run:

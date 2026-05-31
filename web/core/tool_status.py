@@ -1,7 +1,7 @@
 """Non-pipeline MCP tools: status queries, daemon control, bot management, and analysis.
 
-These tools do NOT call any LLM directly. They query data, manage the daemon,
-and handle bot lifecycle operations.
+Most tools query data, manage the daemon, and handle bot lifecycle operations.
+The `diagnose_environment` tool is the exception — it calls LLM for one-shot analysis.
 """
 
 import json
@@ -551,3 +551,127 @@ async def get_bot_stats(args):
         return {"content": [{"type": "text", "text": json.dumps({"error": f"No stats for {bot_name}"})}]}
 
     return {"content": [{"type": "text", "text": json.dumps({"bot_name": bot_name, **bs}, indent=2)}]}
+
+
+# ──────────────────────────────────────────────
+# Startup Diagnosis
+# ──────────────────────────────────────────────
+
+@tool("diagnose_environment", "Analyze environment state and recommend cleanup before starting evolution. Call this when the context reports anomalies (incomplete bots, stale checkpoints, session residue).", {})
+async def diagnose_environment(args):
+    """One-shot LLM analysis of the environment before starting evolution."""
+    ui = _get_ui()
+    current_v = find_current_v()
+    active_bots = get_active_bots()
+    ratings = load_ratings()
+
+    # Collect environment snapshot
+    snapshot_lines = [
+        f"Current highest completed bot: v{current_v}",
+        f"Active bots: {len(active_bots)}",
+        f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+    ]
+
+    # Incomplete bot directories
+    incomplete = []
+    for d in sorted(PROJECT_ROOT.joinpath("bots").glob("claude_v*")):
+        v_num = d.name.replace("claude_v", "")
+        try:
+            v_int = int(v_num)
+        except ValueError:
+            continue
+        if not d.joinpath(".completed").exists() and not git_has_tag(f"bot-v{v_int}"):
+            incomplete.append(v_int)
+
+    if incomplete:
+        snapshot_lines.append(f"INCOMPLETE bots (no .completed, no tag): {incomplete}")
+    else:
+        snapshot_lines.append("No incomplete bot directories.")
+
+    # Pipeline checkpoint
+    checkpoint = read_pipeline_checkpoint()
+    if checkpoint:
+        snapshot_lines.append(
+            f"PIPELINE CHECKPOINT: v{checkpoint['next_v']} (from v{checkpoint['source_v']}) "
+            f"at stage='{checkpoint.get('stage', 'unknown')}'"
+        )
+    else:
+        snapshot_lines.append("No pipeline checkpoint (clean state).")
+
+    # Session residue
+    session_file = PROJECT_ROOT / "web" / "core" / "results" / "orchestrator_session.json"
+    if session_file.exists():
+        snapshot_lines.append("WARNING: orchestrator_session.json exists (previous cycle was interrupted).")
+    else:
+        snapshot_lines.append("No session residue.")
+
+    # Worker failures (last 24h)
+    failures_file = PROJECT_ROOT / "web" / "core" / "results" / "worker_failures.jsonl"
+    recent_failures = []
+    if failures_file.exists():
+        cutoff = time.time() - 86400
+        with open(failures_file) as f:
+            for line in f:
+                try:
+                    entry = json.loads(line.strip())
+                    if entry.get("timestamp", 0) > cutoff:
+                        recent_failures.append(entry)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+    if recent_failures:
+        snapshot_lines.append(f"Worker failures in last 24h: {len(recent_failures)}")
+    else:
+        snapshot_lines.append("No recent worker failures.")
+
+    # Rating summary for top bots
+    sorted_bots = sorted(
+        [(name, p) for name, p in ratings.items() if name.startswith("claude_v")],
+        key=lambda x: x[1].r, reverse=True,
+    )[:10]
+    if sorted_bots:
+        snapshot_lines.append("")
+        snapshot_lines.append("Top 10 rated bots:")
+        for name, p in sorted_bots:
+            v_str = name.replace("claude_v", "")
+            tag = "✓" if git_has_tag(f"bot-v{v_str}") else "✗"
+            snapshot_lines.append(f"  {name}: r={p.r:.0f} rd={p.rd:.0f} {tag}")
+
+    # Daemon status
+    from evolution_core import _daemon_proc
+    daemon_running = False
+    try:
+        from evolution_infra import daemon_proc as dp
+        daemon_running = dp is not None and dp.poll() is None
+    except Exception:
+        pass
+    snapshot_lines.append(f"\nDaemon running: {daemon_running}")
+
+    # Ask LLM for analysis
+    prompt = (
+        "You are an environment diagnostician for a poker bot evolution system.\n"
+        "Analyze the following environment snapshot and return a JSON response:\n\n"
+        f"{chr(10).join(snapshot_lines)}\n\n"
+        "Return JSON with:\n"
+        '- "clean": true/false — whether the environment is ready for evolution\n'
+        '- "issues": list of strings describing problems found\n'
+        '- "actions": list of recommended actions (e.g. "call cleanup_incomplete", "call abandon_generation")\n'
+        '- "summary": one-line summary\n'
+        "Only respond with valid JSON, no other text."
+    )
+
+    if ui:
+        ui.log_history("[diagnose_environment] Running LLM analysis...", "info")
+
+    from evolution_infra import run_claude_query
+    response_text, cost = run_claude_query(
+        prompt=prompt,
+        role="diagnostician",
+        context_files=[],
+        allowed_tools=[],
+    )
+
+    if ui:
+        ui.log_history(f"[diagnose_environment] Analysis complete (cost: ${cost:.3f})", "info")
+
+    return {"content": [{"type": "text", "text": response_text.strip()}]}

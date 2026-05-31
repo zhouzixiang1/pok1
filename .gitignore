@@ -13,6 +13,18 @@ results/*.json
 evolution_workspace/results/**/logs/
 evolution_workspace/results/round_*/
 
+# Runtime data (daemon writes, battle results, LLM logs)
+web/core/results/
+
+# Orchestrator logs
+web/logs/
+
+# Frontend build output
+web/server/static/
+
+# Bot worker backup files
+**/main_backup.py
+
 # Bot graveyard
 bots/graveyard/
 

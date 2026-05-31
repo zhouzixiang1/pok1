@@ -28,7 +28,8 @@ def sanitize_action(action, state, my_chips):
     if action > 0:
         if action >= my_chips:
             return -2
-        if action < state["round_raise"] or action <= state["to_call"]:
+        min_raise_action = state.get("min_raise_action", state["round_raise"])
+        if action < min_raise_action or action <= state["to_call"]:
             return 0 if state["to_call"] == 0 else -1
 
     if action == 0 and state["to_call"] > 0:
