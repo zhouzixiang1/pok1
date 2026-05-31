@@ -250,6 +250,15 @@ def get_anti_bot4_adjustments(bot4_score, board_texture, spot_info, round_idx, v
 
 
 def classify_opponent_style(opp_model):
+    """Classify opponent into 4 archetypes and return threshold deltas.
+
+    Archetypes:
+      - nit:        low VPIP, high fold-to-raise → bluff more, loosen calls
+      - maniac:     high VPIP, high PFR, high aggression → tighten, call lighter
+      - station:    high VPIP, low PFR, low fold-to-raise → don't bluff, value bet
+      - fold-heavy: high fold-to-raise → bluff more
+    Returns delta dict applied to strategy thresholds.
+    """
     deltas = {
         'strong_delta': 0.0, 'medium_delta': 0.0, 'bluff_freq_bonus': 0.0,
         'call_aggression_bonus': 0.0, 'fold_vs_passive_bonus': 0.0,
@@ -261,21 +270,30 @@ def classify_opponent_style(opp_model):
     pfr = opp_model.get('pfr', 0.24)
     fold_to_raise = opp_model.get('fold_to_raise', 0.44)
     postflop_aggr = opp_model.get('postflop_aggr', 0.36)
+
+    # Nit: very tight, folds a lot
     if vpip < 0.35 and fold_to_raise > 0.50:
         deltas['strong_delta'] = -0.02
         deltas['medium_delta'] = -0.015
         deltas['bluff_freq_bonus'] = 0.12
+
+    # Maniac: very loose and aggressive
     elif vpip > 0.65 and pfr > 0.40 and postflop_aggr > 0.45:
         deltas['strong_delta'] = 0.03
         deltas['medium_delta'] = 0.025
         deltas['bluff_freq_bonus'] = -0.08
         deltas['call_aggression_bonus'] = 0.04
+
+    # Station: calls a lot, rarely raises, doesn't fold
     elif vpip > 0.55 and pfr < 0.20 and fold_to_raise < 0.38:
         deltas['strong_delta'] = -0.01
         deltas['medium_delta'] = -0.02
         deltas['bluff_freq_bonus'] = -0.12
+
+    # Fold-heavy: folds too much to raises
     elif fold_to_raise > 0.52:
         deltas['strong_delta'] = -0.015
         deltas['medium_delta'] = -0.01
         deltas['bluff_freq_bonus'] = 0.10
+
     return deltas
