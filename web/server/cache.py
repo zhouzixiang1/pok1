@@ -13,8 +13,10 @@ _CACHE_TTL = 2.0
 def read_locked(path: Path) -> Any:
     with open(path, "r") as f:
         fcntl.flock(f, fcntl.LOCK_SH)
-        data = json.load(f)
-        fcntl.flock(f, fcntl.LOCK_UN)
+        try:
+            data = json.load(f)
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
     return data
 
 

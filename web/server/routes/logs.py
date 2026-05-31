@@ -30,7 +30,7 @@ async def list_generations():
 
 
 @router.get("/logs/generations/{version}/{filename}")
-async def get_log(version: str, filename: str, tail: int = Query(0)):
+async def get_log(version: str, filename: str, tail: int = Query(0, ge=0)):
     # Resolve to prevent path traversal (e.g. version="../../etc")
     resolved = (RESULTS_DIR / version / "logs" / filename).resolve()
     if not resolved.is_relative_to(RESULTS_DIR.resolve()):
@@ -69,7 +69,7 @@ async def list_orchestrator_logs():
 
 
 @router.get("/logs/orchestrator/{filename}", response_class=PlainTextResponse)
-async def get_orchestrator_log(filename: str, tail: int = Query(0)):
+async def get_orchestrator_log(filename: str, tail: int = Query(0, ge=0)):
     """Get orchestrator log content. filename must be orchestrator_*.txt."""
     if not filename.startswith("orchestrator_") or not filename.endswith(".txt") or "/" in filename:
         return PlainTextResponse("Invalid filename", status_code=400)

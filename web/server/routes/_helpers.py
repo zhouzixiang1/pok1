@@ -55,7 +55,8 @@ def build_ranked_ratings(ratings_data: dict, bot_stats_data: dict, h2h_data: dic
 
 def count_lines(path: Path) -> int:
     try:
-        return sum(1 for _ in open(path, "r", errors="ignore"))
+        with open(path, "r", errors="ignore") as f:
+            return sum(1 for _ in f)
     except Exception:
         return 0
 
@@ -162,6 +163,7 @@ def read_jsonl(path: Path, limit: int | None = None, reverse: bool = True) -> li
 
 
 def downsample(entries: list[dict], max_points: int = 200) -> list[dict]:
+    max_points = max(1, max_points)
     if len(entries) <= max_points:
         return entries
     step = max(1, len(entries) // max_points)
