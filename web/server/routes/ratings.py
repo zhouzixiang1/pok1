@@ -82,7 +82,7 @@ async def get_ratings():
             "games": bs.get("games", 0),
             "h2h_avg_wr": round(wr, 4) if wr is not None else None,
         })
-    rows.sort(key=lambda x: x.get("h2h_avg_wr") or 0.0, reverse=True)
+    rows.sort(key=lambda x: x["h2h_avg_wr"] if x["h2h_avg_wr"] is not None else 0.0, reverse=True)
     for i, row in enumerate(rows):
         row["rank"] = i + 1
     return rows

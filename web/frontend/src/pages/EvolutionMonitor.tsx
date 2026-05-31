@@ -453,18 +453,25 @@ export default function EvolutionMonitor() {
       addMsg(msg);
     },
     onEvalTable: (rows) => {
-      const mapped: BotRating[] = rows.map((r: { rank: number; name: string; rating: number; rd: number; conservative: number; h2h_avg_wr?: number }) => ({
-        name: r.name,
-        rank: r.rank,
-        rating: r.rating,
-        rd: r.rd,
-        sigma: 0,
-        conservative_rating: r.conservative,
-        confidence: r.rd < 50 ? "very_confident" : r.rd < 100 ? "confident" : r.rd < 200 ? "uncertain" : "very_uncertain",
-        last_period: "",
-        h2h_avg_wr: r.h2h_avg_wr,
-      }));
-      setLeaderboard(mapped);
+      setLeaderboard((prev) => {
+        const prevMap = new Map(prev.map((b) => [b.name, b]));
+        return rows.map((r: { rank: number; name: string; rating: number; rd: number; conservative: number; h2h_avg_wr?: number }) => {
+          const existing = prevMap.get(r.name);
+          return {
+            name: r.name,
+            rank: r.rank,
+            rating: r.rating,
+            rd: r.rd,
+            sigma: existing?.sigma ?? 0,
+            conservative_rating: r.conservative,
+            confidence: existing?.confidence ?? (r.rd < 50 ? "very_confident" : r.rd < 100 ? "confident" : r.rd < 200 ? "uncertain" : "very_uncertain"),
+            last_period: existing?.last_period ?? "",
+            win_rate: existing?.win_rate,
+            games: existing?.games,
+            h2h_avg_wr: r.h2h_avg_wr,
+          };
+        });
+      });
     },
     onMetrics: (m) => setMetrics(m),
     onDaemon: (data) => setDaemonInfo(data),

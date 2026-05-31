@@ -196,7 +196,7 @@ async def reset_evolution_endpoint():
             pass
         await asyncio.sleep(2)
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     from reset import reset_evolution
     result = await loop.run_in_executor(None, reset_evolution)
 

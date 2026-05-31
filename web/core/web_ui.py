@@ -50,7 +50,7 @@ class EventBroadcaster:
 
     def broadcast(self, event_type: str, payload: dict):
         """Sync-safe broadcast. Stores in ring buffer, pushes to all queues."""
-        payload["ts"] = time.time()
+        payload = {**payload, "ts": time.time()}
         sse_data = {"event": event_type, "data": json.dumps(payload)}
         with self._lock:
             self._ring_buffer.append(sse_data)
@@ -98,6 +98,8 @@ class WebUI(BaseUI):
         icon = {"info": "[INFO]", "warn": "[WARN]", "error": "[ERR]",
                 "success": "[OK]"}.get(status, "[INFO]")
         self._messages.append(f"[{status}] {msg}")
+        if len(self._messages) > 200:
+            self._messages = self._messages[-200:]
         print(f"{icon} {msg}")
         self._emit("history", {"msg": msg, "status": status})
 
@@ -162,6 +164,8 @@ class WebUI(BaseUI):
     def update_cost(self, role, cost_usd, usage):
         if cost_usd is not None:
             self.costs.append({"role": role, "cost_usd": cost_usd})
+            if len(self.costs) > 500:
+                self.costs = self.costs[-500:]
             self.gen_cost_total += cost_usd
             self.grand_cost_total += cost_usd
             in_tok = usage.get("input_tokens", 0) if usage else 0

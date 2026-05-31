@@ -418,14 +418,14 @@ async def orchestrator_loop(ui, no_daemon=False, daemon_workers=14, daemon_pairs
     except Exception as e:
         if ui:
             ui.log_history(f"Orchestrator crashed: {e}", "error")
-    finally:
-        if _daemon_stop is not None:
-            _daemon_stop.set()
         try:
             from server.state import app_state
             app_state.set_running(False)
         except Exception:
             pass
+    finally:
+        if _daemon_stop is not None:
+            _daemon_stop.set()
 
 
 async def run_orchestrator_cli(args):

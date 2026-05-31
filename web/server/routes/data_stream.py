@@ -3,6 +3,7 @@
 import asyncio
 import fcntl
 import json
+import logging
 import os
 import re
 import time
@@ -88,7 +89,7 @@ def _get_ratings() -> list[dict]:
             "games": bs.get("games", 0),
             "h2h_avg_wr": round(wr, 4) if wr is not None else None,
         })
-    rows.sort(key=lambda x: x.get("h2h_avg_wr") or 0.0, reverse=True)
+    rows.sort(key=lambda x: x["h2h_avg_wr"] if x["h2h_avg_wr"] is not None else 0.0, reverse=True)
     for i, row in enumerate(rows):
         row["rank"] = i + 1
     return rows
@@ -286,6 +287,9 @@ def _get_generations() -> list[dict]:
     return versions
 
 
+_log = logging.getLogger("data_stream")
+
+
 @router.get("/data/stream")
 async def data_stream():
     async def generate():
@@ -301,8 +305,8 @@ async def data_stream():
                     ]:
                         try:
                             yield evt
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            _log.warning("SSE event error: %s", e)
                 if tick % 10 == 0:
                     for evt in [
                         _event("matches", _get_recent_matches(100)),
@@ -310,8 +314,8 @@ async def data_stream():
                     ]:
                         try:
                             yield evt
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            _log.warning("SSE event error: %s", e)
                 if tick % 15 == 0:
                     for evt in [
                         _event("matrix", _get_match_matrix()),
@@ -321,8 +325,10 @@ async def data_stream():
                     ]:
                         try:
                             yield evt
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            _log.warning("SSE event error: %s", e)
+                if tick % 30 == 0 and tick % 3 != 0:
+                    yield {"event": "ping", "data": "{}"}
                 await asyncio.sleep(1)
                 tick += 1
         except asyncio.CancelledError:

@@ -147,7 +147,7 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui):
     history_file = RESULTS_DIR / "rating_history.jsonl"
     history_ctx = ""
     if history_file.exists():
-        with open(history_file) as f:
+        with locked_file(history_file, "r") as f:
             lines = f.readlines()
         for line in lines[-10:]:
             try:

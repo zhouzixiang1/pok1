@@ -125,7 +125,7 @@ async def list_bots(include_graveyard: bool = Query(False)):
     if include_graveyard:
         graveyard_dir = BOTS_DIR / "graveyard"
         if graveyard_dir.exists():
-            for d in sorted(graveyard_dir.iterdir()):
+            for d in sorted(graveyard_dir.iterdir(), key=_version_key):
                 if d.is_dir() and d.name.startswith("claude_v"):
                     s = _bot_summary(d, d.name, ratings, bot_stats_data, h2h_data)
                     s["graveyard"] = True

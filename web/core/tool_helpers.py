@@ -4,6 +4,7 @@ UI injection, logging adapters, checkpoint gates, and validation utilities.
 """
 
 import difflib
+import fcntl
 import json
 import re
 import time
@@ -115,7 +116,10 @@ def _read_json(path, default):
         if not Path(path).exists():
             return default
         with open(path, "r") as f:
-            return json.load(f)
+            fcntl.flock(f, fcntl.LOCK_SH)
+            data = json.load(f)
+            fcntl.flock(f, fcntl.LOCK_UN)
+            return data
     except Exception:
         return default
 

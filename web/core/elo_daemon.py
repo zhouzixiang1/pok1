@@ -47,8 +47,6 @@ DIVERSITY_WEIGHT = 0.4
 UNDER_EVAL_BASELINE = 50
 RATING_GAP_SCALE = 200
 DIVERSITY_COUNT_DECAY = 100
-MAX_HISTORY_LINES = 200
-HISTORY_KEEP_LINES = 100
 
 # Continuous scheduling parameters
 SAVE_EVERY_N_GAMES = 20
@@ -136,15 +134,8 @@ def save_ratings(ratings, save_num=None):
             "ratings": {name: {"r": p.r, "rd": p.rd} for name, p in ratings.items()},
             "win_rates": win_rates,
         }
-        with locked_file(history_file, "a+") as f:
+        with locked_file(history_file, "a") as f:
             f.write(json.dumps(snapshot) + "\n")
-            f.flush()
-            f.seek(0)
-            lines = f.readlines()
-            if len(lines) > MAX_HISTORY_LINES:
-                f.seek(0)
-                f.truncate()
-                f.writelines(lines[-HISTORY_KEEP_LINES:])
 
 
 def load_stats():
