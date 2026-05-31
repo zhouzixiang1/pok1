@@ -1,16 +1,17 @@
 """Rating endpoints — Glicko-2 ratings and history."""
 
-import fcntl
 import json
 import time
 from pathlib import Path
-from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from server.cache import cached_read, read_locked
+from server.cache import cached_read
+from server.routes._helpers import (
+    build_rating_row, build_ranked_ratings, downsample, read_jsonl,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RESULTS_DIR = PROJECT_ROOT / "web" / "core" / "results"
@@ -24,100 +25,22 @@ HISTORY_FILE = RESULTS_DIR / "rating_history.jsonl"
 router = APIRouter(prefix="/api", tags=["ratings"])
 
 
-def _confidence(rd: float) -> str:
-    if rd < 50:
-        return "very_confident"
-    if rd < 100:
-        return "confident"
-    if rd < 200:
-        return "uncertain"
-    return "very_uncertain"
-
-
 @router.get("/ratings")
 async def get_ratings():
-    from tool_helpers import compute_h2h_avg_winrate
     data = cached_read("ratings", RATINGS_FILE)
     bot_stats_data = cached_read("bot_stats", BOT_STATS_FILE) or {}
     h2h_data = cached_read("h2h", H2H_FILE) or {}
-    if not data:
-        return []
-
-    rows = []
-    for name, d in data.items():
-        r, rd = d["r"], d["rd"]
-        bs = bot_stats_data.get(name, {})
-        wr = compute_h2h_avg_winrate(name, h2h_data)
-        rows.append({
-            "name": name,
-            "rating": round(r, 1),
-            "rd": round(rd, 1),
-            "sigma": round(d.get("sigma", 0.06), 4),
-            "conservative_rating": round(r - 2 * rd, 1),
-            "confidence": _confidence(rd),
-            "last_period": d.get("last_period", ""),
-            "win_rate": bs.get("win_rate"),
-            "games": bs.get("games", 0),
-            "h2h_avg_wr": round(wr, 4) if wr is not None else None,
-        })
-    rows.sort(key=lambda x: x["h2h_avg_wr"] if x["h2h_avg_wr"] is not None else 0.0, reverse=True)
-    for i, row in enumerate(rows):
-        row["rank"] = i + 1
-    return rows
+    return build_ranked_ratings(data or {}, bot_stats_data, h2h_data)
 
 
 @router.get("/ratings/{bot_name}")
 async def get_rating_detail(bot_name: str):
-    from tool_helpers import compute_h2h_avg_winrate
     data = cached_read("ratings", RATINGS_FILE)
     bot_stats_data = cached_read("bot_stats", BOT_STATS_FILE) or {}
     h2h_data = cached_read("h2h", H2H_FILE) or {}
     if not data or bot_name not in data:
         raise HTTPException(status_code=404, detail="Bot not found")
-    d = data[bot_name]
-    r, rd = d["r"], d["rd"]
-    bs = bot_stats_data.get(bot_name, {})
-
-    wr = compute_h2h_avg_winrate(bot_name, h2h_data)
-    return {
-        "name": bot_name,
-        "rating": round(r, 1),
-        "rd": round(rd, 1),
-        "sigma": round(d.get("sigma", 0.06), 4),
-        "conservative_rating": round(r - 2 * rd, 1),
-        "confidence": _confidence(rd),
-        "last_period": d.get("last_period", ""),
-        "win_rate": bs.get("win_rate"),
-        "games": bs.get("games", 0),
-        "h2h_avg_wr": round(wr, 4) if wr is not None else None,
-    }
-
-
-def _load_history() -> list[dict]:
-    if not HISTORY_FILE.exists():
-        return []
-    entries = []
-    with open(HISTORY_FILE, "r") as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-        fcntl.flock(f, fcntl.LOCK_UN)
-    return entries
-
-
-def _downsample(entries: list[dict], resolution: str) -> list[dict]:
-    if resolution == "full" or len(entries) <= 100:
-        return entries
-    step = max(1, len(entries) // (200 if resolution == "medium" else 50))
-    sampled = entries[::step]
-    if entries[-1] not in sampled:
-        sampled.append(entries[-1])
-    return sampled
+    return build_rating_row(bot_name, data[bot_name], bot_stats_data, h2h_data)
 
 
 @router.get("/history")
@@ -125,8 +48,13 @@ async def history(
     bots: str = Query("", description="Comma-separated bot names"),
     resolution: str = Query("medium", description="full, medium, or low"),
 ):
-    entries = _load_history()
-    entries = _downsample(entries, resolution)
+    entries = read_jsonl(HISTORY_FILE, reverse=False)
+    if resolution != "full" and len(entries) > 100:
+        step = max(1, len(entries) // (200 if resolution == "medium" else 50))
+        sampled = entries[::step]
+        if entries[-1] not in sampled:
+            sampled.append(entries[-1])
+        entries = sampled
     bot_filter = set(b.strip() for b in bots.split(",") if b.strip()) if bots else None
 
     result = []
@@ -147,7 +75,7 @@ async def history(
 
 @router.get("/history/summary")
 async def history_summary():
-    entries = _load_history()
+    entries = read_jsonl(HISTORY_FILE, reverse=False)
     if not entries:
         return {}
     all_bots = set()

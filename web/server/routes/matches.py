@@ -2,15 +2,12 @@
 
 import fcntl
 import json
-import os
-import re
-import time
 from pathlib import Path
-from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
 from server.cache import cached_read, read_locked
+from server.routes._helpers import build_match_matrix, build_match_stats, read_jsonl
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RESULTS_DIR = PROJECT_ROOT / "web" / "core" / "results"
@@ -25,86 +22,21 @@ router = APIRouter(prefix="/api", tags=["matches"])
 
 @router.get("/matches/matrix")
 async def match_matrix():
-    # Try H2H data first (win-rate matrix)
     h2h = cached_read("matches_h2h", H2H_FILE)
-    if h2h:
-        all_bots = set()
-        for k in h2h:
-            parts = k.split(" vs ")
-            all_bots.update(parts)
-        bot_names = sorted(all_bots, key=lambda n: int(re.search(r'\d+', n).group()) if re.search(r'\d+', n) else 0)
-        n = len(bot_names)
-        wr_matrix = [[None] * n for _ in range(n)]
-        for k, v in h2h.items():
-            parts = k.split(" vs ")
-            if len(parts) != 2:
-                continue
-            a, b = parts[0].strip(), parts[1].strip()
-            if a in bot_names and b in bot_names:
-                i, j = bot_names.index(a), bot_names.index(b)
-                wr = v.get("win_rate")
-                if wr is not None:
-                    wr_matrix[i][j] = round(wr, 4)
-                    wr_matrix[j][i] = round(1.0 - wr, 4)
-        return {"bots": bot_names, "matrix": wr_matrix, "source": "h2h"}
-
-    # Fallback to legacy pair counts
+    ratings = cached_read("ratings", RATINGS_FILE)
     stats = cached_read("stats", STATS_FILE)
-    if not stats:
-        return {"bots": [], "matrix": []}
-    ratings = cached_read("ratings", RATINGS_FILE) or {}
-    bot_names = sorted(
-        ratings.keys(),
-        key=lambda n: int(re.search(r'\d+', n).group()) if re.search(r'\d+', n) else 0
-    )
-    n = len(bot_names)
-    matrix = [[0] * n for _ in range(n)]
-    pairs = stats.get("pairs", {})
-    for key, count in pairs.items():
-        parts = key.split(" vs ")
-        if len(parts) == 2:
-            a, b = parts[0].strip(), parts[1].strip()
-            if a in bot_names and b in bot_names:
-                i, j = bot_names.index(a), bot_names.index(b)
-                matrix[i][j] = count
-                matrix[j][i] = count
-    return {"bots": bot_names, "matrix": matrix}
+    return build_match_matrix(h2h, ratings, stats)
 
 
 @router.get("/matches/stats")
 async def match_stats():
     stats = cached_read("stats", STATS_FILE)
-    if not stats:
-        return {"total_games": 0, "total_pairs": 0, "total_periods": 0, "most_active_pair": "", "most_active_count": 0}
-    pairs = stats.get("pairs", {})
-    total_games = stats.get("total_games", sum(pairs.values()))
-    most_active = max(pairs.items(), key=lambda x: x[1]) if pairs else ("", 0)
-    return {
-        "total_games": total_games,
-        "total_pairs": len(pairs),
-        "total_periods": stats.get("total_periods", 0),
-        "most_active_pair": most_active[0],
-        "most_active_count": most_active[1],
-    }
+    return build_match_stats(stats)
 
 
 @router.get("/matches/recent")
 async def recent_matches(limit: int = Query(50, le=200)):
-    if not MATCH_HISTORY_FILE.exists():
-        return []
-    entries = []
-    with open(MATCH_HISTORY_FILE, "r") as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
-        fcntl.flock(f, fcntl.LOCK_UN)
-    entries.reverse()
-    return entries[:limit]
+    return read_jsonl(MATCH_HISTORY_FILE, limit=limit)
 
 
 @router.get("/matches/replay/{match_id}")

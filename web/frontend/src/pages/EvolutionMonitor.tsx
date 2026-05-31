@@ -455,7 +455,7 @@ export default function EvolutionMonitor() {
     onEvalTable: (rows) => {
       setLeaderboard((prev) => {
         const prevMap = new Map(prev.map((b) => [b.name, b]));
-        return rows.map((r: { rank: number; name: string; rating: number; rd: number; conservative: number; h2h_avg_wr?: number }) => {
+        return rows.map((r: { rank: number; name: string; rating: number; rd: number; conservative_rating: number; h2h_avg_wr?: number }) => {
           const existing = prevMap.get(r.name);
           return {
             name: r.name,
@@ -463,7 +463,7 @@ export default function EvolutionMonitor() {
             rating: r.rating,
             rd: r.rd,
             sigma: existing?.sigma ?? 0,
-            conservative_rating: r.conservative,
+            conservative_rating: r.conservative_rating,
             confidence: existing?.confidence ?? (r.rd < 50 ? "very_confident" : r.rd < 100 ? "confident" : r.rd < 200 ? "uncertain" : "very_uncertain"),
             last_period: existing?.last_period ?? "",
             win_rate: existing?.win_rate,

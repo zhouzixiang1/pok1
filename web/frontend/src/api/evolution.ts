@@ -23,7 +23,7 @@ export interface EvolutionState {
     name: string;
     rating: number;
     rd: number;
-    conservative: number;
+    conservative_rating: number;
     h2h_avg_wr?: number;
   }>;
   active_bots: string[];

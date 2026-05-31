@@ -145,7 +145,7 @@ class WebUI(BaseUI):
                 "name": bot,
                 "rating": round(p.r, 1),
                 "rd": round(p.rd, 1),
-                "conservative": round(p.r - 2 * p.rd, 1),
+                "conservative_rating": round(p.r - 2 * p.rd, 1),
                 "h2h_avg_wr": round(real_wr, 4) if real_wr is not None else None,
             })
         self._state["ratings"] = rows
