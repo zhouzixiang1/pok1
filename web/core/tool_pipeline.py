@@ -101,10 +101,8 @@ async def run_master(args):
         return {"content": [{"type": "text", "text": json.dumps({"error": "Master plan validation failed", "validation_errors": plan_errors, "plan": data, "logs": ui.get_output()})}]}
 
     # Persist master plan to checkpoint so it survives crashes between master and workers
-    _ckpt = _matching_checkpoint(next_v, source_v)
-    if _ckpt:
-        from evolution_infra import write_pipeline_checkpoint
-        write_pipeline_checkpoint(next_v, source_v, "prepared", master_plan=data)
+    from evolution_infra import write_pipeline_checkpoint
+    write_pipeline_checkpoint(next_v, source_v, "prepared", master_plan=data)
 
     result = {"plan": data, "logs": ui.get_output()}
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
@@ -705,8 +703,8 @@ async def run_inline_eval(args):
         if opp not in ratings:
             ratings[opp] = Glicko2Player()
         match_wins, draws, n_played, _ = mirror_battle(
-            str(PROJECT_ROOT / "bots" / bot_name / "main.py"),
-            str(PROJECT_ROOT / "bots" / opp / "main.py"),
+            str(_bot_main(bot_name)),
+            str(_bot_main(opp)),
             n_games=n_games, verbose=False, save_log=False
         )
         w_a, w_b = match_wins[0], match_wins[1]
@@ -917,7 +915,8 @@ async def commit_bot(args):
     wr_str = f" h2h_avg_wr={h2h_wr:.2%}" if h2h_wr is not None else ""
     rating_info = f"rating: r={p.r:.1f} rd={p.rd:.1f}{wr_str}" if p else ""
 
-    git_commit_bot(v, source_v, strategy, rating_info=rating_info)
+    parent2_v = ckpt.get("parent2_v") if ckpt else None
+    git_commit_bot(v, source_v, strategy, rating_info=rating_info, parent2_v=parent2_v)
     (bot_dir / ".completed").touch()
     clear_pipeline_checkpoint()
 
@@ -967,13 +966,18 @@ async def run_crossover(args):
     if not parent_a_dir.exists():
         return _json_tool_result({"error": f"Parent A bot v{parent_a} not found"})
 
+    parent_b_dir = get_bot_dir(parent_b)
+    if not parent_b_dir.exists():
+        return _json_tool_result({"error": f"Parent B bot v{parent_b} not found"})
+
     ui = _get_ui()
     success = await _run_crossover(parent_a, parent_b, target_v, ui)
 
     # Write checkpoint so quality gates → review → critic → commit can proceed
     if success:
         from evolution_core import write_pipeline_checkpoint
-        write_pipeline_checkpoint(target_v, parent_a, "workers_done")
+        write_pipeline_checkpoint(target_v, parent_a, "workers_done",
+                                  parent2_v=parent_b)
 
     result = {"success": success, "logs": ui.get_output()}
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}

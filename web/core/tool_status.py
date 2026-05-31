@@ -25,6 +25,7 @@ from evolution_core import (
     wait_for_daemon_eval,
     seed_initial_bots,
     trim_experience_pool,
+    read_pipeline_checkpoint,
     find_current_v,
     _analyze_recent_matches,
     _analyze_stagnation,
@@ -75,7 +76,7 @@ async def get_status(args):
     bot_stats_file = PROJECT_ROOT / "web" / "core" / "results" / "bot_stats.json"
     if bot_stats_file.exists():
         try:
-            with open(bot_stats_file, "r") as f:
+            with locked_file(bot_stats_file, "r") as f:
                 bot_stats_data = json.load(f)
         except Exception:
             pass
@@ -244,7 +245,7 @@ async def wait_for_eval(args):
     bot_stats_file = PROJECT_ROOT / "web" / "core" / "results" / "bot_stats.json"
     if bot_stats_file.exists():
         try:
-            with open(bot_stats_file, "r") as f:
+            with locked_file(bot_stats_file, "r") as f:
                 bot_stats_data = json.load(f)
         except Exception:
             pass
@@ -373,6 +374,41 @@ async def cleanup_incomplete(args):
                         shutil.rmtree(d)
                         cleaned.append(d.name)
     return {"content": [{"type": "text", "text": json.dumps({"cleaned": cleaned, "count": len(cleaned)})}]}
+
+
+class AbandonGenerationInput(TypedDict):
+    pass
+
+
+@tool("abandon_generation", "Clear pipeline checkpoint and remove incomplete next-gen directory. Use when a generation is stuck and needs to be restarted.", {})
+async def abandon_generation(args):
+    from evolution_core import clear_pipeline_checkpoint, find_current_v, PIPELINE_STATE_FILE
+    checkpoint = read_pipeline_checkpoint() if PIPELINE_STATE_FILE.exists() else None
+    cleared_checkpoint = False
+    removed_dir = None
+
+    if checkpoint:
+        next_v = checkpoint.get("next_v")
+        clear_pipeline_checkpoint()
+        cleared_checkpoint = True
+        if next_v is not None:
+            next_dir = get_bot_dir(next_v)
+            if next_dir.exists() and not (next_dir / ".completed").exists():
+                shutil.rmtree(next_dir)
+                removed_dir = f"claude_v{next_v}"
+    else:
+        # No checkpoint — clean up any incomplete dir for next version
+        current_v = find_current_v()
+        next_dir = get_bot_dir(current_v + 1)
+        if next_dir.exists() and not (next_dir / ".completed").exists():
+            shutil.rmtree(next_dir)
+            removed_dir = f"claude_v{current_v + 1}"
+
+    return {"content": [{"type": "text", "text": json.dumps({
+        "abandoned": True,
+        "cleared_checkpoint": cleared_checkpoint,
+        "removed_directory": removed_dir,
+    })}]}
 
 
 class TrimExperienceInput(TypedDict):
@@ -504,7 +540,7 @@ async def get_bot_stats(args):
         return {"content": [{"type": "text", "text": json.dumps({"error": "No bot stats yet", "bot_name": bot_name})}]}
 
     try:
-        with open(bot_stats_file, "r") as f:
+        with locked_file(bot_stats_file, "r") as f:
             all_stats = json.load(f)
     except Exception:
         return {"content": [{"type": "text", "text": json.dumps({"error": "Failed to read bot stats"})}]}

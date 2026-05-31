@@ -135,14 +135,28 @@ def _trim_to_budget(text: str, max_chars: int, tail: bool = False) -> str:
 
 @contextmanager
 def locked_file(path, mode='r', lock_type=None, encoding=None):
-    """Context manager for file operations with fcntl locking."""
+    """Context manager for file operations with fcntl locking.
+
+    For mode='w': opens with 'r+' if file exists (to avoid truncating before
+    the lock is acquired), then truncates after locking. If file doesn't exist,
+    uses 'w' to create it (safe — no data to lose).
+    """
     if lock_type is None:
         lock_type = fcntl.LOCK_EX if ('w' in mode or 'a' in mode or '+' in mode) else fcntl.LOCK_SH
     open_kwargs = {}
     if encoding is not None:
         open_kwargs["encoding"] = encoding
-    with open(path, mode, **open_kwargs) as f:
+    actual_mode = mode
+    truncate_after_lock = False
+    if mode == 'w':
+        if Path(path).exists():
+            actual_mode = 'r+'
+            truncate_after_lock = True
+    with open(path, actual_mode, **open_kwargs) as f:
         fcntl.flock(f, lock_type)
+        if truncate_after_lock:
+            f.seek(0)
+            f.truncate()
         try:
             yield f
         finally:
@@ -166,13 +180,15 @@ def substitute_template(template, replacements):
 
 def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                reviewer_feedback="", generation_attempt=0,
-                               gate_results=None, worker_invocation_count=None):
+                               gate_results=None, worker_invocation_count=None,
+                               parent2_v=None):
     """Write pipeline stage checkpoint so a killed process can resume."""
     existing_gate_results = {}
     existing_invocation_count = 0
     existing_master_plan = master_plan
     existing_reviewer_feedback = reviewer_feedback
     existing_generation_attempt = generation_attempt
+    existing_parent2_v = parent2_v
     # Read-modify-write under a single exclusive lock to prevent TOCTOU races
     with locked_file(PIPELINE_STATE_FILE, "a+") as f:
         f.seek(0)
@@ -189,6 +205,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                         existing_reviewer_feedback = existing.get("reviewer_feedback", "")
                     if generation_attempt == 0:
                         existing_generation_attempt = existing.get("generation_attempt", 0)
+                    if parent2_v is None:
+                        existing_parent2_v = existing.get("parent2_v")
         except Exception:
             existing_gate_results = {}
         allowed_gates = STAGE_GATE_ALLOWLIST.get(stage)
@@ -210,6 +228,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "generation_attempt": existing_generation_attempt,
             "worker_invocation_count": existing_invocation_count,
             "gate_results": existing_gate_results,
+            "parent2_v": existing_parent2_v,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
         f.seek(0)
@@ -682,18 +701,17 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
 def parse_json_output(output):
     match = re.search(r'```json\s*(.*?)\s*```', output, re.DOTALL)
     if match:
+        text = match.group(1).strip()
+        # Try the full extracted text first
         try:
-            return json.loads(match.group(1))
-        except Exception:
-            text = match.group(1)
-            while '```' in text:
-                try:
-                    return json.loads(text)
-                except json.JSONDecodeError:
-                    text = text.rsplit('```', 1)[0]
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        # Strip only a single trailing ``` (common LLM artifact) and retry
+        if text.endswith('```'):
             try:
-                return json.loads(text)
-            except Exception:
+                return json.loads(text[:-3].rstrip())
+            except json.JSONDecodeError:
                 pass
     try:
         return json.loads(output)

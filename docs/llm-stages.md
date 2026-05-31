@@ -99,7 +99,7 @@ Orchestrator 按需调用：
 | **模型** | Sonnet |
 | **工具** | 无（纯 JSON 输出） |
 
-**输入构建** (`agent_master.py:141-189`):
+**输入构建** (函数 `_analyze_stagnation` 内):
 1. 读取 `rating_history.jsonl` 最近 10 个周期，提取每个周期的 top H2H 胜率或 top rating
 2. 计算 Top 5 活跃 bot 的 H2H 平均胜率 + rating + rd
 3. 拼装 prompt："You are a rating trend analyst..." + 趋势数据 + Top 5 bot 列表
@@ -135,7 +135,7 @@ Orchestrator 按需调用：
 | **模型** | Sonnet |
 | **工具** | 无（纯 JSON 输出） |
 
-**输入构建** (`agent_master.py:374-469`):
+**输入构建** (函数 `_analyze_recent_matches` 内):
 1. 读取 `match_history.jsonl`，筛选当前 bot 的对局
 2. 收集最近 8 场失败 + 4 场险胜（胜分差 ≤ 2）
 3. 对每场对局加载 `match_replay/{id}` 完整录像
@@ -171,7 +171,7 @@ Orchestrator 按需调用：
 | **模型** | Sonnet |
 | **工具** | 无（纯 JSON 输出） |
 
-**输入构建** (`agent_review.py:56-195`):
+**输入构建** (函数 `_run_performance_verification` 内):
 1. 读取 `rating_history.jsonl` 最近 10 个周期的 top H2H 胜率或 top rating
 2. 读取 `match_history.jsonl` 最近 100 条计算当前 bot 近期胜率
 3. 读取 `head_to_head.json` 提取每对手胜负，标注 STRENGTH/WEAKNESS
@@ -210,11 +210,13 @@ Orchestrator 按需调用：
 | **Prompt 模板** | `prompts/master_prompt.md` |
 | **重试** | 最多 3 次 (`MAX_MASTER_RETRIES`)，每次需返回含 `tasks` 的 JSON |
 
-**输入构建** (`agent_master.py:25-68`):
+**输入构建** (函数 `_run_master_analysis` 内):
 1. 读取 `prompts/master_prompt.md` 模板
 2. 替换占位符：`{stagnation_info}`、`{match_analysis}`（裁剪至 10K 字符）、`{performance_verification}`（裁剪至 4K 字符）、`{source_v}`
-3. 附加上下文文件路径列表：`glicko_ratings.json`、`rating_history.jsonl`、`head_to_head.json`、`bot_stats.json`、`experience_pool.md`
-4. `run_claude_query()` 会读取这些文件内容附加到 prompt（受 `MAX_PROMPT_CHARS = 700K` 限制，超限时按文件均分压缩）
+3. **附加上下文文件路径列表**（在 prompt 文本中提供路径，由 LLM 用 Bash/Read 自行读取）：`glicko_ratings.json`、`rating_history.jsonl`、`head_to_head.json`、`bot_stats.json`、`experience_pool.md`
+4. `run_claude_query()` 的 `context_files` 参数为 **空列表 `[]`** — Master 通过工具自行读取文件，而非通过 context_files 注入
+
+> ⚠️ **注意**: 早期版本文档错误描述为 `context_files` 传入文件路径列表。实际上 Master 的 `context_files=[]`，LLM 通过 Bash/Read 工具按需读取。
 
 **LLM 能做的事**: 用 Bash/Read 读取上述文件，分析 rating 趋势、经验池、H2H 数据
 
@@ -240,7 +242,7 @@ Orchestrator 按需调用：
 }
 ```
 
-**校验** (`tool_pipeline.py:_validate_master_plan()`):
+**校验** (函数 `_validate_master_plan`):
 - tasks 数量 ≤ 3
 - 每个 task 的 target_files ≤ 3
 - 每个 task 的 worker_prompt ≤ 3000 字符
@@ -276,7 +278,7 @@ Orchestrator 按需调用：
 | **重试** | 每个 worker 最多 4 次 (`MAX_WORKER_RETRIES`) |
 | **超时** | 1000 秒 (`WORKER_TIMEOUT`) |
 
-**单个 Worker 的输入构建** (`agent_workers.py:42-107`):
+**单个 Worker 的输入构建** (函数 `_run_single_worker` 内):
 1. 读取 `prompts/worker_prompt.md` 模板
 2. 替换占位符：`{role}`、`{worker_prompt}`（来自 Master 的任务描述）、`{version}`
 3. 注入 reviewer_feedback（若有，前置 "CRITICAL REVISION NEEDED:" 标记）
@@ -294,6 +296,17 @@ Orchestrator 按需调用：
 
 **并行→串行回退**: 若并行中任一 worker 失败，清除目标目录，从源 bot 重新复制，串行重试全部 tasks。
 
+**⚠️ 重要机制补充**:
+
+1. **Architect + Tuner 串行执行**: 当 tasks 中同时包含 "Algorithmic Logic Architect" 和 "Hyperparameter Tuner" 时，系统自动串行执行（Tuner 需要 Architect 的输出作为基础）。见 `agent_workers.py` 中 `has_architect and has_tuner` 检测逻辑。
+
+2. **Worker Circuit Breaker**: 每代最多允许 6 次 worker 调用（`MAX_WORKER_INVOCATIONS = 6`），防止无限重试。见 `tool_pipeline.py` 中 `invocation_count` 检查。
+
+3. **Worker Boundary Validation**: Worker 完成后自动检查：
+   - 是否修改了未声明的 target_files 外的文件
+   - Hyperparameter Tuner 是否修改了非数字内容（通过 `_numbers_only_changed` 检测）
+   - 见 `tool_helpers.py:_validate_worker_boundaries`
+
 **输出**: `{success: bool, boundary_errors: [], logs, costs}`
 
 **输出去向**:
@@ -307,7 +320,7 @@ Orchestrator 按需调用：
 
 - **触发者**: Orchestrator LLM
 - **有无 LLM**: 无
-- **做什么** (`tool_pipeline.py:run_quality_gates()`):
+- **做什么** (函数 `run_quality_gates` 内):
   1. `verify_code()` — 编译检查
   2. `run_smoke_test()` — 冒烟对战
   3. `run_decision_test_details()` — 决策测试（≥70% 通过率 + 关键场景全部通过）
@@ -330,7 +343,7 @@ Orchestrator 按需调用：
 | **Prompt 模板** | `prompts/reviewer_prompt.md` |
 | **前置条件** | checkpoint 中 quality gate 必须通过 |
 
-**输入构建** (`tool_pipeline.py:280-298`):
+**输入构建** (函数 `run_review` 内):
 1. 读取 `prompts/reviewer_prompt.md` 模板
 2. 替换占位符：`{master_plan}` = `json.dumps(plan)`、`{version}`、`{parent_version}`
 3. 无附加上下文文件 — Reviewer 通过 Bash/Read 自行查看 diff 和代码
@@ -367,7 +380,7 @@ Orchestrator 按需调用：
 | **Prompt 模板** | `prompts/critic_prompt.md` |
 | **前置条件** | checkpoint 中 quality + review gate 必须通过 |
 
-**输入构建** (`agent_review.py:18-43`):
+**输入构建** (函数 `_run_critic` 内):
 1. 读取 `prompts/critic_prompt.md` 模板
 2. 替换占位符：`{master_plan}`、`{version}`、`{parent_version}`
 3. 无附加上下文文件 — Critic 通过 Bash/Read 自行查看 diff
@@ -383,7 +396,9 @@ Orchestrator 按需调用：
 }
 ```
 
-**通过逻辑** (`tool_pipeline.py:414`): `score ≥ 6` 且 `approved == true`
+**通过逻辑** (函数 `run_critic` 内): `score ≥ 6` 且 `approved == true`
+
+**⚠️ 重要**: `force_advance=true` 时，即使 score < 6，也会写入 `critic_checked` checkpoint（用于耗尽重试后推进，避免重启时无限重试）。但 **不意味着可以提交** — 提交仍需 `commit_bot` 的 gate ledger 检查。
 
 **输出去向**:
 - 返回给 Orchestrator LLM
@@ -398,11 +413,11 @@ Orchestrator 按需调用：
 - **触发者**: Orchestrator LLM
 - **有无 LLM**: 无
 - **前置**: checkpoint 中 quality + review + critic gate 全部通过
-- **做什么** (`tool_pipeline.py:run_precommit_eval()`):
+- **做什么** (函数 `run_precommit_eval` 内):
   1. 重新编译检查 + 冒烟测试
   2. 选择对手：父版本 bot + 当前 Top 3 + H2H 弱点对手（最多 2 个）
   3. 与每个对手运行 `mirror_battle(n_games=1)`
-  4. 阻断条件：编译/冒烟失败、输给父版本、总输≥赢+2、对局超时
+  4. 阻断条件：编译/冒烟失败、输给父版本、**总输≥3 且 总输≥赢+2**、对局超时
 - **输出**: `{passed, blockers, matchups, total_wins/losses/draws}`
 - **输出去向**: 通过 → checkpoint `stage="verified"` + gate `precommit_eval`
 
@@ -413,7 +428,7 @@ Orchestrator 按需调用：
 - **触发者**: Orchestrator LLM
 - **有无 LLM**: 无
 - **前置**: checkpoint 中所有 gates 必须存在且通过
-- **做什么** (`tool_pipeline.py:commit_bot()`):
+- **做什么** (函数 `commit_bot` 内):
   1. 验证 gate ledger 完整性（quality + review + critic + precommit_eval）
   2. 写入 `.completed` 标记文件
   3. `git add` + `git commit` + `git tag bot-v{N}`
@@ -497,8 +512,7 @@ Orchestrator 进程被 kill:
 当 Orchestrator LLM 的上下文即将被压缩时：
 
 ```python
-# orchestrator.py:75-103
-# PreCompact hook 注入:
+# PreCompact hook 注入 (orchestrator.py 中 _make_precompact_hook 函数):
 "=== EVOLUTION STATE — PRESERVE DURING COMPACTION ==="
 f"Current completed bot: claude_v{current_v}"
 f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {next_step}."
@@ -555,6 +569,18 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 
 ---
 
+### 4.3 其他辅助工具
+
+以下工具在数据流全景图中未展开，但同样可用：
+
+- **`run_inline_eval(version, n_games)`** — 当守护进程未运行时，手动运行镜像对战并更新 Glicko-2 评分
+- **`get_h2h(bot_name, opponent?)`** — 获取指定 bot 的 Head-to-Head 数据，标注 STRENGTH/WEAKNESS
+- **`get_bot_stats(bot_name)`** — 获取指定 bot 的累计胜负统计
+- **`get_bot_info(version)`** — 获取指定 bot 的详细信息（rating、parent、files、code size）
+- **`get_match_history(version, n)`** — 获取指定 bot 的最近对局记录
+
+---
+
 ## 五、数据流全景图
 
 ```
@@ -567,7 +593,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
                     │    _run_one_cycle() — Orchestrator LLM 会话  │
                     │    输入: _build_context() → ratings/tags/    │
                     │          checkpoint/failures 注入 prompt     │
-                    │    工具: 26 个 MCP tools + Bash + Read       │
+                    │    工具: MCP tools + Bash + Read             │
                     │    输出: 工具调用序列                         │
                     └──────────────────┬──────────────────────────┘
                                        │
@@ -615,9 +641,6 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
          │               │输入: stagnation_info     │
          │               │      + match_analysis   │
          │               │      + perf_verification│
-         │               │      + context_files:   │
-         │               │        ratings, h2h,    │
-         │               │        experience_pool   │
          │               │输出: JSON tasks[]        │
          │               │      (1-3 个 worker 任务) │
          │               └────────────┬─────────────┘
@@ -639,6 +662,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
          │               │输出: 代码写入文件系统    │
          │               │自检: compile+smoke/重试  │
          │               │回退: parallel→serial    │
+         │               │断路器: max 6 次调用      │
          │               └────────────┬─────────────┘
          │                            │
          │               ┌────────────▼────────────┐
@@ -666,7 +690,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
          │               │      + master_plan       │
          │               │输出: score(1-10)+approved│
          │               │阈值: ≥6 通过             │
-         │               │失败→重试workers(≤2次)    │
+         │               │force_advance 可绕过      │
          │               └────────────┬─────────────┘
          │                            │
          │               ┌────────────▼────────────┐
@@ -705,7 +729,153 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 - **所有 LLM 调用统一使用 Sonnet 模型**，通过 `claude_agent_sdk` 的 `query()` 函数
 - **API 限流 (529)**: `run_claude_query()` 内自动指数退避重试（30s → 60s → 120s）
 - **Prompt 预算**: `MAX_PROMPT_CHARS = 700_000`，超限时按文件均分压缩上下文
-- **子代理 MCP 屏蔽**: `_BLOCKED_MCP_TOOLS` 屏蔽 web-reader、web-search、zread
+- **子代理 MCP 屏蔽**: `_BLOCKED_MCP_TOOLS` 屏蔽以下外部工具（防止子代理访问网络）：
+  - `mcp__web-reader__webReader`
+  - `mcp__web-search-prime__web_search_prime`
+  - `mcp__zread__get_repo_structure`
+  - `mcp__zread__read_file`
+  - `mcp__zread__search_doc`
 - **角色边界**: Worker 受 prompt + reviewer 双重约束 — Logic Architect 不改常数，Tuner 不加函数
 - **Gate Ledger**: Pipeline checkpoint 强制阶段顺序 — 每个阶段写入 gate 记录，后续阶段验证前置 gates 完整
 - **阶段常量**: `STAGE_ORDER = [prepared, workers_done, quality_passed, reviewed, critic_checked, verified]`
+
+---
+
+## 附录：真实循环示例（v28 → v29）
+
+以下展示一个真实的完整进化循环，基于实际日志文件。
+
+### 背景
+
+- **源 bot**: claude_v28 (r=1581, 160 games, 60% WR)
+- **目标 bot**: claude_v29
+- **结果**: 成功提交 (`git tag bot-v29`, commit `e3101ad`)
+
+### 实际工具调用序列
+
+```
+get_status() → run_review(v29, v28) → run_critic(v29, v28) → commit_bot(v29, v28)
+```
+
+> 注：此循环从 `quality_passed` checkpoint 恢复（之前因认证失败中断），因此跳过了 Master 和 Worker 阶段。
+
+### 各阶段真实输出
+
+**1. get_status()**
+```json
+{
+  "current_v": 28,
+  "active_bots_count": 28,
+  "rating_reliable": true,
+  "incomplete_next_v": 29,
+  "current_bot_h2h_avg_wr": 0.60
+}
+```
+
+**2. run_review(v29, v28)** — 5 次审查循环
+
+- Review 1-4: 均被拒绝（发现 bug：缺少 `TOTAL_HANDS` 导入、river 3-branch 抢占 nut overbet、preflop tier 防御折叠 AA/KK 等）
+- Review 5: **通过** (score: 7/10)
+
+```json
+{
+  "approved": true,
+  "quality_score": 7,
+  "change_summary": "Added 5-tier preflop hand classification system, river 3-branch decision framework...",
+  "risk_areas": [
+    "River 3-branch may bypass nuanced edge-case handling",
+    "Raise sizing increased 10-15% across all streets",
+    "betting.py doubled in size (305→605 lines)"
+  ]
+}
+```
+
+**3. run_critic(v29, v28)** — 通过 (score: 7/10)
+
+```json
+{
+  "score": 7,
+  "approved": true,
+  "strategic_assessment": "River 3-branch fixes confirmed 0% raise/fold leak... Preflop 5-tier system provides principled decisions...",
+  "local_optima_warning": false,
+  "local_optima_reason": "v28 added board texture, v27 added fold gate, v26 added SPR awareness. v29 adds preflop tier + river 3-branch — fundamentally different."
+}
+```
+
+**4. commit_bot(v29, v28)**
+
+```json
+{
+  "committed": true,
+  "tag": "bot-v29",
+  "sha": "e3101ad"
+}
+```
+
+Git commit message:
+```
+evolve: v28 → v29
+
+parent: claude_v28
+strategy: Gen 29 from v28: Added 5-tier preflop hand classification system, 
+river 3-branch decision framework (strong/medium/weak) to fix 0% raise/fold leak, 
+widened BB defense with tier-based logic, increased raise sizing ratios ~10-15% 
+across all streets, tightened thresholds for tighter-aggressive profile. 
+Review score 7, Critic score 7.
+```
+
+### 关键文件变更
+
+| 文件 | 变更 |
+|---|---|
+| `state.py` | +79 行：新增 `classify_preflop_tier()` |
+| `betting.py` | +300 行：river 3-branch 系统、preflop tier 集成 |
+| `strategy.py` | -10 行：导入新函数、BB 防御、river 分发 |
+
+### 相关日志文件
+
+- `web/logs/orchestrator_20260530_155557.txt` — Orchestrator 循环
+- `web/core/results/v29/logs/master_io.txt` — Master 规划
+- `web/core/results/v29/logs/worker_1_io.txt` — Worker 1（Logic Architect）
+- `web/core/results/v29/logs/worker_2_io.txt` — Worker 2（Hyperparameter Tuner）
+- `web/core/results/v29/logs/reviewer_io.txt` — 5 次审查记录
+- `web/core/results/v29/logs/critic_io.txt` — Critic 评估
+- `web/core/results/v29/logs/match_analyst_io.txt` — 赛后分析
+- `web/core/results/v29/logs/performance_verification_io.txt` — 性能验证
+- `web/core/results/v29/logs/stagnation_analysis.txt` — 停滞分析
+
+---
+
+## 附录：非典型路径示例（v3 → v35）
+
+以下展示一个包含多次重试和低分通过的循环。
+
+### 背景
+
+- **源 bot**: claude_v3（非最近 lineage，因停滞分析建议 branch）
+- **目标 bot**: claude_v35
+- **特点**: Worker 多次重试、Critic 低分通过、无 Reviewer 日志
+
+### 关键偏差
+
+1. **Worker 1 收到 5 次顺序 prompt**（非单次执行）：
+   - Prompt 1: 加宽 preflop 防御
+   - Prompt 2: 修复 AKs 折叠 bug + 压缩文件
+   - Prompt 3: 修复 `sanitize_action` bug
+   - Prompt 4-5: 验证/无操作
+
+2. **Critic 评分 6/10（最低通过线）**，反馈：
+   - "preflop threshold magnitudes are extreme"
+   - "~900 lines of whitespace-only changes make review harder"
+   - "constants.py is identical to worker prompt claim of 'reverted SIZING_TABLE'"
+
+3. **无 Reviewer 日志** — `web/core/results/v35/logs/reviewer_io.txt` 不存在
+
+4. **Precommit 结果**: 3-2-0（边际通过）
+
+### 结果
+
+- **提交**: 是 (`git tag bot-v35`, commit `06d5743`)
+- **策略**: Fixed sanitize_action all-in bug, widened preflop defense, lowered air-hand EQR
+
+> 此示例说明：即使 Critic 低分通过、Worker 多次重试，系统仍可能完成提交。这符合 `force_advance` 的设计意图 — 在重试耗尽后推进，避免无限循环。

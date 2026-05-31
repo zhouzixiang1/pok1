@@ -81,12 +81,16 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 tools=["Bash", "Read", "Edit"],
             ))
             await asyncio.wait_for(llm_task, timeout=WORKER_TIMEOUT)
-        except asyncio.TimeoutError:
-            _last_reason = f"timed out after {WORKER_TIMEOUT}s (attempt {attempt+1}/{MAX_WORKER_RETRIES})"
-            ui.log_history(
-                f"Worker {w_id} ({role}) timed out after {WORKER_TIMEOUT}s. Retrying with simpler task...",
-                "warn",
-            )
+        except (asyncio.TimeoutError, Exception) as exc:
+            if isinstance(exc, asyncio.TimeoutError):
+                _last_reason = f"timed out after {WORKER_TIMEOUT}s (attempt {attempt+1}/{MAX_WORKER_RETRIES})"
+                ui.log_history(
+                    f"Worker {w_id} ({role}) timed out after {WORKER_TIMEOUT}s. Retrying with simpler task...",
+                    "warn",
+                )
+            else:
+                _last_reason = f"unexpected error: {type(exc).__name__}: {str(exc)[:200]}"
+                ui.log_history(f"Worker {w_id} ({role}) error: {exc}", "error")
             # Reset code directory from source to avoid half-edited state
             if source_v is not None:
                 src_dir = get_bot_dir(source_v)
@@ -98,10 +102,6 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 "\n\nPREVIOUS ATTEMPT TIMED OUT. Start fresh with a minimal, focused implementation. "
                 "Implement only the single most impactful change — do NOT try to do everything at once."
             )
-            continue
-        except Exception as e:
-            _last_reason = f"unexpected error: {type(e).__name__}: {str(e)[:200]}"
-            ui.log_history(f"Worker {w_id} ({role}) error: {e}", "error")
             continue
 
         compile_errors = verify_code(next_dir)

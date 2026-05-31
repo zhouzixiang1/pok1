@@ -45,7 +45,8 @@ async def _run_critic(next_v, source_v, master_plan_str, ui):
         data = parse_json_output(output)
         if data and "score" in data:
             # Normalise: score >= 6 → approved
-            data.setdefault("approved", data["score"] >= 6)
+            if "approved" not in data:
+                data["approved"] = data["score"] >= 6
             data.setdefault("local_optima_warning", False)
             return data
     except Exception as e:
