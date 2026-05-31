@@ -135,6 +135,7 @@ def _record_gate(version, source_v, gate_name, gate_data, stage=None,
                  master_plan=None, reviewer_feedback=None):
     ckpt = _matching_checkpoint(version, source_v)
     if not ckpt:
+        print(f"[WARN] _record_gate: no matching checkpoint for v{version}/v{source_v}, gate '{gate_name}' dropped")
         return False
     write_pipeline_checkpoint(
         version,
@@ -193,7 +194,7 @@ def _critic_gate_ok(checkpoint):
         score = float(critic.get("score", 0))
     except (TypeError, ValueError):
         score = 0.0
-    return critic.get("approved") is True and score >= 6
+    return (critic.get("approved") is True and score >= 6) or critic.get("force_advanced") is True
 
 
 def _bot_main(bot_name):
@@ -383,6 +384,19 @@ def _validate_worker_boundaries(tasks, source_v, next_v):
                 "file": rel,
                 "message": "Worker modified a Python file outside declared target_files.",
             })
+
+    # Check for new files created outside target_files
+    if source_dir.exists() and next_dir.exists():
+        source_files = {p.relative_to(source_dir).as_posix() for p in source_dir.rglob("*.py")}
+        next_files = {p.relative_to(next_dir).as_posix() for p in next_dir.rglob("*.py")}
+        new_files = next_files - source_files
+        for rel in new_files:
+            if rel not in all_targets:
+                errors.append({
+                    "type": "new_file_violation",
+                    "file": rel,
+                    "message": "Worker created a new file outside declared target_files.",
+                })
 
     for task in tasks:
         role = str(task.get("role", ""))

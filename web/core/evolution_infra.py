@@ -97,6 +97,10 @@ _BLOCKED_MCP_TOOLS = [
 # Lazy-initialised semaphore — created on first use inside the event loop
 _WORKER_SEMAPHORE: "asyncio.Semaphore | None" = None
 
+
+def _is_rate_limited(output: str) -> bool:
+    return "529" in output or "该模型当前访问量过大" in output or "rate limit" in output.lower()
+
 # Add workspace to sys.path for glicko2 import
 from glicko2 import Glicko2Player, update_rating_period
 from experience_pool import trim_experience_pool
@@ -162,15 +166,17 @@ def substitute_template(template, replacements):
 
 def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                reviewer_feedback="", generation_attempt=0,
-                               gate_results=None):
+                               gate_results=None, worker_invocation_count=None):
     """Write pipeline stage checkpoint so a killed process can resume."""
     existing_gate_results = {}
+    existing_invocation_count = 0
     try:
         if PIPELINE_STATE_FILE.exists():
             with locked_file(PIPELINE_STATE_FILE) as f:
                 existing = json.load(f)
             if existing.get("next_v") == next_v and existing.get("source_v") == source_v:
                 existing_gate_results = existing.get("gate_results", {}) or {}
+                existing_invocation_count = existing.get("worker_invocation_count", 0)
     except Exception:
         existing_gate_results = {}
     allowed_gates = STAGE_GATE_ALLOWLIST.get(stage)
@@ -183,10 +189,14 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
     if gate_results:
         existing_gate_results.update(gate_results)
 
+    if worker_invocation_count is not None:
+        existing_invocation_count = worker_invocation_count
+
     state = {
         "next_v": next_v, "source_v": source_v, "stage": stage,
         "master_plan": master_plan, "reviewer_feedback": reviewer_feedback,
         "generation_attempt": generation_attempt,
+        "worker_invocation_count": existing_invocation_count,
         "gate_results": existing_gate_results,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
@@ -589,15 +599,16 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
     except asyncio.CancelledError:
         ui.log_io(f"\n[{role_name} CANCELLED]", "error")
         if query_gen is not None:
-            await query_gen.aclose()
+            try:
+                await query_gen.aclose()
+            except Exception:
+                pass
         raise
-
-    ui.update_cost(role_name, cost_usd, usage)
 
     output = "\n".join(full_text)
 
     # Auto-retry on API rate limit (529) with exponential backoff
-    if "529" in output or "该模型当前访问量过大" in output or "rate limit" in output.lower():
+    if _is_rate_limited(output):
         for backoff in [30, 60, 120]:
             ui.log_history(f"API rate limited (529). Retrying in {backoff}s...", "warn")
             await asyncio.sleep(backoff)
@@ -625,13 +636,17 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
                 ui.log_io(f"[ERROR] {e}", "error")
             except asyncio.CancelledError:
                 if retry_gen is not None:
-                    await retry_gen.aclose()
+                    try:
+                        await retry_gen.aclose()
+                    except Exception:
+                        pass
                 raise
 
-            ui.update_cost(role_name, cost_usd, usage)
             output = "\n".join(full_text)
-            if "529" not in output and "该模型当前访问量过大" not in output:
+            if not _is_rate_limited(output):
                 break
+
+    ui.update_cost(role_name, cost_usd, usage)
 
     return output, cost_usd, usage
 

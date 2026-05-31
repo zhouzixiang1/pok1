@@ -86,6 +86,7 @@ class WebUI(BaseUI):
         self.gen_cost_total = 0.0
         self.costs = []
         self._messages = []
+        self._output_since_clear = []
         self._state: dict[str, Any] = {
             "status": "Initializing...",
             "is_working": False,
@@ -118,8 +119,11 @@ class WebUI(BaseUI):
         icon = {"info": "[INFO]", "warn": "[WARN]", "error": "[ERR]",
                 "success": "[OK]"}.get(status, "[INFO]")
         self._messages.append(f"[{status}] {msg}")
+        self._output_since_clear.append(f"[{status}] {msg}")
         if len(self._messages) > 200:
             self._messages = self._messages[-200:]
+        if len(self._output_since_clear) > 200:
+            self._output_since_clear = self._output_since_clear[-200:]
         print(f"{icon} {msg}")
         self._emit("history", {"msg": msg, "status": status})
 
@@ -145,6 +149,7 @@ class WebUI(BaseUI):
         self._emit("io", {"msg": msg, "stream_type": stream_type})
 
     def clear_io(self):
+        self._output_since_clear.clear()
         self._emit("clear_io", {})
 
     def update_eval_table(self, ratings, active_bots):
@@ -191,7 +196,7 @@ class WebUI(BaseUI):
             try:
                 _COSTS_FILE.parent.mkdir(parents=True, exist_ok=True)
                 with open(_COSTS_FILE, "a") as f:
-                    f.write(json.dumps({"cost_usd": cost_usd, "grand_total": round(self.grand_cost_total, 6), "ts": time.time()}) + "\n")
+                    f.write(json.dumps({"role": role, "cost_usd": cost_usd, "grand_total": round(self.grand_cost_total, 6), "ts": time.time()}) + "\n")
             except OSError:
                 pass
             in_tok = usage.get("input_tokens", 0) if usage else 0
@@ -230,4 +235,4 @@ class WebUI(BaseUI):
         }
 
     def get_output(self):
-        return "\n".join(self._messages[-20:])
+        return "\n".join(self._output_since_clear[-20:])

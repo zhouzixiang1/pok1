@@ -140,7 +140,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
         return True
 
     # Parallel had issues — fall back to serial with fresh copy
-    ui.log_history("Parallel execution had issues, retrying serially...", "warn")
+    ui.log_history("Parallel execution had issues, retrying serially with fresh code copy...", "warn")
     _source = source_v if source_v is not None else find_current_v()
     src_dir = get_bot_dir(_source)
     if next_dir.exists():
@@ -148,10 +148,16 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
     shutil.copytree(src_dir, next_dir, ignore=_COPY_IGNORE)
     (next_dir / ".completed").unlink(missing_ok=True)
 
+    # Append note so serial workers know prior failures may not apply to fresh copy
+    serial_reviewer_feedback = (reviewer_feedback or "") + (
+        "\n\nNOTE: Previous parallel attempt failed and code was reset from source. "
+        "Prior error messages may reference issues that no longer exist — focus on the current code state."
+    )
+
     for i, task in enumerate(tasks):
         ok = await _run_single_worker(
             task, i, worker_template, next_dir, next_v,
-            context_files, ui, reviewer_feedback,
+            context_files, ui, serial_reviewer_feedback,
         )
         if not ok:
             return False

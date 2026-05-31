@@ -44,6 +44,10 @@ RESULTS_DIR = Path(__file__).resolve().parent / "results"
 ORCHESTRATOR_SESSION_FILE = RESULTS_DIR / "orchestrator_session.json"
 
 
+def _is_rate_limited(output: str) -> bool:
+    return "529" in output or "该模型当前访问量过大" in output or "rate limit" in output.lower()
+
+
 # ── Orchestrator session persistence (process recovery) ──
 
 def _save_orchestrator_session(session_id: str):
@@ -251,17 +255,19 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
 
     total_cost = 0.0
     cycle_completed = False
+    auth_error = False
 
     with open(log_file, "a") as lf:
         lf.write(f"\n{'='*60}\n[ORCHESTRATOR CYCLE] {time.strftime('%Y-%m-%d %H:%M:%S')}\n{'='*60}\n")
         lf.write(f"[PROMPT]\n{prompt}\n\n[OUTPUT]\n")
 
         async def _stream_response(opts, max_retries=3):
-            """Run a single streaming query. Returns (full_text, cost, cycle_ok, gen)."""
+            """Run a single streaming query. Returns (full_text, cost, cycle_ok, gen, auth_error)."""
             texts = []
             cost = 0.0
             ok = False
             gen = None
+            auth_err = False
             try:
                 gen = claude_query(prompt=prompt, options=opts)
                 async for message in gen:
@@ -295,16 +301,22 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                             if message.session_id:
                                 _save_orchestrator_session(message.session_id)
                         else:
+                            error_text = str(getattr(message, 'error', 'Unknown SDK error'))
+                            lf.write(f"\n[API ERROR] {error_text}\n")
+                            if ui:
+                                ui.log_history(f"[Orchestrator] API error: {error_text[:200]}", "error")
                             _clear_orchestrator_session()
+                            if any(code in error_text for code in ["401", "403"]):
+                                auth_err = True
             except (CLINotFoundError, ProcessError) as e:
                 if ui:
                     ui.log_io(f"[ERROR] {e}", "error")
                 else:
                     print(f"\n[ERROR] {e}")
-            return "".join(texts), cost, ok, gen
+            return "".join(texts), cost, ok, gen, auth_err
 
         try:
-            full_output, total_cost, cycle_completed, query_gen = await _stream_response(options)
+            full_output, total_cost, cycle_completed, query_gen, auth_error = await _stream_response(options)
 
             # 529 rate-limit retry with exponential backoff
             if _is_rate_limited(full_output):
@@ -313,7 +325,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                         ui.log_history(f"Orchestrator rate limited (529). Retrying in {backoff}s...", "warn")
                     lf.write(f"\n[529 RETRY] backing off {backoff}s\n")
                     await asyncio.sleep(backoff)
-                    full_output, total_cost, cycle_completed, query_gen = await _stream_response(options)
+                    full_output, total_cost, cycle_completed, query_gen, auth_error = await _stream_response(options)
                     if not _is_rate_limited(full_output):
                         break
 
@@ -364,6 +376,10 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
     # If killed, the session file remains so next startup can resume.
     if cycle_completed:
         _clear_orchestrator_session()
+
+    # Return negative cost to signal auth error for fast backoff
+    if auth_error:
+        return -abs(total_cost) if total_cost > 0 else -1.0
 
     return total_cost
 
@@ -422,7 +438,16 @@ async def orchestrator_loop(ui, no_daemon=False, daemon_workers=14, daemon_pairs
                 max_turns=max_turns,
             )
 
-            if cost == 0:
+            # Auth error fast-fail: immediate long backoff
+            if cost < 0:
+                if ui:
+                    ui.log_history("Orchestrator: API auth error (401/403). Backing off 300s.", "error")
+                await asyncio.sleep(300)
+                _clear_orchestrator_session()
+                consecutive_zero_cost = 0
+                continue
+
+            if cost < 0.05:  # Catch $0 (auth) and ~$0.01 (API validation errors)
                 consecutive_zero_cost += 1
             else:
                 consecutive_zero_cost = 0

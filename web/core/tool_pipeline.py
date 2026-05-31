@@ -43,9 +43,32 @@ from tool_helpers import (
 )
 
 
+def _record_quality_failure(gen, worker_id, role, error):
+    """Record a quality gate rejection (reviewer/critic) to worker_failures.jsonl."""
+    from evolution_core import WORKER_FAILURES_FILE, locked_file
+    entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error}
+    with locked_file(WORKER_FAILURES_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
 # ──────────────────────────────────────────────
 # Master Stage
 # ──────────────────────────────────────────────
+
+def _validate_master_plan(plan):
+    """Validate master plan constraints before dispatching workers."""
+    errors = []
+    tasks = plan.get("tasks", [])
+    if len(tasks) > 3:
+        errors.append(f"Too many tasks: {len(tasks)} > 3")
+    for i, task in enumerate(tasks):
+        targets = task.get("target_files", [])
+        if len(targets) > 3:
+            errors.append(f"Task {i}: too many target_files ({len(targets)} > 3)")
+        prompt = task.get("worker_prompt", "")
+        if len(prompt) > 3000:
+            errors.append(f"Task {i}: worker_prompt too long ({len(prompt)} > 3000 chars)")
+    return errors
 
 class RunMasterInput(TypedDict):
     source_v: Annotated[int, "Source bot version"]
@@ -72,6 +95,10 @@ async def run_master(args):
 
     if data is None:
         return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed to produce a valid plan after 3 retries", "logs": ui.get_output()})}]}
+
+    plan_errors = _validate_master_plan(data)
+    if plan_errors:
+        return {"content": [{"type": "text", "text": json.dumps({"error": "Master plan validation failed", "validation_errors": plan_errors, "plan": data, "logs": ui.get_output()})}]}
 
     result = {"plan": data, "logs": ui.get_output()}
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
@@ -106,6 +133,23 @@ async def execute_workers(args):
             next_v,
             source_v,
         )
+    if not ckpt.get("master_plan"):
+        return _json_tool_result({
+            "error": "execute_workers requires a master plan. Call run_master first to produce a task plan.",
+            "next_v": next_v,
+            "source_v": source_v,
+        })
+
+    # Circuit breaker: limit total worker invocations per generation
+    invocation_count = ckpt.get("worker_invocation_count", 0)
+    MAX_WORKER_INVOCATIONS = 6
+    if invocation_count + len(tasks) > MAX_WORKER_INVOCATIONS:
+        return _json_tool_result({
+            "error": f"CIRCUIT BREAKER: {invocation_count} worker invocations already used this generation (max {MAX_WORKER_INVOCATIONS}). Abandon this generation and start a new one.",
+            "invocation_count": invocation_count,
+            "next_v": next_v,
+            "source_v": source_v,
+        })
 
     ui = _get_ui()
     success = await _execute_workers(
@@ -123,7 +167,8 @@ async def execute_workers(args):
     if success:
         from evolution_core import write_pipeline_checkpoint
         write_pipeline_checkpoint(next_v, source_v, "workers_done",
-                                  master_plan=tasks, reviewer_feedback=reviewer_feedback)
+                                  master_plan=tasks, reviewer_feedback=reviewer_feedback,
+                                  worker_invocation_count=invocation_count + len(tasks))
 
     result = {
         "success": success,
@@ -216,11 +261,18 @@ async def prepare_next_gen(args):
     source_v = args["source_v"]
     next_v = args["next_v"]
 
+    if next_v <= source_v:
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"next_v ({next_v}) must be greater than source_v ({source_v})"})}]}
+
     source_dir = get_bot_dir(source_v)
     next_dir = get_bot_dir(next_v)
 
     if not source_dir.exists():
         return {"content": [{"type": "text", "text": json.dumps({"error": f"Source bot v{source_v} not found"})}]}
+
+    # Guard: refuse to overwrite a completed bot
+    if next_dir.exists() and (next_dir / ".completed").exists():
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"Target v{next_v} already exists and is completed. Refusing to overwrite."})}]}
 
     if next_dir.exists():
         shutil.rmtree(next_dir)
@@ -229,7 +281,7 @@ async def prepare_next_gen(args):
 
     # Write "prepared" checkpoint so a kill+restart shows "Workers not yet run → call execute_workers"
     from evolution_core import write_pipeline_checkpoint
-    write_pipeline_checkpoint(next_v, source_v, "prepared")
+    write_pipeline_checkpoint(next_v, source_v, "prepared", worker_invocation_count=0)
 
     return {"content": [{"type": "text", "text": json.dumps({"prepared": True, "next_v": next_v, "source_v": source_v})}]}
 
@@ -295,6 +347,9 @@ async def run_review(args):
             master_plan=plan,
             reviewer_feedback=feedback,
         )
+        if not approved:
+            _record_quality_failure(v, "reviewer", "Code Reviewer",
+                                    f"Rejected (score={data.get('quality_score', 0)}): {feedback[:200]}")
         result = {
             "approved": approved,
             "quality_score": data.get("quality_score", 0),
@@ -380,6 +435,7 @@ async def run_critic(args):
         score_num = 0.0
     raw_approved = data.get("approved", score_num >= 6)
     approved = bool(raw_approved) and score_num >= 6
+    force_advanced = force_advance and not approved
     gate = _gate_payload(
         v,
         source_v,
@@ -390,17 +446,20 @@ async def run_critic(args):
         feedback=data.get("feedback", ""),
         strategic_assessment=data.get("strategic_assessment", ""),
         local_optima_warning=data.get("local_optima_warning", False),
-        force_advanced=force_advance and not approved,
+        force_advanced=force_advanced,
     )
     checkpoint_recorded = _record_gate(
         v,
         source_v,
         "critic",
         gate,
-        stage="critic_checked" if approved or force_advance else None,
+        stage="critic_checked" if approved or force_advanced else None,
         master_plan=plan,
         reviewer_feedback=reviewer_feedback,
     )
+    if not approved:
+        _record_quality_failure(v, "critic", "Strategy Critic",
+                                f"Rejected (score={score_num}): {data.get('feedback', '')[:200]}")
 
     result = {
         **data,
@@ -408,8 +467,8 @@ async def run_critic(args):
         "raw_approved": raw_approved,
         "score": score_num,
         "logs": ui.get_output(),
-        "action": "approve" if approved else "retry_workers",
-        "force_advanced": force_advance and not approved,
+        "action": "approve" if approved else ("force_commit" if force_advanced else "retry_workers"),
+        "force_advanced": force_advanced,
         "checkpoint_recorded": checkpoint_recorded,
     }
     return _json_tool_result(result)
@@ -574,6 +633,11 @@ async def run_inline_eval(args):
 
     if not (bot_dir / "main.py").exists():
         return {"content": [{"type": "text", "text": json.dumps({"error": f"Bot v{v} main.py not found"})}]}
+
+    # Guard: refuse to run while daemon is active (read-modify-write race on ratings)
+    from evolution_infra import daemon_proc
+    if daemon_proc is not None and daemon_proc.poll() is None:
+        return {"content": [{"type": "text", "text": json.dumps({"error": "Daemon is running. Stop it first with stop_daemon to avoid ratings race condition."})}]}
 
     # Import battle engine
     sys.path.insert(0, str((PROJECT_ROOT / "engine").resolve()))
@@ -744,10 +808,13 @@ async def commit_bot(args):
                 critic_score = float(critic.get("score", 0))
             except (TypeError, ValueError):
                 critic_score = 0.0
-            if critic.get("approved") is not True or critic_score < 6:
+            critic_force_advanced = critic.get("force_advanced", False)
+            if critic_force_advanced:
+                pass  # force_advance allows committing despite low score
+            elif critic.get("approved") is not True or critic_score < 6:
                 failed_gates.append({
                     "gate": "critic",
-                    "reason": "critic score must be >= 6 and approved must be true",
+                    "reason": "critic score must be >= 6 and approved must be true (or force_advanced)",
                     "value": critic,
                 })
 
@@ -865,6 +932,11 @@ async def run_crossover(args):
 
     ui = _get_ui()
     success = await _run_crossover(parent_a, parent_b, target_v, ui)
+
+    # Write checkpoint so quality gates → review → critic → commit can proceed
+    if success:
+        from evolution_core import write_pipeline_checkpoint
+        write_pipeline_checkpoint(target_v, parent_a, "workers_done")
 
     result = {"success": success, "logs": ui.get_output()}
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
