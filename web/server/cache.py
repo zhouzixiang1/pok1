@@ -1,0 +1,31 @@
+"""Shared file cache for route modules — eliminates per-module cache duplication."""
+
+import fcntl
+import json
+import time
+from pathlib import Path
+from typing import Any
+
+_CACHE: dict[str, tuple[float, Any]] = {}
+_CACHE_TTL = 2.0
+
+
+def read_locked(path: Path) -> Any:
+    with open(path, "r") as f:
+        fcntl.flock(f, fcntl.LOCK_SH)
+        data = json.load(f)
+        fcntl.flock(f, fcntl.LOCK_UN)
+    return data
+
+
+def cached_read(key: str, path: Path) -> Any:
+    now = time.time()
+    if key in _CACHE:
+        mtime, data = _CACHE[key]
+        if now - mtime < _CACHE_TTL:
+            return data
+    if not path.exists():
+        return None
+    data = read_locked(path)
+    _CACHE[key] = (now, data)
+    return data

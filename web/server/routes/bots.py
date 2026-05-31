@@ -10,6 +10,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
+from server.cache import cached_read
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BOTS_DIR = PROJECT_ROOT / "bots"
 RESULTS_DIR = PROJECT_ROOT / "web" / "core" / "results"
@@ -17,41 +19,10 @@ RATINGS_FILE = RESULTS_DIR / "glicko_ratings.json"
 
 router = APIRouter(prefix="/api/bots", tags=["bots"])
 
-_cache: dict[str, tuple[float, Any]] = {}
-_CACHE_TTL = 3.0
-
-
-def _cached_read(key: str, path: Path) -> Any:
-    now = time.time()
-    if key in _cache:
-        mtime, data = _cache[key]
-        if now - mtime < _CACHE_TTL:
-            return data
-    if not path.exists():
-        return None
-    with open(path, "r") as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
-        data = json.load(f)
-        fcntl.flock(f, fcntl.LOCK_UN)
-    _cache[key] = (now, data)
-    return data
-
 
 def _load_ratings() -> dict:
-    now = time.time()
-    if "ratings" in _cache:
-        mtime, data = _cache["ratings"]
-        if now - mtime < _CACHE_TTL:
-            return data
-    if not RATINGS_FILE.exists():
-        return {}
     try:
-        with open(RATINGS_FILE, "r") as f:
-            fcntl.flock(f, fcntl.LOCK_SH)
-            data = json.load(f)
-            fcntl.flock(f, fcntl.LOCK_UN)
-        _cache["ratings"] = (now, data)
-        return data
+        return cached_read("ratings", RATINGS_FILE) or {}
     except Exception as e:
         import logging
         logging.getLogger("bots").warning("Failed to load ratings: %s", e)
@@ -108,8 +79,8 @@ def _bot_summary(bot_dir: Path, bot_name: str, ratings: dict, bot_stats_data: di
 async def list_bots(include_graveyard: bool = Query(False)):
     """List all active bots and optionally graveyard bots."""
     ratings = _load_ratings()
-    bot_stats_data = _cached_read("bot_stats", BOT_STATS_FILE) or {}
-    h2h_data = _cached_read("h2h", H2H_FILE) or {}
+    bot_stats_data = cached_read("bot_stats", BOT_STATS_FILE) or {}
+    h2h_data = cached_read("h2h", H2H_FILE) or {}
     active = []
     graveyard = []
 
@@ -157,8 +128,8 @@ async def bot_detail(version: int):
         raise HTTPException(status_code=404, detail=f"Bot v{version} not found")
 
     ratings = _load_ratings()
-    bot_stats_data = _cached_read("bot_stats_detail", BOT_STATS_FILE) or {}
-    h2h_data = _cached_read("h2h_detail", H2H_FILE) or {}
+    bot_stats_data = cached_read("bot_stats_detail", BOT_STATS_FILE) or {}
+    h2h_data = cached_read("h2h_detail", H2H_FILE) or {}
     summary = _bot_summary(bot_dir, bot_name, ratings, bot_stats_data, h2h_data)
 
     # Try to get git parent from tag

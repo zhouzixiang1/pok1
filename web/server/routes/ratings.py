@@ -10,6 +10,8 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
+from server.cache import cached_read, read_locked
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RESULTS_DIR = PROJECT_ROOT / "web" / "core" / "results"
 EXPERIENCE_FILE = PROJECT_ROOT / "web" / "core" / "experience_pool.md"
@@ -20,30 +22,6 @@ BOT_STATS_FILE = RESULTS_DIR / "bot_stats.json"
 HISTORY_FILE = RESULTS_DIR / "rating_history.jsonl"
 
 router = APIRouter(prefix="/api", tags=["ratings"])
-
-_cache: dict[str, tuple[float, Any]] = {}
-_CACHE_TTL = 2.0
-
-
-def _read_locked(path: Path) -> Any:
-    with open(path, "r") as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
-        data = json.load(f)
-        fcntl.flock(f, fcntl.LOCK_UN)
-    return data
-
-
-def _cached_read(key: str, path: Path) -> Any:
-    now = time.time()
-    if key in _cache:
-        mtime, data = _cache[key]
-        if now - mtime < _CACHE_TTL:
-            return data
-    if not path.exists():
-        return None
-    data = _read_locked(path)
-    _cache[key] = (now, data)
-    return data
 
 
 def _confidence(rd: float) -> str:
@@ -59,9 +37,9 @@ def _confidence(rd: float) -> str:
 @router.get("/ratings")
 async def get_ratings():
     from tool_helpers import compute_h2h_avg_winrate
-    data = _cached_read("ratings", RATINGS_FILE)
-    bot_stats_data = _cached_read("bot_stats", BOT_STATS_FILE) or {}
-    h2h_data = _cached_read("h2h", H2H_FILE) or {}
+    data = cached_read("ratings", RATINGS_FILE)
+    bot_stats_data = cached_read("bot_stats", BOT_STATS_FILE) or {}
+    h2h_data = cached_read("h2h", H2H_FILE) or {}
     if not data:
         return []
 
@@ -91,9 +69,9 @@ async def get_ratings():
 @router.get("/ratings/{bot_name}")
 async def get_rating_detail(bot_name: str):
     from tool_helpers import compute_h2h_avg_winrate
-    data = _cached_read("ratings", RATINGS_FILE)
-    bot_stats_data = _cached_read("bot_stats", BOT_STATS_FILE) or {}
-    h2h_data = _cached_read("h2h", H2H_FILE) or {}
+    data = cached_read("ratings", RATINGS_FILE)
+    bot_stats_data = cached_read("bot_stats", BOT_STATS_FILE) or {}
+    h2h_data = cached_read("h2h", H2H_FILE) or {}
     if not data or bot_name not in data:
         raise HTTPException(status_code=404, detail="Bot not found")
     d = data[bot_name]
@@ -256,7 +234,7 @@ async def daemon_status():
 
 @router.get("/h2h")
 async def get_h2h(bot_name: str = Query("", description="Filter by bot name")):
-    data = _cached_read("h2h", H2H_FILE)
+    data = cached_read("h2h", H2H_FILE)
     if not data:
         return {}
     if not bot_name:
@@ -271,5 +249,5 @@ async def get_h2h(bot_name: str = Query("", description="Filter by bot name")):
 
 @router.get("/bot-stats")
 async def get_all_bot_stats():
-    data = _cached_read("bot_stats", BOT_STATS_FILE)
+    data = cached_read("bot_stats", BOT_STATS_FILE)
     return data or {}

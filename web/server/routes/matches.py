@@ -10,6 +10,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
+from server.cache import cached_read, read_locked
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RESULTS_DIR = PROJECT_ROOT / "web" / "core" / "results"
 STATS_FILE = RESULTS_DIR / "elo_daemon_stats.json"
@@ -21,35 +23,10 @@ MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 router = APIRouter(prefix="/api", tags=["matches"])
 
 
-_cache: dict[str, tuple[float, Any]] = {}
-_CACHE_TTL = 2.0
-
-
-def _read_locked(path: Path) -> Any:
-    with open(path, "r") as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
-        data = json.load(f)
-        fcntl.flock(f, fcntl.LOCK_UN)
-    return data
-
-
-def _cached_read(key: str, path: Path) -> Any:
-    now = time.time()
-    if key in _cache:
-        mtime, data = _cache[key]
-        if now - mtime < _CACHE_TTL:
-            return data
-    if not path.exists():
-        return None
-    data = _read_locked(path)
-    _cache[key] = (now, data)
-    return data
-
-
 @router.get("/matches/matrix")
 async def match_matrix():
     # Try H2H data first (win-rate matrix)
-    h2h = _cached_read("matches_h2h", H2H_FILE)
+    h2h = cached_read("matches_h2h", H2H_FILE)
     if h2h:
         all_bots = set()
         for k in h2h:
@@ -72,10 +49,10 @@ async def match_matrix():
         return {"bots": bot_names, "matrix": wr_matrix, "source": "h2h"}
 
     # Fallback to legacy pair counts
-    stats = _cached_read("stats", STATS_FILE)
+    stats = cached_read("stats", STATS_FILE)
     if not stats:
         return {"bots": [], "matrix": []}
-    ratings = _cached_read("ratings", RATINGS_FILE) or {}
+    ratings = cached_read("ratings", RATINGS_FILE) or {}
     bot_names = sorted(
         ratings.keys(),
         key=lambda n: int(re.search(r'\d+', n).group()) if re.search(r'\d+', n) else 0
@@ -96,7 +73,7 @@ async def match_matrix():
 
 @router.get("/matches/stats")
 async def match_stats():
-    stats = _cached_read("stats", STATS_FILE)
+    stats = cached_read("stats", STATS_FILE)
     if not stats:
         return {"total_games": 0, "total_pairs": 0, "total_periods": 0, "most_active_pair": "", "most_active_count": 0}
     pairs = stats.get("pairs", {})
@@ -135,7 +112,7 @@ async def match_replay(match_id: str):
     path = (REPLAY_DIR / match_id).resolve()
     if not path.is_relative_to(REPLAY_DIR.resolve()) or not path.is_file():
         raise HTTPException(status_code=404, detail="Match not found")
-    return _read_locked(path)
+    return read_locked(path)
 
 
 @router.get("/matches/commentary/{match_id}")
@@ -148,11 +125,11 @@ async def match_commentary(match_id: str):
     cache_path = (COMMENTARY_DIR / match_id).resolve()
     if cache_path.is_file() and cache_path.is_relative_to(COMMENTARY_DIR.resolve()):
         try:
-            return _read_locked(cache_path)
+            return read_locked(cache_path)
         except (json.JSONDecodeError, OSError):
             pass
 
-    replay = _read_locked(path)
+    replay = read_locked(path)
     from commentary import generate_match_commentary
     commentary = generate_match_commentary(replay)
 

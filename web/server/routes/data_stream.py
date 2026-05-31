@@ -13,6 +13,8 @@ from typing import Any
 from fastapi import APIRouter
 from sse_starlette.sse import EventSourceResponse
 
+from server.cache import cached_read, read_locked
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BOTS_DIR = PROJECT_ROOT / "bots"
 RESULTS_DIR = PROJECT_ROOT / "web" / "core" / "results"
@@ -24,30 +26,6 @@ HISTORY_FILE = RESULTS_DIR / "rating_history.jsonl"
 MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 
 router = APIRouter(prefix="/api", tags=["data-stream"])
-
-_cache: dict[str, tuple[float, Any]] = {}
-_CACHE_TTL = 2.0
-
-
-def _read_locked(path: Path) -> Any:
-    with open(path, "r") as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
-        data = json.load(f)
-        fcntl.flock(f, fcntl.LOCK_UN)
-    return data
-
-
-def _cached_read(key: str, path: Path) -> Any:
-    now = time.time()
-    if key in _cache:
-        mtime, data = _cache[key]
-        if now - mtime < _CACHE_TTL:
-            return data
-    if not path.exists():
-        return None
-    data = _read_locked(path)
-    _cache[key] = (now, data)
-    return data
 
 
 def _confidence(rd: float) -> str:
@@ -66,11 +44,11 @@ def _event(event_type: str, data: Any) -> dict:
 
 def _get_ratings() -> list[dict]:
     from tool_helpers import compute_h2h_avg_winrate
-    data = _cached_read("ds_ratings", RATINGS_FILE)
+    data = cached_read("ds_ratings", RATINGS_FILE)
     if not data:
         return []
-    bot_stats_data = _cached_read("ds_bot_stats_ratings", BOT_STATS_FILE) or {}
-    h2h_data = _cached_read("ds_h2h_ratings", H2H_FILE) or {}
+    bot_stats_data = cached_read("ds_bot_stats_ratings", BOT_STATS_FILE) or {}
+    h2h_data = cached_read("ds_h2h_ratings", H2H_FILE) or {}
 
     rows = []
     for name, d in data.items():
@@ -108,9 +86,9 @@ def _get_daemon_status() -> dict:
 
 def _get_bots() -> dict:
     from tool_helpers import compute_h2h_avg_winrate
-    ratings = _cached_read("ds_ratings_bots", RATINGS_FILE) or {}
-    bot_stats_data = _cached_read("ds_bot_stats_bots", BOT_STATS_FILE) or {}
-    h2h_data = _cached_read("ds_h2h_bots", H2H_FILE) or {}
+    ratings = cached_read("ds_ratings_bots", RATINGS_FILE) or {}
+    bot_stats_data = cached_read("ds_bot_stats_bots", BOT_STATS_FILE) or {}
+    h2h_data = cached_read("ds_h2h_bots", H2H_FILE) or {}
 
     def _count_lines(path: Path) -> int:
         try:
@@ -159,7 +137,7 @@ def _get_bots() -> dict:
 
 
 def _get_match_stats() -> dict:
-    stats = _cached_read("ds_stats", STATS_FILE)
+    stats = cached_read("ds_stats", STATS_FILE)
     if not stats:
         return {"total_games": 0, "total_pairs": 0, "total_periods": 0, "most_active_pair": "", "most_active_count": 0}
     pairs = stats.get("pairs", {})
@@ -191,13 +169,13 @@ def _get_recent_matches(limit: int = 100) -> list[dict]:
 
 
 def _get_match_matrix() -> dict:
-    h2h = _cached_read("ds_h2h_matrix", H2H_FILE)
+    h2h = cached_read("ds_h2h_matrix", H2H_FILE)
     if not h2h:
         # Fallback to legacy stats
-        stats = _cached_read("ds_stats_matrix", STATS_FILE)
+        stats = cached_read("ds_stats_matrix", STATS_FILE)
         if not stats:
             return {"bots": [], "matrix": []}
-        ratings = _cached_read("ds_ratings_matrix", RATINGS_FILE) or {}
+        ratings = cached_read("ds_ratings_matrix", RATINGS_FILE) or {}
         bot_names = sorted(
             ratings.keys(),
             key=lambda n: int(re.search(r"\d+", n).group()) if re.search(r"\d+", n) else 0,
@@ -239,11 +217,11 @@ def _get_match_matrix() -> dict:
 
 
 def _get_h2h() -> dict:
-    return _cached_read("ds_h2h", H2H_FILE) or {}
+    return cached_read("ds_h2h", H2H_FILE) or {}
 
 
 def _get_bot_stats() -> dict:
-    return _cached_read("ds_bot_stats", BOT_STATS_FILE) or {}
+    return cached_read("ds_bot_stats", BOT_STATS_FILE) or {}
 
 
 def _get_history() -> list[dict]:
