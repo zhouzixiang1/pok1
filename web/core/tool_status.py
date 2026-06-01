@@ -665,7 +665,7 @@ async def diagnose_environment(args):
 
     from evolution_infra import run_claude_query, RESULTS_DIR
     log_path = str(RESULTS_DIR / "logs" / "diagnostician_io.txt")
-    response_text, cost = await run_claude_query(
+    response_text, cost, _ = await run_claude_query(
         prompt=prompt,
         context_files=[],
         ui=ui,

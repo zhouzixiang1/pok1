@@ -66,6 +66,8 @@ export default function EvolutionMonitor() {
 
   const ioRef = useRef<HTMLDivElement>(null);
   const openToolId = useRef<number | null>(null);
+  const activeRoleRef = useRef<string>(activeRole);
+  activeRoleRef.current = activeRole;
 
   // ── Message management (unchanged from original) ──
 
@@ -177,7 +179,7 @@ export default function EvolutionMonitor() {
       closeTool();
       const id = nextId();
       openToolId.current = id;
-      const role = data.role || activeRole || undefined;
+      const role = data.role || activeRoleRef.current || undefined;
       if (role && !knownRoles.includes(role)) setKnownRoles((prev) => [...prev, role]);
       addMsg({ id, type: "tool_call", text: data.tool_name, role, toolName: data.tool_name, toolArgs: data.args, toolOutput: [], toolDone: false });
     },

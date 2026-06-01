@@ -794,7 +794,7 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
             except Exception:
                 pass
     except asyncio.CancelledError:
-        ui.log_io(f"\n[{role_name} CANCELLED]", "error")
+        ui.log_io(f"\n[{role_name} CANCELLED]", "error", role_name)
         if query_gen is not None:
             try:
                 await query_gen.aclose()
