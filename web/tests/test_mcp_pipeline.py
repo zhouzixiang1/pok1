@@ -16,17 +16,16 @@ class TestPrepareNextGen:
         (src / ".completed").touch()
 
         from evolution_infra import BOTS_DIR
-        # Use next_v=999 to avoid colliding with real completed bots
         resp = client.post("/api/control/tool/prepare_next_gen",
-                           json={"args": {"source_v": 30, "next_v": 999}})
+                           json={"args": {"source_v": 30, "next_v": 41}})
         assert resp.status_code == 200
         result = json.loads(resp.json()["result"])
         assert result["prepared"] is True
         assert result["source_v"] == 30
-        assert result["next_v"] == 999
+        assert result["next_v"] == 41
 
         # Clean up created dir
-        next_dir = Path(__file__).resolve().parents[2] / "bots" / "claude_v999"
+        next_dir = Path(__file__).resolve().parents[2] / "bots" / "claude_v41"
         if next_dir.exists():
             shutil.rmtree(next_dir)
 

@@ -18,6 +18,7 @@ from evolution_core import (
     get_bot_dir,
     get_active_bots,
     get_logs_dir,
+    find_current_v,
     load_ratings,
     verify_code,
     check_code_size,
@@ -336,6 +337,10 @@ async def prepare_next_gen(args):
 
     if next_v <= source_v:
         return {"content": [{"type": "text", "text": json.dumps({"error": f"next_v ({next_v}) must be greater than source_v ({source_v})"})}]}
+
+    current_v = find_current_v()
+    if next_v > current_v + 10:
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"next_v ({next_v}) is too far ahead of current_v ({current_v}). Use next_v = {current_v + 1}."})}]}
 
     source_dir = get_bot_dir(source_v)
     next_dir = get_bot_dir(next_v)

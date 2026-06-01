@@ -361,7 +361,7 @@ def load_daemon_stats():
     return {"pairs": {}, "total_periods": 0, "total_games": 0}
 
 
-async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=MIN_GAMES_FOR_EVAL):
+async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=MIN_GAMES_FOR_EVAL, ui=None):
     """Wait for daemon to evaluate a new bot (async, non-blocking).
 
     Requires sufficient games played. Uses mtime caching to avoid redundant disk reads.
@@ -369,6 +369,7 @@ async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=
     start = time.time()
     cached_bot_stats = None
     bot_stats_mtime = 0
+    last_log = start
 
     while time.time() - start < timeout:
         if BOT_STATS_FILE.exists():
@@ -386,7 +387,14 @@ async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=
         games = cached_bot_stats.get(bot_name, {}).get("games", 0)
         if games >= min_games:
             return True
+        if ui and time.time() - last_log >= 30:
+            elapsed = int(time.time() - start)
+            ui.log_history(f"等待 {bot_name} 评估: {games}/{min_games} 场 ({elapsed}s)", "info")
+            last_log = time.time()
         await asyncio.sleep(5)
+    if ui:
+        games = cached_bot_stats.get(bot_name, {}).get("games", 0)
+        ui.log_history(f"评估超时 {bot_name}: 仅 {games}/{min_games} 场 ({int(time.time()-start)}s)", "warn")
     return False
 
 

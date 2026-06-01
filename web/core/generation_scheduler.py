@@ -44,7 +44,7 @@ async def prepare_generation(shutdown_mgr, ui=None) -> GenerationContext | None:
     bot_name = f"claude_v{current_v}"
 
     # Wait for sufficient evaluation
-    eval_ok = await wait_for_daemon_eval(bot_name)
+    eval_ok = await wait_for_daemon_eval(bot_name, ui=ui)
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         return None
     if not eval_ok:
