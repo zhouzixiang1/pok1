@@ -373,17 +373,28 @@ def load_daemon_stats():
     return {"pairs": {}, "total_periods": 0, "total_games": 0}
 
 
-async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=MIN_GAMES_FOR_EVAL, ui=None):
+async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=MIN_GAMES_FOR_EVAL, ui=None, shutdown_event=None):
     """Wait for daemon to evaluate a new bot (async, non-blocking).
 
-    Requires sufficient games played. Uses mtime caching to avoid redundant disk reads.
+    Returns True when either:
+      - games >= min_games (hard threshold), OR
+      - rd < EVAL_RD_THRESHOLD and games >= EVAL_RD_MIN_GAMES (confidence-based early exit)
+    Returns False on timeout or shutdown signal.
     """
+    EVAL_RD_THRESHOLD = 60
+    EVAL_RD_MIN_GAMES = 20
+
     start = time.time()
     cached_bot_stats = None
     bot_stats_mtime = 0
+    ratings_mtime = 0
+    cached_rd = None
     last_log = start
 
     while time.time() - start < timeout:
+        if shutdown_event and shutdown_event.is_set():
+            return False
+
         if BOT_STATS_FILE.exists():
             mt = os.path.getmtime(BOT_STATS_FILE)
             if mt != bot_stats_mtime:
@@ -399,9 +410,27 @@ async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=
         games = cached_bot_stats.get(bot_name, {}).get("games", 0)
         if games >= min_games:
             return True
+
+        # RD-based early exit
+        if games >= EVAL_RD_MIN_GAMES and RATINGS_FILE.exists():
+            mt = os.path.getmtime(RATINGS_FILE)
+            if mt != ratings_mtime:
+                ratings_mtime = mt
+                try:
+                    ratings = load_ratings()
+                    player = ratings.get(bot_name)
+                    cached_rd = player.rd if player else None
+                except Exception:
+                    cached_rd = None
+            if cached_rd is not None and cached_rd < EVAL_RD_THRESHOLD:
+                if ui:
+                    ui.log_history(f"{bot_name} 评估就绪: rd={cached_rd:.1f} (<{EVAL_RD_THRESHOLD}), {games} 场", "success")
+                return True
+
         if ui and time.time() - last_log >= 30:
             elapsed = int(time.time() - start)
-            ui.log_history(f"等待 {bot_name} 评估: {games}/{min_games} 场 ({elapsed}s)", "info")
+            rd_info = f", rd={cached_rd:.1f}" if cached_rd else ""
+            ui.log_history(f"等待 {bot_name} 评估: {games}/{min_games} 场 ({elapsed}s{rd_info})", "info")
             last_log = time.time()
         await asyncio.sleep(5)
     if ui:

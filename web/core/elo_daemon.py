@@ -172,11 +172,31 @@ def _opponent_coverage(bot, active_bots, h2h):
     return n_opponents / total if total > 0 else 1.0
 
 
+PRIORITY_EVAL_FILE = RESULTS_DIR / "priority_eval.json"
+
+
+def _load_priority_eval():
+    """Load the priority eval bot name if a recent signal exists."""
+    if not PRIORITY_EVAL_FILE.exists():
+        return None
+    try:
+        with locked_file(PRIORITY_EVAL_FILE, "r") as f:
+            data = json.load(f)
+        # Expire after 30 minutes
+        if time.time() - data.get("since", 0) > 1800:
+            PRIORITY_EVAL_FILE.unlink(missing_ok=True)
+            return None
+        return data.get("bot")
+    except Exception:
+        return None
+
+
 def pick_matches(active_bots, h2h, ratings, n_picks=14):
     """Pick match pairs prioritizing under-evaluated and rating-diverse matchups.
 
     Bots with low opponent coverage (< 80%) get extra scheduling slots to
-    quickly fill in missing matchups.
+    quickly fill in missing matchups. Newly committed bots (priority_eval.json)
+    are exempt from per-bot caps.
     """
     pairs = [(a, b) for i, a in enumerate(active_bots) for b in active_bots[i + 1:]]
 
@@ -201,14 +221,23 @@ def pick_matches(active_bots, h2h, ratings, n_picks=14):
     pairs.sort(key=lambda p: priority(p[0], p[1]), reverse=True)
 
     n_bots = len(active_bots)
-    base_max = max(1, n_picks * 2 // n_bots)
+    base_max = max(2, n_picks * 2 // n_bots)
+    priority_bot = _load_priority_eval()
+
     selected = []
     bot_counts = Counter()
     for a, b in pairs:
         if len(selected) >= n_picks:
             break
-        max_a = base_max * 3 if coverage[a] < 0.8 else base_max
-        max_b = base_max * 3 if coverage[b] < 0.8 else base_max
+        # Priority bot is exempt from per-bot caps
+        if priority_bot and a == priority_bot:
+            max_a = n_picks
+        else:
+            max_a = base_max * 3 if coverage[a] < 0.8 else base_max
+        if priority_bot and b == priority_bot:
+            max_b = n_picks
+        else:
+            max_b = base_max * 3 if coverage[b] < 0.8 else base_max
         if bot_counts[a] < max_a and bot_counts[b] < max_b:
             selected.append((a, b))
             bot_counts[a] += 1

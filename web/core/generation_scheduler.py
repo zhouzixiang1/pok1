@@ -28,10 +28,10 @@ class GenerationContext:
     gen_count: int = 0
 
 
-async def prepare_generation(shutdown_mgr, ui=None) -> GenerationContext | None:
+async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> GenerationContext | None:
     """Phase 1: Analyze state, decide strategy. Disposable on interrupt."""
     from evolution_infra import (
-        MAX_ACTIVE_BOTS, find_current_v, get_active_bots, load_ratings,
+        MAX_ACTIVE_BOTS, MIN_GAMES_FOR_EVAL, find_current_v, get_active_bots, load_ratings,
         wait_for_daemon_eval,
     )
 
@@ -44,7 +44,11 @@ async def prepare_generation(shutdown_mgr, ui=None) -> GenerationContext | None:
     bot_name = f"claude_v{current_v}"
 
     # Wait for sufficient evaluation
-    eval_ok = await wait_for_daemon_eval(bot_name, ui=ui)
+    shutdown_event = shutdown_mgr if shutdown_mgr else None
+    eval_kwargs = {"ui": ui, "shutdown_event": shutdown_event}
+    if min_games is not None:
+        eval_kwargs["min_games"] = min_games
+    eval_ok = await wait_for_daemon_eval(bot_name, **eval_kwargs)
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         return None
     if not eval_ok:

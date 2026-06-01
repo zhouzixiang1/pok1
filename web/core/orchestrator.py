@@ -596,6 +596,7 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
 
     log_file = LOGS_DIR / f"orchestrator_{time.strftime('%Y%m%d_%H%M%S')}.txt"
     gen_count = 0
+    consecutive_prep_fails = 0
 
     # Startup recovery — assess interrupted state
     recovery = _startup_recovery(ui)
@@ -623,12 +624,22 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                 recovery = None  # consume recovery, only used once
             else:
                 # Phase 1: Prepare (disposable on interrupt)
-                gen_ctx = await _prepare_or_fail(shutdown_mgr, ui)
+                # Use degraded min_games after repeated eval timeouts
+                degraded_min = None
+                if consecutive_prep_fails >= 3:
+                    degraded_min = 30
+                    if ui:
+                        ui.log_history("评估等待连续超时，降低评估要求 (30 局) 继续进化...", "warn")
+
+                gen_ctx = await _prepare_or_fail(shutdown_mgr, ui, min_games=degraded_min)
                 if gen_ctx is None:
                     if shutdown_mgr and shutdown_mgr.is_shutting_down:
                         break
-                    await asyncio.sleep(10)
+                    consecutive_prep_fails += 1
+                    backoff = min(10 * (2 ** min(consecutive_prep_fails - 1, 4)), 300)
+                    await asyncio.sleep(backoff)
                     continue
+                consecutive_prep_fails = 0
 
             # Phase 2: Run one generation (preserves state on interrupt)
             cost = await _run_one_cycle(
@@ -695,11 +706,11 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
         # Daemon is only stopped on full process exit (app.py lifespan) or explicit stop
 
 
-async def _prepare_or_fail(shutdown_mgr, ui):
+async def _prepare_or_fail(shutdown_mgr, ui, min_games=None):
     """Run prepare_generation with error handling. Returns ctx or None."""
     from generation_scheduler import prepare_generation
     try:
-        return await prepare_generation(shutdown_mgr, ui)
+        return await prepare_generation(shutdown_mgr, ui, min_games=min_games)
     except asyncio.CancelledError:
         raise
     except Exception as e:
