@@ -90,6 +90,21 @@ def _validate_master_plan(plan):
                         f"as Algorithmic Logic Architect."
                     )
                     break
+
+    # Check target_files overlap between workers
+    all_targets = {}
+    for i, task in enumerate(tasks):
+        for target in task.get("target_files", []):
+            rel = target.strip()
+            if rel in all_targets:
+                errors.append(
+                    f"Tasks {all_targets[rel]} and {i} share target_file '{target}' — "
+                    f"parallel workers must have exclusive file ownership. "
+                    f"Reassign one worker to a different file."
+                )
+            else:
+                all_targets[rel] = i
+
     return errors
 
 class RunMasterInput(TypedDict):

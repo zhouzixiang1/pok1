@@ -136,6 +136,25 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             source_v=source_v,
         )
 
+    # Check for target_files overlap — run sequentially if shared files exist
+    target_sets = [set(t.get("target_files", [])) for t in tasks]
+    has_overlap = any(
+        target_sets[i] & target_sets[j]
+        for i in range(len(target_sets))
+        for j in range(i + 1, len(target_sets))
+    )
+    if has_overlap:
+        ui.log_history("Target files overlap between workers — running sequentially to avoid race conditions.", "info")
+        for i, task in enumerate(tasks):
+            ok = await _run_single_worker(
+                task, i, worker_template, next_dir, next_v,
+                context_files, ui, reviewer_feedback,
+                source_v=source_v,
+            )
+            if not ok:
+                return False
+        return True
+
     # Check for Architect + Tuner dependency — Tuner needs Architect's output first
     has_architect = any("Architect" in t.get("role", "") for t in tasks)
     has_tuner = any("Tuner" in t.get("role", "") for t in tasks)
