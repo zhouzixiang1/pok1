@@ -267,7 +267,7 @@ class BaseUI:
     def set_header(self, msg): pass
     def update_cost(self, role, cost_usd, usage): pass
     def update_metrics(self, metrics): pass
-    def emit_tool_call(self, tool_name: str, args: dict): pass
+    def emit_tool_call(self, tool_name: str, args: dict, role: str = ""): pass
 
 
 # ──────────────────────────────────────────────
@@ -756,6 +756,7 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         cwd=str(PROJECT_ROOT),  # pok/ — workers use relative paths like bots/claude_vN/
         tools=tools,
         disallowed_tools=_BLOCKED_MCP_TOOLS,
+        thinking={"type": "adaptive", "display": "summarized"},
     )
 
     full_text = []
@@ -778,9 +779,11 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
                         ui.log_io(block.thinking or "[thinking...]", "thinking", role_name)
                     elif isinstance(block, ToolUseBlock):
                         ui.log_io(f"\n[tool: {block.name}]", "tool", role_name)
-                        ui.emit_tool_call(block.name, block.input)
+                        ui.emit_tool_call(block.name, block.input, role_name)
                     elif isinstance(block, ToolResultBlock):
-                        content = block.content if isinstance(block.content, str) else json.dumps(block.content, ensure_ascii=False)
+                        content = block.content if isinstance(block.content, str) else (
+                            json.dumps(block.content, ensure_ascii=False) if block.content is not None else ""
+                        )
                         if content:
                             ui.log_io(content[:3000], "tool_result", role_name)
             elif isinstance(message, ResultMessage):
@@ -826,9 +829,11 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
                                 ui.log_io(block.thinking or "[thinking...]", "thinking", role_name)
                             elif isinstance(block, ToolUseBlock):
                                 ui.log_io(f"\n[tool: {block.name}]", "tool", role_name)
-                                ui.emit_tool_call(block.name, block.input)
+                                ui.emit_tool_call(block.name, block.input, role_name)
                             elif isinstance(block, ToolResultBlock):
-                                content = block.content if isinstance(block.content, str) else json.dumps(block.content, ensure_ascii=False)
+                                content = block.content if isinstance(block.content, str) else (
+                                    json.dumps(block.content, ensure_ascii=False) if block.content is not None else ""
+                                )
                                 if content:
                                     ui.log_io(content[:3000], "tool_result", role_name)
                     elif isinstance(message, ResultMessage):

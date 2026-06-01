@@ -223,9 +223,10 @@ class WebUI(BaseUI):
               f"Cost: ${self.grand_cost_total:.3f}")
         self._emit("metrics", metrics)
 
-    def emit_tool_call(self, tool_name: str, args: dict):
+    def emit_tool_call(self, tool_name: str, args: dict, role: str = ""):
         """Broadcast a structured tool call event for expandable display in the Dashboard."""
-        self._emit("tool_call", {"tool_name": tool_name, "args": args, "role": self._current_role})
+        effective_role = role or self._current_role
+        self._emit("tool_call", {"tool_name": tool_name, "args": args, "role": effective_role})
 
     def reset_gen_cost(self):
         self.gen_cost_total = 0.0

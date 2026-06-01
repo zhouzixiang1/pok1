@@ -66,6 +66,7 @@ export default function EvolutionMonitor() {
 
   const ioRef = useRef<HTMLDivElement>(null);
   const openToolId = useRef<number | null>(null);
+  const thinkingId = useRef<number | null>(null);
   const activeRoleRef = useRef<string>(activeRole);
   activeRoleRef.current = activeRole;
 
@@ -97,6 +98,15 @@ export default function EvolutionMonitor() {
     openToolId.current = null;
   }, []);
 
+  const closeThinking = useCallback(() => {
+    if (thinkingId.current == null) return;
+    const id = thinkingId.current;
+    setMessages((prev) =>
+      prev.map((m) => (m.id === id ? { ...m, toolDone: true } : m))
+    );
+    thinkingId.current = null;
+  }, []);
+
   // ── SSE connection (unchanged from original) ──
 
   const connect = useEvolutionSSE({
@@ -123,11 +133,13 @@ export default function EvolutionMonitor() {
         setKnownRoles((prev) => prev.includes(role) ? prev : [...prev, role]);
       }
       if (line.streamType === "tool") {
+        closeThinking();
         if (line.text.trim() && !line.text.startsWith("\n[tool:")) {
           updateLastTool(line.text.trim());
         }
       } else if (line.streamType === "claude") {
         closeTool();
+        closeThinking();
         setMessages((prev) => {
           if (prev.length > 0 && prev[prev.length - 1].type === "claude" && prev[prev.length - 1].role === role) {
             const last = prev[prev.length - 1];
@@ -142,10 +154,13 @@ export default function EvolutionMonitor() {
             const last = prev[prev.length - 1];
             return [...prev.slice(0, -1), { ...last, text: last.text + line.text }];
           }
-          return [...prev, { id: nextId(), type: "thinking", text: line.text, role: role || undefined, toolOutput: [], toolDone: false }];
+          const newId = nextId();
+          thinkingId.current = newId;
+          return [...prev, { id: newId, type: "thinking", text: line.text, role: role || undefined, toolOutput: [], toolDone: false }];
         });
       } else if (line.streamType === "error") {
         closeTool();
+        closeThinking();
         addMsg({ id: nextId(), type: "error", text: line.text, role: role || undefined, toolOutput: [], toolDone: false });
       } else if (line.streamType === "tool_result") {
         if (line.text.trim()) {
@@ -154,11 +169,12 @@ export default function EvolutionMonitor() {
       } else {
         if (line.text.trim()) {
           closeTool();
+          closeThinking();
           addMsg({ id: nextId(), type: "raw", text: line.text, role: role || undefined, toolOutput: [], toolDone: false });
         }
       }
     },
-    onClearIO: () => { setMessages([]); openToolId.current = null; setWorkers([]); setFilterRole(""); },
+    onClearIO: () => { setMessages([]); openToolId.current = null; thinkingId.current = null; setWorkers([]); setFilterRole(""); },
     onHeader: () => {},
     onCost: (data) => {
       setGrand(data.grand_total);
@@ -202,7 +218,7 @@ export default function EvolutionMonitor() {
     onConnect: () => {
       setRoleCosts([]); setMessages([]); setHistoryLines([]); setWorkers([]);
       setFilterRole(""); setActiveRole(""); setKnownRoles([]);
-      openToolId.current = null;
+      openToolId.current = null; thinkingId.current = null;
       fetchEvolutionState().then((state) => {
         if (state) { setGrand(state.grand_cost_total ?? 0); setGen(state.gen_cost_total ?? 0); }
       }).catch((e) => console.error("[EvolutionMonitor] fetchEvolutionState error:", e));
@@ -314,7 +330,7 @@ export default function EvolutionMonitor() {
                 {autoScroll ? "自动滚动: 开" : "自动滚动: 关"}
               </button>
               <button
-                onClick={() => { setMessages([]); openToolId.current = null; }}
+                onClick={() => { setMessages([]); openToolId.current = null; thinkingId.current = null; }}
                 className="text-[10px] text-gray-500 hover:text-gray-300 transition-colors"
               >
                 清空
@@ -390,7 +406,7 @@ export default function EvolutionMonitor() {
                   {msg.type === "tool_call" ? (
                     <ToolCard msg={msg} />
                   ) : msg.type === "thinking" ? (
-                    <ThinkingBlock text={msg.text} />
+                    <ThinkingBlock text={msg.text} done={msg.toolDone} />
                   ) : msg.type === "error" ? (
                     <div className={cn("my-0.5 border-l-2 rounded px-2 py-0.5 font-medium", roleColor ? `${roleColor.border} bg-red-950/30 ${roleColor.text}` : "border-red-500 bg-red-950/40 text-red-400")}>
                       <CrossIcon className="inline mr-1 w-3 h-3" /> {msg.text}

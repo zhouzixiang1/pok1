@@ -287,6 +287,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
         disallowed_tools=_BLOCKED_MCP_TOOLS,
         hooks=_make_precompact_hook(),
         max_turns=max_turns,
+        thinking={"type": "adaptive", "display": "summarized"},
         **resume_kwargs,
     )
 
@@ -321,7 +322,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 if ui:
                                     ui.log_history(f"[Orchestrator] Calling tool: {block.name}", "info")
                                     ui.log_io(f"\n[tool: {block.name}]", "tool", "Orchestrator")
-                                    ui.emit_tool_call(block.name, block.input)
+                                    ui.emit_tool_call(block.name, block.input, "Orchestrator")
                                 else:
                                     print(f"\n[tool: {block.name}]", end=" ", flush=True)
                                 lf.write(f"\n[tool: {block.name}]\n")
@@ -331,7 +332,9 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 else:
                                     print("[thinking...]", end=" ", flush=True)
                             elif isinstance(block, ToolResultBlock):
-                                content = block.content if isinstance(block.content, str) else json.dumps(block.content, ensure_ascii=False)
+                                content = block.content if isinstance(block.content, str) else (
+                                    json.dumps(block.content, ensure_ascii=False) if block.content is not None else ""
+                                )
                                 if content and ui:
                                     ui.log_io(content[:3000], "tool_result", "Orchestrator")
                     elif isinstance(message, ResultMessage):
@@ -372,6 +375,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     disallowed_tools=_BLOCKED_MCP_TOOLS,
                     hooks=_make_precompact_hook(),
                     max_turns=max_turns,
+                    thinking={"type": "adaptive", "display": "summarized"},
                 )
                 for backoff in [30, 60, 120]:
                     if ui:
