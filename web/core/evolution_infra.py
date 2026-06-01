@@ -213,13 +213,9 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                         existing_parent2_v = existing.get("parent2_v")
         except Exception:
             existing_gate_results = {}
-        allowed_gates = STAGE_GATE_ALLOWLIST.get(stage)
-        if allowed_gates is not None:
-            existing_gate_results = {
-                name: data
-                for name, data in existing_gate_results.items()
-                if name in allowed_gates
-            }
+        # Always preserve existing gate_results — clearing on stage regression
+        # loses quality/review passes that tools will re-verify anyway, but causes
+        # crash recovery confusion. The tools enforce stage ordering independently.
         if gate_results:
             existing_gate_results.update(gate_results)
 
@@ -263,7 +259,7 @@ def clear_pipeline_checkpoint():
 class BaseUI:
     def log_history(self, msg, status="info"): pass
     def set_status(self, msg, is_working=False): pass
-    def log_io(self, msg, stream_type="default"): pass
+    def log_io(self, msg, stream_type="default", role=""): pass
     def clear_io(self): pass
     def update_eval_table(self, ratings, active_bots): pass
     def update_daemon_status(self, stats, ratings): pass
@@ -744,9 +740,9 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
             ui.log_history(f"Prompt too long ({len(full_prompt):,} chars), trimming...", "warn")
             full_prompt = _trim_to_budget(full_prompt, MAX_PROMPT_CHARS)
 
-    ui.log_io(f"\n[{role_name} PROMPT]", "prompt")
-    ui.log_io(prompt[:200] + "...\n[Context Attached]", "prompt")
-    ui.log_io("\n[WAITING FOR CLAUDE...]\n", "prompt")
+    ui.log_io(f"\n[{role_name} PROMPT]", "prompt", role_name)
+    ui.log_io(prompt[:200] + "...\n[Context Attached]", "prompt", role_name)
+    ui.log_io("\n[WAITING FOR CLAUDE...]\n", "prompt", role_name)
 
     with open(log_file_path, "a") as lf:
         lf.write(f"\n[{role_name} PROMPT]\n=============================\n")
@@ -776,16 +772,16 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
                         full_text.append(text)
                         with open(log_file_path, "a") as lf:
                             lf.write(text + "\n")
-                        ui.log_io(text, "claude")
+                        ui.log_io(text, "claude", role_name)
                     elif isinstance(block, ThinkingBlock):
-                        ui.log_io("[thinking...]", "thinking")
+                        ui.log_io("[thinking...]", "thinking", role_name)
                     elif isinstance(block, ToolUseBlock):
-                        ui.log_io(f"[tool: {block.name}]", "tool")
+                        ui.log_io(f"[tool: {block.name}]", "tool", role_name)
             elif isinstance(message, ResultMessage):
                 cost_usd = message.total_cost_usd
                 usage = message.usage
     except (CLINotFoundError, ProcessError) as e:
-        ui.log_io(f"[ERROR] {e}", "error")
+        ui.log_io(f"[ERROR] {e}", "error", role_name)
         if query_gen is not None:
             try:
                 await query_gen.aclose()
@@ -819,16 +815,16 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
                                 full_text.append(text)
                                 with open(log_file_path, "a") as lf:
                                     lf.write(text + "\n")
-                                ui.log_io(text, "claude")
+                                ui.log_io(text, "claude", role_name)
                             elif isinstance(block, ThinkingBlock):
-                                ui.log_io("[thinking...]", "thinking")
+                                ui.log_io("[thinking...]", "thinking", role_name)
                             elif isinstance(block, ToolUseBlock):
-                                ui.log_io(f"[tool: {block.name}]", "tool")
+                                ui.log_io(f"[tool: {block.name}]", "tool", role_name)
                     elif isinstance(message, ResultMessage):
                         cost_usd = (cost_usd or 0) + (message.total_cost_usd or 0)
                         usage = message.usage
             except (CLINotFoundError, ProcessError) as e:
-                ui.log_io(f"[ERROR] {e}", "error")
+                ui.log_io(f"[ERROR] {e}", "error", role_name)
                 if retry_gen is not None:
                     try:
                         await retry_gen.aclose()

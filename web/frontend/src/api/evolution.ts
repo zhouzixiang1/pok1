@@ -35,6 +35,7 @@ export interface IOLine {
   text: string;
   streamType: StreamType;
   ts: number;
+  role?: string;
 }
 
 const BASE = "/api";
@@ -57,7 +58,7 @@ export function useEvolutionSSE(
       grand_total: number;
     }) => void;
     onMetrics?: (metrics: Record<string, number>) => void;
-    onToolCall?: (data: { tool_name: string; args: Record<string, unknown>; ts: number }) => void;
+    onToolCall?: (data: { tool_name: string; args: Record<string, unknown>; ts: number; role?: string }) => void;
     onConnect?: () => void;
   },
   enabled = true
@@ -91,7 +92,7 @@ export function useEvolutionSSE(
                 handlers.onStatus?.(data.msg, data.is_working);
                 break;
               case "io":
-                handlers.onIO?.({ text: data.msg, streamType: data.stream_type, ts: data.ts });
+                handlers.onIO?.({ text: data.msg, streamType: data.stream_type, ts: data.ts, role: data.role });
                 break;
               case "clear_io":
                 handlers.onClearIO?.();

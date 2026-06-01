@@ -6,6 +6,7 @@ to an LLM agent call or a pipeline gate.
 """
 
 import json
+import os
 import shutil
 import sys
 from pathlib import Path

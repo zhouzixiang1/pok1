@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useEvolutionSSE, fetchEvolutionState } from "../api/evolution";
 import type { IOLine } from "../api/evolution";
 import { api } from "../api/client";
@@ -16,6 +16,31 @@ import { CrossIcon, CopyIcon } from "../components/evolution/icons";
 import { cn } from "../lib/utils";
 
 type TabKey = "pipeline" | "metrics" | "history";
+
+const ROLE_COLORS: Record<string, { bg: string; text: string; border: string; dot: string }> = {
+  Orchestrator: { bg: "bg-indigo-500/15", text: "text-indigo-400", border: "border-l-indigo-500", dot: "bg-indigo-400" },
+  Master:       { bg: "bg-amber-500/15", text: "text-amber-400", border: "border-l-amber-500", dot: "bg-amber-400" },
+  Worker:       { bg: "bg-cyan-500/15", text: "text-cyan-400", border: "border-l-cyan-500", dot: "bg-cyan-400" },
+  Reviewer:     { bg: "bg-violet-500/15", text: "text-violet-400", border: "border-l-violet-500", dot: "bg-violet-400" },
+  Critic:       { bg: "bg-rose-500/15", text: "text-rose-400", border: "border-l-rose-500", dot: "bg-rose-400" },
+  Analyst:      { bg: "bg-emerald-500/15", text: "text-emerald-400", border: "border-l-emerald-500", dot: "bg-emerald-400" },
+  Consolidator: { bg: "bg-emerald-500/15", text: "text-emerald-400", border: "border-l-emerald-500", dot: "bg-emerald-400" },
+  Archivist:    { bg: "bg-emerald-500/15", text: "text-emerald-400", border: "border-l-emerald-500", dot: "bg-emerald-400" },
+  Crossover:    { bg: "bg-orange-500/15", text: "text-orange-400", border: "border-l-orange-500", dot: "bg-orange-400" },
+  Diagnostician:{ bg: "bg-pink-500/15", text: "text-pink-400", border: "border-l-pink-500", dot: "bg-pink-400" },
+};
+
+function getRoleColor(role: string) {
+  const key = Object.keys(ROLE_COLORS).find((k) => role.startsWith(k));
+  return ROLE_COLORS[key || ""] ?? { bg: "bg-gray-500/15", text: "text-gray-400", border: "border-l-gray-500", dot: "bg-gray-400" };
+}
+
+function shortRoleName(role: string): string {
+  if (role === "Orchestrator") return "Orchestrator";
+  const m = role.match(/^(\w+(?: \w+)?) \(/);
+  if (m) return m[1];
+  return role.split(" ")[0];
+}
 
 let _msgId = 0;
 const nextId = () => ++_msgId;
@@ -35,6 +60,9 @@ export default function EvolutionMonitor() {
   const [roleCosts, setRoleCosts] = useState<RoleCost[]>([]);
   const [metrics, setMetrics] = useState<Record<string, number>>({});
   const [activeTab, setActiveTab] = useState<TabKey>("pipeline");
+  const [filterRole, setFilterRole] = useState<string>("");
+  const [activeRole, setActiveRole] = useState<string>("");
+  const [knownRoles, setKnownRoles] = useState<string[]>([]);
 
   const ioRef = useRef<HTMLDivElement>(null);
   const openToolId = useRef<number | null>(null);
@@ -87,6 +115,11 @@ export default function EvolutionMonitor() {
     },
     onStatus: (msg, w) => { setStatus(msg); setIsWorking(w); },
     onIO: (line: IOLine) => {
+      const role = line.role || "";
+      if (role) {
+        setActiveRole(role);
+        setKnownRoles((prev) => prev.includes(role) ? prev : [...prev, role]);
+      }
       if (line.streamType === "tool") {
         if (line.text.trim() && !line.text.startsWith("\n[tool:")) {
           updateLastTool(line.text.trim());
@@ -94,32 +127,32 @@ export default function EvolutionMonitor() {
       } else if (line.streamType === "claude") {
         closeTool();
         setMessages((prev) => {
-          if (prev.length > 0 && prev[prev.length - 1].type === "claude") {
+          if (prev.length > 0 && prev[prev.length - 1].type === "claude" && prev[prev.length - 1].role === role) {
             const last = prev[prev.length - 1];
             return [...prev.slice(0, -1), { ...last, text: last.text + line.text }];
           }
-          return [...prev, { id: nextId(), type: "claude", text: line.text, toolOutput: [], toolDone: false }];
+          return [...prev, { id: nextId(), type: "claude", text: line.text, role: role || undefined, toolOutput: [], toolDone: false }];
         });
       } else if (line.streamType === "thinking") {
         closeTool();
         setMessages((prev) => {
-          if (prev.length > 0 && prev[prev.length - 1].type === "thinking") {
+          if (prev.length > 0 && prev[prev.length - 1].type === "thinking" && prev[prev.length - 1].role === role) {
             const last = prev[prev.length - 1];
             return [...prev.slice(0, -1), { ...last, text: last.text + line.text }];
           }
-          return [...prev, { id: nextId(), type: "thinking", text: line.text, toolOutput: [], toolDone: false }];
+          return [...prev, { id: nextId(), type: "thinking", text: line.text, role: role || undefined, toolOutput: [], toolDone: false }];
         });
       } else if (line.streamType === "error") {
         closeTool();
-        addMsg({ id: nextId(), type: "error", text: line.text, toolOutput: [], toolDone: false });
+        addMsg({ id: nextId(), type: "error", text: line.text, role: role || undefined, toolOutput: [], toolDone: false });
       } else {
         if (line.text.trim()) {
           closeTool();
-          addMsg({ id: nextId(), type: "raw", text: line.text, toolOutput: [], toolDone: false });
+          addMsg({ id: nextId(), type: "raw", text: line.text, role: role || undefined, toolOutput: [], toolDone: false });
         }
       }
     },
-    onClearIO: () => { setMessages([]); openToolId.current = null; setWorkers([]); },
+    onClearIO: () => { setMessages([]); openToolId.current = null; setWorkers([]); setFilterRole(""); },
     onHeader: () => {},
     onCost: (data) => {
       setGrand(data.grand_total);
@@ -140,7 +173,9 @@ export default function EvolutionMonitor() {
       closeTool();
       const id = nextId();
       openToolId.current = id;
-      addMsg({ id, type: "tool_call", text: data.tool_name, toolName: data.tool_name, toolArgs: data.args, toolOutput: [], toolDone: false });
+      const role = data.role || activeRole || undefined;
+      if (role && !knownRoles.includes(role)) setKnownRoles((prev) => [...prev, role]);
+      addMsg({ id, type: "tool_call", text: data.tool_name, role, toolName: data.tool_name, toolArgs: data.args, toolOutput: [], toolDone: false });
     },
     onEvalTable: (rows) => {
       setLeaderboard((prev) => {
@@ -160,6 +195,7 @@ export default function EvolutionMonitor() {
     onDaemon: () => {},
     onConnect: () => {
       setRoleCosts([]); setMessages([]); setHistoryLines([]); setWorkers([]);
+      setFilterRole(""); setActiveRole(""); setKnownRoles([]);
       openToolId.current = null;
       fetchEvolutionState().then((state) => {
         if (state) { setGrand(state.grand_cost_total ?? 0); setGen(state.gen_cost_total ?? 0); }
@@ -202,6 +238,11 @@ export default function EvolutionMonitor() {
     }).join("\n");
     navigator.clipboard.writeText(text).catch(() => {});
   }, [messages]);
+
+  const filteredMessages = useMemo(() => {
+    if (!filterRole) return messages;
+    return messages.filter((m) => m.role === filterRole);
+  }, [messages, filterRole]);
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: "pipeline", label: "流水线" },
@@ -275,43 +316,95 @@ export default function EvolutionMonitor() {
             </div>
           </div>
 
+          {/* Role pills */}
+          {knownRoles.length > 0 && (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-gray-800/60 overflow-x-auto">
+              <button
+                onClick={() => setFilterRole("")}
+                className={cn(
+                  "shrink-0 rounded-full px-2.5 py-0.5 text-[10px] font-medium transition-colors",
+                  !filterRole
+                    ? "bg-white/10 text-white"
+                    : "text-gray-500 hover:text-gray-300 hover:bg-white/5",
+                )}
+              >
+                全部
+              </button>
+              {knownRoles.map((role) => {
+                const color = getRoleColor(role);
+                const isActive = activeRole === role;
+                const isFiltered = filterRole === role;
+                return (
+                  <button
+                    key={role}
+                    onClick={() => setFilterRole(isFiltered ? "" : role)}
+                    className={cn(
+                      "shrink-0 rounded-full px-2.5 py-0.5 text-[10px] font-medium transition-all flex items-center gap-1",
+                      color.bg, color.text,
+                      isFiltered ? "ring-1 ring-current" : "opacity-70 hover:opacity-100",
+                      isActive && "opacity-100",
+                    )}
+                  >
+                    <span className={cn("inline-block w-1.5 h-1.5 rounded-full", color.dot, isActive && isWorking && "animate-pulse")} />
+                    {shortRoleName(role)}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
           {/* Message area */}
           <div
             ref={ioRef}
             onScroll={handleScroll}
             className="h-[500px] overflow-y-auto p-4 font-mono text-[13px] leading-relaxed custom-scrollbar"
           >
-            {messages.length === 0 && (
+            {filteredMessages.length === 0 && messages.length === 0 && (
               <div className="flex items-center justify-center h-full text-gray-600 text-sm">
                 等待进化输出...
               </div>
             )}
-            {messages.map((msg) => {
-              if (msg.type === "tool_call") {
-                return <ToolCard key={msg.id} msg={msg} />;
-              }
-              if (msg.type === "thinking") {
-                return <ThinkingBlock key={msg.id} text={msg.text} />;
-              }
-              if (msg.type === "error") {
-                return (
-                  <div key={msg.id} className="my-0.5 border-l-2 border-red-500 bg-red-950/40 rounded px-2 py-0.5 text-red-400 font-medium">
-                    <CrossIcon className="inline mr-1 w-3 h-3" /> {msg.text}
-                  </div>
-                );
-              }
-              // claude / raw
-              return msg.text.split("\n").map((textLine, j) => (
-                <div
-                  key={`${msg.id}-${j}`}
-                  className={cn(
-                    "animate-fade-in-up",
-                    msg.type === "claude" ? "text-gray-200" : "text-gray-500",
+            {filteredMessages.length === 0 && messages.length > 0 && (
+              <div className="flex items-center justify-center h-full text-gray-600 text-sm">
+                该角色暂无输出
+              </div>
+            )}
+            {filteredMessages.map((msg, idx) => {
+              const prevMsg = idx > 0 ? filteredMessages[idx - 1] : null;
+              const showRoleLabel = msg.role && msg.role !== prevMsg?.role && !filterRole;
+              const roleColor = msg.role ? getRoleColor(msg.role) : null;
+              return (
+                <div key={msg.id}>
+                  {showRoleLabel && roleColor && (
+                    <div className={cn("mt-2 mb-1 flex items-center gap-1.5", roleColor.text)}>
+                      <span className={cn("inline-block w-1.5 h-1.5 rounded-full", roleColor.dot)} />
+                      <span className="text-[10px] font-semibold uppercase tracking-wide">{shortRoleName(msg.role!)}</span>
+                    </div>
                   )}
-                >
-                  {msg.type === "claude" ? <span className="text-emerald-500">▸ </span> : "  "}{textLine}
+                  {msg.type === "tool_call" ? (
+                    <ToolCard msg={msg} />
+                  ) : msg.type === "thinking" ? (
+                    <ThinkingBlock text={msg.text} />
+                  ) : msg.type === "error" ? (
+                    <div className={cn("my-0.5 border-l-2 rounded px-2 py-0.5 font-medium", roleColor ? `${roleColor.border} bg-red-950/30 ${roleColor.text}` : "border-red-500 bg-red-950/40 text-red-400")}>
+                      <CrossIcon className="inline mr-1 w-3 h-3" /> {msg.text}
+                    </div>
+                  ) : (
+                    // claude / raw
+                    msg.text.split("\n").map((textLine, j) => (
+                      <div
+                        key={`${msg.id}-${j}`}
+                        className={cn(
+                          "animate-fade-in-up",
+                          msg.type === "claude" ? (roleColor ? roleColor.text : "text-gray-200") : "text-gray-500",
+                        )}
+                      >
+                        {msg.type === "claude" ? <span className={roleColor ? `${roleColor.text} opacity-50` : "text-emerald-500"}>▸ </span> : "  "}{textLine}
+                      </div>
+                    ))
+                  )}
                 </div>
-              ));
+              );
             })}
             {/* Streaming cursor */}
             {isWorking && (
@@ -320,7 +413,7 @@ export default function EvolutionMonitor() {
           </div>
 
           {/* Scroll to bottom button */}
-          {!autoScroll && messages.length > 0 && (
+          {!autoScroll && filteredMessages.length > 0 && (
             <button
               onClick={() => { setAutoScroll(true); if (ioRef.current) ioRef.current.scrollTop = ioRef.current.scrollHeight; }}
               className="absolute bottom-4 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-brand-500 text-white text-xs shadow-lg hover:bg-brand-600 transition-all"

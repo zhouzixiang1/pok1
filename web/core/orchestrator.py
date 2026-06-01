@@ -312,7 +312,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                             if isinstance(block, TextBlock):
                                 texts.append(block.text)
                                 if ui:
-                                    ui.log_io(block.text, "claude")
+                                    ui.log_io(block.text, "claude", "Orchestrator")
                                 else:
                                     print(block.text, end="", flush=True)
                                 lf.write(block.text)
@@ -326,7 +326,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 lf.write(f"\n[tool: {block.name}]\n")
                             elif isinstance(block, ThinkingBlock):
                                 if ui:
-                                    ui.log_io("[thinking...]", "thinking")
+                                    ui.log_io("[thinking...]", "thinking", "Orchestrator")
                                 else:
                                     print("[thinking...]", end=" ", flush=True)
                     elif isinstance(message, ResultMessage):
@@ -346,7 +346,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 auth_err = True
             except (CLINotFoundError, ProcessError) as e:
                 if ui:
-                    ui.log_io(f"[ERROR] {e}", "error")
+                    ui.log_io(f"[ERROR] {e}", "error", "Orchestrator")
                 else:
                     print(f"\n[ERROR] {e}")
             return "".join(texts), cost, ok, gen, auth_err

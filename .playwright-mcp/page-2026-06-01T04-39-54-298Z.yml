@@ -1,0 +1,101 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - link "Bot 自进化" [ref=e6] [cursor=pointer]:
+      - /url: /
+      - img [ref=e7]
+      - generic [ref=e14]: Bot 自进化
+    - navigation [ref=e16]:
+      - generic [ref=e17]:
+        - heading "概览" [level=2] [ref=e18]
+        - list [ref=e19]:
+          - listitem [ref=e20]:
+            - link "总览" [ref=e21] [cursor=pointer]:
+              - /url: /
+              - img [ref=e23]
+              - generic [ref=e25]: 总览
+          - listitem [ref=e26]:
+            - link "进化监控" [ref=e27] [cursor=pointer]:
+              - /url: /evolution
+              - img [ref=e30]
+              - generic [ref=e32]: 进化监控
+      - generic [ref=e33]:
+        - heading "对局" [level=2] [ref=e34]
+        - list [ref=e35]:
+          - listitem [ref=e36]:
+            - link "对局回放" [ref=e37] [cursor=pointer]:
+              - /url: /matches
+              - img [ref=e39]
+              - generic [ref=e41]: 对局回放
+          - listitem [ref=e42]:
+            - link "评分趋势" [ref=e43] [cursor=pointer]:
+              - /url: /rating-trends
+              - img [ref=e45]
+              - generic [ref=e47]: 评分趋势
+          - listitem [ref=e48]:
+            - link "对局矩阵" [ref=e49] [cursor=pointer]:
+              - /url: /match-matrix
+              - img [ref=e51]
+              - generic [ref=e53]: 对局矩阵
+      - generic [ref=e54]:
+        - heading "管理" [level=2] [ref=e55]
+        - list [ref=e56]:
+          - listitem [ref=e57]:
+            - link "迭代日志" [ref=e58] [cursor=pointer]:
+              - /url: /logs
+              - img [ref=e60]
+              - generic [ref=e62]: 迭代日志
+          - listitem [ref=e63]:
+            - link "控制面板" [ref=e64] [cursor=pointer]:
+              - /url: /control
+              - img [ref=e66]
+              - generic [ref=e68]: 控制面板
+          - listitem [ref=e69]:
+            - link "Bot 管理" [ref=e70] [cursor=pointer]:
+              - /url: /bots
+              - img [ref=e72]
+              - generic [ref=e74]: Bot 管理
+          - listitem [ref=e75]:
+            - link "经验池" [ref=e76] [cursor=pointer]:
+              - /url: /experience
+              - img [ref=e78]
+              - generic [ref=e80]: 经验池
+          - listitem [ref=e81]:
+            - link "提示词编辑器" [ref=e82] [cursor=pointer]:
+              - /url: /prompts
+              - img [ref=e84]
+              - generic [ref=e86]: 提示词编辑器
+  - generic [ref=e87]:
+    - banner [ref=e88]:
+      - generic [ref=e89]:
+        - button "切换侧边栏" [ref=e91] [cursor=pointer]:
+          - img [ref=e92]
+        - button [ref=e95] [cursor=pointer]:
+          - img [ref=e96]
+    - generic [ref=e98]:
+      - generic [ref=e99]:
+        - generic [ref=e101]: 运行中
+        - generic [ref=e106]:
+          - text: 总成本
+          - generic [ref=e107]: $0.00
+        - generic [ref=e109]: 成功率 —
+        - generic [ref=e111]: 代次 —
+      - generic [ref=e112]:
+        - generic [ref=e113]:
+          - generic [ref=e114]:
+            - generic [ref=e115]:
+              - generic [ref=e120]: LLM 对话流
+              - generic [ref=e121]: LIVE
+            - generic [ref=e125]:
+              - button "复制" [ref=e126] [cursor=pointer]:
+                - img [ref=e127]
+              - 'button "自动滚动: 开" [ref=e130] [cursor=pointer]'
+              - button "清空" [ref=e131] [cursor=pointer]
+          - generic [ref=e133]: 等待进化输出...
+        - generic [ref=e135]:
+          - generic [ref=e136]:
+            - button "流水线" [ref=e137] [cursor=pointer]
+            - button "指标" [ref=e138] [cursor=pointer]
+            - button "历史" [ref=e139] [cursor=pointer]
+          - generic [ref=e142]:
+            - heading "流水线" [level=3] [ref=e143]
+            - paragraph [ref=e144]: 无活跃代次

@@ -7,6 +7,7 @@ export interface ConvMsg {
   id: number;
   type: MsgType;
   text: string;
+  role?: string;
   toolName?: string;
   toolArgs?: Record<string, unknown>;
   toolOutput: string[];

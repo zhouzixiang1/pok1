@@ -59,7 +59,7 @@ class ToolUI(BaseUI):
     def set_status(self, msg, is_working=False):
         self.messages.append(f"[status] {msg}")
 
-    def log_io(self, msg, stream_type="default"):
+    def log_io(self, msg, stream_type="default", role=""):
         pass
 
     def clear_io(self):

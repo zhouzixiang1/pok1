@@ -546,23 +546,213 @@ _execute_workers():
                       串行逐个执行 tasks → 返回结果
 ```
 
-### 3.4 崩溃恢复
+### 3.4 进程层级
 
 ```
-Orchestrator 进程被 kill:
-  └── orchestrator_session.json 保留 (含 session_id)
-      └── pipeline_state.json 保留 (含 stage, gate_results)
-            │
-            ▼ 下次启动
-  _run_one_cycle():
-    ├── 读取 session_id → resume 参数恢复对话
-    ├── _build_context() 检测 checkpoint → 告知 Orchestrator 从哪步继续
-    └── Orchestrator LLM 恢复后调用对应的下一个工具
-
-可恢复阶段: prepared → workers_done → quality_passed → reviewed → critic_checked → verified → archived
+python web/main.py                          ← 主进程 (uvicorn)
+  ├── asyncio.Task: orchestrator_loop        ← 事件循环中的协程
+  │     ├── daemon_monitor_thread            ← daemon 线程，3s 轮询，自动重启
+  │     └── python elo_daemon.py             ← 子进程，独立进程组 (start_new_session=True)
+  │           └── ProcessPoolExecutor        ← n_workers 个 worker 子进程
+  │                 └── run_single_match()
+  └── FastAPI + SSE streams                  ← Web 服务
 ```
 
-### 3.5 PreCompact Hook
+CLI 模式 (`python web/core/orchestrator.py`) 不启动 daemon，直接在 `asyncio.run()` 中调用 `_run_one_cycle()`。
+
+### 3.5 中断信号链（Web 模式）
+
+`python web/main.py` 模式下 Ctrl+C 的完整传递路径：
+
+```
+用户按 Ctrl+C (SIGINT)
+  │
+  ▼ uvicorn 内置 SIGINT handler
+  │
+  ▼ FastAPI lifespan shutdown (app.py:52-63)
+  │
+  ├─ 1. _evolution_task.cancel()             ← 触发 CancelledError
+  │     await asyncio.wait_for(task, 10s)    ← 等待优雅退出
+  │
+  │     orchestrator.py CancelledError 处理 (line 396-408):
+  │       ├─ query_gen.aclose()              ← 关闭 LLM 流式生成器
+  │       ├─ _clear_orchestrator_session()   ← ⚠️ session 被清除！
+  │       └─ raise CancelledError            ← 继续传播
+  │
+  │     orchestrator_loop finally (line 540-547):
+  │       ├─ _daemon_stop.set()             ← 停止监控线程
+  │       └─ stop_daemon()                  ← 终止 daemon 子进程
+  │
+  ├─ 2. stop_daemon() (再次调用，幂等)
+  │     ├─ os.killpg(pgid, SIGTERM)         ← 终止整个进程组
+  │     ├─ daemon wait(5s)
+  │     ├─ 超时 → os.killpg(pgid, SIGKILL)
+  │     └─ 删除 .daemon_pid
+  │
+  └─ 3. atexit.register(stop_daemon)        ← 退出时的冗余安全网
+
+Daemon 内部收到 SIGTERM:
+  ├─ signal handler: running = False
+  ├─ drain in-flight futures (10s/each)     ← 等待进行中的对局完成
+  ├─ executor.shutdown(wait=False)
+  └─ save_cycle()                           ← 最终持久化 ratings/stats
+```
+
+**关键**: Web 模式下 `CancelledError` **清除** `orchestrator_session.json`（line 402），重启后无法恢复原 LLM 对话，但 `pipeline_state.json` **保留**，Orchestrator 通过 checkpoint 信息从断点继续。
+
+### 3.6 中断信号链（CLI 模式）
+
+`python web/core/orchestrator.py` 独立模式：
+
+```
+用户按 Ctrl+C (SIGINT)
+  │
+  ▼ KeyboardInterrupt in _run_one_cycle (line 384-394)
+  │
+  ├─ query_gen.aclose()                     ← 关闭 LLM 流式生成器
+  ├─ 不调用 _clear_orchestrator_session()   ← ⚠️ session 保留！
+  └─ 写入日志 "[INTERRUPTED]"
+  │
+  ▼ run_orchestrator_cli finally (line 582-587)
+  │
+  └─ stop_daemon()                          ← 无 daemon（CLI 模式未启动）
+```
+
+**关键**: CLI 模式下 `KeyboardInterrupt` **不清除** session 文件。重启后可通过 `resume=session_id` 恢复原始 LLM 对话，拥有完整上下文。
+
+两种模式的差异原因：Web 模式由 `task.cancel()` 触发 `CancelledError`（程序性取消），CLI 模式由 `SIGINT` 触发 `KeyboardInterrupt`（用户中断）。
+
+### 3.7 重启恢复流程
+
+#### Web 模式重启
+
+```
+python web/main.py
+  │
+  ├─ app_state._load_config()               ← 读取 app_config.json 恢复 daemon 配置
+  ├─ uvicorn.run() → lifespan startup
+  │     ├─ app_state.bootstrap(find_current_v())
+  │     └─ asyncio.create_task(orchestrator_loop)
+  │           ├─ start_daemon()
+  │           │     ├─ 检查 .daemon_pid → 若有孤儿 → killpg → 清理
+  │           │     ├─ Popen(start_new_session=True) → 新 daemon
+  │           │     └─ 写 .daemon_pid
+  │           └─ daemon_monitor_thread 启动
+  │
+  └─ _run_one_cycle():
+        ├─ _load_orchestrator_session() → None（已被清除）
+        ├─ 新建 LLM 对话（无 resume）
+        └─ _build_context() 检测 pipeline_state.json:
+              ├─ 若 checkpoint 存在:
+              │     注入 "PIPELINE CHECKPOINT: v{next_v} reached stage='{stage}'"
+              │     注入下一步建议（见下方映射表）
+              │     注入 "ENVIRONMENT ANOMALIES DETECTED" 警告
+              └─ Orchestrator LLM 看到提示后从断点继续
+```
+
+#### CLI 模式重启
+
+```
+python web/core/orchestrator.py
+  │
+  └─ _run_one_cycle():
+        ├─ _load_orchestrator_session() → session_id（保留）
+        ├─ resume=session_id             ← SDK 恢复原 LLM 对话
+        └─ _build_context() 同样注入 checkpoint 信息
+              └─ LLM 拥有完整上下文 + checkpoint 提示，直接继续
+```
+
+#### Checkpoint 阶段提示映射
+
+`_build_context()` (orchestrator.py:194-219) 根据 checkpoint 的 stage 注入下一步建议：
+
+| stage | 注入提示 |
+|-------|---------|
+| `prepared` | Workers not yet run → call `execute_workers` |
+| `workers_done` | Workers done → call `run_quality_gates` |
+| `quality_passed` | Quality passed → call `run_review` |
+| `reviewed` | Review passed → call `run_critic` |
+| `critic_checked` | Critic done → call `run_precommit_eval` |
+| `verified` | Precommit eval passed → call `commit_bot` |
+| `archived` | Committed & archived → start next generation |
+
+若 checkpoint 中有 `master_plan`，额外注入: "Master plan is saved in session history — do NOT call run_master again."
+
+#### 部分完成的阶段
+
+- **阶段内崩溃**（如 workers 执行到一半、quality gates 运行到一半）: stage 不变（只有成功才推进），重启后重新执行该阶段
+- **阶段间崩溃**（workers 完成但 quality gates 未调用）: checkpoint 显示 `stage="workers_done"`，Orchestrator 被告知调用 `run_quality_gates`
+- **Gate 失败后崩溃**（quality 不通过、review 被拒）: stage 停在上一成功阶段，gate 记录 `passed=false`，重启后可重试或放弃
+- **无阶段内部分恢复**: 单个 gate 执行中途崩溃后无法恢复进度，必须重新运行（如 decision tests 只完成一半 → 重来）
+
+### 3.8 Daemon 守护进程恢复
+
+#### 孤儿进程检测
+
+`start_daemon()` (evolution_infra.py:394-406) 每次启动时检查 `.daemon_pid`：
+
+```
+start_daemon():
+  ├─ daemon_proc 已在运行? → 返回
+  ├─ .daemon_pid 文件存在?
+  │     ├─ 读取 old_pid
+  │     ├─ os.killpg(os.getpgid(old_pid), SIGTERM)  ← 杀死孤儿进程组
+  │     ├─ sleep(1)
+  │     └─ 删除 .daemon_pid
+  ├─ subprocess.Popen(start_new_session=True)        ← 独立进程组
+  ├─ 写 .daemon_pid (新 PID)
+  └─ atexit.register(stop_daemon)                    ← 退出安全网
+```
+
+独立进程组（`start_new_session=True`）确保 `killpg` 能干净地终止 daemon 及其所有 `ProcessPoolExecutor` worker 子进程。
+
+#### 监控线程自动重启
+
+`daemon_monitor_thread()` (evolution_infra.py:461-486):
+
+```
+3 秒轮询:
+  ├─ daemon_proc.poll() is not None? (已退出)
+  │     ├─ restart_count > 5 → 停止自动重启，日志报错
+  │     ├─ backoff = min(3 * 2^(n-1), 120) 秒
+  │     │     → 3, 6, 12, 24, 48, 96, 120...
+  │     ├─ stop_event.wait(backoff)  ← 等待期间可被停止
+  │     └─ start_daemon() 重启
+  └─ daemon 正常运行 → restart_count 归零
+```
+
+#### 配置持久化
+
+`app_config.json` (state.py 写入) 保存 daemon 配置，跨重启生效：
+
+```json
+{
+  "daemon_enabled": true,
+  "daemon_workers": 14,
+  "daemon_pairs": 5
+}
+```
+
+由 `main.py` 在 `uvicorn.run()` 前通过 `app_state.update_config()` 写入，lifespan 启动时通过 `app_state.get_config()` 读取。
+
+#### `.reap_signal` 通知
+
+bot 池变更时（`reap_weakest` 工具），写入 `.reap_signal` 文件（含时间戳）。daemon 每 0.5s 检查一次：
+- 文件存在且 < 300 秒 → 刷新 bot 列表，清理已淘汰 bot 的 ratings/stats，过滤 match 队列
+- 处理后删除文件
+
+### 3.9 恢复文件清单
+
+| 文件 | 写入时机 | 清除时机 | 作用 |
+|------|---------|---------|------|
+| `orchestrator_session.json` | 每次 SDK `ResultMessage` 返回 `session_id` 时 | 自然完成 / `CancelledError` / API error / 529 retry / auth error backoff | LLM 对话 session ID，用于 `resume` 参数 |
+| `pipeline_state.json` | 每个 pipeline 阶段完成时 (`_record_gate`) | `commit_bot` 成功后（`clear_pipeline_checkpoint`） | 阶段断点 + gate 结果 + master plan |
+| `.daemon_pid` | `start_daemon()` spawn 后 | `stop_daemon()` 清理 | daemon 子进程 PID，用于孤儿检测 |
+| `app_config.json` | `update_config()` 调用时 | 不清除（永久保留） | daemon 配置（enabled/workers/pairs） |
+| `.reap_signal` | `reap_weakest` / `eliminate_bot` 调用时 | daemon 读取后删除 | bot 池变更通知 |
+| `worker_failures.jsonl` | worker 全部重试失败时 | 不清除（累积记录） | 注入未来 worker prompt 作为失败记忆 |
+
+### 3.10 PreCompact Hook
 
 当 Orchestrator LLM 的上下文即将被压缩时：
 

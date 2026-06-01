@@ -87,6 +87,7 @@ class WebUI(BaseUI):
         self.costs = []
         self._messages = []
         self._output_since_clear = []
+        self._current_role = ""
         self._state: dict[str, Any] = {
             "status": "Initializing...",
             "is_working": False,
@@ -134,7 +135,9 @@ class WebUI(BaseUI):
         print(f"[STATUS] {work_icon} {msg}")
         self._emit("status", {"msg": msg, "is_working": is_working})
 
-    def log_io(self, msg, stream_type="default"):
+    def log_io(self, msg, stream_type="default", role=""):
+        if role:
+            self._current_role = role
         prefix_map = {
             "prompt": "[PROMPT] ",
             "claude": "[CLAUDE] ",
@@ -146,7 +149,7 @@ class WebUI(BaseUI):
         for line in msg.split("\n"):
             if line.strip():
                 print(f"{prefix}{line}")
-        self._emit("io", {"msg": msg, "stream_type": stream_type})
+        self._emit("io", {"msg": msg, "stream_type": stream_type, "role": role})
 
     def clear_io(self):
         self._output_since_clear.clear()
@@ -222,7 +225,7 @@ class WebUI(BaseUI):
 
     def emit_tool_call(self, tool_name: str, args: dict):
         """Broadcast a structured tool call event for expandable display in the Dashboard."""
-        self._emit("tool_call", {"tool_name": tool_name, "args": args})
+        self._emit("tool_call", {"tool_name": tool_name, "args": args, "role": self._current_role})
 
     def reset_gen_cost(self):
         self.gen_cost_total = 0.0
