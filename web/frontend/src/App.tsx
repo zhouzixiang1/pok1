@@ -1,5 +1,6 @@
 import { BrowserRouter as Router, Routes, Route } from "react-router";
 import { DataProvider } from "./context/DataProvider";
+import { ScrollToTop } from "./components/common/ScrollToTop";
 import AppLayout from "./layout/AppLayout";
 import Overview from "./pages/Overview";
 import EvolutionMonitor from "./pages/EvolutionMonitor";
@@ -16,6 +17,7 @@ export default function App() {
   return (
     <DataProvider>
       <Router>
+        <ScrollToTop />
         <Routes>
           <Route element={<AppLayout />}>
             <Route index path="/" element={<Overview />} />

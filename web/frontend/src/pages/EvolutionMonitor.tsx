@@ -204,18 +204,19 @@ export default function EvolutionMonitor() {
       const id = nextId();
       openToolId.current = id;
       const role = data.role || activeRoleRef.current || undefined;
-      if (role && !knownRoles.includes(role)) setKnownRoles((prev) => [...prev, role]);
+      if (role) setKnownRoles((prev) => prev.includes(role) ? prev : [...prev, role]);
       addMsg({ id, type: "tool_call", text: data.tool_name, role, toolName: data.tool_name, toolArgs: data.args, toolOutput: [], toolDone: false });
     },
     onEvalTable: (rows) => {
       setLeaderboard((prev) => {
         const prevMap = new Map(prev.map((b) => [b.name, b]));
-        return rows.map((r: { rank: number; name: string; rating: number; rd: number; conservative_rating: number; h2h_avg_wr?: number }) => {
+        return rows.map((r: { rank: number; name: string; rating: number; rd: number; sigma?: number; conservative_rating: number; confidence?: string; h2h_avg_wr?: number }) => {
           const existing = prevMap.get(r.name);
           return {
             name: r.name, rank: r.rank, rating: r.rating, rd: r.rd,
-            sigma: existing?.sigma ?? 0, conservative_rating: r.conservative_rating,
-            confidence: existing?.confidence ?? (r.rd < 50 ? "very_confident" : r.rd < 100 ? "confident" : r.rd < 200 ? "uncertain" : "very_uncertain"),
+            sigma: r.sigma ?? existing?.sigma ?? 0.06,
+            conservative_rating: r.conservative_rating,
+            confidence: r.confidence ?? existing?.confidence ?? "uncertain",
             last_period: existing?.last_period ?? "", win_rate: existing?.win_rate, games: existing?.games, h2h_avg_wr: r.h2h_avg_wr,
           };
         });

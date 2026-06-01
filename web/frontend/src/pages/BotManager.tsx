@@ -4,7 +4,7 @@ import type { BotSummary, BotDetail, H2HEntry } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
 import { controlApi } from "../api/control";
 import { Skeleton } from "../components/shared/Skeleton";
-import { useBots, useH2H } from "../context/DataProvider";
+import { useBots, useH2H, useUpdateData } from "../context/DataProvider";
 
 // ── Inline SVG helpers ─────────────────────────────────────────────────────────
 const TombIcon = ({ className }: { className?: string }) => (
@@ -189,7 +189,7 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
                   const wr = isA ? val.a_wins / val.games : val.b_wins / val.games;
                   const wins = isA ? val.a_wins : val.b_wins;
                   const losses = isA ? val.b_wins : val.a_wins;
-                  if (!isNaN(wr)) opponents.push({ name: opp, wr, games: val.games, wins, losses, draws: val.draws });
+                  if (val.games > 0 && isFinite(wr)) opponents.push({ name: opp, wr, games: val.games, wins, losses, draws: val.draws });
                 }
                 if (opponents.length === 0) return null;
                 opponents.sort((a, b) => b.wr - a.wr);
@@ -259,11 +259,13 @@ export default function BotManager() {
   const [prepLoading, setPrepLoading] = useState(false);
   const [crossLoading, setCrossLoading] = useState(false);
 
+  const updateData = useUpdateData();
   const refresh = useCallback(async () => {
     try {
-      await api.listBots(true);
+      const bots = await api.listBots(true);
+      updateData({ bots });
     } catch {}
-  }, []);
+  }, [updateData]);
 
   const handleReapWeakest = async () => {
     setReapLoading(true);

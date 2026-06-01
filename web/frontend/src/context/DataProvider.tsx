@@ -31,6 +31,7 @@ const initial: DataStore = {
 };
 
 const DataContext = createContext<DataStore>(initial);
+const SetDataContext = createContext<((partial: Partial<DataStore>) => void) | null>(null);
 
 export function DataProvider({ children }: { children: ReactNode }) {
   const [store, setStore] = useState<DataStore>(initial);
@@ -76,7 +77,13 @@ export function DataProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  return <DataContext.Provider value={store}>{children}</DataContext.Provider>;
+  const updateData = (partial: Partial<DataStore>) => setStore((s) => ({ ...s, ...partial }));
+
+  return (
+    <SetDataContext.Provider value={updateData}>
+      <DataContext.Provider value={store}>{children}</DataContext.Provider>
+    </SetDataContext.Provider>
+  );
 }
 
 export const useRatings = () => useContext(DataContext).ratings;
@@ -89,3 +96,4 @@ export const useHistory = () => useContext(DataContext).history;
 export const useGenerations = () => useContext(DataContext).generations;
 export const useH2H = () => useContext(DataContext).h2h;
 export const useBotStats = () => useContext(DataContext).botStats;
+export const useUpdateData = () => useContext(SetDataContext)!;

@@ -50,6 +50,8 @@ export default function MatchReplay() {
   const [speed, setSpeed] = useState(800);
   const [commentary, setCommentary] = useState<Record<string, string>>({});
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const currentHandRef = useRef(0);
+  currentHandRef.current = currentHand;
 
   const loadMatch = useCallback(async (id: string) => {
     try {
@@ -90,8 +92,10 @@ export default function MatchReplay() {
         setCurrentStep((prev) => {
           if (frames.length === 0) return prev;
           if (prev >= frames.length - 1) {
-            if (selectedMatch && currentHand < selectedMatch.games.length - 1) {
-              const nextH = currentHand + 1;
+            const curHand = currentHandRef.current;
+            if (selectedMatch && curHand < selectedMatch.games.length - 1) {
+              const nextH = curHand + 1;
+              currentHandRef.current = nextH;
               setCurrentHand(nextH);
               setFrames(extractFrames(selectedMatch.games[nextH]));
               return 0;
@@ -106,7 +110,7 @@ export default function MatchReplay() {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [isPlaying, speed, frames.length, selectedMatch, currentHand]);
+  }, [isPlaying, speed, frames.length, selectedMatch]);
 
   const currentFrame = frames[currentStep] || null;
 
@@ -249,7 +253,7 @@ export default function MatchReplay() {
               <div className="mt-3 h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-700">
                 <div
                   className="h-1.5 rounded-full bg-brand-500 transition-all"
-                  style={{ width: `${frames.length > 1 ? (currentStep / (frames.length - 1)) * 100 : 0}%` }}
+                  style={{ width: `${frames.length <= 1 ? 100 : (currentStep / (frames.length - 1)) * 100}%` }}
                 />
               </div>
             </div>

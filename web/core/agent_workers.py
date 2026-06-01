@@ -70,6 +70,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
     compile_errors = []
     smoke_errors = []
     _last_reason = "unknown"
+    ui.log_history(f"Worker {w_id} ({role}) started", "info")
     for attempt in range(MAX_WORKER_RETRIES):
         ui.clear_io()
         ui.set_status(f"[{role}] coding for v{next_v}...", is_working=True)
@@ -123,6 +124,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             base_worker_prompt += f"\n\nCRITICAL FIX: Fix runtime error:\n{smoke_errors[0]}"
             continue
 
+        ui.log_history(f"Worker {w_id} ({role}) done", "info")
         return True
 
     # Worker failed all retries — record failure

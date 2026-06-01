@@ -164,12 +164,23 @@ class WebUI(BaseUI):
         active_list.sort(key=lambda x: h2h_winrates.get(x[0], 0.0), reverse=True)
         for i, (bot, p) in enumerate(active_list):
             real_wr = compute_h2h_avg_winrate(bot, h2h_raw)
+            rd = p.rd
+            if rd < 50:
+                conf = "very_confident"
+            elif rd < 100:
+                conf = "confident"
+            elif rd < 200:
+                conf = "uncertain"
+            else:
+                conf = "very_uncertain"
             rows.append({
                 "rank": i + 1,
                 "name": bot,
                 "rating": round(p.r, 1),
-                "rd": round(p.rd, 1),
-                "conservative_rating": round(p.r - 2 * p.rd, 1),
+                "rd": round(rd, 1),
+                "sigma": round(p.sigma, 4),
+                "conservative_rating": round(p.r - 2 * rd, 1),
+                "confidence": conf,
                 "h2h_avg_wr": round(real_wr, 4) if real_wr is not None else None,
             })
         self._state["ratings"] = rows

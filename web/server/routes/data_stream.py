@@ -28,49 +28,18 @@ MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 router = APIRouter(prefix="/api", tags=["data-stream"])
 
 
-def _confidence(rd: float) -> str:
-    if rd < 50:
-        return "very_confident"
-    if rd < 100:
-        return "confident"
-    if rd < 200:
-        return "uncertain"
-    return "very_uncertain"
-
-
 def _event(event_type: str, data: Any) -> dict:
     return {"event": event_type, "data": json.dumps(data, default=str)}
 
 
 def _get_ratings() -> list[dict]:
-    from tool_helpers import compute_h2h_avg_winrate
+    from server.routes._helpers import build_ranked_ratings
     data = cached_read("ds_ratings", RATINGS_FILE)
     if not data:
         return []
     bot_stats_data = cached_read("ds_bot_stats_ratings", BOT_STATS_FILE) or {}
     h2h_data = cached_read("ds_h2h_ratings", H2H_FILE) or {}
-
-    rows = []
-    for name, d in data.items():
-        r, rd = d["r"], d["rd"]
-        bs = bot_stats_data.get(name, {})
-        wr = compute_h2h_avg_winrate(name, h2h_data)
-        rows.append({
-            "name": name,
-            "rating": round(r, 1),
-            "rd": round(rd, 1),
-            "sigma": round(d.get("sigma", 0.06), 4),
-            "conservative_rating": round(r - 2 * rd, 1),
-            "confidence": _confidence(rd),
-            "last_period": d.get("last_period", ""),
-            "win_rate": bs.get("win_rate"),
-            "games": bs.get("games", 0),
-            "h2h_avg_wr": round(wr, 4) if wr is not None else None,
-        })
-    rows.sort(key=lambda x: x["h2h_avg_wr"] if x["h2h_avg_wr"] is not None else 0.0, reverse=True)
-    for i, row in enumerate(rows):
-        row["rank"] = i + 1
-    return rows
+    return build_ranked_ratings(data, bot_stats_data, h2h_data)
 
 
 def _get_daemon_status() -> dict:

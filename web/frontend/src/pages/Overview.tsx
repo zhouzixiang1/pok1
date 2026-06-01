@@ -227,7 +227,7 @@ export default function Overview() {
                     </Link>
                   </div>
                   <div className="mt-2 flex items-baseline gap-2">
-                    <span className="text-3xl font-bold text-gray-900 dark:text-white tabular-nums">{bot.rating.toFixed(0)}</span>
+                    <span className="text-3xl font-bold text-gray-900 dark:text-white tabular-nums">{bot.rating.toFixed(1)}</span>
                     <span className="text-xs text-gray-500">评分</span>
                   </div>
                   <div className="mt-2 flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
@@ -324,7 +324,7 @@ export default function Overview() {
                   <th className="px-5 py-2 font-medium w-12">#</th>
                   <th className="px-5 py-2 font-medium">Bot</th>
                   <th className="px-5 py-2 font-medium">评分</th>
-                  <th className="px-5 py-2 font-medium">H2H</th>
+                  <th className="px-5 py-2 font-medium">对局胜率</th>
                   <th className="px-5 py-2 font-medium">场数</th>
                   <th className="px-5 py-2 font-medium">趋势</th>
                   <th className="px-5 py-2 font-medium">置信</th>
@@ -371,7 +371,7 @@ export default function Overview() {
                         <Badge
                           variant={
                             bot.confidence === "very_confident" ? "success" :
-                            bot.confidence === "confident" ? "warning" :
+                            bot.confidence === "confident" ? "neutral" :
                             bot.confidence === "uncertain" ? "warning" : "error"
                           }
                           size="sm"
