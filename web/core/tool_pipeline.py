@@ -41,6 +41,7 @@ from tool_helpers import (
     _matching_checkpoint, _record_gate, _gate_payload, _state_blocked,
     _quality_gate_ok, _review_gate_ok, _critic_gate_ok,
     _validate_worker_boundaries, _select_precommit_opponents, _bot_main,
+    _target_rel,
     PROJECT_ROOT,
 )
 
@@ -66,7 +67,7 @@ _TUNER_STRUCTURAL_PATTERNS = [
 ]
 
 
-def _validate_master_plan(plan):
+def _validate_master_plan(plan, next_v=None):
     """Validate master plan constraints before dispatching workers."""
     errors = []
     tasks = plan.get("tasks", [])
@@ -92,11 +93,11 @@ def _validate_master_plan(plan):
                     )
                     break
 
-    # Check target_files overlap between workers
+    # Check target_files overlap between workers (normalized paths)
     all_targets = {}
     for i, task in enumerate(tasks):
         for target in task.get("target_files", []):
-            rel = target.strip()
+            rel = _target_rel(target, next_v) if next_v else target.strip()
             if rel in all_targets:
                 errors.append(
                     f"Tasks {all_targets[rel]} and {i} share target_file '{target}' — "
@@ -134,7 +135,7 @@ async def run_master(args):
     if data is None:
         return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed to produce a valid plan after 3 retries", "logs": ui.get_output()})}]}
 
-    plan_errors = _validate_master_plan(data)
+    plan_errors = _validate_master_plan(data, next_v=next_v)
     if plan_errors:
         return {"content": [{"type": "text", "text": json.dumps({"error": "Master plan validation failed", "validation_errors": plan_errors, "plan": data, "logs": ui.get_output()})}]}
 
@@ -886,13 +887,10 @@ async def commit_bot(args):
                 critic_score = float(critic.get("score", 0))
             except (TypeError, ValueError):
                 critic_score = 0.0
-            critic_force_advanced = critic.get("force_advanced", False)
-            if critic_force_advanced:
-                pass  # force_advance allows committing despite low score
-            elif critic.get("approved") is not True or critic_score < 6:
+            if critic.get("approved") is not True or critic_score < 6:
                 failed_gates.append({
                     "gate": "critic",
-                    "reason": "critic score must be >= 6 and approved must be true (or force_advanced)",
+                    "reason": "critic score must be >= 6 and approved must be true",
                     "value": critic,
                 })
 

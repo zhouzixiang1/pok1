@@ -1,1 +1,48 @@
 [      74ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:5173/node_modules/.vite/deps/react-dom_client.js?v=ad47e121:17803
+[   95306ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:5173/node_modules/.vite/deps/react-dom_client.js?v=ad47e121:17803
+[  103091ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:5173/node_modules/.vite/deps/react-dom_client.js?v=ad47e121:17803
+[  115859ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:5173/node_modules/.vite/deps/react-dom_client.js?v=ad47e121:17803
+[  167432ms] TypeError: Cannot read properties of null (reading '1')
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:4742:198)
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:4821:313)
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:4876:165)
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9798:141)
+    at t2.create (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:479:21)
+    at http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9860:23
+    at new Promise (<anonymous>)
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9858:16)
+    at http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9233:23
+    at Array.forEach (<anonymous>)
+[  169046ms] TypeError: Cannot read properties of undefined (reading '0')
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:5468:40)
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:5491:23)
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:5441:14)
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9170:26)
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9798:462)
+    at t2.create (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:479:21)
+    at http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9860:23
+    at new Promise (<anonymous>)
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9858:16)
+    at http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9233:23
+[  171334ms] TypeError: Cannot read properties of undefined (reading '0')
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:5468:40)
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:5491:23)
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:5441:14)
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9170:26)
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9798:462)
+    at t2.create (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:479:21)
+    at http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9860:23
+    at new Promise (<anonymous>)
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9858:16)
+    at http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9233:23
+[  174373ms] TypeError: Cannot read properties of undefined (reading '0')
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:5468:40)
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:5491:23)
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:5441:14)
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9170:26)
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9798:462)
+    at t2.create (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:479:21)
+    at http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9860:23
+    at new Promise (<anonymous>)
+    at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9858:16)
+    at http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9233:23

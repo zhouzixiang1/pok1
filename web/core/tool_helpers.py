@@ -199,7 +199,7 @@ def _critic_gate_ok(checkpoint):
         score = float(critic.get("score", 0))
     except (TypeError, ValueError):
         score = 0.0
-    return (critic.get("approved") is True and score >= 6) or critic.get("force_advanced") is True
+    return critic.get("approved") is True and score >= 6
 
 
 def _bot_main(bot_name):

@@ -14,6 +14,7 @@ from evolution_infra import (
     find_current_v,
     WORKER_FAILURES_FILE, MAX_WORKER_RETRIES, WORKER_TIMEOUT, MAX_PARALLEL_WORKERS, _COPY_IGNORE,
 )
+from tool_helpers import _target_rel
 
 
 def _record_worker_failure(gen, worker_id, role, error):
@@ -137,7 +138,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
         )
 
     # Check for target_files overlap — run sequentially if shared files exist
-    target_sets = [set(t.get("target_files", [])) for t in tasks]
+    target_sets = [set(_target_rel(f, next_v) for f in t.get("target_files", [])) for t in tasks]
     has_overlap = any(
         target_sets[i] & target_sets[j]
         for i in range(len(target_sets))
