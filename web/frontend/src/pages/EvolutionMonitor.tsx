@@ -4,7 +4,6 @@ import type { IOLine } from "../api/evolution";
 import { api } from "../api/client";
 import type { BotRating, PipelineCheckpoint, WorkerFailure } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
-import { MetricCard } from "../components/shared/MetricCard";
 import { Badge } from "../components/shared/Badge";
 import { PipelineStatus } from "../components/evolution/PipelineStatus";
 import { CostBreakdown } from "../components/evolution/CostBreakdown";
@@ -213,30 +212,31 @@ export default function EvolutionMonitor() {
   return (
     <>
       <PageMeta title="进化监控 — Bot 自进化" description="实时进化视图" />
-
-      {/* Metric strip */}
-      <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <MetricCard
-          label="状态"
-          value={isWorking ? "运行中" : status === "连接中..." ? "—" : "空闲"}
-          loading={status === "连接中..."}
-        />
-        <MetricCard
-          label="总成本"
-          value={`$${grand.toFixed(3)}`}
-          loading={grand === 0 && gen === 0}
-        />
-        <MetricCard
-          label="成功率"
-          value={metrics.success_rate != null ? `${(metrics.success_rate * 100).toFixed(0)}%` : "—"}
-          trend={metrics.rating_trend != null ? { value: metrics.rating_trend, label: "趋势" } : undefined}
-          loading={Object.keys(metrics).length === 0}
-        />
-        <MetricCard
-          label="代次"
-          value={metrics.total_gens != null ? `${metrics.total_gens}` : "—"}
-          loading={Object.keys(metrics).length === 0}
-        />
+      {/* Compact status bar */}
+      <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+        <div className="flex items-center gap-2">
+          <Badge variant={isWorking ? "success" : status === "连接中..." ? "neutral" : "warning"} size="sm" pulse={isWorking}>
+            {isWorking ? "运行中" : status === "连接中..." ? "连接中" : "空闲"}
+          </Badge>
+        </div>
+        <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
+        <span className="text-gray-600 dark:text-gray-400">
+          总成本 <span className="font-semibold text-gray-900 dark:text-white">${grand.toFixed(2)}</span>
+        </span>
+        <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
+        <span className="text-gray-600 dark:text-gray-400">
+          成功率 <span className={cn(
+            "font-semibold",
+            metrics.success_rate != null && metrics.success_rate >= 0.8 ? "text-success-600 dark:text-success-400"
+            : metrics.success_rate != null && metrics.success_rate >= 0.5 ? "text-warning-600 dark:text-warning-400"
+            : metrics.success_rate != null ? "text-error-600 dark:text-error-400"
+            : "text-gray-900 dark:text-white",
+          )}>{metrics.success_rate != null ? `${(metrics.success_rate * 100).toFixed(0)}%` : "—"}</span>
+        </span>
+        <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
+        <span className="text-gray-600 dark:text-gray-400">
+          代次 <span className="font-semibold text-gray-900 dark:text-white">{metrics.total_gens ?? "—"}</span>
+        </span>
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -306,7 +306,7 @@ export default function EvolutionMonitor() {
                   key={`${msg.id}-${j}`}
                   className={cn(
                     "animate-fade-in-up",
-                    msg.type === "claude" ? "text-emerald-400 font-medium" : "text-gray-300",
+                    msg.type === "claude" ? "text-gray-200" : "text-gray-500",
                   )}
                 >
                   {msg.type === "claude" ? <span className="text-emerald-500">▸ </span> : "  "}{textLine}
@@ -315,7 +315,7 @@ export default function EvolutionMonitor() {
             })}
             {/* Streaming cursor */}
             {isWorking && (
-              <span className="inline-block w-2 h-4 bg-emerald-400 animate-cursor-blink ml-1" />
+              <span className="inline-block w-2 h-4 bg-indigo-400 animate-cursor-blink ml-1" />
             )}
           </div>
 
@@ -331,9 +331,9 @@ export default function EvolutionMonitor() {
         </div>
 
         {/* Right panel with tabs */}
-        <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.04] overflow-hidden flex flex-col">
+        <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1 overflow-hidden flex flex-col">
           {/* Tab bar */}
-          <div className="flex border-b border-gray-200 dark:border-gray-800 px-1 pt-2">
+          <div className="flex border-b border-gray-200 dark:border-border-subtle px-1 pt-2">
             {tabs.map((tab) => (
               <button
                 key={tab.key}

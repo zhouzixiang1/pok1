@@ -338,7 +338,7 @@ export default function ControlPanel() {
       </div>
 
       {/* Status Bar */}
-      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+      <div className="rounded-lg border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-4">
         <div className="flex flex-wrap items-center gap-4">
           <div className="flex items-center gap-2">
             <span className="text-sm text-gray-500">模式:</span>
@@ -370,7 +370,7 @@ export default function ControlPanel() {
       </div>
 
       {/* LLM Session Control */}
-      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+      <div className="rounded-lg border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-4">
         <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">LLM 会话</h2>
         <div className="flex flex-wrap items-center gap-4">
           <div>
@@ -421,7 +421,7 @@ export default function ControlPanel() {
       </div>
 
       {/* Settings */}
-      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+      <div className="rounded-lg border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-4">
         <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">评分引擎设置</h2>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="flex items-center gap-3">
@@ -452,7 +452,7 @@ export default function ControlPanel() {
       </div>
 
       {/* Decision Chain */}
-      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+      <div className="rounded-lg border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-4">
         <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">调用记录</h2>
         {decisions.length === 0 ? (
           <p className="text-sm text-gray-400">暂无调用</p>
@@ -470,7 +470,7 @@ export default function ControlPanel() {
       </div>
 
       {/* Manual Tools — accordion groups */}
-      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+      <div className="rounded-lg border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-4">
         <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">手动工具</h2>
         <div className="space-y-2">
           {TOOL_GROUPS.map((group) => (
@@ -504,7 +504,7 @@ export default function ControlPanel() {
 
       {/* Tool Output */}
       {toolResult && (
-        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+        <div className="rounded-lg border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-4">
           <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">
             输出 — {toolResult.tool}
             <button onClick={() => setToolResult(null)} className="ml-3 text-xs text-gray-400 hover:text-gray-600 underline">清空</button>

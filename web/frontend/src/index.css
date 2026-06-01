@@ -81,6 +81,13 @@ layer(base);
   --color-gray-950: #0c111d;
   --color-gray-dark: #1a2231;
 
+  --color-surface-0: #0a0e17;
+  --color-surface-1: #111827;
+  --color-surface-2: #1a2236;
+  --color-border-subtle: rgba(255, 255, 255, 0.06);
+  --color-border-default: rgba(255, 255, 255, 0.1);
+  --color-indigo-500: #6366f1;
+
   --color-orange-25: #fffaf5;
   --color-orange-50: #fff6ed;
   --color-orange-100: #ffead5;
@@ -186,7 +193,7 @@ layer(base);
     cursor: pointer;
   }
   body {
-    @apply relative font-normal font-outfit z-1 bg-gray-50;
+    @apply relative font-normal font-outfit z-1 bg-gray-50 dark:bg-surface-0;
   }
 }
 
@@ -296,7 +303,7 @@ layer(base);
 
 /* ── Card Utilities ────────────────────────────────────── */
 @utility card {
-  @apply rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.04];
+  @apply rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1;
 }
 
 @utility card-glass {
@@ -304,7 +311,7 @@ layer(base);
 }
 
 @utility card-header {
-  @apply px-5 py-4 border-b border-gray-100 dark:border-gray-800;
+  @apply px-5 py-4 border-b border-gray-100 dark:border-border-subtle;
 }
 
 @utility no-scrollbar {

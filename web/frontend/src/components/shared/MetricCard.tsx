@@ -11,7 +11,7 @@ interface MetricCardProps {
 export function MetricCard({ label, value, trend, loading, className }: MetricCardProps) {
   if (loading) {
     return (
-      <div className={cn("rounded-xl border border-gray-200 bg-white px-4 py-3 dark:border-gray-800 dark:bg-white/[0.04]", className)}>
+      <div className={cn("rounded-xl border border-gray-200 bg-white px-4 py-3 dark:border-border-subtle dark:bg-surface-1", className)}>
         <div className="h-3 w-16 animate-shimmer rounded bg-gray-200 dark:bg-gray-700" />
         <div className="mt-2 h-6 w-20 animate-shimmer rounded bg-gray-200 dark:bg-gray-700" />
       </div>
@@ -35,7 +35,7 @@ export function MetricCard({ label, value, trend, loading, className }: MetricCa
     : "";
 
   return (
-    <div className={cn("rounded-xl border border-gray-200 bg-white px-4 py-3 dark:border-gray-800 dark:bg-white/[0.04]", className)}>
+    <div className={cn("rounded-xl border border-gray-200 bg-white px-4 py-3 dark:border-border-subtle dark:bg-surface-1", className)}>
       <p className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">{label}</p>
       <div className="mt-1 flex items-baseline gap-2">
         <span className="text-2xl font-semibold text-gray-900 dark:text-white">{value}</span>

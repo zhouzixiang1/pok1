@@ -101,13 +101,13 @@ export default function MatchMatrix() {
           colorScale: {
             ranges: isH2H
               ? [
-                  { from: -0.01, to: 0.01, color: "#9ca3af", name: "无数据" },
-                  { from: 0.01, to: 0.30, color: "#ef4444", name: "很弱" },
-                  { from: 0.30, to: 0.45, color: "#f87171", name: "弱" },
-                  { from: 0.45, to: 0.55, color: "#e5e7eb", name: "均势" },
-                  { from: 0.55, to: 0.70, color: "#c7d2fe", name: "强" },
-                  { from: 0.70, to: 0.85, color: "#818cf8", name: "很强" },
-                  { from: 0.85, to: 1.01, color: "#4f46e5", name: "极强" },
+                  { from: -0.01, to: 0.01, color: "#374151", name: "无数据" },
+                  { from: 0.01, to: 0.35, color: "#dc2626", name: "很弱 <35%" },
+                  { from: 0.35, to: 0.45, color: "#f87171", name: "弱 35-45%" },
+                  { from: 0.45, to: 0.55, color: "#1f2937", name: "均势 45-55%" },
+                  { from: 0.55, to: 0.65, color: "#93c5fd", name: "强 55-65%" },
+                  { from: 0.65, to: 0.75, color: "#3b82f6", name: "很强 65-75%" },
+                  { from: 0.75, to: 1.01, color: "#1d4ed8", name: "极强 >75%" },
                 ]
               : [
                   { from: 0, to: 0, color: "#f3f4f6", name: "无" },
@@ -164,8 +164,8 @@ export default function MatchMatrix() {
   return (
     <>
       <PageMeta title="对局矩阵 — Bot 自进化" description="Bot 间的 Head-to-Head 胜率" />
-      <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
-        <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800">
+      <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
+        <div className="px-5 py-4 border-b border-gray-100 dark:border-border-subtle">
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-lg font-semibold text-gray-800 dark:text-white">Head-to-Head 胜率矩阵</h3>

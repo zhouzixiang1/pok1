@@ -326,7 +326,7 @@ export default function Logs() {
             className={`px-4 py-2 text-sm rounded-lg font-medium transition-colors ${
               tab === t
                 ? "bg-blue-600 text-white"
-                : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700"
+                : "bg-gray-100 dark:bg-surface-1 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700"
             }`}
           >
             {t === "generation" ? "迭代日志" : t === "orchestrator" ? "编排器日志" : "LLM 对话"}
@@ -336,15 +336,15 @@ export default function Logs() {
 
       {/* Generation Logs */}
       {tab === "generation" && (
-        <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
-          <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800">
+        <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-white/[0.03]">
+          <div className="px-5 py-4 border-b border-gray-100 dark:border-border-subtle">
             <h3 className="text-lg font-semibold text-gray-800 dark:text-white">迭代日志</h3>
           </div>
           {generations.length === 0 ? (
             <div className="p-6"><Skeleton.Card count={2} /></div>
           ) : (
             <div className="flex">
-              <div className="w-48 border-r border-gray-100 dark:border-gray-800 overflow-y-auto max-h-[600px]">
+              <div className="w-48 border-r border-gray-100 dark:border-border-subtle overflow-y-auto max-h-[600px]">
                 {generations.map((gen) => (
                   <button
                     key={gen.version}
@@ -362,7 +362,7 @@ export default function Logs() {
               </div>
               <div className="flex-1">
                 {currentGen && (
-                  <div className="border-b border-gray-100 dark:border-gray-800 flex gap-1 px-3 py-2 overflow-x-auto">
+                  <div className="border-b border-gray-100 dark:border-border-subtle flex gap-1 px-3 py-2 overflow-x-auto">
                     {currentGen.files.map((file) => (
                       <button
                         key={file}
@@ -379,7 +379,7 @@ export default function Logs() {
                   </div>
                 )}
                 <div className="p-4">
-                  <pre className="text-xs text-gray-700 dark:text-gray-300 overflow-auto max-h-[500px] whitespace-pre-wrap font-mono leading-relaxed bg-gray-50 dark:bg-gray-900 rounded-lg p-4">
+                  <pre className="text-xs text-gray-700 dark:text-gray-300 overflow-auto max-h-[500px] whitespace-pre-wrap font-mono leading-relaxed bg-gray-50 dark:bg-surface-0 rounded-lg p-4">
                     {logContent || "选择一个文件以查看"}
                   </pre>
                 </div>
@@ -391,13 +391,13 @@ export default function Logs() {
 
       {/* Orchestrator Logs */}
       {tab === "orchestrator" && (
-        <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
-          <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+        <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-white/[0.03]">
+          <div className="px-5 py-4 border-b border-gray-100 dark:border-border-subtle flex items-center justify-between">
             <h3 className="text-lg font-semibold text-gray-800 dark:text-white">编排器日志</h3>
             <select
               value={selectedOrch}
               onChange={(e) => setSelectedOrch(e.target.value)}
-              className="text-sm border border-gray-200 dark:border-gray-700 dark:bg-gray-800 rounded px-2 py-1"
+              className="text-sm border border-gray-200 dark:border-border-subtle dark:bg-surface-1 rounded px-2 py-1"
             >
               {orchFiles.map((f) => (
                 <option key={f.filename} value={f.filename}>{f.filename} ({formatSize(f.size_bytes)}, {formatFileTime(f.mtime)})</option>
@@ -408,7 +408,7 @@ export default function Logs() {
             {orchLoading ? (
               <div className="space-y-2"><Skeleton.Line /><Skeleton.Line className="w-2/3" /><Skeleton.Line className="w-1/2" /></div>
             ) : (
-              <pre className="text-xs text-gray-700 dark:text-gray-300 overflow-auto max-h-[600px] whitespace-pre-wrap font-mono leading-relaxed bg-gray-50 dark:bg-gray-900 rounded-lg p-4">
+              <pre className="text-xs text-gray-700 dark:text-gray-300 overflow-auto max-h-[600px] whitespace-pre-wrap font-mono leading-relaxed bg-gray-50 dark:bg-surface-0 rounded-lg p-4">
                 {orchContent || "无日志内容"}
               </pre>
             )}
@@ -418,13 +418,13 @@ export default function Logs() {
 
       {/* LLM Conversations */}
       {tab === "conversation" && (
-        <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03] overflow-hidden">
-          <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+        <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-white/[0.03] overflow-hidden">
+          <div className="px-5 py-4 border-b border-gray-100 dark:border-border-subtle flex items-center justify-between">
             <h3 className="text-lg font-semibold text-gray-800 dark:text-white">LLM 对话</h3>
             <select
               value={convFile}
               onChange={(e) => setConvFile(e.target.value)}
-              className="text-sm border border-gray-200 dark:border-gray-700 dark:bg-gray-800 rounded px-2 py-1"
+              className="text-sm border border-gray-200 dark:border-border-subtle dark:bg-surface-1 rounded px-2 py-1"
             >
               {orchFiles.map((f) => (
                 <option key={f.filename} value={f.filename}>{f.filename} ({formatSize(f.size_bytes)}, {formatFileTime(f.mtime)})</option>

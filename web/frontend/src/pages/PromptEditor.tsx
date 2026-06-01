@@ -115,7 +115,7 @@ export default function PromptEditor() {
 
       <div className="flex h-[calc(100vh-8rem)] gap-4 overflow-hidden">
         {/* Left sidebar — prompt list */}
-        <div className="w-52 flex-shrink-0 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-y-auto">
+        <div className="w-52 flex-shrink-0 rounded-xl border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 overflow-y-auto">
           <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700">
             <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300">提示词</h2>
           </div>
@@ -157,7 +157,7 @@ export default function PromptEditor() {
           )}
 
           {/* Header bar */}
-          <div className="mb-2 flex items-center justify-between px-4 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+          <div className="mb-2 flex items-center justify-between px-4 py-2 rounded-xl border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1">
             <div>
               <span className="font-semibold text-gray-800 dark:text-white">{selected}</span>
               {selectedInfo?.filename && (

@@ -13,8 +13,8 @@ export function Card({ children, variant = "solid", className, padding = "p-4" }
     <div
       className={cn(
         "rounded-2xl border transition-colors",
-        variant === "solid" && "border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.04]",
-        variant === "glass" && "border-white/[0.08] bg-white/[0.04] backdrop-blur-xl dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]",
+        variant === "solid" && "border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1",
+        variant === "glass" && "border-white/[0.08] bg-surface-2/80 backdrop-blur-xl dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]",
         variant === "danger" && "border-error-200 bg-error-50 dark:border-error-900/30 dark:bg-error-950/20",
         padding,
         className,

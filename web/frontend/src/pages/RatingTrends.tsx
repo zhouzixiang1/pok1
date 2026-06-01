@@ -112,7 +112,7 @@ export default function RatingTrends() {
         fontSize: "11px",
       },
       grid: {
-        borderColor: "#e5e7eb",
+        borderColor: undefined,
         strokeDashArray: 3,
         xaxis: { lines: { show: false } },
         yaxis: { lines: { show: true } },
@@ -147,8 +147,8 @@ export default function RatingTrends() {
   return (
     <>
       <PageMeta title="评分趋势 — Bot 自进化" description="历史评分趋势" />
-      <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
+      <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-border-subtle">
           <h3 className="text-lg font-semibold text-gray-800 dark:text-white">评分趋势</h3>
           <div className="flex items-center gap-4">
             <SegmentedControl

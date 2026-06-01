@@ -116,7 +116,7 @@ export default function MatchReplay() {
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-4">
         {/* Match list */}
         <div className="xl:col-span-1">
-          <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-white/[0.03]">
+          <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-border-subtle dark:bg-white/[0.03]">
             <h2 className="mb-3 text-sm font-semibold text-gray-700 dark:text-gray-300">
               最近对局 ({matches.length})
             </h2>
@@ -131,7 +131,7 @@ export default function MatchReplay() {
                   className={`w-full rounded-lg border p-2 text-left text-xs transition-colors ${
                     selectedMatch?.id === m.id
                       ? "border-brand-500 bg-brand-50 dark:bg-brand-500/10"
-                      : "border-gray-200 hover:border-gray-300 dark:border-gray-700"
+                      : "border-gray-200 hover:border-gray-300 dark:border-border-subtle"
                   }`}
                 >
                   <div className="font-medium text-gray-800 dark:text-gray-200">
@@ -156,7 +156,7 @@ export default function MatchReplay() {
         {/* Replay area */}
         <div className="xl:col-span-3">
           {/* Poker table */}
-          <div className="mb-4 rounded-2xl border border-gray-200 bg-gray-900 p-4 dark:border-gray-800">
+          <div className="mb-4 rounded-2xl border border-gray-200 bg-gray-900 p-4 dark:border-border-subtle">
             <PokerTable
               frame={currentFrame}
               bot0Name={selectedMatch?.bot0 || "Bot 0"}
@@ -166,21 +166,21 @@ export default function MatchReplay() {
 
           {/* Commentary */}
           {selectedMatch && commentary[String(currentHand)] && (
-            <div className="mb-4 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700 dark:border-gray-800 dark:bg-white/[0.03] dark:text-gray-300">
+            <div className="mb-4 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700 dark:border-border-subtle dark:bg-white/[0.03] dark:text-gray-300">
               {commentary[String(currentHand)]}
             </div>
           )}
 
           {/* Controls */}
           {selectedMatch && (
-            <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-white/[0.03]">
+            <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-border-subtle dark:bg-white/[0.03]">
               {/* Hand selector */}
               <div className="mb-3 flex items-center gap-2">
                 <span className="text-xs text-gray-500">手牌:</span>
                 <select
                   value={currentHand}
                   onChange={(e) => changeHand(Number(e.target.value))}
-                  className="rounded border border-gray-200 px-2 py-1 text-xs dark:border-gray-700 dark:bg-gray-800"
+                  className="rounded border border-gray-200 px-2 py-1 text-xs dark:border-border-subtle dark:bg-surface-1"
                 >
                   {selectedMatch.games.map((g, i) => (
                     <option key={i} value={i}>
@@ -197,13 +197,13 @@ export default function MatchReplay() {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => changeHand(Math.max(0, currentHand - 1))}
-                  className="rounded bg-gray-100 px-3 py-1.5 text-xs font-medium hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 flex items-center gap-1"
+                  className="rounded bg-gray-100 px-3 py-1.5 text-xs font-medium hover:bg-gray-200 dark:bg-surface-1 dark:hover:bg-gray-700 flex items-center gap-1"
                 >
                   <PrevHandIcon /> 上一手
                 </button>
                 <button
                   onClick={() => setCurrentStep(Math.max(0, currentStep - 1))}
-                  className="rounded bg-gray-100 px-3 py-1.5 text-xs font-medium hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 flex items-center gap-1"
+                  className="rounded bg-gray-100 px-3 py-1.5 text-xs font-medium hover:bg-gray-200 dark:bg-surface-1 dark:hover:bg-gray-700 flex items-center gap-1"
                 >
                   <PrevStepIcon /> 上一步
                 </button>
@@ -219,13 +219,13 @@ export default function MatchReplay() {
                 </button>
                 <button
                   onClick={() => setCurrentStep(Math.min(frames.length - 1, currentStep + 1))}
-                  className="rounded bg-gray-100 px-3 py-1.5 text-xs font-medium hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 flex items-center gap-1"
+                  className="rounded bg-gray-100 px-3 py-1.5 text-xs font-medium hover:bg-gray-200 dark:bg-surface-1 dark:hover:bg-gray-700 flex items-center gap-1"
                 >
                   下一步 <NextStepIcon />
                 </button>
                 <button
                   onClick={() => changeHand(Math.min(selectedMatch.games.length - 1, currentHand + 1))}
-                  className="rounded bg-gray-100 px-3 py-1.5 text-xs font-medium hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 flex items-center gap-1"
+                  className="rounded bg-gray-100 px-3 py-1.5 text-xs font-medium hover:bg-gray-200 dark:bg-surface-1 dark:hover:bg-gray-700 flex items-center gap-1"
                 >
                   下一手 <NextHandIcon />
                 </button>
@@ -235,7 +235,7 @@ export default function MatchReplay() {
                   <select
                     value={speed}
                     onChange={(e) => setSpeed(Number(e.target.value))}
-                    className="rounded border border-gray-200 px-2 py-1 text-xs dark:border-gray-700 dark:bg-gray-800"
+                    className="rounded border border-gray-200 px-2 py-1 text-xs dark:border-border-subtle dark:bg-surface-1"
                   >
                     <option value={1500}>0.5x</option>
                     <option value={800}>1x</option>

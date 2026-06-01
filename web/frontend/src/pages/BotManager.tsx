@@ -103,7 +103,7 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
   const conserv = bot.rating ? bot.rating.conservative.toFixed(0) : "—";
 
   return (
-    <div className={`rounded-xl border ${bot.graveyard ? "border-gray-300 opacity-60" : "border-gray-200 dark:border-gray-700"} bg-white dark:bg-gray-800 overflow-hidden`}>
+    <div className={`rounded-xl border ${bot.graveyard ? "border-gray-300 opacity-60" : "border-gray-200 dark:border-border-subtle"} bg-white dark:bg-surface-1 overflow-hidden`}>
       <button
         onClick={() => setExpanded(!expanded)}
         className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 text-left"
@@ -344,7 +344,7 @@ export default function BotManager() {
       )}
 
       {/* Global actions */}
-      <div className="mb-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 flex flex-wrap gap-4 items-end">
+      <div className="mb-4 rounded-xl border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-4 flex flex-wrap gap-4 items-end">
         <div>
           <button
             onClick={handleReapWeakest}
