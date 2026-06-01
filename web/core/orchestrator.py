@@ -56,8 +56,13 @@ def _is_rate_limited(output: str) -> bool:
 def _save_orchestrator_session(session_id: str):
     """Persist session_id so a killed process can resume the exact conversation."""
     tmp = ORCHESTRATOR_SESSION_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"session_id": session_id}))
-    tmp.rename(ORCHESTRATOR_SESSION_FILE)
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        os.write(fd, json.dumps({"session_id": session_id}).encode())
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(str(tmp), str(ORCHESTRATOR_SESSION_FILE))
 
 
 def _load_orchestrator_session() -> "str | None":
@@ -487,6 +492,11 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                         ui.log_history(f"Orchestrator rate limited (529). Retrying in {backoff}s...", "warn")
                     lf.write(f"\n[529 RETRY] backing off {backoff}s\n")
                     await asyncio.sleep(backoff)
+                    if query_gen is not None:
+                        try:
+                            await query_gen.aclose()
+                        except Exception:
+                            pass
                     full_output, total_cost, cycle_completed, query_gen, auth_error = await _stream_response(retry_opts)
                     if not _is_rate_limited(full_output):
                         break
@@ -668,6 +678,12 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
             ui.log_history(f"Orchestrator crashed: {e}", "error")
         log_system_event("orchestrator.crashed", "error", f"Orchestrator crashed: {e}",
                          {"error": str(e)[:200]})
+        _clear_orchestrator_session()
+        try:
+            from evolution_core import clear_pipeline_checkpoint
+            clear_pipeline_checkpoint()
+        except Exception:
+            pass
         try:
             from server.state import app_state
             app_state.set_running(False)

@@ -21,14 +21,20 @@ async function extractError(res: Response): Promise<never> {
   throw new Error(msg);
 }
 
-async function fetchJSON<T>(url: string): Promise<T> {
-  const res = await fetch(url, { signal: abortSignal() });
+async function fetchJSON<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const combinedSignal = signal
+    ? AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT)])
+    : AbortSignal.timeout(FETCH_TIMEOUT);
+  const res = await fetch(url, { signal: combinedSignal });
   if (!res.ok) return extractError(res);
   return res.json();
 }
 
-async function fetchText(url: string): Promise<string> {
-  const res = await fetch(url, { signal: abortSignal() });
+async function fetchText(url: string, signal?: AbortSignal): Promise<string> {
+  const combinedSignal = signal
+    ? AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT)])
+    : AbortSignal.timeout(FETCH_TIMEOUT);
+  const res = await fetch(url, { signal: combinedSignal });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.text();
 }
@@ -97,24 +103,24 @@ export const api = {
     fetchText(`${BASE}/logs/orchestrator/${encodeURIComponent(filename)}${tail ? `?tail=${tail}` : ""}`),
 
   // Logs - system events
-  systemEvents: (params?: { type?: string; severity?: string; since?: number; limit?: number; offset?: number }) => {
+  systemEvents: (params?: { type?: string; severity?: string; since?: number; limit?: number; offset?: number }, signal?: AbortSignal) => {
     const p = new URLSearchParams();
     if (params?.type) p.set("type", params.type);
     if (params?.severity) p.set("severity", params.severity);
     if (params?.since !== undefined) p.set("since", String(params.since));
     if (params?.limit !== undefined) p.set("limit", String(params.limit));
     if (params?.offset !== undefined) p.set("offset", String(params.offset));
-    return fetchJSON<SystemEventsResponse>(`${BASE}/logs/system-events?${p}`);
+    return fetchJSON<SystemEventsResponse>(`${BASE}/logs/system-events?${p}`, signal);
   },
 
   // Logs - worker failures
-  workerFailures: (params?: { gen?: number; role?: string; limit?: number; offset?: number }) => {
+  workerFailures: (params?: { gen?: number; role?: string; limit?: number; offset?: number }, signal?: AbortSignal) => {
     const p = new URLSearchParams();
     if (params?.gen !== undefined && params.gen !== null) p.set("gen", String(params.gen));
     if (params?.role) p.set("role", params.role);
     if (params?.limit !== undefined) p.set("limit", String(params.limit));
     if (params?.offset !== undefined) p.set("offset", String(params.offset));
-    return fetchJSON<WorkerFailuresResponse>(`${BASE}/logs/worker-failures?${p}`);
+    return fetchJSON<WorkerFailuresResponse>(`${BASE}/logs/worker-failures?${p}`, signal);
   },
 
   // Experience pool

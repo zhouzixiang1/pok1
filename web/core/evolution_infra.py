@@ -694,8 +694,10 @@ def archive_rotate_files(version):
         (WORKER_FAILURES_FILE, 200),
         (MATCH_HISTORY_FILE, 500),
         (RATING_HISTORY_FILE, 100),
-        (RESULTS_DIR / "system_events.jsonl", 1000),
+        (None, 1000),  # placeholder — resolved below
     ]
+    from system_log import SYSTEM_EVENTS_FILE
+    rotation_rules[3] = (SYSTEM_EVENTS_FILE, 1000)
     if LLM_COSTS_FILE.exists():
         rotation_rules.append((LLM_COSTS_FILE, 200))
 

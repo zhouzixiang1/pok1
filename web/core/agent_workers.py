@@ -21,6 +21,13 @@ def _record_worker_failure(gen, worker_id, role, error):
     entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error}
     with locked_file(WORKER_FAILURES_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    try:
+        from system_log import log_system_event
+        log_system_event("pipeline.worker_failed", "error",
+                         f"Worker {worker_id} ({role}) failed for v{gen}",
+                         {"gen": gen, "worker_id": worker_id, "role": role, "error": error[:200]})
+    except Exception:
+        pass
 
 
 def _load_recent_failures(n=3):

@@ -142,10 +142,10 @@ def _pick_crossover_parents(ratings, current_v) -> tuple | None:
 
 
 def _cleanup_incomplete():
-    """Remove incomplete bot directories that have no git tag."""
+    """Remove incomplete bot directories that have no git tag and no active checkpoint."""
     import shutil
     from pathlib import Path
-    from evolution_infra import PROJECT_ROOT, git_has_tag
+    from evolution_infra import PROJECT_ROOT, git_has_tag, RESULTS_DIR
 
     bots_dir = PROJECT_ROOT / "bots"
     if not bots_dir.exists():
@@ -158,6 +158,16 @@ def _cleanup_incomplete():
                 except (ValueError, IndexError):
                     continue
                 if not git_has_tag(v):
+                    # Skip if there's an active pipeline checkpoint for this version
+                    checkpoint_file = RESULTS_DIR / "pipeline_state.json"
+                    if checkpoint_file.exists():
+                        try:
+                            import json as _json
+                            ckpt = _json.loads(checkpoint_file.read_text())
+                            if ckpt.get("next_v") == v and ckpt.get("stage") not in (None, "archived"):
+                                continue
+                        except Exception:
+                            pass
                     shutil.rmtree(d, ignore_errors=True)
 
 

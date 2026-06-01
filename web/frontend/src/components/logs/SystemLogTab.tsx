@@ -82,7 +82,7 @@ export default function SystemLogTab() {
         severity: severity || undefined,
         limit: LIMIT,
         offset,
-      });
+      }, controller.signal);
       if (controller.signal.aborted) return;
       setEvents(res.events);
       setTotal(res.total);

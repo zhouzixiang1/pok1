@@ -45,7 +45,9 @@ class ShutdownManager:
 
     def _on_signal(self, sig):
         if self._event.is_set():
-            return  # Second signal — let it raise naturally
+            # Second signal — restore default so the next one terminates the process
+            signal.signal(sig, signal.SIG_DFL)
+            return
         print(f"\n[Shutdown] Received {sig.name}, initiating graceful shutdown...")
         self._event.set()
 

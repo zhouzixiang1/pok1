@@ -44,7 +44,17 @@ export default function WorkerFailuresTab() {
   const [error, setError] = useState<string | null>(null);
   const [genFilter, setGenFilter] = useState<number | "">("");
   const [roleFilter, setRoleFilter] = useState("");
+  const [allGens, setAllGens] = useState<number[]>([]);
+  const [allRoles, setAllRoles] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Load filter options once on mount (unfiltered)
+  useEffect(() => {
+    api.workerFailures({ limit: 500 }).then((res) => {
+      setAllGens([...new Set(res.failures.map((f) => f.gen))].sort((a, b) => b - a));
+      setAllRoles([...new Set(res.failures.map((f) => f.role))].sort());
+    }).catch(() => {});
+  }, []);
 
   const fetchFailures = useCallback(async () => {
     abortRef.current?.abort();
@@ -57,7 +67,7 @@ export default function WorkerFailuresTab() {
         gen: genFilter || undefined,
         role: roleFilter || undefined,
         limit: 200,
-      });
+      }, controller.signal);
       if (controller.signal.aborted) return;
       setFailures(res.failures);
       setTotal(res.total);
@@ -75,8 +85,8 @@ export default function WorkerFailuresTab() {
     return () => { abortRef.current?.abort(); };
   }, [fetchFailures]);
 
-  const uniqueGens = [...new Set(failures.map((f) => f.gen))].sort((a, b) => b - a);
-  const uniqueRoles = [...new Set(failures.map((f) => f.role))].sort();
+  const uniqueGens = allGens;
+  const uniqueRoles = allRoles;
 
   return (
     <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-white/[0.03]">
