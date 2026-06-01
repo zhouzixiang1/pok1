@@ -10,9 +10,12 @@
 python web/main.py
         │
         ▼
-  解析 CLI 参数 (--port, --no-daemon, --dev, --no-build)
+  解析 CLI 参数 (--port [PORT env], --host, --no-daemon, --dev, --no-build)
   构建前端 (npm run build → web/server/static/)
-  预填充 app_state (daemon_enabled, daemon_workers, daemon_pairs)
+  app_state.update_config(daemon_enabled, daemon_workers, daemon_pairs)  ← CLI 参数写入配置
+        │
+        ▼
+  app.py 模块级: EventBroadcaster(buffer_size=500) + WebUI(broadcaster)  ← SSE 广播器在 uvicorn 之前创建
         │
         ▼
   uvicorn.run("server.app:app", host, port)
@@ -20,11 +23,10 @@ python web/main.py
         ▼
   FastAPI lifespan 启动:
     ├── app_state.bootstrap(find_current_v())    ← 从 git tags 读取最新 bot 版本
-    ├── 创建 WebUI(broadcaster)                  ← SSE 事件广播器
     ├── asyncio.create_task(orchestrator_loop()) ← 编排器作为后台协程启动
     └── orchestrator_loop() 内部:
           ├── inject_ui(web_ui)                  ← MCP 工具共享同一个 UI 实例
-          ├── start_daemon(workers=14, pairs=5)  ← 启动 Glicko-2 守护进程子进程
+          ├── start_daemon(workers=配置值, pairs=配置值)  ← 默认 14/5，可通过 API 动态调整
           ├── daemon_monitor_thread 启动          ← 监控守护进程存活，自动重启
           └── while True:
                 ├── gen_count += 1
@@ -42,6 +44,7 @@ python web/main.py
    - 最近 3 条 worker 失败记录
    - Pipeline checkpoint 阶段提示
    - 模式标记（连续进化 / 单代 / dry-run）
+   - 环境异常检测（如检测到不完整 bot、tags 缺失等异常，建议调用 `diagnose_environment`）
 2. 将上下文注入 `orchestrator.md` 模板的 `{context}` 占位符
 3. 检查 `orchestrator_session.json`：若存在（上次中断），用 `resume=session_id` 恢复会话
 4. 以 `model="sonnet"` 启动 `claude_query()` 流式对话
@@ -83,7 +86,7 @@ Orchestrator 按需调用：
 - **触发者**: Orchestrator LLM
 - **有无 LLM**: 无
 - **做什么**: 异步轮询 `bot_stats.json`，等待守护进程为当前 bot 积累足够对局（默认 ≥ 100 局，超时 600s）
-- **输出**: `eval_completed`, `current_rating`, `bot_stats`
+- **输出**: `version`, `eval_completed`, `current_rating`, `bot_stats`
 
 > Orchestrator 据此判断 rating 是否可靠。`eval_completed: false` → 跳过停滞分析，直接进入 Master。
 
@@ -246,6 +249,7 @@ Orchestrator 按需调用：
 - tasks 数量 ≤ 3
 - 每个 task 的 target_files ≤ 3
 - 每个 task 的 worker_prompt ≤ 3000 字符
+- Hyperparameter Tuner prompt 会被 `_TUNER_STRUCTURAL_PATTERNS` 检查，含结构化指令（如 "add parameter"、"new function"）时发出边界警告
 
 **输出去向**: 返回给 Orchestrator LLM → Orchestrator 用 `plan["tasks"]` 调用 `execute_workers()`。
 
@@ -256,10 +260,13 @@ Orchestrator 按需调用：
 - **触发者**: Orchestrator LLM
 - **有无 LLM**: 无
 - **做什么**:
-  1. 拒绝覆盖已完成的 bot（有 `.completed`）
-  2. `shutil.copytree()` 将 `bots/claude_v{source_v}/` 复制为 `bots/claude_v{next_v}/`
-  3. 删除 `.completed` 标记文件
-  4. 写入 pipeline checkpoint：`stage="prepared"`
+  1. 拒绝 `next_v ≤ source_v`
+  2. 拒绝源 bot 不存在或未完成（无 `.completed`）
+  3. 拒绝 pipeline stage 已超过 `prepared`
+  4. 拒绝覆盖已完成的 bot（有 `.completed`）
+  5. `shutil.copytree()` 将 `bots/claude_v{source_v}/` 复制为 `bots/claude_v{next_v}/`
+  6. 删除 `.completed` 标记文件
+  7. 写入 pipeline checkpoint：`stage="prepared"`、`worker_invocation_count=0`
 - **输出**: `{prepared: true, next_v, source_v}`
 
 ---
@@ -274,7 +281,7 @@ Orchestrator 按需调用：
 | **模型** | Sonnet |
 | **工具** | Bash, Read, Edit |
 | **Prompt 模板** | `prompts/worker_prompt.md` |
-| **并发** | 最多 3 个并行（`asyncio.Semaphore(3)`） |
+| **并发** | 最多 3 个并行（`_get_worker_semaphore()` 创建 `Semaphore(MAX_PARALLEL_WORKERS)`） |
 | **重试** | 每个 worker 最多 4 次 (`MAX_WORKER_RETRIES`) |
 | **超时** | 1000 秒 (`WORKER_TIMEOUT`) |
 
@@ -284,7 +291,7 @@ Orchestrator 按需调用：
 3. 注入 reviewer_feedback（若有，前置 "CRITICAL REVISION NEEDED:" 标记）
 4. 注入最近 3 条 worker 失败记忆（从 `worker_failures.jsonl` 读取）
 5. 重试时注入前次错误（编译错误 / 冒烟错误 / 超时简化提示）
-6. 附加上下文文件：源 bot 目录中的 `.py` 文件
+6. `context_files` 为空列表 `[]` — Worker 通过 Bash/Read/Edit 工具直接访问 bot 目录中的文件，而非通过 context_files 注入
 
 **LLM 能做的事**: 用 Bash 运行测试、Read 读取代码、Edit 修改 bot 源文件
 
@@ -298,12 +305,13 @@ Orchestrator 按需调用：
 
 **⚠️ 重要机制补充**:
 
-1. **Architect + Tuner 串行执行**: 当 tasks 中同时包含 "Algorithmic Logic Architect" 和 "Hyperparameter Tuner" 时，系统自动串行执行（Tuner 需要 Architect 的输出作为基础）。见 `agent_workers.py` 中 `has_architect and has_tuner` 检测逻辑。
+1. **Architect + Tuner 串行执行**: 当 tasks 中同时包含 role 含 "Architect" 和 role 含 "Tuner" 时，系统自动串行执行（Tuner 需要 Architect 的输出作为基础）。见 `agent_workers.py` 中 `has_architect and has_tuner` 检测逻辑。
 
-2. **Worker Circuit Breaker**: 每代最多允许 6 次 worker 调用（`MAX_WORKER_INVOCATIONS = 6`），防止无限重试。见 `tool_pipeline.py` 中 `invocation_count` 检查。
+2. **Worker Circuit Breaker**: 每代最多允许 6 次 worker 调用（`MAX_WORKER_INVOCATIONS = 6`，`execute_workers` 内局部变量），防止无限重试。见 `tool_pipeline.py` 中 `invocation_count` 检查。
 
 3. **Worker Boundary Validation**: Worker 完成后自动检查：
-   - 是否修改了未声明的 target_files 外的文件
+   - 是否修改了未声明的 target_files 外的已有文件
+   - 是否在 target_files 外创建了新文件
    - Hyperparameter Tuner 是否修改了非数字内容（通过 `_numbers_only_changed` 检测）
    - 见 `tool_helpers.py:_validate_worker_boundaries`
 
@@ -325,8 +333,8 @@ Orchestrator 按需调用：
   2. `run_smoke_test()` — 冒烟对战
   3. `run_decision_test_details()` — 决策测试（≥70% 通过率 + 关键场景全部通过）
   4. `check_code_size()` — 文件行数检查（每文件 ≤ 1000 行）
-- **前置**: checkpoint `stage` ≥ `workers_done`
-- **输出**: `{compile_ok, smoke_ok, decision_pass_rate, decision_ok, critical_scenarios_passed, size_ok, all_passed}`
+- **注意**: 无前置阶段检查 — 质量门禁无条件运行，即使没有 checkpoint 也会执行（此时 `checkpoint_recorded=false`）
+- **输出**: `{compile_ok, smoke_ok, decision_pass_rate, decision_ok, critical_scenarios_passed, size_ok, all_passed}` + 详细字段：`compile_errors, smoke_errors, critical_passed, critical_total, critical_failures, decision_failures, scenario_results, total_lines, oversized_files, checkpoint_recorded`
 - **输出去向**: 全部通过 → 写入 checkpoint `stage="quality_passed"` + gate `quality`
 
 ---
@@ -341,6 +349,7 @@ Orchestrator 按需调用：
 | **模型** | Sonnet |
 | **工具** | Bash, Read |
 | **Prompt 模板** | `prompts/reviewer_prompt.md` |
+| **重试** | 无（单次 LLM 调用） |
 | **前置条件** | checkpoint 中 quality gate 必须通过 |
 
 **输入构建** (函数 `run_review` 内):
@@ -364,7 +373,7 @@ Orchestrator 按需调用：
 **输出去向**:
 - 返回给 Orchestrator LLM
 - 审批 → 写入 checkpoint `stage="reviewed"` + gate `review`
-- 拒绝 → Orchestrator 可用 feedback 作为 `reviewer_feedback` 重试 workers
+- 拒绝 → `stage=None`（保留前一阶段，不回退），Orchestrator 可用 feedback 作为 `reviewer_feedback` 重试 workers
 
 ---
 
@@ -373,7 +382,7 @@ Orchestrator 按需调用：
 | 项目 | 内容 |
 |---|---|
 | **触发者** | Orchestrator LLM 调用 MCP 工具 `run_critic` |
-| **调用链** | `tool_pipeline.py:run_critic()` → `agent_review.py:_run_critic()` → `run_claude_query()` |
+| **调用链** | `tool_pipeline.py:run_critic()` → `agent_review.py:_run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=None)` → `run_claude_query()` |
 | **LLM 角色** | STRATEGY CRITIC |
 | **模型** | Sonnet |
 | **工具** | Bash, Read |
@@ -396,7 +405,7 @@ Orchestrator 按需调用：
 }
 ```
 
-**通过逻辑** (函数 `run_critic` 内): `score ≥ 6` 且 `approved == true`
+**通过逻辑** (函数 `run_critic` 内): `score ≥ 6` 且 `approved == true`。当 LLM 输出省略 `approved` 字段时，自动推导 `approved = score >= 6`。
 
 **⚠️ 重要**: `force_advance=true` 时，即使 score < 6，也会写入 `critic_checked` checkpoint（用于耗尽重试后推进，避免重启时无限重试）。`commit_bot` 允许 `force_advanced` 状态下的提交（其他 gate 仍须通过）。
 
@@ -417,13 +426,15 @@ Orchestrator 按需调用：
   1. 重新编译检查 + 冒烟测试
   2. 选择对手：父版本 bot + 当前 Top 3 + H2H 弱点对手（最多 2 个）
   3. 与每个对手运行 `mirror_battle(n_games=1)`
-  4. 阻断条件：编译/冒烟失败、输给父版本、**总输≥3 且 总输≥赢+2**、对局超时
+  4. 阻断条件：编译/冒烟失败、输给父版本、**总输≥3 且 总输≥赢+2**、对局超时、无对手可选（`no_opponents`）、对局异常（`match_exception`）
 - **输出**: `{passed, blockers, matchups, total_wins/losses/draws}`
 - **输出去向**: 通过 → checkpoint `stage="verified"` + gate `precommit_eval`
 
 ---
 
-### 步骤 14：提交 `commit_bot(version, source_v, strategy, review_approved=true)`
+### 步骤 14：提交 `commit_bot(version, source_v, strategy, review_approved=false)`
+
+> ⚠️ `review_approved` 默认为 `false`，Orchestrator 必须**显式传递** `review_approved=true`（仅在 `run_review` 返回 `approved:true` 后）。
 
 - **触发者**: Orchestrator LLM
 - **有无 LLM**: 无
@@ -450,7 +461,7 @@ Orchestrator 按需调用：
 | **有无 LLM** | 条件性（仅连续 3 代评分下降 或 `EVOLUTION_ALWAYS_ARCHIVE_LLM=1` 时调用 LLM） |
 | **LLM 角色** | CYCLE ARCHIVIST |
 | **模型** | Sonnet |
-| **工具** | 无（纯 JSON 输出） |
+| **工具** | Bash, Read（通过 `_run_archivist_analysis` 传入 `run_claude_query`） |
 
 **确定性步骤**（始终执行，无 LLM）:
 1. **一致性验证**：确认 `.completed` 文件存在、git tag 存在、ratings 包含新 bot
@@ -476,7 +487,7 @@ Orchestrator 按需调用：
 }
 ```
 
-**输出去向**: 返回给 Orchestrator LLM。写入 checkpoint `stage="archived"`，然后清除 checkpoint。
+**输出去向**: 返回给 Orchestrator LLM。尝试写入 checkpoint `stage="archived"` 然后清除。注意：正常流程中 `commit_bot` 已清除 checkpoint，所以 `_matching_checkpoint` 返回 `None`，`"archived"` 阶段实际上**不会被写入**——该写入逻辑是预防性代码（仅在非正常路径下生效）。
 
 ---
 
