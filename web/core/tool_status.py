@@ -663,12 +663,15 @@ async def diagnose_environment(args):
     if ui:
         ui.log_history("[diagnose_environment] Running LLM analysis...", "info")
 
-    from evolution_infra import run_claude_query
-    response_text, cost = run_claude_query(
+    from evolution_infra import run_claude_query, RESULTS_DIR
+    log_path = str(RESULTS_DIR / "logs" / "diagnostician_io.txt")
+    response_text, cost = await run_claude_query(
         prompt=prompt,
-        role="diagnostician",
         context_files=[],
-        allowed_tools=[],
+        ui=ui,
+        role_name="DIAGNOSTICIAN",
+        log_file_path=log_path,
+        tools=[],
     )
 
     if ui:

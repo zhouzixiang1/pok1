@@ -61,9 +61,9 @@ python web/main.py
 
 - **触发者**: Orchestrator LLM
 - **有无 LLM**: 无
-- **做什么**: 读取 `glicko_ratings.json`、`bot_stats.json`、`elo_daemon_stats.json`、git tags，组装系统状态快照
+- **做什么**: 读取 `glicko_ratings.json`、`bot_stats.json`、`elo_daemon_stats.json`、`head_to_head.json`（via `load_h2h_avg_winrates()`）、git tags，组装系统状态快照
 - **输出返回给**: Orchestrator LLM（决定下一步）
-- **输出内容**: `current_v`, `active_bots_count`, `top_ratings`, `daemon_total_games`, `incomplete_next_v`, `rating_reliable`, `current_bot_h2h_avg_wr`, `recent_worker_failures`
+- **输出内容**: `current_v`, `next_v`, `active_bots_count`, `top_ratings`, `daemon_total_games`, `incomplete_next_v`, `rating_reliable`, `current_bot_rd`, `current_bot_games`, `current_bot_win_rate`, `current_bot_h2h_avg_wr`, `recent_worker_failures`
 
 > Orchestrator 据此判断：是否需要 `seed_initial_bots`、是否有未完成的 bot、rating 是否可靠、是否可以进入进化流程。
 
@@ -398,7 +398,7 @@ Orchestrator 按需调用：
 
 **通过逻辑** (函数 `run_critic` 内): `score ≥ 6` 且 `approved == true`
 
-**⚠️ 重要**: `force_advance=true` 时，即使 score < 6，也会写入 `critic_checked` checkpoint（用于耗尽重试后推进，避免重启时无限重试）。但 **不意味着可以提交** — 提交仍需 `commit_bot` 的 gate ledger 检查。
+**⚠️ 重要**: `force_advance=true` 时，即使 score < 6，也会写入 `critic_checked` checkpoint（用于耗尽重试后推进，避免重启时无限重试）。`commit_bot` 允许 `force_advanced` 状态下的提交（其他 gate 仍须通过）。
 
 **输出去向**:
 - 返回给 Orchestrator LLM
@@ -430,11 +430,53 @@ Orchestrator 按需调用：
 - **前置**: checkpoint 中所有 gates 必须存在且通过
 - **做什么** (函数 `commit_bot` 内):
   1. 验证 gate ledger 完整性（quality + review + critic + precommit_eval）
-  2. 写入 `.completed` 标记文件
+  2. 运行时守卫：编译检查、冒烟测试、决策测试（≥70%）、文件大小（≤1000行）、`review_approved` 检查
   3. `git add` + `git commit` + `git tag bot-v{N}`
-  4. 清除 pipeline checkpoint
-  5. 发送 `.reap_signal` 通知守护进程刷新 bot 列表
-- **输出**: `{committed: true, tag, sha}`
+  4. 验证 git tag 确实创建成功
+  5. 写入 `.completed` 标记文件
+  6. 归档调用：`archive_generation()` 生成快照、`archive_rotate_files()` 归档轮转、`archive_old_logs()` 日志压缩
+  7. 清除 pipeline checkpoint
+  8. 发送 `.reap_signal` 通知守护进程刷新 bot 列表
+- **输出**: `{committed: true, version, source_v, push_ok}`（若池 > 30 额外返回 `needs_reap: true, pool_size`）
+
+---
+
+### 步骤 15：归档审计 `run_archivist(version, source_v)`
+
+| 项目 | 内容 |
+|---|---|
+| **触发者** | Orchestrator LLM 调用 MCP 工具 `run_archivist` |
+| **调用链** | `tool_pipeline.py:run_archivist()` → 确定性归档 + 条件性 `agent_master.py:_run_archivist_analysis()` → `run_claude_query()` |
+| **有无 LLM** | 条件性（仅连续 3 代评分下降 或 `EVOLUTION_ALWAYS_ARCHIVE_LLM=1` 时调用 LLM） |
+| **LLM 角色** | CYCLE ARCHIVIST |
+| **模型** | Sonnet |
+| **工具** | 无（纯 JSON 输出） |
+
+**确定性步骤**（始终执行，无 LLM）:
+1. **一致性验证**：确认 `.completed` 文件存在、git tag 存在、ratings 包含新 bot
+2. **自动 reap**：若活跃 bot > `MAX_ACTIVE_BOTS`(30)，自动调用 `reap_weakest`
+3. **加载归档快照**：读取 `results/archive/v{N}.json`（由 `commit_bot` 内的 `archive_generation()` 创建）
+
+**条件性 LLM 分析**（仅在评分下降时触发）:
+- 检查最近 5 代的归档快照，判断是否连续 3 代评分下降
+- 触发时调用 `_run_archivist_analysis(version, source_v, snapshot, ui)`
+- LLM 输出追加到归档快照的 `archivist_notes` 字段
+
+**输入数据来源**:
+- `results/archive/v{N}.json` — 本代归档快照（rating, H2H, review/critic scores, diff stats）
+- `results/archive/v{N-4..N-1}.json` — 用于趋势判断
+
+**LLM 输出**: JSON
+```json
+{
+  "generation_assessment": "improvement|neutral|regression",
+  "archive_notes": "...",
+  "experience_updates": ["..."],
+  "strategic_advice": "..."
+}
+```
+
+**输出去向**: 返回给 Orchestrator LLM。写入 checkpoint `stage="archived"`，然后清除 checkpoint。
 
 ---
 
@@ -505,6 +547,8 @@ Orchestrator 进程被 kill:
     ├── 读取 session_id → resume 参数恢复对话
     ├── _build_context() 检测 checkpoint → 告知 Orchestrator 从哪步继续
     └── Orchestrator LLM 恢复后调用对应的下一个工具
+
+可恢复阶段: prepared → workers_done → quality_passed → reviewed → critic_checked → verified → archived
 ```
 
 ### 3.5 PreCompact Hook
@@ -517,9 +561,11 @@ Orchestrator 进程被 kill:
 f"Current completed bot: claude_v{current_v}"
 f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {next_step}."
 "DO NOT restart this generation — continue from this stage."
+# 额外：若 checkpoint 中有 master_plan，注入 worker task 列表
+# 阶段映射：archived -> run_archivist
 ```
 
-确保上下文压缩后 Orchestrator 不丢失进化进度。
+确保上下文压缩后 Orchestrator 不丢失进化进度。支持所有阶段包括 `archived`（对应 `run_archivist`）。
 
 ---
 
@@ -701,9 +747,18 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
          │                            │
          │               ┌────────────▼────────────┐
          │               │commit_bot (无 LLM)      │
-         │               │验证 gate ledger 完整     │
-         │               │git commit + tag          │
+         │               │运行时守卫 (编译/冒烟/决策)│
+         │               │git commit + tag + 验证   │
+         │               │归档快照+轮转+日志压缩    │
          │               │清除 checkpoint           │
+         │               └────────────┬─────────────┘
+         │                            │
+         │               ┌────────────▼────────────┐
+         │               │run_archivist            │
+         │               │确定性: 一致性验证+reap   │
+         │               │条件📎: ARCHIVIST LLM    │
+         │               │  (仅连续3代评分下降时)   │
+         │               │写入 archived checkpoint  │
          │               └────────────┬─────────────┘
          │                            │
          │               ┌────────────▼────────────┐
@@ -737,7 +792,8 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
   - `mcp__zread__search_doc`
 - **角色边界**: Worker 受 prompt + reviewer 双重约束 — Logic Architect 不改常数，Tuner 不加函数
 - **Gate Ledger**: Pipeline checkpoint 强制阶段顺序 — 每个阶段写入 gate 记录，后续阶段验证前置 gates 完整
-- **阶段常量**: `STAGE_ORDER = [prepared, workers_done, quality_passed, reviewed, critic_checked, verified]`
+- **阶段常量**: `STAGE_ORDER = [prepared, workers_done, quality_passed, reviewed, critic_checked, verified, archived]`
+- **归档阶段**: `run_archivist` 在 `commit_bot` 后执行，写入 `archived` checkpoint，确保 post-commit 一致性验证和自动 reap。仅连续 3 代评分下降时调用 LLM。
 
 ---
 
