@@ -238,12 +238,12 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
 
-    # Atomic write: tmp + os.replace()
+    # Atomic write: tmp under exclusive lock + os.replace
     tmp = PIPELINE_STATE_FILE.with_suffix(".tmp")
-    with open(tmp, "w") as f:
-        json.dump(state, f, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
+    with locked_file(tmp, "w") as tf:
+        json.dump(state, tf, indent=2)
+        tf.flush()
+        os.fsync(tf.fileno())
     os.replace(str(tmp), str(PIPELINE_STATE_FILE))
 
 

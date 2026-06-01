@@ -290,14 +290,15 @@ async def run_quality_gates(args):
         "all_passed": all_passed,
     }
 
+    log_system_event(
+        "pipeline.quality_passed" if all_passed else "pipeline.quality_failed",
+        "success" if all_passed else "error",
+        f"Quality gates {'passed' if all_passed else 'failed'} for v{v} (decision={decision_rate:.0%})",
+        {"version": v, "pass_rate": round(decision_rate, 2), "all_passed": all_passed},
+    )
+
     _ckpt = _matching_checkpoint(v, source_v) if source_v is not None else _matching_checkpoint(v)
     if _ckpt:
-        log_system_event(
-            "pipeline.quality_passed" if all_passed else "pipeline.quality_failed",
-            "success" if all_passed else "error",
-            f"Quality gates {'passed' if all_passed else 'failed'} for v{v} (decision={decision_rate:.0%})",
-            {"version": v, "pass_rate": round(decision_rate, 2), "all_passed": all_passed},
-        )
         source_v = _ckpt["source_v"]
         gate = _gate_payload(
             v,
@@ -1063,7 +1064,7 @@ async def run_archivist(args):
     if len(active_bots) > MAX_ACTIVE_BOTS:
         try:
             from tool_status import reap_weakest as _reap_weakest
-            reap_result = await _reap_weakest({"quiet": True})
+            reap_result = await _reap_weakest({})
         except Exception as e:
             reap_result = {"error": str(e)}
 
@@ -1106,7 +1107,8 @@ async def run_archivist(args):
             # Append LLM notes to archive snapshot
             if llm_result and archive_path.exists():
                 snapshot["archivist_notes"] = llm_result
-                with open(archive_path, "w") as f:
+                from evolution_infra import locked_file
+                with locked_file(archive_path, "w") as f:
                     json.dump(snapshot, f, indent=2, ensure_ascii=False)
         except Exception as e:
             llm_result = {"error": str(e)}
@@ -1171,7 +1173,7 @@ async def run_crossover(args):
 
     # Write checkpoint so quality gates → review → critic → commit can proceed
     if success:
-        from evolution_core import write_pipeline_checkpoint
+        from evolution_infra import write_pipeline_checkpoint
         write_pipeline_checkpoint(target_v, parent_a, "workers_done",
                                   parent2_v=parent_b)
 

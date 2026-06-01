@@ -161,9 +161,7 @@ async def get_match_history(args):
         return {"content": [{"type": "text", "text": json.dumps({"matches": []})}]}
 
     entries = []
-    with open(history_file, "r") as f:
-        import fcntl
-        fcntl.flock(f, fcntl.LOCK_SH)
+    with locked_file(history_file, "r") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -174,7 +172,6 @@ async def get_match_history(args):
                 continue
             if entry.get("bot0") == bot_name or entry.get("bot1") == bot_name:
                 entries.append(entry)
-        fcntl.flock(f, fcntl.LOCK_UN)
 
     entries = entries[-n:]
     return {"content": [{"type": "text", "text": json.dumps({"matches": entries}, indent=2, ensure_ascii=False)}]}

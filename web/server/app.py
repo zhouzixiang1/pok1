@@ -18,9 +18,11 @@ sys.path.insert(0, str(WEB_DIR / "core"))
 
 from web_ui import EventBroadcaster, WebUI
 from server.state import app_state
+from system_log import set_ui as _set_system_log_ui
 
 broadcaster = EventBroadcaster(buffer_size=500)
 web_ui = WebUI(broadcaster)
+_set_system_log_ui(web_ui)
 
 _evolution_task: asyncio.Task | None = None
 

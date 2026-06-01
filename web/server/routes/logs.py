@@ -100,22 +100,24 @@ async def get_system_events(
     events = []
     with open(events_file, "r") as f:
         fcntl.flock(f, fcntl.LOCK_SH)
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if type and not entry.get("type", "").startswith(type):
-                continue
-            if severity and entry.get("severity") != severity:
-                continue
-            if since and entry.get("ts", 0) < since:
-                continue
-            events.append(entry)
-        fcntl.flock(f, fcntl.LOCK_UN)
+        try:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if type and not entry.get("type", "").startswith(type):
+                    continue
+                if severity and entry.get("severity") != severity:
+                    continue
+                if since and entry.get("ts", 0) < since:
+                    continue
+                events.append(entry)
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
     events.reverse()
     total = len(events)
     return {"events": events[offset:offset + limit], "total": total}
@@ -135,20 +137,22 @@ async def get_worker_failures(
     failures = []
     with open(failures_file, "r") as f:
         fcntl.flock(f, fcntl.LOCK_SH)
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if gen is not None and entry.get("gen") != gen:
-                continue
-            if role and role.lower() not in entry.get("role", "").lower():
-                continue
-            failures.append(entry)
-        fcntl.flock(f, fcntl.LOCK_UN)
+        try:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if gen is not None and entry.get("gen") != gen:
+                    continue
+                if role and role.lower() not in entry.get("role", "").lower():
+                    continue
+                failures.append(entry)
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
     failures.reverse()
     total = len(failures)
     return {"failures": failures[offset:offset + limit], "total": total}

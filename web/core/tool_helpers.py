@@ -138,6 +138,7 @@ def _record_gate(version, source_v, gate_name, gate_data, stage=None,
     if not ckpt:
         print(f"[WARN] _record_gate: no matching checkpoint for v{version}/v{source_v}, gate '{gate_name}' dropped")
         return False
+    current_stage = ckpt.get("stage", "")
     # Preserve previous critic result when overwriting with a new one
     if gate_name == "critic":
         existing_critic = ckpt.get("gate_results", {}).get("critic")
@@ -146,7 +147,7 @@ def _record_gate(version, source_v, gate_name, gate_data, stage=None,
     write_pipeline_checkpoint(
         version,
         source_v,
-        stage or ckpt.get("stage", "workers_done"),
+        stage or current_stage,
         master_plan=master_plan if master_plan is not None else ckpt.get("master_plan"),
         reviewer_feedback=(
             reviewer_feedback

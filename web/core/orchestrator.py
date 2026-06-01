@@ -38,7 +38,7 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import HookMatcher, SyncHookJSONOutput
 from tools import evolution_server, inject_ui
 from shutdown_manager import ShutdownManager
-from system_log import log_system_event
+from system_log import log_system_event, set_ui as set_system_log_ui
 
 
 ORCHESTRATOR_PROMPT = (Path(__file__).parent / "prompts" / "orchestrator.md").read_text()
@@ -558,6 +558,7 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
     """
     from tools import inject_ui
     inject_ui(ui)
+    set_system_log_ui(ui)
 
     os.makedirs(LOGS_DIR, exist_ok=True)
 
@@ -630,8 +631,8 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                 gen_ctx=gen_ctx,
             )
 
-            # Phase 3: Cleanup (idempotent) — only after successful commit
-            if cost >= 0.05:
+            # Phase 3: Cleanup (idempotent) — after any successful generation
+            if cost >= 0:
                 from generation_scheduler import post_generation_cleanup
                 await post_generation_cleanup(shutdown_mgr, ui, gen_ctx)
                 if ui:
@@ -704,6 +705,7 @@ async def run_orchestrator_cli(args, shutdown_mgr=None):
 
     # In CLI mode, inject None (uses ToolUI fallback)
     inject_ui(None)
+    set_system_log_ui(None)
 
     try:
         if args.one_gen or args.dry_run:
@@ -731,7 +733,7 @@ async def run_orchestrator_cli(args, shutdown_mgr=None):
                     max_turns=args.max_turns,
                     gen_ctx=gen_ctx,
                 )
-                if cost >= 0.05:
+                if cost >= 0:
                     await post_generation_cleanup(shutdown_mgr, None, gen_ctx)
             print(f"\n[Orchestrator] Done. Cost: ${cost:.4f}")
         else:

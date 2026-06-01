@@ -101,19 +101,19 @@ export const api = {
     const p = new URLSearchParams();
     if (params?.type) p.set("type", params.type);
     if (params?.severity) p.set("severity", params.severity);
-    if (params?.since) p.set("since", String(params.since));
-    if (params?.limit) p.set("limit", String(params.limit));
-    if (params?.offset) p.set("offset", String(params.offset));
+    if (params?.since !== undefined) p.set("since", String(params.since));
+    if (params?.limit !== undefined) p.set("limit", String(params.limit));
+    if (params?.offset !== undefined) p.set("offset", String(params.offset));
     return fetchJSON<SystemEventsResponse>(`${BASE}/logs/system-events?${p}`);
   },
 
   // Logs - worker failures
   workerFailures: (params?: { gen?: number; role?: string; limit?: number; offset?: number }) => {
     const p = new URLSearchParams();
-    if (params?.gen) p.set("gen", String(params.gen));
+    if (params?.gen !== undefined && params.gen !== null) p.set("gen", String(params.gen));
     if (params?.role) p.set("role", params.role);
-    if (params?.limit) p.set("limit", String(params.limit));
-    if (params?.offset) p.set("offset", String(params.offset));
+    if (params?.limit !== undefined) p.set("limit", String(params.limit));
+    if (params?.offset !== undefined) p.set("offset", String(params.offset));
     return fetchJSON<WorkerFailuresResponse>(`${BASE}/logs/worker-failures?${p}`);
   },
 

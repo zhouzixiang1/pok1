@@ -53,6 +53,9 @@ from tool_status import (  # noqa: F401
     analyze_stagnation,
     get_h2h,
     get_bot_stats,
+    cleanup_incomplete,
+    abandon_generation,
+    diagnose_environment,
 )
 
 # ── MCP tools — available to the LLM Orchestrator session (~15 tools) ──
@@ -96,4 +99,7 @@ all_tools = mcp_tools + [
     seed_initial_bots_tool,
     consolidate_experience,
     analyze_stagnation,
+    cleanup_incomplete,
+    abandon_generation,
+    diagnose_environment,
 ]

@@ -142,7 +142,7 @@ export interface PipelineCheckpoint {
 
 export interface WorkerFailure {
   gen: number;
-  worker_id: number;
+  worker_id: number | string;
   role: string;
   error: string;
   timestamp?: string;
