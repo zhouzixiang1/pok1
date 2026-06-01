@@ -300,6 +300,20 @@ def get_logs_dir(version):
     return d
 
 
+def _target_rel(path, version):
+    raw = str(path).strip()
+    if not raw:
+        return ""
+    raw = raw.replace("\\", "/")
+    marker = f"bots/claude_v{version}/"
+    if marker in raw:
+        return raw.split(marker, 1)[1]
+    marker = f"claude_v{version}/"
+    if marker in raw:
+        return raw.split(marker, 1)[1]
+    return raw.lstrip("./")
+
+
 def get_active_bots():
     bots = []
     if BOTS_DIR.exists():

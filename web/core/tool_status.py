@@ -40,6 +40,7 @@ from tool_helpers import (
     _get_ui, _ratings_summary, _json_tool_result, _bot_main,
     PROJECT_ROOT,
 )
+from system_log import log_system_event
 
 
 def _count_lines(path: Path) -> int:
@@ -346,6 +347,9 @@ async def reap_weakest(args):
     reap_signal = Path(__file__).parent / "results" / ".reap_signal"
     reap_signal.write_text(str(time.time()))
 
+    log_system_event("bot.reaped", "warn", f"Reaped {culled_name} (h2h_wr={h2h_winrates.get(culled_name, 0.0):.2%})",
+                     {"culled": culled_name, "remaining": len(active_bots) - 1})
+
     return {"content": [{"type": "text", "text": json.dumps({
         "reaped": True,
         "culled": culled_name,
@@ -404,6 +408,9 @@ async def abandon_generation(args):
         if next_dir.exists() and not (next_dir / ".completed").exists():
             shutil.rmtree(next_dir)
             removed_dir = f"claude_v{current_v + 1}"
+
+    log_system_event("pipeline.abandoned", "warn", f"Abandoned generation (dir={removed_dir})",
+                     {"removed_dir": removed_dir, "cleared_checkpoint": cleared_checkpoint})
 
     return {"content": [{"type": "text", "text": json.dumps({
         "abandoned": True,

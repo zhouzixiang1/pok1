@@ -2,7 +2,7 @@ import type {
   BotRating, MatchStats, MatchMatrix, HistoryEntry, GenerationLog, LogContent,
   MatchSummary, MatchReplayData, DaemonStatus, BotSummary, BotDetail,
   PipelineCheckpoint, WorkerFailure, PromptInfo, OrchestratorSession, OrchestratorLogFile,
-  H2HEntry, BotStatsEntry,
+  H2HEntry, BotStatsEntry, SystemEventsResponse, WorkerFailuresResponse,
 } from "./types";
 
 const BASE = "/api";
@@ -95,6 +95,27 @@ export const api = {
   orchestratorLogs: () => fetchJSON<OrchestratorLogFile[]>(`${BASE}/logs/orchestrator`),
   orchestratorLogContent: (filename: string, tail = 0) =>
     fetchText(`${BASE}/logs/orchestrator/${encodeURIComponent(filename)}${tail ? `?tail=${tail}` : ""}`),
+
+  // Logs - system events
+  systemEvents: (params?: { type?: string; severity?: string; since?: number; limit?: number; offset?: number }) => {
+    const p = new URLSearchParams();
+    if (params?.type) p.set("type", params.type);
+    if (params?.severity) p.set("severity", params.severity);
+    if (params?.since) p.set("since", String(params.since));
+    if (params?.limit) p.set("limit", String(params.limit));
+    if (params?.offset) p.set("offset", String(params.offset));
+    return fetchJSON<SystemEventsResponse>(`${BASE}/logs/system-events?${p}`);
+  },
+
+  // Logs - worker failures
+  workerFailures: (params?: { gen?: number; role?: string; limit?: number; offset?: number }) => {
+    const p = new URLSearchParams();
+    if (params?.gen) p.set("gen", String(params.gen));
+    if (params?.role) p.set("role", params.role);
+    if (params?.limit) p.set("limit", String(params.limit));
+    if (params?.offset) p.set("offset", String(params.offset));
+    return fetchJSON<WorkerFailuresResponse>(`${BASE}/logs/worker-failures?${p}`);
+  },
 
   // Experience pool
   experience: () => fetchText(`${BASE}/experience`),

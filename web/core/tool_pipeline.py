@@ -44,6 +44,7 @@ from tool_helpers import (
     _target_rel,
     PROJECT_ROOT,
 )
+from system_log import log_system_event
 
 
 def _record_quality_failure(gen, worker_id, role, error):
@@ -143,6 +144,9 @@ async def run_master(args):
     from evolution_infra import write_pipeline_checkpoint
     write_pipeline_checkpoint(next_v, source_v, "prepared", master_plan=data)
 
+    log_system_event("pipeline.master_done", "info", f"Master planned v{next_v}: {len(data.get('tasks', []))} tasks",
+                     {"next_v": next_v, "source_v": source_v, "num_tasks": len(data.get("tasks", []))})
+
     result = {"plan": data, "logs": ui.get_output()}
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
 
@@ -225,6 +229,11 @@ async def execute_workers(args):
                                   master_plan=plan, reviewer_feedback=reviewer_feedback,
                                   worker_invocation_count=invocation_count + len(tasks))
 
+    sev = "success" if success else "error"
+    log_system_event("pipeline.workers_done", sev,
+                     f"Workers {'passed' if success else 'failed'} for v{next_v}",
+                     {"next_v": next_v, "num_workers": len(tasks), "success": success})
+
     result = {
         "success": success,
         "boundary_errors": boundary_errors,
@@ -283,6 +292,12 @@ async def run_quality_gates(args):
 
     _ckpt = _matching_checkpoint(v, source_v) if source_v is not None else _matching_checkpoint(v)
     if _ckpt:
+        log_system_event(
+            "pipeline.quality_passed" if all_passed else "pipeline.quality_failed",
+            "success" if all_passed else "error",
+            f"Quality gates {'passed' if all_passed else 'failed'} for v{v} (decision={decision_rate:.0%})",
+            {"version": v, "pass_rate": round(decision_rate, 2), "all_passed": all_passed},
+        )
         source_v = _ckpt["source_v"]
         gate = _gate_payload(
             v,
@@ -349,6 +364,9 @@ async def prepare_next_gen(args):
     from evolution_infra import write_pipeline_checkpoint
     write_pipeline_checkpoint(next_v, source_v, "prepared", worker_invocation_count=0)
 
+    log_system_event("pipeline.prepare", "info", f"Prepared v{next_v} from v{source_v}",
+                     {"next_v": next_v, "source_v": source_v})
+
     return {"content": [{"type": "text", "text": json.dumps({"prepared": True, "next_v": next_v, "source_v": source_v})}]}
 
 
@@ -394,6 +412,12 @@ async def run_review(args):
     if data and "approved" in data:
         approved = data["approved"] is True
         feedback = data.get("feedback", "")
+        log_system_event(
+            "pipeline.review_passed" if approved else "pipeline.review_rejected",
+            "success" if approved else "warn",
+            f"Review {'approved' if approved else 'rejected'} v{v} (score={data.get('quality_score', 0)})",
+            {"version": v, "score": data.get("quality_score", 0), "approved": approved},
+        )
         gate = _gate_payload(
             v,
             source_v,
@@ -527,6 +551,13 @@ async def run_critic(args):
     if not approved:
         _record_quality_failure(v, "critic", "Strategy Critic",
                                 f"Rejected (score={score_num}): {data.get('feedback', '')[:200]}")
+
+    log_system_event(
+        "pipeline.critic_passed" if approved else "pipeline.critic_rejected",
+        "success" if approved else "warn",
+        f"Critic {'approved' if approved else 'rejected'} v{v} (score={score_num})",
+        {"version": v, "score": score_num, "approved": approved},
+    )
 
     result = {
         **data,
@@ -972,6 +1003,9 @@ async def commit_bot(args):
         })
 
     (bot_dir / ".completed").touch()
+
+    log_system_event("pipeline.committed", "success", f"Committed v{v} from v{source_v}: {strategy[:80]}",
+                     {"version": v, "source_v": source_v, "strategy": strategy[:100]})
 
     # Archive this generation's state snapshot
     try:

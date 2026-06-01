@@ -19,6 +19,7 @@ from evolution_core import (
     write_pipeline_checkpoint,
     read_pipeline_checkpoint,
 )
+from evolution_infra import _target_rel
 from glicko2 import Glicko2Player
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -364,18 +365,6 @@ def _select_precommit_opponents(version, source_v, max_top=3, max_weak=2):
     return [{"name": name, "reason": reasons[name]} for name in selected]
 
 
-def _target_rel(path, version):
-    raw = str(path).strip()
-    if not raw:
-        return ""
-    raw = raw.replace("\\", "/")
-    marker = f"bots/claude_v{version}/"
-    if marker in raw:
-        return raw.split(marker, 1)[1]
-    marker = f"claude_v{version}/"
-    if marker in raw:
-        return raw.split(marker, 1)[1]
-    return raw.lstrip("./")
 
 
 def _py_files_changed_between(source_dir, next_dir):

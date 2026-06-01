@@ -4,8 +4,10 @@ import type { OrchestratorLogFile } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
 import { useGenerations } from "../context/DataProvider";
 import { Skeleton } from "../components/shared/Skeleton";
+import SystemLogTab from "../components/logs/SystemLogTab";
+import WorkerFailuresTab from "../components/logs/WorkerFailuresTab";
 
-type Tab = "generation" | "orchestrator" | "conversation";
+type Tab = "generation" | "orchestrator" | "conversation" | "system" | "failures";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -318,8 +320,8 @@ export default function Logs() {
       <PageMeta title="日志 — Bot 自进化" description="迭代日志与编排器日志" />
 
       {/* Tab bar */}
-      <div className="mb-4 flex gap-1">
-        {(["generation", "orchestrator", "conversation"] as Tab[]).map((t) => (
+      <div className="mb-4 flex gap-1 flex-wrap">
+        {(["generation", "system", "failures", "orchestrator", "conversation"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -329,7 +331,7 @@ export default function Logs() {
                 : "bg-gray-100 dark:bg-surface-1 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700"
             }`}
           >
-            {t === "generation" ? "迭代日志" : t === "orchestrator" ? "编排器日志" : "LLM 对话"}
+            {t === "generation" ? "迭代日志" : t === "system" ? "系统日志" : t === "failures" ? "Worker 失败" : t === "orchestrator" ? "编排器日志" : "LLM 对话"}
           </button>
         ))}
       </div>
@@ -446,6 +448,12 @@ export default function Logs() {
           </div>
         </div>
       )}
+
+      {/* System Events */}
+      {tab === "system" && <SystemLogTab />}
+
+      {/* Worker Failures */}
+      {tab === "failures" && <WorkerFailuresTab />}
     </>
   );
 }

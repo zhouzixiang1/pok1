@@ -171,3 +171,22 @@ export interface OrchestratorLogFile {
   size_bytes: number;
   mtime: number;
 }
+
+// System events
+export interface SystemEvent {
+  ts: number;
+  type: string;
+  severity: "info" | "warn" | "error" | "success";
+  message: string;
+  data?: Record<string, unknown>;
+}
+
+export interface SystemEventsResponse {
+  events: SystemEvent[];
+  total: number;
+}
+
+export interface WorkerFailuresResponse {
+  failures: WorkerFailure[];
+  total: number;
+}

@@ -11,10 +11,9 @@ import asyncio
 from evolution_infra import (
     run_claude_query, substitute_template, verify_code, run_smoke_test,
     locked_file, get_bot_dir, get_logs_dir, _get_worker_semaphore,
-    find_current_v,
+    find_current_v, _target_rel,
     WORKER_FAILURES_FILE, MAX_WORKER_RETRIES, WORKER_TIMEOUT, MAX_PARALLEL_WORKERS, _COPY_IGNORE,
 )
-from tool_helpers import _target_rel
 
 
 def _record_worker_failure(gen, worker_id, role, error):

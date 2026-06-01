@@ -1,6 +1,8 @@
-"""Log endpoints — generation logs browsing and orchestrator logs."""
+"""Log endpoints — generation logs browsing, orchestrator logs, system events, and worker failures."""
 
+import json
 import re
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
@@ -81,3 +83,72 @@ async def get_orchestrator_log(filename: str, tail: int = Query(0, ge=0)):
         lines = content.splitlines()
         content = "\n".join(lines[-tail:])
     return PlainTextResponse(content)
+
+
+@router.get("/logs/system-events")
+async def get_system_events(
+    type: str = Query("", description="Filter by event type prefix (e.g. pipeline.)"),
+    severity: str = Query("", description="Filter by severity: info|warn|error|success"),
+    since: float = Query(0, description="Only events after this Unix timestamp"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    events_file = RESULTS_DIR / "system_events.jsonl"
+    if not events_file.exists():
+        return {"events": [], "total": 0}
+    import fcntl
+    events = []
+    with open(events_file, "r") as f:
+        fcntl.flock(f, fcntl.LOCK_SH)
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if type and not entry.get("type", "").startswith(type):
+                continue
+            if severity and entry.get("severity") != severity:
+                continue
+            if since and entry.get("ts", 0) < since:
+                continue
+            events.append(entry)
+        fcntl.flock(f, fcntl.LOCK_UN)
+    events.reverse()
+    total = len(events)
+    return {"events": events[offset:offset + limit], "total": total}
+
+
+@router.get("/logs/worker-failures")
+async def get_worker_failures(
+    gen: int = Query(None, description="Filter by generation number"),
+    role: str = Query("", description="Filter by role name"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    failures_file = RESULTS_DIR / "worker_failures.jsonl"
+    if not failures_file.exists():
+        return {"failures": [], "total": 0}
+    import fcntl
+    failures = []
+    with open(failures_file, "r") as f:
+        fcntl.flock(f, fcntl.LOCK_SH)
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if gen is not None and entry.get("gen") != gen:
+                continue
+            if role and role.lower() not in entry.get("role", "").lower():
+                continue
+            failures.append(entry)
+        fcntl.flock(f, fcntl.LOCK_UN)
+    failures.reverse()
+    total = len(failures)
+    return {"failures": failures[offset:offset + limit], "total": total}

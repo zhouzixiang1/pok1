@@ -94,3 +94,19 @@ def sample_h2h():
         "claude_v35 vs claude_v10": {"games": 50, "a_wins": 35, "b_wins": 15, "win_rate": 0.7},
         "claude_v30 vs claude_v10": {"games": 50, "a_wins": 28, "b_wins": 22, "win_rate": 0.56},
     }
+
+
+@pytest.fixture(autouse=True)
+def isolate_app_config():
+    """Backup and restore app_config.json so tests don't mutate real daemon config."""
+    import json
+    from server.state import _CONFIG_FILE, app_state
+    backup = None
+    if _CONFIG_FILE.exists():
+        backup = json.loads(_CONFIG_FILE.read_text())
+    yield
+    if backup is not None:
+        _CONFIG_FILE.write_text(json.dumps(backup, indent=2))
+    else:
+        _CONFIG_FILE.unlink(missing_ok=True)
+    app_state._load_config()
