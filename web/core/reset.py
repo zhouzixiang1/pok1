@@ -102,7 +102,8 @@ def _delete_git_tags(keep_versions):
 
 def _reset_json_file(path, default_content):
     """Write default_content to a JSON file."""
-    with open(path, "w") as f:
+    from evolution_infra import locked_file
+    with locked_file(path, "w") as f:
         json.dump(default_content, f)
 
 
@@ -210,7 +211,9 @@ def reset_evolution(keep_versions=6):
     result["deleted_log_dirs"] = _delete_version_log_dirs(keep_versions)
 
     # Step 6: Reset experience pool
-    EXPERIENCE_FILE.write_text(EXPERIENCE_TEMPLATE)
+    from evolution_infra import locked_file
+    with locked_file(EXPERIENCE_FILE, "w") as f:
+        f.write(EXPERIENCE_TEMPLATE)
     result["reset_files"].append("experience_pool.md")
 
     # Step 7: Clear orchestrator logs

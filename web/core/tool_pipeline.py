@@ -663,12 +663,16 @@ async def run_precommit_eval(args):
             "n_played": 0,
         }
         try:
-            match_wins, draws, n_played, _ = mirror_battle(
-                str(candidate_main),
-                str(opponent_main),
-                n_games=n_games,
-                verbose=False,
-                save_log=False,
+            loop = asyncio.get_running_loop()
+            match_wins, draws, n_played, _ = await loop.run_in_executor(
+                None,
+                lambda: mirror_battle(
+                    str(candidate_main),
+                    str(opponent_main),
+                    n_games=n_games,
+                    verbose=False,
+                    save_log=False,
+                ),
             )
             matchup.update({
                 "wins": int(match_wins[0]),
@@ -751,8 +755,10 @@ async def run_inline_eval(args):
         return {"content": [{"type": "text", "text": json.dumps({"error": f"Bot v{v} main.py not found"})}]}
 
     # Guard: refuse to run while daemon is active (read-modify-write race on ratings)
-    from evolution_infra import daemon_proc
-    if daemon_proc is not None and daemon_proc.poll() is None:
+    from evolution_infra import daemon_proc, _daemon_lock
+    with _daemon_lock:
+        _dp = daemon_proc
+    if _dp is not None and _dp.poll() is None:
         return {"content": [{"type": "text", "text": json.dumps({"error": "Daemon is running. Stop it first with stop_daemon to avoid ratings race condition."})}]}
 
     # Import battle engine

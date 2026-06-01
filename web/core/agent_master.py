@@ -191,12 +191,11 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui):
     # ── Lineage info (parent chain) ──
     lineage_lines = []
     try:
-        from evolution_core import read_pipeline_checkpoint
+        from evolution_infra import git_get_parent
         for check_v in range(max(1, source_v - 5), source_v + 1):
-            ckpt = read_pipeline_checkpoint()
-            if ckpt and ckpt.get("next_v") == check_v + 1:
-                parent = ckpt.get("source_v", "?")
-                lineage_lines.append(f"  v{check_v + 1} ← parent: v{parent}")
+            parent = git_get_parent(check_v)
+            if parent is not None:
+                lineage_lines.append(f"  v{check_v} ← parent: v{parent}")
     except Exception:
         pass
 

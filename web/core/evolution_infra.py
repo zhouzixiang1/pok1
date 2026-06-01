@@ -124,6 +124,10 @@ def _get_worker_semaphore() -> "asyncio.Semaphore":
     """Return (creating if needed) the module-level worker concurrency semaphore."""
     global _WORKER_SEMAPHORE
     if _WORKER_SEMAPHORE is None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
         _WORKER_SEMAPHORE = asyncio.Semaphore(MAX_PARALLEL_WORKERS)
     return _WORKER_SEMAPHORE
 
@@ -373,7 +377,18 @@ def load_daemon_stats():
     return {"pairs": {}, "total_periods": 0, "total_games": 0}
 
 
-async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=MIN_GAMES_FOR_EVAL, ui=None, shutdown_event=None):
+def _is_shutdown(event) -> bool:
+    """Check if a shutdown signal is set. Accepts asyncio.Event, ShutdownManager, or None."""
+    if event is None:
+        return False
+    if hasattr(event, 'is_set'):
+        return event.is_set()
+    if hasattr(event, 'is_shutting_down'):
+        return event.is_shutting_down
+    return False
+
+
+async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=MIN_GAMES_FOR_EVAL, ui=None, shutdown_event: asyncio.Event | None = None):
     """Wait for daemon to evaluate a new bot (async, non-blocking).
 
     Returns True when either:
@@ -392,7 +407,7 @@ async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=
     last_log = start
 
     while time.time() - start < timeout:
-        if shutdown_event and shutdown_event.is_set():
+        if _is_shutdown(shutdown_event):
             return False
 
         if BOT_STATS_FILE.exists():
@@ -535,6 +550,8 @@ def stop_daemon():
 
 def daemon_monitor_thread(ui, stop_event, daemon_workers=14, daemon_pairs=5):
     """Background thread: reads daemon stats, updates UI, auto-restarts dead daemon."""
+    if not ui:
+        return
     restart_count = 0
     while not stop_event.is_set():
         try:

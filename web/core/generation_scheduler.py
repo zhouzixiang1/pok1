@@ -44,8 +44,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     bot_name = f"claude_v{current_v}"
 
     # Wait for sufficient evaluation
-    shutdown_event = shutdown_mgr._event if shutdown_mgr else None
-    eval_kwargs = {"ui": ui, "shutdown_event": shutdown_event}
+    eval_kwargs = {"ui": ui, "shutdown_event": shutdown_mgr}
     if min_games is not None:
         eval_kwargs["min_games"] = min_games
     eval_ok = await wait_for_daemon_eval(bot_name, **eval_kwargs)
@@ -58,6 +57,8 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
 
     # Cleanup incomplete bot dirs from previous interrupted cycles
     _cleanup_incomplete()
+    if shutdown_mgr and shutdown_mgr.is_shutting_down:
+        return None
 
     # Three analysis LLM calls — each checks shutdown after
     from agent_master import _analyze_stagnation, _analyze_recent_matches

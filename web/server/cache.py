@@ -15,6 +15,8 @@ def read_locked(path: Path) -> Any:
         fcntl.flock(f, fcntl.LOCK_SH)
         try:
             data = json.load(f)
+        except json.JSONDecodeError:
+            return None
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)
     return data
@@ -29,5 +31,6 @@ def cached_read(key: str, path: Path) -> Any:
     if not path.exists():
         return None
     data = read_locked(path)
-    _CACHE[key] = (now, data)
+    if data is not None:
+        _CACHE[key] = (now, data)
     return data

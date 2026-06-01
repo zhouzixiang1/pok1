@@ -203,7 +203,8 @@ class WebUI(BaseUI):
             self.grand_cost_total += cost_usd
             try:
                 _COSTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-                with open(_COSTS_FILE, "a") as f:
+                from evolution_infra import locked_file
+                with locked_file(_COSTS_FILE, "a") as f:
                     f.write(json.dumps({"role": role, "cost_usd": cost_usd, "grand_total": round(self.grand_cost_total, 6), "ts": time.time()}) + "\n")
             except OSError:
                 pass

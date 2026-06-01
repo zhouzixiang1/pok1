@@ -4,6 +4,10 @@ import asyncio
 import json
 import threading
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from shutdown_manager import ShutdownManager
 
 class AppState:
     def __init__(self, config_file=None):
@@ -19,6 +23,7 @@ class AppState:
         self.generation_count: int = 0
         self.decisions: list = []
         self._evolution_task: asyncio.Task | None = None
+        self._shutdown_mgr: "ShutdownManager | None" = None
         self._load_config()
 
     def to_dict(self) -> dict:
@@ -111,6 +116,15 @@ class AppState:
             if self._evolution_task and not self._evolution_task.done():
                 self._evolution_task.cancel()
             self._evolution_task = None
+
+    def set_shutdown_mgr(self, mgr: "ShutdownManager"):
+        with self._lock:
+            self._shutdown_mgr = mgr
+
+    def request_shutdown(self):
+        with self._lock:
+            if self._shutdown_mgr:
+                self._shutdown_mgr.request_shutdown()
 
     def add_decision(self, tool_name: str, result_summary: str):
         import time

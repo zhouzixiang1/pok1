@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from sse_starlette.sse import EventSourceResponse
 
 from server.cache import cached_read
@@ -129,11 +129,13 @@ _log = logging.getLogger("data_stream")
 
 
 @router.get("/data/stream")
-async def data_stream():
+async def data_stream(request: Request):
     async def generate():
         tick = 0
         try:
             while True:
+                if await request.is_disconnected():
+                    break
                 if tick % 3 == 0:
                     for evt in [
                         _event("ratings", _get_ratings()),

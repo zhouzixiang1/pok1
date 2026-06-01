@@ -11,14 +11,13 @@ import pytest
 
 class TestReadLockedLockRelease:
     def test_lock_released_on_malformed_json(self, tmp_path):
-        """After the fix, flock(LOCK_UN) is in a finally block."""
+        """read_locked returns None on malformed JSON, lock still released."""
         from server.cache import read_locked
         f = tmp_path / "bad.json"
         f.write_text("NOT VALID JSON {{{")
-        with pytest.raises(json.JSONDecodeError):
-            read_locked(f)
-        # If we get here, the lock was released (otherwise the test would deadlock
-        # or the file would remain locked). Verify by reading again with a valid file.
+        result = read_locked(f)
+        assert result is None
+        # Lock was released — verify by reading again with a valid file.
         f.write_text('{"ok": true}')
         result = read_locked(f)
         assert result == {"ok": True}
@@ -90,3 +89,71 @@ class TestDownsampleZeroMaxPoints:
         result = downsample(data, max_points=1)
         assert result[0] == data[0]
         assert result[-1] == data[-1]
+
+
+# ── Bug Fix A5: evolution_infra.py — _is_shutdown accepts multiple types ──
+
+class TestIsShutdown:
+    def test_none(self):
+        from evolution_infra import _is_shutdown
+        assert _is_shutdown(None) is False
+
+    def test_asyncio_event_unset(self):
+        import asyncio
+        from evolution_infra import _is_shutdown
+        assert _is_shutdown(asyncio.Event()) is False
+
+    def test_asyncio_event_set(self):
+        import asyncio
+        from evolution_infra import _is_shutdown
+        e = asyncio.Event()
+        e.set()
+        assert _is_shutdown(e) is True
+
+    def test_shutdown_manager_not_shutting_down(self):
+        from evolution_infra import _is_shutdown
+        from shutdown_manager import ShutdownManager
+        mgr = ShutdownManager()
+        assert _is_shutdown(mgr) is False
+
+    def test_shutdown_manager_shutting_down(self):
+        from evolution_infra import _is_shutdown
+        from shutdown_manager import ShutdownManager
+        mgr = ShutdownManager()
+        mgr.request_shutdown()
+        assert _is_shutdown(mgr) is True
+
+    def test_unknown_object(self):
+        from evolution_infra import _is_shutdown
+        assert _is_shutdown(object()) is False
+
+
+# ── Bug Fix A6: tool_status.py — git_has_tag called with int not string ──
+
+class TestDiagnoseGitHasTagArg:
+    def test_git_has_tag_accepts_int(self):
+        from evolution_infra import git_has_tag
+        # Should not raise TypeError — accepts int
+        result = git_has_tag(99999)
+        assert isinstance(result, bool)
+
+
+# ── Bug Fix A7: cache.py — cached_read handles None from read_locked ──
+
+class TestCachedReadMalformedJson:
+    def test_cached_read_returns_none_on_malformed(self, tmp_path):
+        from server.cache import cached_read
+        f = tmp_path / "bad.json"
+        f.write_text("NOT JSON!!!")
+        result = cached_read("test_bad", f)
+        assert result is None
+
+    def test_cached_read_valid_after_malformed(self, tmp_path):
+        from server.cache import cached_read
+        f = tmp_path / "recover.json"
+        f.write_text("NOT JSON!!!")
+        result = cached_read("test_recover", f)
+        assert result is None
+        f.write_text('{"ok": true}')
+        result = cached_read("test_recover", f)
+        assert result == {"ok": True}

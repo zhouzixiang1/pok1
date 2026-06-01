@@ -293,8 +293,8 @@ async def reap_weakest(args):
             f.seek(0)
             f.truncate()
             json.dump(ratings_raw, f, indent=2)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[WARN] reap: ratings cleanup failed for {culled_name}: {e}")
 
     # Clean up bot_stats
     if BOT_STATS_FILE.exists():
@@ -306,8 +306,8 @@ async def reap_weakest(args):
                     f.seek(0)
                     f.truncate()
                     json.dump(bs, f, indent=2)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] reap: bot_stats cleanup failed for {culled_name}: {e}")
     # Clean up H2H data
     if H2H_FILE.exists():
         try:
@@ -322,8 +322,8 @@ async def reap_weakest(args):
                     f.seek(0)
                     f.truncate()
                     json.dump(h2h, f, indent=2)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] reap: H2H cleanup failed for {culled_name}: {e}")
 
     # Clean up replay files referencing the reaped bot
     try:
@@ -579,7 +579,7 @@ async def diagnose_environment(args):
             v_int = int(v_num)
         except ValueError:
             continue
-        if not d.joinpath(".completed").exists() and not git_has_tag(f"bot-v{v_int}"):
+        if not d.joinpath(".completed").exists() and not git_has_tag(v_int):
             incomplete.append(v_int)
 
     if incomplete:
@@ -632,7 +632,7 @@ async def diagnose_environment(args):
         snapshot_lines.append("Top 10 rated bots:")
         for name, p in sorted_bots:
             v_str = name.replace("claude_v", "")
-            tag = "✓" if git_has_tag(f"bot-v{v_str}") else "✗"
+            tag = "✓" if git_has_tag(int(v_str)) else "✗"
             snapshot_lines.append(f"  {name}: r={p.r:.0f} rd={p.rd:.0f} {tag}")
 
     # Daemon status

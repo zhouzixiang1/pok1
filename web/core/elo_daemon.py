@@ -342,8 +342,9 @@ def process_result(result, ratings, h2h, bot_stats, verbose=False):
                 print(f"[DAEMON] Error saving replay {a} vs {b}: {e}")
 
     # Snapshot opponent ratings for Elo updates
-    opp_b = Glicko2Player(r=ratings[b].r, rd=ratings[b].rd, sigma=ratings[b].sigma)
-    opp_a = Glicko2Player(r=ratings[a].r, rd=ratings[a].rd, sigma=ratings[a].sigma)
+    _default = Glicko2Player()
+    opp_b = Glicko2Player(r=ratings.get(b, _default).r, rd=ratings.get(b, _default).rd, sigma=ratings.get(b, _default).sigma)
+    opp_a = Glicko2Player(r=ratings.get(a, _default).r, rd=ratings.get(a, _default).rd, sigma=ratings.get(a, _default).sigma)
 
     # Per-game Elo updates
     for _ in range(wins_a):

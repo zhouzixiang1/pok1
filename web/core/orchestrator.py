@@ -361,7 +361,7 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
     return "\n".join(lines)
 
 
-async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=None, gen_ctx=None):
+async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=None, gen_ctx=None, shutdown_mgr=None):
     """Run one Orchestrator cycle (one LLM agent session). Returns total cost."""
     context = _build_context(one_gen=one_gen, dry_run=dry_run, gen_ctx=gen_ctx)
     prompt = ORCHESTRATOR_PROMPT.replace("{context}", context)
@@ -490,13 +490,21 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     if ui:
                         ui.log_history(f"Orchestrator rate limited (529). Retrying in {backoff}s...", "warn")
                     lf.write(f"\n[529 RETRY] backing off {backoff}s\n")
-                    await asyncio.sleep(backoff)
+                    if shutdown_mgr:
+                        try:
+                            await asyncio.wait_for(shutdown_mgr.wait_for_shutdown(), timeout=backoff)
+                            return total_cost
+                        except asyncio.TimeoutError:
+                            pass
+                    else:
+                        await asyncio.sleep(backoff)
                     if query_gen is not None:
                         try:
                             await query_gen.aclose()
                         except Exception:
                             pass
-                    full_output, total_cost, cycle_completed, query_gen, auth_error = await _stream_response(retry_opts)
+                    full_output, retry_cost, cycle_completed, query_gen, auth_error = await _stream_response(retry_opts)
+                    total_cost += retry_cost
                     if not _is_rate_limited(full_output):
                         break
 
@@ -637,7 +645,14 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                         break
                     consecutive_prep_fails += 1
                     backoff = min(10 * (2 ** min(consecutive_prep_fails - 1, 4)), 300)
-                    await asyncio.sleep(backoff)
+                    if shutdown_mgr:
+                        try:
+                            await asyncio.wait_for(shutdown_mgr.wait_for_shutdown(), timeout=backoff)
+                            break
+                        except asyncio.TimeoutError:
+                            pass
+                    else:
+                        await asyncio.sleep(backoff)
                     continue
                 consecutive_prep_fails = 0
 
@@ -649,6 +664,7 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                 dry_run=False,
                 max_turns=None,
                 gen_ctx=gen_ctx,
+                shutdown_mgr=shutdown_mgr,
             )
 
             # Phase 3: Cleanup (idempotent) — after any successful generation
@@ -664,7 +680,14 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
             if cost < 0:
                 if ui:
                     ui.log_history("Orchestrator: API auth error (401/403). Backing off 300s.", "error")
-                await asyncio.sleep(300)
+                if shutdown_mgr:
+                    try:
+                        await asyncio.wait_for(shutdown_mgr.wait_for_shutdown(), timeout=300)
+                        break
+                    except asyncio.TimeoutError:
+                        pass
+                else:
+                    await asyncio.sleep(300)
                 _clear_orchestrator_session()
                 continue
 

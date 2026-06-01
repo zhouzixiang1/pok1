@@ -64,8 +64,9 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
             return data
     except Exception as e:
         ui.log_history(f"Critic error: {e}. Defaulting to rejected.", "warn")
+        return None
 
-    return {"score": 0, "approved": False, "feedback": "Critic unavailable — defaulting to rejected.", "local_optima_warning": False}
+    return {"score": 0, "approved": False, "feedback": "Critic output was not valid JSON.", "local_optima_warning": False}
 
 
 async def _run_performance_verification(source_v, ratings, ui):

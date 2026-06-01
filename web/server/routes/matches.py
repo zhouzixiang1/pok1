@@ -63,7 +63,8 @@ async def match_commentary(match_id: str):
 
     replay = read_locked(path)
     from commentary import generate_match_commentary
-    commentary = generate_match_commentary(replay)
+    import asyncio
+    commentary = await asyncio.get_running_loop().run_in_executor(None, generate_match_commentary, replay)
 
     try:
         COMMENTARY_DIR.mkdir(parents=True, exist_ok=True)

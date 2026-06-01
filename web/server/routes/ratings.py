@@ -109,7 +109,9 @@ async def history_summary():
 async def experience():
     if not EXPERIENCE_FILE.exists():
         return ""
-    return EXPERIENCE_FILE.read_text()
+    from evolution_infra import locked_file
+    with locked_file(EXPERIENCE_FILE, "r") as f:
+        return f.read()
 
 
 class ExperienceUpdateRequest(BaseModel):
@@ -124,7 +126,9 @@ class ExperienceAppendRequest(BaseModel):
 async def update_experience(req: ExperienceUpdateRequest):
     """Overwrite experience_pool.md with new content."""
     try:
-        EXPERIENCE_FILE.write_text(req.content, encoding="utf-8")
+        from evolution_infra import locked_file
+        with locked_file(EXPERIENCE_FILE, "w", encoding="utf-8") as f:
+            f.write(req.content)
         lines = req.content.count("\n") + 1
         return {"saved": True, "lines": lines, "chars": len(req.content)}
     except Exception as e:

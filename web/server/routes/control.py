@@ -109,9 +109,13 @@ async def start_evolution():
     web_ui._broadcaster.clear()
     config = app_state.get_config()
 
+    from shutdown_manager import ShutdownManager
+    shutdown_mgr = ShutdownManager(grace_period=15.0)
+    app_state.set_shutdown_mgr(shutdown_mgr)
+
     from orchestrator import orchestrator_loop
     task = asyncio.create_task(_run_with_cleanup(orchestrator_loop(
-        web_ui, no_daemon=not config["daemon_enabled"],
+        web_ui, shutdown_mgr=shutdown_mgr, no_daemon=not config["daemon_enabled"],
         daemon_workers=config["daemon_workers"], daemon_pairs=config["daemon_pairs"])))
     app_state.set_task(task)
 
@@ -120,6 +124,7 @@ async def start_evolution():
 
 @router.post("/stop")
 async def stop_evolution():
+    app_state.request_shutdown()
     app_state.set_running(False)
     app_state.cancel_task()
     try:
@@ -226,10 +231,16 @@ async def reset_evolution_endpoint():
     from server.app import web_ui
     web_ui._broadcaster.clear()
     from orchestrator import orchestrator_loop
+    from shutdown_manager import ShutdownManager
 
-    app_state.set_running(True)
+    if not app_state.try_set_running(True):
+        return {"status": "reset_complete", "warning": "Orchestrator already running — restart skipped"}
+
+    shutdown_mgr = ShutdownManager(grace_period=15.0)
+    app_state.set_shutdown_mgr(shutdown_mgr)
+
     task = asyncio.create_task(_run_with_cleanup(orchestrator_loop(
-        web_ui, no_daemon=not config["daemon_enabled"],
+        web_ui, shutdown_mgr=shutdown_mgr, no_daemon=not config["daemon_enabled"],
         daemon_workers=config["daemon_workers"], daemon_pairs=config["daemon_pairs"])))
     app_state.set_task(task)
     web_ui.log_history("Evolution reset complete. Orchestrator restarted.", "success")
