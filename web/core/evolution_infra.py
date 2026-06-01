@@ -558,21 +558,29 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=14, daemon_pairs=5):
             with _daemon_lock:
                 proc = daemon_proc
             if proc is not None and proc.poll() is not None:
-                restart_count += 1
-                if restart_count > 5:
-                    ui.log_history("Daemon failed 5x consecutively, stopping auto-restart", "error")
+                # Re-check under lock — start_daemon may have replaced daemon_proc
+                with _daemon_lock:
+                    current_proc = daemon_proc
+                if current_proc is not None and current_proc is not proc and current_proc.poll() is None:
+                    # Daemon was intentionally replaced, not a crash
+                    restart_count = 0
+                else:
+                    rc = proc.poll()
+                    restart_count += 1
+                    if restart_count > 5:
+                        ui.log_history(f"Daemon failed 5x consecutively, stopping auto-restart (last rc={rc})", "error")
+                        from system_log import log_system_event
+                        log_system_event("daemon.crashed", "error", f"Daemon failed {restart_count}x, auto-restart stopped",
+                                         {"restart_count": restart_count, "returncode": rc})
+                        break
+                    backoff = min(3 * (2 ** (restart_count - 1)), 120)
+                    ui.log_history(f"⚠️ Daemon exited (rc={rc}), restarting in {backoff}s (attempt {restart_count})", "warn")
                     from system_log import log_system_event
-                    log_system_event("daemon.crashed", "error", f"Daemon failed {restart_count}x, auto-restart stopped",
-                                     {"restart_count": restart_count})
-                    break
-                backoff = min(3 * (2 ** (restart_count - 1)), 120)
-                ui.log_history(f"⚠️ Daemon exited, restarting in {backoff}s (attempt {restart_count})", "warn")
-                from system_log import log_system_event
-                log_system_event("daemon.crashed", "error", f"Daemon exited, restarting (attempt {restart_count})",
-                                 {"restart_count": restart_count})
-                if stop_event.wait(backoff):
-                    break
-                start_daemon(workers=daemon_workers, pairs=daemon_pairs)
+                    log_system_event("daemon.crashed", "error", f"Daemon exited rc={rc}, restarting (attempt {restart_count})",
+                                     {"restart_count": restart_count, "returncode": rc})
+                    if stop_event.wait(backoff):
+                        break
+                    start_daemon(workers=daemon_workers, pairs=daemon_pairs)
             else:
                 restart_count = 0
             stats = load_daemon_stats()

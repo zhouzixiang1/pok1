@@ -528,53 +528,59 @@ def main():
                                 in_flight[new_fut] = (m[0], m[1])
 
                     # Periodic save
-                    now = time.time()
-                    if games_since_save >= SAVE_EVERY_N_GAMES or now - last_save_time >= SAVE_INTERVAL_SEC:
-                        if games_since_save > 0:
-                            save_num += 1
-                            save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots, verbose=args.verbose)
-                            games_since_save = 0
-                            last_save_time = now
+                    try:
+                        now = time.time()
+                        if games_since_save >= SAVE_EVERY_N_GAMES or now - last_save_time >= SAVE_INTERVAL_SEC:
+                            if games_since_save > 0:
+                                save_num += 1
+                                save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots, verbose=args.verbose)
+                                games_since_save = 0
+                                last_save_time = now
+                    except Exception as e:
+                        print(f"[DAEMON] Save error (non-fatal): {e}")
 
                     # Check for reap signal — immediate bot list refresh
-                    reap_signal = Path(__file__).parent / "results" / ".reap_signal"
-                    reap_fresh = False
-                    if reap_signal.exists():
-                        try:
-                            ts = float(reap_signal.read_text().strip())
-                            reap_fresh = time.time() - ts <= 300
-                        except (ValueError, OSError):
-                            reap_fresh = True  # No timestamp = legacy signal, process anyway
-                        reap_signal.unlink(missing_ok=True)
-                    if reap_fresh:
-                        new_bots = get_active_bots()
-                        removed = set(active_bots) - set(new_bots)
-                        for b in removed:
-                            ratings.pop(b, None)
-                            bot_stats.pop(b, None)
-                            h2h = {k: v for k, v in h2h.items() if b not in k.split(" vs ")}
-                        for b in set(new_bots) - set(active_bots):
-                            if b not in ratings:
-                                ratings[b] = Glicko2Player()
-                        active_bots = new_bots
-                        # Filter match_queue and cancel in-flight futures for reaped bots
-                        if removed:
-                            match_queue = deque(
-                                m for m in match_queue
-                                if m[0] not in removed and m[1] not in removed
-                            )
-                            for fut in list(in_flight):
-                                a, b = in_flight[fut]
-                                if a in removed or b in removed:
-                                    fut.cancel()
-                                    del in_flight[fut]
-                        if games_since_save > 0:
-                            save_num += 1
-                            save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots, verbose=args.verbose)
-                            games_since_save = 0
-                            last_save_time = time.time()
-                        if args.verbose:
-                            print(f"[DAEMON] Reap signal processed, active bots: {len(active_bots)}")
+                    try:
+                        reap_signal = Path(__file__).parent / "results" / ".reap_signal"
+                        reap_fresh = False
+                        if reap_signal.exists():
+                            try:
+                                ts = float(reap_signal.read_text().strip())
+                                reap_fresh = time.time() - ts <= 300
+                            except (ValueError, OSError):
+                                reap_fresh = True  # No timestamp = legacy signal, process anyway
+                            reap_signal.unlink(missing_ok=True)
+                        if reap_fresh:
+                            new_bots = get_active_bots()
+                            removed = set(active_bots) - set(new_bots)
+                            for b in removed:
+                                ratings.pop(b, None)
+                                bot_stats.pop(b, None)
+                                h2h = {k: v for k, v in h2h.items() if b not in k.split(" vs ")}
+                            for b in set(new_bots) - set(active_bots):
+                                if b not in ratings:
+                                    ratings[b] = Glicko2Player()
+                            active_bots = new_bots
+                            # Filter match_queue and cancel in-flight futures for reaped bots
+                            if removed:
+                                match_queue = deque(
+                                    m for m in match_queue
+                                    if m[0] not in removed and m[1] not in removed
+                                )
+                                for fut in list(in_flight):
+                                    a, b = in_flight[fut]
+                                    if a in removed or b in removed:
+                                        fut.cancel()
+                                        del in_flight[fut]
+                            if games_since_save > 0:
+                                save_num += 1
+                                save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots, verbose=args.verbose)
+                                games_since_save = 0
+                                last_save_time = time.time()
+                            if args.verbose:
+                                print(f"[DAEMON] Reap signal processed, active bots: {len(active_bots)}")
+                    except Exception as e:
+                        print(f"[DAEMON] Reap signal error (non-fatal): {e}")
 
                     # Refresh bot list periodically
                     if total_matches % 50 == 0:
@@ -620,6 +626,18 @@ def main():
                     fut = executor.submit(run_single_match, m)
                     in_flight[fut] = (m[0], m[1])
 
+    except Exception as e:
+        import traceback
+        crash_log = RESULTS_DIR / "daemon_crash.log"
+        try:
+            with open(crash_log, "a") as f:
+                f.write(f"\n{'='*60}\n")
+                f.write(f"Crash at {datetime.now().isoformat()}\n")
+                f.write(traceback.format_exc())
+        except Exception:
+            pass
+        print(f"[DAEMON] FATAL: {e}\n{traceback.format_exc()}")
+        raise
     finally:
         print(f"[DAEMON] Draining {len(in_flight)} in-flight matches...")
         for fut in in_flight:
@@ -631,7 +649,10 @@ def main():
         executor.shutdown(wait=False)
 
         # Final save
-        save_cycle(ratings, h2h, bot_stats, stats, save_num + 1, active_bots, verbose=args.verbose)
+        try:
+            save_cycle(ratings, h2h, bot_stats, stats, save_num + 1, active_bots, verbose=args.verbose)
+        except Exception as e:
+            print(f"[DAEMON] Final save failed: {e}")
         print(f"[DAEMON] Shutdown complete. {total_matches} matches processed.")
 
 
