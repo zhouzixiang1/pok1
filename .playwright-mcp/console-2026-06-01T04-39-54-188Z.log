@@ -46,3 +46,5 @@
     at new Promise (<anonymous>)
     at t2.value (http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9858:16)
     at http://localhost:5173/node_modules/.vite/deps/react-apexcharts.js?v=ad47e121:9233:23
+[  387158ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:5173/api/experience:0
+[  417133ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:5173/api/experience:0

@@ -27,6 +27,7 @@ from claude_agent_sdk import (
     ResultMessage,
     TextBlock,
     ToolUseBlock,
+    ToolResultBlock,
     ThinkingBlock,
     CLINotFoundError,
     ProcessError,
@@ -774,9 +775,14 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
                             lf.write(text + "\n")
                         ui.log_io(text, "claude", role_name)
                     elif isinstance(block, ThinkingBlock):
-                        ui.log_io("[thinking...]", "thinking", role_name)
+                        ui.log_io(block.thinking or "[thinking...]", "thinking", role_name)
                     elif isinstance(block, ToolUseBlock):
                         ui.log_io(f"[tool: {block.name}]", "tool", role_name)
+                        ui.emit_tool_call(block.name, block.input)
+                    elif isinstance(block, ToolResultBlock):
+                        content = block.content if isinstance(block.content, str) else json.dumps(block.content, ensure_ascii=False)
+                        if content:
+                            ui.log_io(content[:3000], "tool_result", role_name)
             elif isinstance(message, ResultMessage):
                 cost_usd = message.total_cost_usd
                 usage = message.usage
@@ -817,9 +823,14 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
                                     lf.write(text + "\n")
                                 ui.log_io(text, "claude", role_name)
                             elif isinstance(block, ThinkingBlock):
-                                ui.log_io("[thinking...]", "thinking", role_name)
+                                ui.log_io(block.thinking or "[thinking...]", "thinking", role_name)
                             elif isinstance(block, ToolUseBlock):
                                 ui.log_io(f"[tool: {block.name}]", "tool", role_name)
+                                ui.emit_tool_call(block.name, block.input)
+                            elif isinstance(block, ToolResultBlock):
+                                content = block.content if isinstance(block.content, str) else json.dumps(block.content, ensure_ascii=False)
+                                if content:
+                                    ui.log_io(content[:3000], "tool_result", role_name)
                     elif isinstance(message, ResultMessage):
                         cost_usd = (cost_usd or 0) + (message.total_cost_usd or 0)
                         usage = message.usage

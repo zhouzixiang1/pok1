@@ -30,6 +30,7 @@ from claude_agent_sdk import (
     ResultMessage,
     TextBlock,
     ToolUseBlock,
+    ToolResultBlock,
     ThinkingBlock,
     CLINotFoundError,
     ProcessError,
@@ -319,16 +320,20 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                             elif isinstance(block, ToolUseBlock):
                                 if ui:
                                     ui.log_history(f"[Orchestrator] Calling tool: {block.name}", "info")
-                                    ui.log_io(f"\n[tool: {block.name}]", "tool")
+                                    ui.log_io(f"\n[tool: {block.name}]", "tool", "Orchestrator")
                                     ui.emit_tool_call(block.name, block.input)
                                 else:
                                     print(f"\n[tool: {block.name}]", end=" ", flush=True)
                                 lf.write(f"\n[tool: {block.name}]\n")
                             elif isinstance(block, ThinkingBlock):
                                 if ui:
-                                    ui.log_io("[thinking...]", "thinking", "Orchestrator")
+                                    ui.log_io(block.thinking or "[thinking...]", "thinking", "Orchestrator")
                                 else:
                                     print("[thinking...]", end=" ", flush=True)
+                            elif isinstance(block, ToolResultBlock):
+                                content = block.content if isinstance(block.content, str) else json.dumps(block.content, ensure_ascii=False)
+                                if content and ui:
+                                    ui.log_io(content[:3000], "tool_result", "Orchestrator")
                     elif isinstance(message, ResultMessage):
                         if message.total_cost_usd:
                             cost += message.total_cost_usd

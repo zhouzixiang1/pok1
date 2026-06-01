@@ -145,6 +145,10 @@ export default function EvolutionMonitor() {
       } else if (line.streamType === "error") {
         closeTool();
         addMsg({ id: nextId(), type: "error", text: line.text, role: role || undefined, toolOutput: [], toolDone: false });
+      } else if (line.streamType === "tool_result") {
+        if (line.text.trim()) {
+          updateLastTool(line.text.trim());
+        }
       } else {
         if (line.text.trim()) {
           closeTool();

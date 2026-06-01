@@ -1,4 +1,4 @@
-export type StreamType = "prompt" | "claude" | "thinking" | "tool" | "error" | "default";
+export type StreamType = "prompt" | "claude" | "thinking" | "tool" | "tool_result" | "error" | "default";
 
 export type EvolutionEventType =
   | "history"
