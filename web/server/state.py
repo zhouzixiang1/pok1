@@ -5,12 +5,10 @@ import json
 import threading
 from pathlib import Path
 
-_CONFIG_FILE = Path(__file__).resolve().parents[1] / "core" / "results" / "app_config.json"
-
-
 class AppState:
-    def __init__(self):
+    def __init__(self, config_file=None):
         self._lock = threading.RLock()
+        self._config_file = config_file or Path(__file__).resolve().parents[1] / "core" / "results" / "app_config.json"
         self.mode: str = "orchestrator"
         self.running: bool = False
         self.daemon_enabled: bool = True
@@ -70,8 +68,8 @@ class AppState:
 
     def _load_config(self):
         try:
-            if _CONFIG_FILE.exists():
-                data = json.loads(_CONFIG_FILE.read_text())
+            if self._config_file.exists():
+                data = json.loads(self._config_file.read_text())
                 if "daemon_enabled" in data and isinstance(data["daemon_enabled"], bool):
                     self.daemon_enabled = data["daemon_enabled"]
                 if "daemon_workers" in data and isinstance(data["daemon_workers"], int):
@@ -83,8 +81,8 @@ class AppState:
 
     def _save_config(self):
         try:
-            _CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-            _CONFIG_FILE.write_text(json.dumps({
+            self._config_file.parent.mkdir(parents=True, exist_ok=True)
+            self._config_file.write_text(json.dumps({
                 "daemon_enabled": self.daemon_enabled,
                 "daemon_workers": self.daemon_workers,
                 "daemon_pairs": self.daemon_pairs,

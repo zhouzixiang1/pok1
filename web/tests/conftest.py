@@ -97,16 +97,15 @@ def sample_h2h():
 
 
 @pytest.fixture(autouse=True)
-def isolate_app_config():
-    """Backup and restore app_config.json so tests don't mutate real daemon config."""
-    import json
-    from server.state import _CONFIG_FILE, app_state
-    backup = None
-    if _CONFIG_FILE.exists():
-        backup = json.loads(_CONFIG_FILE.read_text())
+def isolate_state(tmp_path):
+    """Redirect all persistent state to tmp so tests don't touch real data files."""
+    from server.state import app_state
+    import system_log
+    real_config = app_state._config_file
+    real_events = system_log.SYSTEM_EVENTS_FILE
+    app_state._config_file = tmp_path / "app_config.json"
+    system_log.SYSTEM_EVENTS_FILE = tmp_path / "system_events.jsonl"
     yield
-    if backup is not None:
-        _CONFIG_FILE.write_text(json.dumps(backup, indent=2))
-    else:
-        _CONFIG_FILE.unlink(missing_ok=True)
+    app_state._config_file = real_config
+    system_log.SYSTEM_EVENTS_FILE = real_events
     app_state._load_config()
