@@ -681,7 +681,8 @@ async def run_precommit_eval(args):
             "n_played": 0,
         }
         try:
-            loop = asyncio.get_running_loop()
+            import asyncio as _asyncio
+            loop = _asyncio.get_running_loop()
             match_wins, draws, n_played, _ = await loop.run_in_executor(
                 None,
                 lambda: mirror_battle(
