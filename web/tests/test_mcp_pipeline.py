@@ -16,17 +16,17 @@ class TestPrepareNextGen:
         (src / ".completed").touch()
 
         from evolution_infra import BOTS_DIR
-        # Can't monkeypatch module-level constant easily; use a version that exists
+        # Use next_v=999 to avoid colliding with real completed bots
         resp = client.post("/api/control/tool/prepare_next_gen",
-                           json={"args": {"source_v": 30, "next_v": 36}})
+                           json={"args": {"source_v": 30, "next_v": 999}})
         assert resp.status_code == 200
         result = json.loads(resp.json()["result"])
         assert result["prepared"] is True
         assert result["source_v"] == 30
-        assert result["next_v"] == 36
+        assert result["next_v"] == 999
 
         # Clean up created dir
-        next_dir = Path(__file__).resolve().parents[2] / "bots" / "claude_v36"
+        next_dir = Path(__file__).resolve().parents[2] / "bots" / "claude_v999"
         if next_dir.exists():
             shutil.rmtree(next_dir)
 
