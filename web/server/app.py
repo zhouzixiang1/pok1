@@ -35,11 +35,18 @@ async def lifespan(app: FastAPI):
     config = app_state.get_config()
     daemon_enabled = config["daemon_enabled"]
 
+    # Install signal handlers for graceful shutdown
+    from shutdown_manager import ShutdownManager
+    shutdown_mgr = ShutdownManager(grace_period=15.0)
+    loop = asyncio.get_running_loop()
+    shutdown_mgr.install_signal_handlers(loop)
+
     app_state.set_running(True)
     try:
         from orchestrator import orchestrator_loop
         _evolution_task = asyncio.create_task(orchestrator_loop(
-            web_ui, no_daemon=not daemon_enabled,
+            web_ui, shutdown_mgr=shutdown_mgr,
+            no_daemon=not daemon_enabled,
             daemon_workers=config["daemon_workers"], daemon_pairs=config["daemon_pairs"]))
         app_state.set_task(_evolution_task)
         web_ui.log_history("🔥 Orchestrator started (LLM-driven mode)", "success")
@@ -49,15 +56,20 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # On shutdown: signal orchestrator to stop, wait briefly
     if _evolution_task and not _evolution_task.done():
-        _evolution_task.cancel()
+        shutdown_mgr.request_shutdown()
         try:
-            await asyncio.wait_for(_evolution_task, timeout=10)
+            await asyncio.wait_for(_evolution_task, timeout=20)
         except (asyncio.CancelledError, asyncio.TimeoutError):
-            pass
+            _evolution_task.cancel()
+            try:
+                await asyncio.wait_for(_evolution_task, timeout=5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
 
     try:
-        from evolution_core import stop_daemon
+        from evolution_infra import stop_daemon
         stop_daemon()
     except Exception:
         pass

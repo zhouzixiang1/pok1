@@ -6,6 +6,10 @@ compatibility. Tools are organized into:
     tool_helpers.py   — Shared helpers, UI injection, checkpoint gates
     tool_pipeline.py  — Core pipeline tools (Master → Workers → Review → Commit)
     tool_status.py    — Status queries, daemon control, bot management
+
+Tools split into two groups:
+    - MCP tools: registered for the LLM Orchestrator session (~15 tools)
+    - Code-layer tools: called directly by generation_scheduler.py (not in MCP)
 """
 
 import sys
@@ -51,12 +55,10 @@ from tool_status import (  # noqa: F401
     get_bot_stats,
 )
 
-all_tools = [
-    get_status,
-    get_bot_info,
-    get_match_history,
-    run_match_analysis,
-    run_performance_verification,
+# ── MCP tools — available to the LLM Orchestrator session (~15 tools) ──
+
+mcp_tools = [
+    # Pipeline tools
     run_master,
     execute_workers,
     run_quality_gates,
@@ -67,6 +69,24 @@ all_tools = [
     prepare_next_gen,
     commit_bot,
     run_archivist,
+    # Query tools
+    get_bot_info,
+    get_match_history,
+    get_h2h,
+    get_bot_stats,
+]
+
+evolution_server = create_sdk_mcp_server(
+    name="evolution",
+    version="1.0.0",
+    tools=mcp_tools,
+)
+
+# all_tools includes MCP tools + code-layer tools (used by /api/control/tool/* HTTP endpoints)
+all_tools = mcp_tools + [
+    get_status,
+    run_match_analysis,
+    run_performance_verification,
     start_eval_daemon,
     stop_eval_daemon,
     wait_for_eval,
@@ -76,12 +96,4 @@ all_tools = [
     seed_initial_bots_tool,
     consolidate_experience,
     analyze_stagnation,
-    get_h2h,
-    get_bot_stats,
 ]
-
-evolution_server = create_sdk_mcp_server(
-    name="evolution",
-    version="1.0.0",
-    tools=all_tools,
-)

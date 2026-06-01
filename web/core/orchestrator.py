@@ -37,6 +37,8 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import HookMatcher, SyncHookJSONOutput
 from tools import evolution_server, inject_ui
+from shutdown_manager import ShutdownManager
+from system_log import log_system_event
 
 
 ORCHESTRATOR_PROMPT = (Path(__file__).parent / "prompts" / "orchestrator.md").read_text()
@@ -71,6 +73,63 @@ def _load_orchestrator_session() -> "str | None":
 def _clear_orchestrator_session():
     """Delete session file after a naturally completed cycle."""
     ORCHESTRATOR_SESSION_FILE.unlink(missing_ok=True)
+
+
+# ── Startup recovery — assess interrupted state on process start ──
+
+def _startup_recovery(ui=None) -> dict:
+    """Assess interrupted state on startup. Returns recovery action dict.
+
+    Decision matrix:
+        checkpoint + session → Case C: resume LLM conversation + pipeline
+        checkpoint + no session → Case B: new LLM session, resume from checkpoint stage
+        no checkpoint + session → Case D: stale session, clear and start fresh
+        no checkpoint + no session → Case A: fresh start
+    """
+    from evolution_core import read_pipeline_checkpoint, clear_pipeline_checkpoint
+    checkpoint = read_pipeline_checkpoint()
+    session_id = _load_orchestrator_session()
+
+    if not checkpoint:
+        if session_id:
+            if ui:
+                ui.log_history("[Recovery] Stale session file (no pipeline checkpoint). Clearing.", "warn")
+            else:
+                print("[Recovery] Stale session file (no pipeline checkpoint). Clearing.")
+            _clear_orchestrator_session()
+        return {"action": "fresh_start"}
+
+    stage = checkpoint.get("stage", "unknown")
+    next_v = checkpoint.get("next_v")
+
+    # archived or prepared with no master_plan = no real work to recover
+    if stage == "archived" or (stage == "prepared" and not checkpoint.get("master_plan")):
+        if ui:
+            ui.log_history(f"[Recovery] Pipeline at '{stage}' for v{next_v}. Clearing stale checkpoint.", "warn")
+        else:
+            print(f"[Recovery] Pipeline at '{stage}' for v{next_v}. Clearing stale checkpoint.")
+        clear_pipeline_checkpoint()
+        _clear_orchestrator_session()
+        return {"action": "fresh_start"}
+
+    # Significant work was done — attempt recovery
+    recovery = {
+        "action": "resume",
+        "checkpoint": checkpoint,
+        "session_id": session_id,
+        "stage": stage,
+        "next_v": next_v,
+        "source_v": checkpoint.get("source_v"),
+    }
+    if session_id:
+        msg = f"[Recovery] Resuming v{next_v} at '{stage}' with session {session_id[:8]}..."
+    else:
+        msg = f"[Recovery] Resuming v{next_v} at '{stage}' (new LLM session)."
+    if ui:
+        ui.log_history(msg, "warn")
+    else:
+        print(msg)
+    return recovery
 
 
 # ── PreCompact hook — preserve generation state across LLM context compaction ──
@@ -116,14 +175,68 @@ def _make_precompact_hook():
     return {"PreCompact": [HookMatcher(matcher="*", hooks=[handler])]}
 
 
-def _build_context(one_gen=False, dry_run=False):
-    """Build context string injected into the orchestrator prompt."""
+def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
+    """Build context string injected into the orchestrator prompt.
+
+    When gen_ctx (GenerationContext) is provided, injects pre-computed analysis
+    data from the code-layer scheduler instead of raw status data.
+    """
     from evolution_core import (
         get_active_bots, load_ratings,
         get_bot_dir, git_has_tag, _load_recent_failures, _git,
         find_current_v,
     )
     from glicko2 import Glicko2Player
+
+    # If GenerationContext is provided, build streamlined context
+    if gen_ctx is not None:
+        lines = [
+            f"Current generation: v{gen_ctx.current_v}",
+            f"Next generation: v{gen_ctx.next_v}",
+            f"Strategy: {gen_ctx.strategy}",
+            f"Source bot: claude_v{gen_ctx.source_v}",
+            f"Active bots: {len(get_active_bots())}",
+            f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        ]
+        if gen_ctx.strategy == "crossover" and gen_ctx.crossover_parents:
+            lines.append(f"Crossover parents: claude_v{gen_ctx.crossover_parents[0]} x claude_v{gen_ctx.crossover_parents[1]}")
+        if gen_ctx.stagnation_info:
+            lines.append(f"\nStagnation analysis:\n{gen_ctx.stagnation_info}")
+        if gen_ctx.match_analysis:
+            lines.append(f"\nMatch analysis:\n{gen_ctx.match_analysis}")
+        if gen_ctx.performance_verification:
+            lines.append(f"\nPerformance verification:\n{gen_ctx.performance_verification}")
+        if one_gen:
+            lines.append("MODE: Run exactly ONE generation, then stop.")
+        else:
+            lines.append("MODE: Execute this generation using the pipeline tools.")
+        # Pipeline checkpoint still relevant for resume
+        try:
+            from evolution_core import read_pipeline_checkpoint
+            checkpoint = read_pipeline_checkpoint()
+            if checkpoint:
+                stage_hints = {
+                    "prepared":       "Workers not yet run → call execute_workers",
+                    "workers_done":   "Workers done → call run_quality_gates",
+                    "quality_passed": "Quality passed → call run_review",
+                    "reviewed":       "Review passed → call run_critic",
+                    "critic_checked": "Critic done → call run_precommit_eval",
+                    "verified":       "Precommit eval passed → call commit_bot",
+                    "archived":       "Committed & archived → done",
+                }
+                stage = checkpoint.get("stage", "unknown")
+                hint = stage_hints.get(stage, "call get_status to assess")
+                lines.append(
+                    f"\nPIPELINE CHECKPOINT: v{checkpoint['next_v']} (from v{checkpoint['source_v']}) "
+                    f"reached stage='{stage}'. Next step: {hint}."
+                )
+                if checkpoint.get("master_plan"):
+                    lines.append("Master plan is saved in session history — do NOT call run_master again.")
+                else:
+                    lines.append("WARNING: Master plan NOT in checkpoint — call run_master first, then execute_workers.")
+        except Exception:
+            pass
+        return "\n".join(lines)
 
     active_bots = get_active_bots()
     ratings = load_ratings()
@@ -219,17 +332,10 @@ def _build_context(one_gen=False, dry_run=False):
     except Exception:
         pass
 
-    # Environment anomaly detection — prompt Orchestrator to diagnose before proceeding
+    # Environment anomaly detection
     anomalies = []
     if next_dir.exists() and not (next_dir / ".completed").exists():
         anomalies.append("incomplete bot directory")
-    try:
-        if RESULTS_DIR.joinpath("pipeline_state.json").exists():
-            anomalies.append("stale pipeline checkpoint")
-    except Exception:
-        pass
-    if ORCHESTRATOR_SESSION_FILE.exists():
-        anomalies.append("session residue from interrupted cycle")
     try:
         from evolution_core import _load_recent_failures
         if _load_recent_failures(1):
@@ -238,8 +344,7 @@ def _build_context(one_gen=False, dry_run=False):
         pass
     if anomalies:
         lines.append(
-            f"ENVIRONMENT ANOMALIES DETECTED: {', '.join(anomalies)}. "
-            f"Consider calling diagnose_environment() before starting pipeline operations."
+            f"ENVIRONMENT ANOMALIES DETECTED: {', '.join(anomalies)}."
         )
 
     if one_gen:
@@ -252,9 +357,9 @@ def _build_context(one_gen=False, dry_run=False):
     return "\n".join(lines)
 
 
-async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=None):
+async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=None, gen_ctx=None):
     """Run one Orchestrator cycle (one LLM agent session). Returns total cost."""
-    context = _build_context(one_gen=one_gen, dry_run=dry_run)
+    context = _build_context(one_gen=one_gen, dry_run=dry_run, gen_ctx=gen_ctx)
     prompt = ORCHESTRATOR_PROMPT.replace("{context}", context)
 
     if dry_run:
@@ -408,12 +513,12 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     await query_gen.aclose()
                 except Exception:
                     pass
-            _clear_orchestrator_session()
+            # Session file PRESERVED — next startup can resume from checkpoint
             if ui:
-                ui.log_history("[Orchestrator] Cancelled.", "warn")
+                ui.log_history("[Orchestrator] Cancelled — session preserved for resume.", "warn")
             else:
-                print("\n[Orchestrator] Cancelled.")
-            lf.write("\n[CANCELLED]\n")
+                print("\n[Orchestrator] Cancelled — session preserved for resume.")
+            lf.write("\n[CANCELLED — session preserved for resume]\n")
             raise
 
         except Exception as e:
@@ -422,7 +527,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     await query_gen.aclose()
                 except Exception:
                     pass
-            _clear_orchestrator_session()
+            # Session file PRESERVED — next startup can assess recovery
             if ui:
                 ui.log_history(f"[Orchestrator] Error: {e}", "error")
             else:
@@ -441,14 +546,12 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
     return total_cost
 
 
-async def orchestrator_loop(ui, no_daemon=False, daemon_workers=14, daemon_pairs=5):
-    """Orchestrator entry point compatible with BaseUI interface.
-
-    Designed to be called from dashboard/backend/app.py:
-        _evolution_task = asyncio.create_task(orchestrator_loop(web_ui))
+async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_workers=14, daemon_pairs=5):
+    """Orchestrator entry point — three-phase generation loop.
 
     Args:
         ui: BaseUI instance (WebUI for Dashboard). Can be None for silent mode.
+        shutdown_mgr: ShutdownManager for graceful signal handling.
         no_daemon: If True, skip daemon startup.
         daemon_workers: Number of parallel workers for the daemon subprocess.
         daemon_pairs: Mirror pairs per match for the daemon subprocess.
@@ -462,10 +565,13 @@ async def orchestrator_loop(ui, no_daemon=False, daemon_workers=14, daemon_pairs
         ui.log_history("🔥 Orchestrator starting...", "success")
         ui.set_header("🔥 LLM Orchestrator Evolution 🔥")
 
+    log_system_event("orchestrator.started", "success", "Orchestrator started",
+                     {"daemon_enabled": not no_daemon})
+
     # Start daemon
     _daemon_stop = None
     if not no_daemon:
-        from evolution_core import start_daemon, daemon_monitor_thread, stop_daemon
+        from evolution_core import start_daemon, daemon_monitor_thread
         import threading
         start_daemon(workers=daemon_workers, pairs=daemon_pairs)
         _daemon_stop = threading.Event()
@@ -480,59 +586,77 @@ async def orchestrator_loop(ui, no_daemon=False, daemon_workers=14, daemon_pairs
 
     log_file = LOGS_DIR / f"orchestrator_{time.strftime('%Y%m%d_%H%M%S')}.txt"
     gen_count = 0
-    consecutive_zero_cost = 0
+
+    # Startup recovery — assess interrupted state
+    recovery = _startup_recovery(ui)
 
     try:
         while True:
-            gen_count += 1
-            max_turns = None  # No turn limit — prompt constrains behavior
+            if shutdown_mgr and shutdown_mgr.is_shutting_down:
+                break
 
+            gen_count += 1
+            log_system_event("orchestrator.cycle_start", "info", f"Cycle {gen_count} starting",
+                             {"gen_count": gen_count})
+
+            # If recovering, skip Phase 1 (context already known from checkpoint)
+            if recovery and recovery.get("action") == "resume":
+                from generation_scheduler import GenerationContext
+                ckpt = recovery["checkpoint"]
+                gen_ctx = GenerationContext(
+                    current_v=ckpt.get("source_v", find_current_v()),
+                    next_v=ckpt["next_v"],
+                    strategy="master",  # recovery always uses master
+                    source_v=ckpt["source_v"],
+                    gen_count=gen_count,
+                )
+                recovery = None  # consume recovery, only used once
+            else:
+                # Phase 1: Prepare (disposable on interrupt)
+                gen_ctx = await _prepare_or_fail(shutdown_mgr, ui)
+                if gen_ctx is None:
+                    if shutdown_mgr and shutdown_mgr.is_shutting_down:
+                        break
+                    await asyncio.sleep(10)
+                    continue
+
+            # Phase 2: Run one generation (preserves state on interrupt)
             cost = await _run_one_cycle(
                 ui=ui,
                 log_file=log_file,
                 one_gen=False,
                 dry_run=False,
-                max_turns=max_turns,
+                max_turns=None,
+                gen_ctx=gen_ctx,
             )
 
-            # Auth error fast-fail: immediate long backoff
+            # Phase 3: Cleanup (idempotent) — only after successful commit
+            if cost >= 0.05:
+                from generation_scheduler import post_generation_cleanup
+                await post_generation_cleanup(shutdown_mgr, ui, gen_ctx)
+                if ui:
+                    ui.log_history(f"Orchestrator gen {gen_count} complete. Cost: ${cost:.4f}", "info")
+                log_system_event("orchestrator.cycle_done", "info", f"Cycle {gen_count} done (cost=${cost:.4f})",
+                                 {"gen_count": gen_count, "cost": round(cost, 4)})
+
+            # Auth error fast-fail
             if cost < 0:
                 if ui:
                     ui.log_history("Orchestrator: API auth error (401/403). Backing off 300s.", "error")
                 await asyncio.sleep(300)
                 _clear_orchestrator_session()
-                consecutive_zero_cost = 0
                 continue
 
-            if cost < 0.05:  # Catch $0 (auth) and ~$0.01 (API validation errors)
-                consecutive_zero_cost += 1
-            else:
-                consecutive_zero_cost = 0
+            if shutdown_mgr and shutdown_mgr.is_shutting_down:
+                break
 
-            if consecutive_zero_cost >= 5:
-                backoff = min(30 * (2 ** min(consecutive_zero_cost - 5, 4)), 600)
-                msg = (
-                    f"Orchestrator: {consecutive_zero_cost} consecutive "
-                    f"zero-cost cycles (likely auth/API error). "
-                    f"Backing off {backoff}s."
-                )
-                if ui:
-                    ui.log_history(msg, "error")
-                await asyncio.sleep(backoff)
-                # Clear stale session before retrying
-                _clear_orchestrator_session()
-                continue
-
-            if ui:
-                ui.log_history(f"Orchestrator cycle {gen_count} complete. Cost: ${cost:.4f}", "info")
-
-            # Brief pause between cycles
             await asyncio.sleep(5)
 
     except asyncio.CancelledError:
         if ui:
             ui.set_status("Stopped", is_working=False)
             ui.log_history("Orchestrator stopped.", "warn")
+        log_system_event("orchestrator.stopped", "warn", "Orchestrator stopped")
         try:
             from server.state import app_state
             app_state.set_running(False)
@@ -541,6 +665,8 @@ async def orchestrator_loop(ui, no_daemon=False, daemon_workers=14, daemon_pairs
     except Exception as e:
         if ui:
             ui.log_history(f"Orchestrator crashed: {e}", "error")
+        log_system_event("orchestrator.crashed", "error", f"Orchestrator crashed: {e}",
+                         {"error": str(e)[:200]})
         try:
             from server.state import app_state
             app_state.set_running(False)
@@ -549,14 +675,26 @@ async def orchestrator_loop(ui, no_daemon=False, daemon_workers=14, daemon_pairs
     finally:
         if _daemon_stop is not None:
             _daemon_stop.set()
-        try:
-            from evolution_infra import stop_daemon
-            stop_daemon()
-        except Exception:
-            pass
+        # Don't stop daemon — it runs independently and survives orchestrator restarts
+        # Daemon is only stopped on full process exit (app.py lifespan) or explicit stop
 
 
-async def run_orchestrator_cli(args):
+async def _prepare_or_fail(shutdown_mgr, ui):
+    """Run prepare_generation with error handling. Returns ctx or None."""
+    from generation_scheduler import prepare_generation
+    try:
+        return await prepare_generation(shutdown_mgr, ui)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        if ui:
+            ui.log_history(f"prepare_generation failed: {e}", "error")
+        else:
+            print(f"[Orchestrator] prepare_generation failed: {e}")
+        return None
+
+
+async def run_orchestrator_cli(args, shutdown_mgr=None):
     """Run Orchestrator in standalone CLI mode."""
     os.makedirs(LOGS_DIR, exist_ok=True)
 
@@ -569,25 +707,39 @@ async def run_orchestrator_cli(args):
 
     try:
         if args.one_gen or args.dry_run:
-            cost = await _run_one_cycle(
-                ui=None,
-                log_file=log_file,
-                one_gen=args.one_gen,
-                dry_run=args.dry_run,
-                max_turns=args.max_turns,
-            )
-            print(f"\n[Orchestrator] Done. Cost: ${cost:.4f}")
-        else:
-            gen_count = 0
-            while True:
-                gen_count += 1
+            if args.dry_run:
                 cost = await _run_one_cycle(
-                    ui=None, log_file=log_file,
-                    one_gen=False, dry_run=False,
+                    ui=None,
+                    log_file=log_file,
+                    one_gen=args.one_gen,
+                    dry_run=args.dry_run,
                     max_turns=args.max_turns,
                 )
-                print(f"\n[Orchestrator] Cycle {gen_count} done. Cost: ${cost:.4f}")
-                await asyncio.sleep(5)
+            else:
+                # one-gen mode: use three phases
+                from generation_scheduler import prepare_generation, post_generation_cleanup
+                gen_ctx = await prepare_generation(shutdown_mgr, None)
+                if gen_ctx is None:
+                    if shutdown_mgr and shutdown_mgr.is_shutting_down:
+                        print("[Orchestrator] Cancelled during preparation.")
+                    else:
+                        print("[Orchestrator] Preparation returned no context.")
+                    return
+                cost = await _run_one_cycle(
+                    ui=None, log_file=log_file,
+                    one_gen=True, dry_run=False,
+                    max_turns=args.max_turns,
+                    gen_ctx=gen_ctx,
+                )
+                if cost >= 0.05:
+                    await post_generation_cleanup(shutdown_mgr, None, gen_ctx)
+            print(f"\n[Orchestrator] Done. Cost: ${cost:.4f}")
+        else:
+            await orchestrator_loop(
+                ui=None,
+                shutdown_mgr=shutdown_mgr,
+                no_daemon=args.no_daemon,
+            )
     finally:
         try:
             from evolution_infra import stop_daemon
@@ -597,13 +749,25 @@ async def run_orchestrator_cli(args):
 
 
 def main():
+    import signal
     parser = argparse.ArgumentParser(description="LLM Evolution Orchestrator")
     parser.add_argument("--one-gen", action="store_true", help="Run one generation then stop")
     parser.add_argument("--dry-run", action="store_true", help="Only check status, no changes")
+    parser.add_argument("--no-daemon", action="store_true", help="Skip daemon startup")
     parser.add_argument("--max-turns", type=int, default=None, help="Max tool call turns per cycle")
     args = parser.parse_args()
 
-    asyncio.run(run_orchestrator_cli(args))
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    shutdown_mgr = ShutdownManager(grace_period=15.0)
+    shutdown_mgr.install_signal_handlers(loop)
+
+    try:
+        loop.run_until_complete(run_orchestrator_cli(args, shutdown_mgr))
+    except KeyboardInterrupt:
+        print("\n[Orchestrator] Forced exit.")
+    finally:
+        loop.close()
 
 
 if __name__ == "__main__":
