@@ -5,6 +5,7 @@ Review → Critic → Precommit Eval → Commit. Each tool maps directly
 to an LLM agent call or a pipeline gate.
 """
 
+import asyncio
 import json
 import os
 import shutil
