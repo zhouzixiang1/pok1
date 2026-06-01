@@ -72,6 +72,8 @@ A generation must follow this order. You may choose retry/branch/crossover detai
 3.5. **Stagnation analysis** → `analyze_stagnation(source_v, active_bots)` (only when `rating_reliable: true`)
    - If stagnation confirmed, prepare `stagnation_info` string summarising the diagnosis for Master.
    - If stagnation severe (≥ 3 gens), consider `run_crossover()` instead of the normal pipeline.
+   - **CRITICAL**: `stagnation_info` must NOT restrict workers to "constants only". If previous critic rejections demanded "structural innovation", the stagnation_info should explicitly ALLOW Architect tasks with structural changes. Passing critic feedback verbatim is preferred over synthesising new restrictions.
+   - **diversity_needed takes priority**: If `run_performance_verification` returns `diversity_needed: true`, stagnation_info MUST NOT constrain the Master to constant-tuning-only. Instead, mention the diversity signal and encourage a different approach.
 4. **Analyze losses** → `run_match_analysis(source_v)` — returns weaknesses + per-street action breakdown
 4.5. **Performance verification** → `run_performance_verification(source_v)` — synthesises trend data for Master
    - Pass its JSON output as the `performance_verification` parameter to `run_master` (separate from `match_analysis`)

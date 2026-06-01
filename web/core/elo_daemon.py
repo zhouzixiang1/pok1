@@ -162,9 +162,28 @@ def save_bot_stats(bot_stats):
         json.dump(bot_stats, f, indent=2)
 
 
+def _opponent_coverage(bot, active_bots, h2h):
+    """Fraction of active opponents this bot has H2H data for."""
+    n_opponents = 0
+    for other in active_bots:
+        if other == bot:
+            continue
+        k = pair_key(bot, other)
+        if h2h.get(k, {}).get("games", 0) > 0:
+            n_opponents += 1
+    total = len(active_bots) - 1
+    return n_opponents / total if total > 0 else 1.0
+
+
 def pick_matches(active_bots, h2h, ratings, n_picks=14):
-    """Pick match pairs prioritizing under-evaluated and rating-diverse matchups."""
+    """Pick match pairs prioritizing under-evaluated and rating-diverse matchups.
+
+    Bots with low opponent coverage (< 80%) get extra scheduling slots to
+    quickly fill in missing matchups.
+    """
     pairs = [(a, b) for i, a in enumerate(active_bots) for b in active_bots[i + 1:]]
+
+    coverage = {b: _opponent_coverage(b, active_bots, h2h) for b in active_bots}
 
     def priority(a, b):
         k = pair_key(a, b)
@@ -174,18 +193,26 @@ def pick_matches(active_bots, h2h, ratings, n_picks=14):
         under_eval = max(0, UNDER_EVAL_BASELINE - count) / UNDER_EVAL_BASELINE
         diversity = min(rating_gap / RATING_GAP_SCALE, 1.0)
         count_penalty = 1.0 / (1.0 + max(0, count - UNDER_EVAL_BASELINE) / DIVERSITY_COUNT_DECAY)
-        return UNDER_EVAL_WEIGHT * under_eval + DIVERSITY_WEIGHT * diversity * count_penalty
+        # Boost never-played pairs where either bot has low coverage
+        new_pair_bonus = 0.0
+        if count == 0:
+            min_cov = min(coverage[a], coverage[b])
+            if min_cov < 0.8:
+                new_pair_bonus = 0.3 * (1.0 - min_cov)
+        return UNDER_EVAL_WEIGHT * under_eval + DIVERSITY_WEIGHT * diversity * count_penalty + new_pair_bonus
 
     pairs.sort(key=lambda p: priority(p[0], p[1]), reverse=True)
 
     n_bots = len(active_bots)
-    max_per_bot = max(1, n_picks * 2 // n_bots)
+    base_max = max(1, n_picks * 2 // n_bots)
     selected = []
     bot_counts = Counter()
     for a, b in pairs:
         if len(selected) >= n_picks:
             break
-        if bot_counts[a] < max_per_bot and bot_counts[b] < max_per_bot:
+        max_a = base_max * 3 if coverage[a] < 0.8 else base_max
+        max_b = base_max * 3 if coverage[b] < 0.8 else base_max
+        if bot_counts[a] < max_a and bot_counts[b] < max_b:
             selected.append((a, b))
             bot_counts[a] += 1
             bot_counts[b] += 1

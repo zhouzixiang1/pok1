@@ -252,27 +252,39 @@ def compute_h2h_avg_winrate(bot_name, h2h_data):
     return sum(opponent_rates) / len(opponent_rates)
 
 
+def compute_opponent_coverage(bot_name, h2h_data, active_bots):
+    """Fraction of active opponents with H2H data (games > 0)."""
+    opponents_with_data = 0
+    total = 0
+    for other in active_bots:
+        if other == bot_name:
+            continue
+        total += 1
+        for key, value in h2h_data.items():
+            parts = key.split(" vs ")
+            if len(parts) == 2 and bot_name in parts and other in parts and value.get("games", 0) > 0:
+                opponents_with_data += 1
+                break
+    return opponents_with_data / total if total > 0 else 1.0
+
+
 def load_h2h_avg_winrates():
-    """Load H2H avg win rates for all bots. Falls back to bot_stats then Glicko r."""
+    """Load H2H avg win rates for all bots. Falls back to bot_stats then Glicko r.
+
+    Returns dict mapping bot_name -> {"h2h_avg_wr": float, "opponent_coverage": float, "opponents_evaluated": int, "opponents_total": int}.
+    """
     from evolution_core import BOT_STATS_FILE
     h2h_data = _load_h2h_data()
     bot_stats_data = _read_json(PROJECT_ROOT / "web" / "core" / "results" / "bot_stats.json", {})
     ratings = load_ratings()
 
-    all_bots = set()
-    for key in h2h_data:
-        parts = key.split(" vs ")
-        if len(parts) == 2:
-            all_bots.update(parts)
-    all_bots.update(bot_stats_data.keys())
-    all_bots.update(ratings.keys())
-
     active = set(get_active_bots())
-    all_bots &= active
+    active_list = list(active)
 
     result = {}
-    for bot_name in all_bots:
+    for bot_name in active:
         wr = compute_h2h_avg_winrate(bot_name, h2h_data)
+        cov = compute_opponent_coverage(bot_name, h2h_data, active_list)
         if wr is not None:
             result[bot_name] = wr
         else:
@@ -285,6 +297,31 @@ def load_h2h_avg_winrates():
                     result[bot_name] = max(0.0, min(1.0, 0.5 + (p.r - 1500) / 1000.0))
                 else:
                     result[bot_name] = 0.5
+    return result
+
+
+def load_h2h_avg_winrates_with_coverage():
+    """Like load_h2h_avg_winrates but returns coverage metadata per bot."""
+    from evolution_core import BOT_STATS_FILE
+    h2h_data = _load_h2h_data()
+    bot_stats_data = _read_json(PROJECT_ROOT / "web" / "core" / "results" / "bot_stats.json", {})
+    ratings = load_ratings()
+
+    active = set(get_active_bots())
+    active_list = list(active)
+
+    wrs = load_h2h_avg_winrates()
+    result = {}
+    for bot_name in active:
+        cov = compute_opponent_coverage(bot_name, h2h_data, active_list)
+        n_total = len(active_list) - 1
+        n_eval = round(cov * n_total) if n_total > 0 else 0
+        result[bot_name] = {
+            "h2h_avg_wr": wrs.get(bot_name, 0.5),
+            "opponent_coverage": cov,
+            "opponents_evaluated": n_eval,
+            "opponents_total": n_total,
+        }
     return result
 
 

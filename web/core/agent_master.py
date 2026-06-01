@@ -147,7 +147,60 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui):
     Returns a dict with: is_stagnant, confidence, recommendation, branch_from, reason.
     Returns None on failure.
     """
-    # Build compact context from rating history
+    from tool_helpers import load_h2h_avg_winrates, load_h2h_avg_winrates_with_coverage
+    h2h_winrates = load_h2h_avg_winrates()
+    coverage_data = load_h2h_avg_winrates_with_coverage()
+
+    # ── Data sufficiency check ──
+    bot_name = f"claude_v{source_v}"
+    bot_cov = coverage_data.get(bot_name, {})
+    opp_coverage = bot_cov.get("opponent_coverage", 1.0)
+    opp_eval = bot_cov.get("opponents_evaluated", 0)
+    opp_total = bot_cov.get("opponents_total", 0)
+
+    if opp_coverage < 0.8:
+        return {
+            "is_stagnant": False,
+            "confidence": "low",
+            "recommendation": "continue",
+            "branch_from": None,
+            "reason": f"Insufficient opponent coverage for stagnation analysis: {opp_eval}/{opp_total} opponents evaluated ({opp_coverage:.0%}). Need more daemon evaluation games before stagnation can be assessed.",
+        }
+
+    # ── Generation-level trend (from git tags, not daemon periods) ──
+    gen_trend_lines = []
+    try:
+        from evolution_core import _git
+        tag_output = _git("tag", "-l", "bot-v*", "--sort=version:refname", check=False)
+        tags = [t.strip() for t in tag_output.splitlines() if t.strip()]
+        recent_tags = tags[-8:] if len(tags) > 8 else tags
+        for tag in recent_tags:
+            try:
+                v_str = tag.replace("bot-v", "")
+                v = int(v_str)
+                v_name = f"claude_v{v}"
+                cov = coverage_data.get(v_name, {})
+                wr = cov.get("h2h_avg_wr", h2h_winrates.get(v_name, 0.0))
+                cov_pct = cov.get("opponent_coverage", 0.0)
+                gen_trend_lines.append(f"  v{v}: h2h_avg_wr={wr:.2%} (coverage={cov_pct:.0%})")
+            except (ValueError, KeyError):
+                continue
+    except Exception:
+        pass
+
+    # ── Lineage info (parent chain) ──
+    lineage_lines = []
+    try:
+        from evolution_core import read_pipeline_checkpoint
+        for check_v in range(max(1, source_v - 5), source_v + 1):
+            ckpt = read_pipeline_checkpoint()
+            if ckpt and ckpt.get("next_v") == check_v + 1:
+                parent = ckpt.get("source_v", "?")
+                lineage_lines.append(f"  v{check_v + 1} ← parent: v{parent}")
+    except Exception:
+        pass
+
+    # ── Daemon period history (top-3, not just top-1) ──
     history_file = RESULTS_DIR / "rating_history.jsonl"
     history_ctx = ""
     if history_file.exists():
@@ -157,31 +210,66 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui):
             try:
                 snap = json.loads(line.strip())
                 wr_data = snap.get("win_rates", {})
-                wrs = [v["h2h_avg_wr"] for v in wr_data.values() if v.get("h2h_avg_wr") is not None]
+                wrs = [(k, v["h2h_avg_wr"]) for k, v in wr_data.items() if v.get("h2h_avg_wr") is not None]
                 if wrs:
-                    history_ctx += f"  Period {snap['period']}: top_h2h_wr={max(wrs):.4f}\n"
+                    wrs.sort(key=lambda x: x[1], reverse=True)
+                    top3 = ", ".join(f"{k}={v:.3f}" for k, v in wrs[:3])
+                    history_ctx += f"  Period {snap['period']}: {top3}\n"
                 else:
                     top = max(p["r"] for p in snap["ratings"].values())
                     history_ctx += f"  Period {snap['period']}: top_r={top:.0f}\n"
             except (json.JSONDecodeError, KeyError):
                 continue
 
-    from tool_helpers import load_h2h_avg_winrates
-    h2h_winrates = load_h2h_avg_winrates()
+    # ── Recent worker failures (for context) ──
+    failure_ctx = ""
+    try:
+        from evolution_infra import WORKER_FAILURES_FILE
+        if WORKER_FAILURES_FILE.exists():
+            with locked_file(WORKER_FAILURES_FILE, "r") as f:
+                flines = f.readlines()
+            recent = [json.loads(l.strip()) for l in flines[-5:] if l.strip()]
+            if recent:
+                failure_ctx = "Recent critic/worker rejections:\n"
+                for e in recent:
+                    failure_ctx += f"  - v{e.get('gen','?')} {e.get('role','?')}: {e.get('error','')[:120]}\n"
+    except Exception:
+        pass
+
     sorted_bots = sorted(active_bots, key=lambda b: h2h_winrates.get(b, 0.0), reverse=True)[:5]
 
     prompt = (
         "You are a rating trend analyst for a poker bot evolution system.\n"
         "Analyze whether the evolution is truly stagnating.\n\n"
-        f"Current bot: claude_v{source_v}\n"
+        f"Current bot: {bot_name} (coverage: {opp_eval}/{opp_total} opponents = {opp_coverage:.0%})\n"
         f"Top 5 bots by H2H avg win rate:\n"
     )
     for b in sorted_bots:
         p = ratings.get(b, Glicko2Player())
         wr = h2h_winrates.get(b, 0.0)
-        prompt += f"  {b}: h2h_avg_wr={wr:.2%} (r={p.r:.0f} rd={p.rd:.0f})\n"
-    prompt += f"\nPerformance history (last 10 periods):\n{history_ctx}\n"
+        cov_info = coverage_data.get(b, {})
+        cov_pct = cov_info.get("opponent_coverage", 1.0)
+        cov_tag = f" [LOW COVERAGE {cov_pct:.0%}]" if cov_pct < 0.8 else ""
+        prompt += f"  {b}: h2h_avg_wr={wr:.2%} (r={p.r:.0f} rd={p.rd:.0f}){cov_tag}\n"
+
+    if gen_trend_lines:
+        prompt += f"\nGeneration-level trend (most recent 8 bots):\n" + "\n".join(gen_trend_lines) + "\n"
+    if lineage_lines:
+        prompt += f"\nLineage (parent chain):\n" + "\n".join(lineage_lines) + "\n"
+    if history_ctx:
+        prompt += f"\nDaemon period history (last 10 periods, top-3):\n{history_ctx}\n"
+    if failure_ctx:
+        prompt += f"\n{failure_ctx}\n"
+
     prompt += (
+        "IMPORTANT CONSIDERATIONS:\n"
+        "1. A bot with coverage < 80% may have an inflated or deflated h2h_avg_wr — treat with caution.\n"
+        "2. 'Stagnation' means multiple consecutive generations FAILED to improve. If the last successful\n"
+        "   bot is strong and only 1-2 generations failed, that's not stagnation — it's normal iteration.\n"
+        "3. If recent failures show critic demanding 'structural innovation' but workers being restricted\n"
+        "   to 'constants only', this is a system deadlock, NOT real stagnation. Recommend 'continue'.\n"
+        "4. If recommending branch_from, check lineage: do NOT branch from an ancestor if a later\n"
+        "   descendant already improved from that ancestor.\n\n"
         "Is this real stagnation? Answer in JSON only:\n"
         '```json\n'
         '{"is_stagnant": true/false, "confidence": "high/medium/low", '
