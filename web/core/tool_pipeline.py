@@ -56,6 +56,15 @@ def _record_quality_failure(gen, worker_id, role, error):
 # Master Stage
 # ──────────────────────────────────────────────
 
+_TUNER_STRUCTURAL_PATTERNS = [
+    "add parameter", "add a parameter", "function signature",
+    "add function", "new function", "add method",
+    "add class", "new class",
+    "add import", "new import",
+    "before the clamp", "after the existing",
+]
+
+
 def _validate_master_plan(plan):
     """Validate master plan constraints before dispatching workers."""
     errors = []
@@ -69,6 +78,18 @@ def _validate_master_plan(plan):
         prompt = task.get("worker_prompt", "")
         if len(prompt) > 3000:
             errors.append(f"Task {i}: worker_prompt too long ({len(prompt)} > 3000 chars)")
+        role = str(task.get("role", "")).lower()
+        if "hyperparameter" in role or "tuner" in role:
+            prompt_lower = prompt.lower()
+            for kw in _TUNER_STRUCTURAL_PATTERNS:
+                if kw in prompt_lower:
+                    errors.append(
+                        f"Task {i} boundary warning: Hyperparameter Tuner prompt contains structural instruction "
+                        f"'{kw}' — Tuner should only change numeric constants. "
+                        f"Either rephrase the prompt to only specify constant changes, or reassign this task "
+                        f"as Algorithmic Logic Architect."
+                    )
+                    break
     return errors
 
 class RunMasterInput(TypedDict):
@@ -155,6 +176,15 @@ async def execute_workers(args):
             "next_v": next_v,
             "source_v": source_v,
         })
+
+    # When retrying after workers already ran, code has been reset from source.
+    # Warn workers that previous modifications no longer exist.
+    if reviewer_feedback and ckpt.get("stage") == "workers_done":
+        reviewer_feedback += (
+            f"\n\nNOTE: This is a retry. The code in bots/claude_v{next_v}/ has been reset "
+            f"from source bots/claude_v{source_v}/. Any modifications described in the feedback "
+            f"above no longer exist in the code — you must re-implement them from scratch."
+        )
 
     ui = _get_ui()
     success = await _execute_workers(
@@ -442,8 +472,9 @@ async def run_critic(args):
         )
 
     master_plan_str = json.dumps(plan, indent=2)
+    prev_critic = ckpt.get("gate_results", {}).get("critic", {}).get("prev_critic") if ckpt else None
     ui = _get_ui()
-    data = await _run_critic(v, source_v, master_plan_str, ui)
+    data = await _run_critic(v, source_v, master_plan_str, ui, prev_critic_result=prev_critic)
 
     if not isinstance(data, dict):
         data = {}

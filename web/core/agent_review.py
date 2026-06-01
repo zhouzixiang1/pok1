@@ -15,7 +15,7 @@ from evolution_infra import (
 )
 
 
-async def _run_critic(next_v, source_v, master_plan_str, ui):
+async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=None):
     """Poker Strategy Critic — independently scores the strategic value of worker changes.
 
     Separate from the Reviewer (which checks code correctness and role boundaries).
@@ -35,6 +35,19 @@ async def _run_critic(next_v, source_v, master_plan_str, ui):
         "version": str(next_v),
         "parent_version": str(source_v),
     })
+
+    if prev_critic_result:
+        prev_score = prev_critic_result.get("score", 0)
+        prev_feedback = prev_critic_result.get("feedback", "")[:500]
+        critic_prompt += (
+            f"\n\n# Previous Critic Evaluation (for context — you are evaluating an UPDATED version):\n"
+            f"- Previous Score: {prev_score}\n"
+            f"- Previous Approved: {prev_critic_result.get('approved', False)}\n"
+            f"- Previous Feedback: {prev_feedback}\n"
+            f"\nScore based on whether the feedback was addressed. "
+            f"If the same issues remain, maintain the low score. "
+            f"If improvements were made, raise the score accordingly.\n"
+        )
 
     log_file = get_logs_dir(next_v) / "critic_io.txt"
     try:
