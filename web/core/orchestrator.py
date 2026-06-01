@@ -264,9 +264,8 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         wr = 0.0
         if bot_stats_file.exists():
             try:
-                import fcntl
-                with open(bot_stats_file, "r") as f:
-                    fcntl.flock(f, fcntl.LOCK_SH)
+                from evolution_infra import locked_file
+                with locked_file(bot_stats_file, "r") as f:
                     bs = json.load(f)
                 games = bs.get(bot_name, {}).get("games", 0)
                 wr = bs.get(bot_name, {}).get("win_rate", 0.0)

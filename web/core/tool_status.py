@@ -258,6 +258,7 @@ class ReapWeakestInput(TypedDict):
 
 @tool("reap_weakest", "Check if bot pool exceeds 30 and cull the weakest bot by H2H average win rate.", {})
 async def reap_weakest(args):
+    quiet = args.get("quiet", False) if isinstance(args, dict) else False
     active_bots = get_active_bots()
     if len(active_bots) <= 30:
         return {"content": [{"type": "text", "text": json.dumps({"reaped": False, "pool_size": len(active_bots)})}]}
@@ -337,7 +338,6 @@ async def reap_weakest(args):
     reap_signal = Path(__file__).parent / "results" / ".reap_signal"
     reap_signal.write_text(str(time.time()))
 
-    quiet = args.get("quiet", False) if isinstance(args, dict) else False
     if not quiet:
         log_system_event("bot.reaped", "warn", f"Reaped {culled_name} (h2h_wr={h2h_winrates.get(culled_name, 0.0):.2%})",
                          {"culled": culled_name, "remaining": len(active_bots) - 1})

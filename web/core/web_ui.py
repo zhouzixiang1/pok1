@@ -102,11 +102,13 @@ class WebUI(BaseUI):
         total = 0.0
         try:
             if _COSTS_FILE.exists():
-                for line in _COSTS_FILE.read_text().splitlines():
-                    try:
-                        total += json.loads(line).get("cost_usd", 0)
-                    except json.JSONDecodeError:
-                        pass
+                from evolution_infra import locked_file
+                with locked_file(_COSTS_FILE, "r") as f:
+                    for line in f:
+                        try:
+                            total += json.loads(line).get("cost_usd", 0)
+                        except json.JSONDecodeError:
+                            pass
         except OSError:
             pass
         return total

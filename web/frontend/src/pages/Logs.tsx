@@ -274,9 +274,11 @@ export default function Logs() {
     try {
       const files = await api.orchestratorLogs();
       setOrchFiles(files);
-      if (files.length > 0 && !selectedOrch) setSelectedOrch(files[0].filename);
+      if (files.length > 0) {
+        setSelectedOrch(prev => prev || files[0].filename);
+      }
     } catch {}
-  }, [selectedOrch]);
+  }, []);
 
   useEffect(() => {
     if (tab === "orchestrator" || tab === "conversation") {
