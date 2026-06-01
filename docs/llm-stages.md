@@ -1136,3 +1136,145 @@ Review score 7, Critic score 7.
 - **策略**: Fixed sanitize_action all-in bug, widened preflop defense, lowered air-hand EQR
 
 > 此示例说明：即使 Critic 低分通过、Worker 多次重试，系统仍可能完成提交。这符合 `force_advance` 的设计意图 — 在重试耗尽后推进，避免无限循环。
+
+---
+
+## 附录3：完整生命周期示例（v7 → v36）
+
+以下展示一个包含 **Master 失败、Crossover 替代、4 轮 Worker 修复** 的完整进化循环。数据来自 orchestrator 日志和各阶段 LLM 输出。
+
+### 背景
+
+- **源 bot**: claude_v7（H2H avg 55.56%, 停滞 7+ 个评估周期）
+- **目标 bot**: claude_v36
+- **结果**: 成功提交（`git tag bot-v36`, commit `6b23ed3`）
+- **路径**: v35 刚提交 → reap v1 → 分析 v7（停滞）→ Master 失败 ×3 → Crossover v7×v30 → 4 轮 Worker 修复 → 最终通过
+- **总耗时**: 约 3 小时（00:17 - 03:01）
+
+### 完整工具调用序列
+
+Orchestrator 在本代共调用约 **35 次** MCP 工具。按阶段分组：
+
+**准备阶段（步骤 1-6）**
+
+| # | 工具调用 | 结果 |
+|---|---|---|
+| 1 | `get_status()` | v35 刚提交，31 active bots（超 30 上限），无未完成代 |
+| 2 | `reap_weakest()` | 移除 claude_v1（h2h_avg_wr: 9.9%），剩 30 bots |
+| 3 | `wait_for_eval(v35)` | 0 games, rating unreliable → 跳过 v35 分析 |
+| 4 | `get_bot_info()` + `get_h2h()` | 查看 v7 对战数据 |
+| 5 | `run_match_analysis(v7)` | preflop 65% fold, postflop 0% fold, underbetting 0.4-0.7x pot |
+| 6 | `run_performance_verification(v7)` | stagnant 7+ periods, `diversity_needed: true` |
+
+**Master 失败 → Crossover 替代（步骤 7-10）**
+
+| # | 工具调用 | 结果 |
+|---|---|---|
+| 7 | `run_master()` | **失败 ×3** — Master 产出 3 版计划（2-worker→2-worker→1-worker），均因 JSON 格式问题被拒绝 |
+| 8 | `run_crossover(v7, v30, v36)` | 第一次失败 — v36 目录已存在（孤儿，无 git tag） |
+| 9 | `cleanup_incomplete()` + Bash | 删除孤儿 v36 目录 |
+| 10 | `run_crossover(v7, v30, v36)` | **成功** — v7（top H2H avg 55.56%）× v30（beats v7 at 55%） |
+
+**第一轮 Pipeline（步骤 11-16）**
+
+| # | 工具调用 | 结果 |
+|---|---|---|
+| 11 | `run_quality_gates()` | ALL PASSED ✅（12/12 critical scenarios, 100% decision） |
+| 12 | `run_review()` | APPROVED ✅（score 7） |
+| 13 | `run_critic()` | APPROVED ✅（score 8.0） |
+| 14 | `run_precommit_eval()` | FAILED ❌（0-1 vs parent v7，1 场样本不足） |
+| 15 | `run_precommit_eval()`（retry, 3 games） | PASSED ✅（2-0-1 vs parent, 4-4-1 aggregate） |
+| 16 | `commit_bot()` | **BLOCKED** ❌ — `preflop_aks_facing_allin` test failed（folded AKs vs all-in） |
+
+**Worker 修复循环 ×4（步骤 17-26）**
+
+commit_bot 因 AKs 测试失败被阻断，触发 4 轮 Worker 修复：
+
+| # | 工具调用 | 原因 | 结果 |
+|---|---|---|---|
+| 17 | `execute_workers()`（fix AKs） | AKs all-in guard 缺失 | **失败**：boundary violation（修改了声明外的文件） |
+| 18 | `execute_workers()`（retry） | 扩展 target_files | 成功，但 file size 超限 |
+| 19 | `run_quality_gates()` | — | decision pass, BUT strategy.py 1164 行 / postflop.py 1015 行 |
+| 20 | `execute_workers()`（refactor） | 拆分大文件到 <1000 行 | 成功 |
+| 21-23 | `quality_gates` → `review(7)` → `critic(7.0)` | — | ALL PASSED ✅ |
+| 24-25 | `precommit_eval()` ×2 | — | FAILED ❌（1-2 vs parent, 5-7-3 aggregate） |
+| 26 | `execute_workers()`（restore features） | Crossover 中被误删的 classify_opponent_style + river overbet bluff | 成功 |
+
+**最终 Pipeline 通过（步骤 27-35）**
+
+| # | 工具调用 | 结果 |
+|---|---|---|
+| 27 | `run_quality_gates()` | ALL PASSED ✅ |
+| 28 | `run_review()` | **REJECTED** ❌（main_backup.py 3268 行违反 1000 行约束） |
+| 29 | Bash: `rm main_backup.py` | Orchestrator 直接删除死文件 |
+| 30 | `run_review()`（retry） | APPROVED ✅（score 7） |
+| 31 | `run_critic()` | APPROVED ✅（score 7.0） |
+| 32 | `run_precommit_eval()`（5 games） | PASSED ✅（2-2-1 vs parent, 7-7-1 aggregate） |
+| 33 | `commit_bot()` | **SUCCESS** ✅（`bot-v36` tagged） |
+| 34 | Bash: `git push` | 推送到远程 |
+| 35 | `run_archivist()` | 轻微错误（无关），commit 安全 |
+
+### 关键节点真实输出
+
+**1. Crossover v7×v30 决策**
+
+Master 失败后 Orchestrator 的推理：
+```
+Master failed after 3 retries. Since stagnation is confirmed and diversity is needed,
+I'll take the crossover approach — combining v7 (top h2h_avg_wr: 0.5696)
+with v30 (beats v7 at 55%).
+```
+
+Crossover 导入 v30 的核心特性：
+- `classify_opponent_style()`（4 种对手画像：tight/loose/aggressive/passive，+2-3pt 适应性）
+- River overbet bluff（blocker quality gating）
+- 确定性诈唬替代随机诈唬
+
+保留 v7 的核心：simulation accuracy、anti-lock pressure、match pressure
+Mutation: SB open threshold 0.49 → 0.47
+
+**2. commit_bot 被阻断**
+
+```
+Commit BLOCKED ❌ — preflop_aks_facing_allin test failed
+(folded AKs vs all-in, a catastrophic blunder)
+```
+
+Crossover 的代码重构破坏了 preflop all-in guard（AKs 面对全下应该 call 却 fold 了）。这是一个灾难性错误，quality gates 中的 critical scenario 测试没捕获（可能是非确定性行为），但 commit_bot 内置的最终校验发现了。
+
+**3. Reviewer 因死文件拒绝**
+
+```json
+{
+  "approved": false,
+  "quality_score": 6,
+  "feedback": "main_backup.py (3268 lines) violates the 1000-line .py file size constraint.
+  This is a dead leftover file not referenced by any operational code — simply DELETE it."
+}
+```
+
+`main_backup.py` 是 v7/v30 的遗留备份文件（3268 行），不被任何代码引用，但 Reviewer 严格执行了"所有 .py 文件 ≤1000 行"的约束。Orchestrator 直接用 Bash 删除了它。
+
+**4. 最终 Gate Ledger**
+
+```
+✅ quality_passed: true (12/12 critical, size_ok)
+✅ critical_scenarios_passed: true
+✅ review_approved: true (score 7)
+✅ critic_score: 7.0 (approved)
+✅ precommit_eval: passed (7-7-1, tied parent v7)
+```
+
+### 结果
+
+| 项目 | 内容 |
+|---|---|
+| 提交 | `git tag bot-v36`, commit `6b23ed3` |
+| 策略 | Crossover v7×v30（stagnation break） |
+| Worker 迭代 | 4 轮（AKs fix → boundary retry → size refactor → restore features） |
+| Pipeline 重跑 | 3 次完整 cycle（quality→review→critic→precommit） |
+| Review score | 7（第 2 次通过，第 1 次因 main_backup.py 拒绝） |
+| Critic score | 7.0（首轮 Critic 8.0，后续因删除 features 降至 7.0） |
+| 文件变更 | 6 files, +502/-549 |
+
+> 此示例展示了进化系统的三种恢复机制协同工作：(1) **Master 失败后 Crossover 替代** — 当 stagnation 确认且 diversity needed 时，Orchestrator 自动切换到遗传交叉路径；(2) **commit_bot 阻断后 Worker 修复循环** — AKs 测试失败触发 4 轮迭代修复，含 boundary violation 重试、文件大小重构、误删功能恢复；(3) **Reviewer 因死文件拒绝后清理重试**。共 35 次工具调用、3 次 Pipeline 完整重跑，耗时约 3 小时。
