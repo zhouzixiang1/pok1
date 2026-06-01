@@ -81,13 +81,30 @@ def _validate_master_plan(plan, next_v=None):
         if len(targets) > 3:
             errors.append(f"Task {i}: too many target_files ({len(targets)} > 3)")
         prompt = task.get("worker_prompt", "")
-        if len(prompt) > 3000:
-            errors.append(f"Task {i}: worker_prompt too long ({len(prompt)} > 3000 chars)")
+        if len(prompt) > 5000:
+            errors.append(f"Task {i}: worker_prompt too long ({len(prompt)} > 5000 chars)")
         role = str(task.get("role", "")).lower()
         if "hyperparameter" in role or "tuner" in role:
             prompt_lower = prompt.lower()
+            # Skip structural keywords that appear in constraint/negative contexts
+            _skip_contexts = ("do not", "don't", "must not", "never", "preserve",
+                              "keep", "unchanged", "maintain", "unchanged", "no new")
             for kw in _TUNER_STRUCTURAL_PATTERNS:
-                if kw in prompt_lower:
+                # Find the keyword in context — skip if it's in a constraint sentence
+                idx = prompt_lower.find(kw)
+                if idx >= 0:
+                    # Check surrounding context (50 chars before) for negative cues
+                    context_before = prompt_lower[max(0, idx - 50):idx]
+                    if any(cue in context_before for cue in _skip_contexts):
+                        continue
+                    # Keyword found in an affirmative (structural) context
+                    errors.append(
+                        f"Task {i} boundary warning: Hyperparameter Tuner prompt contains structural instruction "
+                        f"'{kw}' — Tuner should only change numeric constants. "
+                        f"Either rephrase the prompt to only specify constant changes, or reassign this task "
+                        f"as Algorithmic Logic Architect."
+                    )
+                    break
                     errors.append(
                         f"Task {i} boundary warning: Hyperparameter Tuner prompt contains structural instruction "
                         f"'{kw}' — Tuner should only change numeric constants. "

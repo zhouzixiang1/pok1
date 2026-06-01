@@ -981,20 +981,27 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
 
 
 def parse_json_output(output):
-    match = re.search(r'```json\s*(.*?)\s*```', output, re.DOTALL)
-    if match:
-        text = match.group(1).strip()
-        # Try the full extracted text first
+    # Strategy 1: Find ```json and try every subsequent ``` as the closing delimiter.
+    # This handles nested code blocks (e.g. ```python inside ```json) which cause
+    # the non-greedy regex to stop too early.
+    json_start = re.search(r'```json\s*', output)
+    if json_start:
+        after_start = output[json_start.end():]
+        # Find all ``` positions after ```json
+        close_positions = [m.start() for m in re.finditer(r'```', after_start)]
+        # Try from the LAST ``` backward (most likely the actual closing)
+        for pos in reversed(close_positions):
+            candidate = after_start[:pos].strip()
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+        # Also try the full text after ```json (in case no closing ```)
         try:
-            return json.loads(text)
+            return json.loads(after_start.strip().rstrip('`').strip())
         except json.JSONDecodeError:
             pass
-        # Strip only a single trailing ``` (common LLM artifact) and retry
-        if text.endswith('```'):
-            try:
-                return json.loads(text[:-3].rstrip())
-            except json.JSONDecodeError:
-                pass
+    # Strategy 2: Try the whole output as raw JSON
     try:
         return json.loads(output)
     except Exception:
