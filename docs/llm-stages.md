@@ -4,51 +4,82 @@
 
 ---
 
-## 一、启动序列（无 LLM）
+## 一、启动序列（三阶段架构）
+
+系统采用**代码层调度 + LLM 单代执行**的三阶段架构。代码层（`generation_scheduler.py`）负责 Phase 1 和 Phase 3，LLM 仅在 Phase 2 驱动 pipeline。
 
 ```
 python web/main.py
         │
         ▼
-  解析 CLI 参数 (--port [PORT env], --host, --no-daemon, --dev, --no-build)
-  构建前端 (npm run build → web/server/static/)
-  app_state.update_config(daemon_enabled, daemon_workers, daemon_pairs)  ← CLI 参数写入配置
+  CLI 参数解析 (--port [PORT env], --host, --no-daemon, --dev, --no-build)
+  前端构建 (npm run build → web/server/static/)
+  app_state 配置 (daemon_enabled, daemon_workers, daemon_pairs)
         │
         ▼
   app.py 模块级: EventBroadcaster(buffer_size=500) + WebUI(broadcaster)  ← SSE 广播器在 uvicorn 之前创建
         │
         ▼
-  uvicorn.run("server.app:app", host, port)
+  uvicorn.run("server.app:app")
         │
         ▼
   FastAPI lifespan 启动:
-    ├── app_state.bootstrap(find_current_v())    ← 从 git tags 读取最新 bot 版本
-    ├── asyncio.create_task(orchestrator_loop()) ← 编排器作为后台协程启动
+    ├── app_state.bootstrap(find_current_v())
+    ├── ShutdownManager 创建 + 信号处理安装 (loop.add_signal_handler)
+    ├── asyncio.create_task(orchestrator_loop(shutdown_mgr=...))
     └── orchestrator_loop() 内部:
-          ├── inject_ui(web_ui)                  ← MCP 工具共享同一个 UI 实例
-          ├── start_daemon(workers=配置值, pairs=配置值)  ← 默认 14/5，可通过 API 动态调整
-          ├── daemon_monitor_thread 启动          ← 监控守护进程存活，自动重启
+          ├── inject_ui(web_ui)
+          ├── start_daemon() + daemon_monitor_thread 启动
+          ├── _startup_recovery() — 评估中断状态（4 种情况）
           └── while True:
-                ├── gen_count += 1
-                ├── _run_one_cycle()             ← 一个 Orchestrator LLM 会话
-                ├── 连续 5 次零花费 → 指数退避 + 清除 session
-                └── asyncio.sleep(5)             ← 代际间隔
+                ├── Phase 1: prepare_generation(shutdown_mgr, ui) — 代码层
+                │     ├── wait_for_daemon_eval()
+                │     ├── _cleanup_incomplete()
+                │     ├── _analyze_stagnation() 📎 LLM
+                │     ├── _analyze_recent_matches() 📎 LLM
+                │     ├── _run_performance_verification() 📎 LLM
+                │     └── _decide_strategy() — 纯代码决策
+                │     → 返回 GenerationContext | None
+                │
+                ├── Phase 2: _run_one_cycle(gen_ctx=ctx) — LLM session
+                │     ├── _build_context(gen_ctx=ctx) 注入预计算分析
+                │     ├── Orchestrator LLM 自主调用 MCP 工具
+                │     └── pipeline: master → workers → quality → review → critic → commit
+                │     → 中断时 session + checkpoint 保留
+                │
+                ├── Phase 3: post_generation_cleanup(shutdown_mgr, ui, ctx) — 代码层
+                │     ├── reap_if_needed()
+                │     └── consolidate_experience() (每 3 代)
+                │     → 幂等，可安全中断
+                │
+                ├── shutdown_mgr.is_shutting_down? → break
+                └── asyncio.sleep(5)
 ```
+
+### 三阶段中断语义
+
+| 阶段 | 中断行为 | 恢复方式 |
+|------|---------|---------|
+| Phase 1 (prepare) | 丢弃部分结果 | 下次循环重新执行，获得最新数据 |
+| Phase 2 (LLM session) | session + checkpoint 保留 | 新 LLM session 从 checkpoint 断点继续 |
+| Phase 3 (cleanup) | 幂等操作 | 重新执行，无副作用 |
 
 ### `_run_one_cycle()` 内部
 
-1. `_build_context()` 构建上下文字符串：
-   - 当前 bot 版本、rating、H2H 平均胜率、可靠度（games ≥ 100）
-   - 未完成 bot 目录检测（上一轮中断）
-   - 最近 5 个 git tags
-   - 最近 3 条 worker 失败记录
-   - Pipeline checkpoint 阶段提示
-   - 模式标记（连续进化 / 单代 / dry-run）
-   - 环境异常检测（如检测到不完整 bot、tags 缺失等异常，建议调用 `diagnose_environment`）
+当 `gen_ctx`（`GenerationContext`，来自 `generation_scheduler.py`）提供时，`_build_context()` 注入预计算分析数据：
+
+1. 注入 GenerationContext 字段：strategy (master/crossover)、source_v、stagnation_info、match_analysis、performance_verification
+2. Pipeline checkpoint 信息（用于断点恢复）
+3. **不再**注入原始状态数据（ratings、bot stats 等）— 这些已在 Phase 1 预处理
+
+当 `gen_ctx` 为 None（dry_run 或遗留路径）时，回退到旧行为：自行读取 ratings、bot stats、H2H 数据。
+
+**完整流程**:
+1. `_build_context(gen_ctx=ctx)` 构建上下文字符串
 2. 将上下文注入 `orchestrator.md` 模板的 `{context}` 占位符
 3. 检查 `orchestrator_session.json`：若存在（上次中断），用 `resume=session_id` 恢复会话
 4. 以 `model="sonnet"` 启动 `claude_query()` 流式对话
-5. Orchestrator LLM 开始自主调用 MCP 工具
+5. Orchestrator LLM 开始自主调用 MCP 工具（Phase 2 pipeline）
 
 **此后的一切 LLM 调用，都由 Orchestrator LLM 通过选择调用 MCP 工具来触发。**
 
@@ -56,48 +87,55 @@ python web/main.py
 
 ## 二、一代进化的时间线
 
-下面按 FSM 阶段顺序记录每个步骤。LLM 调用以 **📎** 标记，标注完整数据流。
+一代进化分为三个阶段。**Phase 1 和 Phase 3 由代码层调度**（`generation_scheduler.py`），**Phase 2 由 LLM 驱动**。LLM 调用以 **📎** 标记，标注完整数据流。
 
 ---
 
-### 步骤 1：状态查询 `get_status()`
+### Phase 1：准备阶段（代码层调度）
 
-- **触发者**: Orchestrator LLM
+Phase 1 由 `prepare_generation()` 函数编排，每步完成后检查 `shutdown_mgr.is_shutting_down`，可安全中断。以下步骤**不再由 Orchestrator LLM 触发**，而是代码层自动执行。
+
+---
+
+#### Phase 1.1：状态查询（代码直接调用）
+
+- **触发者**: `prepare_generation()` 代码层
 - **有无 LLM**: 无
-- **做什么**: 读取 `glicko_ratings.json`、`bot_stats.json`、`elo_daemon_stats.json`、`head_to_head.json`（via `load_h2h_avg_winrates()`）、git tags，组装系统状态快照
-- **输出返回给**: Orchestrator LLM（决定下一步）
-- **输出内容**: `current_v`, `next_v`, `active_bots_count`, `top_ratings`, `daemon_total_games`, `incomplete_next_v`, `rating_reliable`, `current_bot_rd`, `current_bot_games`, `current_bot_win_rate`, `current_bot_h2h_avg_wr`, `recent_worker_failures`
+- **做什么**: 调用 `find_current_v()`（从 git tags 读取最新 bot 版本）+ `load_ratings()`（读取 `glicko_ratings.json`）+ `get_active_bots()`（扫描 `bots/` 目录）
+- **输出**: `current_v`、`active_bots`、`ratings` 字典，存入 GenerationContext
 
-> Orchestrator 据此判断：是否需要 `seed_initial_bots`、是否有未完成的 bot、rating 是否可靠、是否可以进入进化流程。
-
----
-
-### 步骤 2：家政维护（无 LLM）
-
-Orchestrator 按需调用：
-- `reap_weakest()` — 若活跃 bot > 30，按 H2H 平均胜率淘汰最弱，移入 `bots/graveyard/`，清理相关数据
-- `cleanup_incomplete()` — 删除无 `.completed` 且无 git tag 的残留目录
-- `trim_experience()` — 裁剪 `experience_pool.md` 保留最近条目
+> **旧对比**: 原 Step 1 `get_status()` 由 Orchestrator LLM 触发，返回 13 个字段的 JSON 快照。现在这些数据直接在代码层获取，不再经过 LLM。
 
 ---
 
-### 步骤 3：等待评估 `wait_for_eval(version=source_v)`
+#### Phase 1.2：等待评估（代码直接调用）
 
-- **触发者**: Orchestrator LLM
+- **触发者**: `prepare_generation()` 代码层
 - **有无 LLM**: 无
 - **做什么**: 异步轮询 `bot_stats.json`，等待守护进程为当前 bot 积累足够对局（默认 ≥ 100 局，超时 600s）
-- **输出**: `version`, `eval_completed`, `current_rating`, `bot_stats`
+- **输出**: `eval_ok` 布尔值。不足 → 返回 `None`（本轮跳过，10 秒后重试）
 
-> Orchestrator 据此判断 rating 是否可靠。`eval_completed: false` → 跳过停滞分析，直接进入 Master。
+> **旧对比**: 原 Step 3 `wait_for_eval()` 由 Orchestrator LLM 触发。现在代码层自动等待，无需 LLM 决策。
 
 ---
 
-### 步骤 4：停滞分析 📎 `analyze_stagnation(source_v, active_bots)`
+#### Phase 1.3：清理残留（代码直接调用）
+
+- **触发者**: `prepare_generation()` 代码层
+- **有无 LLM**: 无
+- **做什么**: `_cleanup_incomplete()` — 删除无 `.completed` 且无 git tag 的残留 bot 目录
+- **输出**: 无（副作用：清理文件系统）
+
+> **旧对比**: 原 Step 2 `housekeeping()` 由 Orchestrator LLM 按需调用。现在代码层自动执行，每代循环开头清理一次。
+
+---
+
+#### Phase 1.4：停滞分析 📎 `_analyze_stagnation(current_v, active_bots, ratings, ui)`
 
 | 项目 | 内容 |
 |---|---|
-| **触发者** | Orchestrator LLM 调用 MCP 工具 `analyze_stagnation` |
-| **调用链** | `tool_status.py:analyze_stagnation()` → `agent_master.py:_analyze_stagnation()` → `run_claude_query()` |
+| **触发者** | `prepare_generation()` 代码层直接调用 |
+| **调用链** | `generation_scheduler.py` → `agent_master.py:_analyze_stagnation()` → `run_claude_query()` |
 | **LLM 角色** | STAGNATION ANALYST |
 | **模型** | Sonnet |
 | **工具** | 无（纯 JSON 输出） |
@@ -124,30 +162,18 @@ Orchestrator 按需调用：
 }
 ```
 
-**输出去向**: 返回给 Orchestrator LLM → Orchestrator 据此决定 `stagnation_info` 字符串（传给 Master），或选择 crossover 替代正常流水线。
+**输出去向**: 返回给 `prepare_generation()`，存入 `GenerationContext.stagnation_info`。
 
-> **💡 真实示例 (v36)**: 当 v7 停滞 7+ 周期后，Performance Analyst 输出 `trend: "stagnant"`, `diversity_needed: true`。Orchestrator 据此跳过 Master 直接选择 Crossover 路径。
-> ```json
-> {
->   "trend": "stagnant",
->   "verified_improvements": ["System-level top H2H win rate held flat at ~53.49% for 8 consecutive periods"],
->   "persistent_weaknesses": [
->     "Top-performing bots (v7, v4, v8) are all from older generations",
->     "No bot has broken past ~53.5% average H2H win rate in 10+ evaluation periods"
->   ],
->   "diversity_needed": true,
->   "diversity_reason": "Incremental tuning has hit a local optimum. A fundamentally different strategic approach is required."
-> }
-> ```
+> **旧对比**: 原 Step 4 由 Orchestrator LLM 调用 MCP 工具触发，输出返回给 Orchestrator 做决策。现在由代码层直接调用，输出传给 `_decide_strategy()` 做确定性决策。
 
 ---
 
-### 步骤 5：对战分析 📎 `run_match_analysis(source_v)`
+#### Phase 1.5：对战分析 📎 `_analyze_recent_matches(current_v, ui)`
 
 | 项目 | 内容 |
 |---|---|
-| **触发者** | Orchestrator LLM 调用 MCP 工具 `run_match_analysis` |
-| **调用链** | `tool_status.py:run_match_analysis()` → `agent_master.py:_analyze_recent_matches()` → `run_claude_query()` |
+| **触发者** | `prepare_generation()` 代码层直接调用 |
+| **调用链** | `generation_scheduler.py` → `agent_master.py:_analyze_recent_matches()` → `run_claude_query()` |
 | **LLM 角色** | MATCH ANALYST |
 | **模型** | Sonnet |
 | **工具** | 无（纯 JSON 输出） |
@@ -174,33 +200,18 @@ Orchestrator 按需调用：
 }
 ```
 
-**输出去向**: 返回给 Orchestrator LLM → 作为 `match_analysis` 参数传给 `run_master()`。
+**输出去向**: 返回给 `prepare_generation()`，存入 `GenerationContext.match_analysis`。
 
-> **💡 真实示例 (v36)**: v7 vs v21 的赛后分析，精准定位了三大缺陷：
-> ```json
-> {
->   "weaknesses": [
->     "Massive preflop overfolding (65%) in heads-up — bleeding chips from blinds",
->     "Postflop calling station: 0% fold on every postflop street, causing -19k+ losses",
->     "River value extraction failure: 87% call / only 12% raise with 0.5x pot sizing"
->   ],
->   "street_weaknesses": {
->     "preflop": "65% fold rate is ruinous in heads-up. Only 14% raise — the bot is limping or folding almost every hand",
->     "river": "87% call / 12% raise / 0% fold is the worst profile possible"
->   },
->   "patterns": "Classic 'fit-or-fold preflop, calling station postflop' pattern. Asymmetric payoff: small wins, huge losses.",
->   "recommendation": "Priority fix — preflop range expansion: reduce fold rate from 65% to ≤30%"
-> }
-> ```
+> **旧对比**: 原 Step 5 由 Orchestrator LLM 调用 MCP 工具触发。现在由代码层直接调用。
 
 ---
 
-### 步骤 6：性能验证 📎 `run_performance_verification(source_v)`
+#### Phase 1.6：性能验证 📎 `_run_performance_verification(current_v, ratings, ui)`
 
 | 项目 | 内容 |
 |---|---|
-| **触发者** | Orchestrator LLM 调用 MCP 工具 `run_performance_verification` |
-| **调用链** | `tool_status.py:run_performance_verification()` → `agent_review.py:_run_performance_verification()` → `run_claude_query()` |
+| **触发者** | `prepare_generation()` 代码层直接调用 |
+| **调用链** | `generation_scheduler.py` → `agent_review.py:_run_performance_verification()` → `run_claude_query()` |
 | **LLM 角色** | PERFORMANCE ANALYST |
 | **模型** | Sonnet |
 | **工具** | 无（纯 JSON 输出） |
@@ -228,9 +239,59 @@ Orchestrator 按需调用：
 }
 ```
 
-**输出去向**: 返回给 Orchestrator LLM → 作为 `performance_verification` 参数传给 `run_master()`。若 `diversity_needed: true`，Orchestrator 会在 `stagnation_info` 中注明。
+**输出去向**: 返回给 `prepare_generation()`，存入 `GenerationContext.performance_verification`。
 
-> **💡 真实示例 (v36)**: Performance Analyst 综合了 10 个评估周期的 rating history、近 100 条 match history、H2H 对阵矩阵和 bot_stats，输出完整的趋势分析。v36 的 `trend: "stagnant"` + `diversity_needed: true` 直接触发了 Crossover 路径（跳过 Master）。完整输出见附录3。
+> **旧对比**: 原 Step 6 由 Orchestrator LLM 调用 MCP 工具触发。现在由代码层直接调用。
+
+---
+
+#### Phase 1.7：策略决策（纯代码，无 LLM）
+
+- **触发者**: `prepare_generation()` 代码层
+- **有无 LLM**: 无
+- **做什么**: `_decide_strategy(stagnation, perf, current_v, ratings)` — 基于停滞分析和性能验证结果，确定性选择策略
+
+**决策逻辑**:
+```
+if stagnation.is_stagnant && confidence=="high" && 有可用 crossover parents:
+    → strategy="crossover", source_v=parent_a, parents=(parent_a, parent_b)
+elif stagnation.recommendation=="branch" && branch_from 有效:
+    → strategy="master", source_v=branch_from
+else:
+    → strategy="master", source_v=current_v
+```
+
+**输出**: `(strategy, source_v, crossover_parents)` 三元组，存入 GenerationContext。
+
+> **旧对比**: 原架构中策略决策由 Orchestrator LLM 在收到步骤 4-6 的输出后推理决定。现在是确定性代码逻辑，消除了 LLM 的决策不确定性。
+
+---
+
+#### Phase 1 输出：GenerationContext
+
+`prepare_generation()` 返回 `GenerationContext` 对象（或 `None` 表示跳过本轮），包含：
+
+| 字段 | 类型 | 来源 |
+|------|------|------|
+| `current_v` | int | `find_current_v()` |
+| `next_v` | int | `current_v + 1` |
+| `strategy` | str | `_decide_strategy()` |
+| `source_v` | int | `_decide_strategy()` |
+| `crossover_parents` | tuple | `_decide_strategy()` |
+| `stagnation_info` | str | `_analyze_stagnation()` → JSON |
+| `match_analysis` | str | `_analyze_recent_matches()` → JSON |
+| `performance_verification` | str | `_run_performance_verification()` → JSON |
+| `gen_count` | int | 循环计数器 |
+
+---
+
+### Phase 2：LLM 驱动的 Pipeline
+
+> **Phase 2 开始**：从此处起，Orchestrator LLM 接管控制权。Phase 1 预计算的分析数据通过 `_build_context(gen_ctx=ctx)` 注入 LLM 上下文，Orchestrator 根据数据自主调用 MCP 工具驱动 pipeline。
+
+**旧步骤 1-6（状态查询、家政维护、等待评估、停滞分析、对战分析、性能验证）已全部移入 Phase 1 代码层。Orchestrator LLM 不再调用 `get_status()`、`wait_for_eval()`、`analyze_stagnation()`、`run_match_analysis()`、`run_performance_verification()` 等 MCP 工具。**
+
+以下步骤仍由 Orchestrator LLM 通过 MCP 工具触发：
 
 ---
 
@@ -612,12 +673,17 @@ Orchestrator 按需调用：
 
 ---
 
-### 代际结束
+### 代际结束（Phase 2 → Phase 3）
 
-`_run_one_cycle()` 检测到 `cycle_completed`:
+Phase 2 `_run_one_cycle()` 检测到 `cycle_completed`:
 - 清除 `orchestrator_session.json`
 - 返回花费给 `orchestrator_loop()`
-- `orchestrator_loop()` 记录花费，`sleep(5)` 后进入下一代
+
+Phase 3 `post_generation_cleanup()`（仅在 cost ≥ 0.05 即成功提交后执行）:
+- `reap_if_needed()` — 活跃 bot > 30 时自动淘汰最弱
+- `consolidate_experience()` — 每 3 代整合经验池
+
+`orchestrator_loop()` 检查 `shutdown_mgr.is_shutting_down`，若未关闭则 `sleep(5)` 后进入下一代。
 
 ---
 
@@ -681,106 +747,108 @@ python web/main.py                          ← 主进程 (uvicorn)
 
 CLI 模式 (`python web/core/orchestrator.py`) 不启动 daemon，直接在 `asyncio.run()` 中调用 `_run_one_cycle()`。
 
-### 3.5 中断信号链（Web 模式）
+### 3.5 中断信号链
 
-`python web/main.py` 模式下 Ctrl+C 的完整传递路径：
+`ShutdownManager`（`shutdown_manager.py`）统一处理 Web 和 CLI 两种模式的中断信号。使用 `loop.add_signal_handler()`（非 `signal.signal()`）在 asyncio 事件循环内正确处理 SIGINT/SIGTERM。
 
-```
-用户按 Ctrl+C (SIGINT)
-  │
-  ▼ uvicorn 内置 SIGINT handler
-  │
-  ▼ FastAPI lifespan shutdown (app.py:52-63)
-  │
-  ├─ 1. _evolution_task.cancel()             ← 触发 CancelledError
-  │     await asyncio.wait_for(task, 10s)    ← 等待优雅退出
-  │
-  │     orchestrator.py CancelledError 处理 (line 396-408):
-  │       ├─ query_gen.aclose()              ← 关闭 LLM 流式生成器
-  │       ├─ _clear_orchestrator_session()   ← ⚠️ session 被清除！
-  │       └─ raise CancelledError            ← 继续传播
-  │
-  │     orchestrator_loop finally (line 540-547):
-  │       ├─ _daemon_stop.set()             ← 停止监控线程
-  │       └─ stop_daemon()                  ← 终止 daemon 子进程
-  │
-  ├─ 2. stop_daemon() (再次调用，幂等)
-  │     ├─ os.killpg(pgid, SIGTERM)         ← 终止整个进程组
-  │     ├─ daemon wait(5s)
-  │     ├─ 超时 → os.killpg(pgid, SIGKILL)
-  │     └─ 删除 .daemon_pid
-  │
-  └─ 3. atexit.register(stop_daemon)        ← 退出时的冗余安全网
-
-Daemon 内部收到 SIGTERM:
-  ├─ signal handler: running = False
-  ├─ drain in-flight futures (10s/each)     ← 等待进行中的对局完成
-  ├─ executor.shutdown(wait=False)
-  └─ save_cycle()                           ← 最终持久化 ratings/stats
-```
-
-**关键**: Web 模式下 `CancelledError` **清除** `orchestrator_session.json`（line 402），重启后无法恢复原 LLM 对话，但 `pipeline_state.json` **保留**，Orchestrator 通过 checkpoint 信息从断点继续。
-
-### 3.6 中断信号链（CLI 模式）
-
-`python web/core/orchestrator.py` 独立模式：
+#### Web 模式 Ctrl+C
 
 ```
 用户按 Ctrl+C (SIGINT)
   │
-  ▼ KeyboardInterrupt in _run_one_cycle (line 384-394)
+  ▼ ShutdownManager._on_signal() → _event.set()
   │
-  ├─ query_gen.aclose()                     ← 关闭 LLM 流式生成器
-  ├─ 不调用 _clear_orchestrator_session()   ← ⚠️ session 保留！
-  └─ 写入日志 "[INTERRUPTED]"
+  ▼ orchestrator_loop 主循环检查 is_shutting_down:
   │
-  ▼ run_orchestrator_cli finally (line 582-587)
+  ├─ Phase 1: prepare_generation() 中的 LLM 调用被取消（Disposable，无状态，丢弃即可）
   │
-  └─ stop_daemon()                          ← 无 daemon（CLI 模式未启动）
+  ├─ Phase 2: _run_one_cycle() 中的 LLM 流被 aclose()
+  │     ├─ CancelledError handler:
+  │     │     ├─ query_gen.aclose()                     ← 关闭 LLM 流式生成器
+  │     │     ├─ 不调用 _clear_orchestrator_session()   ← Session 保留！
+  │     │     └─ raise CancelledError                   ← 继续传播
+  │     │
+  │     └─ Exception handler:
+  │           ├─ query_gen.aclose()
+  │           ├─ 不调用 _clear_orchestrator_session()   ← Session 保留！
+  │           └─ 写入日志 "[ERROR]"
+  │
+  ├─ Phase 3: post_generation_cleanup() 中断（幂等，可重跑）
+  │
+  └─ finally:
+        ├─ _daemon_stop.set()                          ← 仅停止监控线程
+        └─ 不停止 daemon                                ← daemon 独立存活
 ```
 
-**关键**: CLI 模式下 `KeyboardInterrupt` **不清除** session 文件。重启后可通过 `resume=session_id` 恢复原始 LLM 对话，拥有完整上下文。
+#### CLI 模式 Ctrl+C
 
-两种模式的差异原因：Web 模式由 `task.cancel()` 触发 `CancelledError`（程序性取消），CLI 模式由 `SIGINT` 触发 `KeyboardInterrupt`（用户中断）。
+```
+用户按 Ctrl+C (SIGINT)
+  │
+  ▼ ShutdownManager._on_signal() → _event.set()
+  │
+  ▼ 三阶段中断行为与 Web 模式相同
+  │
+  ▼ KeyboardInterrupt fallback 兜底:
+  │     ├─ query_gen.aclose()
+  │     ├─ 不调用 _clear_orchestrator_session()        ← Session 保留！
+  │     └─ 写入日志 "[INTERRUPTED]"
+  │
+  └─ finally: stop_daemon()（CLI 模式无 daemon，空操作）
+```
+
+**关键修复**: `CancelledError` 和 `Exception` handler 均**不再**调用 `_clear_orchestrator_session()`。Session 文件仅在以下两种情况清除：
+1. **自然完成**: `commit_bot` 成功后（`cycle_completed=True`）
+2. **显式放弃**: API 调用 `abandon` 或 `_startup_recovery` 检测到 stale session
 
 ### 3.7 重启恢复流程
 
-#### Web 模式重启
+统一的 `_startup_recovery()` 在 `orchestrator_loop` 启动时执行，根据 checkpoint 和 session 文件的组合状态决定恢复策略。
+
+#### 四种恢复场景
 
 ```
-python web/main.py
+python web/main.py / python web/core/orchestrator.py
   │
-  ├─ app_state._load_config()               ← 读取 app_config.json 恢复 daemon 配置
-  ├─ uvicorn.run() → lifespan startup
-  │     ├─ app_state.bootstrap(find_current_v())
-  │     └─ asyncio.create_task(orchestrator_loop)
-  │           ├─ start_daemon()
-  │           │     ├─ 检查 .daemon_pid → 若有孤儿 → killpg → 清理
-  │           │     ├─ Popen(start_new_session=True) → 新 daemon
-  │           │     └─ 写 .daemon_pid
-  │           └─ daemon_monitor_thread 启动
-  │
-  └─ _run_one_cycle():
-        ├─ _load_orchestrator_session() → None（已被清除）
-        ├─ 新建 LLM 对话（无 resume）
-        └─ _build_context() 检测 pipeline_state.json:
-              ├─ 若 checkpoint 存在:
-              │     注入 "PIPELINE CHECKPOINT: v{next_v} reached stage='{stage}'"
-              │     注入下一步建议（见下方映射表）
-              │     注入 "ENVIRONMENT ANOMALIES DETECTED" 警告
-              └─ Orchestrator LLM 看到提示后从断点继续
+  └─ _startup_recovery(ui):
+        │
+        ├─ Case A: checkpoint 不存在 + session 不存在
+        │     └─ 返回 {"action": "fresh_start"}
+        │
+        ├─ Case B: checkpoint 存在 + session 不存在
+        │     └─ 返回 {"action": "resume", "session_id": None}
+        │           → 新 LLM session，从 checkpoint stage 继续
+        │
+        ├─ Case C: checkpoint 存在 + session 存在
+        │     └─ 返回 {"action": "resume", "session_id": session_id}
+        │           → 恢复 LLM 对话 + pipeline stage
+        │
+        └─ Case D: checkpoint 不存在 + session 存在
+              └─ 清除 session，返回 {"action": "fresh_start"}
+                    → stale session，丢弃
 ```
 
-#### CLI 模式重启
+#### 特殊处理
+
+以下 checkpoint 状态被视为无效，清除后返回 fresh_start：
+- `stage="archived"` — 已完成并归档，无需恢复
+- `stage="prepared"` 且无 `master_plan` — 仅复制了源文件，无实质工作
+
+#### 恢复后的执行路径
 
 ```
-python web/core/orchestrator.py
+orchestrator_loop():
+  recovery = _startup_recovery(ui)
   │
-  └─ _run_one_cycle():
-        ├─ _load_orchestrator_session() → session_id（保留）
-        ├─ resume=session_id             ← SDK 恢复原 LLM 对话
-        └─ _build_context() 同样注入 checkpoint 信息
-              └─ LLM 拥有完整上下文 + checkpoint 提示，直接继续
+  ├─ recovery.action == "resume":
+  │     ├─ 构建 GenerationContext（从 checkpoint 读取 source_v, next_v）
+  │     ├─ 跳过 Phase 1（prepare_generation），直接进入 Phase 2
+  │     ├─ 消费 recovery（设为 None），仅恢复一次
+  │     └─ _run_one_cycle() 中 LLM 对话已恢复（session_id 存在时 resume=）
+  │
+  └─ recovery.action == "fresh_start":
+        ├─ Phase 1: prepare_generation()（新建 GenerationContext）
+        └─ Phase 2: _run_one_cycle()
 ```
 
 #### Checkpoint 阶段提示映射
@@ -827,6 +895,25 @@ start_daemon():
 
 独立进程组（`start_new_session=True`）确保 `killpg` 能干净地终止 daemon 及其所有 `ProcessPoolExecutor` worker 子进程。
 
+#### Daemon 生命周期
+
+```
+orchestrator_loop finally:
+  ├─ _daemon_stop.set()           ← 仅停止监控线程轮询
+  └─ 不调用 stop_daemon()         ← daemon 独立存活，跨 orchestrator 重启
+
+app.py lifespan shutdown:
+  └─ stop_daemon()                ← 仅在完整进程退出时终止 daemon
+
+Web UI 显式 stop:
+  └─ stop_daemon()                ← 用户通过 API 显式停止
+```
+
+**关键变化**: `orchestrator_loop` 的 finally 块**不再**停止 daemon 子进程。Daemon 是独立的评估引擎，仅在以下情况终止：
+1. 完整进程退出（`app.py` lifespan shutdown）
+2. Web UI 显式调用 stop
+3. `start_daemon()` 检测到孤儿进程时替换
+
 #### 监控线程自动重启
 
 `daemon_monitor_thread()` (evolution_infra.py:461-486):
@@ -837,10 +924,12 @@ start_daemon():
   │     ├─ restart_count > 5 → 停止自动重启，日志报错
   │     ├─ backoff = min(3 * 2^(n-1), 120) 秒
   │     │     → 3, 6, 12, 24, 48, 96, 120...
-  │     ├─ stop_event.wait(backoff)  ← 等待期间可被停止
+  │     ├─ _daemon_stop.wait(backoff)  ← 等待期间可被停止信号中断
   │     └─ start_daemon() 重启
   └─ daemon 正常运行 → restart_count 归零
 ```
+
+监控线程由 `_daemon_stop` Event 控制生命周期。`orchestrator_loop` finally 中 `_daemon_stop.set()` 使监控线程退出轮询循环，但不影响 daemon 子进程本身。
 
 #### 配置持久化
 
@@ -866,8 +955,9 @@ bot 池变更时（`reap_weakest` 工具），写入 `.reap_signal` 文件（含
 
 | 文件 | 写入时机 | 清除时机 | 作用 |
 |------|---------|---------|------|
-| `orchestrator_session.json` | 每次 SDK `ResultMessage` 返回 `session_id` 时 | 自然完成 / `CancelledError` / API error / 529 retry / auth error backoff | LLM 对话 session ID，用于 `resume` 参数 |
-| `pipeline_state.json` | 每个 pipeline 阶段完成时 (`_record_gate`) | `commit_bot` 成功后（`clear_pipeline_checkpoint`） | 阶段断点 + gate 结果 + master plan |
+| `orchestrator_session.json` | 每次 SDK `ResultMessage` 返回 `session_id` 时 | **仅**自然完成（`commit_bot` 成功）或显式放弃（API abandon / stale session 检测） | LLM 对话 session ID，用于 `resume` 参数 |
+| `pipeline_state.json` | 每个 pipeline 阶段完成时（`_record_gate`） | `commit_bot` 成功后（`clear_pipeline_checkpoint`） | 阶段断点 + gate 结果 + master plan |
+| `pipeline_state.json` | **原子写入**：`tmp` + `os.replace()`（POSIX 原子操作） | — | 崩溃安全，不会出现半写状态 |
 | `.daemon_pid` | `start_daemon()` spawn 后 | `stop_daemon()` 清理 | daemon 子进程 PID，用于孤儿检测 |
 | `app_config.json` | `update_config()` 调用时 | 不清除（永久保留） | daemon 配置（enabled/workers/pairs） |
 | `.reap_signal` | `reap_weakest` / `eliminate_bot` 调用时 | daemon 读取后删除 | bot 池变更通知 |
@@ -958,146 +1048,133 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 
 ## 五、数据流全景图
 
+三阶段架构：Phase 1（代码层预计算）→ Phase 2（LLM 驱动 pipeline）→ Phase 3（代码层清理）。Phase 1 可丢弃重算，Phase 2 通过 session + checkpoint 持久化保护，Phase 3 幂等可安全重跑。
+
 ```
                     ┌─────────────────────────────────────────────┐
                     │         orchestrator_loop() 启动            │
                     │    (后台 asyncio Task, 由 app.py 创建)       │
+                    │    + ShutdownManager 信号处理安装             │
+                    │    + _startup_recovery() 中断状态评估         │
                     └──────────────────┬──────────────────────────┘
                                        │
                     ┌──────────────────▼──────────────────────────┐
-                    │    _run_one_cycle() — Orchestrator LLM 会话  │
-                    │    输入: _build_context() → ratings/tags/    │
-                    │          checkpoint/failures 注入 prompt     │
-                    │    工具: MCP tools + Bash + Read             │
-                    │    输出: 工具调用序列                         │
+                    │   Phase 1: prepare_generation() — 代码层     │
+                    │   (可丢弃，中断后重算)                        │
+                    │                                            │
+                    │   wait_for_daemon_eval() → 等待足够对局      │
+                    │   _cleanup_incomplete() → 清理孤儿目录       │
+                    │   _analyze_stagnation() 📎 STAGNATION LLM   │
+                    │   _analyze_recent_matches() 📎 MATCH LLM   │
+                    │   _run_performance_verification() 📎 PERF LLM│
+                    │   _decide_strategy() → 纯代码策略决策        │
+                    │                                            │
+                    │   输出: GenerationContext (strategy, source_v,│
+                    │          stagnation_info, match_analysis,   │
+                    │          performance_verification)          │
                     └──────────────────┬──────────────────────────┘
                                        │
-         ┌─────────────────────────────┼─────────────────────────────┐
-         │                             │                              │
-    ┌────▼─────┐              ┌────────▼────────┐           ┌────────▼────────┐
-    │get_status │              │wait_for_eval     │           │housekeeping     │
-    │(无 LLM)   │              │(无 LLM, 轮询)    │           │(无 LLM)         │
-    │读取:      │              │读取:             │           │reap/cleanup/trim│
-    │ratings,   │              │bot_stats.json    │           └─────────────────┘
-    │bot_stats, │              │                  │
-    │daemon_stats│             └────────┬─────────┘
-    └───────────┘                       │
-         │                     ┌────────▼─────────┐
-         │                     │rating_reliable?   │
-         │                     └──┬─────────────┬──┘
-         │                  false │             │ true
-         │                     ┌──▼───┐   ┌─────▼──────────┐
-         │                     │跳过  │   │analyze_stagnation│
-         │                     │停滞  │   │📎 STAGNATION     │
-         │                     │分析  │   │  ANALYST         │
-         │                     └──┬───┘   │输入: history×10  │
-         │                        │       │      + h2h_top5   │
-         │                        │       │输出: is_stagnant  │
-         │                        │       │      + recommend  │
-         │                        │       └──────┬───────────┘
-         │                        │              │
-         │              ┌─────────▼──────────────▼───────────────┐
-         │              │                                        │
-         │         ┌────▼──────────────┐  ┌──────────────────────▼───┐
-         │         │run_match_analysis │  │run_performance_verification│
-         │         │📎 MATCH ANALYST   │  │📎 PERFORMANCE ANALYST     │
-         │         │输入: replay 摘要   │  │输入: history+wr+h2h+stats│
-         │         │      (8败+4险胜)  │  │      ×10周期              │
-         │         │输出: weaknesses   │  │输出: trend+weaknesses     │
-         │         │      +street_wk   │  │      +diversity+suggestion│
-         │         └────┬──────────────┘  └──────────┬───────────────┘
-         │              │ match_analysis              │ performance_verification
-         │              └─────────────┬──────────────┘
-         │                            │
-         │               ┌────────────▼────────────┐
-         │               │run_master               │
-         │               │📎 MASTER                │
-         │               │工具: Bash, Read          │
-         │               │输入: stagnation_info     │
-         │               │      + match_analysis   │
-         │               │      + perf_verification│
-         │               │输出: JSON tasks[]        │
-         │               │      (1-3 个 worker 任务) │
-         │               └────────────┬─────────────┘
-         │                            │ plan["tasks"]
-         │               ┌────────────▼────────────┐
-         │               │prepare_next_gen (无 LLM) │
-         │               │复制 bots/claude_v{N}/    │
-         │               │写入 checkpoint=prepared  │
-         │               └────────────┬─────────────┘
-         │                            │
-         │               ┌────────────▼────────────┐
-         │               │execute_workers          │
-         │               │📎 WORKERS (并行≤3)      │
-         │               │工具: Bash, Read, Edit   │
-         │               │输入: worker_prompt.md   │
-         │               │      + task instructions│
-         │               │      + failure_memory   │
-         │               │      + reviewer_feedback│
-         │               │输出: 代码写入文件系统    │
-         │               │自检: compile+smoke/重试  │
-         │               │回退: parallel→serial    │
-         │               │断路器: max 6 次调用      │
-         │               └────────────┬─────────────┘
-         │                            │
-         │               ┌────────────▼────────────┐
-         │               │run_quality_gates (无LLM)│
-         │               │compile+smoke+decision   │
-         │               │+size (≤1000行/文件)      │
-         │               │pass_rate ≥ 70%           │
-         │               └────────────┬─────────────┘
-         │                            │
-         │               ┌────────────▼────────────┐
-         │               │run_review               │
-         │               │📎 LEAD CODE REVIEWER    │
-         │               │工具: Bash, Read          │
-         │               │输入: reviewer_prompt.md │
-         │               │      + master_plan JSON  │
-         │               │输出: approved+score      │
-         │               │      +feedback+risk_areas│
-         │               └────────────┬─────────────┘
-         │                            │
-         │               ┌────────────▼────────────┐
-         │               │run_critic               │
-         │               │📎 STRATEGY CRITIC       │
-         │               │工具: Bash, Read          │
-         │               │输入: critic_prompt.md   │
-         │               │      + master_plan       │
-         │               │输出: score(1-10)+approved│
-         │               │阈值: ≥6 通过             │
-         │               │force_advance 可绕过      │
-         │               └────────────┬─────────────┘
-         │                            │
-         │               ┌────────────▼────────────┐
-         │               │run_precommit_eval(无LLM)│
-         │               │镜像对战: vs父+Top+弱点    │
-         │               │阻断: 输父版/崩溃/退化     │
-         │               └────────────┬─────────────┘
-         │                            │
-         │               ┌────────────▼────────────┐
-         │               │commit_bot (无 LLM)      │
-         │               │运行时守卫 (编译/冒烟/决策)│
-         │               │git commit + tag + 验证   │
-         │               │归档快照+轮转+日志压缩    │
-         │               │清除 checkpoint           │
-         │               └────────────┬─────────────┘
-         │                            │
-         │               ┌────────────▼────────────┐
-         │               │run_archivist            │
-         │               │确定性: 一致性验证+reap   │
-         │               │条件📎: ARCHIVIST LLM    │
-         │               │  (仅连续3代评分下降时)   │
-         │               │写入 archived checkpoint  │
-         │               └────────────┬─────────────┘
-         │                            │
-         │               ┌────────────▼────────────┐
-         │               │新一代完成, sleep(5)       │
-         │               │回到 get_status()         │
-         │               └─────────────────────────┘
-         │
-    ┌────▼──────────────────────────────────────────────┐
-    │后台并行运行:                                        │
-    │  elo_daemon.py (子进程)                            │
+                    ┌──────────────────▼──────────────────────────┐
+                    │   Phase 2: _run_one_cycle(gen_ctx) — LLM    │
+                    │   (状态保留：session + checkpoint 文件)       │
+                    │                                            │
+                    │   _build_context(gen_ctx) → 注入预计算分析   │
+                    │   Orchestrator LLM 自主调用 MCP 工具         │
+                    │   Pipeline: master → workers → quality →    │
+                    │            review → critic → commit         │
+                    │   中断 → session + checkpoint 保留到磁盘     │
+                    │   下次启动 → _startup_recovery() 恢复        │
+                    └──────────────────┬──────────────────────────┘
+                                       │
+                    ┌──────────────────▼──────────────────────────┐
+                    │   Phase 3: post_generation_cleanup() — 代码层│
+                    │   (幂等，可安全中断并重跑)                    │
+                    │                                            │
+                    │   reap_if_needed() → 淘汰最弱 bot           │
+                    │   consolidate_experience() → 每 3 代去重    │
+                    └──────────────────┬──────────────────────────┘
+                                       │
+                    ┌──────────────────▼──────────────────────────┐
+                    │   shutdown_mgr.is_shutting_down?            │
+                    │     ├── 是 → 优雅退出                        │
+                    │     └── 否 → sleep(5) → 回到 Phase 1        │
+                    └─────────────────────────────────────────────┘
+```
+
+**Phase 2 内部 MCP 工具调用序列（由 Orchestrator LLM 自主编排）：**
+
+```
+    ┌──────────────────▼──────────────────────────┐
+    │   Orchestrator LLM 会话                      │
+    │   输入: _build_context() → ratings/tags/     │
+    │         stagnation/match/perf 分析结果        │
+    │   工具: ~15 MCP tools (详见 tool_pipeline.py) │
+    └──────────────────┬──────────────────────────┘
+                       │
+         ┌─────────────┼─────────────────────────────┐
+         │             │                              │
+    ┌────▼─────┐  ┌────▼──────────┐         ┌────────▼────────┐
+    │get_status │  │run_master     │         │housekeeping     │
+    │(无 LLM)   │  │📎 MASTER     │         │(无 LLM)         │
+    │读取:      │  │工具: Bash,Read │         │reap/cleanup/trim│
+    │ratings,   │  │输入: 预计算分析│         └─────────────────┘
+    │bot_stats, │  │输出: tasks[]  │
+    │daemon_stats│ └────┬──────────┘
+    └───────────┘      │ plan["tasks"]
+              ┌────────▼────────────┐
+              │prepare_next_gen      │
+              │(无 LLM)              │
+              │复制 bots/claude_v{N}/│
+              │写入 checkpoint       │
+              └────────┬────────────┘
+                       │
+              ┌────────▼────────────┐
+              │execute_workers      │
+              │📎 WORKERS (并行≤3)  │
+              │工具: Bash, Read, Edit│
+              │自检: compile+smoke   │
+              │回退: parallel→serial │
+              └────────┬────────────┘
+                       │
+              ┌────────▼────────────┐
+              │run_quality_gates    │
+              │(无 LLM)             │
+              │compile+smoke+decision│
+              │+size (≤1000行/文件)  │
+              └────────┬────────────┘
+                       │
+              ┌────────▼────────────┐
+              │run_review           │
+              │📎 CODE REVIEWER    │
+              │工具: Bash, Read      │
+              │输出: approved+score  │
+              └────────┬────────────┘
+                       │
+              ┌────────▼────────────┐
+              │run_critic           │
+              │📎 STRATEGY CRITIC  │
+              │工具: Bash, Read      │
+              │阈值: ≥6 通过         │
+              └────────┬────────────┘
+                       │
+              ┌────────▼────────────┐
+              │run_precommit_eval   │
+              │(无 LLM)             │
+              │镜像对战: vs父+Top    │
+              └────────┬────────────┘
+                       │
+              ┌────────▼────────────┐
+              │commit_bot (无 LLM)  │
+              │git commit + tag     │
+              │清除 checkpoint       │
+              └─────────────────────┘
+```
+
+**后台守护进程（独立于 Orchestrator 生命周期）：**
+
+```
+    ┌────────────────────────────────────────────────────┐
+    │  elo_daemon.py (独立子进程，orchestrator 停止不影响) │
     │    ├── ProcessPoolExecutor 并行对战               │
     │    ├── 每 game 实时更新 Glicko-2 rating           │
     │    ├── 写入: ratings, h2h, bot_stats, history,    │
@@ -1113,6 +1190,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 - **所有 LLM 调用统一使用 Sonnet 模型**，通过 `claude_agent_sdk` 的 `query()` 函数
 - **API 限流 (529)**: `run_claude_query()` 内自动指数退避重试（30s → 60s → 120s）
 - **Prompt 预算**: `MAX_PROMPT_CHARS = 700_000`，超限时按文件均分压缩上下文
+- **MCP 工具精简**: ~15 个工具（pre-gen 分析工具已移出 MCP，仅通过 HTTP 端点可用），`tool_pipeline.py` + `tool_status.py` 注册
 - **子代理 MCP 屏蔽**: `_BLOCKED_MCP_TOOLS` 屏蔽以下外部工具（防止子代理访问网络）：
   - `mcp__web-reader__webReader`
   - `mcp__web-search-prime__web_search_prime`
@@ -1122,9 +1200,11 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 - **角色边界**: Worker 受 prompt + reviewer 双重约束 — Logic Architect 不改常数，Tuner 不加函数
 - **Gate Ledger**: Pipeline checkpoint 强制阶段顺序 — 每个阶段写入 gate 记录，后续阶段验证前置 gates 完整
 - **阶段常量**: `STAGE_ORDER = [prepared, workers_done, quality_passed, reviewed, critic_checked, verified, archived]`
-- **归档阶段**: `run_archivist` 在 `commit_bot` 后执行，写入 `archived` checkpoint，确保 post-commit 一致性验证和自动 reap。仅连续 3 代评分下降时调用 LLM。
-
----
+- **ShutdownManager**: `loop.add_signal_handler()` 注册 SIGINT/SIGTERM，设置 `is_shutting_down` 标志，Phase 1/3 检查后优雅退出，Phase 2 等待当前 LLM 调用完成
+- **Pipeline checkpoint 原子写入**: `pipeline_state.json` 使用 tmp + `os.replace()` 原子替换，避免中断导致文件损坏
+- **Session 持久化策略**: `orchestrator_session.json` 仅在自然完成时清除；`CancelledError` / `Exception` 中断时保留 session 到磁盘，下次启动 `_startup_recovery()` 恢复会话
+- **Daemon 独立生命周期**: `elo_daemon.py` 作为独立子进程运行，orchestrator 停止不影响 daemon 持续评估；daemon 仅通过 `.reap_signal` 文件与 orchestrator 通信
+- **归档阶段**: Phase 3 中 `reap_if_needed()` + `consolidate_experience()` 在 commit 后执行，幂等可安全重跑
 
 ## 附录：真实循环示例（v28 → v29）
 
