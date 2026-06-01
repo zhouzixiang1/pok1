@@ -25,6 +25,7 @@ from evolution_infra import (  # noqa: F401
     _WORKER_SEMAPHORE, daemon_proc, _daemon_lock, _atexit_registered,
     # Utility functions
     _get_worker_semaphore, _trim_to_budget, locked_file, substitute_template,
+    count_lines, pair_key,
     # Pipeline checkpoints
     write_pipeline_checkpoint, read_pipeline_checkpoint, clear_pipeline_checkpoint,
     # UI

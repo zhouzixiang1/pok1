@@ -29,7 +29,7 @@ sys.path.insert(0, str(CORE_DIR))
 
 from glicko2 import Glicko2Player, update_single_game, decay_rd
 from battle import mirror_battle
-from evolution_infra import locked_file
+from evolution_infra import locked_file, pair_key
 
 BOTS_DIR = PROJECT_ROOT / "bots"
 RESULTS_DIR = CORE_DIR / "results"
@@ -131,10 +131,6 @@ def save_stats(stats):
     os.makedirs(RESULTS_DIR, exist_ok=True)
     with locked_file(STATS_FILE, "w") as f:
         json.dump(stats, f, indent=2)
-
-
-def pair_key(a, b):
-    return f"{a} vs {b}" if a < b else f"{b} vs {a}"
 
 
 def load_h2h():

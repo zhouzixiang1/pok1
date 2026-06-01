@@ -30,7 +30,7 @@ from evolution_core import (
     find_current_v,
     _analyze_recent_matches,
     _analyze_stagnation,
-    RATINGS_FILE, BOT_STATS_FILE, H2H_FILE, REPLAY_DIR,
+    RATINGS_FILE, BOT_STATS_FILE, H2H_FILE, MATCH_HISTORY_FILE, REPLAY_DIR,
     locked_file,
 )
 from glicko2 import Glicko2Player
@@ -40,15 +40,10 @@ from tool_helpers import (
     _get_ui, _ratings_summary, _json_tool_result, _bot_main,
     PROJECT_ROOT,
 )
+from evolution_infra import count_lines
 from system_log import log_system_event
 
 
-def _count_lines(path: Path) -> int:
-    try:
-        with open(path, "r", errors="ignore") as f:
-            return sum(1 for _ in f)
-    except Exception:
-        return 0
 
 
 class GetStatusInput(TypedDict):
@@ -75,10 +70,9 @@ async def get_status(args):
 
     # Load bot stats for current bot
     bot_stats_data = {}
-    bot_stats_file = PROJECT_ROOT / "web" / "core" / "results" / "bot_stats.json"
-    if bot_stats_file.exists():
+    if BOT_STATS_FILE.exists():
         try:
-            with locked_file(bot_stats_file, "r") as f:
+            with locked_file(BOT_STATS_FILE, "r") as f:
                 bot_stats_data = json.load(f)
         except Exception:
             pass
@@ -137,7 +131,7 @@ async def get_bot_info(args):
     if bot_dir.exists():
         py_files = list(bot_dir.glob("*.py"))
         result["files"] = [f.name for f in py_files]
-        result["total_lines"] = sum(_count_lines(f) for f in py_files)
+        result["total_lines"] = sum(count_lines(f) for f in py_files)
         _, oversized = check_code_size(bot_dir)
         if oversized:
             result["oversized_files"] = {name: lines for name, lines in oversized}
@@ -156,7 +150,7 @@ async def get_match_history(args):
     n = args.get("n", 5)
     bot_name = f"claude_v{v}"
 
-    history_file = PROJECT_ROOT / "web" / "core" / "results" / "match_history.jsonl"
+    history_file = MATCH_HISTORY_FILE
     if not history_file.exists():
         return {"content": [{"type": "text", "text": json.dumps({"matches": []})}]}
 
@@ -241,10 +235,9 @@ async def wait_for_eval(args):
 
     # Load bot stats
     bot_stats_data = {}
-    bot_stats_file = PROJECT_ROOT / "web" / "core" / "results" / "bot_stats.json"
-    if bot_stats_file.exists():
+    if BOT_STATS_FILE.exists():
         try:
-            with locked_file(bot_stats_file, "r") as f:
+            with locked_file(BOT_STATS_FILE, "r") as f:
                 bot_stats_data = json.load(f)
         except Exception:
             pass
@@ -344,8 +337,10 @@ async def reap_weakest(args):
     reap_signal = Path(__file__).parent / "results" / ".reap_signal"
     reap_signal.write_text(str(time.time()))
 
-    log_system_event("bot.reaped", "warn", f"Reaped {culled_name} (h2h_wr={h2h_winrates.get(culled_name, 0.0):.2%})",
-                     {"culled": culled_name, "remaining": len(active_bots) - 1})
+    quiet = args.get("quiet", False) if isinstance(args, dict) else False
+    if not quiet:
+        log_system_event("bot.reaped", "warn", f"Reaped {culled_name} (h2h_wr={h2h_winrates.get(culled_name, 0.0):.2%})",
+                         {"culled": culled_name, "remaining": len(active_bots) - 1})
 
     return {"content": [{"type": "text", "text": json.dumps({
         "reaped": True,
@@ -496,12 +491,11 @@ async def get_h2h(args):
     bot_name = args["bot_name"]
     opponent = args.get("opponent")
 
-    h2h_file = PROJECT_ROOT / "web" / "core" / "results" / "head_to_head.json"
+    h2h_file = H2H_FILE
     if not h2h_file.exists():
         return {"content": [{"type": "text", "text": json.dumps({"error": "No H2H data yet", "bot_name": bot_name})}]}
 
     try:
-        from evolution_infra import locked_file
         with locked_file(h2h_file, "r") as f:
             h2h = json.load(f)
     except Exception:
@@ -540,7 +534,7 @@ class GetBotStatsInput(TypedDict):
 async def get_bot_stats(args):
     bot_name = args["bot_name"]
 
-    bot_stats_file = PROJECT_ROOT / "web" / "core" / "results" / "bot_stats.json"
+    bot_stats_file = BOT_STATS_FILE
     if not bot_stats_file.exists():
         return {"content": [{"type": "text", "text": json.dumps({"error": "No bot stats yet", "bot_name": bot_name})}]}
 

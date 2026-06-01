@@ -1,21 +1,20 @@
 """Bot management endpoints — list bots, detail, source code."""
 
-import fcntl
-import json
 import re
-import time
 from pathlib import Path
-from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
 from server.cache import cached_read
+from server.routes._helpers import build_bot_summary, _bot_sort_key
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BOTS_DIR = PROJECT_ROOT / "bots"
 RESULTS_DIR = PROJECT_ROOT / "web" / "core" / "results"
 RATINGS_FILE = RESULTS_DIR / "glicko_ratings.json"
+BOT_STATS_FILE = RESULTS_DIR / "bot_stats.json"
+H2H_FILE = RESULTS_DIR / "head_to_head.json"
 
 router = APIRouter(prefix="/api/bots", tags=["bots"])
 
@@ -29,53 +28,6 @@ def _load_ratings() -> dict:
         return {}
 
 
-def _count_lines(path: Path) -> int:
-    try:
-        with open(path, "r", errors="ignore") as f:
-            return sum(1 for _ in f)
-    except Exception:
-        return 0
-
-
-BOT_STATS_FILE = RESULTS_DIR / "bot_stats.json"
-H2H_FILE = RESULTS_DIR / "head_to_head.json"
-
-
-def _bot_summary(bot_dir: Path, bot_name: str, ratings: dict, bot_stats_data: dict, h2h_data: dict) -> dict:
-    from tool_helpers import compute_h2h_avg_winrate
-    version_match = re.search(r"\d+", bot_name)
-    version = int(version_match.group()) if version_match else 0
-
-    py_files = list(bot_dir.glob("*.py"))
-    total_lines = sum(_count_lines(f) for f in py_files)
-    completed = (bot_dir / ".completed").exists()
-
-    r_data = ratings.get(bot_name)
-    rating_info = None
-    if r_data:
-        r, rd = r_data.get("r", 1500), r_data.get("rd", 350)
-        rating_info = {
-            "r": round(r, 1),
-            "rd": round(rd, 1),
-            "conservative": round(r - 2 * rd, 1),
-        }
-
-    bs = bot_stats_data.get(bot_name, {})
-    wr = compute_h2h_avg_winrate(bot_name, h2h_data)
-
-    return {
-        "name": bot_name,
-        "version": version,
-        "completed": completed,
-        "total_lines": total_lines,
-        "files": [f.name for f in py_files],
-        "rating": rating_info,
-        "win_rate": bs.get("win_rate"),
-        "games": bs.get("games", 0),
-        "h2h_avg_wr": round(wr, 4) if wr is not None else None,
-    }
-
-
 @router.get("")
 async def list_bots(include_graveyard: bool = Query(False)):
     """List all active bots and optionally graveyard bots."""
@@ -85,24 +37,19 @@ async def list_bots(include_graveyard: bool = Query(False)):
     active = []
     graveyard = []
 
-    # Active bots — only include directories with .completed
-    def _version_key(p: Path) -> int:
-        m = re.search(r'\d+', p.name)
-        return int(m.group()) if m else 0
-
     if BOTS_DIR.exists():
-        for d in sorted(BOTS_DIR.iterdir(), key=_version_key):
+        for d in sorted(BOTS_DIR.iterdir(), key=lambda p: _bot_sort_key(p.name)):
             if d.is_dir() and d.name.startswith("claude_v") and d.name != "claude_v0":
                 if (d / ".completed").exists():
-                    active.append(_bot_summary(d, d.name, ratings, bot_stats_data, h2h_data))
+                    active.append(build_bot_summary(d, d.name, ratings, bot_stats_data, h2h_data))
 
     # Graveyard bots
     if include_graveyard:
         graveyard_dir = BOTS_DIR / "graveyard"
         if graveyard_dir.exists():
-            for d in sorted(graveyard_dir.iterdir(), key=_version_key):
+            for d in sorted(graveyard_dir.iterdir(), key=lambda p: _bot_sort_key(p.name)):
                 if d.is_dir() and d.name.startswith("claude_v"):
-                    s = _bot_summary(d, d.name, ratings, bot_stats_data, h2h_data)
+                    s = build_bot_summary(d, d.name, ratings, bot_stats_data, h2h_data)
                     s["graveyard"] = True
                     graveyard.append(s)
 
@@ -131,7 +78,7 @@ async def bot_detail(version: int):
     ratings = _load_ratings()
     bot_stats_data = cached_read("bot_stats_detail", BOT_STATS_FILE) or {}
     h2h_data = cached_read("h2h_detail", H2H_FILE) or {}
-    summary = _bot_summary(bot_dir, bot_name, ratings, bot_stats_data, h2h_data)
+    summary = build_bot_summary(bot_dir, bot_name, ratings, bot_stats_data, h2h_data)
 
     # Try to get git parent from tag
     try:

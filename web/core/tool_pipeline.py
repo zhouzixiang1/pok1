@@ -769,7 +769,7 @@ async def run_inline_eval(args):
     results_summary = []
     all_results = []
 
-    from evolution_core import RATINGS_FILE, H2H_FILE, BOT_STATS_FILE, MATCH_HISTORY_FILE, locked_file
+    from evolution_core import RATINGS_FILE, H2H_FILE, BOT_STATS_FILE, MATCH_HISTORY_FILE, locked_file, pair_key
     h2h = {}
     if H2H_FILE.exists():
         try:
@@ -798,7 +798,7 @@ async def run_inline_eval(args):
         results_summary.append({"opponent": opp, "wins": w_a, "losses": w_b, "draws": draws})
 
         # Update H2H
-        k = f"{bot_name} vs {opp}" if bot_name < opp else f"{opp} vs {bot_name}"
+        k = pair_key(bot_name, opp)
         h2h.setdefault(k, {"games": 0, "a_wins": 0, "b_wins": 0, "draws": 0})
         h2h[k]["games"] += total
         if bot_name < opp:
@@ -825,7 +825,7 @@ async def run_inline_eval(args):
             from datetime import datetime
             summary = {
                 "id": f"inline_v{v}_vs_{opp}",
-                "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
+                "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S_%f"),
                 "bot0": bot_name,
                 "bot1": opp,
                 "bot0_wins": w_a,

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from tool_helpers import compute_h2h_avg_winrate
+from evolution_infra import count_lines
 
 
 def confidence(rd: float) -> str:
@@ -53,12 +54,6 @@ def build_ranked_ratings(ratings_data: dict, bot_stats_data: dict, h2h_data: dic
     return rows
 
 
-def count_lines(path: Path) -> int:
-    try:
-        with open(path, "r", errors="ignore") as f:
-            return sum(1 for _ in f)
-    except Exception:
-        return 0
 
 
 def build_bot_summary(bot_dir: Path, bot_name: str, ratings: dict, bot_stats_data: dict, h2h_data: dict) -> dict:
@@ -170,6 +165,6 @@ def downsample(entries: list[dict], max_points: int = 200) -> list[dict]:
         return entries
     step = max(1, len(entries) // max_points)
     sampled = entries[::step]
-    if entries[-1] is not sampled[-1]:
+    if entries[-1] is not sampled[-1] and entries[-1] not in sampled:
         sampled.append(entries[-1])
     return sampled

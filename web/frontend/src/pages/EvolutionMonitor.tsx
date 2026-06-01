@@ -186,7 +186,10 @@ export default function EvolutionMonitor() {
     onHeader: () => {},
     onCost: (data) => {
       setGrand(data.grand_total);
-      setGen(data.gen_total);
+      setGen((prevGen) => {
+        if (data.gen_total < prevGen) setRoleCosts([]);
+        return data.gen_total;
+      });
       setRoleCosts((prev) => {
         const idx = prev.findIndex((c) => c.role === data.role);
         const updated = {
@@ -240,6 +243,7 @@ export default function EvolutionMonitor() {
     }).catch((e) => console.error("[EvolutionMonitor] API error:", e));
     const refreshLeaderboard = () => api.ratings().then(setLeaderboard).catch((e) => console.error("[EvolutionMonitor] API error:", e));
     refreshLeaderboard();
+    const lbInterval = setInterval(refreshLeaderboard, 15000);
     const refreshPipeline = () => api.pipelineCheckpoint().then(setCheckpoint).catch((e) => console.error("[EvolutionMonitor] API error:", e));
     refreshPipeline();
     const pipeInterval = setInterval(refreshPipeline, 5000);
@@ -247,7 +251,7 @@ export default function EvolutionMonitor() {
     refreshFailures();
     const failInterval = setInterval(refreshFailures, 30000);
     const disconnect = connect();
-    return () => { clearInterval(pipeInterval); clearInterval(failInterval); disconnect(); };
+    return () => { clearInterval(lbInterval); clearInterval(pipeInterval); clearInterval(failInterval); disconnect(); };
   }, []);
 
   useEffect(() => {

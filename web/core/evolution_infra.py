@@ -284,6 +284,18 @@ class BaseUI:
 # Bot Directory & Status
 # ──────────────────────────────────────────────
 
+def count_lines(path):
+    try:
+        with open(path, "r", errors="ignore") as f:
+            return sum(1 for _ in f)
+    except Exception:
+        return 0
+
+
+def pair_key(a, b):
+    return f"{a} vs {b}" if a < b else f"{b} vs {a}"
+
+
 def get_bot_dir(version):
     primary = BOTS_DIR / f"claude_v{version}"
     if primary.exists():

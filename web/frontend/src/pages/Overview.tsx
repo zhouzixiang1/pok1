@@ -168,7 +168,7 @@ export default function Overview() {
   const rest = ratings.slice(5);
   const daemonAge = daemon?.last_update_age_seconds;
   const daemonAgeStr = daemonAge != null
-    ? daemonAge < 0 ? "从未" : daemonAge < 60 ? `${daemonAge}秒前` : `${Math.round(daemonAge / 60)}分钟前`
+    ? daemonAge < 0 ? "从未" : daemonAge < 60 ? `${Math.round(daemonAge)}秒前` : `${Math.round(daemonAge / 60)}分钟前`
     : "—";
 
   return (
@@ -267,7 +267,7 @@ export default function Overview() {
                     </span>
                   </div>
                   <div className="mt-2 flex items-baseline gap-2">
-                    <span className="text-xl font-bold text-gray-900 dark:text-white tabular-nums">{bot.rating.toFixed(0)}</span>
+                    <span className="text-xl font-bold text-gray-900 dark:text-white tabular-nums">{bot.rating.toFixed(1)}</span>
                     <div className="flex-1 h-1.5 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
                       <div className="h-full bg-brand-500 rounded-full transition-all" style={{ width: `${ratingPct}%` }} />
                     </div>
@@ -276,11 +276,11 @@ export default function Overview() {
                     <span>H2H {bot.h2h_avg_wr != null ? `${(bot.h2h_avg_wr * 100).toFixed(1)}%` : "—"}</span>
                     {s && (s.wr_trend != null ? (
                       <Badge variant={s.wr_trend > 0 ? "success" : s.wr_trend < 0 ? "error" : "neutral"} size="sm">
-                        {s.wr_trend > 0 ? "↑" : s.wr_trend < 0 ? "↓" : "→"}{(Math.abs(s.wr_trend) * 100).toFixed(0)}pp
+                        {s.wr_trend > 0 ? "↑" : s.wr_trend < 0 ? "↓" : "→"} {(Math.abs(s.wr_trend) * 100).toFixed(1)}pp
                       </Badge>
                     ) : s.trend !== 0 ? (
                       <span className={s.trend > 0 ? "text-success-600 dark:text-success-400" : "text-error-600 dark:text-error-400"}>
-                        {s.trend > 0 ? "↑" : "↓"}{Math.abs(s.trend).toFixed(0)}
+                        {s.trend > 0 ? "↑" : "↓"} {Math.abs(s.trend).toFixed(1)}
                       </span>
                     ) : null)}
                   </div>
