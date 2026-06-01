@@ -487,6 +487,7 @@ def main():
 
     games_since_save = 0
     last_save_time = time.time()
+    last_parent_check = time.time()
     save_num = stats.get("total_games", 0) // SAVE_EVERY_N_GAMES
     total_matches = 0
     MAX_POOL_RECOVERIES = 3
@@ -538,6 +539,15 @@ def main():
                                 last_save_time = now
                     except Exception as e:
                         print(f"[DAEMON] Save error (non-fatal): {e}")
+
+                    # Parent alive check — exit if orphaned
+                    now = time.time()
+                    if now - last_parent_check >= 30:
+                        last_parent_check = now
+                        if os.getppid() == 1:
+                            print("[DAEMON] Parent process died, shutting down...")
+                            running = False
+                            break
 
                     # Check for reap signal — immediate bot list refresh
                     try:

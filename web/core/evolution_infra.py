@@ -480,7 +480,12 @@ def start_daemon(workers=14, pairs=5):
         daemon_pid_file = RESULTS_DIR / ".daemon_pid"
         if daemon_pid_file.exists():
             try:
-                old_pid = int(daemon_pid_file.read_text().strip())
+                raw = daemon_pid_file.read_text().strip()
+                try:
+                    info = json.loads(raw)
+                    old_pid = info["pid"]
+                except (json.JSONDecodeError, KeyError):
+                    old_pid = int(raw)
                 try:
                     os.killpg(os.getpgid(old_pid), signal.SIGTERM)
                     time.sleep(1)
@@ -496,7 +501,7 @@ def start_daemon(workers=14, pairs=5):
             text=True, bufsize=1,
             start_new_session=True,  # Independent process group for clean killpg
         )
-        daemon_pid_file.write_text(str(daemon_proc.pid))
+        daemon_pid_file.write_text(json.dumps({"pid": daemon_proc.pid, "ppid": os.getpid()}))
     # Drain daemon stdout to prevent pipe buffer deadlock
     threading.Thread(target=_drain_stdout, args=(daemon_proc,), daemon=True).start()
     if not _atexit_registered:
