@@ -166,6 +166,14 @@ export default function EvolutionMonitor() {
         if (line.text.trim()) {
           updateLastTool(line.text.trim());
         }
+      } else if (line.streamType === "prompt") {
+        // System/meta messages — show as subtle info
+        const cleanText = line.text.replace(/\n/g, " ").trim();
+        if (cleanText) {
+          closeTool();
+          closeThinking();
+          addMsg({ id: nextId(), type: "raw", text: cleanText, role: role || undefined, toolOutput: [], toolDone: false });
+        }
       } else {
         if (line.text.trim()) {
           closeTool();
