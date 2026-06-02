@@ -190,7 +190,10 @@ def update_single_game(player, opponent, score, tau=TAU):
     # Variance contribution from this single game
     v_inv = g_j * g_j * e_j * (1.0 - e_j)
     if v_inv < 1e-10:
-        return Glicko2Player(player.r, player.rd, player.sigma)
+        # Degenerate case: extreme rating difference — still grow RD by sigma
+        phi = player.rd / SCALE
+        phi_star = math.sqrt(phi * phi + player.sigma * player.sigma)
+        return Glicko2Player(player.r, phi_star * SCALE, player.sigma)
 
     v = 1.0 / v_inv
     delta_sum = g_j * (score - e_j)

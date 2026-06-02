@@ -209,7 +209,7 @@ def pick_matches(active_bots, h2h, ratings, n_picks=14):
         k = pair_key(a, b)
         h = h2h.get(k, {})
         count = h.get("games", 0)
-        rating_gap = abs(ratings.get(a, Glicko2Player()).r - ratings.get(b, Glicko2Player()).r)
+        rating_gap = abs(ratings.get(a, Glicko2Player()).conservative_rating() - ratings.get(b, Glicko2Player()).conservative_rating())
         under_eval = max(0, UNDER_EVAL_BASELINE - count) / UNDER_EVAL_BASELINE
         diversity = min(rating_gap / RATING_GAP_SCALE, 1.0)
         count_penalty = 1.0 / (1.0 + max(0, count - UNDER_EVAL_BASELINE) / DIVERSITY_COUNT_DECAY)
@@ -387,8 +387,13 @@ def process_result(result, ratings, h2h, bot_stats, verbose=False):
     return total
 
 
-def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots, verbose=False):
-    """Write all data files to disk."""
+def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
+               played_bots=None, verbose=False):
+    """Write all data files to disk. Apply RD decay to bots that didn't play."""
+    if played_bots is not None:
+        for b in active_bots:
+            if b not in played_bots and b in ratings:
+                ratings[b] = decay_rd(ratings[b])
     save_ratings(ratings, save_num=save_num)
 
     # Recompute win rates for H2H
@@ -508,6 +513,7 @@ def main():
     total_matches = 0
     MAX_POOL_RECOVERIES = 3
     recovery_count = 0
+    played_bots_this_cycle = set()
 
     try:
         while running and in_flight and recovery_count < MAX_POOL_RECOVERIES:
@@ -528,6 +534,8 @@ def main():
                         n = process_result(result, ratings, h2h, bot_stats, verbose=args.verbose)
                         games_since_save += n
                         total_matches += 1
+                        played_bots_this_cycle.add(a)
+                        played_bots_this_cycle.add(b)
 
                         # Replenish: submit next match
                         if match_queue:
@@ -550,8 +558,10 @@ def main():
                         if games_since_save >= SAVE_EVERY_N_GAMES or now - last_save_time >= SAVE_INTERVAL_SEC:
                             if games_since_save > 0:
                                 save_num += 1
-                                save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots, verbose=args.verbose)
+                                save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
+                                           played_bots=played_bots_this_cycle, verbose=args.verbose)
                                 games_since_save = 0
+                                played_bots_this_cycle = set()
                                 last_save_time = now
                     except Exception as e:
                         log.warning("Save error (non-fatal): %s", e)
@@ -601,8 +611,10 @@ def main():
                                         del in_flight[fut]
                             if games_since_save > 0:
                                 save_num += 1
-                                save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots, verbose=args.verbose)
+                                save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
+                                           played_bots=played_bots_this_cycle, verbose=args.verbose)
                                 games_since_save = 0
+                                played_bots_this_cycle = set()
                                 last_save_time = time.time()
                             if args.verbose:
                                 log.info("Reap signal processed, active bots: %d", len(active_bots))
@@ -677,7 +689,8 @@ def main():
 
         # Final save
         try:
-            save_cycle(ratings, h2h, bot_stats, stats, save_num + 1, active_bots, verbose=args.verbose)
+            save_cycle(ratings, h2h, bot_stats, stats, save_num + 1, active_bots,
+                       played_bots=played_bots_this_cycle, verbose=args.verbose)
         except Exception as e:
             log.warning("Final save failed: %s", e)
         log.info("Shutdown complete. %d matches processed.", total_matches)

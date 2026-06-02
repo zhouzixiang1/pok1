@@ -126,7 +126,13 @@ def _parse_branch_from(branch_str: str) -> int | None:
 
 
 def _pick_crossover_parents(ratings, current_v) -> tuple | None:
-    """Select two diverse parents for crossover."""
+    """Select two diverse parents for crossover.
+
+    Parent A: highest h2h_avg_wr (strongest bot).
+    Parent B: highest h2h_avg_wr with version gap >= 3 from parent A
+    (strategy diversity — non-adjacent versions likely differ more).
+    Falls back to second-highest h2h_avg_wr if no gap candidate exists.
+    """
     from evolution_infra import get_active_bots
     from tool_helpers import load_h2h_avg_winrates
 
@@ -134,20 +140,36 @@ def _pick_crossover_parents(ratings, current_v) -> tuple | None:
     if len(active) < 2:
         return None
     h2h = load_h2h_avg_winrates()
-    # Sort by rating descending
-    from glicko2 import Glicko2Player
-    rated = sorted(
+    ranked = sorted(
         active,
-        key=lambda b: ratings.get(b, Glicko2Player()).r,
+        key=lambda b: h2h.get(b, 0.0),
         reverse=True,
     )
-    if len(rated) < 2:
+    if len(ranked) < 2:
         return None
-    parent_a = rated[0]
-    # Second parent: highest-rated after parent_a
-    parent_b = rated[1]
+
+    parent_a = ranked[0]
     try:
         va = int(parent_a.split("_v")[1])
+    except (ValueError, IndexError):
+        return None
+
+    # Find diverse parent B: prefer version gap >= 3 for strategy diversity
+    parent_b = None
+    for candidate in ranked[1:]:
+        try:
+            vc = int(candidate.split("_v")[1])
+        except (ValueError, IndexError):
+            continue
+        if abs(vc - va) >= 3:
+            parent_b = candidate
+            break
+
+    # Fallback: second highest if no gap candidate
+    if parent_b is None:
+        parent_b = ranked[1]
+
+    try:
         vb = int(parent_b.split("_v")[1])
         return (va, vb)
     except (ValueError, IndexError):

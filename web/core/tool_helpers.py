@@ -122,6 +122,9 @@ def _read_json(path, default):
             return default
         with locked_file(path, "r") as f:
             return json.load(f)
+    except json.JSONDecodeError:
+        log.warning("_read_json: corrupt JSON in %s, returning default", path)
+        return default
     except Exception:
         return default
 

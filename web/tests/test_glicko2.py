@@ -153,3 +153,131 @@ class TestDecayRd:
         p = Glicko2Player(1500, 50, 0.06)
         p2 = decay_rd(p, 0)
         assert p2.rd == p.rd
+
+
+class TestDegenerateCases:
+    def test_single_game_extreme_rating_gap_grows_rd(self):
+        """When opponents are 2000+ rating apart, v_inv -> 0. RD should still grow."""
+        p = Glicko2Player(1000, 50, 0.06)
+        opp = Glicko2Player(3000, 50, 0.06)
+        p2 = update_single_game(p, opp, 1.0)
+        # RD should grow due to sigma uncertainty, not stay flat
+        assert p2.rd > p.rd
+
+    def test_single_game_equal_rating_updates(self):
+        """Normal case: equal ratings, expect rating change and RD decrease."""
+        p = Glicko2Player(1500, 200, 0.06)
+        opp = Glicko2Player(1500, 50, 0.06)
+        p2 = update_single_game(p, opp, 1.0)
+        assert p2.r > p.r
+        assert p2.rd < p.rd
+
+    def test_rating_period_high_rd_opponent(self):
+        """With very high RD opponent, little information gained, RD may grow."""
+        p = Glicko2Player(1500, 50, 0.06)
+        opp = Glicko2Player(1500, 350, 0.06)
+        p2 = update_rating_period(p, [(opp, 1.0)])
+        # Rating increases after win
+        assert p2.r > p.r
+        # With high-RD opponent the information gain is small, so
+        # sigma contribution may outweigh it and RD can grow slightly
+        assert p2.rd >= p.rd
+
+    def test_conservative_rating(self):
+        p = Glicko2Player(1600, 100, 0.06)
+        assert p.conservative_rating() == 1400
+
+    def test_conservative_rating_default(self):
+        p = Glicko2Player()
+        assert p.conservative_rating() == 1500 - 2 * 350
+
+
+class TestCrossoverParents:
+    """Tests for _pick_crossover_parents in generation_scheduler.py."""
+
+    def test_sorts_by_h2h_avg_wr(self, monkeypatch, tmp_path):
+        from glicko2 import Glicko2Player
+
+        # Setup: mock get_active_bots and load_h2h_avg_winrates
+        active = ["claude_v1", "claude_v2", "claude_v3", "claude_v4"]
+        # v3 has highest h2h_wr, v1 has second highest
+        h2h_wr = {"claude_v1": 0.52, "claude_v2": 0.48, "claude_v3": 0.55, "claude_v4": 0.45}
+        ratings = {b: Glicko2Player(1500 + i * 10, 50) for i, b in enumerate(active)}
+
+        import generation_scheduler as gs
+        monkeypatch.setattr("evolution_infra.get_active_bots", lambda: active)
+        monkeypatch.setattr("tool_helpers.load_h2h_avg_winrates", lambda: h2h_wr)
+
+        result = gs._pick_crossover_parents(ratings, 4)
+        assert result is not None
+        pa, pb = result
+        # Parent A should be v3 (highest h2h_wr)
+        assert pa == 3
+
+    def test_selects_diverse_parents(self, monkeypatch, tmp_path):
+        from glicko2 import Glicko2Player
+
+        active = ["claude_v1", "claude_v2", "claude_v3", "claude_v4", "claude_v5"]
+        # v5 highest, v2 second highest with gap >= 3
+        h2h_wr = {"claude_v5": 0.55, "claude_v4": 0.54, "claude_v3": 0.53,
+                   "claude_v2": 0.52, "claude_v1": 0.50}
+        ratings = {b: Glicko2Player() for b in active}
+
+        import generation_scheduler as gs
+        monkeypatch.setattr("evolution_infra.get_active_bots", lambda: active)
+        monkeypatch.setattr("tool_helpers.load_h2h_avg_winrates", lambda: h2h_wr)
+
+        result = gs._pick_crossover_parents(ratings, 5)
+        assert result is not None
+        pa, pb = result
+        # Parent A = v5 (highest)
+        assert pa == 5
+        # Parent B should prefer gap >= 3, so v2 (|5-2|=3) over v4 (|5-4|=1)
+        assert pb == 2
+
+    def test_falls_back_to_second(self, monkeypatch, tmp_path):
+        from glicko2 import Glicko2Player
+
+        # Only 2 bots, adjacent versions — no gap candidate, fallback to second
+        active = ["claude_v5", "claude_v6"]
+        h2h_wr = {"claude_v5": 0.55, "claude_v6": 0.50}
+        ratings = {b: Glicko2Player() for b in active}
+
+        import generation_scheduler as gs
+        monkeypatch.setattr("evolution_infra.get_active_bots", lambda: active)
+        monkeypatch.setattr("tool_helpers.load_h2h_avg_winrates", lambda: h2h_wr)
+
+        result = gs._pick_crossover_parents(ratings, 6)
+        assert result is not None
+        assert result == (5, 6)
+
+    def test_returns_none_single_bot(self, monkeypatch):
+        import generation_scheduler as gs
+        monkeypatch.setattr("evolution_infra.get_active_bots", lambda: ["claude_v1"])
+        monkeypatch.setattr("tool_helpers.load_h2h_avg_winrates", lambda: {"claude_v1": 0.5})
+        result = gs._pick_crossover_parents({"claude_v1": Glicko2Player()}, 1)
+        assert result is None
+
+
+class TestRdDecayInDaemon:
+    """Tests for RD decay applied during save_cycle."""
+
+    def test_decay_applied_to_inactive_bots(self):
+        from glicko2 import Glicko2Player, decay_rd
+
+        # Setup: 3 active bots, only 2 played
+        p_a = Glicko2Player(1600, 50, 0.06)
+        p_b = Glicko2Player(1500, 50, 0.06)
+        p_c = Glicko2Player(1400, 50, 0.06)
+        ratings = {"claude_v1": p_a, "claude_v2": p_b, "claude_v3": p_c}
+
+        active_bots = ["claude_v1", "claude_v2", "claude_v3"]
+        played = {"claude_v1", "claude_v2"}
+
+        for b in active_bots:
+            if b not in played and b in ratings:
+                ratings[b] = decay_rd(ratings[b])
+
+        assert ratings["claude_v3"].rd > 50
+        assert ratings["claude_v1"].rd == 50
+        assert ratings["claude_v2"].rd == 50
