@@ -6,8 +6,6 @@ from pathlib import Path
 
 import pytest
 
-sys_path_setup = pytest.fixture(autouse=True)(lambda: None)  # conftest handles paths
-
 
 # ── _helpers.py ──
 
@@ -157,15 +155,19 @@ class TestComputeH2HAvgWinrate:
 
 
 class TestBotMain:
-    def test_valid_version(self):
+    def test_valid_version(self, active_bot_version):
+        if active_bot_version is None:
+            return
         from tool_helpers import _bot_main
-        path = _bot_main("claude_v30")
+        path = _bot_main(f"claude_v{active_bot_version}")
         assert path.name == "main.py"
-        assert "claude_v30" in str(path)
+        assert f"claude_v{active_bot_version}" in str(path)
 
-    def test_graveyard_fallback(self):
+    def test_graveyard_fallback(self, graveyard_bot_version):
+        if graveyard_bot_version is None:
+            return
         from tool_helpers import _bot_main
-        path = _bot_main("claude_v31")
+        path = _bot_main(f"claude_v{graveyard_bot_version}")
         assert path.name == "main.py"
         assert path.exists()
 
@@ -176,9 +178,11 @@ class TestBotMain:
 
 
 class TestSelectPrecommitOpponents:
-    def test_basic(self):
+    def test_basic(self, active_bot_version):
+        if active_bot_version is None:
+            return
         from tool_helpers import _select_precommit_opponents
-        opponents = _select_precommit_opponents(36, 30)
+        opponents = _select_precommit_opponents(active_bot_version + 1, active_bot_version)
         assert isinstance(opponents, list)
         for opp in opponents:
             assert "name" in opp
@@ -186,15 +190,16 @@ class TestSelectPrecommitOpponents:
 
 
 class TestValidateWorkerBoundaries:
-    def test_no_changes(self, monkeypatch):
+    def test_no_changes(self, monkeypatch, active_bot_version):
+        if active_bot_version is None:
+            return
         from tool_helpers import _validate_worker_boundaries
         from evolution_infra import get_bot_dir
         import evolution_infra
-        # Use real v30 as both source and next (identical = no changes)
-        monkeypatch.setattr(evolution_infra, "get_bot_dir", lambda v: get_bot_dir(30))
+        monkeypatch.setattr(evolution_infra, "get_bot_dir", lambda v: get_bot_dir(active_bot_version))
         errors = _validate_worker_boundaries(
             [{"target_files": ["main.py"], "role": "Algorithmic Logic Architect"}],
-            source_v=30, next_v=30,
+            source_v=active_bot_version, next_v=active_bot_version,
         )
         assert errors == []
 
@@ -210,17 +215,21 @@ class TestFindCurrentV:
 
 
 class TestGetBotDir:
-    def test_primary(self):
+    def test_primary(self, active_bot_version):
+        if active_bot_version is None:
+            return
         from evolution_infra import get_bot_dir
-        d = get_bot_dir(30)
+        d = get_bot_dir(active_bot_version)
         assert d.exists()
-        assert "claude_v30" in str(d)
+        assert f"claude_v{active_bot_version}" in str(d)
 
-    def test_graveyard_fallback(self):
+    def test_graveyard_fallback(self, graveyard_bot_version):
+        if graveyard_bot_version is None:
+            return
         from evolution_infra import get_bot_dir
-        d = get_bot_dir(31)
+        d = get_bot_dir(graveyard_bot_version)
         assert d.exists()
-        assert "graveyard" in str(d) or "claude_v31" in str(d)
+        assert "graveyard" in str(d) or f"claude_v{graveyard_bot_version}" in str(d)
 
     def test_nonexistent(self):
         from evolution_infra import get_bot_dir

@@ -96,6 +96,33 @@ def sample_h2h():
     }
 
 
+@pytest.fixture(scope="session")
+def active_bot_version():
+    from evolution_infra import get_active_bots
+    bots = get_active_bots()
+    if not bots:
+        return None
+    versions = sorted(int(b.split("_v")[1]) for b in bots)
+    return versions[len(versions) // 2]
+
+
+@pytest.fixture(scope="session")
+def graveyard_bot_version():
+    main_bots = PROJECT_ROOT / "bots"
+    graveyard = main_bots / "graveyard"
+    main_names = set()
+    if main_bots.exists():
+        main_names = {d.name for d in main_bots.iterdir() if d.is_dir() and d.name.startswith("claude_v")}
+    if graveyard.exists():
+        for d in sorted(graveyard.iterdir(), reverse=True):
+            if d.is_dir() and d.name.startswith("claude_v") and d.name not in main_names:
+                try:
+                    return int(d.name.split("_v")[1])
+                except (ValueError, IndexError):
+                    pass
+    return None
+
+
 @pytest.fixture(autouse=True)
 def isolate_state(tmp_path):
     """Redirect all persistent state to tmp so tests don't touch real data files."""

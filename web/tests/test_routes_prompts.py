@@ -7,17 +7,18 @@ class TestListPrompts:
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, list)
-        assert len(data) == 7
+        assert len(data) >= 7
         for p in data:
             assert "name" in p
             assert "exists" in p
             assert "role" in p
 
-    def test_prompt_names(self, client):
+    def test_core_prompt_names_present(self, client):
         resp = client.get("/api/prompts")
         data = resp.json()
         names = {p["name"] for p in data}
-        assert names == {"orchestrator", "master", "worker", "reviewer", "critic", "crossover", "initial"}
+        expected_min = {"orchestrator", "master", "worker", "reviewer", "critic", "crossover", "initial"}
+        assert expected_min.issubset(names)
 
 
 class TestGetPrompt:

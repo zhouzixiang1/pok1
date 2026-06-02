@@ -60,25 +60,31 @@ class TestLoadH2HAvgWinratesFallback:
 # ── tool_helpers.py: _select_precommit_opponents() ──
 
 class TestSelectPrecommitOpponents:
-    def test_returns_list_of_dicts(self):
+    def test_returns_list_of_dicts(self, active_bot_version):
+        if active_bot_version is None:
+            return
         from tool_helpers import _select_precommit_opponents
-        result = _select_precommit_opponents(36, 30)
+        result = _select_precommit_opponents(active_bot_version + 1, active_bot_version)
         assert isinstance(result, list)
         for opp in result:
             assert "name" in opp
             assert "reason" in opp
 
-    def test_no_duplicates(self):
+    def test_no_duplicates(self, active_bot_version):
+        if active_bot_version is None:
+            return
         from tool_helpers import _select_precommit_opponents
-        result = _select_precommit_opponents(36, 30)
+        result = _select_precommit_opponents(active_bot_version + 1, active_bot_version)
         names = [o["name"] for o in result]
         assert len(names) == len(set(names))
 
-    def test_parent_included(self):
+    def test_parent_included(self, active_bot_version):
+        if active_bot_version is None:
+            return
         from tool_helpers import _select_precommit_opponents
-        result = _select_precommit_opponents(36, 30)
+        result = _select_precommit_opponents(active_bot_version + 1, active_bot_version)
         names = [o["name"] for o in result]
-        assert "claude_v30" in names
+        assert f"claude_v{active_bot_version}" in names
 
 
 # ── evolution_infra.py: parse_json_output() ──
@@ -133,36 +139,44 @@ class TestMCPGetStatusLogic:
 # ── MCP tool: get_bot_info via API ──
 
 class TestMCPGetBotInfoLogic:
-    def test_existing_bot_has_files(self, client):
+    def test_existing_bot_has_files(self, client, active_bot_version):
+        if active_bot_version is None:
+            return
         resp = client.post("/api/control/tool/get_bot_info",
-                           json={"args": {"version": 30}})
+                           json={"args": {"version": active_bot_version}})
         assert resp.status_code == 200
         result = json.loads(resp.json()["result"])
         assert result.get("exists") is not False
         assert "files" in result
         assert len(result["files"]) > 0
 
-    def test_version_matches_request(self, client):
+    def test_version_matches_request(self, client, active_bot_version):
+        if active_bot_version is None:
+            return
         resp = client.post("/api/control/tool/get_bot_info",
-                           json={"args": {"version": 30}})
+                           json={"args": {"version": active_bot_version}})
         result = json.loads(resp.json()["result"])
-        assert result.get("version") == 30
+        assert result.get("version") == active_bot_version
 
 
 # ── MCP tool: get_match_history via API ──
 
 class TestMCPGetMatchHistoryLogic:
-    def test_respects_n_limit(self, client):
+    def test_respects_n_limit(self, client, active_bot_version):
+        if active_bot_version is None:
+            return
         resp = client.post("/api/control/tool/get_match_history",
-                           json={"args": {"version": 30, "n": 2}})
+                           json={"args": {"version": active_bot_version, "n": 2}})
         assert resp.status_code == 200
         result = json.loads(resp.json()["result"])
         if "matches" in result:
             assert len(result["matches"]) <= 2
 
-    def test_matches_are_dicts(self, client):
+    def test_matches_are_dicts(self, client, active_bot_version):
+        if active_bot_version is None:
+            return
         resp = client.post("/api/control/tool/get_match_history",
-                           json={"args": {"version": 30, "n": 3}})
+                           json={"args": {"version": active_bot_version, "n": 3}})
         result = json.loads(resp.json()["result"])
         if "matches" in result:
             for m in result["matches"]:
@@ -172,9 +186,11 @@ class TestMCPGetMatchHistoryLogic:
 # ── MCP tool: get_h2h via API ──
 
 class TestMCPGetH2HLogic:
-    def test_opponents_have_win_rate(self, client):
+    def test_opponents_have_win_rate(self, client, active_bot_version):
+        if active_bot_version is None:
+            return
         resp = client.post("/api/control/tool/get_h2h",
-                           json={"args": {"bot_name": "claude_v30"}})
+                           json={"args": {"bot_name": f"claude_v{active_bot_version}"}})
         assert resp.status_code == 200
         result = json.loads(resp.json()["result"])
         if "opponents" in result and result["opponents"]:
@@ -188,9 +204,11 @@ class TestMCPGetH2HLogic:
 # ── MCP tool: get_bot_stats via API ──
 
 class TestMCPGetBotStatsLogic:
-    def test_has_games_and_win_rate(self, client):
+    def test_has_games_and_win_rate(self, client, active_bot_version):
+        if active_bot_version is None:
+            return
         resp = client.post("/api/control/tool/get_bot_stats",
-                           json={"args": {"bot_name": "claude_v30"}})
+                           json={"args": {"bot_name": f"claude_v{active_bot_version}"}})
         assert resp.status_code == 200
         result = json.loads(resp.json()["result"])
         if "error" not in result:

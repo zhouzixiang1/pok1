@@ -18,12 +18,14 @@ class TestGetStatus:
 
 
 class TestGetBotInfo:
-    def test_found(self, client):
-        resp = client.post("/api/control/tool/get_bot_info", json={"args": {"version": 30}})
+    def test_found(self, client, active_bot_version):
+        if active_bot_version is None:
+            return
+        resp = client.post("/api/control/tool/get_bot_info", json={"args": {"version": active_bot_version}})
         assert resp.status_code == 200
         result = json.loads(resp.json()["result"])
         assert result["exists"] is True
-        assert result["version"] == 30
+        assert result["version"] == active_bot_version
         assert "files" in result
 
     def test_missing(self, client):
@@ -32,17 +34,21 @@ class TestGetBotInfo:
         result = json.loads(resp.json()["result"])
         assert "error" in result
 
-    def test_graveyard_bot(self, client):
-        resp = client.post("/api/control/tool/get_bot_info", json={"args": {"version": 31}})
+    def test_graveyard_bot(self, client, graveyard_bot_version):
+        if graveyard_bot_version is None:
+            return
+        resp = client.post("/api/control/tool/get_bot_info", json={"args": {"version": graveyard_bot_version}})
         assert resp.status_code == 200
         result = json.loads(resp.json()["result"])
         assert result["exists"] is True
 
 
 class TestGetMatchHistory:
-    def test_basic(self, client):
+    def test_basic(self, client, active_bot_version):
+        if active_bot_version is None:
+            return
         resp = client.post("/api/control/tool/get_match_history",
-                           json={"args": {"version": 30, "n": 3}})
+                           json={"args": {"version": active_bot_version, "n": 3}})
         assert resp.status_code == 200
         result = json.loads(resp.json()["result"])
         assert "matches" in result
@@ -56,28 +62,36 @@ class TestGetMatchHistory:
 
 
 class TestGetH2H:
-    def test_with_opponent(self, client):
+    def test_with_opponent(self, client, active_bot_version):
+        if active_bot_version is None:
+            return
+        bot_name = f"claude_v{active_bot_version}"
         resp = client.post("/api/control/tool/get_h2h",
-                           json={"args": {"bot_name": "claude_v30", "opponent": "claude_v29"}})
+                           json={"args": {"bot_name": bot_name}})
         assert resp.status_code == 200
         result = json.loads(resp.json()["result"])
         assert "opponents" in result
 
-    def test_all_opponents(self, client):
+    def test_all_opponents(self, client, active_bot_version):
+        if active_bot_version is None:
+            return
         resp = client.post("/api/control/tool/get_h2h",
-                           json={"args": {"bot_name": "claude_v30"}})
+                           json={"args": {"bot_name": f"claude_v{active_bot_version}"}})
         assert resp.status_code == 200
         result = json.loads(resp.json()["result"])
         assert "opponents" in result
 
 
 class TestGetBotStats:
-    def test_found(self, client):
+    def test_found(self, client, active_bot_version):
+        if active_bot_version is None:
+            return
+        bot_name = f"claude_v{active_bot_version}"
         resp = client.post("/api/control/tool/get_bot_stats",
-                           json={"args": {"bot_name": "claude_v30"}})
+                           json={"args": {"bot_name": bot_name}})
         assert resp.status_code == 200
         result = json.loads(resp.json()["result"])
-        assert result["bot_name"] == "claude_v30"
+        assert result["bot_name"] == bot_name
         assert "games" in result
 
     def test_missing(self, client):

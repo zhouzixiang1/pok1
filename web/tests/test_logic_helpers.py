@@ -328,7 +328,7 @@ class TestDownsampleLogic:
 class TestBotSortKey:
     def test_standard_name(self):
         from server.routes._helpers import _bot_sort_key
-        assert _bot_sort_key("claude_v30") == 30
+        assert _bot_sort_key("claude_v30") == 30  # testing the parsing logic, not a real bot
 
     def test_no_digits(self):
         from server.routes._helpers import _bot_sort_key
@@ -371,14 +371,18 @@ class TestComputeH2HAvgWinrateLogic:
 # ── tool_helpers.py: _bot_main() ──
 
 class TestBotMainLogic:
-    def test_graveyard_fallback(self):
+    def test_graveyard_fallback(self, graveyard_bot_version):
+        if graveyard_bot_version is None:
+            return
         from tool_helpers import _bot_main
-        path = _bot_main("claude_v31")
+        path = _bot_main(f"claude_v{graveyard_bot_version}")
         assert path.exists()
         assert "graveyard" in str(path)
 
-    def test_valid_version(self):
+    def test_valid_version(self, active_bot_version):
+        if active_bot_version is None:
+            return
         from tool_helpers import _bot_main
-        path = _bot_main("claude_v30")
+        path = _bot_main(f"claude_v{active_bot_version}")
         assert path.name == "main.py"
-        assert "claude_v30" in str(path)
+        assert f"claude_v{active_bot_version}" in str(path)

@@ -42,16 +42,16 @@ class TestMatchReplay:
         resp = client.get("/api/matches/replay/nonexistent_replay_id")
         assert resp.status_code == 404
 
-    def test_existing(self, client):
-        # Find a real replay file
-        from pathlib import Path
-        replay_dir = Path(__file__).resolve().parents[2] / "web" / "core" / "results" / "match_replay"
-        if not replay_dir.exists():
-            return
-        replays = list(replay_dir.iterdir())
-        if not replays:
-            return
-        match_id = replays[0].name
+    def test_existing(self, client, tmp_path, monkeypatch):
+        from server.routes import matches
+        import json
+
+        replay_dir = tmp_path / "match_replay"
+        replay_dir.mkdir()
+        match_id = "test_match_001"
+        (replay_dir / match_id).write_text(json.dumps({"hands": [], "winner": "a"}))
+        monkeypatch.setattr(matches, "REPLAY_DIR", replay_dir)
+
         resp = client.get(f"/api/matches/replay/{match_id}")
         assert resp.status_code == 200
         assert isinstance(resp.json(), dict)

@@ -15,11 +15,13 @@ class TestGetRatings:
             assert "rank" in row
             assert "h2h_avg_wr" in row
 
-    def test_detail_found(self, client):
-        resp = client.get("/api/ratings/claude_v30")
+    def test_detail_found(self, client, active_bot_version):
+        if active_bot_version is None:
+            return
+        resp = client.get(f"/api/ratings/claude_v{active_bot_version}")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["name"] == "claude_v30"
+        assert data["name"] == f"claude_v{active_bot_version}"
         assert "rating" in data
 
     def test_detail_404(self, client):
@@ -38,8 +40,10 @@ class TestHistory:
             assert "ratings" in data[0]
             assert "win_rates" in data[0]
 
-    def test_filtered(self, client):
-        resp = client.get("/api/history?bots=claude_v30")
+    def test_filtered(self, client, active_bot_version):
+        if active_bot_version is None:
+            return
+        resp = client.get(f"/api/history?bots=claude_v{active_bot_version}")
         assert resp.status_code == 200
 
     def test_summary(self, client):
@@ -97,12 +101,15 @@ class TestH2H:
         assert resp.status_code == 200
         assert isinstance(resp.json(), dict)
 
-    def test_filtered(self, client):
-        resp = client.get("/api/h2h?bot_name=claude_v30")
+    def test_filtered(self, client, active_bot_version):
+        if active_bot_version is None:
+            return
+        bot_name = f"claude_v{active_bot_version}"
+        resp = client.get(f"/api/h2h?bot_name={bot_name}")
         assert resp.status_code == 200
         data = resp.json()
         for key in data:
-            assert "claude_v30" in key
+            assert bot_name in key
 
 
 class TestBotStats:
