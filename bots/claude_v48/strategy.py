@@ -79,13 +79,13 @@ def choose_raise(
         draw_info = empty_draw_profile()
     wetness = board_texture["wetness"]
     if round_idx == 0:
-        ratio = 0.55 if to_call == 0 else 0.75
+        ratio = 0.65 if to_call == 0 else 0.80
     elif round_idx == 1:
-        ratio = 0.65
-    elif round_idx == 2:
         ratio = 0.75
+    elif round_idx == 2:
+        ratio = 0.85
     else:
-        ratio = 0.92
+        ratio = 0.95
 
     ratio += max(0.0, win_rate - 0.55) * (0.90 + 0.20 * round_idx)
     ratio += -0.05 if has_position else 0.05
@@ -173,8 +173,8 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
 
     if spot_info["preflop_spot"] == "sb_open":
         # Lower SB open/limp thresholds to open ~75% and limp ~10% more.
-        open_threshold = 0.36 + match_adjust + match_profile["open_delta"] - early_game_bonus
-        limp_threshold = 0.24 + match_adjust - early_game_bonus
+        open_threshold = 0.30 + match_adjust + match_profile["open_delta"] - early_game_bonus
+        limp_threshold = 0.20 + match_adjust - early_game_bonus
         raise_amount = choose_raise(
             state.get("min_raise_action", state["round_raise"]),
             my_chips,
@@ -248,10 +248,10 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
         if preflop_strength >= 0.38 - early_game_bonus:
             return 0
         # Fold the very weakest hands
-        if preflop_strength < 0.26 - early_game_bonus:
+        if preflop_strength < 0.22 - early_game_bonus:
             return -1
         # 0.26–0.38 gap: call if getting good pot odds and hand isn't total trash
-        if pot_odds < 0.45 and not trash_hand:
+        if pot_odds < 0.50 and not trash_hand:
             return 0
         return -1
 
@@ -391,19 +391,29 @@ def get_action(req, requests):
         else {"active": False, "severe": False, "line_strength": 0.0, "size_bucket": "small"}
     )
 
-    # Postflop fold gate (v40 primary + v45 secondary rules)
-    if (round_idx > 0 and to_call > 0 and len(public_cards) >= 3
-            and not anti_lock_pressure and to_call < my_chips):
-        if should_fold_postflop(made_strength, draw_strength, round_idx, spot_info,
-                board_texture, pair_profile, value_profile, pot_odds, blocker_profile, opponent_model):
+    # Postflop fold detection layer (v40): structural mechanism to break 0% fold rate.
+    # Only applies when facing a bet and NOT under match-ending pressure.
+    if (
+        round_idx > 0
+        and to_call > 0
+        and len(public_cards) >= 3
+        and not anti_lock_pressure
+        and to_call < my_chips
+    ):
+        if should_fold_postflop(
+            made_strength,
+            draw_strength,
+            round_idx,
+            spot_info,
+            board_texture,
+            pair_profile,
+            value_profile,
+            pot_odds,
+            blocker_profile,
+            opponent_model,
+        ):
             return -1
-        # R3: medium showdown vs river barrels (targeted fold rule)
-        _ob = spot_info.get("opp_postflop_bet_count", 0)
-        _bl = blocker_profile is not None and blocker_profile["eligible"]
-        if (round_idx == 3 and 0.18 <= made_strength < 0.40 and _ob >= 2
-                and pot_odds > 0.30 and draw_strength < 0.08 and not _bl
-                and (value_profile is None or value_profile["tier"] in ("none", "thin"))):
-            return -1
+
     # Anti-bot_4 adjustments
     if board_texture is not None:
         anti_bot4 = get_anti_bot4_adjustments(bot4_score, board_texture, spot_info, round_idx, value_profile)

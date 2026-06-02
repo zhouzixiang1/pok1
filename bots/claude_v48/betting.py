@@ -165,27 +165,27 @@ def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength
     size_bucket = bet_size_bucket(spot_info["last_raise_pot_ratio"])
 
     if weak_showdown:
-        margin += 0.012
+        margin += 0.022
     if air_hand:
-        margin += 0.020
+        margin += 0.038
 
     if spot_info["facing_postflop_aggression"]:
-        margin += 0.008
+        margin += 0.015
         if size_bucket == "small":
             margin += 0.015
         elif size_bucket == "medium":
             margin += 0.010
         else:
-            margin += 0.025
+            margin += 0.045
 
         if spot_info.get("opp_postflop_bet_count", 0) >= 2:
             margin += 0.024 if size_bucket == "small" else 0.014
         if round_idx >= 2 and air_hand:
-            margin += 0.010
+            margin += 0.020
         if round_idx == 3 and size_bucket == "large":
-            margin += 0.022
+            margin += 0.042
         if round_idx == 3 and weak_showdown and size_bucket == "medium":
-            margin += 0.010
+            margin += 0.020
 
     if not has_position:
         margin += 0.008
@@ -196,7 +196,7 @@ def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength
     else:
         margin -= confidence * max(0.0, opponent_model["postflop_aggr"] - 0.50) * 0.008
 
-    return clamp(margin, 0.0, 0.055)
+    return clamp(margin, 0.0, 0.08)
 
 
 def realized_postflop_equity(
@@ -215,36 +215,36 @@ def realized_postflop_equity(
     eqr = 1.0
 
     if air_hand:
-        eqr = 0.50 if has_position else 0.38
+        eqr = 0.60 if has_position else 0.48
 
         if spot_info.get("opp_postflop_bet_count", 0) >= 2:
-            eqr -= 0.18
+            eqr -= 0.15
         if round_idx == 2:
-            eqr -= 0.10
+            eqr -= 0.07
         elif round_idx == 3:
-            eqr -= 0.22
+            eqr -= 0.19
 
-        eqr = clamp(eqr, 0.35, 0.72)
+        eqr = clamp(eqr, 0.40, 0.80)
         return win_rate * eqr
 
     if pair_profile is not None and pair_profile["made_class"] == 1:
         pair_type = pair_profile["pair_type"]
 
         if pair_type in ("middle_pair", "bottom_pair", "underpair", "board_pair"):
-            eqr = 0.80 if has_position else 0.70
+            eqr = 0.84 if has_position else 0.75
 
             if pair_profile["weak_kicker"]:
-                eqr -= 0.09
+                eqr -= 0.07
             if spot_info.get("opp_postflop_bet_count", 0) >= 2:
-                eqr -= 0.12
+                eqr -= 0.09
             if round_idx == 3:
-                eqr -= 0.15
+                eqr -= 0.12
 
-            eqr = clamp(eqr, 0.50, 0.85)
+            eqr = clamp(eqr, 0.58, 0.88)
             return win_rate * eqr
 
         if pair_type == "top_pair" and pair_profile["weak_kicker"]:
-            eqr = 0.89 if has_position else 0.82
+            eqr = 0.92 if has_position else 0.86
             if spot_info.get("opp_postflop_bet_count", 0) >= 2:
                 eqr -= 0.04
             eqr = clamp(eqr, 0.75, 0.95)
@@ -441,7 +441,7 @@ def should_fold_postflop(
 
         if (is_weak_pair or is_weak_middle) and size_bucket in ("medium", "large"):
             # Higher draw threshold vs aggressive (fold even with slightly more draw equity)
-            effective_draw_threshold = 0.16 + aggr_delta * 0.5
+            effective_draw_threshold = 0.12 + aggr_delta * 0.5
             if draw_strength < effective_draw_threshold:
                 call_equity = max(0.10, made_strength + draw_strength)
                 ev = call_equity - pot_odds
@@ -468,7 +468,7 @@ def should_fold_postflop(
     # On river facing any bet, very weak pairs (bottom/under/board pair)
     # with no draw equity should fold.
     # Adaptive: expand made_strength threshold vs aggressive opponents.
-    effective_cat4_made = 0.30 + aggr_delta * 0.5
+    effective_cat4_made = 0.35 + aggr_delta * 0.5
     if round_idx == 3 and made_strength < effective_cat4_made and draw_strength < 0.08:
         if pair_profile is not None and pair_profile["pair_type"] in ("bottom_pair", "underpair", "board_pair"):
             return True
@@ -488,7 +488,7 @@ def should_fold_postflop(
     # Counter-aggression guard: if opponent is barrel-heavy (≥3 postflop bets),
     # skip this fold — opponent may be over-barreling with wide range.
     # Adaptive: expand upper bound vs aggressive opponents.
-    effective_cat6_upper = 0.26 + aggr_delta * 0.5
+    effective_cat6_upper = 0.30 + aggr_delta * 0.5
     if (round_idx == 2 and 0.18 <= made_strength < effective_cat6_upper and draw_strength < 0.10
             and size_bucket == "large" and not has_blocker
             and (not value_profile or value_profile["tier"] == "none")
@@ -505,6 +505,43 @@ def should_fold_postflop(
                 and made_strength < 0.32 + aggr_delta * 0.5
                 and (value_profile is None or value_profile["tier"] not in ("strong", "nut"))):
             return True
+
+    # --- Category 8: Weak top pair on river facing medium/large bets ---
+    # Top pair with weak kicker is often dominated by better top-pair combos.
+    # On the river with no draw redraw and a non-dynamic board, fold to real pressure.
+    if (round_idx == 3
+            and pair_profile is not None and pair_profile["made_class"] == 1
+            and pair_profile["pair_type"] == "top_pair"
+            and pair_profile["weak_kicker"]
+            and size_bucket in ("medium", "large")
+            and draw_strength < 0.10
+            and (board_texture is None or not board_texture.get("dynamic", False))
+            and (value_profile is None or value_profile["tier"] not in ("strong", "nut"))):
+        return True
+
+    # --- Category 9: Overpair on dynamic board facing turn aggression ---
+    # Overpairs look strong but are vulnerable on dynamic (straight/flush-completing)
+    # boards. When opponent shows aggression with real sizing, overpairs shrink.
+    if (round_idx == 2
+            and pair_profile is not None and pair_profile["pair_type"] == "overpair"
+            and board_texture is not None and board_texture.get("dynamic", False)
+            and spot_info["facing_postflop_aggression"]
+            and size_bucket in ("medium", "large")
+            and (value_profile is None or value_profile["tier"] not in ("strong", "nut"))):
+        return True
+
+    # --- Category 10: Second pair on turn facing large bets ---
+    # Middle pair (second pair) with weak kicker facing a large turn bet is
+    # dominated by top-pair and two-pair+ combos. Fold without draw equity.
+    if (round_idx == 2
+            and pair_profile is not None and pair_profile["made_class"] == 1
+            and pair_profile["pair_type"] == "middle_pair"
+            and size_bucket == "large"
+            and draw_strength < 0.12
+            and not has_blocker
+            and (value_profile is None or value_profile["tier"] not in ("strong", "nut"))):
+        return True
+
     return False
 
 
