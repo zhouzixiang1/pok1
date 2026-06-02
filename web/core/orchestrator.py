@@ -620,16 +620,23 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
     if not no_daemon:
         from evolution_core import start_daemon, daemon_monitor_thread
         import threading
-        start_daemon(workers=daemon_workers, pairs=daemon_pairs)
-        _daemon_stop = threading.Event()
-        monitor = threading.Thread(
-            target=daemon_monitor_thread,
-            args=(ui, _daemon_stop, daemon_workers, daemon_pairs),
-            daemon=True,
-        )
-        monitor.start()
-        if ui:
-            ui.log_history("Daemon started.", "info")
+        try:
+            start_daemon(workers=daemon_workers, pairs=daemon_pairs)
+        except Exception as e:
+            if ui:
+                ui.log_history(f"Daemon start failed: {e}", "error")
+            log.error("Daemon start failed: %s", e)
+            no_daemon = True
+        if not no_daemon:
+            _daemon_stop = threading.Event()
+            monitor = threading.Thread(
+                target=daemon_monitor_thread,
+                args=(ui, _daemon_stop, daemon_workers, daemon_pairs),
+                daemon=True,
+            )
+            monitor.start()
+            if ui:
+                ui.log_history("Daemon started.", "info")
 
     log_file = LOGS_DIR / f"orchestrator_{time.strftime('%Y%m%d_%H%M%S')}.txt"
     gen_count = 0

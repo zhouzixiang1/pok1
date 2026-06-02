@@ -497,8 +497,8 @@ def start_daemon(workers=14, pairs=5):
                 raw = daemon_pid_file.read_text().strip()
                 try:
                     info = json.loads(raw)
-                    old_pid = info["pid"]
-                except (json.JSONDecodeError, KeyError):
+                    old_pid = info["pid"] if isinstance(info, dict) else int(info)
+                except (json.JSONDecodeError, KeyError, TypeError):
                     old_pid = int(raw)
                 try:
                     os.killpg(os.getpgid(old_pid), signal.SIGTERM)

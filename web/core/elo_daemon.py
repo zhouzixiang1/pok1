@@ -449,7 +449,8 @@ def main():
     if _daemon_pid_file.exists():
         try:
             info = json.loads(_daemon_pid_file.read_text().strip())
-            _stored_ppid = info.get("ppid")
+            if isinstance(info, dict):
+                _stored_ppid = info.get("ppid")
         except (json.JSONDecodeError, KeyError):
             pass
 
