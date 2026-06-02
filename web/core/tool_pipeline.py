@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 from typing import Annotated, TypedDict
 
@@ -52,7 +53,7 @@ from system_log import log_system_event
 def _record_quality_failure(gen, worker_id, role, error):
     """Record a quality gate rejection (reviewer/critic) to worker_failures.jsonl."""
     from evolution_core import WORKER_FAILURES_FILE, locked_file
-    entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error, "timestamp": __import__("time").time()}
+    entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error, "timestamp": time.time()}
     with locked_file(WORKER_FAILURES_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 

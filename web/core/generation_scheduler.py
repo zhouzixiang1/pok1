@@ -144,7 +144,7 @@ def _pick_crossover_parents(ratings, current_v) -> tuple | None:
     if len(rated) < 2:
         return None
     parent_a = rated[0]
-    # Pick parent with most different playstyle
+    # Second parent: highest-rated after parent_a
     parent_b = rated[1]
     try:
         va = int(parent_a.split("_v")[1])

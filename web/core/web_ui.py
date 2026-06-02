@@ -57,23 +57,50 @@ class EventBroadcaster:
             self._clients.pop(cid, None)
 
     def broadcast(self, event_type: str, payload: dict):
-        """Sync-safe broadcast. Stores in ring buffer, pushes to all queues."""
+        """Thread-safe broadcast. Stores in ring buffer, pushes to all queues.
+
+        Detects whether called from the event loop thread or a background thread
+        (e.g. daemon_monitor_thread). For cross-thread calls, routes through
+        loop.call_soon_threadsafe() to avoid unsafe asyncio.Queue manipulation.
+        """
         payload = {**payload, "ts": time.time()}
         sse_data = {"event": event_type, "data": json.dumps(payload)}
         with self._lock:
             self._ring_buffer.append(sse_data)
             for q in self._clients.values():
-                try:
-                    q.put_nowait(sse_data)
-                except asyncio.QueueFull:
-                    try:
-                        q.get_nowait()
-                    except asyncio.QueueEmpty:
-                        pass
-                    try:
-                        q.put_nowait(sse_data)
-                    except asyncio.QueueFull:
-                        pass
+                self._safe_put(q, sse_data)
+
+    def _safe_put(self, q, item):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        q_loop = getattr(q, '_loop', None)
+        if loop is not None and loop is q_loop:
+            # Same event loop — direct put
+            try:
+                q.put_nowait(item)
+            except asyncio.QueueFull:
+                pass
+        elif q_loop is not None:
+            # Cross-thread — route through event loop
+            try:
+                q_loop.call_soon_threadsafe(self._try_put, q, item)
+            except RuntimeError:
+                pass
+        else:
+            # No event loop at all (tests, CLI) — safe to put directly
+            try:
+                q.put_nowait(item)
+            except asyncio.QueueFull:
+                pass
+
+    @staticmethod
+    def _try_put(q, item):
+        try:
+            q.put_nowait(item)
+        except asyncio.QueueFull:
+            pass
 
 
 class WebUI(BaseUI):
@@ -113,6 +140,14 @@ class WebUI(BaseUI):
                             pass
         except OSError:
             pass
+        # Add archived cost total (preserved during archive_rotate_files)
+        try:
+            from evolution_infra import ARCHIVE_DIR
+            summary = ARCHIVE_DIR / "cost_summary.json"
+            if summary.exists():
+                total += json.loads(summary.read_text()).get("grand_total", 0.0)
+        except Exception:
+            pass
         return total
 
     def _emit(self, event_type: str, payload: dict):
@@ -149,6 +184,7 @@ class WebUI(BaseUI):
             "claude": "[CLAUDE] ",
             "thinking": "[THINK] ",
             "tool": "[TOOL] ",
+            "tool_result": "[RESULT] ",
             "error": "[ERR] ",
         }
         prefix = prefix_map.get(stream_type, "  ")

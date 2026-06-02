@@ -1,7 +1,6 @@
 """Log endpoints — generation logs browsing, orchestrator logs, system events, and worker failures."""
 
 import json
-import re
 import time
 from pathlib import Path
 
@@ -17,18 +16,8 @@ router = APIRouter(prefix="/api", tags=["logs"])
 
 @router.get("/logs/generations")
 async def list_generations():
-    if not RESULTS_DIR.exists():
-        return []
-    versions = []
-    dirs = sorted(
-        (p for p in RESULTS_DIR.iterdir()
-         if p.is_dir() and p.name.startswith("v") and (p / "logs").is_dir()),
-        key=lambda p: int(re.search(r'\d+', p.name).group()) if re.search(r'\d+', p.name) else 0,
-    )
-    for p in dirs:
-        files = sorted(f.name for f in (p / "logs").iterdir() if f.is_file())
-        versions.append({"version": p.name, "files": files})
-    return versions
+    from server.routes._helpers import list_generation_dirs
+    return list_generation_dirs(RESULTS_DIR)
 
 
 @router.get("/logs/generations/{version}/{filename}")

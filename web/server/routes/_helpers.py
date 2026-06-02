@@ -103,6 +103,7 @@ def build_match_matrix(h2h_data: dict | None, ratings_data: dict | None, stats_d
         if ratings_data:
             all_bots &= set(ratings_data.keys())
         bot_names = sorted(all_bots, key=_bot_sort_key)
+        idx = {name: i for i, name in enumerate(bot_names)}
         n = len(bot_names)
         wr_matrix = [[None] * n for _ in range(n)]
         for k, v in h2h_data.items():
@@ -110,8 +111,8 @@ def build_match_matrix(h2h_data: dict | None, ratings_data: dict | None, stats_d
             if len(parts) != 2:
                 continue
             a, b = parts[0].strip(), parts[1].strip()
-            if a in bot_names and b in bot_names:
-                i, j = bot_names.index(a), bot_names.index(b)
+            if a in idx and b in idx:
+                i, j = idx[a], idx[b]
                 wr = v.get("win_rate")
                 if wr is not None:
                     wr_matrix[i][j] = round(wr, 4)
@@ -123,6 +124,7 @@ def build_match_matrix(h2h_data: dict | None, ratings_data: dict | None, stats_d
         return {"bots": [], "matrix": []}
     ratings = ratings_data or {}
     bot_names = sorted(ratings.keys(), key=_bot_sort_key)
+    idx = {name: i for i, name in enumerate(bot_names)}
     n = len(bot_names)
     matrix = [[0] * n for _ in range(n)]
     pairs = stats_data.get("pairs", {})
@@ -130,8 +132,8 @@ def build_match_matrix(h2h_data: dict | None, ratings_data: dict | None, stats_d
         parts = key.split(" vs ")
         if len(parts) == 2:
             a, b = parts[0].strip(), parts[1].strip()
-            if a in bot_names and b in bot_names:
-                i, j = bot_names.index(a), bot_names.index(b)
+            if a in idx and b in idx:
+                i, j = idx[a], idx[b]
                 matrix[i][j] = count
                 matrix[j][i] = count
     return {"bots": bot_names, "matrix": matrix}
@@ -166,3 +168,18 @@ def downsample(entries: list[dict], max_points: int = 200) -> list[dict]:
     if entries[-1] is not sampled[-1] and entries[-1] not in sampled:
         sampled.append(entries[-1])
     return sampled
+
+
+def list_generation_dirs(results_dir: Path) -> list[dict]:
+    if not results_dir.exists():
+        return []
+    versions = []
+    dirs = sorted(
+        (p for p in results_dir.iterdir()
+         if p.is_dir() and p.name.startswith("v") and (p / "logs").is_dir()),
+        key=lambda p: _bot_sort_key(p.name),
+    )
+    for p in dirs:
+        files = sorted(f.name for f in (p / "logs").iterdir() if f.is_file())
+        versions.append({"version": p.name, "files": files})
+    return versions

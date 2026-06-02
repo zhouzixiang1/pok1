@@ -111,18 +111,8 @@ def _downsample(entries: list[dict], max_points: int = 200) -> list[dict]:
 
 
 def _get_generations() -> list[dict]:
-    if not RESULTS_DIR.exists():
-        return []
-    versions = []
-    dirs = sorted(
-        (p for p in RESULTS_DIR.iterdir()
-         if p.is_dir() and p.name.startswith("v") and (p / "logs").is_dir()),
-        key=lambda p: int(re.search(r"\d+", p.name).group()) if re.search(r"\d+", p.name) else 0,
-    )
-    for p in dirs:
-        files = sorted(f.name for f in (p / "logs").iterdir() if f.is_file())
-        versions.append({"version": p.name, "files": files})
-    return versions
+    from server.routes._helpers import list_generation_dirs
+    return list_generation_dirs(RESULTS_DIR)
 
 
 _log = logging.getLogger("data_stream")

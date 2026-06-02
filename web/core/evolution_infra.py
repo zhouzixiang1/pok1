@@ -133,10 +133,6 @@ def _get_worker_semaphore() -> "asyncio.Semaphore":
     """Return (creating if needed) the module-level worker concurrency semaphore."""
     global _WORKER_SEMAPHORE
     if _WORKER_SEMAPHORE is None:
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            pass
         _WORKER_SEMAPHORE = asyncio.Semaphore(MAX_PARALLEL_WORKERS)
     return _WORKER_SEMAPHORE
 
@@ -404,7 +400,7 @@ def _is_shutdown(event) -> bool:
     return False
 
 
-async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=MIN_GAMES_FOR_EVAL, ui=None, shutdown_event: asyncio.Event | None = None):
+async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=MIN_GAMES_FOR_EVAL, ui=None, shutdown_event=None):
     """Wait for daemon to evaluate a new bot (async, non-blocking).
 
     Returns True when either:
@@ -811,6 +807,20 @@ def archive_rotate_files(version):
             f.writelines(archived_lines)
         with locked_file(filepath, "w") as f:
             f.writelines(hot_lines)
+        # Preserve cost total when archiving LLM costs
+        if filepath == LLM_COSTS_FILE:
+            archived_cost = sum(
+                json.loads(l).get("cost_usd", 0)
+                for l in archived_lines if l.strip()
+            )
+            summary_file = ARCHIVE_DIR / "cost_summary.json"
+            existing = 0.0
+            if summary_file.exists():
+                try:
+                    existing = json.loads(summary_file.read_text()).get("grand_total", 0.0)
+                except Exception:
+                    pass
+            summary_file.write_text(json.dumps({"grand_total": round(existing + archived_cost, 6)}))
 
 
 def archive_old_logs(keep_generations=5):
