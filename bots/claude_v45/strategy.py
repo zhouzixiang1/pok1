@@ -391,27 +391,32 @@ def get_action(req, requests):
         else {"active": False, "severe": False, "line_strength": 0.0, "size_bucket": "small"}
     )
 
-    # Postflop fold detection layer (v40): structural mechanism to break 0% fold rate.
-    # Only applies when facing a bet and NOT under match-ending pressure.
-    if (
-        round_idx > 0
-        and to_call > 0
-        and len(public_cards) >= 3
-        and not anti_lock_pressure
-        and to_call < my_chips
-    ):
-        if should_fold_postflop(
-            made_strength,
-            draw_strength,
-            round_idx,
-            spot_info,
-            board_texture,
-            pair_profile,
-            value_profile,
-            pot_odds,
-            blocker_profile,
-            opponent_model,
-        ):
+    # Postflop fold gates: primary (v40) + secondary EV rules (v45)
+    if (round_idx > 0 and to_call > 0 and len(public_cards) >= 3
+            and not anti_lock_pressure and to_call < my_chips):
+        if should_fold_postflop(made_strength, draw_strength, round_idx, spot_info,
+                board_texture, pair_profile, value_profile, pot_odds, blocker_profile, opponent_model):
+            return -1
+        _ob = spot_info.get("opp_postflop_bet_count", 0)
+        _ns = value_profile is not None and value_profile["tier"] in ("nut", "strong")
+        _bl = blocker_profile is not None and blocker_profile["eligible"]
+        # R1: weak pair (bottom/under/board) on turn/river
+        if (round_idx >= 2 and pair_profile is not None
+                and pair_profile["made_class"] == 1
+                and pair_profile["pair_type"] in ("bottom_pair", "underpair", "board_pair")
+                and win_rate * 0.65 < pot_odds and draw_strength < 0.12
+                and not _ns and not (_ob >= 3 and made_strength >= 0.30)):
+            return -1
+        # R2: air/near-air on turn
+        if (round_idx == 2 and made_strength < 0.20 and draw_strength < 0.10
+                and bet_size_bucket(spot_info["last_raise_pot_ratio"]) in ("medium", "large")
+                and pot_odds > 0.28 and not _bl):
+            return -1
+        # R3: medium showdown vs river barrels
+        if (round_idx == 3 and 0.18 <= made_strength < 0.40
+                and _ob >= 2 and pot_odds > 0.30 and draw_strength < 0.08
+                and not _bl
+                and (value_profile is None or value_profile["tier"] in ("none", "thin"))):
             return -1
 
     # Anti-bot_4 adjustments
@@ -442,24 +447,13 @@ def get_action(req, requests):
         if overbet_bluff is not None:
             return overbet_bluff
 
-    repeated_raise_trap = (
-        round_idx > 0
+    repeated_raise_trap = (round_idx > 0
         and spot_info["facing_postflop_aggression"]
-        and spot_info.get("opp_current_round_bet_count", 0) >= 2
-    )
-    strong_flush_repressure_continue = (
-        flush_profile is not None
-        and (
-            flush_profile["repressure_continue"]
-            or flush_profile["nut_like"]
-            or (
-                board_texture is not None
-                and not board_texture["paired"]
-                and flush_profile["high_hole_rank"] >= 12
-                and flush_profile["better_unseen_ranks"] <= 1
-            )
-        )
-    )
+        and spot_info.get("opp_current_round_bet_count", 0) >= 2)
+    strong_flush_repressure_continue = flush_profile is not None and (
+        flush_profile["repressure_continue"] or flush_profile["nut_like"]
+        or (board_texture is not None and not board_texture["paired"]
+            and flush_profile["high_hole_rank"] >= 12 and flush_profile["better_unseen_ranks"] <= 1))
     hard_repressure_fold = (
         repeated_raise_trap
         and not strong_flush_repressure_continue

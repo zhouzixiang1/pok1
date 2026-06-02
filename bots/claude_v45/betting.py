@@ -160,32 +160,32 @@ def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength
         return 0.0
 
     margin = 0.0
-    air_hand = made_strength < 0.18 and draw_strength < 0.08
+    air_hand = made_strength < 0.20 and draw_strength < 0.10
     weak_showdown = made_strength < 0.22
     size_bucket = bet_size_bucket(spot_info["last_raise_pot_ratio"])
 
     if weak_showdown:
-        margin += 0.022
+        margin += 0.012
     if air_hand:
-        margin += 0.038
+        margin += 0.020
 
     if spot_info["facing_postflop_aggression"]:
-        margin += 0.015
+        margin += 0.008
         if size_bucket == "small":
             margin += 0.015
         elif size_bucket == "medium":
             margin += 0.010
         else:
-            margin += 0.045
+            margin += 0.025
 
         if spot_info.get("opp_postflop_bet_count", 0) >= 2:
             margin += 0.024 if size_bucket == "small" else 0.014
         if round_idx >= 2 and air_hand:
-            margin += 0.020
+            margin += 0.010
         if round_idx == 3 and size_bucket == "large":
-            margin += 0.042
+            margin += 0.022
         if round_idx == 3 and weak_showdown and size_bucket == "medium":
-            margin += 0.020
+            margin += 0.010
 
     if not has_position:
         margin += 0.008
@@ -196,7 +196,7 @@ def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength
     else:
         margin -= confidence * max(0.0, opponent_model["postflop_aggr"] - 0.50) * 0.008
 
-    return clamp(margin, 0.0, 0.08)
+    return clamp(margin, 0.0, 0.055)
 
 
 def realized_postflop_equity(
@@ -208,43 +208,43 @@ def realized_postflop_equity(
     spot_info,
     pair_profile=None,
 ):
-    air_hand = made_strength < 0.18 and draw_strength < 0.08
+    air_hand = made_strength < 0.20 and draw_strength < 0.10
     if round_idx <= 0:
         return win_rate
 
     eqr = 1.0
 
     if air_hand:
-        eqr = 0.60 if has_position else 0.48
+        eqr = 0.50 if has_position else 0.38
 
         if spot_info.get("opp_postflop_bet_count", 0) >= 2:
-            eqr -= 0.15
+            eqr -= 0.18
         if round_idx == 2:
-            eqr -= 0.07
+            eqr -= 0.10
         elif round_idx == 3:
-            eqr -= 0.19
+            eqr -= 0.22
 
-        eqr = clamp(eqr, 0.40, 0.80)
+        eqr = clamp(eqr, 0.30, 0.72)
         return win_rate * eqr
 
     if pair_profile is not None and pair_profile["made_class"] == 1:
         pair_type = pair_profile["pair_type"]
 
         if pair_type in ("middle_pair", "bottom_pair", "underpair", "board_pair"):
-            eqr = 0.84 if has_position else 0.75
+            eqr = 0.80 if has_position else 0.70
 
             if pair_profile["weak_kicker"]:
-                eqr -= 0.07
-            if spot_info.get("opp_postflop_bet_count", 0) >= 2:
                 eqr -= 0.09
-            if round_idx == 3:
+            if spot_info.get("opp_postflop_bet_count", 0) >= 2:
                 eqr -= 0.12
+            if round_idx == 3:
+                eqr -= 0.15
 
-            eqr = clamp(eqr, 0.58, 0.88)
+            eqr = clamp(eqr, 0.50, 0.85)
             return win_rate * eqr
 
         if pair_type == "top_pair" and pair_profile["weak_kicker"]:
-            eqr = 0.92 if has_position else 0.86
+            eqr = 0.89 if has_position else 0.82
             if spot_info.get("opp_postflop_bet_count", 0) >= 2:
                 eqr -= 0.04
             eqr = clamp(eqr, 0.75, 0.95)
@@ -404,7 +404,7 @@ def should_fold_postflop(
     aggr_delta = _adaptive_aggression_delta(opponent_model)
 
     size_bucket = bet_size_bucket(spot_info["last_raise_pot_ratio"])
-    air_hand = made_strength < 0.18 and draw_strength < 0.08
+    air_hand = made_strength < 0.20 and draw_strength < 0.10
     has_blocker = blocker_profile is not None and blocker_profile.get("eligible", False)
 
     # --- Category 0: Air hands on flop facing bets ---
@@ -441,7 +441,7 @@ def should_fold_postflop(
 
         if (is_weak_pair or is_weak_middle) and size_bucket in ("medium", "large"):
             # Higher draw threshold vs aggressive (fold even with slightly more draw equity)
-            effective_draw_threshold = 0.16 + aggr_delta * 0.5
+            effective_draw_threshold = 0.14 + aggr_delta * 0.5
             if draw_strength < effective_draw_threshold:
                 call_equity = max(0.10, made_strength + draw_strength)
                 ev = call_equity - pot_odds
@@ -457,7 +457,7 @@ def should_fold_postflop(
     if round_idx >= 2 and spot_info.get("opp_current_round_bet_count", 0) >= 2:
         if board_texture is not None and board_texture["dynamic"] and size_bucket == "large":
             has_nut = value_profile is not None and value_profile["tier"] == "nut"
-            effective_draw_threshold = 0.16 + aggr_delta * 0.3
+            effective_draw_threshold = 0.14 + aggr_delta * 0.3
             has_strong_draw = draw_strength >= effective_draw_threshold
             if not has_nut and not has_strong_draw:
                 effective_made_threshold = 0.58 + aggr_delta * 0.5
@@ -468,7 +468,7 @@ def should_fold_postflop(
     # On river facing any bet, very weak pairs (bottom/under/board pair)
     # with no draw equity should fold.
     # Adaptive: expand made_strength threshold vs aggressive opponents.
-    effective_cat4_made = 0.30 + aggr_delta * 0.5
+    effective_cat4_made = 0.34 + aggr_delta * 0.5
     if round_idx == 3 and made_strength < effective_cat4_made and draw_strength < 0.08:
         if pair_profile is not None and pair_profile["pair_type"] in ("bottom_pair", "underpair", "board_pair"):
             return True
@@ -476,7 +476,7 @@ def should_fold_postflop(
     # Counter-aggression guard: if opponent is barrel-heavy (≥3 postflop bets),
     # raise threshold to avoid over-folding to pressure.
     # Adaptive: shift threshold by aggr_delta.
-    _cat5_made_threshold = 0.45 if spot_info.get("opp_postflop_bet_count", 0) >= 3 else 0.38
+    _cat5_made_threshold = 0.42 if spot_info.get("opp_postflop_bet_count", 0) >= 3 else 0.38
     _cat5_made_threshold += aggr_delta * 0.5
     if (round_idx == 3 and pair_profile and pair_profile["made_class"] == 1
             and pair_profile["pair_type"] == "middle_pair"
@@ -488,7 +488,7 @@ def should_fold_postflop(
     # Counter-aggression guard: if opponent is barrel-heavy (≥3 postflop bets),
     # skip this fold — opponent may be over-barreling with wide range.
     # Adaptive: expand upper bound vs aggressive opponents.
-    effective_cat6_upper = 0.26 + aggr_delta * 0.5
+    effective_cat6_upper = 0.30 + aggr_delta * 0.5
     if (round_idx == 2 and 0.18 <= made_strength < effective_cat6_upper and draw_strength < 0.10
             and size_bucket == "large" and not has_blocker
             and (not value_profile or value_profile["tier"] == "none")
