@@ -438,6 +438,16 @@ def main():
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
+    # Read stored parent PID for robust orphan detection
+    _stored_ppid = None
+    _daemon_pid_file = RESULTS_DIR / ".daemon_pid"
+    if _daemon_pid_file.exists():
+        try:
+            info = json.loads(_daemon_pid_file.read_text().strip())
+            _stored_ppid = info.get("ppid")
+        except (json.JSONDecodeError, KeyError):
+            pass
+
     from logging_config import configure_logging
     configure_logging()
 
@@ -550,8 +560,9 @@ def main():
                     now = time.time()
                     if now - last_parent_check >= 30:
                         last_parent_check = now
-                        if os.getppid() == 1:
-                            log.warning("Parent process died, shutting down...")
+                        cur_ppid = os.getppid()
+                        if cur_ppid == 1 or (_stored_ppid is not None and cur_ppid != _stored_ppid):
+                            log.warning("Parent process died (ppid %d → %d), shutting down...", _stored_ppid, cur_ppid)
                             running = False
                             break
 

@@ -45,6 +45,7 @@ async def lifespan(app: FastAPI):
     shutdown_mgr = ShutdownManager(grace_period=15.0)
     loop = asyncio.get_running_loop()
     shutdown_mgr.install_signal_handlers(loop)
+    app_state.set_shutdown_mgr(shutdown_mgr)
 
     app_state.set_running(True)
     try:

@@ -123,6 +123,7 @@ from experience_pool import trim_experience_pool
 daemon_proc = None
 _daemon_lock = threading.Lock()
 _atexit_registered = False
+_daemon_shutting_down = False
 
 
 # ──────────────────────────────────────────────
@@ -484,8 +485,9 @@ def _drain_stdout(proc):
 
 def start_daemon(workers=14, pairs=5):
     """Start elo_daemon.py as a background subprocess in its own process group."""
-    global daemon_proc, _atexit_registered
+    global daemon_proc, _atexit_registered, _daemon_shutting_down
     with _daemon_lock:
+        _daemon_shutting_down = False
         if daemon_proc and daemon_proc.poll() is None:
             return daemon_proc  # Already running
         # Kill orphaned daemon from a previous process
@@ -527,7 +529,8 @@ def start_daemon(workers=14, pairs=5):
 
 def stop_daemon():
     """Stop the daemon subprocess and its entire process group."""
-    global daemon_proc
+    global daemon_proc, _daemon_shutting_down
+    _daemon_shutting_down = True
     with _daemon_lock:
         if daemon_proc is None:
             return
@@ -604,6 +607,8 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=14, daemon_pairs=5):
                     log_system_event("daemon.crashed", "error", f"Daemon exited rc={rc}, restarting (attempt {restart_count})",
                                      {"restart_count": restart_count, "returncode": rc, "output_tail": output_tail[:500] if output_tail else ""})
                     if stop_event.wait(backoff):
+                        break
+                    if _daemon_shutting_down:
                         break
                     start_daemon(workers=daemon_workers, pairs=daemon_pairs)
             else:
