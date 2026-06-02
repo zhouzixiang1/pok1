@@ -43,7 +43,7 @@ function shortRoleName(role: string): string {
 }
 
 let _msgId = 0;
-const nextId = () => ++_msgId;
+const nextId = () => ++_msgId + Date.now();
 
 export default function EvolutionMonitor() {
   const [messages, setMessages] = useState<ConvMsg[]>([]);

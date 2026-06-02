@@ -612,7 +612,8 @@ async def diagnose_environment(args):
     recent_failures = []
     if failures_file.exists():
         cutoff = time.time() - 86400
-        with open(failures_file) as f:
+        from evolution_infra import locked_file as _locked_file
+        with _locked_file(failures_file, "r") as f:
             for line in f:
                 try:
                     entry = json.loads(line.strip())

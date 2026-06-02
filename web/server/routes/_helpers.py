@@ -4,7 +4,6 @@ Pure functions that accept pre-loaded data as parameters — no caching logic.
 Each caller retains control of its own cache keys.
 """
 
-import fcntl
 import json
 import re
 from pathlib import Path
@@ -141,9 +140,9 @@ def build_match_matrix(h2h_data: dict | None, ratings_data: dict | None, stats_d
 def read_jsonl(path: Path, limit: int | None = None, reverse: bool = True) -> list[dict]:
     if not path.exists():
         return []
+    from evolution_infra import locked_file
     entries = []
-    with open(path, "r") as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
+    with locked_file(path, "r") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -151,7 +150,6 @@ def read_jsonl(path: Path, limit: int | None = None, reverse: bool = True) -> li
                     entries.append(json.loads(line))
                 except json.JSONDecodeError:
                     continue
-        fcntl.flock(f, fcntl.LOCK_UN)
     if reverse:
         entries.reverse()
     if limit is not None:

@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -66,7 +67,12 @@ def _rotate_orchestrator_logs(logs_dir, keep=20):
 
 
 def _is_rate_limited(output: str) -> bool:
-    return "529" in output or "该模型当前访问量过大" in output or "rate limit" in output.lower()
+    return (
+        "overloaded" in output.lower()
+        or "该模型当前访问量过大" in output
+        or "rate limit" in output.lower()
+        or re.search(r'\b529\b', output) is not None
+    )
 
 
 # ── Orchestrator session persistence (process recovery) ──

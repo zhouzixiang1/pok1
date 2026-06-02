@@ -212,11 +212,11 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
     Uses atomic tmp+rename: if the process crashes mid-write, the old file
     survives intact (POSIX guarantees os.replace is atomic).
     """
-    # Read existing state under shared lock
+    # Read existing state under exclusive lock to prevent concurrent merge-write races
     existing = None
     if PIPELINE_STATE_FILE.exists():
         try:
-            with locked_file(PIPELINE_STATE_FILE, "r") as f:
+            with locked_file(PIPELINE_STATE_FILE, "r", lock_type=fcntl.LOCK_EX) as f:
                 raw = f.read()
                 if raw.strip():
                     existing = json.loads(raw)
@@ -596,16 +596,17 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=14, daemon_pairs=5):
                         break
                     backoff = min(3 * (2 ** (restart_count - 1)), 120)
                     ui.log_history(f"⚠️ Daemon exited (rc={rc}), restarting in {backoff}s (attempt {restart_count})", "warn")
-                    # Capture last stderr output for diagnostics
-                    stderr_tail = ""
+                    # Capture last output for diagnostics (stderr is merged into stdout)
+                    output_tail = ""
                     try:
-                        if hasattr(proc, 'stderr') and proc.stderr:
-                            stderr_tail = proc.stderr.read()[-500:] if hasattr(proc.stderr, 'read') else ""
-                    except Exception:
+                        if hasattr(proc, 'stdout') and proc.stdout:
+                            raw = proc.stdout.read()
+                            output_tail = raw[-500:] if raw else ""
+                    except (ValueError, OSError):
                         pass
                     from system_log import log_system_event
                     log_system_event("daemon.crashed", "error", f"Daemon exited rc={rc}, restarting (attempt {restart_count})",
-                                     {"restart_count": restart_count, "returncode": rc, "stderr_tail": stderr_tail[:500] if stderr_tail else ""})
+                                     {"restart_count": restart_count, "returncode": rc, "output_tail": output_tail[:500] if output_tail else ""})
                     if stop_event.wait(backoff):
                         break
                     start_daemon(workers=daemon_workers, pairs=daemon_pairs)
