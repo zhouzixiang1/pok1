@@ -8,6 +8,7 @@ No LLM agent logic — agent functions live in agent_*.py modules.
 import os
 import sys
 import json
+import logging
 import shutil
 import subprocess
 import re
@@ -19,6 +20,8 @@ import time
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+
+log = logging.getLogger("pok.infra")
 
 from claude_agent_sdk import (
     query as claude_query,
@@ -192,7 +195,7 @@ def substitute_template(template, replacements):
         result = result.replace(f"{{{key}}}", str(value))
     remaining = set(re.findall(r'\{([a-z_]+)\}', result))
     if remaining:
-        print(f"[WARN] Unreplaced template placeholders: {remaining}")
+        log.warning("Unreplaced template placeholders: %s", remaining)
     return result
 
 
@@ -478,7 +481,7 @@ def _drain_stdout(proc):
             line = proc.stdout.readline()
             if not line:
                 break
-            print(f"[DAEMON] {line.rstrip()}")
+            log.debug("[DAEMON] %s", line.rstrip())
     except (ValueError, OSError):
         pass  # Pipe closed
 
@@ -637,18 +640,18 @@ def _git_ensure_main_branch():
         return
     if current == "HEAD":
         # Detached HEAD — reset to main
-        print(f"[git] WARNING: detached HEAD detected, resetting to {EVOLUTION_BRANCH}")
+        log.warning("git: detached HEAD detected, resetting to %s", EVOLUTION_BRANCH)
         _git("checkout", EVOLUTION_BRANCH, check=False)
         return
-    print(f"[git] WARNING: on branch '{current}', expected '{EVOLUTION_BRANCH}'. "
-          f"Switching back before commit.")
+    log.warning("git: on branch '%s', expected '%s'. Switching back before commit.",
+                current, EVOLUTION_BRANCH)
     # Stash any uncommitted changes, switch to main, pop stash
     stash_out = _git("stash", check=False)
     _git("checkout", EVOLUTION_BRANCH, check=False)
     if "No local changes to save" not in stash_out:
         pop_out = _git("stash", "pop", check=False)
         if "error" in pop_out.lower():
-            print(f"[git] WARNING: stash pop failed: {pop_out[:200]}")
+            log.warning("git: stash pop failed: %s", pop_out[:200])
 
 
 def git_has_tag(version):

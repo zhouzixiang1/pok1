@@ -5,6 +5,7 @@ and also prints to terminal.
 
 import asyncio
 import json
+import logging
 import time
 import threading
 from collections import deque
@@ -16,6 +17,7 @@ from pathlib import Path
 from evolution_core import BaseUI, Glicko2Player
 
 _COSTS_FILE = Path(__file__).resolve().parent / "results" / "llm_costs.jsonl"
+log = logging.getLogger("pok.webui")
 
 
 class EventBroadcaster:
@@ -121,20 +123,22 @@ class WebUI(BaseUI):
     def log_history(self, msg, status="info"):
         icon = {"info": "[INFO]", "warn": "[WARN]", "error": "[ERR]",
                 "success": "[OK]"}.get(status, "[INFO]")
+        level = {"info": logging.INFO, "warn": logging.WARNING, "error": logging.ERROR,
+                 "success": logging.INFO}.get(status, logging.INFO)
         self._messages.append(f"[{status}] {msg}")
         self._output_since_clear.append(f"[{status}] {msg}")
         if len(self._messages) > 200:
             self._messages = self._messages[-200:]
         if len(self._output_since_clear) > 200:
             self._output_since_clear = self._output_since_clear[-200:]
-        print(f"{icon} {msg}")
+        log.log(level, "%s %s", icon, msg)
         self._emit("history", {"msg": msg, "status": status})
 
     def set_status(self, msg, is_working=False):
         self._state["status"] = msg
         self._state["is_working"] = is_working
         work_icon = "..." if is_working else "OK"
-        print(f"[STATUS] {work_icon} {msg}")
+        log.info("[STATUS] %s %s", work_icon, msg)
         self._emit("status", {"msg": msg, "is_working": is_working})
 
     def log_io(self, msg, stream_type="default", role=""):
@@ -150,7 +154,7 @@ class WebUI(BaseUI):
         prefix = prefix_map.get(stream_type, "  ")
         for line in msg.split("\n"):
             if line.strip():
-                print(f"{prefix}{line}")
+                log.debug("%s%s", prefix, line)
         self._emit("io", {"msg": msg, "stream_type": stream_type, "role": role})
 
     def clear_io(self):
@@ -210,7 +214,7 @@ class WebUI(BaseUI):
                 pass
             in_tok = usage.get("input_tokens", 0) if usage else 0
             out_tok = usage.get("output_tokens", 0) if usage else 0
-            print(f"[COST] {role}: ${cost_usd:.4f} (in={in_tok} out={out_tok})")
+            log.info("[COST] %s: $%.4f (in=%d out=%d)", role, cost_usd, in_tok, out_tok)
             self._emit("cost", {
                 "role": role,
                 "cost_usd": cost_usd,
@@ -223,10 +227,10 @@ class WebUI(BaseUI):
     def update_metrics(self, metrics):
         self._state["metrics"] = metrics
         m = metrics
-        print(f"[METRICS] v{m.get('current_v','?')}→v{m.get('next_v','?')} | "
-              f"Rate: {m.get('success_rate',0):.0%} | "
-              f"Trend: {m.get('rating_trend',0):+.0f} | "
-              f"Cost: ${self.grand_cost_total:.3f}")
+        log.info("[METRICS] v%s→v%s | Rate: %.0f%% | Trend: %+.0f | Cost: $%.3f",
+                 m.get('current_v', '?'), m.get('next_v', '?'),
+                 m.get('success_rate', 0) * 100, m.get('rating_trend', 0),
+                 self.grand_cost_total)
         self._emit("metrics", metrics)
 
     def emit_tool_call(self, tool_name: str, args: dict, role: str = ""):

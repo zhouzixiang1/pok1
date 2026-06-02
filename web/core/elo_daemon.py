@@ -30,6 +30,9 @@ sys.path.insert(0, str(CORE_DIR))
 from glicko2 import Glicko2Player, update_single_game, decay_rd
 from battle import mirror_battle
 from evolution_infra import locked_file, pair_key
+import logging
+
+log = logging.getLogger("pok.daemon")
 
 BOTS_DIR = PROJECT_ROOT / "bots"
 RESULTS_DIR = CORE_DIR / "results"
@@ -58,7 +61,7 @@ running = True
 
 def handle_signal(signum, frame):
     global running
-    print(f"\n[DAEMON] Received signal {signum}, shutting down gracefully...")
+    log.warning("Received signal %d, shutting down gracefully...", signum)
     running = False
 
 
@@ -327,11 +330,11 @@ def process_result(result, ratings, h2h, bot_stats, verbose=False):
     a, b, wins_a, wins_b, draws, total, err, replay_data = result
     if err is not None:
         if verbose:
-            print(f"[DAEMON] Error in {a} vs {b}: {err}")
+            log.error("Error in %s vs %s: %s", a, b, err)
         return 0
 
     if verbose:
-        print(f"[DAEMON] {a} vs {b}: {wins_a}-{wins_b}-{draws} ({total} games)")
+        log.debug("%s vs %s: %d-%d-%d (%d games)", a, b, wins_a, wins_b, draws, total)
 
     # Save replay (using per-game counts)
     if replay_data:
@@ -339,7 +342,7 @@ def process_result(result, ratings, h2h, bot_stats, verbose=False):
             save_match_replay(a, b, wins_a, wins_b, draws, replay_data)
         except Exception as e:
             if verbose:
-                print(f"[DAEMON] Error saving replay {a} vs {b}: {e}")
+                log.warning("Error saving replay %s vs %s: %s", a, b, e)
 
     # Snapshot opponent ratings for Elo updates
     _default = Glicko2Player()
@@ -411,15 +414,15 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots, verbose=Fa
         from tool_helpers import compute_h2h_avg_winrate
         bot_wr_map = {b: compute_h2h_avg_winrate(b, h2h_out) or 0.0 for b in active_bots}
         sorted_bots = sorted(active_bots, key=lambda b: bot_wr_map.get(b, 0.0), reverse=True)
-        print(f"\n[DAEMON] Leaderboard (save #{save_num}):")
+        log.info("Leaderboard (save #%d):", save_num)
         for i, b in enumerate(sorted_bots):
             p = ratings[b]
             bs = bot_stats.get(b, {})
             wr = bs.get("win_rate", 0.0)
             g = bs.get("games", 0)
             hwr = bot_wr_map.get(b, 0.0)
-            print(f"  {i+1}. {b}: h2h_avg_wr={hwr:.2%} r={p.r:.1f} rd={p.rd:.1f} wr={wr:.2%} ({g} games)")
-        print()
+            log.info("  %d. %s: h2h_avg_wr=%.2f%% r=%.1f rd=%.1f wr=%.2f%% (%d games)",
+                     i + 1, b, hwr * 100, p.r, p.rd, wr * 100, g)
 
 
 def main():
@@ -435,8 +438,11 @@ def main():
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
-    print(f"[DAEMON] Starting rating daemon (workers={args.workers}, pairs={args.pairs})")
-    print(f"[DAEMON] Elo ranking + Head-to-Head matrix + per-game updates")
+    from logging_config import configure_logging
+    configure_logging()
+
+    log.info("Starting rating daemon (workers=%d, pairs=%d)", args.workers, args.pairs)
+    log.info("Elo ranking + Head-to-Head matrix + per-game updates")
 
     # Load persisted state
     ratings = load_ratings()
@@ -453,7 +459,7 @@ def main():
         if b not in ratings:
             ratings[b] = Glicko2Player()
             if args.verbose:
-                print(f"[DAEMON] New bot: {b} (r=1500, rd=350)")
+                log.info("New bot: %s (r=1500, rd=350)", b)
 
     # Remove retired bots
     retired = [b for b in ratings if b not in active_bots]
@@ -462,12 +468,12 @@ def main():
         if b in bot_stats:
             del bot_stats[b]
         if args.verbose:
-            print(f"[DAEMON] Retired: {b}")
+            log.info("Retired: %s", b)
     for b in retired:
         h2h = {k: v for k, v in h2h.items() if b not in k.split(" vs ")}
 
     if len(active_bots) < 2:
-        print("[DAEMON] Less than 2 active bots, exiting.")
+        log.warning("Less than 2 active bots, exiting.")
         return
 
     # Build initial match queue
@@ -538,14 +544,14 @@ def main():
                                 games_since_save = 0
                                 last_save_time = now
                     except Exception as e:
-                        print(f"[DAEMON] Save error (non-fatal): {e}")
+                        log.warning("Save error (non-fatal): %s", e)
 
                     # Parent alive check — exit if orphaned
                     now = time.time()
                     if now - last_parent_check >= 30:
                         last_parent_check = now
                         if os.getppid() == 1:
-                            print("[DAEMON] Parent process died, shutting down...")
+                            log.warning("Parent process died, shutting down...")
                             running = False
                             break
 
@@ -588,9 +594,9 @@ def main():
                                 games_since_save = 0
                                 last_save_time = time.time()
                             if args.verbose:
-                                print(f"[DAEMON] Reap signal processed, active bots: {len(active_bots)}")
+                                log.info("Reap signal processed, active bots: %d", len(active_bots))
                     except Exception as e:
-                        print(f"[DAEMON] Reap signal error (non-fatal): {e}")
+                        log.warning("Reap signal error (non-fatal): %s", e)
 
                     # Refresh bot list periodically
                     if total_matches % 50 == 0:
@@ -600,12 +606,12 @@ def main():
                         for b in added:
                             ratings[b] = Glicko2Player()
                             if args.verbose:
-                                print(f"[DAEMON] New bot: {b}")
+                                log.info("New bot: %s", b)
                         for b in removed:
                             ratings.pop(b, None)
                             bot_stats.pop(b, None)
                             if args.verbose:
-                                print(f"[DAEMON] Retired: {b}")
+                                log.info("Retired: %s", b)
                         for b in removed:
                             h2h = {k: v for k, v in h2h.items() if b not in k.split(" vs ")}
                         if added or removed:
@@ -618,7 +624,7 @@ def main():
 
             except BrokenProcessPool as e:
                 recovery_count += 1
-                print(f"[DAEMON] ProcessPool broken (recovery {recovery_count}/{MAX_POOL_RECOVERIES}): {e}")
+                log.error("ProcessPool broken (recovery %d/%d): %s", recovery_count, MAX_POOL_RECOVERIES, e)
                 for fut in list(in_flight):
                     try:
                         fut.result(timeout=1)
@@ -646,10 +652,10 @@ def main():
                 f.write(traceback.format_exc())
         except Exception:
             pass
-        print(f"[DAEMON] FATAL: {e}\n{traceback.format_exc()}")
+        log.critical("FATAL: %s\n%s", e, traceback.format_exc())
         raise
     finally:
-        print(f"[DAEMON] Draining {len(in_flight)} in-flight matches...")
+        log.info("Draining %d in-flight matches...", len(in_flight))
         for fut in in_flight:
             try:
                 result = fut.result(timeout=10)
@@ -662,8 +668,8 @@ def main():
         try:
             save_cycle(ratings, h2h, bot_stats, stats, save_num + 1, active_bots, verbose=args.verbose)
         except Exception as e:
-            print(f"[DAEMON] Final save failed: {e}")
-        print(f"[DAEMON] Shutdown complete. {total_matches} matches processed.")
+            log.warning("Final save failed: %s", e)
+        log.info("Shutdown complete. %d matches processed.", total_matches)
 
 
 if __name__ == "__main__":

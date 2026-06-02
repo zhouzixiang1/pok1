@@ -5,10 +5,13 @@ The `diagnose_environment` tool is the exception — it calls LLM for one-shot a
 """
 
 import json
+import logging
 import shutil
 import sys
 import time
 from pathlib import Path
+
+log = logging.getLogger("pok.tools")
 from typing import Annotated, TypedDict
 
 from claude_agent_sdk import tool
@@ -294,7 +297,7 @@ async def reap_weakest(args):
             f.truncate()
             json.dump(ratings_raw, f, indent=2)
     except Exception as e:
-        print(f"[WARN] reap: ratings cleanup failed for {culled_name}: {e}")
+        log.warning("reap: ratings cleanup failed for %s: %s", culled_name, e)
 
     # Clean up bot_stats
     if BOT_STATS_FILE.exists():
@@ -307,7 +310,7 @@ async def reap_weakest(args):
                     f.truncate()
                     json.dump(bs, f, indent=2)
         except Exception as e:
-            print(f"[WARN] reap: bot_stats cleanup failed for {culled_name}: {e}")
+            log.warning("reap: bot_stats cleanup failed for %s: %s", culled_name, e)
     # Clean up H2H data
     if H2H_FILE.exists():
         try:
@@ -323,7 +326,7 @@ async def reap_weakest(args):
                     f.truncate()
                     json.dump(h2h, f, indent=2)
         except Exception as e:
-            print(f"[WARN] reap: H2H cleanup failed for {culled_name}: {e}")
+            log.warning("reap: H2H cleanup failed for %s: %s", culled_name, e)
 
     # Clean up replay files referencing the reaped bot
     try:

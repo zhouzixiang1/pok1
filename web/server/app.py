@@ -24,6 +24,8 @@ broadcaster = EventBroadcaster(buffer_size=500)
 web_ui = WebUI(broadcaster)
 _set_system_log_ui(web_ui)
 
+from logging_config import configure_logging
+
 _evolution_task: asyncio.Task | None = None
 
 
@@ -32,6 +34,7 @@ async def lifespan(app: FastAPI):
     global _evolution_task
 
     from evolution_infra import find_current_v
+    configure_logging(broadcaster=broadcaster)
     app_state.bootstrap(find_current_v())
 
     config = app_state.get_config()

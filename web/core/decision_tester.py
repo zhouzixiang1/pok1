@@ -10,9 +10,12 @@ Usage:
 """
 
 import json
+import logging
 import subprocess
 import sys
 import os
+
+log = logging.getLogger("pok.scheduler")
 from pathlib import Path
 
 WORKSPACE = Path(__file__).resolve().parent
@@ -105,7 +108,7 @@ def run_decision_tests_detail(bot_path, verbose=False):
     """Run all scenarios and return detailed critical/advisory gate data."""
     if not SCENARIOS_FILE.exists():
         if verbose:
-            print("[DECISION TESTER] No scenarios file found, skipping.")
+            log.warning("No scenarios file found, skipping.")
         return {
             "pass_rate": 1.0,
             "passed": 0,
@@ -164,7 +167,7 @@ def run_decision_tests_detail(bot_path, verbose=False):
         })
         if verbose:
             status = "PASS" if ok else "FAIL"
-            print(f"  [{status}] {scenario['id']} ({severity}): {details}")
+            log.info("  [%s] %s (%s): %s", status, scenario['id'], severity, details)
 
     return {
         "pass_rate": passed / total if total > 0 else 1.0,
@@ -186,11 +189,14 @@ if __name__ == "__main__":
     bot_path = sys.argv[1]
     verbose = "--verbose" in sys.argv
 
+    from logging_config import configure_logging
+    configure_logging()
+
     result = run_decision_tests_detail(bot_path, verbose=verbose)
     rate = result["pass_rate"]
-    print(f"\nDecision test pass rate: {rate:.0%} ({int(rate * 100)}%)")
+    log.info("Decision test pass rate: %.0f%% (%d%%)", rate * 100, int(rate * 100))
     if result["critical_failures"]:
-        print(f"Critical failures: {len(result['critical_failures'])}")
+        log.error("Critical failures: %d", len(result["critical_failures"]))
         for failure in result["critical_failures"]:
-            print(f"  - {failure['id']}: {failure['details']}")
+            log.error("  - %s: %s", failure['id'], failure['details'])
     sys.exit(0 if rate >= 0.7 and not result["critical_failures"] else 1)

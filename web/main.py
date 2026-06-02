@@ -9,10 +9,13 @@ Usage:
 """
 
 import argparse
+import logging
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+log = logging.getLogger("pok.main")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = Path(__file__).resolve().parent
@@ -26,10 +29,10 @@ def build_frontend() -> bool:
     """Build the frontend and copy dist to server/static. Returns True on success."""
     frontend_dir = WEB_DIR / "frontend"
     if not (frontend_dir / "package.json").exists():
-        print("[build] package.json not found, skipping frontend build.", file=sys.stderr)
+        log.warning("[build] package.json not found, skipping frontend build.")
         return False
 
-    print("[build] Building frontend...")
+    log.info("[build] Building frontend...")
     result = subprocess.run(
         ["npm", "run", "build"],
         cwd=str(frontend_dir),
@@ -37,11 +40,10 @@ def build_frontend() -> bool:
         text=True,
     )
     if result.returncode != 0:
-        print("[build] Frontend build failed:", file=sys.stderr)
-        print(result.stderr, file=sys.stderr)
+        log.error("[build] Frontend build failed: %s", result.stderr)
         return False
 
-    print("[build] Frontend build complete.")
+    log.info("[build] Frontend build complete.")
     return True
 
 
@@ -63,6 +65,10 @@ def main():
     if not args.no_build:
         if not build_frontend():
             sys.exit(1)
+
+    # Initialize structured logging
+    from logging_config import configure_logging
+    configure_logging(dev_mode=args.dev)
 
     # Pre-populate app_state from CLI args so lifespan reads correct config
     sys.path.insert(0, str(WEB_DIR / "server"))

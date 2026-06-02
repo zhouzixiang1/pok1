@@ -6,9 +6,12 @@ UI injection, logging adapters, checkpoint gates, and validation utilities.
 import difflib
 import fcntl
 import json
+import logging
 import re
 import time
 from pathlib import Path
+
+log = logging.getLogger("pok.tools")
 from typing import Annotated
 
 from evolution_core import (
@@ -136,7 +139,7 @@ def _record_gate(version, source_v, gate_name, gate_data, stage=None,
                  master_plan=None, reviewer_feedback=None):
     ckpt = _matching_checkpoint(version, source_v)
     if not ckpt:
-        print(f"[WARN] _record_gate: no matching checkpoint for v{version}/v{source_v}, gate '{gate_name}' dropped")
+        log.warning("_record_gate: no matching checkpoint for v%s/v%s, gate '%s' dropped", version, source_v, gate_name)
         return False
     current_stage = ckpt.get("stage", "")
     # Preserve previous critic result when overwriting with a new one

@@ -14,7 +14,10 @@ Usage:
 """
 
 import asyncio
+import logging
 import signal
+
+log = logging.getLogger("pok.shutdown")
 
 
 class ShutdownManager:
@@ -48,7 +51,7 @@ class ShutdownManager:
             # Second signal — restore default so the next one terminates the process
             signal.signal(sig, signal.SIG_DFL)
             return
-        print(f"\n[Shutdown] Received {sig.name}, initiating graceful shutdown...")
+        log.warning("Received %s, initiating graceful shutdown...", sig.name)
         self._event.set()
 
     async def perform_cleanup(self):
