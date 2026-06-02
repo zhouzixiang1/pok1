@@ -30,7 +30,7 @@ def _record_worker_failure(gen, worker_id, role, error):
         pass
 
 
-def _load_recent_failures(n=3):
+def _load_recent_failures(n=5):
     """Load the n most recent worker failure records."""
     if not WORKER_FAILURES_FILE.exists():
         return []
@@ -58,11 +58,11 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
         base_worker_prompt = f"CRITICAL REVISION NEEDED:\n{reviewer_feedback}\n\nORIGINAL:\n{base_worker_prompt}"
 
     # Inject recent worker failure memory
-    recent_failures = _load_recent_failures(3)
+    recent_failures = _load_recent_failures(5)
     if recent_failures:
         failure_lines = ["# Recent Worker Failures (avoid repeating these mistakes):"]
         for f in recent_failures:
-            failure_lines.append(f"- Gen {f['gen']} Worker {f['worker_id']} ({f['role']}): {f['error'][:150]}")
+            failure_lines.append(f"- Gen {f['gen']} Worker {f['worker_id']} ({f['role']}): {f['error'][:300]}")
         base_worker_prompt += "\n\n" + "\n".join(failure_lines)
 
     worker_log_file = get_logs_dir(next_v) / f"worker_{w_id}_io.txt"
@@ -75,9 +75,17 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
         ui.clear_io()
         ui.set_status(f"[{role}] coding for v{next_v}...", is_working=True)
 
+        attempt_note = ""
+        if attempt > 0:
+            attempt_note = (
+                f"\n\n# Retry Context\nThis is attempt {attempt+1} of {MAX_WORKER_RETRIES}. "
+                f"Previous attempt failed: {_last_reason}. "
+                f"{'Consider a FUNDAMENTALLY DIFFERENT approach.' if attempt >= 2 else 'Try a different strategy.'}"
+            )
+
         worker_prompt = substitute_template(worker_template, {
             "role": role,
-            "worker_prompt": base_worker_prompt,
+            "worker_prompt": base_worker_prompt + attempt_note,
             "version": str(next_v),
             "parent_version": str(source_v),
         })

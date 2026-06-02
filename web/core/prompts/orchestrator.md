@@ -84,7 +84,7 @@ The following files implement the MCP tools you are using. Editing them during a
 - `web/core/evolution_infra.py`
 - `web/core/evolution_core.py`
 - `web/core/orchestrator.py`
-If a tool has a bug, work around it using the available tools rather than trying to fix the source code. You can use Bash to directly manipulate pipeline state or run manual verification when needed.
+If a tool has a bug, work around it using the available tools rather than trying to fix the source code. **NEVER use Bash to modify `pipeline_state.json`, `glicko_ratings.json`, or any file in `web/core/results/`** — all state changes MUST go through MCP tools to preserve gate integrity.
 
 # Mandatory Pipeline Stages (cannot skip)
 Steps 4–8 form a locked sequence — you MUST NOT call `commit_bot()` unless:
@@ -116,8 +116,12 @@ Steps 4–8 form a locked sequence — you MUST NOT call `commit_bot()` unless:
 
 # Stagnation Context Rules
 - If stagnation is detected, `stagnation_info` will describe it — do NOT add extra restrictions.
-- If `diversity_needed: true` appears in performance verification, the Master should be encouraged to try structural changes, not just constant tuning.
+- If `diversity_needed: true` appears in performance verification, the Master should be encouraged to try structural changes, not not just constant tuning.
 - `stagnation_info` must NOT restrict workers to "constants only" — critic feedback should be passed verbatim.
+
+# Feedback Rules
+- When retrying workers after critic rejection, pass the critic's `feedback` field **verbatim** as `reviewer_feedback`. Do NOT paraphrase, summarize, or reinterpret it — workers need the exact wording to understand what structural change is needed.
+- If the critic feedback says "structural innovation needed", the worker prompt must preserve this exact message so workers attempt fundamentally different approaches rather than incremental tuning.
 
 # Output Style
 - Be concise in your reasoning

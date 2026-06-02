@@ -447,7 +447,7 @@ def _validate_worker_boundaries(tasks, source_v, next_v):
 
     changed_files = _py_files_changed_between(source_dir, next_dir)
     for rel in changed_files:
-        if not all_targets or rel not in all_targets:
+        if rel not in all_targets:
             errors.append({
                 "type": "target_file_violation",
                 "file": rel,

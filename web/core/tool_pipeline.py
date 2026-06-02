@@ -251,6 +251,12 @@ async def execute_workers(args):
         boundary_errors = _validate_worker_boundaries(tasks, source_v, next_v)
         if boundary_errors:
             success = False
+            # Reset code directory from source to avoid dirty state
+            src_dir = get_bot_dir(source_v)
+            if src_dir.exists() and next_dir.exists():
+                shutil.rmtree(next_dir)
+                shutil.copytree(src_dir, next_dir, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+                (next_dir / ".completed").unlink(missing_ok=True)
 
     if success:
         from evolution_infra import write_pipeline_checkpoint
@@ -336,7 +342,7 @@ async def run_quality_gates(args):
     log_system_event(
         "pipeline.quality_passed" if all_passed else "pipeline.quality_failed",
         "success" if all_passed else "error",
-        f"Quality gates {'passed' if all_passed else 'failed'} for v{v} (decision={decision_rate:.0%})",
+        f"Quality gates {'passed' if all_passed else 'failed'} for v{v}: {', '.join(failed_gates_detail) or 'all checks passed'}",
         {"version": v, "pass_rate": round(decision_rate, 2), "all_passed": all_passed,
          "failed_gates": failed_gates_detail if not all_passed else []},
     )
@@ -487,12 +493,12 @@ async def run_review(args):
             "review",
             gate,
             stage="reviewed" if approved else None,
-            master_plan=plan,
+            master_plan=ckpt.get("master_plan") if ckpt else plan,
             reviewer_feedback=feedback,
         )
         if not approved:
             _record_quality_failure(v, "reviewer", "Code Reviewer",
-                                    f"Rejected (score={data.get('quality_score', 0)}): {feedback[:200]}")
+                                    f"Rejected (score={data.get('quality_score', 0)}): {feedback[:2000]}")
         result = {
             "approved": approved,
             "quality_score": data.get("quality_score", 0),
@@ -522,7 +528,7 @@ async def run_review(args):
             "review",
             gate,
             stage=None,
-            master_plan=plan,
+            master_plan=ckpt.get("master_plan") if ckpt else plan,
             reviewer_feedback=error_msg,
         )
         result = {
@@ -598,12 +604,12 @@ async def run_critic(args):
         "critic",
         gate,
         stage="critic_checked" if approved or force_advanced else None,
-        master_plan=plan,
+        master_plan=ckpt.get("master_plan") if ckpt else plan,
         reviewer_feedback=reviewer_feedback,
     )
     if not approved:
         _record_quality_failure(v, "critic", "Strategy Critic",
-                                f"Rejected (score={score_num}): {data.get('feedback', '')[:200]}")
+                                f"Rejected (score={score_num}): {data.get('feedback', '')[:2000]}")
 
     log_system_event(
         "pipeline.critic_passed" if approved else "pipeline.critic_rejected",
