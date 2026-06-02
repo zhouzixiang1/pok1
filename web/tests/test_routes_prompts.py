@@ -48,13 +48,22 @@ class TestUpdatePrompt:
 
 
 class TestResetPrompt:
-    def test_reset(self, client):
-        # Reset uses git checkout HEAD -- <path>, works with real files
+    def test_reset(self, client, monkeypatch):
+        import subprocess
+        calls = []
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            class R:
+                returncode = 0
+                stderr = ""
+            return R()
+        monkeypatch.setattr(subprocess, "run", fake_run)
         resp = client.post("/api/prompts/master/reset")
         assert resp.status_code == 200
         data = resp.json()
         assert data["reset"] is True
         assert data["name"] == "master"
+        assert any("checkout" in str(c) for c in calls)
 
     def test_unknown(self, client):
         resp = client.post("/api/prompts/nonexistent/reset")

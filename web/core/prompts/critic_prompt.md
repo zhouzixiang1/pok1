@@ -21,9 +21,11 @@ Read `web/core/results/head_to_head.json` and find the current bot's weakest opp
 
 # How to Evaluate
 
-1. Run `git diff bot-v{parent_version} -- bots/claude_v{version}/` to see all changes
-2. Run `git diff --stat bot-v{parent_version} -- bots/claude_v{version}/` for a summary
-3. Read the most changed functions for strategic context
+1. The new bot directory is untracked, so `git diff` will be empty. Instead use:
+   - List changed files: `diff -rq bots/claude_v{parent_version}/ bots/claude_v{version}/`
+   - Diff each changed file: `diff bots/claude_v{parent_version}/FILE bots/claude_v{version}/FILE`
+   - If the above doesn't work (parent removed), fall back to `git diff bot-v{parent_version} -- bots/claude_v{version}/`
+2. Read the most changed functions for strategic context
 4. **For diversity/local-optima check**: Run `git log --oneline bot-v{parent_version}..HEAD --decorate` to see recent commits, then `git show bot-v{parent_version}` to read the previous generation's commit message and strategy. Also read `web/core/experience_pool.md` for `[POSSIBLY EXHAUSTED]` tags.
 5. Cite the concrete evidence you used: weakest H2H matchups, experience-pool lessons, and the real diff.
 6. Score against the criteria below

@@ -72,6 +72,20 @@ Failures may only move backward to `workers` or `master`. A failed or missing `q
 - **Bash** — Run git commands for history inspection.
 - **NEVER use Edit or Write to modify bot files directly**. All code changes MUST go through `execute_workers`.
 
+# READ-ONLY Files (NEVER edit these during a session)
+The following files implement the MCP tools you are using. Editing them during a session is USELESS because the MCP server has already loaded its code. Edits will NOT take effect until the next restart.
+- `web/core/tool_pipeline.py`
+- `web/core/tool_helpers.py`
+- `web/core/tool_status.py`
+- `web/core/tools.py`
+- `web/core/agent_master.py`
+- `web/core/agent_workers.py`
+- `web/core/agent_review.py`
+- `web/core/evolution_infra.py`
+- `web/core/evolution_core.py`
+- `web/core/orchestrator.py`
+If a tool has a bug, work around it using the available tools rather than trying to fix the source code. You can use Bash to directly manipulate pipeline state or run manual verification when needed.
+
 # Mandatory Pipeline Stages (cannot skip)
 Steps 4–8 form a locked sequence — you MUST NOT call `commit_bot()` unless:
 1. `run_quality_gates(next_v)` returned `all_passed: true`

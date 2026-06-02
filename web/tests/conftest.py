@@ -104,14 +104,29 @@ def isolate_state(tmp_path):
     import system_log
     real_config = app_state._config_file
     real_events = system_log.SYSTEM_EVENTS_FILE
+    snapshot = {
+        "running": app_state.running,
+        "daemon_enabled": app_state.daemon_enabled,
+        "daemon_workers": app_state.daemon_workers,
+        "daemon_pairs": app_state.daemon_pairs,
+    }
     app_state._config_file = tmp_path / "app_config.json"
     system_log.SYSTEM_EVENTS_FILE = tmp_path / "system_events.jsonl"
-    # Suppress logging output during tests
     pok_logger = logging.getLogger("pok")
     orig_level = pok_logger.level
     pok_logger.setLevel(logging.CRITICAL + 1)
-    yield
-    app_state._config_file = real_config
-    system_log.SYSTEM_EVENTS_FILE = real_events
-    app_state._load_config()
-    pok_logger.setLevel(orig_level)
+    try:
+        yield
+    finally:
+        app_state._config_file = real_config
+        system_log.SYSTEM_EVENTS_FILE = real_events
+        try:
+            app_state._load_config()
+        except Exception:
+            pass
+        app_state.running = snapshot["running"]
+        app_state.daemon_enabled = snapshot["daemon_enabled"]
+        app_state.daemon_workers = snapshot["daemon_workers"]
+        app_state.daemon_pairs = snapshot["daemon_pairs"]
+        app_state.decisions = []
+        pok_logger.setLevel(orig_level)

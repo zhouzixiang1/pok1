@@ -91,16 +91,26 @@ def _validate_master_plan(plan, next_v=None):
             errors.append(f"Task {i}: worker_prompt too long ({len(prompt)} > 5000 chars)")
         role = str(task.get("role", "")).lower()
         if "hyperparameter" in role or "tuner" in role:
+            # Tuners should only modify constants.py — warn if target_files includes other files
+            tuner_only_files = {"constants.py"}
+            non_tuner_files = [t for t in targets if Path(t).name not in tuner_only_files]
+            if non_tuner_files:
+                warnings.append(
+                    f"Task {i}: Hyperparameter Tuner targets non-constants file(s) {non_tuner_files}. "
+                    f"Tuners should only modify constants.py."
+                )
             prompt_lower = prompt.lower()
             # Skip structural keywords that appear in constraint/negative contexts
             _skip_contexts = ("do not", "don't", "must not", "never", "preserve",
-                              "keep", "unchanged", "maintain", "unchanged", "no new")
+                              "keep", "unchanged", "maintain", "no new", "forbidden",
+                              "avoid", "except", "aside from", "other than",
+                              "should not", "cannot", "do not change", "do not add")
             for kw in _TUNER_STRUCTURAL_PATTERNS:
                 # Find the keyword in context — skip if it's in a constraint sentence
                 idx = prompt_lower.find(kw)
                 if idx >= 0:
-                    # Check surrounding context (100 chars before) for negative cues
-                    context_before = prompt_lower[max(0, idx - 100):idx]
+                    # Check surrounding context (200 chars before) for negative cues
+                    context_before = prompt_lower[max(0, idx - 200):idx]
                     if any(cue in context_before for cue in _skip_contexts):
                         continue
                     # Keyword found in an affirmative (structural) context — warn only
@@ -311,11 +321,23 @@ async def run_quality_gates(args):
         "all_passed": all_passed,
     }
 
+    # Build list of which specific gates failed (for diagnostics)
+    failed_gates_detail = []
+    if compile_errors:
+        failed_gates_detail.append("compile")
+    if smoke_errors:
+        failed_gates_detail.append("smoke_test")
+    if not decision_ok:
+        failed_gates_detail.append(f"decision_tests({decision_rate:.0%})")
+    if oversized:
+        failed_gates_detail.append(f"file_size({', '.join(f'{n}:{l}L' for n, l in oversized)})")
+
     log_system_event(
         "pipeline.quality_passed" if all_passed else "pipeline.quality_failed",
         "success" if all_passed else "error",
         f"Quality gates {'passed' if all_passed else 'failed'} for v{v} (decision={decision_rate:.0%})",
-        {"version": v, "pass_rate": round(decision_rate, 2), "all_passed": all_passed},
+        {"version": v, "pass_rate": round(decision_rate, 2), "all_passed": all_passed,
+         "failed_gates": failed_gates_detail if not all_passed else []},
     )
 
     _ckpt = _matching_checkpoint(v, source_v) if source_v is not None else _matching_checkpoint(v)
@@ -357,6 +379,10 @@ async def prepare_next_gen(args):
 
     if next_v <= source_v:
         return {"content": [{"type": "text", "text": json.dumps({"error": f"next_v ({next_v}) must be greater than source_v ({source_v})"})}]}
+
+    # Guard against clearly invalid version numbers (test artifacts)
+    if next_v >= 900:
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"next_v ({next_v}) is invalid. Version numbers must be < 900."})}]}
 
     current_v = find_current_v()
     if next_v > current_v + 10:
@@ -677,6 +703,9 @@ async def run_precommit_eval(args):
     sys.path.insert(0, str((PROJECT_ROOT / "engine").resolve()))
     from battle import mirror_battle
 
+    # Defensive: ensure asyncio is available even if MCP server cached a stale module
+    import asyncio as _asyncio
+
     for item in opponents:
         opponent = item["name"]
         opponent_main = _bot_main(opponent)
@@ -689,7 +718,6 @@ async def run_precommit_eval(args):
             "n_played": 0,
         }
         try:
-            import asyncio as _asyncio
             loop = _asyncio.get_running_loop()
             match_wins, draws, n_played, _ = await loop.run_in_executor(
                 None,

@@ -75,8 +75,10 @@ Apply these when implementing changes:
 # Action
 Please write the Python code to fulfill your objective. After editing:
 
-1. **Verify your changes**: Run `git diff bots/claude_v{version}/` to review what you changed.
-   Ensure no unintended modifications to files outside your assigned `target_files`.
+1. **Verify your changes**: The new bot directory is untracked, so `git diff` will be empty. Instead use:
+   - List changed files: `diff -rq bots/claude_v{parent_version}/ bots/claude_v{version}/`
+   - Diff each changed file: `diff bots/claude_v{parent_version}/FILE bots/claude_v{version}/FILE`
+   - Ensure no unintended modifications to files outside your assigned `target_files`.
 2. If you see unexpected changes, fix them before finishing.
 3. **Run quality checks**:
    - Compile check: `python -m py_compile bots/claude_v{version}/main.py` (and other .py files you changed)
@@ -86,7 +88,7 @@ Please write the Python code to fulfill your objective. After editing:
 # Self-Review Before Finishing
 After all quality checks pass, run these final checks:
 
-1. **Role Boundary Check**: Run `git diff bots/claude_v{version}/` one more time and review your changes carefully.
+1. **Role Boundary Check**: Run `diff -rq bots/claude_v{parent_version}/ bots/claude_v{version}/` one more time and review ALL changes carefully.
    - If you are a **Hyperparameter Tuner**: Verify that ALL your changes are limited to numeric constants, thresholds, or magic numbers. If you added new functions, classes, or control flow logic (if/for/while blocks), REMOVE them immediately.
    - If you are an **Algorithmic Logic Architect**: Verify that you did not change well-tuned constants (thin_cap, open thresholds, VPIP/PFR priors) unless structurally required by your new algorithm.
 

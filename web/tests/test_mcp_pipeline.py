@@ -9,30 +9,35 @@ import pytest
 
 class TestPrepareNextGen:
     def test_creates_directory(self, client, tmp_path, monkeypatch):
-        # Set up temp bots dir with a source bot
-        src = tmp_path / "bots" / "claude_v99"
-        src.mkdir(parents=True)
+        import evolution_infra
+        import tool_pipeline
+
+        fake_bots = tmp_path / "bots"
+        fake_bots.mkdir()
+        src = fake_bots / "claude_v99"
+        src.mkdir()
         (src / "main.py").write_text("x = 1\n")
         (src / ".completed").touch()
+        monkeypatch.setattr(evolution_infra, "BOTS_DIR", fake_bots)
+        monkeypatch.setattr(tool_pipeline, "get_bot_dir", evolution_infra.get_bot_dir)
 
-        from evolution_infra import BOTS_DIR
+        fake_results = tmp_path / "results"
+        fake_results.mkdir()
+        fake_ckpt = fake_results / "pipeline_state.json"
+        monkeypatch.setattr(evolution_infra, "RESULTS_DIR", fake_results)
+        monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", fake_ckpt)
+
+        monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 99)
+        monkeypatch.setattr(tool_pipeline, "find_current_v", lambda: 99)
+
         resp = client.post("/api/control/tool/prepare_next_gen",
-                           json={"args": {"source_v": 30, "next_v": 41}})
+                           json={"args": {"source_v": 99, "next_v": 100}})
         assert resp.status_code == 200
         result = json.loads(resp.json()["result"])
         assert result["prepared"] is True
-        assert result["source_v"] == 30
-        assert result["next_v"] == 41
-
-        # Clean up created dir
-        next_dir = Path(__file__).resolve().parents[2] / "bots" / "claude_v41"
-        if next_dir.exists():
-            shutil.rmtree(next_dir)
-
-        # Clean up checkpoint
-        ckpt_file = Path(__file__).resolve().parents[2] / "web" / "core" / "results" / "pipeline_state.json"
-        if ckpt_file.exists():
-            ckpt_file.unlink()
+        assert result["source_v"] == 99
+        assert result["next_v"] == 100
+        assert (fake_bots / "claude_v100").exists()
 
     def test_missing_source(self, client):
         resp = client.post("/api/control/tool/prepare_next_gen",

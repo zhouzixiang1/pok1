@@ -278,14 +278,22 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui):
     )
 
     log_file = get_logs_dir(source_v) / "stagnation_analysis.txt"
-    try:
-        output, _, _ = await run_claude_query(
-            prompt, [], ui, "STAGNATION ANALYST", log_file,
-        )
-        return parse_json_output(output)
-    except Exception as e:
-        ui.log_history(f"Stagnation analysis failed: {e}", "warn")
-        return None
+    for attempt in range(3):
+        try:
+            output, _, _ = await run_claude_query(
+                prompt, [], ui, "STAGNATION ANALYST", log_file,
+            )
+            result = parse_json_output(output)
+            if result:
+                return result
+            # Empty output (529/timeout) — retry with backoff
+            ui.log_history(f"Stagnation analysis returned empty (attempt {attempt+1}/3), retrying...", "warn")
+        except Exception as e:
+            ui.log_history(f"Stagnation analysis failed: {e} (attempt {attempt+1}/3)", "warn")
+        if attempt < 2:
+            import asyncio
+            await asyncio.sleep(30 * (attempt + 1))
+    return None
 
 
 # ──────────────────────────────────────────────
@@ -567,6 +575,12 @@ async def _analyze_recent_matches(source_v, ui, max_matches=8):
             match_analyst_prompt, [], ui,
             "MATCH ANALYST", log_file,
         )
+        if not output or not output.strip():
+            # Retry once if match analyst returned empty (529/timeout)
+            output, _, _ = await run_claude_query(
+                match_analyst_prompt, [], ui,
+                "MATCH ANALYST (retry)", log_file,
+            )
         return output or ""
     except Exception:
         return ""

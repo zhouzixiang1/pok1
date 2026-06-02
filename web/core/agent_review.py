@@ -38,15 +38,15 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
 
     if prev_critic_result:
         prev_score = prev_critic_result.get("score", 0)
-        prev_feedback = prev_critic_result.get("feedback", "")[:500]
+        prev_feedback = prev_critic_result.get("feedback", "")[:1000]
         critic_prompt += (
             f"\n\n# Previous Critic Evaluation (for context — you are evaluating an UPDATED version):\n"
             f"- Previous Score: {prev_score}\n"
             f"- Previous Approved: {prev_critic_result.get('approved', False)}\n"
-            f"- Previous Feedback: {prev_feedback}\n"
-            f"\nScore based on whether the feedback was addressed. "
-            f"If the same issues remain, maintain the low score. "
-            f"If improvements were made, raise the score accordingly.\n"
+            f"- Previous Feedback (each point MUST be explicitly addressed):\n{prev_feedback}\n"
+            f"\nYou MUST verify that EACH specific point from the previous feedback was addressed.\n"
+            f"If ANY previous issue remains unresolved, do NOT raise the score above the previous score.\n"
+            f"If improvements were made that address ALL feedback points, raise the score accordingly.\n"
         )
 
     log_file = get_logs_dir(next_v) / "critic_io.txt"
@@ -185,10 +185,26 @@ async def _run_performance_verification(source_v, ratings, ui):
             pass
 
     # ── Build prompt ──
+    # Check rd (rating deviation) for the current bot to flag unreliable data
+    bot_rd = ratings.get(bot_name, Glicko2Player()).rd if ratings else 350
+    rd_warning = ""
+    if bot_rd > 200:
+        rd_warning = (
+            f"\n⚠️ IMPORTANT: This bot has rd={bot_rd:.0f} (>200), meaning its rating is VERY uncertain.\n"
+            "Trend analysis is unreliable — period-to-period fluctuations are likely noise, not signal.\n"
+            "You MUST note this explicitly and treat any 'trend' with extreme skepticism.\n"
+        )
+    elif bot_rd > 100:
+        rd_warning = (
+            f"\nNOTE: This bot has rd={bot_rd:.0f} (>100), meaning its rating is moderately uncertain.\n"
+            "Be cautious about interpreting small period-to-period changes as meaningful trends.\n"
+        )
+
     prompt = (
         "You are a Performance Verification Analyst for a self-evolving poker bot system.\n"
         "Your job: synthesise the quantitative data below into actionable LLM-readable insight.\n\n"
-        f"Current bot under analysis: {bot_name}\n\n"
+        f"Current bot under analysis: {bot_name}\n"
+        f"{rd_warning}\n"
         "## Performance History (last 10 periods)\n"
         + ("\n".join(gen_trend_lines) if gen_trend_lines else "  No history available") + "\n\n"
         "## Overall Win Rate\n"

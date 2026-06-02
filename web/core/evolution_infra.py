@@ -596,9 +596,16 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=14, daemon_pairs=5):
                         break
                     backoff = min(3 * (2 ** (restart_count - 1)), 120)
                     ui.log_history(f"⚠️ Daemon exited (rc={rc}), restarting in {backoff}s (attempt {restart_count})", "warn")
+                    # Capture last stderr output for diagnostics
+                    stderr_tail = ""
+                    try:
+                        if hasattr(proc, 'stderr') and proc.stderr:
+                            stderr_tail = proc.stderr.read()[-500:] if hasattr(proc.stderr, 'read') else ""
+                    except Exception:
+                        pass
                     from system_log import log_system_event
                     log_system_event("daemon.crashed", "error", f"Daemon exited rc={rc}, restarting (attempt {restart_count})",
-                                     {"restart_count": restart_count, "returncode": rc})
+                                     {"restart_count": restart_count, "returncode": rc, "stderr_tail": stderr_tail[:500] if stderr_tail else ""})
                     if stop_event.wait(backoff):
                         break
                     start_daemon(workers=daemon_workers, pairs=daemon_pairs)

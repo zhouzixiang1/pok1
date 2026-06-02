@@ -79,6 +79,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             "role": role,
             "worker_prompt": base_worker_prompt,
             "version": str(next_v),
+            "parent_version": str(source_v),
         })
 
         # ── Timeout isolation: abort and retry if worker hangs for >WORKER_TIMEOUT sec ──

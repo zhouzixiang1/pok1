@@ -81,12 +81,12 @@ class TestStop:
 
 
 class TestStartConflict:
-    def test_start_when_not_running(self, client):
-        # Ensure stopped
+    def test_start_when_not_running(self, client, monkeypatch):
         client.post("/api/control/stop")
-        # Start should succeed or fail cleanly (might fail due to missing claude_agent_sdk in test env)
+        import orchestrator
+        async def fake_loop(*a, **kw):
+            pass
+        monkeypatch.setattr(orchestrator, "orchestrator_loop", fake_loop)
         resp = client.post("/api/control/start")
-        # Either 200 (started) or 500 (import error) is acceptable
-        assert resp.status_code in (200, 500)
-        # Clean up
+        assert resp.status_code == 200
         client.post("/api/control/stop")
