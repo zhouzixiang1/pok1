@@ -1010,11 +1010,10 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
 
 
 def parse_json_output(output):
-    # Strategy 1: Find ```json and try every subsequent ``` as the closing delimiter.
-    # This handles nested code blocks (e.g. ```python inside ```json) which cause
-    # the non-greedy regex to stop too early.
-    json_start = re.search(r'```json\s*', output)
-    if json_start:
+    # Strategy 1: Find ALL ```json blocks, try from LAST to first.
+    # Handles the case where the LLM references the prompt template before the actual plan.
+    json_starts = list(re.finditer(r'```json\s*', output))
+    for json_start in reversed(json_starts):
         after_start = output[json_start.end():]
         # Find all ``` positions after ```json
         close_positions = [m.start() for m in re.finditer(r'```', after_start)]
@@ -1030,6 +1029,42 @@ def parse_json_output(output):
             return json.loads(after_start.strip().rstrip('`').strip())
         except json.JSONDecodeError:
             pass
+
+    # Strategy 1.5: Brace-matching from each ```json start.
+    # Handles embedded ``` inside JSON string values (e.g., worker_prompt with code blocks).
+    # Tracks string boundaries so ``` inside strings are ignored.
+    for json_start in reversed(json_starts):
+        after_start = output[json_start.end():]
+        brace_pos = after_start.find('{')
+        if brace_pos == -1:
+            continue
+        depth = 0
+        in_string = False
+        escape_next = False
+        for i in range(brace_pos, len(after_start)):
+            c = after_start[i]
+            if escape_next:
+                escape_next = False
+                continue
+            if c == '\\' and in_string:
+                escape_next = True
+                continue
+            if c == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    candidate = after_start[brace_pos:i + 1]
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        break  # brace match failed, try next ```json block
+
     # Strategy 2: Try the whole output as raw JSON
     try:
         return json.loads(output)
