@@ -30,7 +30,10 @@ def cached_read(key: str, path: Path) -> Any:
             return data
     if not path.exists():
         return None
-    data = read_locked(path)
+    try:
+        data = read_locked(path)
+    except (OSError, FileNotFoundError):
+        return None
     if data is not None:
         _CACHE[key] = (now, data)
     return data

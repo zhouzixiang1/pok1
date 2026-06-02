@@ -112,7 +112,15 @@ def _decide_strategy(stagnation, perf, current_v, ratings):
 
 def _parse_branch_from(branch_str: str) -> int | None:
     try:
+        return int(branch_str)
+    except ValueError:
+        pass
+    try:
         return int(branch_str.split("_v")[1])
+    except (ValueError, IndexError):
+        pass
+    try:
+        return int(branch_str.lstrip("v"))
     except (ValueError, IndexError):
         return None
 
@@ -189,8 +197,9 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
         try:
             from tool_status import reap_weakest
             await reap_weakest({"quiet": True})
-        except Exception:
-            pass
+        except Exception as e:
+            if ui:
+                ui.log_history(f"Auto-reap failed: {e}", "warn")
 
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         return
@@ -200,5 +209,6 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
         try:
             from agent_master import _consolidate_experience_pool
             await _consolidate_experience_pool(ui)
-        except Exception:
-            pass
+        except Exception as e:
+            if ui:
+                ui.log_history(f"Experience consolidation failed: {e}", "warn")

@@ -636,7 +636,6 @@ async def diagnose_environment(args):
             snapshot_lines.append(f"  {name}: r={p.r:.0f} rd={p.rd:.0f} {tag}")
 
     # Daemon status
-    from evolution_core import _daemon_proc
     daemon_running = False
     try:
         from evolution_infra import daemon_proc as dp

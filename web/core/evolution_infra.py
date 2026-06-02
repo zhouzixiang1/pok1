@@ -104,7 +104,13 @@ _WORKER_SEMAPHORE: "asyncio.Semaphore | None" = None
 
 
 def _is_rate_limited(output: str) -> bool:
-    return "529" in output or "该模型当前访问量过大" in output or "rate limit" in output.lower()
+    # Check for specific API error patterns, not bare "529" which can appear in poker data
+    return (
+        "overloaded" in output.lower()
+        or "该模型当前访问量过大" in output
+        or "rate limit" in output.lower()
+        or re.search(r'\b529\b', output) is not None
+    )
 
 # Add workspace to sys.path for glicko2 import
 from glicko2 import Glicko2Player, update_rating_period
@@ -161,7 +167,14 @@ def locked_file(path, mode='r', lock_type=None, encoding=None):
         if Path(path).exists():
             actual_mode = 'r+'
             truncate_after_lock = True
-    with open(path, actual_mode, **open_kwargs) as f:
+    try:
+        f = open(path, actual_mode, **open_kwargs)
+    except FileNotFoundError:
+        if mode == 'w':
+            f = open(path, 'w', **open_kwargs)
+        else:
+            raise
+    with f:
         fcntl.flock(f, lock_type)
         if truncate_after_lock:
             f.seek(0)
@@ -955,7 +968,13 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
                                     ui.log_io(content[:3000], "tool_result", role_name)
                     elif isinstance(message, ResultMessage):
                         cost_usd = (cost_usd or 0) + (message.total_cost_usd or 0)
-                        usage = message.usage
+                        if usage is None:
+                            usage = message.usage
+                        elif message.usage:
+                            merged = {}
+                            for k in ("input_tokens", "output_tokens"):
+                                merged[k] = (usage.get(k, 0) or 0) + (message.usage.get(k, 0) or 0)
+                            usage = merged
             except (CLINotFoundError, ProcessError) as e:
                 ui.log_io(f"[ERROR] {e}", "error", role_name)
                 if retry_gen is not None:

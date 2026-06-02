@@ -68,10 +68,9 @@ async def match_commentary(match_id: str):
 
     try:
         COMMENTARY_DIR.mkdir(parents=True, exist_ok=True)
-        with open(cache_path, "w") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
+        from evolution_infra import locked_file
+        with locked_file(cache_path, "w") as f:
             json.dump(commentary, f)
-            fcntl.flock(f, fcntl.LOCK_UN)
     except OSError:
         pass
 

@@ -130,10 +130,9 @@ async def _consolidate_experience_pool(ui):
             ).strip()
 
         if consolidated and len(consolidated) > 50:
-            with locked_file(EXPERIENCE_FILE, "r+") as ef:
-                ef.truncate(0)
-                ef.seek(0)
-                ef.write(consolidated + "\n")
+            tmp = EXPERIENCE_FILE.with_suffix(".tmp")
+            tmp.write_text(consolidated + "\n", encoding="utf-8")
+            tmp.replace(EXPERIENCE_FILE)
             ui.log_history("Experience pool consolidated and written back.", "success")
         else:
             ui.log_history("Experience pool consolidation produced no output — skipping write.", "warn")
@@ -339,8 +338,9 @@ def extract_street_patterns(games, bot_idx):
                     streets[street]["raise_size_sum"] += act_val
                     streets[street]["raise_size_pot_sum"] += act_val / pot
                     streets[street]["raise_size_count"] += 1
-            else:
+            elif act_val == 0:
                 streets[street]["call"] += 1
+            # Other values (e.g. timeout) are ignored
 
     # Build compact text lines
     lines = []
@@ -389,8 +389,11 @@ def summarize_replay_for_analysis(replay_data, bot_name):
     chip_deltas = [g.get(f"bot{bot_idx}_chips", 0.0) for g in games]
 
     lines = []
+    draws = total_games - wins - sum(1 for g in games if g.get("winner") == opp_idx)
+    losses = total_games - wins - draws
+    result_str = f"{wins}W/{draws}D/{losses}L" if draws else f"{wins}W/{losses}L"
     lines.append(f"Match: {replay_data['bot0']} vs {replay_data['bot1']}, "
-                 f"Result: {wins}W/{total_games - wins}L out of {total_games} games")
+                 f"Result: {result_str} out of {total_games} games")
     lines.append(f"Chip delta: avg={sum(chip_deltas)/len(chip_deltas):.0f}, "
                  f"best={max(chip_deltas):.0f}, worst={min(chip_deltas):.0f}")
 

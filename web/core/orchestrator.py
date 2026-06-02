@@ -39,12 +39,30 @@ from claude_agent_sdk.types import HookMatcher, SyncHookJSONOutput
 from tools import evolution_server, inject_ui
 from shutdown_manager import ShutdownManager
 from system_log import log_system_event, set_ui as set_system_log_ui
+import logging
 
+log = logging.getLogger("pok.orchestrator")
 
 ORCHESTRATOR_PROMPT = (Path(__file__).parent / "prompts" / "orchestrator.md").read_text()
 LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 ORCHESTRATOR_SESSION_FILE = RESULTS_DIR / "orchestrator_session.json"
+
+
+def _rotate_orchestrator_logs(logs_dir, keep=20):
+    """Keep only the most recent N orchestrator log files."""
+    if not logs_dir.exists():
+        return
+    files = sorted(
+        (f for f in logs_dir.iterdir()
+         if f.name.startswith("orchestrator_") and f.name.endswith(".txt")),
+        key=lambda f: f.stat().st_mtime,
+    )
+    for old_file in files[:-keep]:
+        try:
+            old_file.unlink()
+        except OSError:
+            pass
 
 
 def _is_rate_limited(output: str) -> bool:
@@ -100,7 +118,7 @@ def _startup_recovery(ui=None) -> dict:
             if ui:
                 ui.log_history("[Recovery] Stale session file (no pipeline checkpoint). Clearing.", "warn")
             else:
-                print("[Recovery] Stale session file (no pipeline checkpoint). Clearing.")
+                log.warning("Stale session file (no pipeline checkpoint). Clearing.")
             _clear_orchestrator_session()
         return {"action": "fresh_start"}
 
@@ -112,7 +130,7 @@ def _startup_recovery(ui=None) -> dict:
         if ui:
             ui.log_history(f"[Recovery] Pipeline at '{stage}' for v{next_v}. Clearing stale checkpoint.", "warn")
         else:
-            print(f"[Recovery] Pipeline at '{stage}' for v{next_v}. Clearing stale checkpoint.")
+            log.warning("Pipeline at '%s' for v%s. Clearing stale checkpoint.", stage, next_v)
         clear_pipeline_checkpoint()
         _clear_orchestrator_session()
         return {"action": "fresh_start"}
@@ -132,8 +150,7 @@ def _startup_recovery(ui=None) -> dict:
         msg = f"[Recovery] Resuming v{next_v} at '{stage}' (new LLM session)."
     if ui:
         ui.log_history(msg, "warn")
-    else:
-        print(msg)
+        log.warning(msg)
     return recovery
 
 
@@ -425,6 +442,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 if ui:
                                     ui.log_io(block.text, "claude", "Orchestrator")
                                 else:
+                                    log.debug("%s", block.text.rstrip())
                                     print(block.text, end="", flush=True)
                                 lf.write(block.text)
                             elif isinstance(block, ToolUseBlock):
@@ -433,12 +451,14 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                     ui.log_io(f"\n[tool: {block.name}]", "tool", "Orchestrator")
                                     ui.emit_tool_call(block.name, block.input, "Orchestrator")
                                 else:
+                                    log.info("Calling tool: %s", block.name)
                                     print(f"\n[tool: {block.name}]", end=" ", flush=True)
                                 lf.write(f"\n[tool: {block.name}]\n")
                             elif isinstance(block, ThinkingBlock):
                                 if ui:
                                     ui.log_io(block.thinking or "[thinking...]", "thinking", "Orchestrator")
                                 else:
+                                    log.debug("[thinking...]")
                                     print("[thinking...]", end=" ", flush=True)
                             elif isinstance(block, ToolResultBlock):
                                 content = block.content if isinstance(block.content, str) else (
@@ -465,6 +485,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                 if ui:
                     ui.log_io(f"[ERROR] {e}", "error", "Orchestrator")
                 else:
+                    log.error("LLM error: %s", e)
                     print(f"\n[ERROR] {e}")
             return "".join(texts), cost, ok, gen, auth_err
 
@@ -521,7 +542,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             if ui:
                 ui.log_history("[Orchestrator] Interrupted by user.", "warn")
             else:
-                print("\n[Orchestrator] Interrupted by user.")
+                log.warning("Interrupted by user.")
             lf.write("\n[INTERRUPTED]\n")
 
         except asyncio.CancelledError:
@@ -534,7 +555,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             if ui:
                 ui.log_history("[Orchestrator] Cancelled — session preserved for resume.", "warn")
             else:
-                print("\n[Orchestrator] Cancelled — session preserved for resume.")
+                log.warning("Cancelled — session preserved for resume.")
             lf.write("\n[CANCELLED — session preserved for resume]\n")
             raise
 
@@ -548,7 +569,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             if ui:
                 ui.log_history(f"[Orchestrator] Error: {e}", "error")
             else:
-                print(f"\n[Orchestrator] Error: {e}")
+                log.error("Error: %s", e)
             lf.write(f"\n[ERROR] {e}\n")
 
     # Only clear session file on natural (non-error) cycle completion.
@@ -578,6 +599,7 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
     set_system_log_ui(ui)
 
     os.makedirs(LOGS_DIR, exist_ok=True)
+    _rotate_orchestrator_logs(LOGS_DIR)
 
     if ui:
         ui.log_history("🔥 Orchestrator starting...", "success")
@@ -585,6 +607,7 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
 
     log_system_event("orchestrator.started", "success", "Orchestrator started",
                      {"daemon_enabled": not no_daemon})
+    log.info("Orchestrator loop started (daemon=%s)", not no_daemon)
 
     # Start daemon
     _daemon_stop = None
@@ -712,11 +735,15 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
         log_system_event("orchestrator.crashed", "error", f"Orchestrator crashed: {e}",
                          {"error": str(e)[:200]})
         _clear_orchestrator_session()
-        try:
-            from evolution_core import clear_pipeline_checkpoint
-            clear_pipeline_checkpoint()
-        except Exception:
-            pass
+        # Only clear checkpoint for non-transient errors (auth, data corruption)
+        # Transient errors (network, timeout) preserve checkpoint for recovery
+        is_transient = isinstance(e, (ConnectionError, TimeoutError, OSError))
+        if not is_transient:
+            try:
+                from evolution_core import clear_pipeline_checkpoint
+                clear_pipeline_checkpoint()
+            except Exception:
+                pass
         try:
             from server.state import app_state
             app_state.set_running(False)
@@ -740,17 +767,20 @@ async def _prepare_or_fail(shutdown_mgr, ui, min_games=None):
         if ui:
             ui.log_history(f"prepare_generation failed: {e}", "error")
         else:
-            print(f"[Orchestrator] prepare_generation failed: {e}")
+            log.error("prepare_generation failed: %s", e)
         return None
 
 
 async def run_orchestrator_cli(args, shutdown_mgr=None):
     """Run Orchestrator in standalone CLI mode."""
+    from logging_config import configure_logging
+    configure_logging()
     os.makedirs(LOGS_DIR, exist_ok=True)
 
     log_file = LOGS_DIR / f"orchestrator_{time.strftime('%Y%m%d_%H%M%S')}.txt"
-    print(f"[Orchestrator] Starting. Mode: {'dry-run' if args.dry_run else 'one-gen' if args.one_gen else 'continuous'}")
-    print(f"[Orchestrator] Log: {log_file}")
+    mode = 'dry-run' if args.dry_run else 'one-gen' if args.one_gen else 'continuous'
+    log.info("Starting. Mode: %s", mode)
+    log.info("Log: %s", log_file)
 
     # In CLI mode, inject None (uses ToolUI fallback)
     inject_ui(None)
@@ -772,9 +802,9 @@ async def run_orchestrator_cli(args, shutdown_mgr=None):
                 gen_ctx = await prepare_generation(shutdown_mgr, None)
                 if gen_ctx is None:
                     if shutdown_mgr and shutdown_mgr.is_shutting_down:
-                        print("[Orchestrator] Cancelled during preparation.")
+                        log.warning("Cancelled during preparation.")
                     else:
-                        print("[Orchestrator] Preparation returned no context.")
+                        log.warning("Preparation returned no context.")
                     return
                 cost = await _run_one_cycle(
                     ui=None, log_file=log_file,
@@ -784,7 +814,7 @@ async def run_orchestrator_cli(args, shutdown_mgr=None):
                 )
                 if cost >= 0:
                     await post_generation_cleanup(shutdown_mgr, None, gen_ctx)
-            print(f"\n[Orchestrator] Done. Cost: ${cost:.4f}")
+            log.info("Done. Cost: $%.4f", cost)
         else:
             await orchestrator_loop(
                 ui=None,
@@ -816,7 +846,7 @@ def main():
     try:
         loop.run_until_complete(run_orchestrator_cli(args, shutdown_mgr))
     except KeyboardInterrupt:
-        print("\n[Orchestrator] Forced exit.")
+        log.warning("Forced exit.")
     finally:
         loop.close()
 

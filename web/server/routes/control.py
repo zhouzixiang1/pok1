@@ -126,7 +126,16 @@ async def start_evolution():
 async def stop_evolution():
     app_state.request_shutdown()
     app_state.set_running(False)
-    app_state.cancel_task()
+    task = None
+    with app_state._lock:
+        task = app_state._evolution_task
+        app_state._evolution_task = None
+    if task and not task.done():
+        task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=10)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
     try:
         from evolution_core import stop_daemon
         stop_daemon()
@@ -203,13 +212,21 @@ async def reset_evolution_endpoint():
     """Reset evolution to baseline (v1-v6), then auto-restart."""
     if app_state.running:
         app_state.set_running(False)
-        app_state.cancel_task()
+        task = None
+        with app_state._lock:
+            task = app_state._evolution_task
+            app_state._evolution_task = None
+        if task and not task.done():
+            task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=10)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
         try:
             from evolution_core import stop_daemon
             stop_daemon()
         except Exception:
             pass
-        await asyncio.sleep(2)
 
     loop = asyncio.get_running_loop()
     from reset import reset_evolution

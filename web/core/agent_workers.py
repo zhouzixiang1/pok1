@@ -100,8 +100,9 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 _last_reason = f"unexpected error: {type(exc).__name__}: {str(exc)[:200]}"
                 ui.log_history(f"Worker {w_id} ({role}) error: {exc}", "error")
             # Reset code directory from source to avoid half-edited state
-            if source_v is not None:
-                src_dir = get_bot_dir(source_v)
+            reset_v = source_v if source_v is not None else find_current_v()
+            if reset_v is not None:
+                src_dir = get_bot_dir(reset_v)
                 if src_dir.exists() and next_dir.exists():
                     shutil.rmtree(next_dir)
                     shutil.copytree(src_dir, next_dir, ignore=_COPY_IGNORE)
@@ -216,7 +217,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
         ok = await _run_single_worker(
             task, i, worker_template, next_dir, next_v,
             context_files, ui, serial_reviewer_feedback,
-            source_v=source_v,
+            source_v=_source,
         )
         if not ok:
             return False

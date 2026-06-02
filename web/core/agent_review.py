@@ -64,7 +64,7 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
             return data
     except Exception as e:
         ui.log_history(f"Critic error: {e}. Defaulting to rejected.", "warn")
-        return None
+        return {"score": 0, "approved": False, "feedback": str(e), "local_optima_warning": False}
 
     return {"score": 0, "approved": False, "feedback": "Critic output was not valid JSON.", "local_optima_warning": False}
 
@@ -227,7 +227,15 @@ async def _run_performance_verification(source_v, ratings, ui):
 async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
     """Run crossover between two elite bots to create a new child bot."""
     import shutil
-    crossover_prompt = (PROMPTS_DIR / "crossover_prompt.md").read_text()
+    crossover_prompt_path = PROMPTS_DIR / "crossover_prompt.md"
+    if not crossover_prompt_path.exists():
+        ui.log_history("Crossover prompt not found — skipping crossover.", "error")
+        return False
+    parent_a_dir = get_bot_dir(parent_a_v)
+    if not parent_a_dir.exists():
+        ui.log_history(f"Crossover parent_a (v{parent_a_v}) directory not found — skipping.", "error")
+        return False
+    crossover_prompt = crossover_prompt_path.read_text()
     crossover_prompt = substitute_template(crossover_prompt, {
         "parent_a_version": str(parent_a_v),
         "parent_b_version": str(parent_b_v),

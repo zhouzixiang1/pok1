@@ -52,7 +52,7 @@ from system_log import log_system_event
 def _record_quality_failure(gen, worker_id, role, error):
     """Record a quality gate rejection (reviewer/critic) to worker_failures.jsonl."""
     from evolution_core import WORKER_FAILURES_FILE, locked_file
-    entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error}
+    entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error, "timestamp": __import__("time").time()}
     with locked_file(WORKER_FAILURES_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
@@ -71,8 +71,14 @@ _TUNER_STRUCTURAL_PATTERNS = [
 
 
 def _validate_master_plan(plan, next_v=None):
-    """Validate master plan constraints before dispatching workers."""
+    """Validate master plan constraints before dispatching workers.
+
+    Returns (errors, warnings) — only errors block plan storage.
+    Boundary warnings are logged but non-blocking; the reviewer/critic
+    enforce actual role boundaries during code review.
+    """
     errors = []
+    warnings = []
     tasks = plan.get("tasks", [])
     if len(tasks) > 3:
         errors.append(f"Too many tasks: {len(tasks)} > 3")
@@ -93,23 +99,15 @@ def _validate_master_plan(plan, next_v=None):
                 # Find the keyword in context — skip if it's in a constraint sentence
                 idx = prompt_lower.find(kw)
                 if idx >= 0:
-                    # Check surrounding context (50 chars before) for negative cues
-                    context_before = prompt_lower[max(0, idx - 50):idx]
+                    # Check surrounding context (100 chars before) for negative cues
+                    context_before = prompt_lower[max(0, idx - 100):idx]
                     if any(cue in context_before for cue in _skip_contexts):
                         continue
-                    # Keyword found in an affirmative (structural) context
-                    errors.append(
+                    # Keyword found in an affirmative (structural) context — warn only
+                    warnings.append(
                         f"Task {i} boundary warning: Hyperparameter Tuner prompt contains structural instruction "
                         f"'{kw}' — Tuner should only change numeric constants. "
-                        f"Either rephrase the prompt to only specify constant changes, or reassign this task "
-                        f"as Algorithmic Logic Architect."
-                    )
-                    break
-                    errors.append(
-                        f"Task {i} boundary warning: Hyperparameter Tuner prompt contains structural instruction "
-                        f"'{kw}' — Tuner should only change numeric constants. "
-                        f"Either rephrase the prompt to only specify constant changes, or reassign this task "
-                        f"as Algorithmic Logic Architect."
+                        f"The reviewer/critic will enforce this boundary."
                     )
                     break
 
@@ -127,7 +125,7 @@ def _validate_master_plan(plan, next_v=None):
             else:
                 all_targets[rel] = i
 
-    return errors
+    return errors, warnings
 
 class RunMasterInput(TypedDict):
     source_v: Annotated[int, "Source bot version"]
@@ -155,9 +153,13 @@ async def run_master(args):
     if data is None:
         return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed to produce a valid plan after 3 retries", "logs": ui.get_output()})}]}
 
-    plan_errors = _validate_master_plan(data, next_v=next_v)
+    plan_errors, plan_warnings = _validate_master_plan(data, next_v=next_v)
+    if plan_warnings:
+        log_system_event("pipeline.master_boundary", "warning",
+                         f"Master plan boundary warnings for v{next_v}: {plan_warnings}",
+                         {"next_v": next_v, "warnings": plan_warnings})
     if plan_errors:
-        return {"content": [{"type": "text", "text": json.dumps({"error": "Master plan validation failed", "validation_errors": plan_errors, "plan": data, "logs": ui.get_output()})}]}
+        return {"content": [{"type": "text", "text": json.dumps({"error": "Master plan validation failed", "validation_errors": plan_errors, "validation_warnings": plan_warnings, "plan": data, "logs": ui.get_output()})}]}
 
     # Persist master plan to checkpoint so it survives crashes between master and workers
     from evolution_infra import write_pipeline_checkpoint
@@ -660,6 +662,12 @@ async def run_precommit_eval(args):
         return _json_tool_result(result)
 
     opponents = _select_precommit_opponents(v, source_v)
+    # Add crossover parent_b if applicable
+    if ckpt and ckpt.get("parent2_v"):
+        parent2_name = f"claude_v{ckpt['parent2_v']}"
+        parent2_main = _bot_main(parent2_name)
+        if parent2_main.exists() and not any(o["name"] == parent2_name for o in opponents):
+            opponents.append({"name": parent2_name, "reason": "crossover_parent_b"})
     if not opponents:
         blockers.append({"reason": "no_opponents", "details": "No parent/top/H2H opponents with main.py found."})
 
@@ -813,10 +821,12 @@ async def run_inline_eval(args):
     for opp in opponents:
         if opp not in ratings:
             ratings[opp] = Glicko2Player()
-        match_wins, draws, n_played, _ = mirror_battle(
-            str(_bot_main(bot_name)),
-            str(_bot_main(opp)),
-            n_games=n_games, verbose=False, save_log=False
+        loop = asyncio.get_running_loop()
+        match_wins, draws, n_played, _ = await loop.run_in_executor(
+            None,
+            lambda _b=str(_bot_main(bot_name)), _o=str(_bot_main(opp)): mirror_battle(
+                _b, _o, n_games=n_games, verbose=False, save_log=False,
+            ),
         )
         w_a, w_b = match_wins[0], match_wins[1]
         total = w_a + w_b + draws
@@ -1065,7 +1075,7 @@ async def commit_bot(args):
         import time as _time
         from evolution_infra import locked_file
         with locked_file(priority_file, "w") as f:
-            json.dump({"bot": bot_name, "min_games": 100, "since": _time.time()}, f)
+            json.dump({"bot": f"claude_v{v}", "min_games": 100, "since": _time.time()}, f)
     except Exception:
         pass
 
