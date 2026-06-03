@@ -74,8 +74,15 @@ async def lifespan(app: FastAPI):
                 except (asyncio.CancelledError, asyncio.TimeoutError):
                     pass
     finally:
+        # Set daemon shutting_down flag FIRST to prevent monitor restart race
         try:
-            from evolution_infra import stop_daemon
+            from daemon_management import _daemon_shutting_down
+            import daemon_management
+            daemon_management._daemon_shutting_down = True
+        except Exception:
+            pass
+        try:
+            from daemon_management import stop_daemon
             await asyncio.to_thread(stop_daemon)
         except Exception:
             pass

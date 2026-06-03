@@ -74,6 +74,12 @@ def main():
     from server.state import app_state
     app_state.update_config(daemon_enabled=not args.no_daemon)
 
+    # Register atexit daemon cleanup as backup (lifespan handler is primary)
+    import atexit
+    sys.path.insert(0, str(WEB_DIR / "core"))
+    from daemon_management import stop_daemon
+    atexit.register(stop_daemon)
+
     uvicorn.run(
         "server.app:app",
         host=args.host,

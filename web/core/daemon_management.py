@@ -94,6 +94,8 @@ def stop_daemon():
     _daemon_shutting_down = True
     with _daemon_lock:
         if daemon_proc is None:
+            # No in-memory handle — try PID file for orphan cleanup
+            _kill_orphan_from_pid_file()
             return
         if daemon_proc.poll() is None:
             try:
@@ -130,6 +132,34 @@ def stop_daemon():
     log_system_event("daemon.stopped", "info", "Daemon stopped")
 
 
+def _kill_orphan_from_pid_file():
+    """Kill any orphan daemon process recorded in the PID file."""
+    from evolution_infra import RESULTS_DIR
+    daemon_pid_file = RESULTS_DIR / ".daemon_pid"
+    if not daemon_pid_file.exists():
+        return
+    try:
+        raw = daemon_pid_file.read_text().strip()
+        try:
+            info = json.loads(raw)
+            old_pid = info["pid"] if isinstance(info, dict) else int(raw)
+        except (json.JSONDecodeError, KeyError, TypeError):
+            old_pid = int(raw)
+        try:
+            pgid = os.getpgid(old_pid)
+            os.killpg(pgid, signal.SIGTERM)
+            time.sleep(0.5)
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    except (ValueError, OSError):
+        pass
+    daemon_pid_file.unlink(missing_ok=True)
+
+
 def is_daemon_alive():
     """Check if daemon subprocess is running."""
     with _daemon_lock:
@@ -144,6 +174,9 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=14, daemon_pairs=5):
     from evolution_infra import load_daemon_stats, load_ratings
     restart_count = 0
     while not stop_event.is_set():
+        # Check shutdown flag first to prevent restart race
+        if _daemon_shutting_down:
+            break
         try:
             with _daemon_lock:
                 proc = daemon_proc

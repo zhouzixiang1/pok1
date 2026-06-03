@@ -10,8 +10,12 @@ Phase 3 is idempotent (interrupt → re-run safely).
 """
 
 import json
+import logging
 import time
+import traceback
 from dataclasses import dataclass, field
+
+log = logging.getLogger("pok.scheduler")
 
 
 @dataclass
@@ -221,6 +225,7 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
             from tool_bot_management import _do_reap_weakest
             await _do_reap_weakest(quiet=True)
         except Exception as e:
+            log.warning("Auto-reap failed: %s\n%s", e, traceback.format_exc())
             if ui:
                 ui.log_history(f"Auto-reap failed: {e}", "warn")
 
