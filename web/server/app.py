@@ -37,11 +37,10 @@ async def lifespan(app: FastAPI):
     config = app_state.get_config()
     daemon_enabled = config["daemon_enabled"]
 
-    # Install signal handlers for graceful shutdown
+    # Let uvicorn own signal handling — its handle_exit sets should_exit,
+    # which triggers sse-starlette shutdown → lifespan shutdown below.
     from shutdown_manager import ShutdownManager
     shutdown_mgr = ShutdownManager(grace_period=15.0)
-    loop = asyncio.get_running_loop()
-    shutdown_mgr.install_signal_handlers(loop)
     app_state.set_shutdown_mgr(shutdown_mgr)
 
     app_state.set_running(True)
