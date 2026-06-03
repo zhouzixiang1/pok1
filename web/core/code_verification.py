@@ -1,0 +1,84 @@
+"""Code verification tools: compile check, file size, smoke test, decision tests."""
+
+import os
+import shutil
+import subprocess
+import sys
+
+from evolution_infra import (
+    CORE_DIR, REFERENCE_DIR, RESULTS_DIR, MAX_LINES_PER_FILE, _COPY_IGNORE,
+    get_bot_dir,
+)
+
+
+def verify_code(directory):
+    errors = []
+    for root, _, files in os.walk(directory):
+        for f in files:
+            if f.endswith(".py"):
+                path = os.path.join(root, f)
+                proc = subprocess.run([sys.executable, "-m", "py_compile", path], capture_output=True, text=True)
+                if proc.returncode != 0:
+                    errors.append(proc.stderr.strip())
+    return errors
+
+
+def check_code_size(directory, max_lines_per_file=MAX_LINES_PER_FILE):
+    """Check single-file LOC limits (excluding backup files). Returns (total, oversized_files)."""
+    oversized_files = []
+    total = 0
+    for root, _, files in os.walk(directory):
+        for f in files:
+            if f.endswith(".py") and "backup" not in f:
+                path = os.path.join(root, f)
+                with open(path) as fh:
+                    lines = sum(1 for _ in fh)
+                total += lines
+                if lines > max_lines_per_file:
+                    oversized_files.append((f, lines))
+    return total, oversized_files
+
+
+def run_smoke_test(directory):
+    main_path = os.path.join(directory, "main.py")
+    if not os.path.exists(main_path):
+        return ["main.py not found!"]
+    proc = subprocess.run(
+        [sys.executable, str(CORE_DIR / "smoke_tester.py"), main_path],
+        capture_output=True, text=True
+    )
+    if proc.returncode != 0:
+        return [proc.stderr.strip() or proc.stdout.strip()]
+    return []
+
+
+def run_decision_test_details(directory):
+    """Run standard decision scenarios. Returns detailed gate results."""
+    main_path = os.path.join(directory, "main.py")
+    if not os.path.exists(main_path):
+        return {
+            "pass_rate": 0.0,
+            "passed": 0,
+            "total": 0,
+            "critical_passed": 0,
+            "critical_total": 0,
+            "critical_failures": [{"id": "main.py", "details": "main.py not found"}],
+            "failures": [{"id": "main.py", "severity": "critical", "details": "main.py not found"}],
+            "scenarios": [],
+        }
+    from decision_tester import run_decision_tests_detail as _run_detail
+    return _run_detail(main_path, verbose=False)
+
+
+def seed_initial_bots(ui):
+    """Seed claude_v1 through claude_v6 with bot1 through bot6 if they don't exist."""
+    seeded = False
+    for i in range(1, 7):
+        target_dir = get_bot_dir(i)
+        source_dir = REFERENCE_DIR / f"bot{i}"
+        if not target_dir.exists() and source_dir.exists():
+            ui.log_history(f"Seeding claude_v{i} from reference bot{i}...", "info")
+            shutil.copytree(source_dir, target_dir, ignore=_COPY_IGNORE)
+            (target_dir / ".completed").touch()
+            seeded = True
+    return seeded

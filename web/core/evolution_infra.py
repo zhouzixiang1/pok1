@@ -1,8 +1,9 @@
 """Shared infrastructure for the poker bot evolution framework.
 
-Contains constants, file utilities, git operations, daemon management,
-ratings helpers, LLM query primitives, and code verification tools.
+Contains constants, file utilities, git operations, ratings helpers.
 No LLM agent logic — agent functions live in agent_*.py modules.
+Runtime operations (daemon, LLM query, code verification) extracted to
+daemon_management.py, llm_query.py, and code_verification.py.
 """
 
 import os
@@ -12,10 +13,8 @@ import logging
 import shutil
 import subprocess
 import re
-import signal
 import asyncio
 import fcntl
-import atexit
 import time
 import threading
 from contextlib import contextmanager
@@ -23,18 +22,9 @@ from pathlib import Path
 
 log = logging.getLogger("pok.infra")
 
-from claude_agent_sdk import (
-    query as claude_query,
-    ClaudeAgentOptions,
-    AssistantMessage,
-    ResultMessage,
-    TextBlock,
-    ToolUseBlock,
-    ToolResultBlock,
-    ThinkingBlock,
-    CLINotFoundError,
-    ProcessError,
-)
+# Add workspace to sys.path for glicko2 import
+from glicko2 import Glicko2Player, update_rating_period
+from experience_pool import trim_experience_pool
 
 # ──────────────────────────────────────────────
 # Constants
@@ -108,45 +98,12 @@ _BLOCKED_MCP_TOOLS = [
 _WORKER_SEMAPHORE: "asyncio.Semaphore | None" = None
 
 
-def _is_rate_limited(output: str) -> bool:
-    return (
-        "overloaded" in output.lower()
-        or "该模型当前访问量过大" in output
-        or "rate limit" in output.lower()
-        or re.search(r'(?:status["\s:=]+529|HTTP/\d\.?\d?\s+529|error.*529)', output, re.IGNORECASE) is not None
-    )
-
-# Add workspace to sys.path for glicko2 import
-from glicko2 import Glicko2Player, update_rating_period
-from experience_pool import trim_experience_pool
-
-# Global daemon process handle
-daemon_proc = None
-_daemon_lock = threading.Lock()
-_atexit_registered = False
-_daemon_shutting_down = False
-
-
-# ──────────────────────────────────────────────
-# Utility Functions
-# ──────────────────────────────────────────────
-
 def _get_worker_semaphore() -> "asyncio.Semaphore":
     """Return (creating if needed) the module-level worker concurrency semaphore."""
     global _WORKER_SEMAPHORE
     if _WORKER_SEMAPHORE is None:
         _WORKER_SEMAPHORE = asyncio.Semaphore(MAX_PARALLEL_WORKERS)
     return _WORKER_SEMAPHORE
-
-
-def _trim_to_budget(text: str, max_chars: int, tail: bool = False) -> str:
-    """Trim text to max_chars. If tail=True, keep the LAST max_chars (most recent content)."""
-    if len(text) <= max_chars:
-        return text
-    note = "\n...[TRIMMED]\n"
-    if tail:
-        return note + text[-(max_chars - len(note)):]
-    return text[:max_chars - len(note)] + note
 
 
 @contextmanager
@@ -412,6 +369,8 @@ async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=
       - rd < EVAL_RD_THRESHOLD and games >= EVAL_RD_MIN_GAMES (confidence-based early exit)
     Returns False on timeout or shutdown signal.
     """
+    from daemon_management import daemon_proc, _daemon_lock
+
     EVAL_RD_THRESHOLD = 60
     EVAL_RD_MIN_GAMES = 20
 
@@ -478,174 +437,6 @@ async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=
         games = cached_bot_stats.get(bot_name, {}).get("games", 0)
         ui.log_history(f"评估超时 {bot_name}: 仅 {games}/{min_games} 场 ({int(time.time()-start)}s)", "warn")
     return False
-
-
-# ──────────────────────────────────────────────
-# Daemon Management
-# ──────────────────────────────────────────────
-
-def _drain_stdout(proc):
-    """Drain daemon stdout to prevent pipe buffer deadlock."""
-    try:
-        while True:
-            line = proc.stdout.readline()
-            if not line:
-                break
-            log.debug("[DAEMON] %s", line.rstrip())
-    except (ValueError, OSError):
-        pass  # Pipe closed
-
-
-def start_daemon(workers=14, pairs=5):
-    """Start elo_daemon.py as a background subprocess in its own process group."""
-    global daemon_proc, _atexit_registered, _daemon_shutting_down
-
-    # Kill orphaned daemon from a previous process (before acquiring lock)
-    _need_wait = False
-    daemon_pid_file = RESULTS_DIR / ".daemon_pid"
-    if daemon_pid_file.exists():
-        try:
-            raw = daemon_pid_file.read_text().strip()
-            try:
-                info = json.loads(raw)
-                old_pid = info["pid"] if isinstance(info, dict) else int(info)
-            except (json.JSONDecodeError, KeyError, TypeError):
-                old_pid = int(raw)
-            try:
-                os.killpg(os.getpgid(old_pid), signal.SIGTERM)
-                _need_wait = True
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
-        except ValueError:
-            pass
-    if _need_wait:
-        time.sleep(1)  # Wait outside lock for orphan to die
-
-    with _daemon_lock:
-        _daemon_shutting_down = False
-        if daemon_proc and daemon_proc.poll() is None:
-            return daemon_proc  # Already running
-        daemon_pid_file.unlink(missing_ok=True)
-        daemon_script = str(CORE_DIR / "elo_daemon.py")
-        cmd = [sys.executable, daemon_script, "--workers", str(workers), "--pairs", str(pairs)]
-        daemon_proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1,
-            start_new_session=True,  # Independent process group for clean killpg
-        )
-        tmp_pid = daemon_pid_file.with_suffix(".tmp")
-        tmp_pid.write_text(json.dumps({"pid": daemon_proc.pid, "ppid": os.getpid()}))
-        os.replace(str(tmp_pid), str(daemon_pid_file))
-    # Drain daemon stdout to prevent pipe buffer deadlock
-    threading.Thread(target=_drain_stdout, args=(daemon_proc,), daemon=True).start()
-    if not _atexit_registered:
-        atexit.register(stop_daemon)
-        _atexit_registered = True
-    from system_log import log_system_event
-    log_system_event("daemon.started", "success", f"Daemon started (workers={workers}, pairs={pairs})",
-                     {"workers": workers, "pairs": pairs})
-    return daemon_proc
-
-
-def stop_daemon():
-    """Stop the daemon subprocess and its entire process group."""
-    global daemon_proc, _daemon_shutting_down
-    _daemon_shutting_down = True
-    with _daemon_lock:
-        if daemon_proc is None:
-            return
-        if daemon_proc.poll() is None:
-            try:
-                pgid = os.getpgid(daemon_proc.pid)
-            except (ProcessLookupError, PermissionError):
-                pgid = None
-            try:
-                if pgid is not None:
-                    os.killpg(pgid, signal.SIGTERM)
-                else:
-                    daemon_proc.terminate()
-            except (ProcessLookupError, PermissionError):
-                daemon_proc.terminate()
-            try:
-                daemon_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                try:
-                    if pgid is not None:
-                        os.killpg(pgid, signal.SIGKILL)
-                    else:
-                        daemon_proc.kill()
-                except (ProcessLookupError, PermissionError):
-                    daemon_proc.kill()
-                try:
-                    daemon_proc.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    pass
-        daemon_proc = None
-        # Clean up PID file
-        daemon_pid_file = RESULTS_DIR / ".daemon_pid"
-        daemon_pid_file.unlink(missing_ok=True)
-    from system_log import log_system_event
-    log_system_event("daemon.stopped", "info", "Daemon stopped")
-
-
-def is_daemon_alive():
-    """Check if daemon subprocess is running."""
-    with _daemon_lock:
-        proc = daemon_proc
-    return proc is not None and proc.poll() is None
-
-
-def daemon_monitor_thread(ui, stop_event, daemon_workers=14, daemon_pairs=5):
-    """Background thread: reads daemon stats, updates UI, auto-restarts dead daemon."""
-    if not ui:
-        return
-    restart_count = 0
-    while not stop_event.is_set():
-        try:
-            with _daemon_lock:
-                proc = daemon_proc
-            if proc is not None and proc.poll() is not None:
-                # Re-check under lock — start_daemon may have replaced daemon_proc
-                with _daemon_lock:
-                    current_proc = daemon_proc
-                if current_proc is not None and current_proc is not proc and current_proc.poll() is None:
-                    # Daemon was intentionally replaced, not a crash
-                    restart_count = 0
-                else:
-                    rc = proc.poll()
-                    restart_count += 1
-                    if restart_count > 5:
-                        ui.log_history(f"Daemon failed 5x consecutively, stopping auto-restart (last rc={rc})", "error")
-                        from system_log import log_system_event
-                        log_system_event("daemon.crashed", "error", f"Daemon failed {restart_count}x, auto-restart stopped",
-                                         {"restart_count": restart_count, "returncode": rc})
-                        break
-                    backoff = min(3 * (2 ** (restart_count - 1)), 120)
-                    ui.log_history(f"⚠️ Daemon exited (rc={rc}), restarting in {backoff}s (attempt {restart_count})", "warn")
-                    # Capture last output for diagnostics (stderr is merged into stdout)
-                    output_tail = ""
-                    try:
-                        if hasattr(proc, 'stdout') and proc.stdout:
-                            raw = proc.stdout.read()
-                            output_tail = raw[-500:] if raw else ""
-                    except (ValueError, OSError):
-                        pass
-                    from system_log import log_system_event
-                    log_system_event("daemon.crashed", "error", f"Daemon exited rc={rc}, restarting (attempt {restart_count})",
-                                     {"restart_count": restart_count, "returncode": rc, "output_tail": output_tail[:500] if output_tail else ""})
-                    if stop_event.wait(backoff):
-                        break
-                    if _daemon_shutting_down:
-                        break
-                    start_daemon(workers=daemon_workers, pairs=daemon_pairs)
-            else:
-                restart_count = 0
-            stats = load_daemon_stats()
-            ratings = load_ratings()
-            ui.update_daemon_status(stats, ratings)
-        except Exception as e:
-            ui.log_history(f"Daemon monitor error: {e}", "error")
-        stop_event.wait(3)
 
 
 # ──────────────────────────────────────────────
@@ -882,312 +673,19 @@ def archive_old_logs(keep_generations=5):
 
 
 # ──────────────────────────────────────────────
-# LLM Query Primitive
+# Re-exports from extracted modules
 # ──────────────────────────────────────────────
 
-async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, model="sonnet", tools=None):
-    """Run a Claude query via the Agent SDK with cost tracking and typed streaming.
-
-    tools: list of built-in tool names (e.g. ["Bash", "Read"]) or a ToolsPreset dict.
-           When None, no built-in tools are exposed to the model.
-    """
-    # Build (path, content) pairs for context files
-    context_parts = []
-    if context_files:
-        for cf in context_files:
-            if os.path.exists(cf):
-                with open(cf, 'r') as f:
-                    context_parts.append((cf, f.read()))
-
-    # Assemble prompt with context files, smart-budgeting if needed
-    if context_parts:
-        ctx_section = "\n\n# Context Files:\n" + "".join(
-            f"\n--- {p} ---\n{c}\n" for p, c in context_parts
-        )
-        full_prompt = prompt + ctx_section
-        if len(full_prompt) > MAX_PROMPT_CHARS:
-            # Compress context_files proportionally while keeping base prompt intact
-            budget_for_files = MAX_PROMPT_CHARS - len(prompt) - 500
-            if budget_for_files > 0:
-                per_file = max(budget_for_files // len(context_parts), 500)
-                ctx_section = "\n\n# Context Files:\n" + "".join(
-                    f"\n--- {p} ---\n{_trim_to_budget(c, per_file)}\n"
-                    for p, c in context_parts
-                )
-                full_prompt = prompt + ctx_section
-            else:
-                full_prompt = prompt + "\n\n[Context files omitted — prompt too long]"
-            ui.log_history(f"Prompt budgeted to {len(full_prompt):,} chars (context compressed)", "warn")
-    else:
-        full_prompt = prompt
-        if len(full_prompt) > MAX_PROMPT_CHARS:
-            ui.log_history(f"Prompt too long ({len(full_prompt):,} chars), trimming...", "warn")
-            full_prompt = _trim_to_budget(full_prompt, MAX_PROMPT_CHARS)
-
-    ui.log_io(f"\n[{role_name} PROMPT]", "prompt", role_name)
-    ui.log_io(prompt[:200] + "...\n[Context Attached]", "prompt", role_name)
-    ui.log_io("\n[WAITING FOR CLAUDE...]\n", "prompt", role_name)
-
-    with open(log_file_path, "a") as lf:
-        lf.write(f"\n[{role_name} PROMPT]\n=============================\n")
-        lf.write(full_prompt)
-        lf.write("\n=============================\n[CLAUDE OUTPUT]\n")
-
-    options = ClaudeAgentOptions(
-        model=model,
-        permission_mode="bypassPermissions",
-        cwd=str(PROJECT_ROOT),  # pok/ — workers use relative paths like bots/claude_vN/
-        tools=tools,
-        disallowed_tools=_BLOCKED_MCP_TOOLS,
-        thinking={"type": "adaptive", "display": "summarized"},
-    )
-
-    full_text = []
-    cost_usd = None
-    usage = None
-
-    query_gen = None
-    try:
-        query_gen = claude_query(prompt=full_prompt, options=options)
-        async for message in query_gen:
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        text = block.text
-                        full_text.append(text)
-                        with open(log_file_path, "a") as lf:
-                            lf.write(text + "\n")
-                        ui.log_io(text, "claude", role_name)
-                    elif isinstance(block, ThinkingBlock):
-                        ui.log_io(block.thinking or "[thinking...]", "thinking", role_name)
-                    elif isinstance(block, ToolUseBlock):
-                        ui.log_io(f"\n[tool: {block.name}]", "tool", role_name)
-                        ui.emit_tool_call(block.name, block.input, role_name)
-                    elif isinstance(block, ToolResultBlock):
-                        content = block.content if isinstance(block.content, str) else (
-                            json.dumps(block.content, ensure_ascii=False) if block.content is not None else ""
-                        )
-                        if content:
-                            ui.log_io(content[:3000], "tool_result", role_name)
-            elif isinstance(message, ResultMessage):
-                cost_usd = message.total_cost_usd
-                usage = message.usage
-    except (CLINotFoundError, ProcessError) as e:
-        ui.log_io(f"[ERROR] {e}", "error", role_name)
-        if query_gen is not None:
-            try:
-                await query_gen.aclose()
-            except Exception:
-                pass
-    except asyncio.CancelledError:
-        ui.log_io(f"\n[{role_name} CANCELLED]", "error", role_name)
-        if query_gen is not None:
-            try:
-                await query_gen.aclose()
-            except Exception:
-                pass
-        raise
-
-    output = "\n".join(full_text)
-
-    # Auto-retry on API rate limit (529) with exponential backoff
-    if _is_rate_limited(output):
-        for backoff in [30, 60, 120]:
-            ui.log_history(f"API rate limited (529). Retrying in {backoff}s...", "warn")
-            await asyncio.sleep(backoff)
-            full_text.clear()
-            retry_gen = None
-            try:
-                retry_gen = claude_query(prompt=full_prompt, options=options)
-                async for message in retry_gen:
-                    if isinstance(message, AssistantMessage):
-                        for block in message.content:
-                            if isinstance(block, TextBlock):
-                                text = block.text
-                                full_text.append(text)
-                                with open(log_file_path, "a") as lf:
-                                    lf.write(text + "\n")
-                                ui.log_io(text, "claude", role_name)
-                            elif isinstance(block, ThinkingBlock):
-                                ui.log_io(block.thinking or "[thinking...]", "thinking", role_name)
-                            elif isinstance(block, ToolUseBlock):
-                                ui.log_io(f"\n[tool: {block.name}]", "tool", role_name)
-                                ui.emit_tool_call(block.name, block.input, role_name)
-                            elif isinstance(block, ToolResultBlock):
-                                content = block.content if isinstance(block.content, str) else (
-                                    json.dumps(block.content, ensure_ascii=False) if block.content is not None else ""
-                                )
-                                if content:
-                                    ui.log_io(content[:3000], "tool_result", role_name)
-                    elif isinstance(message, ResultMessage):
-                        cost_usd = (cost_usd or 0) + (message.total_cost_usd or 0)
-                        if usage is None:
-                            usage = message.usage
-                        elif message.usage:
-                            merged = {}
-                            for k in ("input_tokens", "output_tokens"):
-                                merged[k] = (usage.get(k, 0) or 0) + (message.usage.get(k, 0) or 0)
-                            usage = merged
-            except (CLINotFoundError, ProcessError) as e:
-                ui.log_io(f"[ERROR] {e}", "error", role_name)
-                if retry_gen is not None:
-                    try:
-                        await retry_gen.aclose()
-                    except Exception:
-                        pass
-            except asyncio.CancelledError:
-                if retry_gen is not None:
-                    try:
-                        await retry_gen.aclose()
-                    except Exception:
-                        pass
-                raise
-
-            output = "\n".join(full_text)
-            if not _is_rate_limited(output):
-                break
-
-    ui.update_cost(role_name, cost_usd, usage)
-
-    return output, cost_usd, usage
-
-
-def parse_json_output(output):
-    # Strategy 1: Find ALL ```json blocks, try from LAST to first.
-    # Handles the case where the LLM references the prompt template before the actual plan.
-    json_starts = list(re.finditer(r'```json\s*', output))
-    for json_start in reversed(json_starts):
-        after_start = output[json_start.end():]
-        # Find all ``` positions after ```json
-        close_positions = [m.start() for m in re.finditer(r'```', after_start)]
-        # Try from the LAST ``` backward (most likely the actual closing)
-        for pos in reversed(close_positions):
-            candidate = after_start[:pos].strip()
-            try:
-                return json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
-        # Also try the full text after ```json (in case no closing ```)
-        try:
-            return json.loads(after_start.strip().rstrip('`').strip())
-        except json.JSONDecodeError:
-            pass
-
-    # Strategy 1.5: Brace-matching from each ```json start.
-    # Handles embedded ``` inside JSON string values (e.g., worker_prompt with code blocks).
-    # Tracks string boundaries so ``` inside strings are ignored.
-    for json_start in reversed(json_starts):
-        after_start = output[json_start.end():]
-        brace_pos = after_start.find('{')
-        if brace_pos == -1:
-            continue
-        depth = 0
-        in_string = False
-        escape_next = False
-        for i in range(brace_pos, len(after_start)):
-            c = after_start[i]
-            if escape_next:
-                escape_next = False
-                continue
-            if c == '\\' and in_string:
-                escape_next = True
-                continue
-            if c == '"':
-                in_string = not in_string
-                continue
-            if in_string:
-                continue
-            if c == '{':
-                depth += 1
-            elif c == '}':
-                depth -= 1
-                if depth == 0:
-                    candidate = after_start[brace_pos:i + 1]
-                    try:
-                        return json.loads(candidate)
-                    except json.JSONDecodeError:
-                        break  # brace match failed, try next ```json block
-
-    # Strategy 2: Try the whole output as raw JSON
-    try:
-        return json.loads(output)
-    except Exception:
-        pass
-    return None
-
-
-# ──────────────────────────────────────────────
-# Code Verification
-# ──────────────────────────────────────────────
-
-def verify_code(directory):
-    errors = []
-    for root, _, files in os.walk(directory):
-        for f in files:
-            if f.endswith(".py"):
-                path = os.path.join(root, f)
-                proc = subprocess.run([sys.executable, "-m", "py_compile", path], capture_output=True, text=True)
-                if proc.returncode != 0:
-                    errors.append(proc.stderr.strip())
-    return errors
-
-
-def check_code_size(directory, max_lines_per_file=MAX_LINES_PER_FILE):
-    """Check single-file LOC limits (excluding backup files). Returns (total, oversized_files)."""
-    oversized_files = []
-    total = 0
-    for root, _, files in os.walk(directory):
-        for f in files:
-            if f.endswith(".py") and "backup" not in f:
-                path = os.path.join(root, f)
-                with open(path) as fh:
-                    lines = sum(1 for _ in fh)
-                total += lines
-                if lines > max_lines_per_file:
-                    oversized_files.append((f, lines))
-    return total, oversized_files
-
-
-def run_smoke_test(directory):
-    main_path = os.path.join(directory, "main.py")
-    if not os.path.exists(main_path):
-        return ["main.py not found!"]
-    proc = subprocess.run(
-        [sys.executable, str(CORE_DIR / "smoke_tester.py"), main_path],
-        capture_output=True, text=True
-    )
-    if proc.returncode != 0:
-        return [proc.stderr.strip() or proc.stdout.strip()]
-    return []
-
-
-def run_decision_test_details(directory):
-    """Run standard decision scenarios. Returns detailed gate results."""
-    main_path = os.path.join(directory, "main.py")
-    if not os.path.exists(main_path):
-        return {
-            "pass_rate": 0.0,
-            "passed": 0,
-            "total": 0,
-            "critical_passed": 0,
-            "critical_total": 0,
-            "critical_failures": [{"id": "main.py", "details": "main.py not found"}],
-            "failures": [{"id": "main.py", "severity": "critical", "details": "main.py not found"}],
-            "scenarios": [],
-        }
-    from decision_tester import run_decision_tests_detail as _run_detail
-    return _run_detail(main_path, verbose=False)
-
-
-def seed_initial_bots(ui):
-    """Seed claude_v1 through claude_v6 with bot1 through bot6 if they don't exist."""
-    seeded = False
-    for i in range(1, 7):
-        target_dir = get_bot_dir(i)
-        source_dir = REFERENCE_DIR / f"bot{i}"
-        if not target_dir.exists() and source_dir.exists():
-            ui.log_history(f"Seeding claude_v{i} from reference bot{i}...", "info")
-            shutil.copytree(source_dir, target_dir, ignore=_COPY_IGNORE)
-            (target_dir / ".completed").touch()
-            seeded = True
-    return seeded
+from daemon_management import (  # noqa: F401, E402
+    daemon_proc, _daemon_lock, _atexit_registered, _daemon_shutting_down,
+    start_daemon, stop_daemon, is_daemon_alive, daemon_monitor_thread,
+    _drain_stdout,
+)
+from llm_query import (  # noqa: F401, E402
+    _is_rate_limited, _trim_to_budget,
+    run_claude_query, parse_json_output,
+)
+from code_verification import (  # noqa: F401, E402
+    verify_code, check_code_size, run_smoke_test,
+    run_decision_test_details, seed_initial_bots,
+)
