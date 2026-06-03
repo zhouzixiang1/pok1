@@ -456,6 +456,16 @@ async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=
             rd_info = f", rd={cached_rd:.1f}" if cached_rd else ""
             ui.log_history(f"等待 {bot_name} 评估: {games}/{min_games} 场 ({elapsed}s{rd_info})", "info")
             last_log = time.time()
+
+            # Early exit if daemon is dead and no games are being produced
+            if games == 0:
+                with _daemon_lock:
+                    proc = daemon_proc
+                if proc is not None and proc.poll() is not None:
+                    if ui:
+                        ui.log_history(f"Daemon 已终止 (rc={proc.returncode})，无法获取评估数据", "error")
+                    return False
+
         await asyncio.sleep(5)
     if ui:
         games = cached_bot_stats.get(bot_name, {}).get("games", 0)
@@ -564,6 +574,13 @@ def stop_daemon():
         daemon_pid_file.unlink(missing_ok=True)
     from system_log import log_system_event
     log_system_event("daemon.stopped", "info", "Daemon stopped")
+
+
+def is_daemon_alive():
+    """Check if daemon subprocess is running."""
+    with _daemon_lock:
+        proc = daemon_proc
+    return proc is not None and proc.poll() is None
 
 
 def daemon_monitor_thread(ui, stop_event, daemon_workers=14, daemon_pairs=5):

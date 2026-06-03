@@ -441,6 +441,8 @@ def main():
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
+    global running
+
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     # Read stored parent PID for robust orphan detection

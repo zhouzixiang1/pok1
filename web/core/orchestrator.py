@@ -683,6 +683,9 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                     if shutdown_mgr and shutdown_mgr.is_shutting_down:
                         break
                     consecutive_prep_fails += 1
+                    from evolution_infra import is_daemon_alive
+                    if not is_daemon_alive() and ui:
+                        ui.log_history(f"Daemon 未运行，等待恢复中... (连续失败 {consecutive_prep_fails} 次)", "error")
                     backoff = min(10 * (2 ** min(consecutive_prep_fails - 1, 4)), 300)
                     if shutdown_mgr:
                         try:
