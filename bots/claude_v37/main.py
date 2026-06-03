@@ -69,9 +69,14 @@ def decide_action(payload):
 
 
 def main():
-    payload = json.loads(input())
-    action = decide_action(payload)
-    print(json.dumps({"response": int(action)}))
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            break
+        payload = json.loads(line)
+        action = decide_action(payload)
+        print(json.dumps({"response": int(action)}))
+        sys.stdout.flush()
 
 
 if __name__ == "__main__":

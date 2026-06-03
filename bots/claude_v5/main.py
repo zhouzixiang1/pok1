@@ -32,15 +32,20 @@ def sanitize_action(action, state, my_chips):
 
 
 def main():
-    payload = json.loads(input())
-    requests = payload["requests"]
-    req = dict(requests[-1])
-    if "remaining_hands" not in req:
-        req["remaining_hands"] = infer_remaining_hands_from_requests(requests)
-    action = get_action(req, requests)
-    state = reconstruct_state(req)
-    action = sanitize_action(action, state, req["my_chips"])
-    print(json.dumps({"response": int(action)}))
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            break
+        payload = json.loads(line)
+        requests = payload["requests"]
+        req = dict(requests[-1])
+        if "remaining_hands" not in req:
+            req["remaining_hands"] = infer_remaining_hands_from_requests(requests)
+        action = get_action(req, requests)
+        state = reconstruct_state(req)
+        action = sanitize_action(action, state, req["my_chips"])
+        print(json.dumps({"response": int(action)}))
+        sys.stdout.flush()
 
 
 if __name__ == "__main__":

@@ -289,46 +289,8 @@ async def reap_weakest(args):
         return {"content": [{"type": "text", "text": json.dumps({"reaped": False, "reason": f"{culled_name} already moved"})}]}
     shutil.move(str(bot_src), str(target))
 
-    # Clean up ratings — atomic read-modify-write under single exclusive lock
-    try:
-        with locked_file(RATINGS_FILE, "r+") as f:
-            ratings_raw = json.load(f)
-            if culled_name in ratings_raw:
-                del ratings_raw[culled_name]
-            f.seek(0)
-            f.truncate()
-            json.dump(ratings_raw, f, indent=2)
-    except Exception as e:
-        log.warning("reap: ratings cleanup failed for %s: %s", culled_name, e)
-
-    # Clean up bot_stats
-    if BOT_STATS_FILE.exists():
-        try:
-            with locked_file(BOT_STATS_FILE, "r+") as f:
-                bs = json.load(f)
-                if culled_name in bs:
-                    del bs[culled_name]
-                    f.seek(0)
-                    f.truncate()
-                    json.dump(bs, f, indent=2)
-        except Exception as e:
-            log.warning("reap: bot_stats cleanup failed for %s: %s", culled_name, e)
-    # Clean up H2H data
-    if H2H_FILE.exists():
-        try:
-            with locked_file(H2H_FILE, "r+") as f:
-                h2h = json.load(f)
-                changed = False
-                for key in list(h2h.keys()):
-                    if culled_name in key.split(" vs "):
-                        del h2h[key]
-                        changed = True
-                if changed:
-                    f.seek(0)
-                    f.truncate()
-                    json.dump(h2h, f, indent=2)
-        except Exception as e:
-            log.warning("reap: H2H cleanup failed for %s: %s", culled_name, e)
+    # Daemon handles all ratings/H2H/stats cleanup via reap signal.
+    # Only clean up replay files (file deletions, no write-write race).
 
     # Clean up replay files referencing the reaped bot
     try:

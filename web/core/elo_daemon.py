@@ -539,6 +539,8 @@ def main():
                         # Replenish: submit next match
                         if match_queue:
                             m = match_queue.popleft()
+                            if m[0] not in active_bots or m[1] not in active_bots:
+                                continue
                             new_fut = executor.submit(run_single_match, m)
                             in_flight[new_fut] = (m[0], m[1])
                         else:
@@ -548,6 +550,8 @@ def main():
                                 match_queue.append((ma, mb, bot_path(ma), bot_path(mb), n_pairs))
                             if match_queue:
                                 m = match_queue.popleft()
+                                if m[0] not in active_bots or m[1] not in active_bots:
+                                    continue
                                 new_fut = executor.submit(run_single_match, m)
                                 in_flight[new_fut] = (m[0], m[1])
 
@@ -638,6 +642,16 @@ def main():
                             h2h = {k: v for k, v in h2h.items() if b not in k.split(" vs ")}
                         if added or removed:
                             active_bots = new_bots
+                            if removed:
+                                match_queue = deque(
+                                    m for m in match_queue
+                                    if m[0] not in removed and m[1] not in removed
+                                )
+                                for fut in list(in_flight):
+                                    fa, fb = in_flight[fut]
+                                    if fa in removed or fb in removed:
+                                        fut.cancel()
+                                        del in_flight[fut]
 
                     # --once mode: stop after first batch completes
                     if args.once and total_matches >= n_workers:
@@ -683,15 +697,6 @@ def main():
         except (ProcessLookupError, PermissionError, OSError):
             pass
 
-        log.info("Cancelling %d in-flight matches...", len(in_flight))
-        for fut in in_flight:
-            fut.cancel()
-        for fut in in_flight:
-            try:
-                result = fut.result(timeout=3)
-                process_result(result, ratings, h2h, bot_stats, verbose=args.verbose)
-            except Exception:
-                pass
         executor.shutdown(wait=False, cancel_futures=True)
 
         # Final save

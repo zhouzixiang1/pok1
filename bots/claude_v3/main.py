@@ -93,9 +93,14 @@ def decide_action(payload):
 
 
 def main():
-    payload = json.loads(input())
-    action, exp3_state = decide_action(payload)
-    print(json.dumps({"response": int(action), "data": exp3_state}))
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            break
+        payload = json.loads(line)
+        action, exp3_state = decide_action(payload)
+        print(json.dumps({"response": int(action), "data": exp3_state}))
+        sys.stdout.flush()
 
 
 if __name__ == "__main__":

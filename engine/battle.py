@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""通用 bot 对战脚本 — 子进程模式，每决策回合启动独立进程"""
+"""通用 bot 对战脚本 — 支持持久化进程模式以提升对局速度"""
 import json
 import subprocess
 import sys
 import os
 import argparse
+import select
+import threading
 from datetime import datetime
 
 ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -34,8 +36,101 @@ def _call_bot_subprocess(bot_path, payload):
         return -1, "CRASH: {}".format(e), None
 
 
-def _call_bot(bot_paths, player_id, request_data, bot_requests, bot_responses, debug_bots=None, bot_data=None):
-    """构造 payload 并调用子进程。返回 (response, verdict, stderr_output)。"""
+class _PersistentBot:
+    """Persistent bot process — one Popen per game, line-delimited JSON communication."""
+
+    def __init__(self, bot_path):
+        self.bot_path = bot_path
+        self.proc = None
+        self._alive = False
+        self._start()
+
+    def _start(self):
+        try:
+            self.proc = subprocess.Popen(
+                [sys.executable, self.bot_path],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+            self._alive = True
+        except Exception:
+            self._alive = False
+
+    def call(self, payload):
+        if not self._alive:
+            self._start()
+            if not self._alive:
+                return -1, "CRASH: process not started", None
+        try:
+            line = json.dumps(payload, separators=(',', ':'))
+            self.proc.stdin.write(line + '\n')
+            self.proc.stdin.flush()
+        except Exception:
+            self._alive = False
+            return -1, "CRASH: stdin write failed", None
+
+        result_line = [None]
+        error = [None]
+
+        def _read():
+            try:
+                result_line[0] = self.proc.stdout.readline()
+            except Exception as e:
+                error[0] = e
+
+        t = threading.Thread(target=_read, daemon=True)
+        t.start()
+        t.join(timeout=30)
+
+        if t.is_alive():
+            self._alive = False
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+            return -1, "TIMEOUT", None
+
+        if error[0] is not None:
+            self._alive = False
+            return -1, "CRASH: {}".format(error[0]), None
+
+        if not result_line[0]:
+            self._alive = False
+            return -1, "EOF", None
+
+        try:
+            result = json.loads(result_line[0].strip())
+            action = int(result.get("response", -1))
+            bot_data = result.get("data")
+            return action, "OK", bot_data
+        except Exception as e:
+            self._alive = False
+            return -1, "CRASH: {}".format(e), None
+
+    def close(self):
+        self._alive = False
+        if self.proc:
+            try:
+                self.proc.stdin.close()
+            except Exception:
+                pass
+            try:
+                self.proc.terminate()
+                self.proc.wait(timeout=3)
+            except Exception:
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
+
+
+def _call_bot(bot_paths, player_id, request_data, bot_requests, bot_responses,
+              debug_bots=None, bot_data=None, persistent_procs=None):
+    """构造 payload 并调用 bot。返回 (response, verdict, stderr_output)。
+    persistent_procs: list[_PersistentBot|None] — 若非 None 则使用持久化进程。"""
     bot_requests[player_id].append(request_data)
     payload = {
         "requests": list(bot_requests[player_id]),
@@ -44,11 +139,12 @@ def _call_bot(bot_paths, player_id, request_data, bot_requests, bot_responses, d
     if bot_data is not None and bot_data[player_id] is not None:
         payload["data"] = bot_data[player_id]
 
-    # debug 模式下捕获 stderr
+    # debug 模式下捕获 stderr — 必须用子进程模式
     capture_stderr = debug_bots is not None and player_id in debug_bots
-    stderr_output = ""
 
     _returned_data = None
+    stderr_output = ""
+
     if capture_stderr:
         try:
             proc = subprocess.run(
@@ -70,9 +166,10 @@ def _call_bot(bot_paths, player_id, request_data, bot_requests, bot_responses, d
             action, verdict = -1, "TIMEOUT"
         except Exception as e:
             action, verdict = -1, "CRASH: {}".format(e)
+    elif persistent_procs and persistent_procs[player_id]:
+        action, verdict, _returned_data = persistent_procs[player_id].call(payload)
     else:
         action, verdict, _returned_data = _call_bot_subprocess(bot_paths[player_id], payload)
-        stderr_output = ""
 
     bot_responses[player_id].append(action)
     if bot_data is not None and _returned_data is not None:
@@ -90,12 +187,18 @@ def battle(bot0_path, bot1_path, n_games=50, verbose=False, debug_bots=None, sav
     if debug_bots is None:
         debug_bots = set()
 
+    use_persistent = not debug_bots
     match_wins = [0, 0]  # 赢了多少局
     draws = 0
     n_played = 0
     all_logs = []  # 每局日志
 
     for game in range(n_games):
+        # Create persistent bots per game
+        persistent = None
+        if use_persistent:
+            persistent = [_PersistentBot(bot_paths[0]), _PersistentBot(bot_paths[1])]
+
         result_str = judge_func(json.dumps({"log": []}))
         result = json.loads(result_str)
         log = [{"output": result}]
@@ -116,6 +219,7 @@ def battle(bot0_path, bot1_path, n_games=50, verbose=False, debug_bots=None, sav
             response, _, stderr_out = _call_bot(
                 bot_paths, player_id, request_data,
                 bot_requests, bot_responses, debug_bots, bot_data,
+                persistent_procs=persistent,
             )
 
             # 打印 debug 输出
@@ -131,6 +235,12 @@ def battle(bot0_path, bot1_path, n_games=50, verbose=False, debug_bots=None, sav
 
             if result.get("command") == "finish":
                 break
+
+        # Close persistent bots
+        if persistent:
+            for p in persistent:
+                if p:
+                    p.close()
 
         if result.get("command") == "finish":
             display = result.get("display", {})
@@ -164,7 +274,8 @@ def mirror_battle(bot0_path, bot1_path, n_games=50, verbose=False, save_log=Fals
     """镜像对战：每局先正常打一次，再用交换手牌后的牌堆打一次。
     返回 (bot0_wins, bot1_wins, draws, n_games_actual, all_logs)。
     胜负按镜像对（两局）的筹码差判定：若正局 bot0 赢 3000、镜像局 bot0 输 1000，
-    则 bot0 净赢 2000，记为 bot0 胜。"""
+    则 bot0 净赢 2000，记为 bot0 胜。
+    使用持久化 bot 进程加速（每局游戏一个进程，多决策复用）。"""
     if ENGINE_DIR not in sys.path:
         sys.path.insert(0, ENGINE_DIR)
     from judge import judge as judge_func
@@ -176,6 +287,9 @@ def mirror_battle(bot0_path, bot1_path, n_games=50, verbose=False, save_log=Fals
     all_logs = []
 
     for game in range(n_games):
+        # Create persistent bots for this game (reused across normal + mirror)
+        persistent = [_PersistentBot(bot_paths[0]), _PersistentBot(bot_paths[1])]
+
         # ── 正局：正常发牌 ──
         result_str = judge_func(json.dumps({"log": []}))
         result = json.loads(result_str)
@@ -191,7 +305,8 @@ def mirror_battle(bot0_path, bot1_path, n_games=50, verbose=False, save_log=Fals
                 break
             player_id = int(next(iter(content.keys())))
             request_data = content[str(player_id)]
-            response, _, _ = _call_bot(bot_paths, player_id, request_data, bot_requests, bot_responses, bot_data=bot_data)
+            response, _, _ = _call_bot(bot_paths, player_id, request_data, bot_requests, bot_responses,
+                                       bot_data=bot_data, persistent_procs=persistent)
             log.append({str(player_id): {"response": str(response), "verdict": "OK"}, "output": None})
             result_str = judge_func(json.dumps({"log": log, "initdata": initdata}))
             result = json.loads(result_str)
@@ -200,10 +315,14 @@ def mirror_battle(bot0_path, bot1_path, n_games=50, verbose=False, save_log=Fals
                 break
 
         if result.get("command") != "finish":
+            for p in persistent:
+                p.close()
             continue
 
         chips_normal = [r["win_chips"] for r in result.get("display", {}).get("final_result", [])]
         if len(chips_normal) < 2:
+            for p in persistent:
+                p.close()
             continue
 
         if save_log:
@@ -239,13 +358,18 @@ def mirror_battle(bot0_path, bot1_path, n_games=50, verbose=False, save_log=Fals
                 break
             player_id = int(next(iter(content.keys())))
             request_data = content[str(player_id)]
-            response, _, _ = _call_bot(bot_paths, player_id, request_data, bot_requests_m, bot_responses_m, bot_data=bot_data_m)
+            response, _, _ = _call_bot(bot_paths, player_id, request_data, bot_requests_m, bot_responses_m,
+                                       bot_data=bot_data_m, persistent_procs=persistent)
             log_m.append({str(player_id): {"response": str(response), "verdict": "OK"}, "output": None})
             result_str = judge_func(json.dumps({"log": log_m, "initdata": mirror_initdata}))
             result = json.loads(result_str)
             log_m.append({"output": result})
             if result.get("command") == "finish":
                 break
+
+        # Close persistent bots for this game
+        for p in persistent:
+            p.close()
 
         if result.get("command") != "finish":
             continue
