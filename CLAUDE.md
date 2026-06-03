@@ -103,7 +103,7 @@ Uses `claude_agent_sdk` (not the Anthropic SDK directly). Two distinct patterns:
 `orchestrator.py` → `create_sdk_mcp_server()` registers `@tool()` decorated functions from `tool_pipeline.py` + `tool_status.py`. The Orchestrator agent calls these tools (run_master, execute_workers, run_quality_gates, run_review, run_critic, commit_bot, etc.) to drive evolution. Each tool function receives `args` dict, runs business logic (often calling `run_claude_query()` for sub-agents), and returns MCP-formatted results. Session ID persisted for crash recovery (`orchestrator_session.json`). PreCompact hook injects pipeline state to survive LLM context compaction.
 
 **Pattern 2 — Direct `run_claude_query()` (Master, Workers, Reviewer, Critic, Analysts):**
-`evolution_infra.py:run_claude_query()` sends a prompt + context files to Claude. 700K char prompt budget — context files proportionally compressed when exceeded. Streaming via `AssistantMessage`/`ResultMessage` types. Output captured as text, cost tracked per role. Each agent gets specific tool access: Workers get Bash/Read/Edit, Reviewer/Critic get Bash/Read, Analysts get no tools. API rate limit (529) handled with automatic retry + exponential backoff (30s, 60s, 120s).
+`evolution_infra.py:run_claude_query()` → `llm_query.py:run_claude_query()` sends a prompt + context files to Claude. 700K char prompt budget — context files proportionally compressed when exceeded. Streaming via `AssistantMessage`/`ResultMessage` types. Output captured as text, cost tracked per role. Each agent gets specific tool access: Workers get Bash/Read/Edit, Reviewer/Critic get Bash/Read, Analysts get no tools. API rate limit (529) handled with automatic retry + exponential backoff (30s, 60s, 120s).
 
 **LLM agent roles and their tools:**
 
@@ -249,24 +249,39 @@ Defaults: `r=1500`, `rd=350`, `sigma=0.06`, `tau=0.5`. Confidence levels: rd<50 
 
 | File | Lines | Role |
 |---|---|---|
-| `evolution_infra.py` | 1193 | Constants, git ops, daemon management, `run_claude_query()`, code verification, `locked_file()` |
-| `tool_pipeline.py` | 1362 | Core pipeline MCP tools (prepare → master → workers → quality → review → critic → commit) |
-| `agent_master.py` | 765 | Master Architect + stagnation/match/performance analysis |
-| `orchestrator.py` | 873 | LLM-driven orchestrator loop, session persistence, context assembly |
 | `elo_daemon.py` | 712 | Background mirror battle subprocess with Glicko-2 updates |
-| `tool_status.py` | 645 | Non-pipeline MCP tools (queries, daemon control, bot management) |
+| `evolution_infra.py` | 690 | Constants, git ops, file locking, checkpoints, bot directory, ratings, archiving |
+| `orchestrator.py` | 534 | LLM-driven orchestrator loop, three-phase generation cycle |
+| `tool_status.py` | 503 | Non-pipeline MCP tools (queries, daemon control, analysis) |
 | `tool_helpers.py` | 503 | Shared helpers: UI injection, checkpoint gates, H2H utilities, boundary validation |
+| `tool_gates.py` | 398 | Pipeline tools: quality gates, prepare_next_gen, review, critic |
+| `tool_commit.py` | 357 | Pipeline tools: commit, archivist, crossover |
+| `tool_eval.py` | 344 | Pipeline tools: precommit eval, inline eval |
+| `tool_planning.py` | 334 | Pipeline tools: direction audit, master, workers |
 | `agent_review.py` | 296 | Critic, Performance Verification, Crossover agents |
 | `web_ui.py` | 292 | `EventBroadcaster` (ring buffer 500) + `WebUI` (terminal + SSE dual output) |
+| `llm_query.py` | 278 | `run_claude_query()`, `parse_json_output()`, prompt budgeting |
+| `orchestrator_context.py` | 241 | Context string builder + PreCompact hook |
 | `generation_scheduler.py` | 236 | Three-phase cycle: prepare, run, post-cleanup |
 | `agent_workers.py` | 227 | Worker execution: parallel/serial dispatch, timeout isolation, retry logic |
 | `glicko2.py` | 222 | Pure Glicko-2 rating algorithm |
 | `reset.py` | 222 | Wipe evolution state to baseline |
-| `decision_tester.py` | 202 | Predefined scenario tests against bots (folding AA preflop, etc.) |
-| `logging_config.py` | 121 | Structured logging: colored console, rotating file, SSE handler |
+| `decision_tester.py` | 202 | Predefined scenario tests against bots |
+| `daemon_management.py` | 191 | Daemon subprocess lifecycle: start, stop, monitor, orphan detection |
+| `agent_master.py` | 187 | Master Architect + match analysis |
+| `replay_analysis.py` | 178 | Replay data summarization (pure data, no LLM) |
+| `stagnation_analyzer.py` | 171 | Rating trend stagnation analysis via LLM |
+| `tool_bot_management.py` | 170 | Bot reaping, cleanup, abandonment, experience pool tools |
+| `experience_archivist.py` | 139 | Experience pool consolidation + archivist analysis |
+| `direction_auditor.py` | 127 | Pre-Master repetition detection via LLM |
+| `orchestrator_session.py` | 122 | Session persistence, startup recovery, log rotation |
 | `commentary.py` | 129 | Deterministic match replay commentary (no LLM) |
+| `logging_config.py` | 121 | Structured logging: colored console, rotating file, SSE handler |
+| `code_verification.py` | 65 | Compile check, file size, smoke test, decision tests |
 | `shutdown_manager.py` | 80 | Asyncio-native SIGINT/SIGTERM handler |
 | `tools.py` | 107 | MCP server registration + tool aggregation |
+| `tool_pipeline.py` | 6 | Re-export shim: `from tool_planning/gates/eval/commit import *` |
+| `evolution_core.py` | 85 | Re-export facade: aggregates all sub-modules for backward compatibility |
 | `evolution_core.py` | 68 | Re-export facade for backward compatibility |
 | `smoke_tester.py` | 34 | Run 1 mirror match as sanity check |
 | `system_log.py` | 33 | Structured JSONL event logger |
