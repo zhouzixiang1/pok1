@@ -94,7 +94,7 @@ After all quality checks pass, run these final checks:
 
 2. **Target File Check**: Ensure you ONLY modified files in your assigned `target_files`. If you touched other files, undo only your own accidental edits in those files; if unsure, stop and report the violation.
 
-3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount.
+3. **Protocol Check**: Verify the bot still outputs `{"response": <int>}` via stdout. The action encoding is: 0=call/check, -1=fold, -2=all-in, >0=raise amount (additive, raise BY this many chips). Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.
 
 4. If you find any violations, fix them and re-run the quality checks.
 

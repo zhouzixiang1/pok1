@@ -21,7 +21,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = Path(__file__).resolve().parent
 
 sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT / "engine"))
 sys.path.insert(0, str(WEB_DIR / "core"))
 
 

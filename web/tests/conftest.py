@@ -17,7 +17,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "web" / "core"))
 sys.path.insert(0, str(PROJECT_ROOT / "web" / "server"))
-sys.path.insert(0, str(PROJECT_ROOT / "engine"))
 
 # Import server.app to create module-level broadcaster and web_ui
 # (some endpoints do `from server.app import web_ui` inside handlers)

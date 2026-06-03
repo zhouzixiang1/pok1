@@ -101,8 +101,8 @@ async def run_precommit_eval(args):
     total_wins = 0
     total_losses = 0
     total_draws = 0
-    sys.path.insert(0, str((PROJECT_ROOT / "engine").resolve()))
-    from battle import mirror_battle
+    sys.path.insert(0, str(CORE_DIR.resolve()))
+    from engine.battle import mirror_battle
 
     # Defensive: ensure asyncio is available even if MCP server cached a stale module
     import asyncio as _asyncio
@@ -222,8 +222,8 @@ async def run_inline_eval(args):
         return {"content": [{"type": "text", "text": json.dumps({"error": "Daemon is running. Stop it first with stop_daemon to avoid ratings race condition."})}]}
 
     # Import battle engine
-    sys.path.insert(0, str((PROJECT_ROOT / "engine").resolve()))
-    from battle import mirror_battle
+    sys.path.insert(0, str(CORE_DIR.resolve()))
+    from engine.battle import mirror_battle
 
     ratings = load_ratings()
     active_bots = get_active_bots()

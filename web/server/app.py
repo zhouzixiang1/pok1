@@ -13,7 +13,6 @@ from fastapi.responses import FileResponse
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WEB_DIR = PROJECT_ROOT / "web"
 sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT / "engine"))
 sys.path.insert(0, str(WEB_DIR / "core"))
 
 from web_ui import EventBroadcaster, WebUI

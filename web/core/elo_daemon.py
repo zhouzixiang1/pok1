@@ -23,12 +23,11 @@ from datetime import datetime
 
 CORE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CORE_DIR.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT / "engine"))
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(CORE_DIR))
 
 from glicko2 import Glicko2Player, update_single_game, decay_rd
-from battle import mirror_battle
+from engine.battle import mirror_battle
 from evolution_infra import locked_file, pair_key
 import logging
 
