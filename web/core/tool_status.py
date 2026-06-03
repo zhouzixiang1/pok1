@@ -257,156 +257,6 @@ async def wait_for_eval(args):
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
 
 
-class ReapWeakestInput(TypedDict):
-    pass
-
-
-@tool("reap_weakest", f"Check if bot pool exceeds MAX_ACTIVE_BOTS and cull the weakest bot by H2H average win rate.", {})
-async def reap_weakest(args):
-    quiet = args.get("quiet", False) if isinstance(args, dict) else False
-    active_bots = get_active_bots()
-    if len(active_bots) <= MAX_ACTIVE_BOTS:
-        return {"content": [{"type": "text", "text": json.dumps({"reaped": False, "pool_size": len(active_bots)})}]}
-
-    ratings = load_ratings()
-    h2h_winrates = load_h2h_avg_winrates()
-    # Exclude current production bot from reaping
-    current_bot = f"claude_v{find_current_v()}"
-    active_ratings = [(b, ratings.get(b, Glicko2Player())) for b in active_bots if b != current_bot]
-    if not active_ratings:
-        return {"content": [{"type": "text", "text": json.dumps({"reaped": False, "reason": "Only current bot in pool"})}]}
-    active_ratings.sort(key=lambda x: h2h_winrates.get(x[0], 0.0))
-    weakest = active_ratings[0]
-    culled_name = weakest[0]
-
-    graveyard = PROJECT_ROOT / "bots" / "graveyard"
-    graveyard.mkdir(exist_ok=True)
-    target = graveyard / culled_name
-    if target.exists():
-        shutil.rmtree(target)
-    bot_src = PROJECT_ROOT / "bots" / culled_name
-    if not bot_src.exists():
-        return {"content": [{"type": "text", "text": json.dumps({"reaped": False, "reason": f"{culled_name} already moved"})}]}
-    shutil.move(str(bot_src), str(target))
-
-    # Daemon handles all ratings/H2H/stats cleanup via reap signal.
-    # Only clean up replay files (file deletions, no write-write race).
-
-    # Clean up replay files referencing the reaped bot
-    try:
-        if REPLAY_DIR.exists():
-            for f in list(REPLAY_DIR.iterdir()):
-                if culled_name in f.name:
-                    f.unlink()
-    except Exception:
-        pass
-
-    # Signal daemon to immediately refresh bot list
-    reap_signal = RESULTS_DIR / ".reap_signal"
-    reap_signal.write_text(str(time.time()))
-
-    if not quiet:
-        log_system_event("bot.reaped", "warn", f"Reaped {culled_name} (h2h_wr={h2h_winrates.get(culled_name, 0.0):.2%})",
-                         {"culled": culled_name, "remaining": len(active_bots) - 1})
-
-    return {"content": [{"type": "text", "text": json.dumps({
-        "reaped": True,
-        "culled": culled_name,
-        "h2h_avg_wr": round(h2h_winrates.get(culled_name, 0.0), 4),
-        "rating": {"r": round(weakest[1].r, 1), "rd": round(weakest[1].rd, 1)},
-        "remaining": len(active_bots) - 1,
-    })}]}
-
-
-class CleanupIncompleteInput(TypedDict):
-    pass
-
-
-@tool("cleanup_incomplete", "Remove bot directories without .completed that have no git tag.", {})
-async def cleanup_incomplete(args):
-    cleaned = []
-    bots_dir = PROJECT_ROOT / "bots"
-    if bots_dir.exists():
-        for d in sorted(bots_dir.iterdir()):
-            if d.is_dir() and d.name.startswith("claude_v"):
-                if not (d / ".completed").exists():
-                    try:
-                        v = int(d.name.split("_v")[1])
-                    except (ValueError, IndexError):
-                        continue
-                    if not git_has_tag(v):
-                        shutil.rmtree(d)
-                        cleaned.append(d.name)
-    return {"content": [{"type": "text", "text": json.dumps({"cleaned": cleaned, "count": len(cleaned)})}]}
-
-
-class AbandonGenerationInput(TypedDict):
-    pass
-
-
-@tool("abandon_generation", "Clear pipeline checkpoint and remove incomplete next-gen directory. Use when a generation is stuck and needs to be restarted.", {})
-async def abandon_generation(args):
-    from evolution_core import clear_pipeline_checkpoint, find_current_v, PIPELINE_STATE_FILE
-    checkpoint = read_pipeline_checkpoint() if PIPELINE_STATE_FILE.exists() else None
-    cleared_checkpoint = False
-    removed_dir = None
-
-    if checkpoint:
-        next_v = checkpoint.get("next_v")
-        clear_pipeline_checkpoint()
-        cleared_checkpoint = True
-        if next_v is not None:
-            next_dir = get_bot_dir(next_v)
-            if next_dir.exists() and not (next_dir / ".completed").exists():
-                shutil.rmtree(next_dir)
-                removed_dir = f"claude_v{next_v}"
-    else:
-        # No checkpoint — clean up any incomplete dir for next version
-        current_v = find_current_v()
-        next_dir = get_bot_dir(current_v + 1)
-        if next_dir.exists() and not (next_dir / ".completed").exists():
-            shutil.rmtree(next_dir)
-            removed_dir = f"claude_v{current_v + 1}"
-
-    log_system_event("pipeline.abandoned", "warn", f"Abandoned generation (dir={removed_dir})",
-                     {"removed_dir": removed_dir, "cleared_checkpoint": cleared_checkpoint})
-
-    return {"content": [{"type": "text", "text": json.dumps({
-        "abandoned": True,
-        "cleared_checkpoint": cleared_checkpoint,
-        "removed_directory": removed_dir,
-    })}]}
-
-
-class TrimExperienceInput(TypedDict):
-    pass
-
-
-@tool("trim_experience", "Trim the experience pool to keep only the most recent entries.", {})
-async def trim_experience(args):
-    trim_experience_pool(max_entries=8)
-    return {"content": [{"type": "text", "text": json.dumps({"trimmed": True})}]}
-
-
-@tool("seed_initial_bots", "Seed claude_v1 through claude_v6 from reference bots if they don't exist. Call this when get_status() returns current_v=0 or no completed bots.", {})
-async def seed_initial_bots_tool(args):
-    ui = _get_ui()
-    seeded = seed_initial_bots(ui)
-    return {"content": [{"type": "text", "text": json.dumps({"seeded": seeded})}]}
-
-
-class ConsolidateExperienceInput(TypedDict):
-    pass
-
-
-@tool("consolidate_experience", "Use LLM to consolidate and deduplicate the experience pool.", {})
-async def consolidate_experience(args):
-    from evolution_core import _consolidate_experience_pool
-    ui = _get_ui()
-    await _consolidate_experience_pool(ui)
-    return {"content": [{"type": "text", "text": json.dumps({"consolidated": True, "logs": ui.get_output()})}]}
-
-
 class AnalyzeStagnationInput(TypedDict):
     source_v: Annotated[int, "Current bot version"]
     active_bots: Annotated[list, "List of active bot names"]
@@ -643,3 +493,11 @@ async def diagnose_environment(args):
         ui.log_history(f"[diagnose_environment] Analysis complete (cost: ${cost:.3f})", "info")
 
     return {"content": [{"type": "text", "text": response_text.strip()}]}
+
+# ──────────────────────────────────────────────
+# Re-exports from extracted module
+# ──────────────────────────────────────────────
+from tool_bot_management import (  # noqa: F401
+    reap_weakest, cleanup_incomplete, abandon_generation,
+    trim_experience, seed_initial_bots_tool, consolidate_experience,
+)
