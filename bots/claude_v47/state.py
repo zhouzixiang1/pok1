@@ -267,7 +267,7 @@ def forced_fold_loss_bound(req, state, my_id, remaining_hands):
 
     loss = state["committed"][my_id]
     current_dealer = req["dealer_id"]
-    for offset in range(1, remaining_hands):
+    for offset in range(1, remaining_hands + 1):
         future_dealer = next_player(current_dealer, offset)
         future_sb = next_player(future_dealer, 1)
         future_bb = next_player(future_dealer, 2)

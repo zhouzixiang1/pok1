@@ -32,7 +32,7 @@ def sanitize_action(action, state, my_chips):
             return 0 if state["to_call"] == 0 else -1
 
     if action == 0 and state["to_call"] > 0:
-        return 0
+        return -1  # cannot check when facing a bet
 
     return action
 

@@ -121,7 +121,7 @@ _log = logging.getLogger("data_stream")
 @router.get("/data/stream")
 async def data_stream(request: Request):
     async def generate():
-        tick = 1
+        tick = 0
         try:
             while True:
                 if await request.is_disconnected():

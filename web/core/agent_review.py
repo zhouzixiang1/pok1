@@ -4,6 +4,9 @@ These agents evaluate worker output and verify strategic improvements.
 """
 
 import json
+import logging
+
+_log = logging.getLogger(__name__)
 
 from evolution_infra import (
     run_claude_query, parse_json_output, substitute_template,
@@ -98,8 +101,8 @@ async def _run_performance_verification(source_v, ratings, ui):
                         gen_trend_lines.append(f"  Period {snap.get('period','?')}: top_r={top_r:.0f}")
                 except (json.JSONDecodeError, KeyError):
                     continue
-        except Exception:
-            pass
+        except Exception as e:
+            _log.warning("Failed to read rating history for perf verification: %s", e)
 
     # ── Win-rate summary for source_v (last 30 matches) ──
     bot_name = f"claude_v{source_v}"
@@ -123,8 +126,8 @@ async def _run_performance_verification(source_v, ratings, ui):
             total = wins + losses
             if total > 0:
                 win_rate_lines.append(f"  {bot_name} recent: {wins}W / {losses}L ({wins*100//total}% win rate)")
-        except Exception:
-            pass
+        except Exception as e:
+            _log.warning("Failed to read match history for perf verification: %s", e)
 
     # ── Top-5 active bots for context ──
     active_bots = get_active_bots()
@@ -167,8 +170,8 @@ async def _run_performance_verification(source_v, ratings, ui):
                     tag = " ← STRENGTH"
                 h2h_lines.append((wr, f"  vs {opponent}: {bot_w}W-{opp_w}L ({wr:.0%}){tag}"))
             h2h_lines.sort(key=lambda x: x[0])
-        except Exception:
-            pass
+        except Exception as e:
+            _log.warning("Failed to read H2H data for perf verification: %s", e)
 
     # ── Bot stats (overall win rate) ──
     bot_stats_line = ""
@@ -181,8 +184,8 @@ async def _run_performance_verification(source_v, ratings, ui):
             wr = bs.get("win_rate", 0.0)
             if g > 0:
                 bot_stats_line = f"  {bot_name}: {wr:.0%} overall ({g} games)"
-        except Exception:
-            pass
+        except Exception as e:
+            _log.warning("Failed to read bot stats for perf verification: %s", e)
 
     # ── Build prompt ──
     # Check rd (rating deviation) for the current bot to flag unreliable data

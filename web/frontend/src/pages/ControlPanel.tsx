@@ -265,7 +265,7 @@ export default function ControlPanel() {
     try {
       await controlApi.setConfig({ daemon_enabled: editDaemon, daemon_workers: editWorkers, daemon_pairs: editPairs });
     } finally { setLoading(null); }
-    await refresh();
+    try { await refresh(); } catch (e) { console.error("[ControlPanel] refresh after save failed:", e); }
   };
 
   const handleStart = async () => {

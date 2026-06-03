@@ -108,14 +108,8 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             else:
                 _last_reason = f"unexpected error: {type(exc).__name__}: {str(exc)[:200]}"
                 ui.log_history(f"Worker {w_id} ({role}) error: {exc}", "error")
-            # Reset code directory from source to avoid half-edited state
-            reset_v = source_v if source_v is not None else find_current_v()
-            if reset_v is not None:
-                src_dir = get_bot_dir(reset_v)
-                if src_dir.exists() and next_dir.exists():
-                    shutil.rmtree(next_dir)
-                    shutil.copytree(src_dir, next_dir, ignore=_COPY_IGNORE)
-                    (next_dir / ".completed").unlink(missing_ok=True)
+            # Note: do NOT reset next_dir here during parallel execution — other workers
+            # may still be editing files. The serial fallback path handles full reset.
             base_worker_prompt += (
                 "\n\nPREVIOUS ATTEMPT TIMED OUT. Start fresh with a minimal, focused implementation. "
                 "Implement only the single most impactful change — do NOT try to do everything at once."

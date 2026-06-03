@@ -107,12 +107,11 @@ _WORKER_SEMAPHORE: "asyncio.Semaphore | None" = None
 
 
 def _is_rate_limited(output: str) -> bool:
-    # Check for specific API error patterns, not bare "529" which can appear in poker data
     return (
         "overloaded" in output.lower()
         or "该模型当前访问量过大" in output
         or "rate limit" in output.lower()
-        or re.search(r'\b529\b', output) is not None
+        or re.search(r'(?:status["\s:=]+529|HTTP/\d\.?\d?\s+529|error.*529)', output, re.IGNORECASE) is not None
     )
 
 # Add workspace to sys.path for glicko2 import
@@ -206,62 +205,59 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                parent2_v=None):
     """Write pipeline stage checkpoint so a killed process can resume.
 
-    Uses atomic tmp+rename: if the process crashes mid-write, the old file
-    survives intact (POSIX guarantees os.replace is atomic).
+    Uses atomic tmp+rename under exclusive lock to prevent concurrent
+    read-merge-write races (POSIX guarantees os.replace is atomic).
     """
-    # Read existing state under exclusive lock to prevent concurrent merge-write races
-    existing = None
-    if PIPELINE_STATE_FILE.exists():
-        try:
-            with locked_file(PIPELINE_STATE_FILE, "r", lock_type=fcntl.LOCK_EX) as f:
-                raw = f.read()
-                if raw.strip():
-                    existing = json.loads(raw)
-        except Exception:
-            existing = None
+    # Single exclusive lock covers read-merge-write-rename to prevent TOCTOU
+    with locked_file(PIPELINE_STATE_FILE, "a+", lock_type=fcntl.LOCK_EX) as f:
+        f.seek(0)
+        raw = f.read()
+        existing = None
+        if raw.strip():
+            try:
+                existing = json.loads(raw)
+            except Exception:
+                existing = None
 
-    # Merge with existing — preserve gate_results, master_plan, etc.
-    existing_gate_results = {}
-    existing_invocation_count = 0
-    existing_master_plan = master_plan
-    existing_reviewer_feedback = reviewer_feedback
-    existing_generation_attempt = generation_attempt
-    existing_parent2_v = parent2_v
+        # Merge with existing — preserve gate_results, master_plan, etc.
+        existing_gate_results = {}
+        existing_invocation_count = 0
+        existing_master_plan = master_plan
+        existing_reviewer_feedback = reviewer_feedback
+        existing_generation_attempt = generation_attempt
+        existing_parent2_v = parent2_v
 
-    if existing and existing.get("next_v") == next_v and existing.get("source_v") == source_v:
-        existing_gate_results = existing.get("gate_results", {}) or {}
-        existing_invocation_count = existing.get("worker_invocation_count", 0)
-        if master_plan is None:
-            existing_master_plan = existing.get("master_plan")
-        if not reviewer_feedback:
-            existing_reviewer_feedback = existing.get("reviewer_feedback", "")
-        if generation_attempt == 0:
-            existing_generation_attempt = existing.get("generation_attempt", 0)
-        if parent2_v is None:
-            existing_parent2_v = existing.get("parent2_v")
+        if existing and existing.get("next_v") == next_v and existing.get("source_v") == source_v:
+            existing_gate_results = existing.get("gate_results", {}) or {}
+            existing_invocation_count = existing.get("worker_invocation_count", 0)
+            if master_plan is None:
+                existing_master_plan = existing.get("master_plan")
+            if not reviewer_feedback:
+                existing_reviewer_feedback = existing.get("reviewer_feedback", "")
+            if generation_attempt == 0:
+                existing_generation_attempt = existing.get("generation_attempt", 0)
+            if parent2_v is None:
+                existing_parent2_v = existing.get("parent2_v")
 
-    if gate_results:
-        existing_gate_results.update(gate_results)
-    if worker_invocation_count is not None:
-        existing_invocation_count = worker_invocation_count
+        if gate_results:
+            existing_gate_results.update(gate_results)
+        if worker_invocation_count is not None:
+            existing_invocation_count = worker_invocation_count
 
-    state = {
-        "next_v": next_v, "source_v": source_v, "stage": stage,
-        "master_plan": existing_master_plan, "reviewer_feedback": existing_reviewer_feedback,
-        "generation_attempt": existing_generation_attempt,
-        "worker_invocation_count": existing_invocation_count,
-        "gate_results": existing_gate_results,
-        "parent2_v": existing_parent2_v,
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-    }
+        state = {
+            "next_v": next_v, "source_v": source_v, "stage": stage,
+            "master_plan": existing_master_plan, "reviewer_feedback": existing_reviewer_feedback,
+            "generation_attempt": existing_generation_attempt,
+            "worker_invocation_count": existing_invocation_count,
+            "gate_results": existing_gate_results,
+            "parent2_v": existing_parent2_v,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
 
-    # Atomic write: tmp under exclusive lock + os.replace
-    tmp = PIPELINE_STATE_FILE.with_suffix(".tmp")
-    with locked_file(tmp, "w") as tf:
-        json.dump(state, tf, indent=2)
-        tf.flush()
-        os.fsync(tf.fileno())
-    os.replace(str(tmp), str(PIPELINE_STATE_FILE))
+        # Atomic write: tmp + fsync + rename, all under the same lock
+        tmp = PIPELINE_STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, indent=2))
+        os.replace(str(tmp), str(PIPELINE_STATE_FILE))
 
 
 def read_pipeline_checkpoint():
@@ -515,7 +511,9 @@ def start_daemon(workers=14, pairs=5):
             text=True, bufsize=1,
             start_new_session=True,  # Independent process group for clean killpg
         )
-        daemon_pid_file.write_text(json.dumps({"pid": daemon_proc.pid, "ppid": os.getpid()}))
+        tmp_pid = daemon_pid_file.with_suffix(".tmp")
+        tmp_pid.write_text(json.dumps({"pid": daemon_proc.pid, "ppid": os.getpid()}))
+        os.replace(str(tmp_pid), str(daemon_pid_file))
     # Drain daemon stdout to prevent pipe buffer deadlock
     threading.Thread(target=_drain_stdout, args=(daemon_proc,), daemon=True).start()
     if not _atexit_registered:

@@ -34,6 +34,7 @@ from evolution_core import (
     _analyze_recent_matches,
     _analyze_stagnation,
     RATINGS_FILE, BOT_STATS_FILE, H2H_FILE, MATCH_HISTORY_FILE, REPLAY_DIR,
+    RESULTS_DIR,
     locked_file,
 )
 from glicko2 import Glicko2Player
@@ -338,7 +339,7 @@ async def reap_weakest(args):
         pass
 
     # Signal daemon to immediately refresh bot list
-    reap_signal = Path(__file__).parent / "results" / ".reap_signal"
+    reap_signal = RESULTS_DIR / ".reap_signal"
     reap_signal.write_text(str(time.time()))
 
     if not quiet:

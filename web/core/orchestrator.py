@@ -658,11 +658,14 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
             if recovery and recovery.get("action") == "resume":
                 from generation_scheduler import GenerationContext
                 ckpt = recovery["checkpoint"]
+                parent2_v = ckpt.get("parent2_v")
+                strategy = "crossover" if parent2_v else "master"
                 gen_ctx = GenerationContext(
                     current_v=ckpt.get("source_v", find_current_v()),
                     next_v=ckpt["next_v"],
-                    strategy="master",  # recovery always uses master
+                    strategy=strategy,
                     source_v=ckpt["source_v"],
+                    crossover_parents=(ckpt["source_v"], parent2_v) if parent2_v else (),
                     gen_count=gen_count,
                 )
                 recovery = None  # consume recovery, only used once

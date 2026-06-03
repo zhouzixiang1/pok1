@@ -71,6 +71,14 @@ class AppState:
             self.running = running
             return True
 
+    def stop_running(self):
+        """Atomically set running=False and extract the evolution task."""
+        with self._lock:
+            self.running = False
+            task = self._evolution_task
+            self._evolution_task = None
+            return task
+
     def _load_config(self):
         try:
             if self._config_file.exists():

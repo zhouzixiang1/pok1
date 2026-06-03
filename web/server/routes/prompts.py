@@ -45,7 +45,8 @@ def _prompt_info(name: str) -> dict:
     if not path.exists():
         return {"name": name, "exists": False, "lines": 0, "mtime": None, "role": PROMPT_ROLES.get(name, "")}
     stat = path.stat()
-    lines = sum(1 for _ in open(path, "r", errors="ignore"))
+    with open(path, "r", errors="ignore") as f:
+        lines = sum(1 for _ in f)
     return {
         "name": name,
         "filename": path.name,

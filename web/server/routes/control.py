@@ -125,11 +125,7 @@ async def start_evolution():
 @router.post("/stop")
 async def stop_evolution():
     app_state.request_shutdown()
-    app_state.set_running(False)
-    task = None
-    with app_state._lock:
-        task = app_state._evolution_task
-        app_state._evolution_task = None
+    task = app_state.stop_running()
     if task and not task.done():
         task.cancel()
         try:
@@ -168,6 +164,10 @@ async def call_tool(tool_name: str, req: ToolRequest = Body(default=None)):
             app_state.update_config(daemon_enabled=False)
 
         return {"tool": tool_name, "result": text}
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail=f"Missing parameter: {e}")
+    except (TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid parameter: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

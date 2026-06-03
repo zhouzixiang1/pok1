@@ -26,6 +26,7 @@ from evolution_core import (
     check_code_size,
     run_smoke_test,
     run_decision_test_details,
+    RESULTS_DIR,
     parse_json_output,
     run_claude_query,
     git_commit_bot,
@@ -1101,7 +1102,7 @@ async def commit_bot(args):
         pass
 
     # Signal daemon to pick up the new bot
-    reap_signal = Path(__file__).parent / "results" / ".reap_signal"
+    reap_signal = RESULTS_DIR / ".reap_signal"
     reap_signal.touch()
 
     # Write priority eval signal so daemon schedules this bot heavily
