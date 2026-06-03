@@ -567,7 +567,7 @@ def main():
 
                     # Parent alive check — exit if orphaned
                     now = time.time()
-                    if now - last_parent_check >= 30:
+                    if now - last_parent_check >= 5:
                         last_parent_check = now
                         cur_ppid = os.getppid()
                         if cur_ppid == 1 or (_stored_ppid is not None and cur_ppid != _stored_ppid):
@@ -653,7 +653,7 @@ def main():
                     except Exception:
                         pass
                 in_flight.clear()
-                executor.shutdown(wait=False)
+                executor.shutdown(wait=False, cancel_futures=True)
                 executor = ProcessPoolExecutor(max_workers=n_workers)
                 match_queue = deque()
                 matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
@@ -677,14 +677,22 @@ def main():
         log.critical("FATAL: %s\n%s", e, traceback.format_exc())
         raise
     finally:
-        log.info("Draining %d in-flight matches...", len(in_flight))
+        # Kill entire process group (workers + bot subprocesses)
+        try:
+            os.killpg(os.getpgrp(), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+        log.info("Cancelling %d in-flight matches...", len(in_flight))
+        for fut in in_flight:
+            fut.cancel()
         for fut in in_flight:
             try:
-                result = fut.result(timeout=10)
+                result = fut.result(timeout=3)
                 process_result(result, ratings, h2h, bot_stats, verbose=args.verbose)
             except Exception:
                 pass
-        executor.shutdown(wait=False)
+        executor.shutdown(wait=False, cancel_futures=True)
 
         # Final save
         try:

@@ -60,23 +60,24 @@ async def lifespan(app: FastAPI):
     yield
 
     # On shutdown: signal orchestrator to stop, wait briefly
-    task = app_state.stop_running()
-    if task and not task.done():
-        shutdown_mgr.request_shutdown()
-        try:
-            await asyncio.wait_for(task, timeout=20)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
-            task.cancel()
-            try:
-                await asyncio.wait_for(task, timeout=5)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
-
     try:
-        from evolution_infra import stop_daemon
-        stop_daemon()
-    except Exception:
-        pass
+        task = app_state.stop_running()
+        if task and not task.done():
+            shutdown_mgr.request_shutdown()
+            try:
+                await asyncio.wait_for(task, timeout=20)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                task.cancel()
+                try:
+                    await asyncio.wait_for(task, timeout=5)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+    finally:
+        try:
+            from evolution_infra import stop_daemon
+            stop_daemon()
+        except Exception:
+            pass
     web_ui.log_history("Evolution stopped.", "info")
 
 
