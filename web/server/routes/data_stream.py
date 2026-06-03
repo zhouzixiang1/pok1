@@ -44,11 +44,14 @@ def _get_ratings() -> list[dict]:
 def _get_daemon_status() -> dict:
     from server.state import app_state
     config = app_state.get_config()
-    if RATINGS_FILE.exists():
-        mtime = os.path.getmtime(RATINGS_FILE)
-        age = time.time() - mtime
-        status = "active" if age < 60 else ("recent" if age < 600 else "idle")
-        return {"status": status, "last_update_age_seconds": round(age, 0), "daemon_enabled": config["daemon_enabled"]}
+    try:
+        if RATINGS_FILE.exists():
+            mtime = os.path.getmtime(RATINGS_FILE)
+            age = time.time() - mtime
+            status = "active" if age < 60 else ("recent" if age < 600 else "idle")
+            return {"status": status, "last_update_age_seconds": round(age, 0), "daemon_enabled": config["daemon_enabled"]}
+    except OSError:
+        pass
     return {"status": "unknown", "last_update_age_seconds": -1, "daemon_enabled": config["daemon_enabled"]}
 
 
@@ -127,32 +130,47 @@ async def data_stream(request: Request):
                 if await request.is_disconnected():
                     break
                 if tick % 3 == 0:
-                    for evt in [
-                        _event("ratings", _get_ratings()),
-                        _event("daemon", _get_daemon_status()),
-                        _event("bots", _get_bots()),
-                        _event("stats", _get_match_stats()),
-                    ]:
+                    try:
+                        events = [
+                            _event("ratings", _get_ratings()),
+                            _event("daemon", _get_daemon_status()),
+                            _event("bots", _get_bots()),
+                            _event("stats", _get_match_stats()),
+                        ]
+                    except Exception as e:
+                        _log.warning("SSE data fetch error (3s): %s", e)
+                        events = []
+                    for evt in events:
                         try:
                             yield evt
                         except Exception as e:
                             _log.warning("SSE event error: %s", e)
                 if tick % 10 == 0:
-                    for evt in [
-                        _event("matches", _get_recent_matches(100)),
-                        _event("generations", _get_generations()),
-                    ]:
+                    try:
+                        events = [
+                            _event("matches", _get_recent_matches(100)),
+                            _event("generations", _get_generations()),
+                        ]
+                    except Exception as e:
+                        _log.warning("SSE data fetch error (10s): %s", e)
+                        events = []
+                    for evt in events:
                         try:
                             yield evt
                         except Exception as e:
                             _log.warning("SSE event error: %s", e)
                 if tick % 15 == 0:
-                    for evt in [
-                        _event("matrix", _get_match_matrix()),
-                        _event("h2h", _get_h2h()),
-                        _event("bot_stats", _get_bot_stats()),
-                        _event("history", _downsample(_get_history())),
-                    ]:
+                    try:
+                        events = [
+                            _event("matrix", _get_match_matrix()),
+                            _event("h2h", _get_h2h()),
+                            _event("bot_stats", _get_bot_stats()),
+                            _event("history", _downsample(_get_history())),
+                        ]
+                    except Exception as e:
+                        _log.warning("SSE data fetch error (15s): %s", e)
+                        events = []
+                    for evt in events:
                         try:
                             yield evt
                         except Exception as e:

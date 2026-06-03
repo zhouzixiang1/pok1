@@ -26,12 +26,9 @@ _set_system_log_ui(web_ui)
 
 from logging_config import configure_logging
 
-_evolution_task: asyncio.Task | None = None
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _evolution_task
 
     from evolution_infra import find_current_v
     configure_logging(broadcaster=broadcaster)
@@ -50,11 +47,11 @@ async def lifespan(app: FastAPI):
     app_state.set_running(True)
     try:
         from orchestrator import orchestrator_loop
-        _evolution_task = asyncio.create_task(orchestrator_loop(
+        _task = asyncio.create_task(orchestrator_loop(
             web_ui, shutdown_mgr=shutdown_mgr,
             no_daemon=not daemon_enabled,
             daemon_workers=config["daemon_workers"], daemon_pairs=config["daemon_pairs"]))
-        app_state.set_task(_evolution_task)
+        app_state.set_task(_task)
         web_ui.log_history("🔥 Orchestrator started (LLM-driven mode)", "success")
     except Exception:
         app_state.set_running(False)
@@ -63,14 +60,15 @@ async def lifespan(app: FastAPI):
     yield
 
     # On shutdown: signal orchestrator to stop, wait briefly
-    if _evolution_task and not _evolution_task.done():
+    task = app_state.stop_running()
+    if task and not task.done():
         shutdown_mgr.request_shutdown()
         try:
-            await asyncio.wait_for(_evolution_task, timeout=20)
+            await asyncio.wait_for(task, timeout=20)
         except (asyncio.CancelledError, asyncio.TimeoutError):
-            _evolution_task.cancel()
+            task.cancel()
             try:
-                await asyncio.wait_for(_evolution_task, timeout=5)
+                await asyncio.wait_for(task, timeout=5)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
 

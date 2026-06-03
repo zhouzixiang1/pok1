@@ -211,11 +211,7 @@ async def clear_orchestrator_session():
 async def reset_evolution_endpoint():
     """Reset evolution to baseline (v1-v6), then auto-restart."""
     if app_state.running:
-        app_state.set_running(False)
-        task = None
-        with app_state._lock:
-            task = app_state._evolution_task
-            app_state._evolution_task = None
+        task = app_state.stop_running()
         if task and not task.done():
             task.cancel()
             try:

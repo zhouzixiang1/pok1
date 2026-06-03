@@ -15,7 +15,7 @@ def read_locked(path: Path) -> Any:
         fcntl.flock(f, fcntl.LOCK_SH)
         try:
             data = json.load(f)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
             return None
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)

@@ -125,6 +125,8 @@ def update_rating_period(player, results):
         k = 1
         while f(a - k * TAU) < 0:
             k += 1
+            if k > 100:
+                break
         B = a - k * TAU
 
     fA = f(A)

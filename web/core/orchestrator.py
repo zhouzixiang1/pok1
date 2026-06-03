@@ -754,15 +754,8 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
         log_system_event("orchestrator.crashed", "error", f"Orchestrator crashed: {e}",
                          {"error": str(e)[:200]})
         _clear_orchestrator_session()
-        # Only clear checkpoint for non-transient errors (auth, data corruption)
-        # Transient errors (network, timeout) preserve checkpoint for recovery
-        is_transient = isinstance(e, (ConnectionError, TimeoutError, OSError))
-        if not is_transient:
-            try:
-                from evolution_core import clear_pipeline_checkpoint
-                clear_pipeline_checkpoint()
-            except Exception:
-                pass
+        # Preserve checkpoint for crash recovery regardless of error type.
+        # The checkpoint stage-tracking allows startup recovery to assess state.
         try:
             from server.state import app_state
             app_state.set_running(False)

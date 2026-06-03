@@ -17,6 +17,7 @@ from typing import Annotated, TypedDict
 from claude_agent_sdk import tool
 
 from evolution_core import (
+    MAX_ACTIVE_BOTS,
     get_active_bots,
     get_bot_dir,
     load_ratings,
@@ -260,11 +261,11 @@ class ReapWeakestInput(TypedDict):
     pass
 
 
-@tool("reap_weakest", "Check if bot pool exceeds 30 and cull the weakest bot by H2H average win rate.", {})
+@tool("reap_weakest", f"Check if bot pool exceeds MAX_ACTIVE_BOTS and cull the weakest bot by H2H average win rate.", {})
 async def reap_weakest(args):
     quiet = args.get("quiet", False) if isinstance(args, dict) else False
     active_bots = get_active_bots()
-    if len(active_bots) <= 30:
+    if len(active_bots) <= MAX_ACTIVE_BOTS:
         return {"content": [{"type": "text", "text": json.dumps({"reaped": False, "pool_size": len(active_bots)})}]}
 
     ratings = load_ratings()

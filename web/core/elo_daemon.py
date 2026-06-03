@@ -344,21 +344,17 @@ def process_result(result, ratings, h2h, bot_stats, verbose=False):
             if verbose:
                 log.warning("Error saving replay %s vs %s: %s", a, b, e)
 
-    # Snapshot opponent ratings for Elo updates
+    # Per-game Glicko-2 updates (use live opponent ratings each game)
     _default = Glicko2Player()
-    opp_b = Glicko2Player(r=ratings.get(b, _default).r, rd=ratings.get(b, _default).rd, sigma=ratings.get(b, _default).sigma)
-    opp_a = Glicko2Player(r=ratings.get(a, _default).r, rd=ratings.get(a, _default).rd, sigma=ratings.get(a, _default).sigma)
-
-    # Per-game Elo updates
     for _ in range(wins_a):
-        ratings[a] = update_single_game(ratings[a], opp_b, 1.0)
-        ratings[b] = update_single_game(ratings[b], opp_a, 0.0)
+        ratings[a] = update_single_game(ratings[a], ratings.get(b, _default), 1.0)
+        ratings[b] = update_single_game(ratings[b], ratings.get(a, _default), 0.0)
     for _ in range(wins_b):
-        ratings[a] = update_single_game(ratings[a], opp_b, 0.0)
-        ratings[b] = update_single_game(ratings[b], opp_a, 1.0)
+        ratings[a] = update_single_game(ratings[a], ratings.get(b, _default), 0.0)
+        ratings[b] = update_single_game(ratings[b], ratings.get(a, _default), 1.0)
     for _ in range(draws):
-        ratings[a] = update_single_game(ratings[a], opp_b, 0.5)
-        ratings[b] = update_single_game(ratings[b], opp_a, 0.5)
+        ratings[a] = update_single_game(ratings[a], ratings.get(b, _default), 0.5)
+        ratings[b] = update_single_game(ratings[b], ratings.get(a, _default), 0.5)
 
     # Update H2H
     k = pair_key(a, b)

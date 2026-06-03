@@ -464,9 +464,13 @@ async def run_review(args):
     log_file = get_logs_dir(v) / "reviewer_io.txt"
 
     ui = _get_ui()
-    output, _, _ = await run_claude_query(
-        reviewer_prompt, [], ui, "LEAD CODE REVIEWER", log_file, tools=["Bash", "Read"]
-    )
+    try:
+        output, _, _ = await run_claude_query(
+            reviewer_prompt, [], ui, "LEAD CODE REVIEWER", log_file, tools=["Bash", "Read"]
+        )
+    except Exception as e:
+        ui.log_history(f"Reviewer error: {e}. Defaulting to rejected.", "warn")
+        output = None
     data = parse_json_output(output)
 
     if data and "approved" in data:
@@ -996,11 +1000,14 @@ async def commit_bot(args):
             except (TypeError, ValueError):
                 critic_score = 0.0
             if critic.get("approved") is not True or critic_score < 6:
-                failed_gates.append({
-                    "gate": "critic",
-                    "reason": "critic score must be >= 6 and approved must be true",
-                    "value": critic,
-                })
+                if critic.get("force_advanced") is True:
+                    pass  # Force-advanced: allow despite low score
+                else:
+                    failed_gates.append({
+                        "gate": "critic",
+                        "reason": "critic score must be >= 6 and approved must be true",
+                        "value": critic,
+                    })
 
         precommit = gate_results.get("precommit_eval")
         if not precommit:

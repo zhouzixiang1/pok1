@@ -29,7 +29,8 @@ class EventBroadcaster:
     """
 
     def __init__(self, buffer_size=500):
-        self._clients: dict[int, asyncio.Queue] = {}
+        # Each client: (asyncio.Queue, captured event loop or None)
+        self._clients: dict[int, tuple[asyncio.Queue, asyncio.AbstractEventLoop | None]] = {}
         self._ring_buffer: deque[dict] = deque(maxlen=buffer_size)
         self._next_id = 0
         self._lock = threading.Lock()
@@ -39,7 +40,11 @@ class EventBroadcaster:
             cid = self._next_id
             self._next_id += 1
             q: asyncio.Queue = asyncio.Queue(maxsize=2000)
-            self._clients[cid] = q
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            self._clients[cid] = (q, loop)
             # Replay ring buffer
             for event in self._ring_buffer:
                 try:
@@ -67,15 +72,14 @@ class EventBroadcaster:
         sse_data = {"event": event_type, "data": json.dumps(payload)}
         with self._lock:
             self._ring_buffer.append(sse_data)
-            for q in self._clients.values():
-                self._safe_put(q, sse_data)
+            for cid, (q, q_loop) in self._clients.items():
+                self._safe_put(q, q_loop, sse_data)
 
-    def _safe_put(self, q, item):
+    def _safe_put(self, q, q_loop, item):
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = None
-        q_loop = getattr(q, '_loop', None)
         if loop is not None and loop is q_loop:
             # Same event loop — direct put
             try:

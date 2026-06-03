@@ -492,28 +492,33 @@ def _drain_stdout(proc):
 def start_daemon(workers=14, pairs=5):
     """Start elo_daemon.py as a background subprocess in its own process group."""
     global daemon_proc, _atexit_registered, _daemon_shutting_down
+
+    # Kill orphaned daemon from a previous process (before acquiring lock)
+    _need_wait = False
+    daemon_pid_file = RESULTS_DIR / ".daemon_pid"
+    if daemon_pid_file.exists():
+        try:
+            raw = daemon_pid_file.read_text().strip()
+            try:
+                info = json.loads(raw)
+                old_pid = info["pid"] if isinstance(info, dict) else int(info)
+            except (json.JSONDecodeError, KeyError, TypeError):
+                old_pid = int(raw)
+            try:
+                os.killpg(os.getpgid(old_pid), signal.SIGTERM)
+                _need_wait = True
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        except ValueError:
+            pass
+    if _need_wait:
+        time.sleep(1)  # Wait outside lock for orphan to die
+
     with _daemon_lock:
         _daemon_shutting_down = False
         if daemon_proc and daemon_proc.poll() is None:
             return daemon_proc  # Already running
-        # Kill orphaned daemon from a previous process
-        daemon_pid_file = RESULTS_DIR / ".daemon_pid"
-        if daemon_pid_file.exists():
-            try:
-                raw = daemon_pid_file.read_text().strip()
-                try:
-                    info = json.loads(raw)
-                    old_pid = info["pid"] if isinstance(info, dict) else int(info)
-                except (json.JSONDecodeError, KeyError, TypeError):
-                    old_pid = int(raw)
-                try:
-                    os.killpg(os.getpgid(old_pid), signal.SIGTERM)
-                    time.sleep(1)
-                except (ProcessLookupError, PermissionError, OSError):
-                    pass
-            except ValueError:
-                pass
-            daemon_pid_file.unlink(missing_ok=True)
+        daemon_pid_file.unlink(missing_ok=True)
         daemon_script = str(CORE_DIR / "elo_daemon.py")
         cmd = [sys.executable, daemon_script, "--workers", str(workers), "--pairs", str(pairs)]
         daemon_proc = subprocess.Popen(

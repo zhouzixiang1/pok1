@@ -203,6 +203,8 @@ def _review_gate_ok(checkpoint):
 
 def _critic_gate_ok(checkpoint):
     critic = _checkpoint_gate(checkpoint, "critic")
+    if critic.get("force_advanced") is True:
+        return True
     try:
         score = float(critic.get("score", 0))
     except (TypeError, ValueError):
