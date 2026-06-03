@@ -1,7 +1,7 @@
 """Opponent modeling and anti-bot_4 exploitation."""
 
-from constants import BIG_BLIND
-from card_utils import clamp, next_player
+from constants import BIG_BLIND, HAND_CLASS_SCORE
+from card_utils import clamp, next_player, evaluate_7
 from state import collect_latest_requests_by_hand
 from tournament import opponent_can_lock_win
 
@@ -297,3 +297,265 @@ def classify_opponent_style(opp_model):
         deltas['bluff_freq_bonus'] = 0.10
 
     return deltas
+
+
+# ---------------------------------------------------------------------------
+# Opponent action-sequence line tracker
+# ---------------------------------------------------------------------------
+
+LINE_STRENGTH_MAP = {
+    # 3+ consecutive aggressive streets (barrel barrel barrel)
+    "aggressive-aggressive-aggressive": 0.035,
+    # Polarized: bet, check/give-up, bet again
+    "aggressive-passive-aggressive": 0.020,
+    # Two consecutive aggressive streets
+    "aggressive-aggressive": 0.010,
+    # Donk bet then checks down (weak — probing, gave up)
+    "aggressive-passive-passive": -0.015,
+    # All passive across 3+ streets (very weak/passive)
+    "passive-passive-passive": -0.020,
+    # Two passive streets
+    "passive-passive": -0.015,
+    # Raises then passive (pot-controlling marginal hand)
+    "aggressive-passive": -0.010,
+    # One-and-done: passive-aggro-passive
+    "passive-aggressive-passive": -0.010,
+    # Single aggressive street
+    "aggressive": 0.005,
+    # Single mixed street (erratic)
+    "mixed": 0.005,
+}
+
+# Check-raise signal — handled specially, not in the map.
+_CHECK_RAISE_SIGNAL = 0.040
+
+
+def _default_line_profile():
+    """Return a neutral line profile when no history is available."""
+    return {
+        "line": "none",
+        "strength_signal": 0.0,
+        "aggression_count": 0,
+        "passive_count": 0,
+        "last_street_action": "none",
+        "check_raise_detected": False,
+    }
+
+
+def _classify_street(history, opponent_id, street_idx):
+    """Classify opponent's actions on a single street.
+
+    Returns (label, check_raise) where label is one of
+    'passive' / 'aggressive' / 'mixed' and check_raise is True when
+    the opponent first checked/called then raised/all-in on this street.
+    """
+    actions = []
+    for record in history:
+        if record["player_id"] != opponent_id:
+            continue
+        if record["round"] != street_idx:
+            continue
+        actions.append(record["action_type"])
+
+    if not actions:
+        return None, False
+
+    has_aggressive = any(a in ("raise", "allin") for a in actions)
+    has_passive = any(a in ("check", "call") for a in actions)
+
+    check_raise = False
+    if has_aggressive and has_passive:
+        # Check-raise: first action passive, later action aggressive
+        first_passive = actions[0] in ("check", "call")
+        later_aggressive = any(a in ("raise", "allin") for a in actions[1:])
+        if first_passive and later_aggressive:
+            check_raise = True
+        return "mixed", check_raise
+    elif has_aggressive:
+        return "aggressive", False
+    else:
+        return "passive", False
+
+
+def _lookup_line_strength(line, check_raise):
+    """Look up strength signal from LINE_STRENGTH_MAP.
+
+    Uses longest-match semantics (most specific pattern wins).
+    """
+    if check_raise:
+        return _CHECK_RAISE_SIGNAL
+
+    if line == "none":
+        return 0.0
+
+    best_signal = 0.0
+    best_len = 0
+    for pattern, signal in LINE_STRENGTH_MAP.items():
+        plen = len(pattern)
+        if plen <= best_len:
+            continue
+        if (
+            line == pattern
+            or line.endswith("-" + pattern)
+            or ("-" + pattern + "-") in line
+            or line.startswith(pattern + "-")
+        ):
+            best_signal = signal
+            best_len = plen
+
+    return best_signal
+
+
+def build_opponent_line_profile(requests, my_id, state):
+    """Analyze the current hand's opponent action sequence.
+
+    Encodes each street as passive / aggressive / mixed, looks up the
+    resulting line in LINE_STRENGTH_MAP, and returns a strength signal
+    together with summary counters.
+
+    Returns dict with keys:
+        line, strength_signal, aggression_count, passive_count,
+        last_street_action, check_raise_detected
+    """
+    opponent_id = next_player(my_id, 1)
+    req = requests[-1] if requests else None
+    if req is None:
+        return _default_line_profile()
+
+    history = req.get("history", [])
+    if not history:
+        return _default_line_profile()
+
+    current_round = state["round"]
+
+    street_labels = []
+    aggression_count = 0
+    passive_count = 0
+    any_check_raise = False
+    last_action = "none"
+
+    for street_idx in range(current_round + 1):
+        label, check_raise = _classify_street(history, opponent_id, street_idx)
+        if label is None:
+            continue
+        street_labels.append(label)
+        if label == "aggressive" or (label == "mixed" and check_raise):
+            aggression_count += 1
+        if label in ("passive", "mixed"):
+            passive_count += 1
+        if check_raise:
+            any_check_raise = True
+        # Capture last opponent action on this street
+        for record in reversed(history):
+            if record["player_id"] == opponent_id and record["round"] == street_idx:
+                last_action = record["action_type"]
+                break
+
+    line = "-".join(street_labels) if street_labels else "none"
+    strength_signal = _lookup_line_strength(line, any_check_raise)
+
+    return {
+        "line": line,
+        "strength_signal": clamp(strength_signal, -0.04, 0.04),
+        "aggression_count": aggression_count,
+        "passive_count": passive_count,
+        "last_street_action": last_action,
+        "check_raise_detected": any_check_raise,
+    }
+
+
+def build_line_showdown_tracker(requests, my_id):
+    """Track which opponent lines resulted in strong/weak showdown hands.
+
+    Parses completed hands from *requests* to find showdowns where the
+    opponent's hole cards are visible.  Accumulates line → avg-strength
+    correlations for future exploitation.
+
+    Best-effort: silently skips hands without visible opponent cards.
+    """
+    opponent_id = next_player(my_id, 1)
+    hand_requests = collect_latest_requests_by_hand(requests)
+
+    line_strengths = {}
+    n_showdowns = 0
+
+    for req in hand_requests:
+        public_cards = req.get("public_cards", [])
+        if len(public_cards) != 5:
+            continue
+
+        # Try common field names for opponent hole cards
+        opp_cards = (
+            req.get("opponent_cards")
+            or req.get("oppo_cards")
+            or req.get("opp_cards")
+        )
+        if not opp_cards or not isinstance(opp_cards, (list, tuple)) or len(opp_cards) != 2:
+            continue
+
+        # Compute opponent's showdown hand strength
+        try:
+            all_cards = list(opp_cards) + list(public_cards)
+            if len(all_cards) != 7:
+                continue
+            hand_score = evaluate_7(all_cards)
+            hand_class = hand_score[0]  # 0–8
+            normalized = HAND_CLASS_SCORE[min(hand_class, 8)]
+        except Exception:
+            continue
+
+        # Extract opponent's line for this hand
+        history = req.get("history", [])
+        labels = []
+        for street_idx in range(4):  # preflop through river
+            label, _ = _classify_street(history, opponent_id, street_idx)
+            if label is not None:
+                labels.append(label)
+
+        line = "-".join(labels) if labels else "none"
+
+        if line not in line_strengths:
+            line_strengths[line] = []
+        line_strengths[line].append(normalized)
+        n_showdowns += 1
+
+    return {
+        "line_strengths": line_strengths,
+        "n_showdowns": n_showdowns,
+    }
+
+
+def line_adjustment(line_profile, showdown_tracker):
+    """Compute threshold adjustments from opponent's action line.
+
+    Blends the lookup-table signal with observed showdown data
+    (when ≥ 2 observations exist).  Returns deltas intended to be
+    added to the *strong* and *medium* thresholds in strategy.py.
+    """
+    line = line_profile["line"]
+    lookup_signal = line_profile["strength_signal"]
+
+    threshold_delta = lookup_signal
+
+    # Blend with showdown observations if enough data
+    if showdown_tracker is not None and showdown_tracker.get("n_showdowns", 0) >= 2:
+        observed = showdown_tracker.get("line_strengths", {}).get(line, [])
+        if len(observed) >= 2:
+            avg_observed = sum(observed) / len(observed)
+            # observed strength is 0–1; centre at 0.5 and scale to a small delta
+            observed_signal = (avg_observed - 0.5) * 0.08
+            # Blend: 60 % lookup, 40 % observed
+            threshold_delta = 0.6 * lookup_signal + 0.4 * observed_signal
+
+    # Fold delta: positive → fold more (opponent is strong), negative → fold less
+    fold_delta = 0.0
+    if lookup_signal > 0.02:
+        fold_delta = lookup_signal * 0.5
+    elif lookup_signal < -0.01:
+        fold_delta = lookup_signal * 0.3
+
+    return {
+        "threshold_delta": clamp(threshold_delta, -0.04, 0.04),
+        "fold_delta": clamp(fold_delta, -0.02, 0.02),
+        "label": line,
+    }
