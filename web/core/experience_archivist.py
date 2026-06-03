@@ -31,31 +31,15 @@ async def _consolidate_experience_pool(ui):
     if not content or len(content.split("\n")) < 20:
         return  # Too short to bother consolidating
 
-    consolidate_prompt = (
-        "You are an Experience Pool Consolidator. Your job is to clean up the experience pool file.\n\n"
-        "RULES:\n"
-        "1. Read the current experience pool content provided below.\n"
-        "2. Merge duplicate or near-duplicate lessons into single, concise bullet points.\n"
-        "3. Keep the most recent/relevant version of each lesson.\n"
-        "4. Remove entries superseded by newer findings.\n"
-        "5. Keep the total output under 70 lines.\n"
-        "6. Output ONLY the consolidated markdown — no explanation, no code fences.\n\n"
-        "CRITICAL — Output MUST use exactly these category headers (in this order):\n"
-        "## OPPONENT_MODELING\n"
-        "## POSTFLOP_STRATEGY\n"
-        "## BLUFF_CALIBRATION\n"
-        "## PARAMETER_TUNING\n"
-        "## GENERAL\n"
-        "## RECENT_LESSONS\n\n"
-        "Sort each lesson into the most relevant category.\n"
-        "RECENT_LESSONS should contain only lessons from the last 3 generations.\n\n"
-        "LOCAL OPTIMA FLAG: If the same type of lesson appears for 3+ consecutive "
-        "generations (e.g. 3 gens of constant-tuning in the same direction with no gain), "
-        "append ' [POSSIBLY EXHAUSTED]' to that bullet so Master avoids repeating it.\n\n"
-        "## Current experience_pool.md content:\n\n"
-        f"{content}\n\n"
-        "## Output the consolidated version now (plain markdown, no fences):"
-    )
+    # Load template and substitute
+    template_file = PROMPTS_DIR / "experience_consolidator.md"
+    if not template_file.exists():
+        return
+    consolidate_prompt = template_file.read_text()
+    consolidate_prompt = substitute_template(consolidate_prompt, {
+        "pool_content": content,
+        "exhausted_directions": "",
+    })
     log_file = get_logs_dir(0) / "experience_consolidation_io.txt"
 
     try:

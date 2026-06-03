@@ -342,6 +342,7 @@ Defaults: `r=1500`, `rd=350`, `sigma=0.06`, `tau=0.5`. Confidence levels: rd<50 
 | `replay_analysis.py` | 178 | Replay data summarization (pure data, no LLM) |
 | `stagnation_analyzer.py` | 171 | Rating trend stagnation analysis via LLM |
 | `tool_bot_management.py` | 170 | Bot reaping, cleanup, abandonment, experience pool tools |
+| `output_schema.py` | 85 | Pydantic models for validating structured LLM output |
 | `experience_archivist.py` | 139 | Experience pool consolidation + archivist analysis |
 | `direction_auditor.py` | 127 | Pre-Master repetition detection via LLM |
 | `orchestrator_session.py` | 122 | Session persistence, startup recovery, log rotation |

@@ -11,6 +11,7 @@ from evolution_infra import (
     locked_file, get_logs_dir,
     PROMPTS_DIR, WORKER_FAILURES_FILE,
 )
+from output_schema import validate_agent_output
 
 
 async def _run_direction_audit(source_v, ui):
@@ -113,6 +114,9 @@ async def _run_direction_audit(source_v, ui):
         )
         data = parse_json_output(output)
         if data and "repetition_detected" in data:
+            data, errors = validate_agent_output("direction_auditor", data)
+            if errors:
+                ui.log_history(f"Direction Auditor validation issues: {'; '.join(errors[:3])}", "warn")
             data.setdefault("exhausted_directions", [])
             data.setdefault("mandatory_constraints", None)
             data.setdefault("suggested_direction", None)

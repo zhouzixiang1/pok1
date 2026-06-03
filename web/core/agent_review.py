@@ -61,6 +61,10 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
         data = parse_json_output(output)
         if data and "score" in data:
             # Normalise: score >= 6 → approved
+            from output_schema import validate_agent_output
+            data, errors = validate_agent_output("critic", data)
+            if errors:
+                ui.log_history(f"Critic validation issues: {'; '.join(errors[:3])}", "warn")
             if "approved" not in data:
                 data["approved"] = data["score"] >= 6
             data.setdefault("local_optima_warning", False)
@@ -203,31 +207,19 @@ async def _run_performance_verification(source_v, ratings, ui):
             "Be cautious about interpreting small period-to-period changes as meaningful trends.\n"
         )
 
-    prompt = (
-        "You are a Performance Verification Analyst for a self-evolving poker bot system.\n"
-        "Your job: synthesise the quantitative data below into actionable LLM-readable insight.\n\n"
-        f"Current bot under analysis: {bot_name}\n"
-        f"{rd_warning}\n"
-        "## Performance History (last 10 periods)\n"
-        + ("\n".join(gen_trend_lines) if gen_trend_lines else "  No history available") + "\n\n"
-        "## Overall Win Rate\n"
-        + (bot_stats_line if bot_stats_line else "  No stats available") + "\n\n"
-        "## Head-to-Head Results (per-opponent)\n"
-        + ("\n".join(l for _, l in h2h_lines) if h2h_lines else "  No H2H data available") + "\n\n"
-        "## Top Active Bots (by H2H avg win rate)\n"
-        + "\n".join(ratings_lines) + "\n\n"
-        "Produce a JSON block answering:\n"
-        "```json\n"
-        '{"trend": "improving|stagnant|declining",\n'
-        ' "verified_improvements": ["list of things that actually helped recent gens"],\n'
-        ' "persistent_weaknesses": ["list of recurring problems not yet fixed"],\n'
-        ' "diversity_needed": true|false,\n'
-        ' "diversity_reason": "why diversity is needed (or null)",\n'
-        ' "suggestion": "one concrete high-priority suggestion for next gen"}\n'
-        "```\n"
-        "Set `diversity_needed: true` if: trend is stagnant/declining for 2+ gens, "
-        "OR the last 2 gens applied the same type of change. Be direct and concise."
-    )
+    # Build prompt from template
+    template_file = PROMPTS_DIR / "performance_analyst.md"
+    if not template_file.exists():
+        return ""
+    prompt = template_file.read_text()
+    prompt = substitute_template(prompt, {
+        "bot_name": bot_name,
+        "rd_warning": rd_warning,
+        "performance_history": "\n".join(gen_trend_lines) if gen_trend_lines else "  No history available",
+        "bot_stats": bot_stats_line if bot_stats_line else "  No stats available",
+        "h2h_results": "\n".join(l for _, l in h2h_lines) if h2h_lines else "  No H2H data available",
+        "top_bots": "\n".join(ratings_lines),
+    })
 
     log_file = get_logs_dir(source_v) / "performance_verification_io.txt"
     try:

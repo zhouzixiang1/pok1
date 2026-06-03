@@ -7,9 +7,9 @@ worker failures to determine if the evolution strategy needs adjustment.
 import json
 
 from evolution_infra import (
-    run_claude_query, parse_json_output,
+    run_claude_query, parse_json_output, substitute_template,
     locked_file, get_logs_dir, load_ratings,
-    RESULTS_DIR, WORKER_FAILURES_FILE,
+    RESULTS_DIR, WORKER_FAILURES_FILE, PROMPTS_DIR,
     Glicko2Player,
 )
 
@@ -110,47 +110,33 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui):
 
     sorted_bots = sorted(active_bots, key=lambda b: h2h_winrates.get(b, 0.0), reverse=True)[:5]
 
-    prompt = (
-        "You are a rating trend analyst for a poker bot evolution system.\n"
-        "Analyze whether the evolution is truly stagnating.\n\n"
-        f"Current bot: {bot_name} (coverage: {opp_eval}/{opp_total} opponents = {opp_coverage:.0%})\n"
-        f"Top 5 bots by H2H avg win rate:\n"
-    )
+    # Build top bots section
+    top_bots_lines = []
     for b in sorted_bots:
         p = ratings.get(b, Glicko2Player())
         wr = h2h_winrates.get(b, 0.0)
         cov_info = coverage_data.get(b, {})
         cov_pct = cov_info.get("opponent_coverage", 1.0)
         cov_tag = f" [LOW COVERAGE {cov_pct:.0%}]" if cov_pct < 0.8 else ""
-        prompt += f"  {b}: h2h_avg_wr={wr:.2%} (r={p.r:.0f} rd={p.rd:.0f}){cov_tag}\n"
+        top_bots_lines.append(f"  {b}: h2h_avg_wr={wr:.2%} (r={p.r:.0f} rd={p.rd:.0f}){cov_tag}")
 
-    if gen_trend_lines:
-        prompt += f"\nGeneration-level trend (most recent 8 bots):\n" + "\n".join(gen_trend_lines) + "\n"
-    if lineage_lines:
-        prompt += f"\nLineage (parent chain):\n" + "\n".join(lineage_lines) + "\n"
-    if history_ctx:
-        prompt += f"\nDaemon period history (last 10 periods, top-3):\n{history_ctx}\n"
-    if failure_ctx:
-        prompt += f"\n{failure_ctx}\n"
+    # Load template and substitute
+    template_file = PROMPTS_DIR / "stagnation_analyzer.md"
+    prompt = template_file.read_text() if template_file.exists() else ""
+    if not prompt:
+        return None
 
-    prompt += (
-        "IMPORTANT CONSIDERATIONS:\n"
-        "1. A bot with coverage < 80% may have an inflated or deflated h2h_avg_wr — treat with caution.\n"
-        "2. 'Stagnation' means multiple consecutive generations FAILED to improve. If the last successful\n"
-        "   bot is strong and only 1-2 generations failed, that's not stagnation — it's normal iteration.\n"
-        "3. If recent failures show critic repeatedly demanding 'structural innovation' but workers keep\n"
-        "   producing constant-tuning changes, this is a system deadlock. Recommend 'crossover' to break\n"
-        "   the impasse — forcing a combination of diverse strategies is more effective than retrying.\n"
-        "4. If recommending branch_from, check lineage: do NOT branch from an ancestor if a later\n"
-        "   descendant already improved from that ancestor.\n\n"
-        "Is this real stagnation? Answer in JSON only:\n"
-        '```json\n'
-        '{"is_stagnant": true/false, "confidence": "high/medium/low", '
-        '"recommendation": "continue|branch|crossover", '
-        '"branch_from": "claude_vN" or null, '
-        '"reason": "brief explanation"}\n'
-        '```'
-    )
+    prompt = substitute_template(prompt, {
+        "bot_name": bot_name,
+        "opp_eval": str(opp_eval),
+        "opp_total": str(opp_total),
+        "opp_coverage": f"{opp_coverage:.0%}",
+        "top_bots": "\n".join(top_bots_lines),
+        "generation_trend": (f"Generation-level trend (most recent 8 bots):\n" + "\n".join(gen_trend_lines)) if gen_trend_lines else "",
+        "lineage": (f"Lineage (parent chain):\n" + "\n".join(lineage_lines)) if lineage_lines else "",
+        "daemon_history": (f"Daemon period history (last 10 periods, top-3):\n{history_ctx}") if history_ctx else "",
+        "failure_context": failure_ctx,
+    })
 
     log_file = get_logs_dir(source_v) / "stagnation_analysis.txt"
     for attempt in range(3):
@@ -160,6 +146,10 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui):
             )
             result = parse_json_output(output)
             if result:
+                from output_schema import validate_agent_output
+                result, errors = validate_agent_output("stagnation_analyst", result)
+                if errors:
+                    ui.log_history(f"Stagnation validation issues: {'; '.join(errors[:3])}", "warn")
                 return result
             # Empty output (529/timeout) — retry with backoff
             ui.log_history(f"Stagnation analysis returned empty (attempt {attempt+1}/3), retrying...", "warn")

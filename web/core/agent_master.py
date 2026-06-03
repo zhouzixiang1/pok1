@@ -59,6 +59,10 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         )
         data = parse_json_output(output)
         if data and "tasks" in data:
+            from output_schema import validate_agent_output
+            data, errors = validate_agent_output("master", data)
+            if errors:
+                ui.log_history(f"Master plan validation issues: {'; '.join(errors[:3])}", "warn")
             ui.log_history("Master analysis complete.", "success")
             return data
         ui.log_history("Master output malformed JSON. Retrying...", "warn")
@@ -143,32 +147,14 @@ async def _analyze_recent_matches(source_v, ui, max_matches=8):
     if not summaries:
         return ""
 
-    # Call LLM for analysis
-    match_analyst_prompt = (
-        "You are a Poker Hand Analyst specializing in Texas Hold'em bot strategy.\n"
-        "Analyze the following match replay summaries (losses and close wins) for weaknesses and patterns.\n\n"
-    )
-    match_analyst_prompt += "## Recent Match Summaries (LOSS = bot lost, CLOSE WIN = bot won by ≤2 games)\n\n"
-    for s in summaries:
-        match_analyst_prompt += s + "\n\n"
-    match_analyst_prompt += (
-        "Based on the data above, identify:\n"
-        "1. Key weaknesses (e.g., folding too much, not raising enough, poor all-in timing)\n"
-        "2. Street-specific weaknesses from the Per-street actions data:\n"
-        "   - River fold rate ≥40% → scared-money, consider expanding river calling range\n"
-        "   - Flop raise rate ≤10% → too passive postflop, giving free cards\n"
-        "   - Preflop raise rate ≤15% → limping too much, losing positional advantage\n"
-        "   - avg_raise < 0.5x pot on river with big pot → underbetting strong hands\n"
-        "3. Any detectable patterns (e.g., weak out-of-position, poor against aggressive opponents)\n"
-        "4. What seems to be working (from close wins, if any)\n"
-        "5. A concrete recommendation for improvement (be specific: which street, what change)\n\n"
-        "Output ONLY a JSON block:\n"
-        "```json\n"
-        '{"weaknesses": ["..."], "street_weaknesses": {"river": "...", "flop": "..."}, '
-        '"patterns": "...", "working": "...", "recommendation": "..."}\n'
-        "```\n"
-        "Keep it concise — 2-3 weaknesses, specific street observations, 1 recommendation."
-    )
+    # Load template and substitute
+    template_file = PROMPTS_DIR / "match_analyst.md"
+    if not template_file.exists():
+        return ""
+    match_analyst_prompt = template_file.read_text()
+    match_analyst_prompt = substitute_template(match_analyst_prompt, {
+        "match_summaries": "\n\n".join(summaries),
+    })
 
     log_file = get_logs_dir(source_v) / "match_analyst_io.txt"
     try:
