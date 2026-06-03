@@ -456,7 +456,7 @@ async def diagnose_environment(args):
     # Daemon status
     daemon_running = False
     try:
-        from evolution_infra import daemon_proc as dp
+        from daemon_management import daemon_proc as dp
         daemon_running = dp is not None and dp.poll() is None
     except Exception:
         pass

@@ -37,6 +37,27 @@ from betting import (
 )
 from simulation import build_opponent_range, estimate_weighted_win_rate
 
+
+def _simple_equity_fold(win_rate, pot_odds, made_strength, draw_strength, round_idx, value_profile, pair_profile, to_call, pot):
+    """Direct equity fold gate: fold weak hands when clearly behind vs betting range."""
+    if value_profile and value_profile["tier"] in ("nut", "strong"):
+        return False
+    if draw_strength >= 0.16:
+        return False
+    if round_idx == 1 and made_strength >= 0.18:
+        return False
+    if pot_odds < 0.20:
+        return False
+    buf = 0.08 if round_idx == 3 else 0.05
+    if round_idx >= 2 and made_strength < 0.25 and draw_strength < 0.12 and to_call / max(1, pot) >= 0.40:
+        return True
+    if win_rate < pot_odds - buf:
+        if pair_profile and pair_profile["made_class"] == 1 and pair_profile["pair_type"] in ("overpair", "top_pair"):
+            return False
+        return True
+    return False
+
+
 def choose_raise(
     min_raise,
     my_chips,
@@ -382,7 +403,8 @@ def get_action(req, requests):
         and spot_info["facing_postflop_aggression"]
         and bet_size_bucket(spot_info["last_raise_pot_ratio"]) in ("medium", "large")
         and value_profile is not None
-        and value_profile["tier"] != "nut"
+        and value_profile["tier"] not in ("nut", "strong")
+        and made_strength < 0.45
     )
     line_strength = aggressive_line_strength(spot_info, board_texture) if len(public_cards) >= 3 else 0.0
     check_resistance = check_probe_resistance_margin(spot_info, opponent_model, round_idx) if len(public_cards) >= 3 else 0.0
@@ -414,6 +436,21 @@ def get_action(req, requests):
         ):
             return -1
 
+    # Direct equity fold gate (v50): catches weak hands that the margin system misses
+    if (
+        round_idx > 0
+        and to_call > 0
+        and len(public_cards) >= 3
+        and not anti_lock_pressure
+        and to_call < my_chips
+        and not spot_info.get("facing_allin", False)
+    ):
+        if _simple_equity_fold(
+            win_rate, pot_odds, made_strength, draw_strength, round_idx,
+            value_profile, pair_profile, to_call, pot
+        ):
+            return -1
+
     # Anti-bot_4 adjustments
     if board_texture is not None:
         anti_bot4 = get_anti_bot4_adjustments(bot4_score, board_texture, spot_info, round_idx, value_profile)
@@ -442,33 +479,16 @@ def get_action(req, requests):
         if overbet_bluff is not None:
             return overbet_bluff
 
-    repeated_raise_trap = (
-        round_idx > 0
-        and spot_info["facing_postflop_aggression"]
-        and spot_info.get("opp_current_round_bet_count", 0) >= 2
-    )
-    strong_flush_repressure_continue = (
-        flush_profile is not None
-        and (
-            flush_profile["repressure_continue"]
-            or flush_profile["nut_like"]
-            or (
-                board_texture is not None
-                and not board_texture["paired"]
-                and flush_profile["high_hole_rank"] >= 12
-                and flush_profile["better_unseen_ranks"] <= 1
-            )
-        )
-    )
-    hard_repressure_fold = (
-        repeated_raise_trap
-        and not strong_flush_repressure_continue
+    repeated_raise_trap = (round_idx > 0 and spot_info["facing_postflop_aggression"]
+        and spot_info.get("opp_current_round_bet_count", 0) >= 2)
+    strong_flush_repressure_continue = (flush_profile is not None
+        and (flush_profile["repressure_continue"] or flush_profile["nut_like"]
+            or (board_texture is not None and not board_texture["paired"]
+                and flush_profile["high_hole_rank"] >= 12 and flush_profile["better_unseen_ranks"] <= 1)))
+    hard_repressure_fold = (repeated_raise_trap and not strong_flush_repressure_continue
         and (value_profile is None or value_profile["tier"] != "nut")
-        and (
-            (board_texture is not None and board_texture["paired"])
-            or bet_size_bucket(spot_info["last_raise_pot_ratio"]) in ("medium", "large")
-        )
-    )
+        and ((board_texture is not None and board_texture["paired"])
+            or bet_size_bucket(spot_info["last_raise_pot_ratio"]) in ("medium", "large")))
 
     strong = 0.69 if round_idx == 0 else 0.65 if round_idx == 1 else 0.61 if round_idx == 2 else 0.59
     medium = 0.54 if round_idx == 0 else 0.50 if round_idx == 1 else 0.48
@@ -669,23 +689,15 @@ def get_action(req, requests):
                 blocker_profile=blocker_profile,
                 board_texture=board_texture,
             )
-        fragile_river_raise_fold = (
-            round_idx == 3
-            and spot_info["facing_postflop_aggression"]
+        fragile_river_raise_fold = (round_idx == 3 and spot_info["facing_postflop_aggression"]
             and bet_size_bucket(spot_info["last_raise_pot_ratio"]) in ("medium", "large")
-            and paired_board_profile is not None
-            and paired_board_profile["fold_to_raise"]
+            and paired_board_profile is not None and paired_board_profile["fold_to_raise"]
             and paired_board_profile["hand_class"] == 2
-            and (value_profile is None or value_profile["tier"] != "nut")
-        )
-        fragile_pair_raise_fold = (
-            round_idx > 0
-            and spot_info["facing_postflop_aggression"]
-            and marginal_pair
-            and draw_strength < 0.14
+            and (value_profile is None or value_profile["tier"] != "nut"))
+        fragile_pair_raise_fold = (round_idx > 0 and spot_info["facing_postflop_aggression"]
+            and marginal_pair and draw_strength < 0.14
             and bet_size_bucket(spot_info["last_raise_pot_ratio"]) in ("medium", "large")
-            and (value_profile is None or value_profile["tier"] not in ("strong", "nut"))
-        )
+            and (value_profile is None or value_profile["tier"] not in ("strong", "nut")))
         if anti_lock_attack is not None:
             return anti_lock_attack
         if fragile_river_raise_fold:
@@ -791,36 +803,23 @@ def get_action(req, requests):
                 return raise_amount
         return 0
 
-    weak_pair_river = (
-        round_idx == 3
-        and pair_profile is not None
-        and pair_profile["made_class"] == 1
-        and pair_profile["pair_type"] in ("middle_pair", "bottom_pair", "underpair", "board_pair")
-    )
+    weak_pair_river = (round_idx == 3 and pair_profile is not None and pair_profile["made_class"] == 1
+        and pair_profile["pair_type"] in ("middle_pair", "bottom_pair", "underpair", "board_pair"))
     opp_double_barrel_then_river_check = (
         round_idx == 3
         and to_call == 0
         and spot_info.get("opp_postflop_bet_count", 0) >= 2
         and spot_info["last_opp_action_type"] == "check"
     )
-    bad_river_bluff_candidate = (
-        round_idx == 3
-        and to_call == 0
-        and made_strength >= 0.18
-        and made_strength < 0.40
+    bad_river_bluff_candidate = (round_idx == 3 and to_call == 0
+        and made_strength >= 0.18 and made_strength < 0.40
         and not (blocker_profile and blocker_profile["eligible"])
         and not (value_profile and value_profile["tier"] in ("strong", "nut"))
-        and anti_bot4["bluff_freq_bonus"] < 0.05
-    )
-    weak_bottom_pair_barrel = (
-        round_idx >= 2
-        and to_call == 0
-        and pair_profile is not None
-        and pair_profile["made_class"] == 1
+        and anti_bot4["bluff_freq_bonus"] < 0.05)
+    weak_bottom_pair_barrel = (round_idx >= 2 and to_call == 0
+        and pair_profile is not None and pair_profile["made_class"] == 1
         and pair_profile["pair_type"] in ("bottom_pair", "underpair", "board_pair")
-        and made_strength < 0.40
-        and draw_strength < 0.12
-    )
+        and made_strength < 0.40 and draw_strength < 0.12)
     weak_pair_after_raise_barrel = (
         round_idx >= 2
         and to_call == 0
@@ -832,16 +831,11 @@ def get_action(req, requests):
             or spot_info.get("opp_prior_postflop_raise_count", 0) > 0
         )
     )
-    bad_river_value_bet = (
-        round_idx == 3
-        and to_call == 0
-        and paired_board_profile is not None
-        and paired_board_profile["board_paired"]
-        and paired_board_profile["prefer_check"]
-        and paired_board_profile["hand_class"] == 2
+    bad_river_value_bet = (round_idx == 3 and to_call == 0
+        and paired_board_profile is not None and paired_board_profile["board_paired"]
+        and paired_board_profile["prefer_check"] and paired_board_profile["hand_class"] == 2
         and nutted_risk["risk"] >= 0.05
-        and (value_profile is None or value_profile["tier"] != "nut")
-    )
+        and (value_profile is None or value_profile["tier"] != "nut"))
     bad_stackoff_overpair = (
         round_idx > 0
         and to_call == 0

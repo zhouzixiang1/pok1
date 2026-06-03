@@ -278,7 +278,7 @@ async def run_archivist(args):
 
     if needs_llm or os.environ.get("EVOLUTION_ALWAYS_ARCHIVE_LLM") == "1":
         try:
-            from agent_master import _run_archivist_analysis
+            from experience_archivist import _run_archivist_analysis
             llm_result = await _run_archivist_analysis(v, source_v, snapshot, ui)
             # Append LLM notes to archive snapshot
             if llm_result and archive_path.exists():

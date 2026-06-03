@@ -61,7 +61,8 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         return None
 
     # Three analysis LLM calls — each checks shutdown after
-    from agent_master import _analyze_stagnation, _analyze_recent_matches
+    from stagnation_analyzer import _analyze_stagnation
+    from agent_master import _analyze_recent_matches
     from agent_review import _run_performance_verification
 
     stagnation = await _analyze_stagnation(current_v, active_bots, ratings, ui)
@@ -229,7 +230,7 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
     # Experience pool consolidation (every 3 generations)
     if ctx.gen_count > 0 and ctx.gen_count % 3 == 0:
         try:
-            from agent_master import _consolidate_experience_pool
+            from experience_archivist import _consolidate_experience_pool
             await _consolidate_experience_pool(ui)
         except Exception as e:
             if ui:

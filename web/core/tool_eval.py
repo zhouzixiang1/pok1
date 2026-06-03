@@ -215,7 +215,7 @@ async def run_inline_eval(args):
         return {"content": [{"type": "text", "text": json.dumps({"error": f"Bot v{v} main.py not found"})}]}
 
     # Guard: refuse to run while daemon is active (read-modify-write race on ratings)
-    from evolution_infra import daemon_proc, _daemon_lock
+    from daemon_management import daemon_proc, _daemon_lock
     with _daemon_lock:
         _dp = daemon_proc
     if _dp is not None and _dp.poll() is None:
