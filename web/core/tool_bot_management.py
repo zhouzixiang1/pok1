@@ -1,5 +1,6 @@
 """Bot management MCP tools: reaping, cleanup, abandonment, experience pool."""
 
+import fcntl
 import json
 import shutil
 import time
@@ -36,27 +37,53 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
     ratings = load_ratings()
     h2h_winrates = load_h2h_avg_winrates()
     current_bot = f"claude_v{find_current_v()}"
-    active_ratings = [(b, ratings.get(b, Glicko2Player())) for b in active_bots if b != current_bot]
-    if not active_ratings:
-        return {"reaped": False, "reason": "Only current bot in pool"}
-    active_ratings.sort(key=lambda x: h2h_winrates.get(x[0], 0.0))
-    weakest = active_ratings[0]
+
+    # Load bot stats to protect untested bots from reaping
+    from tool_helpers import _read_json
+    bot_stats = _read_json(PROJECT_ROOT / "web" / "core" / "results" / "bot_stats.json", {})
+
+    # Exclude current bot and bots with zero games (untested — deserve evaluation first)
+    candidates = []
+    for b in active_bots:
+        if b == current_bot:
+            continue
+        if bot_stats.get(b, {}).get("games", 0) == 0:
+            continue
+        candidates.append((b, ratings.get(b, Glicko2Player())))
+    if not candidates:
+        return {"reaped": False, "reason": "All remaining bots are current or untested"}
+
+    candidates.sort(key=lambda x: (
+        h2h_winrates.get(x[0], 0.0),
+        x[1].r - 2 * x[1].rd,  # conservative rating tiebreaker
+    ))
+    weakest = candidates[0]
     culled_name = weakest[0]
 
     graveyard = PROJECT_ROOT / "bots" / "graveyard"
     graveyard.mkdir(exist_ok=True)
     target = graveyard / culled_name
-    if target.exists():
-        shutil.rmtree(target)
-    bot_src = PROJECT_ROOT / "bots" / culled_name
-    if not bot_src.exists():
-        return {"reaped": False, "reason": f"{culled_name} already moved"}
-    shutil.move(str(bot_src), str(target))
+
+    # Serialize concurrent reaps via file lock
+    reap_lock = RESULTS_DIR / ".reap.lock"
+    with open(reap_lock, "w") as lock_f:
+        fcntl.flock(lock_f, fcntl.LOCK_EX)
+        try:
+            # Re-check after acquiring lock — another process may have reaped this bot
+            if target.exists():
+                shutil.rmtree(target)
+            bot_src = PROJECT_ROOT / "bots" / culled_name
+            if not bot_src.exists():
+                return {"reaped": False, "reason": f"{culled_name} already moved"}
+            shutil.move(str(bot_src), str(target))
+        finally:
+            fcntl.flock(lock_f, fcntl.LOCK_UN)
 
     try:
         if REPLAY_DIR.exists():
+            prefix = f"_{culled_name}_"
             for f in list(REPLAY_DIR.iterdir()):
-                if culled_name in f.name:
+                if prefix in f.name or f.name.endswith(f"_{culled_name}.json"):
                     f.unlink()
     except Exception:
         pass
@@ -96,12 +123,25 @@ async def cleanup_incomplete(args):
     cleaned = []
     bots_dir = PROJECT_ROOT / "bots"
     if bots_dir.exists():
+        # Check for active pipeline checkpoint to avoid deleting mid-generation bots
+        active_next_v = None
+        checkpoint_file = RESULTS_DIR / "pipeline_state.json"
+        if checkpoint_file.exists():
+            try:
+                ckpt = json.loads(checkpoint_file.read_text())
+                stage = ckpt.get("stage")
+                if ckpt.get("next_v") and stage not in (None, "archived"):
+                    active_next_v = ckpt["next_v"]
+            except Exception:
+                pass
         for d in sorted(bots_dir.iterdir()):
             if d.is_dir() and d.name.startswith("claude_v"):
                 if not (d / ".completed").exists():
                     try:
                         v = int(d.name.split("_v")[1])
                     except (ValueError, IndexError):
+                        continue
+                    if v == active_next_v:
                         continue
                     if not git_has_tag(v):
                         shutil.rmtree(d)

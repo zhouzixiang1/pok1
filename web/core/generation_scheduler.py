@@ -52,11 +52,17 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         from tool_bot_management import _do_reap_weakest
         reap_count = 0
         while len(get_active_bots()) > MAX_ACTIVE_BOTS and reap_count < 10:
-            result = await _do_reap_weakest(quiet=True)
-            if not result.get("reaped"):
+            try:
+                result = await _do_reap_weakest(quiet=True)
+                if not result.get("reaped"):
+                    break
+                if ui:
+                    ui.log_history(f"淘汰 {result['culled']} (池 {result['remaining']}/{MAX_ACTIVE_BOTS})", "info")
+            except Exception as e:
+                log.warning("Pre-eval reap failed: %s\n%s", e, traceback.format_exc())
+                if ui:
+                    ui.log_history(f"淘汰失败: {e}", "warn")
                 break
-            if ui:
-                ui.log_history(f"淘汰 {result['culled']} (池 {result['remaining']}/{MAX_ACTIVE_BOTS})", "info")
             reap_count += 1
 
     # Wait for sufficient evaluation
@@ -235,7 +241,12 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
     if len(active_bots) > MAX_ACTIVE_BOTS:
         try:
             from tool_bot_management import _do_reap_weakest
-            await _do_reap_weakest(quiet=True)
+            reap_count = 0
+            while len(get_active_bots()) > MAX_ACTIVE_BOTS and reap_count < 10:
+                result = await _do_reap_weakest(quiet=True)
+                if not result.get("reaped"):
+                    break
+                reap_count += 1
         except Exception as e:
             log.warning("Auto-reap failed: %s\n%s", e, traceback.format_exc())
             if ui:

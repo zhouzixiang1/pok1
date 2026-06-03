@@ -145,6 +145,8 @@ def load_h2h():
 
 def save_h2h(h2h):
     os.makedirs(RESULTS_DIR, exist_ok=True)
+    # Prune low-sample entries (games < 2 have no statistical value)
+    h2h = {k: v for k, v in h2h.items() if v.get("games", 0) >= 2}
     with locked_file(H2H_FILE, "w") as f:
         json.dump(h2h, f, indent=2)
 

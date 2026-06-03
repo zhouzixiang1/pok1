@@ -194,7 +194,7 @@ async def commit_bot(args):
 
     # Signal daemon to pick up the new bot
     reap_signal = RESULTS_DIR / ".reap_signal"
-    reap_signal.touch()
+    reap_signal.write_text(str(time.time()))
 
     # Write priority eval signal so daemon schedules this bot heavily
     priority_file = Path(__file__).parent / "results" / "priority_eval.json"
