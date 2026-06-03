@@ -128,9 +128,13 @@ async def stop_evolution():
     if task and not task.done():
         task.cancel()
         try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=10)
+            await asyncio.wait_for(task, timeout=10)
         except (asyncio.TimeoutError, asyncio.CancelledError):
-            pass
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
     try:
         from evolution_core import stop_daemon
         stop_daemon()
@@ -210,13 +214,18 @@ async def clear_orchestrator_session():
 async def reset_evolution_endpoint():
     """Reset evolution to baseline (v1-v6), then auto-restart."""
     if app_state.running:
+        app_state.request_shutdown()
         task = app_state.stop_running()
         if task and not task.done():
             task.cancel()
             try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=10)
+                await asyncio.wait_for(task, timeout=10)
             except (asyncio.TimeoutError, asyncio.CancelledError):
-                pass
+                task.cancel()
+                try:
+                    await asyncio.wait_for(task, timeout=5)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
         try:
             from evolution_core import stop_daemon
             stop_daemon()

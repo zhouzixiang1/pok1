@@ -24,7 +24,6 @@ class ShutdownManager:
     def __init__(self, grace_period: float = 15.0):
         self._event = asyncio.Event()
         self._grace_period = grace_period
-        self._callbacks: list[tuple] = []  # (coro_fn, name)
 
     @property
     def is_shutting_down(self) -> bool:
@@ -35,13 +34,12 @@ class ShutdownManager:
         if not self._event.is_set():
             self._event.set()
 
-    def register_cleanup(self, callback, name: str = ""):
-        self._callbacks.append((callback, name))
-
     def install_signal_handlers(self, loop: asyncio.AbstractEventLoop):
         """Install SIGINT/SIGTERM handlers on the event loop.
 
         Must be called from within a running event loop.
+        NOTE: Do NOT call this inside a uvicorn lifespan — it overwrites
+        uvicorn's signal handlers and prevents graceful shutdown.
         """
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, self._on_signal, sig)
@@ -53,26 +51,6 @@ class ShutdownManager:
             return
         log.warning("Received %s, initiating graceful shutdown...", sig.name)
         self._event.set()
-
-    async def perform_cleanup(self):
-        """Run registered cleanup callbacks with grace period timeout."""
-        tasks = []
-        for cb, name in self._callbacks:
-            if asyncio.iscoroutinefunction(cb):
-                tasks.append(asyncio.create_task(cb(), name=f"cleanup-{name}"))
-            else:
-                try:
-                    cb()
-                except Exception:
-                    pass
-        if tasks:
-            done, pending = await asyncio.wait(tasks, timeout=self._grace_period)
-            for t in pending:
-                t.cancel()
-                try:
-                    await t
-                except (asyncio.CancelledError, Exception):
-                    pass
 
     async def wait_for_shutdown(self):
         await self._event.wait()

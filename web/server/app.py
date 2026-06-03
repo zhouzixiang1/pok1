@@ -42,7 +42,10 @@ async def lifespan(app: FastAPI):
     shutdown_mgr = ShutdownManager(grace_period=15.0)
     app_state.set_shutdown_mgr(shutdown_mgr)
 
-    app_state.set_running(True)
+    if not app_state.try_set_running(True):
+        web_ui.log_history("Orchestrator already running", "warn")
+        yield
+        return
     try:
         from orchestrator import orchestrator_loop
         _task = asyncio.create_task(orchestrator_loop(
@@ -73,7 +76,7 @@ async def lifespan(app: FastAPI):
     finally:
         try:
             from evolution_infra import stop_daemon
-            stop_daemon()
+            await asyncio.to_thread(stop_daemon)
         except Exception:
             pass
     web_ui.log_history("Evolution stopped.", "info")

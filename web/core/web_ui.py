@@ -87,13 +87,13 @@ class EventBroadcaster:
             except asyncio.QueueFull:
                 pass
         elif q_loop is not None:
-            # Cross-thread — route through event loop
+            # Cross-thread or no current loop — route through target event loop
             try:
                 q_loop.call_soon_threadsafe(self._try_put, q, item)
             except RuntimeError:
                 pass
         else:
-            # No event loop at all (tests, CLI) — safe to put directly
+            # No event loop stored for this queue (tests, CLI) — single-threaded, safe to put directly
             try:
                 q.put_nowait(item)
             except asyncio.QueueFull:

@@ -27,20 +27,18 @@ class ReapWeakestInput(TypedDict):
     pass
 
 
-@tool("reap_weakest", f"Check if bot pool exceeds MAX_ACTIVE_BOTS and cull the weakest bot by H2H average win rate.", {})
-async def reap_weakest(args):
-    quiet = args.get("quiet", False) if isinstance(args, dict) else False
+async def _do_reap_weakest(quiet: bool = False) -> dict:
+    """Core reaping logic — callable directly (not via MCP)."""
     active_bots = get_active_bots()
     if len(active_bots) <= MAX_ACTIVE_BOTS:
-        return {"content": [{"type": "text", "text": json.dumps({"reaped": False, "pool_size": len(active_bots)})}]}
+        return {"reaped": False, "pool_size": len(active_bots)}
 
     ratings = load_ratings()
     h2h_winrates = load_h2h_avg_winrates()
-    # Exclude current production bot from reaping
     current_bot = f"claude_v{find_current_v()}"
     active_ratings = [(b, ratings.get(b, Glicko2Player())) for b in active_bots if b != current_bot]
     if not active_ratings:
-        return {"content": [{"type": "text", "text": json.dumps({"reaped": False, "reason": "Only current bot in pool"})}]}
+        return {"reaped": False, "reason": "Only current bot in pool"}
     active_ratings.sort(key=lambda x: h2h_winrates.get(x[0], 0.0))
     weakest = active_ratings[0]
     culled_name = weakest[0]
@@ -52,10 +50,9 @@ async def reap_weakest(args):
         shutil.rmtree(target)
     bot_src = PROJECT_ROOT / "bots" / culled_name
     if not bot_src.exists():
-        return {"content": [{"type": "text", "text": json.dumps({"reaped": False, "reason": f"{culled_name} already moved"})}]}
+        return {"reaped": False, "reason": f"{culled_name} already moved"}
     shutil.move(str(bot_src), str(target))
 
-    # Clean up replay files referencing the reaped bot
     try:
         if REPLAY_DIR.exists():
             for f in list(REPLAY_DIR.iterdir()):
@@ -64,7 +61,6 @@ async def reap_weakest(args):
     except Exception:
         pass
 
-    # Signal daemon to immediately refresh bot list
     reap_signal = RESULTS_DIR / ".reap_signal"
     reap_signal.write_text(str(time.time()))
 
@@ -72,13 +68,23 @@ async def reap_weakest(args):
         log_system_event("bot.reaped", "warn", f"Reaped {culled_name} (h2h_wr={h2h_winrates.get(culled_name, 0.0):.2%})",
                          {"culled": culled_name, "remaining": len(active_bots) - 1})
 
-    return {"content": [{"type": "text", "text": json.dumps({
+    return {
         "reaped": True,
         "culled": culled_name,
         "h2h_avg_wr": round(h2h_winrates.get(culled_name, 0.0), 4),
         "rating": {"r": round(weakest[1].r, 1), "rd": round(weakest[1].rd, 1)},
         "remaining": len(active_bots) - 1,
-    })}]}
+    }
+
+
+def _mcp_result(data: dict) -> dict:
+    return {"content": [{"type": "text", "text": json.dumps(data)}]}
+
+
+@tool("reap_weakest", f"Check if bot pool exceeds MAX_ACTIVE_BOTS and cull the weakest bot by H2H average win rate.", {})
+async def reap_weakest(args):
+    result = await _do_reap_weakest(quiet=args.get("quiet", False) if isinstance(args, dict) else False)
+    return _mcp_result(result)
 
 
 class CleanupIncompleteInput(TypedDict):

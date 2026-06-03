@@ -125,6 +125,10 @@ class _PersistentBot:
                     self.proc.kill()
                 except Exception:
                     pass
+                try:
+                    self.proc.wait(timeout=5)
+                except Exception:
+                    pass
 
 
 def _call_bot(bot_paths, player_id, request_data, bot_requests, bot_responses,
@@ -289,115 +293,110 @@ def mirror_battle(bot0_path, bot1_path, n_games=50, verbose=False, save_log=Fals
     for game in range(n_games):
         # Create persistent bots for this game (reused across normal + mirror)
         persistent = [_PersistentBot(bot_paths[0]), _PersistentBot(bot_paths[1])]
-
-        # ── 正局：正常发牌 ──
-        result_str = judge_func(json.dumps({"log": []}))
-        result = json.loads(result_str)
-        log = [{"output": result}]
-        initdata = result.get("initdata")
-        bot_requests = [[], []]
-        bot_responses = [[], []]
-        bot_data = [None, None]
-
-        while result.get("command") == "request":
-            content = result.get("content", {})
-            if not content:
-                break
-            player_id = int(next(iter(content.keys())))
-            request_data = content[str(player_id)]
-            response, _, _ = _call_bot(bot_paths, player_id, request_data, bot_requests, bot_responses,
-                                       bot_data=bot_data, persistent_procs=persistent)
-            log.append({str(player_id): {"response": str(response), "verdict": "OK"}, "output": None})
-            result_str = judge_func(json.dumps({"log": log, "initdata": initdata}))
+        try:
+            # ── 正局：正常发牌 ──
+            result_str = judge_func(json.dumps({"log": []}))
             result = json.loads(result_str)
-            log.append({"output": result})
-            if result.get("command") == "finish":
-                break
+            log = [{"output": result}]
+            initdata = result.get("initdata")
+            bot_requests = [[], []]
+            bot_responses = [[], []]
+            bot_data = [None, None]
 
-        if result.get("command") != "finish":
+            while result.get("command") == "request":
+                content = result.get("content", {})
+                if not content:
+                    break
+                player_id = int(next(iter(content.keys())))
+                request_data = content[str(player_id)]
+                response, _, _ = _call_bot(bot_paths, player_id, request_data, bot_requests, bot_responses,
+                                           bot_data=bot_data, persistent_procs=persistent)
+                log.append({str(player_id): {"response": str(response), "verdict": "OK"}, "output": None})
+                result_str = judge_func(json.dumps({"log": log, "initdata": initdata}))
+                result = json.loads(result_str)
+                log.append({"output": result})
+                if result.get("command") == "finish":
+                    break
+
+            if result.get("command") != "finish":
+                continue
+
+            chips_normal = [r["win_chips"] for r in result.get("display", {}).get("final_result", [])]
+            if len(chips_normal) < 2:
+                continue
+
+            if save_log:
+                all_logs.append({
+                    "game": game * 2, "mirror": False,
+                    "winner": 0 if chips_normal[0] > chips_normal[1] else (1 if chips_normal[1] > chips_normal[0] else -1),
+                    "bot0_chips": chips_normal[0], "bot1_chips": chips_normal[1],
+                    "logs": log,
+                })
+
+            # ── 镜像局：交换手牌的牌堆 ──
+            mirror_initdata = {
+                "max_hand": initdata["max_hand"],
+                "dealer": (initdata["dealer"] + 1) % 2,
+                "decks": [],
+            }
+            for deck in initdata["decks"]:
+                # deck[-1],deck[-2] 是 player0 的牌，deck[-3],deck[-4] 是 player1 的牌
+                # 交换两组，使 player0 拿到原 player1 的牌，反之亦然
+                mirror_deck = deck[:-4] + deck[-2:] + deck[-4:-2]
+                mirror_initdata["decks"].append(mirror_deck)
+
+            result_str = judge_func(json.dumps({"log": [], "initdata": mirror_initdata}))
+            result = json.loads(result_str)
+            log_m = [{"output": result}]
+            bot_requests_m = [[], []]
+            bot_responses_m = [[], []]
+            bot_data_m = [None, None]
+
+            while result.get("command") == "request":
+                content = result.get("content", {})
+                if not content:
+                    break
+                player_id = int(next(iter(content.keys())))
+                request_data = content[str(player_id)]
+                response, _, _ = _call_bot(bot_paths, player_id, request_data, bot_requests_m, bot_responses_m,
+                                           bot_data=bot_data_m, persistent_procs=persistent)
+                log_m.append({str(player_id): {"response": str(response), "verdict": "OK"}, "output": None})
+                result_str = judge_func(json.dumps({"log": log_m, "initdata": mirror_initdata}))
+                result = json.loads(result_str)
+                log_m.append({"output": result})
+                if result.get("command") == "finish":
+                    break
+
+            if result.get("command") != "finish":
+                continue
+
+            chips_mirror = [r["win_chips"] for r in result.get("display", {}).get("final_result", [])]
+            if len(chips_mirror) < 2:
+                continue
+
+            if save_log:
+                all_logs.append({
+                    "game": game * 2 + 1, "mirror": True,
+                    "winner": 0 if chips_mirror[0] > chips_mirror[1] else (1 if chips_mirror[1] > chips_mirror[0] else -1),
+                    "bot0_chips": chips_mirror[0], "bot1_chips": chips_mirror[1],
+                    "logs": log_m,
+                })
+
+            # ── 镜像对合计 ──
+            n_played += 1
+            net_chips_0 = chips_normal[0] + chips_mirror[0]
+            if net_chips_0 > 0:
+                match_wins[0] += 1
+            elif net_chips_0 < 0:
+                match_wins[1] += 1
+            else:
+                draws += 1
+
+            if verbose and (game + 1) % 10 == 0:
+                print("  已完成 {}/{} 局(含镜像)".format(game + 1, n_games), file=sys.stderr)
+        finally:
             for p in persistent:
                 p.close()
-            continue
-
-        chips_normal = [r["win_chips"] for r in result.get("display", {}).get("final_result", [])]
-        if len(chips_normal) < 2:
-            for p in persistent:
-                p.close()
-            continue
-
-        if save_log:
-            all_logs.append({
-                "game": game * 2, "mirror": False,
-                "winner": 0 if chips_normal[0] > chips_normal[1] else (1 if chips_normal[1] > chips_normal[0] else -1),
-                "bot0_chips": chips_normal[0], "bot1_chips": chips_normal[1],
-                "logs": log,
-            })
-
-        # ── 镜像局：交换手牌的牌堆 ──
-        mirror_initdata = {
-            "max_hand": initdata["max_hand"],
-            "dealer": (initdata["dealer"] + 1) % 2,
-            "decks": [],
-        }
-        for deck in initdata["decks"]:
-            # deck[-1],deck[-2] 是 player0 的牌，deck[-3],deck[-4] 是 player1 的牌
-            # 交换两组，使 player0 拿到原 player1 的牌，反之亦然
-            mirror_deck = deck[:-4] + deck[-2:] + deck[-4:-2]
-            mirror_initdata["decks"].append(mirror_deck)
-
-        result_str = judge_func(json.dumps({"log": [], "initdata": mirror_initdata}))
-        result = json.loads(result_str)
-        log_m = [{"output": result}]
-        bot_requests_m = [[], []]
-        bot_responses_m = [[], []]
-        bot_data_m = [None, None]
-
-        while result.get("command") == "request":
-            content = result.get("content", {})
-            if not content:
-                break
-            player_id = int(next(iter(content.keys())))
-            request_data = content[str(player_id)]
-            response, _, _ = _call_bot(bot_paths, player_id, request_data, bot_requests_m, bot_responses_m,
-                                       bot_data=bot_data_m, persistent_procs=persistent)
-            log_m.append({str(player_id): {"response": str(response), "verdict": "OK"}, "output": None})
-            result_str = judge_func(json.dumps({"log": log_m, "initdata": mirror_initdata}))
-            result = json.loads(result_str)
-            log_m.append({"output": result})
-            if result.get("command") == "finish":
-                break
-
-        # Close persistent bots for this game
-        for p in persistent:
-            p.close()
-
-        if result.get("command") != "finish":
-            continue
-
-        chips_mirror = [r["win_chips"] for r in result.get("display", {}).get("final_result", [])]
-        if len(chips_mirror) < 2:
-            continue
-
-        if save_log:
-            all_logs.append({
-                "game": game * 2 + 1, "mirror": True,
-                "winner": 0 if chips_mirror[0] > chips_mirror[1] else (1 if chips_mirror[1] > chips_mirror[0] else -1),
-                "bot0_chips": chips_mirror[0], "bot1_chips": chips_mirror[1],
-                "logs": log_m,
-            })
-
-        # ── 镜像对合计 ──
-        n_played += 1
-        net_chips_0 = chips_normal[0] + chips_mirror[0]
-        if net_chips_0 > 0:
-            match_wins[0] += 1
-        elif net_chips_0 < 0:
-            match_wins[1] += 1
-        else:
-            draws += 1
-
-        if verbose and (game + 1) % 10 == 0:
-            print("  已完成 {}/{} 局(含镜像)".format(game + 1, n_games), file=sys.stderr)
 
     return match_wins, draws, n_played, all_logs
 

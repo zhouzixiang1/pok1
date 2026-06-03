@@ -197,6 +197,10 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
     coros = [_guarded_worker(task, i) for i, task in enumerate(tasks)]
     results = await asyncio.gather(*coros, return_exceptions=True)
 
+    # If cancelled, propagate immediately instead of falling back to serial
+    if any(isinstance(r, asyncio.CancelledError) for r in results):
+        return False
+
     all_ok = all(r is True for r in results)
     if all_ok:
         return True

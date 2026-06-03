@@ -239,8 +239,8 @@ async def run_archivist(args):
     active_bots = get_active_bots()
     if len(active_bots) > MAX_ACTIVE_BOTS:
         try:
-            from tool_status import reap_weakest as _reap_weakest
-            reap_result = await _reap_weakest({})
+            from tool_bot_management import _do_reap_weakest
+            reap_result = await _do_reap_weakest()
         except Exception as e:
             reap_result = {"error": str(e)}
 

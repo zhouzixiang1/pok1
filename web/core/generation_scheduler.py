@@ -218,8 +218,8 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
     active_bots = get_active_bots()
     if len(active_bots) > MAX_ACTIVE_BOTS:
         try:
-            from tool_status import reap_weakest
-            await reap_weakest({"quiet": True})
+            from tool_bot_management import _do_reap_weakest
+            await _do_reap_weakest(quiet=True)
         except Exception as e:
             if ui:
                 ui.log_history(f"Auto-reap failed: {e}", "warn")

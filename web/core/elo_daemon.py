@@ -690,13 +690,17 @@ def main():
         log.critical("FATAL: %s\n%s", e, traceback.format_exc())
         raise
     finally:
-        # Kill entire process group (workers + bot subprocesses)
+        # Shutdown executor first (workers + their bot subprocesses)
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+
+        # Kill entire process group (stray bot subprocesses)
         try:
             os.killpg(os.getpgrp(), signal.SIGTERM)
         except (ProcessLookupError, PermissionError, OSError):
             pass
-
-        executor.shutdown(wait=False, cancel_futures=True)
 
         # Final save
         try:
