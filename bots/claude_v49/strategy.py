@@ -149,16 +149,19 @@ def choose_raise(
             desired_total = int((3.2 + max(0.0, preflop_strength - 0.60) * 1.8) * BIG_BLIND)
             amount = max(amount, desired_total - my_round_bet)
 
-    amount = max(min_raise, amount)
+    # min_raise 现在是 raise-to-total 语义（最小输出总额）
+    raise_to_total = my_round_bet + amount
+    raise_to_total = max(min_raise, raise_to_total)
     if semi_bluff and fold_to_raise < 0.45:
-        amount = min(amount, max(min_raise, int(to_call + pot_after_call * 0.60)))
+        cap = max(min_raise, my_round_bet + int(to_call + pot_after_call * 0.60))
+        raise_to_total = min(raise_to_total, cap)
     if blocker_bluff:
-        bluff_cap = max(min_raise, int(to_call + pot_after_call * (0.45 if round_idx == 3 and to_call == 0 else 0.56 + 0.16 * wetness)))
-        amount = min(amount, bluff_cap)
-    amount = min(amount, my_chips - 1)
-    if amount <= to_call or amount < min_raise or amount >= my_chips:
+        bluff_cap = max(min_raise, my_round_bet + int(to_call + pot_after_call * (0.45 if round_idx == 3 and to_call == 0 else 0.56 + 0.16 * wetness)))
+        raise_to_total = min(raise_to_total, bluff_cap)
+    raise_to_total = min(raise_to_total, my_round_bet + my_chips - 1)
+    if raise_to_total <= my_round_bet + to_call or raise_to_total < min_raise or raise_to_total >= my_round_bet + my_chips:
         return None
-    return amount
+    return raise_to_total
 
 def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_strength, win_rate, match_profile):
     my_chips = req["my_chips"]

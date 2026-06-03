@@ -26,9 +26,11 @@ def sanitize_action(action, state, my_chips):
         return -2 if action == -2 else -1
 
     if action > 0:
-        if action >= my_chips:
+        # action 是 raise-to-total（协议文档语义）
+        min_raise_to = state.get("min_raise_action", 2 * state["round_raise"] - state["my_round_bet"])
+        if action >= state["my_round_bet"] + my_chips:
             return -2
-        if action < state["round_raise"] or action <= state["to_call"]:
+        if action < min_raise_to:
             return 0 if state["to_call"] == 0 else -1
 
     if action == 0 and state["to_call"] > 0:

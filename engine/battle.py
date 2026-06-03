@@ -22,7 +22,7 @@ def _call_bot_subprocess(bot_path, payload):
             input=json.dumps(payload, separators=(',', ':')),
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=60,
         )
         if proc.returncode != 0:
             return -1, "EXIT({})".format(proc.returncode), None
@@ -83,7 +83,7 @@ class _PersistentBot:
 
         t = threading.Thread(target=_read, daemon=True)
         t.start()
-        t.join(timeout=30)
+        t.join(timeout=60)
 
         if t.is_alive():
             self._alive = False
@@ -156,7 +156,7 @@ def _call_bot(bot_paths, player_id, request_data, bot_requests, bot_responses,
                 input=json.dumps(payload, separators=(',', ':')),
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=60,
             )
             stderr_output = proc.stderr or ""
             if proc.returncode != 0:

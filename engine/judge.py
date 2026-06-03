@@ -207,12 +207,13 @@ class Holdem:
         self.pot = 0  # 奖池
         self.round = Holdem.PRE_FLOP  # 当前轮次
         self.round_idx = dealer_idx  # 当前玩家位置
-        self.round_bet = 0  # 本轮最大下注
-        self.round_raise = 0  # 本轮最大加注量
+        self.round_bet = 0  # 本轮最大下注（阶段总额）
+        self.last_raise_to = 0  # 上次加注到的总额（协议文档：raise-to-total 语义）
         self.round_action_left = self.num_players + 2  # 本轮剩余的最低玩家表态次数
         self.round_player_bet = [0 for _ in range(self.num_players)]  # 当前玩家下注 (-1=弃牌)
         self.allin_occurred = False  # 本轮是否有人全下
         self.history = []  # 玩家操作历史记录
+        self.chips_before_hand = player_chips[:]  # 记录手牌开始时筹码（边池计算用）
         self.deck = [Card(suit, number) for number in range(2, 15) for suit in Suit]
         random.shuffle(self.deck)
 
@@ -254,7 +255,7 @@ class Holdem:
         self.round_idx = self.dealer_idx
         self.round_bet = 0
         self.allin_occurred = False
-        self.round_raise = self.big_blind // 2  # 翻牌后首个raise至少大盲注
+        self.last_raise_to = self.big_blind // 2  # 翻后首个 raise 至少到 big_blind
         self.round_action_left = sum(1 for bet in self.round_player_bet if bet >= 0)
         self.round_player_bet = [bet if bet < 0 else 0 for bet in self.round_player_bet]
         if self.round_action_left > 0:
@@ -275,7 +276,8 @@ class Holdem:
 
     def player_action(self, bet):
         """
-        bet: 跟注或过牌(0)/加注(>0)/弃牌(-1)/全下(-2)
+        bet: 跟注或过牌(0)/加注到指定金额(>0)/弃牌(-1)/全下(-2)
+        >0 表示加注到的阶段总额（raise-to-total），与协议文档一致。
         返回获胜玩家id列表, 或空列表表示下一玩家, 或None表示下一阶段
         非法行为自动转为弃牌（与竞赛平台规则一致）
         """
@@ -302,50 +304,56 @@ class Holdem:
             self.player_chips[self.round_idx] = 0
             action_type = "allin"
         elif bet == Holdem.CALL:  # call/check, 下注或跟注
-            # 非法: allin 后不能 call（应该由 allin 分支处理短筹码）
             # 非法: 翻牌后第一个行为不能是 call（必须 check 或 raise）
             round_actions = self._actions_in_current_round()
             if self.round != Holdem.PRE_FLOP and round_actions == 0:
                 return self.player_action(Holdem.FOLD)
-            # 非法: preflop BB 在 SB call 后不能再 call
+            # 非法: preflop BB 在 SB call 后不能再 call/check
             if self.round == Holdem.PRE_FLOP:
                 non_dealer = (self.dealer_idx + 1) % self.num_players
-                is_bb = self.round_idx != non_dealer  # dealer=SB, non-dealer=BB
+                is_bb = self.round_idx == non_dealer  # dealer=SB, non-dealer=BB
                 if is_bb:
                     sb_actions = [h for h in self.history
-                                  if h["round"] == Holdem.PRE_FLOP and h["player_id"] == non_dealer]
+                                  if h["round"] == Holdem.PRE_FLOP and h["player_id"] == self.dealer_idx]
                     if sb_actions and sb_actions[-1]["action_type"] == "call" and round_actions == 1:
                         return self.player_action(Holdem.FOLD)
             inc = self.round_bet - self.round_player_bet[self.round_idx]  # 下注增量
             if inc <= 0:  # check 场景
                 self.round_player_bet[self.round_idx] = self.round_bet
                 action_type = "check"
-            elif self.player_chips[self.round_idx] < inc:
-                # 筹码不够 call，视为非法 -> fold
-                return self.player_action(Holdem.FOLD)
             else:
-                self.pot += inc
-                self.player_chips[self.round_idx] -= inc
-                self.round_player_bet[self.round_idx] = self.round_bet
-                action_type = "call"
-        elif bet > 0:  # raise, 加注
+                # 筹码不够 call 时，允许全下所有剩余筹码
+                actual_call = min(inc, self.player_chips[self.round_idx])
+                self.pot += actual_call
+                self.player_chips[self.round_idx] -= actual_call
+                self.round_player_bet[self.round_idx] += actual_call
+                if self.player_chips[self.round_idx] == 0:
+                    self.allin_occurred = True
+                    action_type = "allin"
+                else:
+                    action_type = "call"
+        elif bet > 0:  # raise, 加注到指定金额（raise-to-total）
+            raise_to = bet  # bet 表示加注到的阶段总额
+            current_bet = self.round_player_bet[self.round_idx]
+            additional = raise_to - current_bet  # 反推增量
+
             # 非法: allin 后不能 raise
             if self.allin_occurred:
                 return self.player_action(Holdem.FOLD)
-            # 非法: raise 金额等于全部筹码时必须用 allin
-            if self.player_chips[self.round_idx] == bet:
+            # 非法: raise 到的金额等于全部筹码时必须用 allin
+            if self.player_chips[self.round_idx] == additional:
                 return self.player_action(Holdem.FOLD)
             # 非法: 筹码不足
-            if self.player_chips[self.round_idx] < bet:
+            if self.player_chips[self.round_idx] < additional:
                 return self.player_action(Holdem.FOLD)
-            # 非法: 加注量不满足最低加注规则
-            if bet + self.round_player_bet[self.round_idx] < self.round_raise * 2:
+            # 非法: 加注到的金额不满足最低加注规则（≥ last_raise_to * 2）
+            if raise_to < self.last_raise_to * 2:
                 return self.player_action(Holdem.FOLD)
-            self.round_raise = max(self.round_raise, bet)
-            self.round_player_bet[self.round_idx] += bet
-            self.round_bet = max(self.round_bet, self.round_player_bet[self.round_idx])
-            self.pot += bet
-            self.player_chips[self.round_idx] -= bet
+            self.last_raise_to = raise_to
+            self.round_player_bet[self.round_idx] = raise_to
+            self.round_bet = max(self.round_bet, raise_to)
+            self.pot += additional
+            self.player_chips[self.round_idx] -= additional
             action_type = "raise"
         else:
             return self.player_action(Holdem.FOLD)
@@ -376,6 +384,7 @@ class Holdem:
         self.player_action(self.small_blind)  # dealer 放 SB
         result = self.player_action(self.big_blind)  # non-dealer 放 BB
         self.history.clear()  # 盲注不算在历史里面
+        self.last_raise_to = self.big_blind  # 翻前初始 raise-to 基准
         return result
 
     def get_player_cards(self, player_idx, with_public=True):
@@ -384,10 +393,26 @@ class Holdem:
         return self.player_cards[player_idx]
 
     def get_player_final_chips(self, players_win):
-        return [
-            chips + (self.pot // len(players_win) if i in players_win else 0)
-            for i, chips in enumerate(self.player_chips)
-        ]
+        # 边池计算：一方全下时，正确分配主池和超额投入
+        contrib = [self.chips_before_hand[i] - self.player_chips[i] for i in range(self.num_players)]
+        min_contrib = min(contrib)
+        main_pot = 2 * min_contrib
+        side_pot = self.pot - main_pot  # 超额投入
+        per_winner = main_pot // len(players_win)
+        results = []
+        for i, chips in enumerate(self.player_chips):
+            if i in players_win:
+                # 赢家获得 main_pot 份额 + 如果是超额投入方也获得 side_pot
+                win = per_winner
+                if contrib[i] > min_contrib:
+                    win += side_pot
+                results.append(chips + win)
+            elif side_pot > 0 and contrib[i] > min_contrib:
+                # 超额投入的输家退回多余部分
+                results.append(chips + side_pot)
+            else:
+                results.append(chips)
+        return results
 
 
 def get_display_data(game, matchdata, temp_result=None, error=None, last_game=None):
@@ -396,7 +421,7 @@ def get_display_data(game, matchdata, temp_result=None, error=None, last_game=No
         "round": game.round,
         "round_idx": game.round_idx,
         "round_bet": game.round_bet,
-        "round_raise": game.round_raise,
+        "round_raise": game.last_raise_to,
         "round_player_bet": game.round_player_bet,
         "pot": game.pot,
         "player_chips": game.player_chips,

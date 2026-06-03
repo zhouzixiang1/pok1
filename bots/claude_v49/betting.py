@@ -271,13 +271,14 @@ def choose_overbet_river(
         ratio = max(1.3, ratio - 0.2)
     ratio = min(ratio, 2.2)
     amount = int(to_call + pot_after_call * ratio)
+    raise_to_total = my_round_bet + amount
 
-    if amount >= my_chips:
+    if raise_to_total >= my_round_bet + my_chips:
         return -2
-    amount = min(amount, my_chips - 1)
-    if amount <= to_call or amount < min_raise:
+    raise_to_total = min(raise_to_total, my_round_bet + my_chips - 1)
+    if raise_to_total <= my_round_bet + to_call or raise_to_total < min_raise:
         return None
-    return amount
+    return raise_to_total
 
 
 def choose_overbet_bluff_river(
@@ -318,13 +319,14 @@ def choose_overbet_bluff_river(
         ratio = max(1.1, ratio - 0.15)
     ratio = min(ratio, 1.6)
     amount = int(pot * ratio)
+    raise_to_total = my_round_bet + amount
 
-    if amount >= my_chips:
+    if raise_to_total >= my_round_bet + my_chips:
         return -2
-    amount = min(amount, my_chips - 1)
-    if amount < min_raise:
+    raise_to_total = min(raise_to_total, my_round_bet + my_chips - 1)
+    if raise_to_total < min_raise:
         return None
-    return amount
+    return raise_to_total
 
 
 def must_continue_vs_raise(value_profile, made_strength, pot_odds, nutted_risk, board_texture):
