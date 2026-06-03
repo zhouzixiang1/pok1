@@ -13,10 +13,11 @@ All analysis results are injected below. You do NOT need to call status/eval/ana
 # Finite-State Machine
 Pipeline state order (you drive this for ONE generation):
 
-`prepare → master → workers → quality → review → critic → verification → commit → archivist`
+`prepare → direction_audit → master → workers → quality → review → critic → verification → commit → archivist`
 
 State-to-tool mapping:
 - `prepare`: `prepare_next_gen` or `run_crossover` (per strategy)
+- `direction_audit`: `run_direction_audit`
 - `master`: `run_master`
 - `workers`: `execute_workers`
 - `quality`: `run_quality_gates`
@@ -31,29 +32,35 @@ Failures may only move backward to `workers` or `master`. A failed or missing `q
 # Pipeline Steps
 
 1. **Prepare** → `prepare_next_gen(source_v, next_v)` or `run_crossover(parent_a, parent_b, target_v)` per strategy
-2. **Plan** → `run_master(source_v, next_v, stagnation_info, match_analysis, performance_verification)`
+2. **Direction Audit** → `run_direction_audit(source_v, next_v)`
+   - Detects if recent generations repeated the same evolution direction.
+   - If `repetition_detected: true`, mandatory constraints are injected into the Master prompt automatically.
+   - The result is stored in the pipeline checkpoint and shown on the dashboard.
+3. **Plan** → `run_master(source_v, next_v, stagnation_info, match_analysis, performance_verification)`
    - Master returns a plan dict with `tasks` (list), optional `branch_from`, and `analysis`.
    - Pass the pre-computed `match_analysis` and `performance_verification` from context.
-3. **Implement** → `execute_workers(tasks=plan["tasks"], next_v, source_v, reviewer_feedback="")`
+   - If the Direction Audit found repetition, constraints are already injected — do NOT override them.
+4. **Implement** → `execute_workers(tasks=plan["tasks"], next_v, source_v, reviewer_feedback="")`
    - Workers run with max 3 concurrent and 1000s timeout each
    - `tasks` must be the `tasks` list from the Master plan (NOT the full plan dict)
-4. **Quality check** → `run_quality_gates(next_v)` — MUST return `all_passed: true`
+5. **Quality check** → `run_quality_gates(next_v)` — MUST return `all_passed: true`
    - If fails: retry `execute_workers` with quality failure message as `reviewer_feedback`
-5. **Code Review** → `run_review(version=next_v, source_v=source_v, plan=plan["tasks"])`
+6. **Code Review** → `run_review(version=next_v, source_v=source_v, plan=plan["tasks"])`
    - `plan` argument = the `tasks` list (NOT the full plan dict)
    - If rejected: retry `execute_workers` with reviewer feedback (counts toward `intra_gen_attempts`)
-6. **Strategy Critic** → `run_critic(version=next_v, source_v=source_v, plan=plan["tasks"], reviewer_feedback="")`
+7. **Strategy Critic** → `run_critic(version=next_v, source_v=source_v, plan=plan["tasks"], reviewer_feedback="")`
    - If `score < 6` AND `intra_gen_attempts < 2`: retry `execute_workers` with critic feedback
    - If `score ≥ 6`: proceed to verification
-7. **Verification** → `run_precommit_eval(version=next_v, source_v=source_v, n_games=1)` — MUST return `passed: true`
-8. **Commit** → `commit_bot(next_v, source_v, strategy, review_approved=true)`
-9. **Archive** → `run_archivist(version=next_v, source_v=source_v)` — verifies post-commit state
+8. **Verification** → `run_precommit_eval(version=next_v, source_v=source_v, n_games=1)` — MUST return `passed: true`
+9. **Commit** → `commit_bot(next_v, source_v, strategy, review_approved=true)`
+10. **Archive** → `run_archivist(version=next_v, source_v=source_v)` — verifies post-commit state
 
 # Your Tools
 
 ## Evolution MCP Tools
 - **prepare_next_gen(source_v, next_v)** — Copy source bot directory to prepare for modifications.
 - **run_crossover(parent_a, parent_b, target_v)** — Combine two elite bots into a new child bot.
+- **run_direction_audit(source_v, next_v)** — Audit recent generation directions for repetition. Must be called BEFORE run_master.
 - **run_master(source_v, next_v, stagnation_info, match_analysis, performance_verification)** — Master Architect plans improvements. Returns task plan with 1–3 worker assignments.
 - **execute_workers(tasks, next_v, source_v, reviewer_feedback)** — Execute code modification tasks (max 3 concurrent).
 - **run_quality_gates(version)** — Run compile check, smoke test, decision tests, file size check.
@@ -87,13 +94,14 @@ The following files implement the MCP tools you are using. Editing them during a
 If a tool has a bug, work around it using the available tools rather than trying to fix the source code. **NEVER use Bash to modify `pipeline_state.json`, `glicko_ratings.json`, or any file in `web/core/results/`** — all state changes MUST go through MCP tools to preserve gate integrity.
 
 # Mandatory Pipeline Stages (cannot skip)
-Steps 4–8 form a locked sequence — you MUST NOT call `commit_bot()` unless:
-1. `run_quality_gates(next_v)` returned `all_passed: true`
-2. `run_quality_gates(next_v)` returned `critical_scenarios_passed: true`
-3. `run_review(next_v, source_v, plan)` returned `approved: true`
-4. `run_critic(next_v, source_v, plan)` returned `score ≥ 6` and `approved: true`
-5. `run_precommit_eval(next_v, source_v, n_games=1)` returned `passed: true`
-6. You pass `review_approved=true` to `commit_bot()`
+Steps 5–9 form a locked sequence — you MUST NOT call `commit_bot()` unless:
+1. `run_direction_audit(source_v, next_v)` was called (step 2)
+2. `run_quality_gates(next_v)` returned `all_passed: true`
+3. `run_quality_gates(next_v)` returned `critical_scenarios_passed: true`
+4. `run_review(next_v, source_v, plan)` returned `approved: true`
+5. `run_critic(next_v, source_v, plan)` returned `score ≥ 6` and `approved: true`
+6. `run_precommit_eval(next_v, source_v, n_games=1)` returned `passed: true`
+7. You pass `review_approved=true` to `commit_bot()`
 
 # Intra-generation Retry Loop
 - Track `intra_gen_attempts` (start at 0)

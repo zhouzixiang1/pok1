@@ -34,6 +34,7 @@ from evolution_core import (
     clear_pipeline_checkpoint,
     MAX_ACTIVE_BOTS,
     _run_master_analysis,
+    _run_direction_audit,
     _execute_workers,
     _run_crossover,
     _run_critic,
@@ -57,6 +58,60 @@ def _record_quality_failure(gen, worker_id, role, error):
     entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error, "timestamp": time.time()}
     with locked_file(WORKER_FAILURES_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+# ──────────────────────────────────────────────
+# Direction Audit Stage (pre-Master)
+# ──────────────────────────────────────────────
+
+@tool("run_direction_audit", "Audit recent generation directions for repetition. Returns exhausted directions and mandatory constraints for the Master.", {"source_v": int, "next_v": int})
+async def run_direction_audit(args):
+    source_v = args["source_v"]
+    next_v = args["next_v"]
+
+    ui = _get_ui()
+    result = await _run_direction_audit(source_v, ui)
+
+    repetition = result.get("repetition_detected", False)
+    exhausted = result.get("exhausted_directions", [])
+    constraints = result.get("mandatory_constraints")
+    suggested = result.get("suggested_direction")
+    confidence = result.get("confidence", "low")
+
+    direction_audit_payload = {
+        "repetition_detected": repetition,
+        "exhausted_directions": exhausted,
+        "mandatory_constraints": constraints,
+        "suggested_direction": suggested,
+        "confidence": confidence,
+        "resolved": False,
+    }
+
+    # Persist to checkpoint
+    from evolution_infra import write_pipeline_checkpoint
+    _ckpt = _matching_checkpoint(next_v, source_v)
+    existing_plan = _ckpt.get("master_plan") if _ckpt else None
+    write_pipeline_checkpoint(
+        next_v, source_v, "direction_audited",
+        direction_audit=direction_audit_payload,
+        master_plan=existing_plan,
+        worker_invocation_count=_ckpt.get("worker_invocation_count", 0) if _ckpt else 0,
+    )
+
+    event_type = "pipeline.direction_audit_warning" if repetition else "pipeline.direction_audit_passed"
+    severity = "warn" if repetition else "success"
+    msg = (f"Direction audit: repetition detected ({', '.join(exhausted)})" if repetition
+           else "Direction audit: no repetition detected")
+    log_system_event(event_type, severity, msg, {
+        "next_v": next_v, "source_v": source_v,
+        "repetition_detected": repetition,
+        "exhausted_directions": exhausted,
+    })
+
+    return _json_tool_result({
+        "direction_audit": direction_audit_payload,
+        "logs": ui.get_output(),
+    })
 
 
 # ──────────────────────────────────────────────
@@ -147,13 +202,38 @@ class RunMasterInput(TypedDict):
     performance_verification: Annotated[str, "Performance verification output from run_performance_verification (or '')"]
 
 
-@tool("run_master", "Run Master Architect analysis to plan the next generation. Returns a task plan with worker assignments.", {"source_v": int, "next_v": int, "stagnation_info": str, "match_analysis": str, "performance_verification": str})
+@tool("run_master", "Run Master Architect analysis to plan the next generation. Returns a task plan with worker assignments.", {"source_v": int, "next_v": int, "stagnation_info": str, "match_analysis": str, "performance_verification": str, "direction_audit": str})
 async def run_master(args):
     source_v = args["source_v"]
     next_v = args["next_v"]
     stagnation_info = args.get("stagnation_info", "No stagnation detected. Continue from latest version.")
     match_analysis = args.get("match_analysis", "")
     performance_verification = args.get("performance_verification", "")
+    direction_audit_str = args.get("direction_audit", "")
+
+    # Parse direction audit from arg or checkpoint
+    direction_audit = None
+    if direction_audit_str:
+        try:
+            direction_audit = json.loads(direction_audit_str) if isinstance(direction_audit_str, str) else direction_audit_str
+        except (json.JSONDecodeError, TypeError):
+            pass
+    if not direction_audit:
+        _ckpt = _matching_checkpoint(next_v, source_v)
+        direction_audit = _ckpt.get("direction_audit") if _ckpt else None
+
+    # Inject mandatory constraints into performance_verification if audit found repetition
+    if direction_audit and direction_audit.get("repetition_detected") and direction_audit.get("mandatory_constraints"):
+        constraint_block = (
+            f"\n\n# Direction Audit Constraints (MANDATORY)\n"
+            f"The Direction Auditor detected that recent generations are stuck repeating the same approach.\n"
+            f"**DO NOT repeat these exhausted directions:** {', '.join(direction_audit.get('exhausted_directions', []))}\n"
+            f"**Mandatory constraint:** {direction_audit['mandatory_constraints']}\n"
+        )
+        if direction_audit.get("suggested_direction"):
+            constraint_block += f"**Suggested alternative:** {direction_audit['suggested_direction']}\n"
+        constraint_block += "\nYou MUST comply with these constraints. A plan that repeats an exhausted direction will be rejected.\n"
+        performance_verification = (performance_verification or "") + constraint_block
 
     ui = _get_ui()
     data = await _run_master_analysis(
@@ -175,7 +255,15 @@ async def run_master(args):
 
     # Persist master plan to checkpoint so it survives crashes between master and workers
     from evolution_infra import write_pipeline_checkpoint
-    write_pipeline_checkpoint(next_v, source_v, "prepared", master_plan=data)
+    _ckpt = _matching_checkpoint(next_v, source_v)
+    existing_audit = _ckpt.get("direction_audit") if _ckpt else direction_audit
+    # Mark direction_audit as resolved now that Master has produced a plan
+    if existing_audit and existing_audit.get("repetition_detected"):
+        existing_audit["resolved"] = True
+    write_pipeline_checkpoint(next_v, source_v, "master_planned",
+                              master_plan=data,
+                              direction_audit=existing_audit,
+                              worker_invocation_count=_ckpt.get("worker_invocation_count", 0) if _ckpt else 0)
 
     log_system_event("pipeline.master_done", "info", f"Master planned v{next_v}: {len(data.get('tasks', []))} tasks",
                      {"next_v": next_v, "source_v": source_v, "num_tasks": len(data.get("tasks", []))})

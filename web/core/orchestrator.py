@@ -173,13 +173,15 @@ def _make_precompact_hook():
             checkpoint = read_pipeline_checkpoint()
             if checkpoint:
                 stage_hints = {
-                    "prepared":       "execute_workers",
-                    "workers_done":   "run_quality_gates",
-                    "quality_passed": "run_review",
-                    "reviewed":       "run_critic",
-                    "critic_checked": "run_precommit_eval",
-                    "verified":       "commit_bot",
-                    "archived":       "run_archivist",
+                    "prepared":          "run_direction_audit",
+                    "direction_audited": "run_master",
+                    "master_planned":    "execute_workers",
+                    "workers_done":      "run_quality_gates",
+                    "quality_passed":    "run_review",
+                    "reviewed":          "run_critic",
+                    "critic_checked":    "run_precommit_eval",
+                    "verified":          "commit_bot",
+                    "archived":          "run_archivist",
                 }
                 stage = checkpoint.get("stage", "unknown")
                 next_step = stage_hints.get(stage, "check get_status")
@@ -244,13 +246,15 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
             checkpoint = read_pipeline_checkpoint()
             if checkpoint:
                 stage_hints = {
-                    "prepared":       "Workers not yet run → call execute_workers",
-                    "workers_done":   "Workers done → call run_quality_gates",
-                    "quality_passed": "Quality passed → call run_review",
-                    "reviewed":       "Review passed → call run_critic",
-                    "critic_checked": "Critic done → call run_precommit_eval",
-                    "verified":       "Precommit eval passed → call commit_bot",
-                    "archived":       "Committed & archived → done",
+                    "prepared":          "Call run_direction_audit first",
+                    "direction_audited": "Direction audited → call run_master",
+                    "master_planned":    "Master done → call execute_workers",
+                    "workers_done":      "Workers done → call run_quality_gates",
+                    "quality_passed":    "Quality passed → call run_review",
+                    "reviewed":          "Review passed → call run_critic",
+                    "critic_checked":    "Critic done → call run_precommit_eval",
+                    "verified":          "Precommit eval passed → call commit_bot",
+                    "archived":          "Committed & archived → done",
                 }
                 stage = checkpoint.get("stage", "unknown")
                 hint = stage_hints.get(stage, "call get_status to assess")
@@ -338,13 +342,15 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         checkpoint = read_pipeline_checkpoint()
         if checkpoint:
             stage_hints = {
-                "prepared":       "Workers not yet run → call execute_workers",
-                "workers_done":   "Workers done → call run_quality_gates",
-                "quality_passed": "Quality passed → call run_review",
-                "reviewed":       "Review passed → call run_critic",
-                "critic_checked": "Critic done → call run_precommit_eval",
-                "verified":       "Precommit eval passed → call commit_bot",
-                "archived":       "Committed & archived → start next generation",
+                "prepared":          "Call run_direction_audit first",
+                "direction_audited": "Direction audited → call run_master",
+                "master_planned":    "Master done → call execute_workers",
+                "workers_done":      "Workers done → call run_quality_gates",
+                "quality_passed":    "Quality passed → call run_review",
+                "reviewed":          "Review passed → call run_critic",
+                "critic_checked":    "Critic done → call run_precommit_eval",
+                "verified":          "Precommit eval passed → call commit_bot",
+                "archived":          "Committed & archived → start next generation",
             }
             stage = checkpoint.get("stage", "unknown")
             hint = stage_hints.get(stage, "call get_status to assess")

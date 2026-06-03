@@ -129,6 +129,15 @@ export interface BotDetail extends BotSummary {
 }
 
 // Pipeline
+export interface DirectionAudit {
+  repetition_detected: boolean;
+  exhausted_directions: string[];
+  mandatory_constraints: string | null;
+  suggested_direction: string | null;
+  confidence: string;
+  resolved: boolean;
+}
+
 export interface PipelineCheckpoint {
   next_v: number;
   source_v: number;
@@ -137,6 +146,7 @@ export interface PipelineCheckpoint {
   reviewer_feedback: string;
   generation_attempt: number;
   gate_results?: Record<string, unknown>;
+  direction_audit?: DirectionAudit;
   timestamp: string;
 }
 

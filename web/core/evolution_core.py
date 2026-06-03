@@ -53,6 +53,7 @@ from agent_master import (  # noqa: F401
     _run_master_analysis, _consolidate_experience_pool, _analyze_stagnation,
     _num_public_cards_to_street, extract_street_patterns,
     summarize_replay_for_analysis, _analyze_recent_matches,
+    _run_direction_audit,
 )
 
 # ── Worker Agent ──

@@ -20,6 +20,7 @@ ALLOWED_PROMPTS = {
     "reviewer",
     "critic",
     "crossover",
+    "direction_auditor",
     "initial",
 }
 
@@ -30,6 +31,7 @@ PROMPT_ROLES = {
     "reviewer": "Lead Code Reviewer — checks code quality and role boundary compliance",
     "critic": "Poker Strategy Critic — scores strategic quality 1–10",
     "crossover": "Crossover Agent — merges two elite bots into a hybrid child",
+    "direction_auditor": "Direction Auditor — detects repetitive evolution directions before Master planning",
     "initial": "Initial Bot Generator — creates the first-generation bot from scratch",
 }
 

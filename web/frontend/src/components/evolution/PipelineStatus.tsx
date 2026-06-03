@@ -75,6 +75,45 @@ export function PipelineStatus({ checkpoint }: { checkpoint: PipelineCheckpoint 
 
       {expanded && (
         <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-700 space-y-2">
+          {checkpoint.direction_audit?.repetition_detected && (
+            <div className={cn(
+              "p-2 rounded text-[10px] border",
+              checkpoint.direction_audit.resolved
+                ? "bg-success-50 dark:bg-success-900/20 border-success-200 dark:border-success-800"
+                : "bg-warning-50 dark:bg-warning-900/20 border-warning-200 dark:border-warning-800",
+            )}>
+              {checkpoint.direction_audit.resolved ? (
+                <div className="flex items-start gap-1.5">
+                  <CheckIcon className="w-3 h-3 text-success-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-semibold text-success-700 dark:text-success-400">方向重复已解决</span>
+                    {checkpoint.direction_audit.suggested_direction && (
+                      <p className="mt-0.5 text-success-600 dark:text-success-400">
+                        已切换至: {checkpoint.direction_audit.suggested_direction}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-start gap-1.5">
+                  <span className="text-warning-600 shrink-0 mt-0.5">⚠</span>
+                  <div>
+                    <span className="font-semibold text-warning-700 dark:text-warning-400">检测到方向重复</span>
+                    {checkpoint.direction_audit.exhausted_directions.length > 0 && (
+                      <p className="mt-0.5 text-warning-600 dark:text-warning-400">
+                        已枯竭方向: {checkpoint.direction_audit.exhausted_directions.join("、")}
+                      </p>
+                    )}
+                    {checkpoint.direction_audit.mandatory_constraints && (
+                      <p className="mt-0.5 text-warning-600 dark:text-warning-400">
+                        强制约束: {checkpoint.direction_audit.mandatory_constraints.slice(0, 150)}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           {plan.length > 0 && (
             <div>
               <p className="text-[10px] text-gray-500 mb-1">Master Plan</p>
@@ -97,6 +136,7 @@ export function PipelineStatus({ checkpoint }: { checkpoint: PipelineCheckpoint 
             const gates = checkpoint.gate_results as Record<string, Record<string, unknown>> | undefined;
             if (!gates || Object.keys(gates).length === 0) return null;
             const gateLabels: Record<string, string> = {
+              direction_audit: "方向审核",
               quality: "质量检查",
               review: "代码审核",
               critic: "策略审核",
