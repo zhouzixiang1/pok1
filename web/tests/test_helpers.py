@@ -195,8 +195,7 @@ class TestValidateWorkerBoundaries:
             return
         from tool_helpers import _validate_worker_boundaries
         from evolution_infra import get_bot_dir
-        import evolution_infra
-        monkeypatch.setattr(evolution_infra, "get_bot_dir", lambda v: get_bot_dir(active_bot_version))
+        monkeypatch.setattr("tool_helpers.get_bot_dir", lambda v: get_bot_dir(active_bot_version))
         errors = _validate_worker_boundaries(
             [{"target_files": ["main.py"], "role": "Algorithmic Logic Architect"}],
             source_v=active_bot_version, next_v=active_bot_version,

@@ -1,12 +1,12 @@
 """Evolution Orchestrator — LLM-driven bot evolution pipeline.
 
 Usage (standalone CLI):
-    python orchestrator/orchestrator.py              # Run continuous evolution
-    python orchestrator/orchestrator.py --one-gen    # Run one generation then stop
-    python orchestrator/orchestrator.py --dry-run    # Only check status, no changes
+    python web/core/orchestrator.py              # Run continuous evolution
+    python web/core/orchestrator.py --one-gen    # Run one generation then stop
+    python web/core/orchestrator.py --dry-run    # Only check status, no changes
 
 Usage (from dashboard/backend/app.py):
-    from orchestrator.orchestrator import orchestrator_loop
+    from orchestrator import orchestrator_loop
     await orchestrator_loop(web_ui, no_daemon=False)
 """
 

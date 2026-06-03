@@ -7,7 +7,6 @@ log rotation, and rate-limit detection.
 import json
 import logging
 import os
-import re
 from pathlib import Path
 
 log = logging.getLogger("pok.orchestrator")
@@ -32,13 +31,7 @@ def _rotate_orchestrator_logs(logs_dir, keep=20):
             pass
 
 
-def _is_rate_limited(output: str) -> bool:
-    return (
-        "overloaded" in output.lower()
-        or "该模型当前访问量过大" in output
-        or "rate limit" in output.lower()
-        or re.search(r'\b529\b', output) is not None
-    )
+from llm_query import _is_rate_limited  # noqa: E402
 
 
 def _save_orchestrator_session(session_id: str):
