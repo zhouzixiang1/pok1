@@ -28,6 +28,7 @@ from tool_pipeline import (  # noqa: F401
     execute_workers,
     run_quality_gates,
     prepare_next_gen,
+    run_direction_audit,
     run_review,
     run_critic,
     run_precommit_eval,
@@ -70,6 +71,7 @@ mcp_tools = [
     run_precommit_eval,
     run_crossover,
     prepare_next_gen,
+    run_direction_audit,
     commit_bot,
     run_archivist,
     # Query tools

@@ -80,9 +80,11 @@ MAX_PARALLEL_WORKERS = 3      # Hard cap on simultaneous LLM worker calls (Semap
 MAX_PROMPT_CHARS = 700_000
 
 # Pipeline stage constants
-STAGE_ORDER = ["prepared", "workers_done", "quality_passed", "reviewed", "critic_checked", "verified", "archived"]
+STAGE_ORDER = ["prepared", "direction_audited", "master_planned", "workers_done", "quality_passed", "reviewed", "critic_checked", "verified", "archived"]
 STAGE_GATE_ALLOWLIST = {
     "prepared": set(),
+    "direction_audited": set(),
+    "master_planned": set(),
     "workers_done": set(),
     "quality_passed": {"quality"},
     "reviewed": {"quality", "review"},
@@ -202,7 +204,7 @@ def substitute_template(template, replacements):
 def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                reviewer_feedback="", generation_attempt=0,
                                gate_results=None, worker_invocation_count=None,
-                               parent2_v=None):
+                               parent2_v=None, direction_audit=None):
     """Write pipeline stage checkpoint so a killed process can resume.
 
     Uses atomic tmp+rename under exclusive lock to prevent concurrent
@@ -226,6 +228,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         existing_reviewer_feedback = reviewer_feedback
         existing_generation_attempt = generation_attempt
         existing_parent2_v = parent2_v
+        existing_direction_audit = None
 
         if existing and existing.get("next_v") == next_v and existing.get("source_v") == source_v:
             existing_gate_results = existing.get("gate_results", {}) or {}
@@ -238,11 +241,14 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 existing_generation_attempt = existing.get("generation_attempt", 0)
             if parent2_v is None:
                 existing_parent2_v = existing.get("parent2_v")
+            existing_direction_audit = existing.get("direction_audit")
 
         if gate_results:
             existing_gate_results.update(gate_results)
         if worker_invocation_count is not None:
             existing_invocation_count = worker_invocation_count
+        if direction_audit is not None:
+            existing_direction_audit = direction_audit
 
         state = {
             "next_v": next_v, "source_v": source_v, "stage": stage,
@@ -251,6 +257,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "worker_invocation_count": existing_invocation_count,
             "gate_results": existing_gate_results,
             "parent2_v": existing_parent2_v,
+            "direction_audit": existing_direction_audit,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
 

@@ -147,6 +147,8 @@ export interface PipelineCheckpoint {
   generation_attempt: number;
   gate_results?: Record<string, unknown>;
   direction_audit?: DirectionAudit;
+  worker_invocation_count?: number;
+  parent2_v?: number | null;
   timestamp: string;
 }
 
@@ -155,7 +157,7 @@ export interface WorkerFailure {
   worker_id: number | string;
   role: string;
   error: string;
-  timestamp?: string;
+  timestamp?: number;
 }
 
 // Prompts

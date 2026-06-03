@@ -162,6 +162,7 @@ def _record_gate(version, source_v, gate_name, gate_data, stage=None,
         ),
         generation_attempt=ckpt.get("generation_attempt", 0),
         gate_results={gate_name: gate_data},
+        direction_audit=ckpt.get("direction_audit"),
     )
     return True
 

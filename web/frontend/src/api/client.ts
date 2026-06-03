@@ -126,7 +126,7 @@ export const api = {
   // Experience pool
   experience: () => fetchText(`${BASE}/experience`),
   updateExperience: (content: string) => putJSON<{ saved: boolean; lines: number; chars: number }>(`${BASE}/experience`, { content }),
-  appendExperience: (lesson: string) => postJSON<{ appended: boolean; lesson: string }>(`${BASE}/experience/append`, { lesson }),
+  appendExperience: (lesson: string) => postJSON<{ appended: boolean; lesson: string; total_chars: number }>(`${BASE}/experience/append`, { lesson }),
 
   // Daemon
   daemonStatus: () => fetchJSON<DaemonStatus>(`${BASE}/daemon/status`),
