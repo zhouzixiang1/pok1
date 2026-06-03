@@ -71,6 +71,14 @@ python merge_bot.py bots/claude_v49/             # Merge multi-file bot into sin
 python merge_bot.py --all                        # Batch merge all bot directories
 ```
 
+### TCP Competition Server (`sever/`)
+
+```bash
+cd sever && python main.py                    # Start TCP :10001 + Web :18080
+cd sever && python bot_adapter.py --bot ../bots/claude_v49 --name test  # Bridge bot to TCP server
+cd sever && python -m pytest tests/ -v        # All tests (evaluator, validator, game, protocol, integration)
+```
+
 ## Architecture
 
 ### Three-Phase Generation Cycle
@@ -202,14 +210,76 @@ Local CLI poker battle system for testing bots offline.
 
 ### TCP Server (`sever/` — git submodule)
 
-A separate self-contained poker competition platform. Bots connect as TCP clients and play 70-hand matches. Has its own engine (`sever/engine/`), validator (13-rule action legality), web dashboard, and test suite.
+A self-contained poker competition platform. Bots connect as TCP clients and play 70-hand matches. Has its own engine (`sever/engine/`), validator (13-rule action legality), web dashboard (`:18080`), and test suite.
 
-Key differences from `engine/`:
-- Line-delimited text protocol over TCP (not subprocess JSON)
-- Card format: `<suit,rank>` tuples (not integers)
+**Startup & testing:**
+```bash
+cd sever && python main.py                    # TCP :10001 + Web :18080
+cd sever && python -m pytest tests/ -v        # All tests (evaluator, validator, game, protocol, integration)
+```
+
+**Structure:** `engine/game.py` (stateful GameEngine), `engine/validator.py` (13-rule validation), `engine/evaluator.py` (hand comparison), `engine/deck.py` (Card class, `<suit,rank>`), `server/tcp_server.py` (async TCP), `server/protocol.py` (message encode/decode), `bot_adapter.py` (bridges `engine/judge.py` bots to TCP server), `web/app.py` (FastAPI + SSE dashboard).
+
+**Protocol differences from `engine/`:**
+- Line-delimited text over TCP (not subprocess JSON)
+- Card format: `<suit,rank>` tuples where `suit ∈ {0=♠,1=♥,2=♦,3=♣}`, `rank ∈ {0=2..12=A}`
 - Actions: text strings (`"call"`, `"fold"`, `"raise 200"`, `"allin"`)
 - Stateful `GameEngine` object (not stateless `judge()` function)
-- Strict action validation (illegal = auto-fold)
+- Strict action validation via 13-rule validator (illegal = auto-fold)
+- 70 hands per match, 20000 starting chips, blinds 50/100, 60s decision timeout
+
+### CRITICAL: Raise Semantics — Two Different Conventions
+
+The two engines interpret a bot's positive raise value differently:
+
+**`engine/judge.py` (Botzone): raise-as-increment**
+- Bot output `>0` = additional chips to add to current bet
+- Internally: `round_player_bet[idx] += bet` (adds increment)
+- Example: SB (already bet 50) wants to raise to 200 total → bot outputs `150`
+
+**`sever/` TCP server: raise-to-total**
+- `raise X` means "raise stage bet TO X" (total amount after raise)
+- Internally: `additional = raise_to - player_bets_this_stage[idx]` (derives increment from total)
+- Example: SB (already bet 50) wants to raise to 200 → sends `raise 200`
+
+**`bot_adapter.py` bridge:** Connects `engine/judge.py`-style bots to the TCP server. Converts bot integer output directly: `>0` → `raise {value}`. The adapter's comment says `>0 = raise到的金额（真实值）` — it expects the bot to output the total raise-to amount. Bots designed for `engine/judge.py` (which output increments) would produce incorrect results when used with the adapter.
+
+**Minimum raise rules also differ:**
+
+| Rule | `engine/judge.py` | `sever/` |
+|------|--------------------|----------|
+| Tracking variable | `round_raise` (max increment seen) | `last_raise_to` (last raise-to total) |
+| Preflop first raise | total ≥ `round_raise * 2` = 200 | total ≥ 200 (explicit check) |
+| Postflop first raise | total ≥ `round_raise * 2` = 100 | total ≥ 100 (explicit check) |
+| Re-raise minimum | total ≥ `round_raise * 2` | total ≥ `last_raise_to * 2` |
+| Example: raise to 200, re-raise | `round_raise=150`, min total = 300 | `last_raise_to=200`, min total = 400 |
+
+The `sever/` re-raise rule is stricter — it doubles the total raise-to, not the increment.
+
+### `sever/` Game Flow & Rules Summary
+
+**Action order:** Preflop → SB first; Flop/Turn/River → BB first. 70 hands, alternating SB/BB.
+
+**TCP message sequence per hand:**
+1. Server sends `name` → client responds with bot name
+2. Server sends `preflop|{ROLE}|<s,r><s,r>` → SB acts first
+3. Opponent actions forwarded: `call`, `fold`, `check`, `raise X`, `allin`
+4. Stage cards: `flop|<s,r><s,r><s,r>`, `turn|<s,r>`, `river|<s,r>` → BB acts first
+5. Settlement: `earnChips {amount}` (net change), `oppo_hands|<s,r><s,r>` (showdown only)
+
+**13-rule action validation** (`sever/engine/validator.py`):
+1. `bet` always illegal
+2. Postflop first action `call` → illegal
+3. Preflop BB call after SB call → illegal
+4. Postflop non-first action `check` → illegal
+5. Preflop check only allowed as BB's first action
+6-9. Minimum raise constraints (200 preflop, 100 postflop, 2x for re-raises)
+10. Raise exceeding available chips → illegal
+11. Raise equaling all chips → must use `allin`
+12. After opponent allin → only `call`/`fold`
+13. Two consecutive `allin` → second illegal
+
+**Card conversion** (`bot_adapter.py`): Server `<suit,rank>` → Bot integer: `card = rank * 4 + suit`. The formula is mathematically identical to `engine/judge.py`'s `(number-2)*4 + suit`, but the **suit mapping differs**: `engine/judge.py` uses `{♥=0, ♦=1, ♠=2, ♣=3}` while `sever/` uses `{♠=0, ♥=1, ♦=2, ♣=3}`. The same real-world card gets a different integer in each system (e.g., ♠A = 50 in engine vs 48 via adapter). This doesn't break hand evaluation because all cards are converted consistently within a session, but suit-specific bot logic would misinterpret suits.
 
 ### Bot Versioning & Conventions
 
