@@ -47,6 +47,18 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     ratings = load_ratings()
     bot_name = f"claude_v{current_v}"
 
+    # Reap bots if pool exceeds limit — reduces starvation in match selection
+    if len(active_bots) > MAX_ACTIVE_BOTS:
+        from tool_bot_management import _do_reap_weakest
+        reap_count = 0
+        while len(get_active_bots()) > MAX_ACTIVE_BOTS and reap_count < 10:
+            result = await _do_reap_weakest(quiet=True)
+            if not result.get("reaped"):
+                break
+            if ui:
+                ui.log_history(f"淘汰 {result['culled']} (池 {result['remaining']}/{MAX_ACTIVE_BOTS})", "info")
+            reap_count += 1
+
     # Wait for sufficient evaluation
     eval_kwargs = {"ui": ui, "shutdown_event": shutdown_mgr}
     if min_games is not None:

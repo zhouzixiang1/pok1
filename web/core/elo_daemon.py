@@ -12,6 +12,7 @@ Usage:
 import os
 import sys
 import json
+import random
 import signal
 import argparse
 import time
@@ -178,17 +179,22 @@ PRIORITY_EVAL_FILE = RESULTS_DIR / "priority_eval.json"
 
 
 def _load_priority_eval():
-    """Load the priority eval bot name if a recent signal exists."""
+    """Load the priority eval bot name. Expires when bot reaches min_games."""
     if not PRIORITY_EVAL_FILE.exists():
         return None
     try:
         with locked_file(PRIORITY_EVAL_FILE, "r") as f:
             data = json.load(f)
-        # Expire after 30 minutes
-        if time.time() - data.get("since", 0) > 1800:
+        bot = data.get("bot")
+        if not bot:
+            return None
+        # Expire when bot has reached min_games (not by timeout — daemon may be stopped/restarted)
+        min_games = data.get("min_games", 100)
+        stats = load_bot_stats()
+        if stats.get(bot, {}).get("games", 0) >= min_games:
             PRIORITY_EVAL_FILE.unlink(missing_ok=True)
             return None
-        return data.get("bot")
+        return bot
     except Exception:
         return None
 
@@ -198,11 +204,15 @@ def pick_matches(active_bots, h2h, ratings, n_picks=14):
 
     Bots with low opponent coverage (< 80%) get extra scheduling slots to
     quickly fill in missing matchups. Newly committed bots (priority_eval.json)
-    are exempt from per-bot caps.
+    get a strong priority boost and are exempt from per-bot caps.
     """
     pairs = [(a, b) for i, a in enumerate(active_bots) for b in active_bots[i + 1:]]
+    # Shuffle before sorting to break alphabetical ordering — prevents systematic
+    # starvation of high-version bots when priority values cluster tightly
+    random.shuffle(pairs)
 
     coverage = {b: _opponent_coverage(b, active_bots, h2h) for b in active_bots}
+    priority_bot = _load_priority_eval()
 
     def priority(a, b):
         k = pair_key(a, b)
@@ -218,13 +228,16 @@ def pick_matches(active_bots, h2h, ratings, n_picks=14):
             min_cov = min(coverage[a], coverage[b])
             if min_cov < 0.8:
                 new_pair_bonus = 0.3 * (1.0 - min_cov)
-        return UNDER_EVAL_WEIGHT * under_eval + DIVERSITY_WEIGHT * diversity * count_penalty + new_pair_bonus
+        score = UNDER_EVAL_WEIGHT * under_eval + DIVERSITY_WEIGHT * diversity * count_penalty + new_pair_bonus
+        # Strong boost for priority bot pairs — ensures newly committed bots get scheduled
+        if priority_bot and (a == priority_bot or b == priority_bot):
+            score += 2.0
+        return score
 
     pairs.sort(key=lambda p: priority(p[0], p[1]), reverse=True)
 
     n_bots = len(active_bots)
     base_max = max(2, n_picks * 2 // n_bots)
-    priority_bot = _load_priority_eval()
 
     selected = []
     bot_counts = Counter()
