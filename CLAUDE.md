@@ -6,12 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Texas Hold'em poker AI bot self-evolution framework. The system uses a multi-agent LLM pipeline (Master Architect → Worker Agents → Code Reviewer → Critic) to iteratively improve heads-up No-Limit Texas Hold'em bots for the Botzone platform (botzone.org.cn). A background Glicko-2 daemon continuously evaluates bots through mirror battles, and a React + FastAPI dashboard provides real-time monitoring.
 
+The project has three independent poker engines serving different purposes:
+- `engine/` — CLI battle runner for local bot testing (subprocess JSON protocol, used by the evolution system)
+- `sever/` — TCP competition server for network-based bot matches (git submodule, independent codebase)
+- `engine/judge.py` — Stateless judge function used by both `engine/battle.py` and Botzone
+
 ## Common Commands
 
 ### Evolution System
 
 ```bash
-python web/main.py                           # Orchestrator mode + daemon + frontend on :8000
+python web/main.py                           # Full stack: orchestrator + daemon + frontend on :8000
 python web/main.py --no-daemon               # No background daemon
 python web/main.py --dev                     # Enable uvicorn auto-reload
 python web/main.py --no-build                # Skip frontend build
@@ -59,20 +64,36 @@ python scripts/botzone_upload_match.py rank-match --bot-name test --execute
 
 Credentials via `BOTZONE_EMAIL` / `BOTZONE_PASSWORD` env vars.
 
+### Utilities
+
+```bash
+python merge_bot.py bots/claude_v49/             # Merge multi-file bot into single file
+python merge_bot.py --all                        # Batch merge all bot directories
+```
+
 ## Architecture
 
-### Orchestrator-Driven Evolution
+### Three-Phase Generation Cycle
 
-`orchestrator.py` spawns a Claude agent with MCP tools and lets it autonomously decide the evolution flow. Uses `claude_agent_sdk` with `create_sdk_mcp_server()` registering tools from `tools.py`. Business logic is split into focused modules: `evolution_infra.py` (constants, git, daemon, ratings, `run_claude_query()`), `agent_master.py` (Master + analysis), `agent_workers.py` (worker execution), `agent_review.py` (Critic, Verification, Crossover). MCP tools are in `tool_pipeline.py` and `tool_status.py`. `evolution_core.py` and `tools.py` remain as re-export shells for backward compatibility.
+Each evolution generation follows a three-phase cycle managed by `generation_scheduler.py`:
 
-### Per-Generation Pipeline
+1. **Phase 1 — `prepare_generation()`**: Code-layer analysis (stagnation, matches, performance verification). Decides strategy: `master` (evolve from ancestor) or `crossover` (merge two parents). Creates `GenerationContext` with pre-computed data. **Disposable** — safe to re-run on interrupt.
+2. **Phase 2 — `_run_one_cycle()` in `orchestrator.py`**: LLM-driven pipeline execution. Orchestrator Claude agent calls MCP tools in sequence. **Preserves state** on interrupt via session + checkpoint files.
+3. **Phase 3 — `post_generation_cleanup()`**: Reap weakest bot if pool > 30, consolidate experience pool every 3 gens. **Idempotent** — safe to re-run.
 
-1. **Master Architect** (`prompts/master_prompt.md`): Analyzes ratings, experience pool, match data. Produces JSON task plan with 2 worker assignments — one "Algorithmic Logic Architect" (structural changes) and one "Hyperparameter Tuner" (constants only). Can set `branch_from` to evolve from a different ancestor.
-2. **Workers** (`prompts/worker_prompt.md`): Execute tasks in parallel (max 3 via semaphore), 4 retries each. Workers directly edit bot source files using Bash/Read/Edit tools.
-3. **Quality Gates** (automated, no LLM): `py_compile` check, 1 mirror battle smoke test, decision tests (≥70% pass), file size ≤1000 lines.
-4. **Code Reviewer** (`prompts/reviewer_prompt.md`): LLM reviews diff, enforces role boundaries, scores 1-10. Up to 3 retries.
-5. **Critic** (`prompts/critic_prompt.md`): Independent strategic quality gate. Score ≥6 to approve. Up to 2 intra-generation retries feeding feedback back to workers.
-6. **Commit**: Git commit + `bot-v{N}` annotated tag. Tags are authoritative completion proof.
+### Per-Generation Pipeline (inside Phase 2)
+
+The Orchestrator LLM calls these MCP tools in order:
+
+1. **Direction Auditor**: Pre-Master LLM gate that checks git history for repetitive evolution directions. Forces structural alternatives if stuck.
+2. **Master Architect** (`prompts/master_prompt.md`): Analyzes ratings, experience pool, match data. Produces JSON task plan with 2 worker assignments — one "Algorithmic Logic Architect" (structural changes) and one "Hyperparameter Tuner" (constants only). Can set `branch_from` to evolve from a different ancestor.
+3. **Workers** (`prompts/worker_prompt.md`): Execute tasks in parallel (max 3 via semaphore), 4 retries each. Workers directly edit bot source files using Bash/Read/Edit tools.
+4. **Quality Gates** (automated, no LLM): `py_compile` check, 1 mirror battle smoke test, decision tests (≥70% pass), file size ≤1000 lines.
+5. **Code Reviewer** (`prompts/reviewer_prompt.md`): LLM reviews diff, enforces role boundaries, scores 1-10. Up to 3 retries.
+6. **Critic** (`prompts/critic_prompt.md`): Independent strategic quality gate. Score ≥6 to approve. Up to 2 intra-generation retries feeding feedback back to workers.
+7. **Pre-commit Eval**: Mirror battle regression check vs parent + top opponents.
+8. **Commit**: Git commit + `bot-v{N}` annotated tag. Tags are authoritative completion proof.
+9. **Archivist**: Snapshot, rotate, and verify old generation files.
 
 ### LLM Integration
 
@@ -82,7 +103,7 @@ Uses `claude_agent_sdk` (not the Anthropic SDK directly). Two distinct patterns:
 `orchestrator.py` → `create_sdk_mcp_server()` registers `@tool()` decorated functions from `tool_pipeline.py` + `tool_status.py`. The Orchestrator agent calls these tools (run_master, execute_workers, run_quality_gates, run_review, run_critic, commit_bot, etc.) to drive evolution. Each tool function receives `args` dict, runs business logic (often calling `run_claude_query()` for sub-agents), and returns MCP-formatted results. Session ID persisted for crash recovery (`orchestrator_session.json`). PreCompact hook injects pipeline state to survive LLM context compaction.
 
 **Pattern 2 — Direct `run_claude_query()` (Master, Workers, Reviewer, Critic, Analysts):**
-`evolution_infra.py:run_claude_query()` sends a prompt + context files to Claude. Streaming via `AssistantMessage`/`ResultMessage` types. Output captured as text, cost tracked per role. Each agent gets specific tool access: Workers get Bash/Read/Edit, Reviewer/Critic get Bash/Read, Analysts get no tools. API rate limit (529) handled with automatic retry + exponential backoff (30s, 60s, 120s).
+`evolution_infra.py:run_claude_query()` sends a prompt + context files to Claude. 700K char prompt budget — context files proportionally compressed when exceeded. Streaming via `AssistantMessage`/`ResultMessage` types. Output captured as text, cost tracked per role. Each agent gets specific tool access: Workers get Bash/Read/Edit, Reviewer/Critic get Bash/Read, Analysts get no tools. API rate limit (529) handled with automatic retry + exponential backoff (30s, 60s, 120s).
 
 **LLM agent roles and their tools:**
 
@@ -93,6 +114,7 @@ Uses `claude_agent_sdk` (not the Anthropic SDK directly). Two distinct patterns:
 | Workers | Bash, Read, Edit | Modify bot source code |
 | Reviewer | Bash, Read | Reviews diff, scores quality |
 | Critic | Bash, Read | Strategic assessment, score 1-10 |
+| Direction Auditor | None | Detects repetitive evolution directions |
 | Stagnation Analyst | None | JSON-only rating trend analysis |
 | Match Analyst | None | Analyzes replay summaries |
 | Performance Analyst | None | Synthesizes rating/win-rate trends |
@@ -134,25 +156,66 @@ React frontend:
 
 Entry point: `web/main.py` → `web/server/app.py`. Nine route modules in `server/routes/`:
 
-- `/api/data/stream` — Periodic SSE pushing dashboard data (ratings, bots, matches, history, etc.) at 3s/10s/15s intervals. Frontend's `DataProvider` context subscribes to this.
-- `/api/evolution/stream` — Event-driven SSE from `EventBroadcaster` (ring buffer 500 events, per-client asyncio.Queue). Used by EvolutionMonitor for real-time LLM output streaming. Events: `history`, `status`, `io`, `clear_io`, `eval_table`, `daemon`, `header`, `cost`, `metrics`, `tool_call`.
-- `/api/control/tool/{name}` — Invokes any of the MCP tools manually via the tool map. Records decisions in `app_state`.
-- `/api/control/start|stop` — Start/stop the orchestrator loop as asyncio tasks.
+- `/api/data/stream` — Periodic SSE pushing dashboard data at 3s/10s/15s intervals.
+- `/api/evolution/stream` — Event-driven SSE from `EventBroadcaster` (ring buffer 500 events, per-client asyncio.Queue).
+- `/api/control/tool/{name}` — Invokes any MCP tool manually.
+- `/api/control/start|stop` — Start/stop the orchestrator loop.
 - REST endpoints for ratings, bots, matches, logs, prompts, experience pool, pipeline state.
 
-All shared file reads use `fcntl.LOCK_SH` (shared) / `fcntl.LOCK_EX` (exclusive) with a 2-second TTL cache (`server/cache.py`).
+Shared utilities:
+- `server/cache.py` — In-memory 2s TTL cache with `fcntl.LOCK_SH` reads. All route modules share one `_CACHE` dict.
+- `server/state.py` — Thread-safe `AppState` singleton (RLock-protected). Manages daemon config, generation counter, orchestrator task reference, decisions log.
+- `server/routes/_helpers.py` — Pure data-building functions shared across routes (build_rating_row, build_ranked_ratings, build_match_matrix, etc.).
 
 ### Frontend (React 19 + Vite + Tailwind 4)
 
-`DataProvider` context in `App.tsx` opens a single `EventSource` to `/api/data/stream`. Pages consume typed hooks (`useRatings()`, `useBots()`, etc.) for auto-refreshing data. Page-specific data (replay details, log content, prompt editing) uses direct REST calls via `api/client.ts`. EvolutionMonitor has its own dedicated SSE connection to `/api/evolution/stream` for real-time LLM streaming.
+`DataProvider` context opens a single `EventSource` to `/api/data/stream`. Pages consume typed hooks (`useRatings()`, `useBots()`, etc.) for auto-refreshing data.
+
+| Path | Page | Data source |
+|------|------|-------------|
+| `/` | Overview | DataProvider hooks |
+| `/evolution` | EvolutionMonitor | Own SSE to `/api/evolution/stream` |
+| `/matches` | MatchReplay | REST (replay detail) |
+| `/rating-trends` | RatingTrends | DataProvider hooks |
+| `/match-matrix` | MatchMatrix | DataProvider hooks |
+| `/logs` | Logs | REST (log content) |
+| `/control` | ControlPanel | REST (control API) |
+| `/bots` | BotManager | REST (bot detail, code) |
+| `/experience` | ExperiencePool | REST (experience read/write) |
+| `/prompts` | PromptEditor | REST (prompt read/write) |
+
+Shared components in `src/components/shared/`: Card, Badge, MetricCard, Skeleton, SegmentedControl, StatusDot, EmptyState. All UI labels are in Chinese.
+
+### Engine (`engine/`)
+
+Local CLI poker battle system for testing bots offline.
+
+**Card protocol:** Integers 0-51. `number = card // 4 + 2` (2-14 = 2-A), `suit = card % 4` (0=♥, 1=♦, 2=♠, 3=♣).
+
+**Bot subprocess protocol:** JSON on stdin/stdout. Input: `{"requests": [...], "responses": [...], "data": ...}`. Output: `{"response": ACTION, "data": ...}`. Actions: `0`=check/call, `-1`=fold, `-2`=all-in, `>0`=raise. 30s timeout per decision.
+
+**Two process modes:** `_PersistentBot` (one Popen per game, line-delimited JSON) for performance, `_call_bot_subprocess()` (fresh process per decision) for debug.
+
+**Battle types:** `battle()` for standard matches, `mirror_battle()` plays each hand twice with swapped hole cards to eliminate luck of the deal.
+
+**Game format:** 50 hands per game, 20000 starting chips, blinds 50/100.
+
+### TCP Server (`sever/` — git submodule)
+
+A separate self-contained poker competition platform. Bots connect as TCP clients and play 70-hand matches. Has its own engine (`sever/engine/`), validator (13-rule action legality), web dashboard, and test suite.
+
+Key differences from `engine/`:
+- Line-delimited text protocol over TCP (not subprocess JSON)
+- Card format: `<suit,rank>` tuples (not integers)
+- Actions: text strings (`"call"`, `"fold"`, `"raise 200"`, `"allin"`)
+- Stateful `GameEngine` object (not stateless `judge()` function)
+- Strict action validation (illegal = auto-fold)
 
 ### Bot Versioning & Conventions
 
 - Bots: `bots/claude_v{N}/` (N monotonically increasing). `.completed` sentinel + `bot-v{N}` git tag.
 - Pool capped at 30 active; weakest culled by H2H average win rate to `bots/graveyard/`.
-- Cards: integers 0-51. `number = card // 4 + 2` (2-14 = 2-A), `suit = card % 4` (0=♥, 1=♦, 2=♠, 3=♣).
-- Bot protocol: JSON on stdin/stdout. `0`=check/call, `-1`=fold, `-2`=all-in, `>0`=raise. 30s timeout per decision.
-- Each game = 50 hands, 20000 chips, blinds 50/100. Botzone game ID: `63dcfaddee1bce5e6c8f4b53`.
+- Botzone game ID: `63dcfaddee1bce5e6c8f4b53`.
 
 ### Key Constants (evolution_infra.py)
 
@@ -170,15 +233,68 @@ All shared file reads use `fcntl.LOCK_SH` (shared) / `fcntl.LOCK_EX` (exclusive)
 
 ### Glicko-2 Daemon (`elo_daemon.py`)
 
-Background subprocess continuously running mirror battles. Match selection: 60% under-evaluated pairs + 40% rating-diverse pairs. Per-game Glicko-2 updates (not batch). Writes to all result files with `fcntl` locking. Continuous scheduling via `ProcessPoolExecutor` — replenishes match queue when empty. Replay files capped at 200. Responds to `.reap_signal` for immediate bot list refresh after commit.
+Background subprocess continuously running mirror battles. Match selection: 60% under-evaluated pairs + 40% rating-diverse pairs. Per-game Glicko-2 updates (not batch). Writes to all result files with `fcntl` locking. Continuous scheduling via `ProcessPoolExecutor`. Replay files capped at 200. Responds to `.reap_signal` for immediate bot list refresh after commit.
 
 Defaults: `r=1500`, `rd=350`, `sigma=0.06`, `tau=0.5`. Confidence levels: rd<50 green, 50-100 yellow, 100-200 orange, >200 red.
 
-### Process Recovery
+### Process Lifecycle & Recovery
 
-The system survives crashes via two mechanisms:
+- **ShutdownManager** (`shutdown_manager.py`): Asyncio-native SIGINT/SIGTERM handler. Double-signal kills process. All three generation phases check `shutdown_mgr.is_shutting_down` between operations.
 - **Orchestrator session persistence**: `orchestrator_session.json` stores the session ID. On restart, the Orchestrator resumes the exact LLM conversation. Cleared on natural cycle completion.
-- **Pipeline checkpoint**: `pipeline_state.json` tracks stage (`prepared` → `workers_done` → `quality_passed` → `reviewed` → `critic_checked` → `verified`), gate results, and master plan. Tools enforce stage ordering — `run_review` blocks if quality gates haven't passed, `commit_bot` blocks if any gate is missing.
+- **Pipeline checkpoint**: `pipeline_state.json` tracks stage (`prepared` → `direction_audited` → `master_planned` → `workers_done` → `quality_passed` → `reviewed` → `critic_checked` → `verified` → `archived`), gate results, and master plan. Tools enforce stage ordering — `run_review` blocks if quality gates haven't passed, `commit_bot` blocks if any gate is missing.
+- **Daemon lifecycle**: `start_daemon()` spawns `elo_daemon.py` as subprocess. `daemon_monitor_thread()` watches for crashes and auto-restarts. Daemon auto-exits on parent death via `getppid()==1` check.
+- **Orphan detection**: JSON PID file for daemon process tracking. 5s orphan detection interval.
+
+### Web Core Module Map
+
+| File | Lines | Role |
+|---|---|---|
+| `evolution_infra.py` | 1193 | Constants, git ops, daemon management, `run_claude_query()`, code verification, `locked_file()` |
+| `tool_pipeline.py` | 1362 | Core pipeline MCP tools (prepare → master → workers → quality → review → critic → commit) |
+| `agent_master.py` | 765 | Master Architect + stagnation/match/performance analysis |
+| `orchestrator.py` | 873 | LLM-driven orchestrator loop, session persistence, context assembly |
+| `elo_daemon.py` | 712 | Background mirror battle subprocess with Glicko-2 updates |
+| `tool_status.py` | 645 | Non-pipeline MCP tools (queries, daemon control, bot management) |
+| `tool_helpers.py` | 503 | Shared helpers: UI injection, checkpoint gates, H2H utilities, boundary validation |
+| `agent_review.py` | 296 | Critic, Performance Verification, Crossover agents |
+| `web_ui.py` | 292 | `EventBroadcaster` (ring buffer 500) + `WebUI` (terminal + SSE dual output) |
+| `generation_scheduler.py` | 236 | Three-phase cycle: prepare, run, post-cleanup |
+| `agent_workers.py` | 227 | Worker execution: parallel/serial dispatch, timeout isolation, retry logic |
+| `glicko2.py` | 222 | Pure Glicko-2 rating algorithm |
+| `reset.py` | 222 | Wipe evolution state to baseline |
+| `decision_tester.py` | 202 | Predefined scenario tests against bots (folding AA preflop, etc.) |
+| `logging_config.py` | 121 | Structured logging: colored console, rotating file, SSE handler |
+| `commentary.py` | 129 | Deterministic match replay commentary (no LLM) |
+| `shutdown_manager.py` | 80 | Asyncio-native SIGINT/SIGTERM handler |
+| `tools.py` | 107 | MCP server registration + tool aggregation |
+| `evolution_core.py` | 68 | Re-export facade for backward compatibility |
+| `smoke_tester.py` | 34 | Run 1 mirror match as sanity check |
+| `system_log.py` | 33 | Structured JSONL event logger |
+| `experience_pool.py` | 40 | Experience pool trim logic (keep under 120 lines) |
+
+### Scripts
+
+| Script | Purpose |
+|---|---|
+| `scripts/botzone_upload_match.py` | Full Botzone client: upload, rooms, matches, ranking |
+| `scripts/botzone_room_series.py` | Batch room matches on Botzone |
+| `scripts/botzone_multi_account_upload.py` | Multi-account bot upload |
+| `scripts/ref_strategy_labels.py` | Offline strategy analysis / labeling |
+| `scripts/reset_evolution.py` | Reset evolution to baseline (keeps v1-v6) |
+| `scripts/test_claude_cli.py` | Claude CLI testing utility |
+
+## Key Conventions
+
+- All shared files use `fcntl` file locking for concurrent access between daemon subprocess, orchestrator, and API server
+- Worker role boundaries enforced by prompts and reviewer: Logic Architects cannot tune constants, Hyperparameter Tuners cannot add functions
+- `_validate_worker_boundaries()` checks edits don't cross role boundaries after each worker run
+- Worker failures recorded to `worker_failures.jsonl` and injected into future worker prompts as memory
+- Experience pool consolidated by LLM every 3 generations
+- `_BLOCKED_MCP_TOOLS` in `evolution_infra.py` blocks external MCP tools from sub-agents
+- `_WORKER_SEMAPHORE` (asyncio.Semaphore, max 3) limits concurrent LLM worker calls
+- `_PersistentBot` keeps one Popen alive for an entire game (2x battle speedup vs per-decision subprocess)
+- Tests use `starlette.testclient.TestClient` with no lifespan (no orchestrator/daemon startup)
+- Test naming: `test_routes_*.py` (HTTP endpoints), `test_logic_*.py` (pure functions), `test_mcp_*.py` (MCP tool handlers)
 
 ## Post-Task Workflow
 

@@ -1,0 +1,398 @@
+"""Pipeline tools: quality gates, code preparation, review, and critic."""
+
+import json
+import shutil
+from typing import Annotated, TypedDict
+
+from claude_agent_sdk import tool
+
+from evolution_core import (
+    get_bot_dir,
+    get_logs_dir,
+    find_current_v,
+    verify_code,
+    check_code_size,
+    run_smoke_test,
+    run_decision_test_details,
+    parse_json_output,
+    run_claude_query,
+    _run_critic,
+)
+from tool_helpers import (
+    _get_ui, _json_tool_result,
+    _matching_checkpoint, _record_gate, _gate_payload, _state_blocked,
+    _quality_gate_ok, _review_gate_ok, _critic_gate_ok,
+    PROJECT_ROOT,
+)
+from system_log import log_system_event
+
+
+def _record_quality_failure(gen, worker_id, role, error):
+    """Record a quality gate rejection (reviewer/critic) to worker_failures.jsonl."""
+    import time
+    from evolution_core import WORKER_FAILURES_FILE, locked_file
+    entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error, "timestamp": time.time()}
+    with locked_file(WORKER_FAILURES_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+# ──────────────────────────────────────────────
+# Quality Gates
+# ──────────────────────────────────────────────
+
+class RunQualityGatesInput(TypedDict):
+    version: Annotated[int, "Bot version to test"]
+    source_v: Annotated[int, "Source version this bot was derived from"]
+
+
+@tool("run_quality_gates", "Run all quality gates on a bot: compile check, smoke test, decision tests, and file size check.", {"version": int, "source_v": int})
+async def run_quality_gates(args):
+    v = args["version"]
+    source_v = args.get("source_v")
+    bot_dir = get_bot_dir(v)
+
+    compile_errors = verify_code(bot_dir)
+    smoke_errors = run_smoke_test(bot_dir)
+    decision_detail = run_decision_test_details(bot_dir)
+    decision_rate = decision_detail.get("pass_rate", 0.0)
+    critical_failures = decision_detail.get("critical_failures", [])
+    critical_ok = len(critical_failures) == 0
+    total_lines, oversized = check_code_size(bot_dir)
+    decision_ok = decision_rate >= 0.7 and critical_ok
+
+    all_passed = (
+        len(compile_errors) == 0
+        and len(smoke_errors) == 0
+        and decision_ok
+        and len(oversized) == 0
+    )
+
+    result = {
+        "version": v,
+        "compile_ok": len(compile_errors) == 0,
+        "compile_errors": compile_errors[:3] if compile_errors else [],
+        "smoke_ok": len(smoke_errors) == 0,
+        "smoke_errors": smoke_errors[:3] if smoke_errors else [],
+        "decision_pass_rate": round(decision_rate, 2),
+        "decision_ok": decision_ok,
+        "critical_scenarios_passed": critical_ok,
+        "critical_passed": decision_detail.get("critical_passed", 0),
+        "critical_total": decision_detail.get("critical_total", 0),
+        "critical_failures": critical_failures,
+        "decision_failures": decision_detail.get("failures", []),
+        "scenario_results": decision_detail.get("scenarios", []),
+        "total_lines": total_lines,
+        "oversized_files": {name: lines for name, lines in oversized} if oversized else {},
+        "size_ok": len(oversized) == 0,
+        "all_passed": all_passed,
+    }
+
+    # Build list of which specific gates failed (for diagnostics)
+    failed_gates_detail = []
+    if compile_errors:
+        failed_gates_detail.append("compile")
+    if smoke_errors:
+        failed_gates_detail.append("smoke_test")
+    if not decision_ok:
+        failed_gates_detail.append(f"decision_tests({decision_rate:.0%})")
+    if oversized:
+        failed_gates_detail.append(f"file_size({', '.join(f'{n}:{l}L' for n, l in oversized)})")
+
+    log_system_event(
+        "pipeline.quality_passed" if all_passed else "pipeline.quality_failed",
+        "success" if all_passed else "error",
+        f"Quality gates {'passed' if all_passed else 'failed'} for v{v}: {', '.join(failed_gates_detail) or 'all checks passed'}",
+        {"version": v, "pass_rate": round(decision_rate, 2), "all_passed": all_passed,
+         "failed_gates": failed_gates_detail if not all_passed else []},
+    )
+
+    _ckpt = _matching_checkpoint(v, source_v) if source_v is not None else _matching_checkpoint(v)
+    if _ckpt:
+        source_v = _ckpt["source_v"]
+        gate = _gate_payload(
+            v,
+            source_v,
+            all_passed,
+            all_passed=all_passed,
+            critical_scenarios_passed=critical_ok,
+            decision_pass_rate=round(decision_rate, 4),
+            critical_failures=critical_failures,
+        )
+        _record_gate(
+            v,
+            source_v,
+            "quality",
+            gate,
+            stage="quality_passed" if all_passed else _ckpt.get("stage", "workers_done"),
+        )
+        result["checkpoint_recorded"] = True
+        result["source_v"] = source_v
+    else:
+        result["checkpoint_recorded"] = False
+
+    return _json_tool_result(result)
+
+
+# ──────────────────────────────────────────────
+# Prepare Next Gen
+# ──────────────────────────────────────────────
+
+class PrepareNextGenInput(TypedDict):
+    source_v: Annotated[int, "Source bot version to copy from"]
+    next_v: Annotated[int, "Target version"]
+
+
+@tool("prepare_next_gen", "Prepare the next generation directory by copying from source bot.", {"source_v": int, "next_v": int})
+async def prepare_next_gen(args):
+    source_v = args["source_v"]
+    next_v = args["next_v"]
+
+    if next_v <= source_v:
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"next_v ({next_v}) must be greater than source_v ({source_v})"})}]}
+
+    # Guard against clearly invalid version numbers (test artifacts)
+    if next_v >= 900:
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"next_v ({next_v}) is invalid. Version numbers must be < 900."})}]}
+
+    current_v = find_current_v()
+    if next_v > current_v + 10:
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"next_v ({next_v}) is too far ahead of current_v ({current_v}). Use next_v = {current_v + 1}."})}]}
+
+    source_dir = get_bot_dir(source_v)
+    next_dir = get_bot_dir(next_v)
+
+    if not source_dir.exists():
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"Source bot v{source_v} not found"})}]}
+
+    # Guard: warn if source bot is not completed (may be broken)
+    if not (source_dir / ".completed").exists():
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"Source bot v{source_v} is not marked completed. Cannot use incomplete code as source."})}]}
+
+    # Guard: refuse to overwrite a completed bot
+    if next_dir.exists() and (next_dir / ".completed").exists():
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"Target v{next_v} already exists and is completed. Refusing to overwrite."})}]}
+
+    # Guard: refuse to re-prepare if pipeline has already progressed past "prepared"
+    _ckpt = _matching_checkpoint(next_v, source_v)
+    if _ckpt and _ckpt.get("stage") not in (None, "prepared"):
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"Pipeline for v{next_v} already at stage '{_ckpt['stage']}'. Refusing to overwrite worker output. Call abandon_generation first if you want to restart."})}]}
+
+    if next_dir.exists():
+        shutil.rmtree(next_dir)
+    shutil.copytree(source_dir, next_dir, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    (next_dir / ".completed").unlink(missing_ok=True)
+
+    # Write "prepared" checkpoint so a kill+restart shows "Workers not yet run → call execute_workers"
+    from evolution_infra import write_pipeline_checkpoint
+    write_pipeline_checkpoint(next_v, source_v, "prepared", worker_invocation_count=0)
+
+    log_system_event("pipeline.prepare", "info", f"Prepared v{next_v} from v{source_v}",
+                     {"next_v": next_v, "source_v": source_v})
+
+    return {"content": [{"type": "text", "text": json.dumps({"prepared": True, "next_v": next_v, "source_v": source_v})}]}
+
+
+# ──────────────────────────────────────────────
+# Review Stage
+# ──────────────────────────────────────────────
+
+class RunReviewInput(TypedDict):
+    version: Annotated[int, "Bot version being reviewed"]
+    source_v: Annotated[int, "Parent bot version"]
+    plan: Annotated[list, "Master's task plan"]
+
+
+@tool("run_review", "Run Lead Code Reviewer on the bot changes. Returns approval decision with quality score.", {"version": int, "source_v": int, "plan": list})
+async def run_review(args):
+    v = args["version"]
+    source_v = args["source_v"]
+    plan = args["plan"]
+
+    ckpt = _matching_checkpoint(v, source_v)
+    if not _quality_gate_ok(ckpt):
+        return _state_blocked(
+            "run_review requires run_quality_gates all_passed=true and critical_scenarios_passed=true for the same version/source_v.",
+            v,
+            source_v,
+            ckpt,
+        )
+
+    prompts_dir = PROJECT_ROOT / "web" / "core" / "prompts"
+    reviewer_prompt = (prompts_dir / "reviewer_prompt.md").read_text()
+    reviewer_prompt = reviewer_prompt.replace("{master_plan}", json.dumps(plan, indent=2))
+    reviewer_prompt = reviewer_prompt.replace("{version}", str(v))
+    reviewer_prompt = reviewer_prompt.replace("{parent_version}", str(source_v))
+
+    log_file = get_logs_dir(v) / "reviewer_io.txt"
+
+    ui = _get_ui()
+    try:
+        output, _, _ = await run_claude_query(
+            reviewer_prompt, [], ui, "LEAD CODE REVIEWER", log_file, tools=["Bash", "Read"]
+        )
+    except Exception as e:
+        ui.log_history(f"Reviewer error: {e}. Defaulting to rejected.", "warn")
+        output = None
+    data = parse_json_output(output)
+
+    if data and "approved" in data:
+        approved = data["approved"] is True
+        feedback = data.get("feedback", "")
+        log_system_event(
+            "pipeline.review_passed" if approved else "pipeline.review_rejected",
+            "success" if approved else "warn",
+            f"Review {'approved' if approved else 'rejected'} v{v} (score={data.get('quality_score', 0)})",
+            {"version": v, "score": data.get("quality_score", 0), "approved": approved},
+        )
+        gate = _gate_payload(
+            v,
+            source_v,
+            approved,
+            approved=approved,
+            quality_score=data.get("quality_score", 0),
+            feedback=feedback,
+            change_summary=data.get("change_summary", ""),
+            risk_areas=data.get("risk_areas", []),
+        )
+        checkpoint_recorded = _record_gate(
+            v,
+            source_v,
+            "review",
+            gate,
+            stage="reviewed" if approved else None,
+            master_plan=ckpt.get("master_plan") if ckpt else plan,
+            reviewer_feedback=feedback,
+        )
+        if not approved:
+            _record_quality_failure(v, "reviewer", "Code Reviewer",
+                                    f"Rejected (score={data.get('quality_score', 0)}): {feedback[:2000]}")
+        result = {
+            "approved": approved,
+            "quality_score": data.get("quality_score", 0),
+            "change_summary": data.get("change_summary", ""),
+            "risk_areas": data.get("risk_areas", []),
+            "feedback": feedback,
+            "checkpoint_recorded": checkpoint_recorded,
+            "logs": ui.get_output(),
+        }
+    else:
+        error_msg = (
+            "Reviewer returned valid JSON but missing 'approved' field"
+            if data and isinstance(data, dict)
+            else "Reviewer failed to produce valid JSON"
+        )
+        gate = _gate_payload(
+            v,
+            source_v,
+            False,
+            approved=False,
+            error=error_msg,
+            raw_output=output[:500] if output else "",
+        )
+        checkpoint_recorded = _record_gate(
+            v,
+            source_v,
+            "review",
+            gate,
+            stage=None,
+            master_plan=ckpt.get("master_plan") if ckpt else plan,
+            reviewer_feedback=error_msg,
+        )
+        result = {
+            "approved": False,
+            "error": error_msg,
+            "raw_output": output[:500] if output else "",
+            "checkpoint_recorded": checkpoint_recorded,
+            "logs": ui.get_output(),
+        }
+
+    return _json_tool_result(result)
+
+
+# ──────────────────────────────────────────────
+# Critic Stage
+# ──────────────────────────────────────────────
+
+class RunCriticInput(TypedDict):
+    version: Annotated[int, "Bot version being evaluated"]
+    source_v: Annotated[int, "Parent bot version"]
+    plan: Annotated[list, "Master's task plan (list of task dicts)"]
+    reviewer_feedback: Annotated[str, "Reviewer feedback if available (or '')"]
+    force_advance: Annotated[bool, "Set true when retries exhausted — advances checkpoint to critic_checked regardless of score so a kill+restart does not re-trigger the retry loop"]
+
+
+@tool("run_critic", "Run Poker Strategy Critic on bot changes. Returns score 1-10 and strategic feedback. score ≥ 6 = approved.", {"version": int, "source_v": int, "plan": list, "reviewer_feedback": str, "force_advance": bool})
+async def run_critic(args):
+    v = args["version"]
+    source_v = args["source_v"]
+    plan = args["plan"]
+    reviewer_feedback = args.get("reviewer_feedback", "")
+    force_advance = args.get("force_advance", False)
+
+    ckpt = _matching_checkpoint(v, source_v)
+    if not _quality_gate_ok(ckpt) or not _review_gate_ok(ckpt):
+        return _state_blocked(
+            "run_critic requires passing quality gates and reviewer approval for the same version/source_v.",
+            v,
+            source_v,
+            ckpt,
+        )
+
+    master_plan_str = json.dumps(plan, indent=2)
+    prev_critic = ckpt.get("gate_results", {}).get("critic", {}).get("prev_critic") if ckpt else None
+    ui = _get_ui()
+    data = await _run_critic(v, source_v, master_plan_str, ui, prev_critic_result=prev_critic)
+
+    if not isinstance(data, dict):
+        data = {}
+    score = data.get("score", 0)
+    try:
+        score_num = float(score)
+    except (TypeError, ValueError):
+        score_num = 0.0
+    raw_approved = data.get("approved", score_num >= 6)
+    approved = bool(raw_approved) and score_num >= 6
+    force_advanced = force_advance and not approved
+    gate = _gate_payload(
+        v,
+        source_v,
+        approved,
+        approved=approved,
+        raw_approved=raw_approved,
+        score=score_num,
+        feedback=data.get("feedback", ""),
+        strategic_assessment=data.get("strategic_assessment", ""),
+        local_optima_warning=data.get("local_optima_warning", False),
+        force_advanced=force_advanced,
+    )
+    checkpoint_recorded = _record_gate(
+        v,
+        source_v,
+        "critic",
+        gate,
+        stage="critic_checked" if approved or force_advanced else None,
+        master_plan=ckpt.get("master_plan") if ckpt else plan,
+        reviewer_feedback=reviewer_feedback,
+    )
+    if not approved:
+        _record_quality_failure(v, "critic", "Strategy Critic",
+                                f"Rejected (score={score_num}): {data.get('feedback', '')[:2000]}")
+
+    log_system_event(
+        "pipeline.critic_passed" if approved else "pipeline.critic_rejected",
+        "success" if approved else "warn",
+        f"Critic {'approved' if approved else 'rejected'} v{v} (score={score_num})",
+        {"version": v, "score": score_num, "approved": approved},
+    )
+
+    result = {
+        **data,
+        "approved": approved,
+        "raw_approved": raw_approved,
+        "score": score_num,
+        "logs": ui.get_output(),
+        "action": "approve" if approved else ("force_commit" if force_advanced else "retry_workers"),
+        "force_advanced": force_advanced,
+        "checkpoint_recorded": checkpoint_recorded,
+    }
+    return _json_tool_result(result)

@@ -10,7 +10,7 @@ import pytest
 class TestPrepareNextGen:
     def test_creates_directory(self, client, tmp_path, monkeypatch):
         import evolution_infra
-        import tool_pipeline
+        import tool_gates
 
         fake_bots = tmp_path / "bots"
         fake_bots.mkdir()
@@ -19,7 +19,7 @@ class TestPrepareNextGen:
         (src / "main.py").write_text("x = 1\n")
         (src / ".completed").touch()
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", fake_bots)
-        monkeypatch.setattr(tool_pipeline, "get_bot_dir", evolution_infra.get_bot_dir)
+        monkeypatch.setattr(tool_gates, "get_bot_dir", evolution_infra.get_bot_dir)
 
         fake_results = tmp_path / "results"
         fake_results.mkdir()
@@ -28,7 +28,7 @@ class TestPrepareNextGen:
         monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", fake_ckpt)
 
         monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 99)
-        monkeypatch.setattr(tool_pipeline, "find_current_v", lambda: 99)
+        monkeypatch.setattr(tool_gates, "find_current_v", lambda: 99)
 
         resp = client.post("/api/control/tool/prepare_next_gen",
                            json={"args": {"source_v": 99, "next_v": 100}})
