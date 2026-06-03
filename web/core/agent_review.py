@@ -41,7 +41,7 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
 
     if prev_critic_result:
         prev_score = prev_critic_result.get("score", 0)
-        prev_feedback = prev_critic_result.get("feedback", "")[:1000]
+        prev_feedback = (prev_critic_result.get("feedback") or "")[:1000]
         critic_prompt += (
             f"\n\n# Previous Critic Evaluation (for context — you are evaluating an UPDATED version):\n"
             f"- Previous Score: {prev_score}\n"

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+from pathlib import Path
 from typing import Annotated, TypedDict
 
 from claude_agent_sdk import tool
@@ -13,6 +14,7 @@ from evolution_core import (
     load_ratings,
     verify_code,
     run_smoke_test,
+    CORE_DIR,
 )
 from glicko2 import Glicko2Player, update_rating_period
 
@@ -101,7 +103,8 @@ async def run_precommit_eval(args):
     total_wins = 0
     total_losses = 0
     total_draws = 0
-    sys.path.insert(0, str(CORE_DIR.resolve()))
+    _core = CORE_DIR if 'CORE_DIR' in dir() else Path(__file__).resolve().parent
+    sys.path.insert(0, str(_core.resolve()))
     from engine.battle import mirror_battle
 
     # Defensive: ensure asyncio is available even if MCP server cached a stale module
@@ -222,7 +225,8 @@ async def run_inline_eval(args):
         return {"content": [{"type": "text", "text": json.dumps({"error": "Daemon is running. Stop it first with stop_daemon to avoid ratings race condition."})}]}
 
     # Import battle engine
-    sys.path.insert(0, str(CORE_DIR.resolve()))
+    _core = CORE_DIR if 'CORE_DIR' in dir() else Path(__file__).resolve().parent
+    sys.path.insert(0, str(_core.resolve()))
     from engine.battle import mirror_battle
 
     ratings = load_ratings()
