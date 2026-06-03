@@ -81,12 +81,13 @@ def choose_anti_lock_pressure_action(
         return -2
 
     min_raise_action = state.get("min_raise_action", state["round_raise"])
+    my_round_bet = state["my_round_bet"]
 
     if round_idx == 0:
         ratio = 2.20 if to_call == 0 else 2.60
         target = int(to_call + pot_after_call * ratio)
         strength = preflop_strength if preflop_strength is not None else win_rate
-        target = max(target, int((5.5 + max(0.0, strength - 0.50) * 3.0) * BIG_BLIND) - state["my_round_bet"])
+        target = max(target, int((5.5 + max(0.0, strength - 0.50) * 3.0) * BIG_BLIND) - my_round_bet)
     elif round_idx == 1:
         target = int(to_call + pot_after_call * 1.15)
     elif round_idx == 2:
@@ -102,12 +103,16 @@ def choose_anti_lock_pressure_action(
         target = int(target * 1.12)
 
     amount = max(min_raise_action, target)
-    if amount >= my_chips * 0.72:
+    raise_to_total = my_round_bet + amount
+    raise_to_total = max(min_raise_action, raise_to_total)
+    raise_to_total = min(raise_to_total, my_round_bet + my_chips - 1)
+    if raise_to_total >= my_round_bet + my_chips:
         return -2
-    amount = min(amount, my_chips - 1)
-    if amount <= to_call or amount < min_raise_action:
+    if raise_to_total >= my_round_bet + my_chips * 0.72:
+        return -2
+    if raise_to_total <= my_round_bet + to_call or raise_to_total < min_raise_action:
         return -2 if hands_left <= 4 else None
-    return amount
+    return raise_to_total
 
 
 def paired_board_stackoff_profile(pair_profile, paired_board_profile, board_texture, spot_info, round_idx):

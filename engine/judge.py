@@ -304,24 +304,21 @@ class Holdem:
             self.player_chips[self.round_idx] = 0
             action_type = "allin"
         elif bet == Holdem.CALL:  # call/check, 下注或跟注
-            # 非法: 翻牌后第一个行为不能是 call（必须 check 或 raise）
             round_actions = self._actions_in_current_round()
-            if self.round != Holdem.PRE_FLOP and round_actions == 0:
-                return self.player_action(Holdem.FOLD)
-            # 非法: preflop BB 在 SB call 后不能再 call/check
-            if self.round == Holdem.PRE_FLOP:
-                non_dealer = (self.dealer_idx + 1) % self.num_players
-                is_bb = self.round_idx == non_dealer  # dealer=SB, non-dealer=BB
-                if is_bb:
-                    sb_actions = [h for h in self.history
-                                  if h["round"] == Holdem.PRE_FLOP and h["player_id"] == self.dealer_idx]
-                    if sb_actions and sb_actions[-1]["action_type"] == "call" and round_actions == 1:
-                        return self.player_action(Holdem.FOLD)
             inc = self.round_bet - self.round_player_bet[self.round_idx]  # 下注增量
-            if inc <= 0:  # check 场景
-                self.round_player_bet[self.round_idx] = self.round_bet
-                action_type = "check"
-            else:
+            if inc > 0:  # call 场景（有注要跟）
+                # 非法: 翻牌后第一个行为不能是 call（必须 check 或 raise）
+                if self.round != Holdem.PRE_FLOP and round_actions == 0:
+                    return self.player_action(Holdem.FOLD)
+                # 非法: preflop BB 在 SB call 后不能再 call
+                if self.round == Holdem.PRE_FLOP:
+                    non_dealer = (self.dealer_idx + 1) % self.num_players
+                    is_bb = self.round_idx == non_dealer  # dealer=SB, non-dealer=BB
+                    if is_bb:
+                        sb_actions = [h for h in self.history
+                                      if h["round"] == Holdem.PRE_FLOP and h["player_id"] == self.dealer_idx]
+                        if sb_actions and sb_actions[-1]["action_type"] == "call" and round_actions == 1:
+                            return self.player_action(Holdem.FOLD)
                 # 筹码不够 call 时，允许全下所有剩余筹码
                 actual_call = min(inc, self.player_chips[self.round_idx])
                 self.pot += actual_call
@@ -332,6 +329,9 @@ class Holdem:
                     action_type = "allin"
                 else:
                     action_type = "call"
+            else:  # inc <= 0 → check（永远合法）
+                self.round_player_bet[self.round_idx] = self.round_bet
+                action_type = "check"
         elif bet > 0:  # raise, 加注到指定金额（raise-to-total）
             raise_to = bet  # bet 表示加注到的阶段总额
             current_bet = self.round_player_bet[self.round_idx]
@@ -339,6 +339,9 @@ class Holdem:
 
             # 非法: allin 后不能 raise
             if self.allin_occurred:
+                return self.player_action(Holdem.FOLD)
+            # 非法: raise 必须超过当前阶段最大注
+            if raise_to <= self.round_bet:
                 return self.player_action(Holdem.FOLD)
             # 非法: raise 到的金额等于全部筹码时必须用 allin
             if self.player_chips[self.round_idx] == additional:
