@@ -18,7 +18,7 @@ from tool_helpers import (
     _get_ui, _json_tool_result,
     _matching_checkpoint, _state_blocked,
     _validate_worker_boundaries,
-    _target_rel,
+    _target_rel, _py_files_changed_between,
     PROJECT_ROOT,
 )
 from system_log import log_system_event
@@ -323,6 +323,16 @@ async def execute_workers(args):
                         dst_file.write_text(src_file.read_text())
                     elif dst_file.exists():
                         dst_file.unlink()
+                # After resetting files, check if ANY .py files still differ.
+                # If not, the code is back to source state — revert checkpoint stage
+                # so the orchestrator knows workers need to re-run from scratch.
+                remaining_changes = [p for p in _py_files_changed_between(src_dir, next_dir) if 'backup' not in p]
+                if not remaining_changes:
+                    # All changes were reset — code is identical to source.
+                    # Do NOT advance checkpoint to workers_done.
+                    log_system_event("pipeline.workers_all_reset", "warn",
+                                     f"All worker changes reset for v{next_v} — code identical to v{source_v}",
+                                     {"next_v": next_v, "source_v": source_v})
 
     if success:
         from evolution_infra import write_pipeline_checkpoint

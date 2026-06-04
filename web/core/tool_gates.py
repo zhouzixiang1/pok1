@@ -22,7 +22,7 @@ from tool_helpers import (
     _get_ui, _json_tool_result,
     _matching_checkpoint, _record_gate, _gate_payload, _state_blocked,
     _quality_gate_ok, _review_gate_ok, _critic_gate_ok,
-    PROJECT_ROOT,
+    _py_files_changed_between, PROJECT_ROOT,
 )
 from system_log import log_system_event
 
@@ -51,6 +51,19 @@ async def run_quality_gates(args):
     source_v = args.get("source_v")
     bot_dir = get_bot_dir(v)
 
+    # CRITICAL: Check that code actually changed vs source.
+    # Prevents zombie loop where workers reset code but quality gates pass on unchanged (parent) code.
+    code_changed = True
+    changed_files_list = []
+    if source_v is not None:
+        source_dir = get_bot_dir(source_v)
+        changed_files_list = [p for p in _py_files_changed_between(source_dir, bot_dir) if 'backup' not in p]
+        code_changed = len(changed_files_list) > 0
+        if not code_changed:
+            log_system_event("pipeline.quality_no_changes", "error",
+                             f"Quality gates: v{v} is byte-for-byte identical to v{source_v} -- workers made zero changes",
+                             {"version": v, "source_v": source_v})
+
     compile_errors = verify_code(bot_dir)
     smoke_errors = run_smoke_test(bot_dir)
     decision_detail = run_decision_test_details(bot_dir)
@@ -65,10 +78,13 @@ async def run_quality_gates(args):
         and len(smoke_errors) == 0
         and decision_ok
         and len(oversized) == 0
+        and code_changed  # MUST have at least one changed .py file
     )
 
     result = {
         "version": v,
+        "code_changed": code_changed,
+        "changed_files": changed_files_list,
         "compile_ok": len(compile_errors) == 0,
         "compile_errors": compile_errors[:3] if compile_errors else [],
         "smoke_ok": len(smoke_errors) == 0,
@@ -95,6 +111,8 @@ async def run_quality_gates(args):
         failed_gates_detail.append("smoke_test")
     if not decision_ok:
         failed_gates_detail.append(f"decision_tests({decision_rate:.0%})")
+    if not code_changed:
+        failed_gates_detail.append(f"no_code_changes(v{v} identical to v{source_v})")
     if oversized:
         failed_gates_detail.append(f"file_size({', '.join(f'{n}:{l}L/{lim}L' for n, l, lim in oversized)})")
 

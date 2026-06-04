@@ -118,6 +118,20 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     )
 
 
+def _count_consecutive_diversity_needed(perf_text):
+    """Count how many consecutive periods have diversity_needed: true in perf verification."""
+    if not perf_text:
+        return 0
+    import json
+    try:
+        data = json.loads(perf_text) if isinstance(perf_text, str) else perf_text
+    except (json.JSONDecodeError, TypeError):
+        return 0
+    # The performance verification is for the current generation only,
+    # so we can check if diversity_needed is set.
+    return 1 if data.get("diversity_needed") else 0
+
+
 def _decide_strategy(stagnation, perf, current_v, ratings):
     """Deterministic strategy selection based on analysis results."""
     if stagnation and stagnation.get("is_stagnant") and stagnation.get("confidence") == "high":
@@ -129,6 +143,15 @@ def _decide_strategy(stagnation, perf, current_v, ratings):
         branch_v = _parse_branch_from(stagnation["branch_from"])
         if branch_v is not None:
             return "master", branch_v, ()
+
+    # Force diversity: if performance verification flags diversity_needed,
+    # try crossover to break out of local optima
+    if perf and _count_consecutive_diversity_needed(perf):
+        parents = _pick_crossover_parents(ratings, current_v)
+        if parents:
+            log.info("Diversity injection: forcing crossover (%s, %s) to break local optimum",
+                     f"v{parents[0]}", f"v{parents[1]}")
+            return "crossover", parents[0], parents
 
     return "master", current_v, ()
 

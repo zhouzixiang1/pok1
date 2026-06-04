@@ -63,13 +63,22 @@ Do not broaden scope. Only modify your assigned `target_files`.
 <verification>
 After editing:
 
-1. **Verify changes**: Use `diff -rq bots/claude_v{parent_version}/ bots/claude_v{version}/` to list changed files, then `diff` each changed file. Ensure no unintended modifications outside `target_files`.
-2. **Run quality checks**:
+1. **SUBSTANTIVE CHANGE CHECK** (CRITICAL — do this FIRST):
+   Run: `diff bots/claude_v{parent_version}/TARGET_FILE bots/claude_v{version}/TARGET_FILE`
+   If the diff shows ONLY formatting changes (whitespace, blank lines, docstrings, comments, collapsed multi-line), your edits FAILED.
+   You MUST see at least ONE of: new function definition, changed numeric constant, new conditional logic, changed return value.
+   If you see only formatting, re-read the file and implement the ACTUAL required changes.
+
+2. **Verify changes**: Use `diff -rq bots/claude_v{parent_version}/ bots/claude_v{version}/` to list changed files, then `diff` each changed file. Ensure no unintended modifications outside `target_files`.
+
+3. **Run quality checks**:
    - Compile: `python -m py_compile bots/claude_v{version}/main.py`
    - Smoke test: `python web/core/smoke_tester.py bots/claude_v{version}/main.py`
    - Fix any errors before finishing.
-3. **Role boundary check**: Review ALL changes. If you are a Tuner, verify every change is a numeric constant. If you are an Architect, verify you did not change well-tuned constants.
-4. **Protocol check**: Verify the bot still outputs `{"response": <int>}` via stdout. Action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.
+
+4. **Role boundary check**: Review ALL changes. If you are a Tuner, verify every change is a numeric constant. If you are an Architect, verify you did not change well-tuned constants.
+
+5. **Protocol check**: Verify the bot still outputs `{"response": <int>}` via stdout. Action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.
 </verification>
 
 <output>

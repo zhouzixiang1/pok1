@@ -26,6 +26,21 @@ Pipeline order (drive forward only; failures may retreat to `workers` or `master
 | commit | `commit_bot` |
 | archivist | `run_archivist` |
 </state_machine>
+<validation_handling>
+When `run_master` returns a JSON result:
+- If the result contains `"plan"` key → Master SUCCEEDED. Proceed to `execute_workers`.
+- If the result contains `"error"` key but NO `"plan"` key → Master FAILED. You may retry.
+- `validation_warnings` in a successful result are INFORMATIONAL ONLY — they do NOT block execution.
+- NEVER retry `run_master` when the result contains a valid `"plan"`. This wastes $0.8-1.0 and 3-5 minutes per retry.
+</validation_handling>
+
+<code_change_verification>
+After workers complete and before calling `run_quality_gates`, you MUST verify that code actually changed:
+1. Run: `diff -rq bots/claude_v{source_v}/ bots/claude_v{next_v}/ --exclude='__pycache__' --exclude='.completed'`
+2. If NO .py files differ, workers failed to modify code. Do NOT proceed to quality gates.
+3. Instead, retry workers with feedback: "Workers produced zero code changes. All files are identical to the parent."
+This prevents the zombie loop where quality gates pass on unchanged code.
+</code_change_verification>
 
 <gate_requirements>
 Do NOT call `commit_bot()` unless ALL of these are satisfied:
@@ -39,11 +54,14 @@ Do NOT call `commit_bot()` unless ALL of these are satisfied:
 
 <retry_rules>
 - Track `intra_gen_attempts` (start at 0)
+- Master fails → retry at most 2 times total. If still failing, abandon this generation.
 - Quality gates fail → retry workers with failure message
 - Reviewer rejects → inject feedback, retry workers (counts toward attempts)
 - Critic score < 6 AND attempts < 2: inject critic feedback, retry workers
 - Critic score < 6 AND attempts >= 2: do NOT commit. Return to Master or retry workers with narrower fix
 - Precommit fails → inject exact blocker, retry workers or return to Master
+- Workers produce zero code changes → retry workers with explicit feedback. If still zero changes after 2 retries, abandon this generation.
+- Total intra_gen_attempts must not exceed 4. If exhausted, abandon and start fresh.
 </retry_rules>
 
 <optimization_metric>

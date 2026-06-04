@@ -168,7 +168,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     print(f"\n[ERROR] {e}")
             return "".join(texts), cost, ok, gen, auth_err
 
-        CYCLE_TIMEOUT = 1800  # 30 minutes max per cycle
+        CYCLE_TIMEOUT = 3600  # 60 minutes max per cycle (was 1800s, increased for retry cycles)
         query_gen = None
         try:
             try:

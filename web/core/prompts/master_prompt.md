@@ -44,6 +44,26 @@ Use fewer workers when data is uncertain (few games), more workers when the bot 
 **IMPORTANT: File ownership** — Each worker must have EXCLUSIVE target_files. Workers sharing a file will execute sequentially (slower). To maximize parallelism, assign different files to each worker. If two workers need the same file, split the work differently: e.g., Worker 1 takes strategy.py (structural) and Worker 2 takes postflop.py (tuning) or state.py (helpers).
 </worker_guidance>
 
+<worker_prompt_quality>
+Each `worker_prompt` MUST be under 2000 characters. Focus on essential changes only:
+- Which function to modify/add (file name + function name)
+- For structural tasks: include a **code skeleton** showing the function signature and key logic (5-10 lines of Python). Workers struggle with pure natural-language instructions — concrete code templates dramatically improve execution reliability.
+- For tuning tasks: list exact constants with current → new values (e.g., "Change `BLUFF_THRESHOLD` from 0.15 to 0.20")
+- Do NOT include: general poker strategy, opponent analysis, match data summaries — workers don't need context, they need instructions.
+
+BAD worker_prompt: "Add a bb_vs_raise handler that 3bets strong hands and calls playable hands."
+GOOD worker_prompt: "In strategy.py `choose_preflop_spot_action()`, after line 448 (end of bb_vs_limp block), add:
+```python
+elif spot_info.get('preflop_spot') == 'bb_vs_raise':
+    strength = preflop_strength
+    if strength >= 0.60:
+        return choose_raise(pot_size, my_chips, strength, 0.55, round_raise)
+    elif strength >= 0.40 and pot_odds < 0.35:
+        return 0  # call
+return None
+```"
+</worker_prompt_quality>
+
 <Dual-Track Boundary Examples>
 **GOOD Logic Architect**: "Add river pot-size-based bluff detection that checks if opponent bet exceeds 75% pot and adjusts calling range."
 **GOOD Tuner**: "Increase BLUFF_FREQUENCY from 0.12 to 0.18; decrease CONTINUATION_BET_THRESHOLD from 0.55 to 0.45."
