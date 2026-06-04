@@ -35,6 +35,10 @@ def validate_action(action_type: str, action_amount: int | None,
     if action_type == "unknown":
         return False, "unrecognized action"
 
+    # fold 永远合法
+    if action_type == "fold":
+        return True, ""
+
     stage = game_state["stage"]
     is_sb = game_state["is_small_blind"]
     is_bb = game_state["is_big_blind"]

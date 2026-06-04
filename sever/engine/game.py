@@ -170,7 +170,7 @@ class GameEngine:
             )
 
             if result.folded:
-                return await self._settle_fold(result.winner_idx, pot, community)
+                return await self._settle_fold(result.winner_idx, result.pot, community)
 
             pot = result.pot
             community = result.community
