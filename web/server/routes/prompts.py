@@ -22,6 +22,11 @@ ALLOWED_PROMPTS = {
     "crossover",
     "direction_auditor",
     "initial",
+    "match_analyst",
+    "performance_analyst",
+    "stagnation_analyzer",
+    "experience_consolidator",
+    "archivist",
 }
 
 PROMPT_ROLES = {
@@ -33,13 +38,23 @@ PROMPT_ROLES = {
     "crossover": "Crossover Agent — merges two elite bots into a hybrid child",
     "direction_auditor": "Direction Auditor — detects repetitive evolution directions before Master planning",
     "initial": "Initial Bot Generator — creates the first-generation bot from scratch",
+    "match_analyst": "Match Analyst — analyzes replay summaries for weaknesses and patterns",
+    "performance_analyst": "Performance Analyst — synthesises rating/win-rate trends into actionable insight",
+    "stagnation_analyzer": "Stagnation Analyzer — detects whether evolution is stuck in a local optimum",
+    "experience_consolidator": "Experience Consolidator — deduplicates and trims the experience pool",
+    "archivist": "Cycle Archivist — audits completed generations and produces strategic summaries",
 }
 
 router = APIRouter(prefix="/api/prompts", tags=["prompts"])
 
 
 def _prompt_path(name: str) -> Path:
-    return PROMPTS_DIR / f"{name}_prompt.md" if name != "orchestrator" else PROMPTS_DIR / "orchestrator.md"
+    # Special names that don't follow the "{name}_prompt.md" convention
+    exact_names = {"orchestrator", "archivist", "match_analyst", "performance_analyst",
+                   "stagnation_analyzer", "experience_consolidator"}
+    if name in exact_names:
+        return PROMPTS_DIR / f"{name}.md"
+    return PROMPTS_DIR / f"{name}_prompt.md"
 
 
 def _prompt_info(name: str) -> dict:

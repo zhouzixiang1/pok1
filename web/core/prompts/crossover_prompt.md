@@ -42,5 +42,5 @@ Parent A has tight preflop ranges (VPIP 18%) but weak river play. Parent B has a
 4. Run quality checks:
    - `python -m py_compile bots/claude_v{version}/main.py`
    - `python web/core/smoke_tester.py bots/claude_v{version}/main.py`
-5. The bot must output `{"response": int}` via stdout. Action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise (additive). Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.
+5. The bot must output `{"response": int}` via stdout. Action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.
 </action>
