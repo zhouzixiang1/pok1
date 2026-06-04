@@ -40,6 +40,8 @@ Use fewer workers when data is uncertain (few games), more workers when the bot 
 | Algorithmic Logic Architect | Structural changes | New functions, refactored logic, new imports | Changing well-tuned constants unless structurally required |
 | Hyperparameter Tuner | Numeric tuning only | Constants, thresholds, magic numbers | New functions, classes, imports, control flow changes |
 | Opponent Modeler | Opponent tracking only | Per-street stats, bet sizing patterns, exploitative adjustments | Changing overall decision flow or non-opponent-model logic |
+
+**IMPORTANT: File ownership** — Each worker must have EXCLUSIVE target_files. Workers sharing a file will execute sequentially (slower). To maximize parallelism, assign different files to each worker. If two workers need the same file, split the work differently: e.g., Worker 1 takes strategy.py (structural) and Worker 2 takes postflop.py (tuning) or state.py (helpers).
 </worker_guidance>
 
 <Dual-Track Boundary Examples>

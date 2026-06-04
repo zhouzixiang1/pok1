@@ -94,6 +94,11 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
     total_cost = 0.0
     cycle_completed = False
     auth_error = False
+    # Snapshot sub-agent costs at start to compute delta on return.
+    # ui.gen_cost_total tracks ALL sub-agent costs (Master, Workers, etc.)
+    # via ui.update_cost() called from llm_query.py. The orchestrator's own
+    # session cost (total_cost from ResultMessage) is added below.
+    _cost_at_start = ui.gen_cost_total if ui else 0.0
 
     with open(log_file, "a") as lf:
         lf.write(f"\n{'='*60}\n[ORCHESTRATOR CYCLE] {time.strftime('%Y-%m-%d %H:%M:%S')}\n{'='*60}\n")
@@ -185,6 +190,11 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     log.error("Cycle timed out after %ss", CYCLE_TIMEOUT)
                 lf.write(f"\n[TIMEOUT] Cycle killed after {CYCLE_TIMEOUT}s\n")
                 _clear_orchestrator_session()
+                if ui:
+                    # Add any partial Orchestrator session cost to UI tracking
+                    if total_cost > 0:
+                        ui.update_cost("Orchestrator", total_cost, None)
+                    return ui.gen_cost_total - _cost_at_start
                 return total_cost
 
             # 529 rate-limit retry with exponential backoff
@@ -225,6 +235,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
 
             if ui:
                 ui.update_cost("Orchestrator", total_cost, None)
+                total_cost = ui.gen_cost_total - _cost_at_start
             lf.write(f"\n[CYCLE DONE] cost=${total_cost:.4f}\n")
 
         except KeyboardInterrupt:
@@ -274,6 +285,14 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
     # Return negative cost to signal auth error for fast backoff
     if auth_error:
         return -abs(total_cost) if total_cost > 0 else -1.0
+
+    # On non-happy paths (KeyboardInterrupt, CancelledError, generic Exception),
+    # total_cost may only be the Orchestrator's partial session cost.
+    # Return the full tracked cost delta when UI is available.
+    if ui and not cycle_completed:
+        if total_cost > 0:
+            ui.update_cost("Orchestrator", total_cost, None)
+        return ui.gen_cost_total - _cost_at_start
 
     return total_cost
 
@@ -405,6 +424,9 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                     ui.log_history(f"Orchestrator gen {gen_count} complete. Cost: ${cost:.4f}", "info")
                 log_system_event("orchestrator.cycle_done", "info", f"Cycle {gen_count} done (cost=${cost:.4f})",
                                  {"gen_count": gen_count, "cost": round(cost, 4)})
+                # Reset per-generation cost tracker for next cycle
+                if ui:
+                    ui.reset_gen_cost()
 
             # Auth error fast-fail
             if cost < 0:
