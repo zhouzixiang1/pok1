@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>德州扑克对弈平台</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!-- 工具栏 -->
+  <header class="toolbar">
+    <h1>🃏 德州扑克对弈平台</h1>
+    <div class="toolbar-actions">
+      <span id="status-badge" class="badge waiting">等待连接</span>
+      <button id="btn-start" onclick="startMatch()" disabled>开始比赛</button>
+      <button id="btn-reset" onclick="resetMatch()">重置</button>
+      <span id="timer" class="timer" style="display:none">60</span>
+    </div>
+  </header>
+
+  <div class="main-layout">
+    <!-- 左侧：牌桌区域 -->
+    <div class="table-area">
+      <div class="poker-table">
+        <!-- 玩家区域 -->
+        <div class="player-zone player-top" id="player1-zone">
+          <div class="player-info">
+            <span class="player-name" id="p1-name">玩家 2</span>
+            <span class="player-role" id="p1-role"></span>
+          </div>
+          <div class="player-cards" id="p1-cards"></div>
+        </div>
+
+        <!-- 公共牌 + 底池 -->
+        <div class="table-center">
+          <div class="community-cards" id="community-cards">
+            <div class="card-slot empty"></div>
+            <div class="card-slot empty"></div>
+            <div class="card-slot empty"></div>
+            <div class="card-slot empty"></div>
+            <div class="card-slot empty"></div>
+          </div>
+          <div class="pot-display">底池: <span id="pot">0</span></div>
+        </div>
+
+        <!-- 玩家区域 -->
+        <div class="player-zone player-bottom" id="player0-zone">
+          <div class="player-cards" id="p0-cards"></div>
+          <div class="player-info">
+            <span class="player-name" id="p0-name">玩家 1</span>
+            <span class="player-role" id="p0-role"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 操作日志 -->
+      <div class="action-log" id="action-log">
+        <div class="log-entry info">等待客户端连接...</div>
+      </div>
+    </div>
+
+    <!-- 右侧面板 -->
+    <div class="side-panel">
+      <!-- 累计输赢 -->
+      <div class="panel-section">
+        <h3>累计输赢</h3>
+        <div class="earnings-display">
+          <div class="earning-row">
+            <span id="earn-name-0">玩家 1</span>
+            <span class="earning-value" id="earn-val-0">0</span>
+          </div>
+          <div class="earning-row">
+            <span id="earn-name-1">玩家 2</span>
+            <span class="earning-value" id="earn-val-1">0</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 当前手牌信息 -->
+      <div class="panel-section">
+        <h3>当前手牌 <span id="hand-num">0</span> / 70</h3>
+        <div id="hand-info">
+          <div class="info-row">
+            <span>阶段:</span>
+            <span id="current-stage">--</span>
+          </div>
+          <div class="info-row">
+            <span>SB:</span>
+            <span id="current-sb">--</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 历史牌局 -->
+      <div class="panel-section history-section">
+        <h3>牌局历史</h3>
+        <div class="history-list" id="history-list">
+          <div class="empty-history">暂无历史记录</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/script.js"></script>
+</body>
+</html>
