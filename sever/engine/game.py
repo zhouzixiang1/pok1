@@ -300,6 +300,10 @@ class GameEngine:
                 logger.info(f"[Hand {self.hand_num}] {stage}: {current.name} "
                             f"calls ({actual}), chips={current.chips}")
 
+                # call 耗尽筹码 → 有效 allin（与 judge.py 对齐）
+                if current.chips == 0:
+                    allin_occurred = True
+
                 # allin 后的 call → 双方都行动完毕，自动发剩余牌
                 if allin_occurred:
                     return BettingResult(pot=pot, community=community,

@@ -329,7 +329,11 @@ class Holdem:
                     action_type = "allin"
                 else:
                     action_type = "call"
-            else:  # inc <= 0 → check（永远合法）
+            else:  # inc <= 0 → check
+                # 规则 4：flop/turn/river 非第一个行为 check → 非法（按 fold 处理）
+                # 文档原文："flop、turn、river 阶段非第一个行为出现 check，属于非法行为"
+                if self.round != Holdem.PRE_FLOP and round_actions > 0:
+                    return self.player_action(Holdem.FOLD)
                 self.round_player_bet[self.round_idx] = self.round_bet
                 action_type = "check"
         elif bet > 0:  # raise, 加注到指定金额（raise-to-total）
