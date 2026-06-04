@@ -96,6 +96,30 @@ def _startup_recovery(ui=None) -> dict:
         _clear_orchestrator_session()
         return {"action": "fresh_start"}
 
+    # Aborted pipeline: no git tag for next_v + checkpoint is stale (>=30 min old)
+    # This catches cases where a generation was aborted (e.g. via manual git commit)
+    # but pipeline_state.json was never cleaned up.
+    from evolution_infra import git_has_tag
+    if next_v is not None and not git_has_tag(next_v):
+        ckpt_ts = checkpoint.get("timestamp")
+        if ckpt_ts:
+            try:
+                from datetime import datetime, timezone
+                ckpt_time = datetime.fromisoformat(ckpt_ts).replace(tzinfo=None)
+                age_minutes = (datetime.now() - ckpt_time).total_seconds() / 60
+                if age_minutes >= 30:
+                    msg = (f"[Recovery] v{next_v} has no git tag and checkpoint is "
+                           f"{age_minutes:.0f} min old — treating as aborted. Clearing.")
+                    if ui:
+                        ui.log_history(msg, "warn")
+                    else:
+                        log.warning(msg)
+                    clear_pipeline_checkpoint()
+                    _clear_orchestrator_session()
+                    return {"action": "fresh_start"}
+            except (ValueError, TypeError):
+                pass
+
     # Significant work was done — attempt recovery
     recovery = {
         "action": "resume",

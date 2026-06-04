@@ -314,17 +314,42 @@ def get_active_bots():
 
 
 def find_current_v():
-    """Find the latest completed bot version from git tags (authoritative)."""
+    """Find the latest completed bot version.
+
+    Cascading sources: git tags > .completed sentinel files > directory names.
+    """
+    versions = set()
+
+    # Source 1: git tags (most authoritative)
     tags = _git("tag", "-l", "bot-v*", check=False).strip().splitlines()
-    if not tags:
-        return 6  # seeded bots v1-v6 have no tags
-    versions = []
     for tag in tags:
         try:
-            versions.append(int(tag.replace("bot-v", "")))
+            versions.add(int(tag.replace("bot-v", "")))
         except ValueError:
             pass
-    return max(versions) if versions else 6
+
+    # Source 2: .completed sentinel files
+    if BOTS_DIR.exists():
+        for d in os.listdir(BOTS_DIR):
+            if d.startswith("claude_v") and (BOTS_DIR / d / ".completed").exists():
+                try:
+                    versions.add(int(d.split("_v")[1]))
+                except (ValueError, IndexError):
+                    pass
+
+    if versions:
+        return max(versions)
+
+    # Source 3: any claude_v* directory (no tags, no .completed)
+    if BOTS_DIR.exists():
+        for d in os.listdir(BOTS_DIR):
+            if d.startswith("claude_v") and os.path.isdir(BOTS_DIR / d):
+                try:
+                    versions.add(int(d.split("_v")[1]))
+                except (ValueError, IndexError):
+                    pass
+
+    return max(versions) if versions else 0
 
 
 # ──────────────────────────────────────────────

@@ -163,9 +163,29 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     print(f"\n[ERROR] {e}")
             return "".join(texts), cost, ok, gen, auth_err
 
+        CYCLE_TIMEOUT = 1800  # 30 minutes max per cycle
         query_gen = None
         try:
-            full_output, total_cost, cycle_completed, query_gen, auth_error = await _stream_response(options)
+            try:
+                full_output, total_cost, cycle_completed, query_gen, auth_error = (
+                    await asyncio.wait_for(_stream_response(options), timeout=CYCLE_TIMEOUT)
+                )
+            except asyncio.TimeoutError:
+                if query_gen is not None:
+                    try:
+                        await query_gen.aclose()
+                    except Exception:
+                        pass
+                if ui:
+                    ui.log_history(
+                        f"[Orchestrator] Cycle timed out after {CYCLE_TIMEOUT}s — killing stuck session.",
+                        "error",
+                    )
+                else:
+                    log.error("Cycle timed out after %ss", CYCLE_TIMEOUT)
+                lf.write(f"\n[TIMEOUT] Cycle killed after {CYCLE_TIMEOUT}s\n")
+                _clear_orchestrator_session()
+                return total_cost
 
             # 529 rate-limit retry with exponential backoff
             if _is_rate_limited(full_output):
