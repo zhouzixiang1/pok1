@@ -92,6 +92,10 @@ def load_network(name, data_dir=None):
             'layers': [200, 256, 128, 64, 3],
             'activation': 'softmax',
         },
+        'policy_discrete': {
+            'layers': [200, 256, 128, 64, 6],
+            'activation': 'softmax',
+        },
         'policy_raise': {
             'layers': [200, 128, 64, 1],
             'activation': 'sigmoid',

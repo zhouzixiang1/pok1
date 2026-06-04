@@ -200,6 +200,43 @@ def action_to_label(action_int):
         return 2  # raise
 
 
+def action_to_discrete_label(action_int, display, my_id):
+    """将动作整数映射为 6 类离散标签 (参考 neuron_poker)。
+
+    0=fold, 1=call/check, 2=raise_half_pot, 3=raise_pot, 4=raise_2pot, 5=allin
+    """
+    if action_int == -1:
+        return 0
+    if action_int == -2:
+        return 5
+    if action_int == 0:
+        return 1
+
+    # raise — 需要计算 raise 大小占 pot 的比例
+    round_player_bet = display.get('round_player_bet', [0, 0])
+    round_bet = display.get('round_bet', 100)
+    pot = display.get('pot', 0)
+    my_bet = round_player_bet[my_id] if len(round_player_bet) > my_id else 0
+    to_call = max(0, round_bet - my_bet)
+    pot_after_call = pot + to_call
+    if pot_after_call <= 0:
+        pot_after_call = 1
+
+    # action_int > 0 = raise-to-total
+    # 额外加注 = action_int - my_bet
+    extra = action_int - my_bet
+    if extra <= 0:
+        return 1  # 无效
+
+    ratio = extra / pot_after_call
+    if ratio <= 0.75:
+        return 2  # raise_half_pot
+    elif ratio <= 1.5:
+        return 3  # raise_pot
+    else:
+        return 4  # raise_2pot
+
+
 # ──── 数据提取 ────
 
 def extract_from_replays(mode='equity', mc_iterations=3000):
@@ -278,6 +315,12 @@ def extract_from_replays(mode='equity', mc_iterations=3000):
                         features_list.append(feat)
                         labels_list.append(label)
 
+                    elif mode == 'discrete':
+                        feat = encode_policy_features(req, display)
+                        label = action_to_discrete_label(action, display, pid)
+                        features_list.append(feat)
+                        labels_list.append(label)
+
         if (file_idx + 1) % 10 == 0:
             print(f"  已处理 {file_idx + 1}/{len(files)} 个文件, 累计 {len(features_list)} 样本")
 
@@ -287,7 +330,7 @@ def extract_from_replays(mode='equity', mc_iterations=3000):
 
 def main():
     parser = argparse.ArgumentParser(description="从回放数据提取训练样本")
-    parser.add_argument("--mode", choices=['equity', 'policy'], default='equity',
+    parser.add_argument("--mode", choices=['equity', 'policy', 'discrete'], default='equity',
                         help="数据模式: equity (胜率) 或 policy (策略)")
     parser.add_argument("--output", type=str, default=None, help="输出路径")
     parser.add_argument("--mc-iters", type=int, default=2000,

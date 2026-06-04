@@ -1,14 +1,13 @@
-"""Neural Bot — 混合神经-符号扑克 Bot。
+"""Neural Bot v3 — 6-class discrete policy + conservative rule fusion.
 
-策略：完全复用 claude_v49 的决策逻辑，但用策略网络信号辅助修正。
-主要改进点：
-1. 策略网络作为辅助信号，当网络高置信度且规则边界时采纳
-2. 保留完整的规则决策链（胜率估算、对手建模、锦标赛压力等）
+Uses discrete policy network (fold/call/raise_half/raise_pot/raise_2pot/allin)
+as auxiliary signal, with claude_v49 rules as primary decision engine.
 """
 
 import json
 import os
 import sys
+import numpy as np
 
 _BOT_DIR = os.path.dirname(os.path.abspath(__file__))
 _REF_DIR = os.path.join(os.path.dirname(_BOT_DIR), 'claude_v49')
@@ -17,7 +16,7 @@ sys.path.insert(0, _BOT_DIR)
 
 from state import reconstruct_state, infer_remaining_hands_from_requests
 from strategy import get_action as rule_get_action
-from nn_strategy import get_strategy
+from neural_inference import load_network
 from generate_data import encode_policy_features
 
 
@@ -36,13 +35,32 @@ def sanitize_action(action, state, my_chips):
     return action
 
 
-def nn_opinion(req):
-    """获取策略网络的看法。返回 (label, confidence) 或 None。"""
-    strategy = get_strategy()
-    if not strategy.is_available():
-        return None
+# 离散类别名
+DISCRETE_NAMES = ['fold', 'call', 'raise_half', 'raise_pot', 'raise_2pot', 'allin']
 
-    state = reconstruct_state(req)
+# 加载网络（模块级别，只加载一次）
+_discrete_net = None
+_policy_net = None
+
+
+def _get_discrete_net():
+    global _discrete_net
+    if _discrete_net is None:
+        data_dir = os.path.join(os.path.dirname(__file__), 'data')
+        _discrete_net = load_network('policy_discrete', data_dir)
+    return _discrete_net
+
+
+def _get_policy_net():
+    global _policy_net
+    if _policy_net is None:
+        data_dir = os.path.join(os.path.dirname(__file__), 'data')
+        _policy_net = load_network('policy_action', data_dir)
+    return _policy_net
+
+
+def nn_opinion(req, state):
+    """获取两个网络的预测。返回 (discrete_label, discrete_conf, policy_label, policy_conf)。"""
     display = {
         'pot': state['pot'],
         'player_chips': state['stacks'],
@@ -50,8 +68,52 @@ def nn_opinion(req):
         'round_player_bet': state['player_bets'],
     }
     features = encode_policy_features(req, display)
-    label, confidence = strategy.get_action(features)
-    return label, confidence
+
+    d_label, d_conf = None, 0.0
+    p_label, p_conf = None, 0.0
+
+    dnet = _get_discrete_net()
+    if dnet is not None:
+        probs = dnet.forward(features.reshape(1, -1))[0]
+        d_label = int(np.argmax(probs))
+        d_conf = float(probs[d_label])
+
+    pnet = _get_policy_net()
+    if pnet is not None:
+        probs = pnet.forward(features.reshape(1, -1))[0]
+        p_label = int(np.argmax(probs))
+        p_conf = float(probs[p_label])
+
+    return d_label, d_conf, p_label, p_conf
+
+
+def discrete_to_action(category, state, my_chips, pot, to_call, my_round_bet):
+    """将离散类别转换为具体动作整数。"""
+    if category == 0:  # fold
+        return -1
+    if category == 1:  # call/check
+        return 0
+    if category == 5:  # allin
+        return -2
+
+    # raise sizes: 2=half, 3=pot, 4=2pot
+    round_raise = state.get('round_raise', state.get('judge_round_raise', 100))
+    min_raise_action = state.get('min_raise_action', round_raise)
+    pot_after_call = pot + to_call
+
+    if category == 2:
+        target = int(to_call + pot_after_call * 0.5)
+    elif category == 3:
+        target = int(to_call + pot_after_call * 1.0)
+    else:
+        target = int(to_call + pot_after_call * 2.0)
+
+    target = max(min_raise_action, target)
+    if target >= my_chips:
+        return -2
+    if target <= to_call:
+        return 0
+    return target
 
 
 def decide_action(payload):
@@ -69,46 +131,51 @@ def decide_action(payload):
     if "remaining_hands" not in req:
         req["remaining_hands"] = infer_remaining_hands_from_requests(requests)
 
-    # 基础决策：完全使用 claude_v49 的规则逻辑
-    rule_action = rule_get_action(req, requests)
-
-    # 获取 NN 意见作为辅助信号
-    nn = nn_opinion(req)
-    if nn is None:
-        state = reconstruct_state(req)
-        return int(sanitize_action(rule_action, state, req["my_chips"]))
-
-    nn_label, nn_conf = nn
     state = reconstruct_state(req)
     my_chips = req["my_chips"]
     to_call = state["to_call"]
     pot = max(1, state["pot"])
 
-    # ── NN 辅助修正规则 ──
+    # 基础决策：规则引擎
+    rule_action = rule_get_action(req, requests)
 
-    # 1. 规则说 fold，但 NN 高置信度说 call/raise，且 to_call 不大
-    if rule_action == -1 and nn_label >= 1 and nn_conf >= 0.85:
-        if to_call > 0 and to_call < pot * 0.3 and to_call < my_chips * 0.05:
-            # 小注情况下，NN 认为值得继续
+    # NN 意见
+    d_label, d_conf, p_label, p_conf = nn_opinion(req, state)
+
+    if d_label is None and p_label is None:
+        return int(sanitize_action(rule_action, state, my_chips))
+
+    # ── 融合策略（保守） ──
+
+    # 两个网络都同意 fold → fold（除非 free check）
+    both_fold = (d_label == 0 or p_label == 0) and (d_label is None or d_label == 0) and (p_label is None or p_label == 0)
+    if both_fold and d_conf >= 0.80 and p_conf >= 0.80:
+        if to_call == 0:
+            return 0
+        return -1
+
+    # 两个网络都同意 raise，且高置信度 → 用离散网络的大小
+    both_raise = (d_label is not None and d_label >= 2) and (p_label is not None and p_label == 2)
+    if both_raise and d_conf >= 0.85 and p_conf >= 0.85:
+        if state['opponent_allin']:
+            return -1
+        action = discrete_to_action(d_label, state, my_chips, pot, to_call, state['my_round_bet'])
+        return int(sanitize_action(action, state, my_chips))
+
+    # 离散网络说 fold（高置信度）+ 规则说 raise → 降级到 call
+    if d_label == 0 and d_conf >= 0.90 and rule_action > 0:
+        if to_call > 0:
             return 0
 
-    # 2. 规则说 call，但 NN 高置信度说 raise，且我们确实应该加注
-    if rule_action == 0 and nn_label == 2 and nn_conf >= 0.90:
-        round_raise = state.get('round_raise', state.get('judge_round_raise', 100))
-        min_raise_action = state.get('min_raise_action', round_raise)
+    # 离散网络说 raise_2pot/allin（高置信度）+ 规则说 call → 考虑加注
+    if d_label in (4, 5) and d_conf >= 0.90 and rule_action == 0:
         if not state['opponent_allin'] and to_call < my_chips:
-            # 用适度加注（0.6x pot）
-            pot_after_call = pot + to_call
-            amount = int(to_call + pot_after_call * 0.6)
-            amount = max(min_raise_action, amount)
-            if amount < my_chips and amount > to_call:
-                return int(sanitize_action(amount, state, my_chips))
+            action = discrete_to_action(d_label, state, my_chips, pot, to_call, state['my_round_bet'])
+            result = sanitize_action(action, state, my_chips)
+            if result > 0:
+                return int(result)
 
-    # 3. 规则说 raise，但 NN 高置信度说 fold（规则可能过度激进）
-    if rule_action > 0 and nn_label == 0 and nn_conf >= 0.92:
-        if to_call > 0:
-            return 0  # 降级为 call
-
+    # 默认：信任规则
     return int(sanitize_action(rule_action, state, my_chips))
 
 
