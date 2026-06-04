@@ -20,6 +20,10 @@ BOT_STATS_FILE = RESULTS_DIR / "bot_stats.json"
 WORKER_FAILURES_FILE = RESULTS_DIR / "worker_failures.jsonl"
 PIPELINE_STATE_FILE = RESULTS_DIR / "pipeline_state.json"
 ORCHESTRATOR_SESSION_FILE = RESULTS_DIR / "orchestrator_session.json"
+SYSTEM_EVENTS_FILE = RESULTS_DIR / "system_events.jsonl"
+DAEMON_CRASH_LOG = RESULTS_DIR / "daemon_crash.log"
+APP_CONFIG_FILE = RESULTS_DIR / "app_config.json"
+ARCHIVE_DIR = RESULTS_DIR / "archive"
 RATING_HISTORY_FILE = RESULTS_DIR / "rating_history.jsonl"
 MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 MATCH_REPLAY_DIR = RESULTS_DIR / "match_replay"
@@ -124,7 +128,49 @@ def _clear_directory(path):
                 item_path.unlink()
 
 
-def _delete_version_log_dirs(keep_versions):
+def _ensure_completed_sentinels(keep_versions):
+    """Ensure all kept bot dirs have .completed sentinel files."""
+    ensured = []
+    for d in sorted(os.listdir(BOTS_DIR)):
+        if d.startswith("claude_v") and os.path.isdir(BOTS_DIR / d):
+            try:
+                v = int(d.split("_v")[1])
+                if v <= keep_versions:
+                    sentinel = BOTS_DIR / d / ".completed"
+                    if not sentinel.exists():
+                        sentinel.touch()
+                        ensured.append(v)
+            except (ValueError, IndexError):
+                pass
+    return sorted(ensured)
+
+
+def _wait_for_daemon_dead(timeout=10):
+    """Wait for daemon process to exit. Returns True if dead, False if timed out."""
+    import time
+    try:
+        from daemon_management import daemon_proc, _daemon_lock
+    except ImportError:
+        return True
+    start = time.time()
+    while time.time() - start < timeout:
+        with _daemon_lock:
+            proc = daemon_proc
+        if proc is None or proc.poll() is not None:
+            return True
+        time.sleep(0.5)
+    # Force kill if still alive
+    with _daemon_lock:
+        proc = daemon_proc
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    return False
+
+
+
     """Delete results/v{N}/ log directories for N > keep_versions."""
     deleted = []
     if RESULTS_DIR.exists():
@@ -150,19 +196,28 @@ def _clear_orchestrator_logs():
     return deleted
 
 
-def reset_evolution(keep_versions=6):
+def reset_evolution(keep_versions=None):
     """Reset evolution state, keeping only v1-keep_versions as baselines.
 
+    If keep_versions is None, auto-detects from actual bot directories.
     Returns a dict with details of what was reset.
     """
+    if keep_versions is None:
+        keep_versions = _find_max_version()
+        if keep_versions == 0:
+            raise RuntimeError("No bots found in bots/ — nothing to keep")
+
     result = {
         "stopped_daemon": False,
+        "daemon_dead": False,
         "deleted_bot_dirs": [],
         "deleted_tags": [],
         "reset_files": [],
         "cleared_dirs": [],
         "deleted_log_dirs": [],
         "deleted_orch_logs": 0,
+        "ensured_sentinels": [],
+        "keep_versions": keep_versions,
     }
 
     # Step 1: Stop daemon if running
@@ -173,14 +228,12 @@ def reset_evolution(keep_versions=6):
     except Exception:
         pass
 
-    # Give daemon time for final save
-    import time
-    time.sleep(2)
+    result["daemon_dead"] = _wait_for_daemon_dead(timeout=10)
 
-    # Step 2: Delete v7+ bot directories
+    # Step 2: Delete bot directories above keep_versions
     result["deleted_bot_dirs"] = _delete_bot_dirs(keep_versions)
 
-    # Step 3: Delete git tags
+    # Step 3: Delete git tags above keep_versions
     result["deleted_tags"] = _delete_git_tags(keep_versions)
 
     # Step 4: Reset results data files
@@ -197,7 +250,8 @@ def reset_evolution(keep_versions=6):
     result["reset_files"].append("bot_stats.json")
 
     for f in [RATING_HISTORY_FILE, MATCH_HISTORY_FILE, WORKER_FAILURES_FILE,
-              PIPELINE_STATE_FILE, ORCHESTRATOR_SESSION_FILE]:
+              PIPELINE_STATE_FILE, ORCHESTRATOR_SESSION_FILE,
+              SYSTEM_EVENTS_FILE, DAEMON_CRASH_LOG, APP_CONFIG_FILE]:
         _delete_file(f)
         result["reset_files"].append(f.name)
 
@@ -207,6 +261,9 @@ def reset_evolution(keep_versions=6):
 
     _clear_directory(COMMENTARY_DIR)
     result["cleared_dirs"].append("commentary/")
+
+    _clear_directory(ARCHIVE_DIR)
+    result["cleared_dirs"].append("archive/")
 
     result["deleted_log_dirs"] = _delete_version_log_dirs(keep_versions)
 
@@ -218,5 +275,8 @@ def reset_evolution(keep_versions=6):
 
     # Step 7: Clear orchestrator logs
     result["deleted_orch_logs"] = _clear_orchestrator_logs()
+
+    # Step 8: Ensure kept bots have .completed sentinel
+    result["ensured_sentinels"] = _ensure_completed_sentinels(keep_versions)
 
     return result
