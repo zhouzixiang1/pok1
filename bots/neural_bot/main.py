@@ -1,7 +1,7 @@
-"""Neural Bot v3 — 6-class discrete policy + conservative rule fusion.
+"""Neural Bot v4 — Improved fusion with calibrated confidence thresholds.
 
-Uses discrete policy network (fold/call/raise_half/raise_pot/raise_2pot/allin)
-as auxiliary signal, with claude_v49 rules as primary decision engine.
+Key insight from replay analysis: fold has 58% win rate, call 47%, raise 43%.
+NN should encourage folding and discourage over-aggressive raising.
 """
 
 import json
@@ -145,37 +145,24 @@ def decide_action(payload):
     if d_label is None and p_label is None:
         return int(sanitize_action(rule_action, state, my_chips))
 
-    # ── 融合策略（保守） ──
+    # ── 融合策略（超保守 v5）──
+    # NN 只在极少数高置信度情况下干预
 
-    # 两个网络都同意 fold → fold（除非 free check）
-    both_fold = (d_label == 0 or p_label == 0) and (d_label is None or d_label == 0) and (p_label is None or p_label == 0)
-    if both_fold and d_conf >= 0.80 and p_conf >= 0.80:
+    # 1. 两个网络都同意 fold (高置信度) → fold
+    if d_label == 0 and p_label == 0 and d_conf >= 0.85 and p_conf >= 0.85:
         if to_call == 0:
             return 0
         return -1
 
-    # 两个网络都同意 raise，且高置信度 → 用离散网络的大小
+    # 2. 两个网络都同意 raise (极高置信度) → 用离散网络的大小
     both_raise = (d_label is not None and d_label >= 2) and (p_label is not None and p_label == 2)
-    if both_raise and d_conf >= 0.85 and p_conf >= 0.85:
+    if both_raise and d_conf >= 0.90 and p_conf >= 0.90:
         if state['opponent_allin']:
             return -1
         action = discrete_to_action(d_label, state, my_chips, pot, to_call, state['my_round_bet'])
         return int(sanitize_action(action, state, my_chips))
 
-    # 离散网络说 fold（高置信度）+ 规则说 raise → 降级到 call
-    if d_label == 0 and d_conf >= 0.90 and rule_action > 0:
-        if to_call > 0:
-            return 0
-
-    # 离散网络说 raise_2pot/allin（高置信度）+ 规则说 call → 考虑加注
-    if d_label in (4, 5) and d_conf >= 0.90 and rule_action == 0:
-        if not state['opponent_allin'] and to_call < my_chips:
-            action = discrete_to_action(d_label, state, my_chips, pot, to_call, state['my_round_bet'])
-            result = sanitize_action(action, state, my_chips)
-            if result > 0:
-                return int(result)
-
-    # 默认：信任规则
+    # 默认：完全信任规则
     return int(sanitize_action(rule_action, state, my_chips))
 
 

@@ -239,8 +239,12 @@ def action_to_discrete_label(action_int, display, my_id):
 
 # ──── 数据提取 ────
 
-def extract_from_replays(mode='equity', mc_iterations=3000):
-    """从所有回放文件提取训练数据。"""
+def extract_from_replays(mode='equity', mc_iterations=3000, win_weight=1.0):
+    """从回放文件提取训练数据。
+
+    win_weight: 0.0 = 只用输的局, 1.0 = 全部, >1.0 = 赢的局过采样
+                设为 0.0 且 include_won=True = 只用赢的局
+    """
     files = sorted([f for f in os.listdir(REPLAY_DIR) if f.endswith('.json')])
     print(f"找到 {len(files)} 个回放文件")
 
@@ -263,7 +267,6 @@ def extract_from_replays(mode='equity', mc_iterations=3000):
                 continue
 
             winner = g.get('winner', -1)
-            bot0_chips = g.get('bot0_chips', 0)
 
             for i in range(0, len(logs) - 1, 2):
                 judge_out = logs[i]
@@ -275,7 +278,6 @@ def extract_from_replays(mode='equity', mc_iterations=3000):
                     continue
 
                 for pid_str, req in content.items():
-                    # 获取 response
                     resp = resp_in.get(pid_str)
                     if not resp or not isinstance(resp, dict):
                         continue
@@ -285,6 +287,16 @@ def extract_from_replays(mode='equity', mc_iterations=3000):
                         continue
 
                     pid = int(pid_str)
+                    bot_won = (winner == pid)
+
+                    # Win weighting: duplicate won samples
+                    n_copies = int(win_weight) if bot_won else 1
+                    if win_weight > 1 and bot_won:
+                        n_copies = int(win_weight)
+                    elif not bot_won and win_weight == 0:
+                        continue
+                    elif bot_won and win_weight == 0:
+                        n_copies = 1
 
                     if mode == 'equity':
                         hole = req.get('my_cards', [])
@@ -293,33 +305,31 @@ def extract_from_replays(mode='equity', mc_iterations=3000):
                             continue
 
                         feat = encode_cards(hole, pub)
-
-                        # 判断这步决策最终是否赢了这个游戏
-                        # 简化标签: 该玩家是否最终赢了这局 (用 game winner)
-                        # 但这不够精确 — 用 MC 估算当前胜率
                         n_pub = len(pub)
                         if n_pub == 5:
                             equity = compute_equity_exact(hole, pub)
                         elif n_pub == 0:
-                            # Preflop: 用快速 MC (较少迭代，更快)
                             equity = compute_equity_mc(hole, pub, 1000)
                         else:
                             equity = compute_equity_mc(hole, pub, mc_iterations)
 
-                        features_list.append(feat)
-                        labels_list.append(equity)
+                        for _ in range(n_copies):
+                            features_list.append(feat)
+                            labels_list.append(equity)
 
                     elif mode == 'policy':
                         feat = encode_policy_features(req, display)
                         label = action_to_label(action)
-                        features_list.append(feat)
-                        labels_list.append(label)
+                        for _ in range(n_copies):
+                            features_list.append(feat)
+                            labels_list.append(label)
 
                     elif mode == 'discrete':
                         feat = encode_policy_features(req, display)
                         label = action_to_discrete_label(action, display, pid)
-                        features_list.append(feat)
-                        labels_list.append(label)
+                        for _ in range(n_copies):
+                            features_list.append(feat)
+                            labels_list.append(label)
 
         if (file_idx + 1) % 10 == 0:
             print(f"  已处理 {file_idx + 1}/{len(files)} 个文件, 累计 {len(features_list)} 样本")
