@@ -11,6 +11,6 @@ Create a robust, multi-file Texas Hold'em poker bot in the `bots/claude_v1/` dir
      `{"requests": [{"my_cards": [12, 35], "public_cards": [3, 22, 48], "history": [], "my_chips": 20000}], "responses": []}`
    - Output JSON to `stdout`. Example response:
      `{"response": 100}`
-   - Actions: `0` (call/check), `-1` (fold), `-2` (all-in), `>0` (raise amount).
+   - Actions: `0` (call/check), `-1` (fold), `-2` (all-in), `>0` (raise-to-total: 加注到的阶段总额).
 3. **Execution**:
    Please create these files and write functional baseline code. Make sure the logic is separated cleanly and the bot does not crash.

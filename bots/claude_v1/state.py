@@ -1,67 +1,40 @@
-"""State reconstruction and preflop profiling functions."""
-
-from constants import (
-    N_PLAYERS, INITIAL_CHIPS, SMALL_BLIND, BIG_BLIND, TOTAL_HANDS,
-    PREFLOP_STRENGTH_TABLE,
-)
-from card_utils import clamp, card_suit, card_number, next_player
+from constants import N_PLAYERS, INITIAL_CHIPS, SMALL_BLIND, BIG_BLIND, TOTAL_HANDS
+from card_utils import card_suit, card_number, next_player, clamp
 
 
 def estimate_preflop_strength(my_cards):
     r1 = card_number(my_cards[0])
     r2 = card_number(my_cards[1])
+    s1 = card_suit(my_cards[0])
+    s2 = card_suit(my_cards[1])
     high = max(r1, r2)
     low = min(r1, r2)
-    suited = card_suit(my_cards[0]) == card_suit(my_cards[1])
-    return PREFLOP_STRENGTH_TABLE.get((high, low, suited), 0.30)
-
-
-def preflop_hand_profile(my_cards):
-    ranks = sorted((card_number(card) for card in my_cards), reverse=True)
-    suited = card_suit(my_cards[0]) == card_suit(my_cards[1])
-    pair = ranks[0] == ranks[1]
-    return {
-        "high": ranks[0],
-        "low": ranks[1],
-        "suited": suited,
-        "pair": pair,
-    }
-
-
-def is_preflop_3bet_candidate(my_cards):
-    profile = preflop_hand_profile(my_cards)
-    if profile["pair"]:
-        return True
-    return profile["high"] == 14 and profile["low"] >= 12
-
-
-def is_preflop_trash_hand(my_cards, preflop_strength=None):
-    profile = preflop_hand_profile(my_cards)
-    if profile["pair"]:
-        return False
-
-    high = profile["high"]
-    low = profile["low"]
     gap = high - low
-    suited = profile["suited"]
-    strength = estimate_preflop_strength(my_cards) if preflop_strength is None else preflop_strength
+    suited = s1 == s2
+    pair = r1 == r2
+
+    score = 0.0
+    score += (high - 2) / 16.0
+    score += (low - 2) / 28.0
+
+    if pair:
+        score += 0.25 + (high - 2) / 30.0
+    else:
+        if suited:
+            score += 0.06
+        if gap == 1:
+            score += 0.06
+        elif gap == 2:
+            score += 0.03
+        elif gap >= 4:
+            score -= 0.04
 
     if high == 14:
-        return False
-    if suited and gap <= 2 and high >= 6:
-        return False
-    if high >= 11 and low >= 8 and gap <= 4:
-        return False
+        score += 0.04
+        if low >= 10:
+            score += 0.04
 
-    if strength <= 0.30:
-        return True
-    if not suited and high <= 10 and low <= 5 and gap >= 3:
-        return True
-    if not suited and high <= 12 and low <= 4 and gap >= 5:
-        return True
-    if suited and high <= 9 and low <= 4 and gap >= 4:
-        return True
-    return False
+    return clamp(score, 0.0, 1.0)
 
 
 def get_hand_index(req):
@@ -163,7 +136,7 @@ def reconstruct_state(req):
         if record_round != current_round:
             current_round = record_round
             round_bet = 0
-            last_raise_to = SMALL_BLIND
+            last_raise_to = BIG_BLIND // 2
             round_contrib = [0] * N_PLAYERS
 
         if action_type == "fold":
@@ -189,6 +162,7 @@ def reconstruct_state(req):
             committed[pid] += need
             round_contrib[pid] += need
         elif action_type == "raise":
+            # action is raise-to-total; derive increment
             target = max(round_bet, action)
             add = max(0, min(target - round_contrib[pid], stacks[pid]))
             stacks[pid] -= add
@@ -202,7 +176,7 @@ def reconstruct_state(req):
 
     if current_round != round_idx:
         round_bet = 0
-        last_raise_to = SMALL_BLIND
+        last_raise_to = BIG_BLIND // 2
         round_contrib = [0] * N_PLAYERS
 
     player_bets = [0] * N_PLAYERS
@@ -228,7 +202,7 @@ def reconstruct_state(req):
         "round": round_idx,
         "round_bet": round_bet,
         "round_raise": last_raise_to,
-        "judge_round_raise": last_raise_to,
+        "last_raise_to": last_raise_to,
         "min_raise_action": min_raise_action,
         "round_contrib": round_contrib,
         "player_bets": player_bets,

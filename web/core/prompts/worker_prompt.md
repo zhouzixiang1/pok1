@@ -69,7 +69,7 @@ After editing:
    - Smoke test: `python web/core/smoke_tester.py bots/claude_v{version}/main.py`
    - Fix any errors before finishing.
 3. **Role boundary check**: Review ALL changes. If you are a Tuner, verify every change is a numeric constant. If you are an Architect, verify you did not change well-tuned constants.
-4. **Protocol check**: Verify the bot still outputs `{"response": <int>}` via stdout. Action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise amount (additive). Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.
+4. **Protocol check**: Verify the bot still outputs `{"response": <int>}` via stdout. Action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.
 </verification>
 
 <output>
