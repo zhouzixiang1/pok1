@@ -178,12 +178,19 @@ def _gate_payload(version, source_v, passed, **extra):
 
 
 def _state_blocked(message, version, source_v=None, checkpoint=None):
+    # Compact gate summary instead of full gate_results (saves ~600+ tokens)
+    gate_summary = {}
+    if checkpoint:
+        for name, gate in (checkpoint.get("gate_results") or {}).items():
+            gate_summary[name] = {"passed": gate.get("passed")}
+            if gate.get("score") is not None:
+                gate_summary[name]["score"] = gate.get("score")
     return _json_tool_result({
         "error": f"STATE BLOCKED: {message}",
         "version": version,
         "source_v": source_v,
         "checkpoint_stage": checkpoint.get("stage") if checkpoint else None,
-        "gate_results": checkpoint.get("gate_results", {}) if checkpoint else {},
+        "gate_summary": gate_summary,
     })
 
 

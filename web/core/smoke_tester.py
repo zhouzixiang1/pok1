@@ -10,10 +10,11 @@ sys.path.append(str(CORE_DIR))
 from engine.battle import mirror_battle
 
 def smoke_test(target_bot_path):
-    # Opponent is always the stable bot6
-    stable_bot_path = str(PROJECT_ROOT / "bots" / "bot6" / "main.py")
+    # Use reference_bots for a stable opponent (always available, never graveyarded)
+    stable_bot_path = str(CORE_DIR / "reference_bots" / "bot6" / "main.py")
     if not os.path.exists(stable_bot_path):
-        # Fallback to whatever exists if bot6 is missing
+        stable_bot_path = str(PROJECT_ROOT / "bots" / "bot6" / "main.py")
+    if not os.path.exists(stable_bot_path):
         stable_bot_path = str(PROJECT_ROOT / "bots" / "bot1" / "main.py")
         
     try:

@@ -12,8 +12,6 @@ from evolution_core import (
     get_bot_dir,
     get_active_bots,
     load_ratings,
-    verify_code,
-    run_smoke_test,
     CORE_DIR,
 )
 from glicko2 import Glicko2Player, update_rating_period
@@ -71,24 +69,7 @@ async def run_precommit_eval(args):
         _record_gate(v, source_v, "precommit_eval", _gate_payload(v, source_v, False, **gate_extra), stage=None)
         return _json_tool_result(result)
 
-    compile_errors = verify_code(get_bot_dir(v))
-    smoke_errors = run_smoke_test(get_bot_dir(v))
-    if compile_errors:
-        blockers.append({"reason": "compile_errors", "details": compile_errors[:3]})
-    if smoke_errors:
-        blockers.append({"reason": "smoke_errors_or_timeout", "details": smoke_errors[:3]})
-    # Short-circuit: no point running battles if the bot can't even compile or run
-    if compile_errors or smoke_errors:
-        result = {
-            "version": v, "source_v": source_v, "n_games": n_games,
-            "opponents": [], "matchups": [],
-            "total_wins": 0, "total_losses": 0, "total_draws": 0,
-            "passed": False, "blockers": blockers,
-        }
-        _record_gate(v, source_v, "precommit_eval", _gate_payload(v, source_v, False, **{
-            k: val for k, val in result.items() if k not in {"version", "source_v", "passed"}
-        }), stage=None)
-        return _json_tool_result(result)
+    # compile/smoke already verified by quality gates (required by _quality_gate_ok above)
 
     opponents = _select_precommit_opponents(v, source_v)
     # Add crossover parent_b if applicable

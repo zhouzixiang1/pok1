@@ -96,7 +96,7 @@ The Orchestrator LLM calls these MCP tools in order:
 1. **Direction Auditor**: Pre-Master LLM gate that checks git history for repetitive evolution directions. Forces structural alternatives if stuck.
 2. **Master Architect** (`prompts/master_prompt.md`): Analyzes ratings, experience pool, match data. Produces JSON task plan with 2 worker assignments — one "Algorithmic Logic Architect" (structural changes) and one "Hyperparameter Tuner" (constants only). Can set `branch_from` to evolve from a different ancestor.
 3. **Workers** (`prompts/worker_prompt.md`): Execute tasks in parallel (max 3 via semaphore), 4 retries each. Workers directly edit bot source files using Bash/Read/Edit tools.
-4. **Quality Gates** (automated, no LLM): `py_compile` check, 1 mirror battle smoke test, decision tests (≥70% pass), file size ≤1000 lines.
+4. **Quality Gates** (automated, no LLM): `py_compile` check, 1 mirror battle smoke test, decision tests (≥70% pass), file size ≤1500 lines (core strategy files) / ≤1200 lines (helpers).
 5. **Code Reviewer** (`prompts/reviewer_prompt.md`): LLM reviews diff, enforces role boundaries, scores 1-10. Up to 3 retries.
 6. **Critic** (`prompts/critic_prompt.md`): Independent strategic quality gate. Score ≥6 to approve. Up to 2 intra-generation retries feeding feedback back to workers.
 7. **Pre-commit Eval**: Mirror battle regression check vs parent + top opponents.
@@ -292,7 +292,8 @@ The `sever/` re-raise rule is stricter — it doubles the total raise-to, not th
 | Constant | Value | Purpose |
 |---|---|---|
 | `MAX_ACTIVE_BOTS` | 30 | Pool cap before reaping |
-| `MAX_LINES_PER_FILE` | 1000 | LOC limit per .py file |
+| `MAX_LINES_PER_FILE` | 1500 | LOC limit for core strategy files (strategy.py, postflop.py) |
+| `MAX_LINES_HELPER` | 1200 | LOC limit for helper .py files |
 | `MIN_DECISION_PASS_RATE` | 0.7 | Decision test threshold |
 | `MAX_WORKER_RETRIES` | 4 | Retries per worker |
 | `MAX_MASTER_RETRIES` | 3 | Retries for Master plan |

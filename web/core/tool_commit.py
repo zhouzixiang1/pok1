@@ -12,10 +12,6 @@ from evolution_core import (
     get_bot_dir,
     get_active_bots,
     load_ratings,
-    verify_code,
-    check_code_size,
-    run_smoke_test,
-    run_decision_test_details,
     git_commit_bot,
     git_has_tag,
     clear_pipeline_checkpoint,
@@ -110,37 +106,13 @@ async def commit_bot(args):
             "gate_results": gate_results,
         })
 
-    # Guard: compile check
-    compile_errors = verify_code(bot_dir)
-    if compile_errors:
+    # Guard: quality gates already verified in checkpoint — no need to re-run
+    # (compile, smoke, decision, size all checked in run_quality_gates)
+    quality = gate_results.get("quality")
+    if not quality or not quality.get("all_passed"):
         return _json_tool_result({
-            "error": "COMMIT BLOCKED: compile errors present. Run run_quality_gates() first and fix errors.",
-            "compile_errors": compile_errors[:3],
-        })
-
-    smoke_errors = run_smoke_test(bot_dir)
-    if smoke_errors:
-        return _json_tool_result({
-            "error": "COMMIT BLOCKED: smoke test failed. Run run_quality_gates() first and fix runtime errors.",
-            "smoke_errors": smoke_errors[:3],
-        })
-
-    decision_detail = run_decision_test_details(bot_dir)
-    decision_rate = decision_detail.get("pass_rate", 0.0)
-    critical_failures = decision_detail.get("critical_failures", [])
-    if decision_rate < 0.7 or critical_failures:
-        return _json_tool_result({
-            "error": "COMMIT BLOCKED: decision tests failed. Fix catastrophic blunders first.",
-            "decision_pass_rate": round(decision_rate, 2),
-            "critical_failures": critical_failures,
-            "decision_failures": decision_detail.get("failures", []),
-        })
-
-    _, oversized = check_code_size(bot_dir)
-    if oversized:
-        return _json_tool_result({
-            "error": "COMMIT BLOCKED: code size gate failed.",
-            "oversized_files": {name: lines for name, lines in oversized},
+            "error": "COMMIT BLOCKED: quality gates not passed in checkpoint.",
+            "gate_summary": {k: {"passed": v.get("passed")} for k, v in gate_results.items()},
         })
 
     # Guard: reviewer approval required

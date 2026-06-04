@@ -82,7 +82,7 @@ async def run_quality_gates(args):
         "decision_failures": decision_detail.get("failures", []),
         "scenario_results": decision_detail.get("scenarios", []),
         "total_lines": total_lines,
-        "oversized_files": {name: lines for name, lines in oversized} if oversized else {},
+        "oversized_files": {name: lines for name, lines, _ in oversized} if oversized else {},
         "size_ok": len(oversized) == 0,
         "all_passed": all_passed,
     }
@@ -96,7 +96,7 @@ async def run_quality_gates(args):
     if not decision_ok:
         failed_gates_detail.append(f"decision_tests({decision_rate:.0%})")
     if oversized:
-        failed_gates_detail.append(f"file_size({', '.join(f'{n}:{l}L' for n, l in oversized)})")
+        failed_gates_detail.append(f"file_size({', '.join(f'{n}:{l}L/{lim}L' for n, l, lim in oversized)})")
 
     log_system_event(
         "pipeline.quality_passed" if all_passed else "pipeline.quality_failed",

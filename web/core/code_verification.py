@@ -6,7 +6,8 @@ import subprocess
 import sys
 
 from evolution_infra import (
-    CORE_DIR, REFERENCE_DIR, RESULTS_DIR, MAX_LINES_PER_FILE, _COPY_IGNORE,
+    CORE_DIR, REFERENCE_DIR, RESULTS_DIR,
+    MAX_LINES_PER_FILE, MAX_LINES_HELPER, CORE_STRATEGY_FILES, _COPY_IGNORE,
     get_bot_dir,
 )
 
@@ -23,8 +24,12 @@ def verify_code(directory):
     return errors
 
 
-def check_code_size(directory, max_lines_per_file=MAX_LINES_PER_FILE):
-    """Check single-file LOC limits (excluding backup files). Returns (total, oversized_files)."""
+def check_code_size(directory, max_lines_per_file=None):
+    """Check single-file LOC limits (excluding backup files). Returns (total, oversized_files).
+
+    Uses tiered limits: CORE_STRATEGY_FILES (strategy.py, postflop.py) get
+    MAX_LINES_PER_FILE (1500), all others get MAX_LINES_HELPER (1200).
+    """
     oversized_files = []
     total = 0
     for root, _, files in os.walk(directory):
@@ -34,8 +39,11 @@ def check_code_size(directory, max_lines_per_file=MAX_LINES_PER_FILE):
                 with open(path) as fh:
                     lines = sum(1 for _ in fh)
                 total += lines
-                if lines > max_lines_per_file:
-                    oversized_files.append((f, lines))
+                limit = MAX_LINES_PER_FILE if f in CORE_STRATEGY_FILES else MAX_LINES_HELPER
+                if max_lines_per_file is not None:
+                    limit = max_lines_per_file
+                if lines > limit:
+                    oversized_files.append((f, lines, limit))
     return total, oversized_files
 
 

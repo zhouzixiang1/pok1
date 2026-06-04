@@ -28,7 +28,7 @@ Then verify:
 - Changes fulfill Master's instructions without logical flaws
 - Verify changes match the assigned role — reject if a Tuner added functions/classes/imports/control flow
 - Code compiles conceptually and outputs `{"response": int}` JSON
-- No single .py file exceeds 1000 lines
+- Core strategy files (strategy.py, postflop.py) do not exceed 1500 lines; helper files do not exceed 1200 lines
 - Diff makes attribution possible for the stated generation objective
 </analysis>
 

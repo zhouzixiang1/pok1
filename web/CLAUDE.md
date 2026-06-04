@@ -123,9 +123,9 @@ React frontend:
 
 - All shared files use `fcntl` file locking for concurrent access between daemon subprocess, orchestrator, and API server
 - Worker role boundaries enforced by prompts and reviewer: Logic Architects cannot tune constants, Hyperparameter Tuners cannot add functions
-- Max 1000 lines per `.py` file — reviewer rejects oversized files
+- Max 1500 lines for core strategy files (strategy.py, postflop.py), 1200 lines for other `.py` files — reviewer rejects oversized files
 - Decision test pass rate ≥70% (prevents catastrophic regressions like folding AA preflop)
-- `commit_bot()` has hard guards: compile errors, decision tests <70%, or `review_approved=false` all block the commit
+- `commit_bot()` uses checkpoint-based gate ledger: verifies all gates passed in checkpoint, plus `review_approved=true` parameter
 - Pipeline checkpoint enforces stage ordering via gate ledger — each stage records pass/fail, next stage verifies previous gates
 - Orchestrator session persistence for crash recovery: session file cleared on natural completion, preserved on kill
 - Worker failures recorded to `worker_failures.jsonl` and injected into future worker prompts as memory

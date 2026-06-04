@@ -308,12 +308,21 @@ async def execute_workers(args):
         boundary_errors = _validate_worker_boundaries(tasks, source_v, next_v)
         if boundary_errors:
             success = False
-            # Reset code directory from source to avoid dirty state
+            # Selective reset: only revert files modified by violating workers
             src_dir = get_bot_dir(source_v)
             if src_dir.exists() and next_dir.exists():
-                shutil.rmtree(next_dir)
-                shutil.copytree(src_dir, next_dir, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
-                (next_dir / ".completed").unlink(missing_ok=True)
+                violated_files = set()
+                for err in boundary_errors:
+                    f = err.get("file", "")
+                    if f:
+                        violated_files.add(f)
+                for rel in violated_files:
+                    src_file = src_dir / rel
+                    dst_file = next_dir / rel
+                    if src_file.exists():
+                        dst_file.write_text(src_file.read_text())
+                    elif dst_file.exists():
+                        dst_file.unlink()
 
     if success:
         from evolution_infra import write_pipeline_checkpoint
