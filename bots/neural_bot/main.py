@@ -10,7 +10,7 @@ import sys
 import numpy as np
 
 _BOT_DIR = os.path.dirname(os.path.abspath(__file__))
-_REF_DIR = os.path.join(os.path.dirname(_BOT_DIR), 'claude_v49')
+_REF_DIR = os.path.join(os.path.dirname(_BOT_DIR), 'claude_v5')
 sys.path.insert(0, _REF_DIR)
 sys.path.insert(0, _BOT_DIR)
 

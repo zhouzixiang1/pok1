@@ -20,7 +20,7 @@ import sys
 import numpy as np
 
 # 复用 claude_v49 的牌型评估和状态重建
-_BOT_DIR = os.path.join(os.path.dirname(__file__), '..', 'claude_v49')
+_BOT_DIR = os.path.join(os.path.dirname(__file__), '..', 'claude_v5')
 sys.path.insert(0, _BOT_DIR)
 from card_utils import evaluate_7, card_number, card_suit
 
