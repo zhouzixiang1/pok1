@@ -18,6 +18,11 @@ The bot reads JSON from stdin and writes `{"response": int}` to stdout.
 | Algorithmic Logic Architect | New functions, refactored logic, new imports | Changing well-tuned constants unless structurally required |
 | Opponent Modeler | Per-street tracking (`opp_stats[street]['vpip']`), bet sizing patterns, exploitative adjustments | Changing decision flow or non-opponent-model logic |
 
+CRITICAL ENFORCEMENT:
+- **Hyperparameter Tuner**: You MUST change at least one numeric constant. Zero changes is a FAILURE. If you cannot find the exact constant mentioned in the plan, search all .py files in the bot directory for it. Never output files identical to the source.
+- **Algorithmic Logic Architect**: You MUST NOT change any numeric constants or thresholds (e.g., 0.49 → 0.45, 0.60 → 0.55). Those belong EXCLUSIVELY to the Tuner role. If you believe a constant needs changing, note it in your output but do NOT edit it yourself.
+- **Opponent Modeler**: You MUST wire any new tracking data into decision logic (strategy.py or postflop.py). Data collection without consumption is a FAILURE.
+
 If you accidentally make edits outside your role, remove only your accidental edits before finishing.
 </role_boundaries>
 

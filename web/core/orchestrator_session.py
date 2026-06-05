@@ -99,10 +99,19 @@ def _startup_recovery(ui=None) -> dict:
     # Aborted pipeline: no git tag for next_v + checkpoint is stale (>=30 min old)
     # This catches cases where a generation was aborted (e.g. via manual git commit)
     # but pipeline_state.json was never cleaned up.
+    # EXCEPT: stages beyond "prepared" represent real work (direction audit, master plan, etc.)
+    # that should be recovered rather than discarded.
     from evolution_infra import git_has_tag
     if next_v is not None and not git_has_tag(next_v):
         ckpt_ts = checkpoint.get("timestamp")
-        if ckpt_ts:
+        # Stages with real work — don't abort even if old
+        recoverable_stages = {"direction_audited", "master_planned", "workers_done",
+                              "quality_passed", "reviewed", "critic_checked", "verified"}
+        if stage in recoverable_stages:
+            if ui:
+                ui.log_history(f"[Recovery] v{next_v} at stage '{stage}' — preserving for resume (no 30-min abort).", "warn")
+            # Fall through to recovery below
+        elif ckpt_ts:
             try:
                 from datetime import datetime, timezone
                 ckpt_time = datetime.fromisoformat(ckpt_ts).replace(tzinfo=None)

@@ -10,6 +10,7 @@ from evolution_infra import (
     run_claude_query, parse_json_output,
     locked_file, get_logs_dir,
     PROMPTS_DIR, EXPERIENCE_FILE, ARCHIVE_DIR,
+    substitute_template,
 )
 
 
@@ -28,8 +29,8 @@ async def _consolidate_experience_pool(ui):
 
     with locked_file(EXPERIENCE_FILE, "r") as ef:
         content = ef.read()
-    if not content or len(content.split("\n")) < 20:
-        return  # Too short to bother consolidating
+    if not content or content.strip() == "":
+        return  # Skip only if file is completely empty
 
     # Load template and substitute
     template_file = PROMPTS_DIR / "experience_consolidator.md"
@@ -56,11 +57,19 @@ async def _consolidate_experience_pool(ui):
                 l for l in lines if not l.strip().startswith("```")
             ).strip()
 
-        if consolidated and len(consolidated) > 50:
-            tmp = EXPERIENCE_FILE.with_suffix(".tmp")
-            tmp.write_text(consolidated + "\n", encoding="utf-8")
-            tmp.replace(EXPERIENCE_FILE)
-            ui.log_history("Experience pool consolidated and written back.", "success")
+        if consolidated and len(consolidated) > 20:
+            # Ensure consolidated content preserves section headers
+            has_headers = any(f"## {h}" in consolidated for h in [
+                "OPPONENT_MODELING", "POSTFLOP_STRATEGY", "BLUFF_CALIBRATION",
+                "PARAMETER_TUNING", "GENERAL", "RECENT_LESSONS"
+            ])
+            if not has_headers:
+                ui.log_history("Experience pool consolidation lost section headers — skipping write.", "warn")
+            else:
+                tmp = EXPERIENCE_FILE.with_suffix(".tmp")
+                tmp.write_text(consolidated + "\n", encoding="utf-8")
+                tmp.replace(EXPERIENCE_FILE)
+                ui.log_history("Experience pool consolidated and written back.", "success")
         else:
             ui.log_history("Experience pool consolidation produced no output — skipping write.", "warn")
     except Exception as e:
