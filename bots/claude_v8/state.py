@@ -1,9 +1,4 @@
-"""State reconstruction and preflop profiling functions."""
-
-from constants import (
-    N_PLAYERS, INITIAL_CHIPS, SMALL_BLIND, BIG_BLIND, TOTAL_HANDS,
-    PREFLOP_STRENGTH_TABLE,
-)
+from constants import N_PLAYERS, INITIAL_CHIPS, SMALL_BLIND, BIG_BLIND, TOTAL_HANDS, PREFLOP_STRENGTH_TABLE
 from card_utils import clamp, card_suit, card_number, next_player
 
 

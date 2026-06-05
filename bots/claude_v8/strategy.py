@@ -5,8 +5,8 @@ from state import (
     is_preflop_3bet_candidate, is_preflop_trash_hand,
 )
 from tournament import (
-    should_lock_win, fold_gives_opponent_lock, match_risk_adjustment,
-    match_pressure_profile, apply_anti_lock_pressure, anti_lock_can_continue,
+    should_lock_win, match_risk_adjustment, match_pressure_profile,
+    fold_gives_opponent_lock, apply_anti_lock_pressure, anti_lock_can_continue,
 )
 from opponent import build_opponent_model, analyze_current_spot
 from postflop import (
@@ -287,6 +287,7 @@ def choose_raise(
     induce_mode=False,
     nutted_risk_score=0.0,
     match_sizing_delta=0.0,
+    allow_river_overbet=False,
 ):
     if my_chips <= max(min_raise, to_call) + 1:
         return None
@@ -362,7 +363,9 @@ def choose_raise(
     low_ratio = 0.28 if inducing_value else 0.22 if probe_mode or (blocker_bluff and to_call == 0) else 0.40
     if thin_cap is not None:
         low_ratio = min(low_ratio, thin_cap)
-    ratio = clamp(ratio, low_ratio, 1.45)
+    # CROSSOVER from v7: allow river overbet up to 2.2x pot with nut hands
+    max_ratio = 2.2 if (allow_river_overbet and round_idx == 3 and value_profile.get("tier") == "nut") else 1.45
+    ratio = clamp(ratio, low_ratio, max_ratio)
 
     amount = int(to_call + pot_after_call * ratio)
 
@@ -387,6 +390,34 @@ def choose_raise(
     return amount
 
 
+# CROSSOVER from v7: river overbet with nut hands
+def choose_overbet_river(
+    min_raise, my_chips, my_round_bet, to_call, pot,
+    win_rate, value_profile, board_texture, spot_info, opponent_model
+):
+    """River overbet: 1.5-2.2x pot with NUT hands only."""
+    if value_profile is None or value_profile["tier"] != "nut":
+        return None
+    if board_texture is not None and board_texture["wetness"] > 0.35:
+        return None
+    if pot < 400:
+        return None
+
+    pot_after_call = pot + to_call
+    ratio = 1.5 + 0.3 * max(0.0, win_rate - 0.70)
+    if not spot_info.get("has_position", False):
+        ratio = max(1.3, ratio - 0.2)
+    ratio = min(ratio, 2.2)
+    amount = int(to_call + pot_after_call * ratio)
+
+    if amount >= my_chips:
+        return -2
+    amount = min(amount, my_chips - 1)
+    if amount <= to_call or amount < min_raise:
+        return None
+    return amount
+
+
 def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_strength, win_rate, match_profile):
     my_chips = req["my_chips"]
     to_call = state["to_call"]
@@ -396,9 +427,7 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
     trash_hand = is_preflop_trash_hand(req["my_cards"], preflop_strength)
 
     if spot_info["preflop_spot"] == "sb_open":
-        # CROSSOVER MUTATION: Lower sb_open threshold from 0.49 to 0.47
-        # for more aggressive blind stealing in heads-up play
-        open_threshold = 0.47 + match_adjust + 0.02 + match_profile["open_delta"]
+        open_threshold = 0.49 + match_adjust + 0.02 + match_profile["open_delta"]
         limp_threshold = 0.36 + match_adjust
         raise_amount = choose_raise(
             state["min_raise_action"],
@@ -442,10 +471,8 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
             return raise_amount
         return 0
 
-    # CROSSOVER FROM V7: bb_vs_raise preflop 3-bet and call logic
-    # v4 returned None here, missing this strategic case entirely
+    # CROSSOVER from v7: explicit BB vs raise handling
     if spot_info["preflop_spot"] == "bb_vs_raise":
-        pot_odds_preflop = to_call / (state["pot"] + to_call) if to_call > 0 else 0.0
         three_bet_threshold = 0.68 + match_adjust + match_profile["open_delta"]
         call_threshold = 0.30 + match_adjust
         call_threshold -= confidence * max(0.0, opponent_model["fold_to_raise"] - 0.52) * 0.04
@@ -562,6 +589,16 @@ def get_action(req, requests):
         if len(public_cards) >= 3
         else {"active": False, "severe": False, "line_strength": 0.0, "size_bucket": "small"}
     )
+
+    # CROSSOVER from v7: river overbet with nut hands
+    if round_idx == 3 and to_call == 0 and len(public_cards) >= 3 and value_profile is not None and value_profile["tier"] == "nut":
+        overbet = choose_overbet_river(
+            state["min_raise_action"], my_chips, state["my_round_bet"],
+            to_call, pot, win_rate, value_profile, board_texture, spot_info, opponent_model
+        )
+        if overbet is not None:
+            return overbet
+
     repeated_raise_trap = (
         round_idx > 0
         and spot_info["facing_postflop_aggression"]
@@ -591,7 +628,8 @@ def get_action(req, requests):
     )
 
     strong = 0.69 if round_idx == 0 else 0.65 if round_idx == 1 else 0.61 if round_idx == 2 else 0.59
-    medium = 0.54 if round_idx == 0 else 0.50 if round_idx == 1 else 0.48
+    # MUTATION: river medium threshold 0.48 -> 0.43 (10.4% decrease, enables more river aggression)
+    medium = 0.54 if round_idx == 0 else 0.50 if round_idx == 1 else 0.48 if round_idx == 2 else 0.43
 
     if spot_info["has_position"]:
         strong -= 0.015

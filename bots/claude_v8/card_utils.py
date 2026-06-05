@@ -1,5 +1,3 @@
-"""Card utility functions and hand evaluation."""
-
 import itertools
 
 from constants import N_PLAYERS, CARD_RANKS, CARD_SUITS
