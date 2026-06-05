@@ -121,8 +121,14 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
                             lf.write(text + "\n")
                         ui.log_io(text, "claude", role_name)
                     elif isinstance(block, ThinkingBlock):
-                        ui.log_io(block.thinking or "[thinking...]", "thinking", role_name)
+                        thinking = block.thinking or "[thinking...]"
+                        with open(log_file_path, "a") as lf:
+                            lf.write(f"\n[THINKING] {thinking[:2000]}\n")
+                        ui.log_io(thinking, "thinking", role_name)
                     elif isinstance(block, ToolUseBlock):
+                        args_str = json.dumps(block.input, ensure_ascii=False, indent=2)[:2000]
+                        with open(log_file_path, "a") as lf:
+                            lf.write(f"\n[TOOL_CALL] {block.name}\n[ARGS] {args_str}\n")
                         ui.log_io(f"\n[tool: {block.name}]", "tool", role_name)
                         ui.emit_tool_call(block.name, block.input, role_name)
                     elif isinstance(block, ToolResultBlock):
@@ -130,6 +136,8 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
                             json.dumps(block.content, ensure_ascii=False) if block.content is not None else ""
                         )
                         if content:
+                            with open(log_file_path, "a") as lf:
+                                lf.write(f"\n[TOOL_RESULT] {content[:3000]}\n")
                             ui.log_io(content[:3000], "tool_result", role_name)
             elif isinstance(message, ResultMessage):
                 cost_usd = message.total_cost_usd
@@ -171,8 +179,14 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
                                     lf.write(text + "\n")
                                 ui.log_io(text, "claude", role_name)
                             elif isinstance(block, ThinkingBlock):
-                                ui.log_io(block.thinking or "[thinking...]", "thinking", role_name)
+                                thinking = block.thinking or "[thinking...]"
+                                with open(log_file_path, "a") as lf:
+                                    lf.write(f"\n[THINKING] {thinking[:2000]}\n")
+                                ui.log_io(thinking, "thinking", role_name)
                             elif isinstance(block, ToolUseBlock):
+                                args_str = json.dumps(block.input, ensure_ascii=False, indent=2)[:2000]
+                                with open(log_file_path, "a") as lf:
+                                    lf.write(f"\n[TOOL_CALL] {block.name}\n[ARGS] {args_str}\n")
                                 ui.log_io(f"\n[tool: {block.name}]", "tool", role_name)
                                 ui.emit_tool_call(block.name, block.input, role_name)
                             elif isinstance(block, ToolResultBlock):
@@ -180,6 +194,8 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
                                     json.dumps(block.content, ensure_ascii=False) if block.content is not None else ""
                                 )
                                 if content:
+                                    with open(log_file_path, "a") as lf:
+                                        lf.write(f"\n[TOOL_RESULT] {content[:3000]}\n")
                                     ui.log_io(content[:3000], "tool_result", role_name)
                     elif isinstance(message, ResultMessage):
                         cost_usd = (cost_usd or 0) + (message.total_cost_usd or 0)

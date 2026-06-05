@@ -132,13 +132,16 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 else:
                                     log.info("Calling tool: %s", block.name)
                                     print(f"\n[tool: {block.name}]", end=" ", flush=True)
-                                lf.write(f"\n[tool: {block.name}]\n")
+                                args_str = json.dumps(block.input, ensure_ascii=False, indent=2)[:2000]
+                                lf.write(f"\n[tool: {block.name}]\n[args] {args_str}\n")
                             elif isinstance(block, ThinkingBlock):
+                                thinking = block.thinking or "[thinking...]"
                                 if ui:
-                                    ui.log_io(block.thinking or "[thinking...]", "thinking", "Orchestrator")
+                                    ui.log_io(thinking, "thinking", "Orchestrator")
                                 else:
                                     log.debug("[thinking...]")
                                     print("[thinking...]", end=" ", flush=True)
+                                lf.write(f"\n[THINKING] {thinking[:2000]}\n")
                             elif isinstance(block, ToolResultBlock):
                                 content = block.content if isinstance(block.content, str) else (
                                     json.dumps(block.content, ensure_ascii=False) if block.content is not None else ""

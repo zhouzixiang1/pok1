@@ -41,31 +41,31 @@ def start_daemon(workers=14, pairs=5):
 
     from evolution_infra import CORE_DIR, RESULTS_DIR
 
-    # Kill orphaned daemon from a previous process (before acquiring lock)
-    _need_wait = False
-    daemon_pid_file = RESULTS_DIR / ".daemon_pid"
-    if daemon_pid_file.exists():
-        try:
-            raw = daemon_pid_file.read_text().strip()
-            try:
-                info = json.loads(raw)
-                old_pid = info["pid"] if isinstance(info, dict) else int(info)
-            except (json.JSONDecodeError, KeyError, TypeError):
-                old_pid = int(raw)
-            try:
-                os.killpg(os.getpgid(old_pid), signal.SIGTERM)
-                _need_wait = True
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
-        except ValueError:
-            pass
-    if _need_wait:
-        time.sleep(1)  # Wait outside lock for orphan to die
-
     with _daemon_lock:
         _daemon_shutting_down = False
+        # Check in-memory handle first — if daemon is alive, no need to touch PID file.
+        # This MUST happen before reading the PID file to avoid killing a running daemon
+        # whose PID file still exists from a previous start_daemon() call.
         if daemon_proc and daemon_proc.poll() is None:
             return daemon_proc  # Already running
+
+        # Daemon is dead or never started — check PID file for orphan from a previous process
+        daemon_pid_file = RESULTS_DIR / ".daemon_pid"
+        if daemon_pid_file.exists():
+            try:
+                raw = daemon_pid_file.read_text().strip()
+                try:
+                    info = json.loads(raw)
+                    old_pid = info["pid"] if isinstance(info, dict) else int(raw)
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    old_pid = int(raw)
+                try:
+                    os.killpg(os.getpgid(old_pid), signal.SIGTERM)
+                    time.sleep(0.5)  # Wait for orphan to die
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+            except ValueError:
+                pass
         daemon_pid_file.unlink(missing_ok=True)
         daemon_script = str(CORE_DIR / "elo_daemon.py")
         cmd = [sys.executable, daemon_script, "--workers", str(workers), "--pairs", str(pairs)]
