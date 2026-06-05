@@ -397,10 +397,18 @@ def choose_raise(
 def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_strength, win_rate, match_profile):
     my_chips = req["my_chips"]
     to_call = state["to_call"]
+    pot = max(1, state["pot"])
     match_adjust = match_risk_adjustment(req, req["my_id"], get_remaining_hands(req))
     confidence = opponent_model["confidence"]
     loose_bonus = confidence * max(0.0, opponent_model["vpip"] - 0.55) * 0.03
     trash_hand = is_preflop_trash_hand(req["my_cards"], preflop_strength)
+
+    # Preflop all-in protection: never fold strong hands vs opponent all-in.
+    # Must return -2 (not 0) because sanitize_action() in main.py only permits
+    # -1 (fold) or -2 (all-in) when opponent_allin is True; returning 0 gets
+    # silently converted to -1 (fold), which is the bug we're fixing.
+    if spot_info["facing_allin"] and preflop_strength >= 0.55:
+        return -2
 
     if spot_info["preflop_spot"] == "sb_open":
         open_threshold = 0.49 + match_adjust + 0.02 + match_profile["open_delta"]
@@ -448,23 +456,45 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
         return 0
 
     if spot_info["preflop_spot"] == "bb_vs_raise":
-        pot_odds_preflop = to_call / (state["pot"] + to_call) if to_call > 0 else 0.0
-        three_bet_threshold = 0.68 + match_adjust + match_profile["open_delta"]
-        call_threshold = 0.30 + match_adjust
-        call_threshold -= confidence * max(0.0, opponent_model["fold_to_raise"] - 0.52) * 0.04
-        if preflop_strength >= three_bet_threshold and not trash_hand:
-            raise_amount = choose_raise(
-                state["min_raise_action"], my_chips, state["my_round_bet"],
-                to_call, state["pot"], max(win_rate, preflop_strength),
-                0, "bb_vs_raise", preflop_strength, spot_info["has_position"],
-                opponent_model, match_sizing_delta=match_profile["sizing_delta"],
-            )
-            if raise_amount is not None:
-                return raise_amount
+        strength = preflop_strength
+        raise_bb = to_call / BIG_BLIND
+        three_bet_thr = 0.62 + match_adjust + match_profile["threshold_delta"] * 0.5
+        call_thr = 0.30 + match_adjust
+        if confidence >= 0.20:
+            three_bet_thr -= confidence * max(0.0, opponent_model["fold_to_raise"] - 0.48) * 0.12
+            three_bet_thr -= confidence * max(0.0, opponent_model["pfr"] - 0.35) * 0.05
+        if raise_bb >= 4:
+            call_thr += 0.05
+        if raise_bb >= 6:
+            call_thr += 0.06
+        if not trash_hand and strength >= three_bet_thr:
+            amt = choose_raise(state["min_raise_action"], my_chips, state["my_round_bet"], to_call, pot, max(win_rate, strength), 0, "bb_vs_raise", preflop_strength, True, opponent_model, match_sizing_delta=match_profile["sizing_delta"])
+            if amt is not None:
+                return amt
             return 0
-        if preflop_strength >= call_threshold:
+        # All-in protection: call with strong hands even vs large raises
+        if to_call >= my_chips * 0.5 and strength >= 0.55:
             return 0
-        if to_call <= BIG_BLIND * 2 and preflop_strength >= 0.28:
+        if strength >= call_thr or (strength >= call_thr - 0.05 and to_call <= BIG_BLIND * 2):
+            return 0
+        return -1
+
+    if spot_info["preflop_spot"] == "sb_vs_reraise":
+        strength = preflop_strength
+        pot_odds_pf = to_call / (pot + to_call) if to_call > 0 else 0
+        four_bet_thr = 0.72 + match_adjust
+        call_thr = 0.42 + match_adjust
+        if confidence >= 0.20:
+            four_bet_thr -= confidence * max(0.0, opponent_model["fold_to_raise"] - 0.50) * 0.10
+        if not trash_hand and strength >= four_bet_thr:
+            amt = choose_raise(state["min_raise_action"], my_chips, state["my_round_bet"], to_call, pot, max(win_rate, strength), 0, "sb_vs_reraise", preflop_strength, False, opponent_model, match_sizing_delta=match_profile["sizing_delta"])
+            if amt is not None:
+                return amt
+            return 0
+        # All-in protection: call with strong hands vs all-in
+        if to_call >= my_chips * 0.5 and strength >= 0.55:
+            return 0
+        if strength >= call_thr and win_rate >= pot_odds_pf - 0.02:
             return 0
         return -1
 

@@ -1,7 +1,6 @@
 """Pipeline tools: commit, archivist, and crossover."""
 
 import json
-import os
 import time
 from pathlib import Path
 from typing import Annotated, TypedDict
@@ -192,7 +191,46 @@ async def commit_bot(args):
 # Archivist Stage
 # ──────────────────────────────────────────────
 
-@tool("run_archivist", "Run post-commit archive audit for a completed generation. Verifies consistency, auto-reaps if needed, optionally calls LLM for strategic assessment.", {"version": int, "source_v": int})
+def _append_experience_updates(version: int, updates: list[str]):
+    """Append archivist experience_updates to experience_pool.md under RECENT_LESSONS."""
+    from evolution_infra import EXPERIENCE_FILE, locked_file
+
+    if not updates:
+        return
+
+    # Build the lines to insert
+    new_lines = [f"- **v{version}**: {u}" for u in updates if u.strip()]
+    if not new_lines:
+        return
+
+    with locked_file(EXPERIENCE_FILE, "r") as f:
+        content = f.read()
+
+    lines = content.split("\n")
+
+    # Find the RECENT_LESSONS section and append after it
+    recent_idx = None
+    for i, line in enumerate(lines):
+        if line.strip() == "## RECENT_LESSONS":
+            recent_idx = i
+            break
+
+    if recent_idx is not None:
+        # Insert after the ## RECENT_LESSONS header
+        insert_at = recent_idx + 1
+        for j, new_line in enumerate(new_lines):
+            lines.insert(insert_at + j, new_line)
+    else:
+        # Fallback: append at end
+        lines.append("")
+        lines.append("## RECENT_LESSONS")
+        lines.extend(new_lines)
+
+    with locked_file(EXPERIENCE_FILE, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+@tool("run_archivist", "Run post-commit archive audit for a completed generation. Verifies consistency, auto-reaps if needed, calls LLM for strategic assessment and experience pool updates.", {"version": int, "source_v": int})
 async def run_archivist(args):
     v, source_v = _resolve_version_args(args)
     if v is None or source_v is None:
@@ -233,39 +271,25 @@ async def run_archivist(args):
         except Exception:
             pass
 
-    # 4. Conditional LLM archivist analysis
+    # 4. LLM archivist analysis — run every commit to populate experience pool
     llm_result = None
-    needs_llm = False
-    # Check if rating has been declining for 3+ gens
     try:
-        rating_trend = []
-        for check_v in range(max(1, v - 4), v + 1):
-            check_archive = ARCHIVE_DIR / f"v{check_v}.json"
-            if check_archive.exists():
-                with open(check_archive, "r") as f:
-                    s = json.load(f)
-                r = s.get("rating", {}).get("r")
-                if r:
-                    rating_trend.append((check_v, r))
-        if len(rating_trend) >= 3:
-            declining = all(rating_trend[i][1] > rating_trend[i + 1][1] for i in range(len(rating_trend) - 1))
-            if declining:
-                needs_llm = True
-    except Exception:
-        pass
+        from experience_archivist import _run_archivist_analysis
+        llm_result = await _run_archivist_analysis(v, source_v, snapshot, ui)
+        # Append LLM notes to archive snapshot
+        if llm_result and archive_path.exists():
+            snapshot["archivist_notes"] = llm_result
+            from evolution_infra import locked_file
+            with locked_file(archive_path, "w") as f:
+                json.dump(snapshot, f, indent=2, ensure_ascii=False)
 
-    if needs_llm or os.environ.get("EVOLUTION_ALWAYS_ARCHIVE_LLM") == "1":
-        try:
-            from experience_archivist import _run_archivist_analysis
-            llm_result = await _run_archivist_analysis(v, source_v, snapshot, ui)
-            # Append LLM notes to archive snapshot
-            if llm_result and archive_path.exists():
-                snapshot["archivist_notes"] = llm_result
-                from evolution_infra import locked_file
-                with locked_file(archive_path, "w") as f:
-                    json.dump(snapshot, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            llm_result = {"error": str(e)}
+        # Write experience_updates to experience_pool.md
+        if llm_result and isinstance(llm_result, dict):
+            updates = llm_result.get("experience_updates", [])
+            if updates:
+                _append_experience_updates(v, updates)
+    except Exception as e:
+        llm_result = {"error": str(e)}
 
     result = {
         "version": v,

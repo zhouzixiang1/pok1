@@ -187,7 +187,7 @@ def analyze_current_spot(req, state):
 def detect_bot4_profile(opponent_model, n_hands_played):
     """Detect if opponent exhibits bot_4's characteristic stats."""
     confidence = opponent_model["confidence"]
-    if confidence < 0.20:
+    if confidence < 0.10:
         return False, 0.0
 
     score = 0.0
@@ -197,19 +197,19 @@ def detect_bot4_profile(opponent_model, n_hands_played):
     post_aggr = opponent_model["postflop_aggr"]
     fold_raise = opponent_model["fold_to_raise"]
 
-    if abs(vpip - 0.58) < 0.12:
+    if abs(vpip - 0.58) < 0.15:
         score += 0.20
-    if abs(pfr - 0.28) < 0.10:
+    if abs(pfr - 0.28) < 0.13:
         score += 0.20
-    if abs(post_aggr - 0.36) < 0.12:
+    if abs(post_aggr - 0.36) < 0.15:
         score += 0.20
-    if abs(fold_raise - 0.44) < 0.12:
+    if abs(fold_raise - 0.44) < 0.15:
         score += 0.15
-    if abs(aggr - 0.30) < 0.10:
+    if abs(aggr - 0.30) < 0.13:
         score += 0.15
 
     score *= confidence
-    return score >= 0.25, score
+    return score >= 0.20, score
 
 
 def get_anti_bot4_adjustments(bot4_score, board_texture, spot_info, round_idx, value_profile):
