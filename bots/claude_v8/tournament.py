@@ -1,10 +1,6 @@
-"""Tournament-level strategy: lock-win detection, match pressure, anti-lock pressure."""
-
-from constants import N_PLAYERS, BIG_BLIND, LOCK_WIN_MARGIN, TOTAL_HANDS
+from constants import N_PLAYERS, BIG_BLIND, LOCK_WIN_MARGIN
 from card_utils import clamp, next_player
-from state import (
-    get_remaining_hands, reconstruct_state, forced_fold_loss_bound,
-)
+from state import reconstruct_state, get_remaining_hands, forced_fold_loss_bound
 
 
 def should_lock_win(req, state, my_id):
