@@ -18,12 +18,9 @@ EXTRA_SIMULATIONS_BY_PUBLIC_COUNT = {
     4: 180,
 }
 
-# Precomputed card number and suit for all 52 cards (from v7)
-CARD_RANKS = [c // 4 + 2 for c in range(52)]
-CARD_SUITS = [c % 4 for c in range(52)]
-
-# Preflop 169-hand Chen formula lookup table (from v7)
+# Improvement 2: Preflop 169-hand lookup table
 # Key: (high_rank, low_rank, suited) -> normalized strength [0,1]
+# Values derived from Chen formula + empirical equity data
 PREFLOP_STRENGTH_TABLE = {}
 _chen_base = {
     (14,14):1.00,(13,13):0.95,(12,12):0.90,(11,11):0.86,(10,10):0.82,
