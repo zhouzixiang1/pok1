@@ -129,6 +129,22 @@ def _read_json(path, default):
         return default
 
 
+def _resolve_version_args(args):
+    """Get version/source_v from args, falling back to active pipeline checkpoint.
+
+    Prevents KeyError death spiral when the orchestrator LLM calls a tool
+    without providing version/source_v parameters.
+    """
+    v = args.get("version") or args.get("next_v")
+    source_v = args.get("source_v")
+    if v is None or source_v is None:
+        ckpt = read_pipeline_checkpoint()
+        if ckpt:
+            v = v or ckpt.get("next_v")
+            source_v = source_v or ckpt.get("source_v")
+    return v, source_v
+
+
 def _matching_checkpoint(version, source_v=None):
     ckpt = read_pipeline_checkpoint()
     if not ckpt or ckpt.get("next_v") != version:

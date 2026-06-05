@@ -18,7 +18,7 @@ from tool_helpers import (
     _get_ui, _json_tool_result,
     _matching_checkpoint, _state_blocked,
     _validate_worker_boundaries,
-    _target_rel, _py_files_changed_between,
+    _target_rel, _py_files_changed_between, _resolve_version_args,
     PROJECT_ROOT,
 )
 from system_log import log_system_event
@@ -30,8 +30,13 @@ from system_log import log_system_event
 
 @tool("run_direction_audit", "Audit recent generation directions for repetition. Returns exhausted directions and mandatory constraints for the Master.", {"source_v": int, "next_v": int})
 async def run_direction_audit(args):
-    source_v = args["source_v"]
-    next_v = args["next_v"]
+    source_v = args.get("source_v")
+    next_v = args.get("next_v")
+    if source_v is None or next_v is None:
+        _v, source_v = _resolve_version_args(args)
+        next_v = next_v or _v
+    if source_v is None or next_v is None:
+        return _json_tool_result({"error": "Missing source_v/next_v and no active checkpoint"})
 
     ui = _get_ui()
     result = await _run_direction_audit(source_v, ui)
@@ -172,8 +177,13 @@ class RunMasterInput(TypedDict):
 
 @tool("run_master", "Run Master Architect analysis to plan the next generation. Returns a task plan with worker assignments.", {"source_v": int, "next_v": int, "stagnation_info": str, "match_analysis": str, "performance_verification": str, "direction_audit": str})
 async def run_master(args):
-    source_v = args["source_v"]
-    next_v = args["next_v"]
+    source_v = args.get("source_v")
+    next_v = args.get("next_v")
+    if source_v is None or next_v is None:
+        _v, source_v = _resolve_version_args(args)
+        next_v = next_v or _v
+    if source_v is None or next_v is None:
+        return {"content": [{"type": "text", "text": json.dumps({"error": "Missing source_v/next_v and no active checkpoint"})}]}
     stagnation_info = args.get("stagnation_info", "No stagnation detected. Continue from latest version.")
     match_analysis = args.get("match_analysis", "")
     performance_verification = args.get("performance_verification", "")
@@ -253,9 +263,13 @@ class ExecuteWorkersInput(TypedDict):
 
 @tool("execute_workers", "Execute worker tasks to modify bot code. Each task has worker_id, role, target_files, worker_prompt.", {"tasks": list, "next_v": int, "source_v": int, "reviewer_feedback": str})
 async def execute_workers(args):
-    tasks = args["tasks"]
-    next_v = args["next_v"]
-    source_v = args["source_v"]
+    tasks = args.get("tasks", [])
+    next_v = args.get("next_v")
+    source_v = args.get("source_v")
+    if next_v is None or source_v is None:
+        next_v, source_v = _resolve_version_args(args)
+    if next_v is None or source_v is None:
+        return _json_tool_result({"error": "Missing next_v/source_v and no active checkpoint"})
     reviewer_feedback = args.get("reviewer_feedback", "")
 
     next_dir = get_bot_dir(next_v)

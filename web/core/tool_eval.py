@@ -20,7 +20,7 @@ from tool_helpers import (
     _json_tool_result,
     _matching_checkpoint, _record_gate, _gate_payload, _state_blocked,
     _quality_gate_ok, _review_gate_ok, _critic_gate_ok,
-    _select_precommit_opponents, _bot_main,
+    _select_precommit_opponents, _bot_main, _resolve_version_args,
     PROJECT_ROOT,
 )
 
@@ -37,8 +37,11 @@ class RunPrecommitEvalInput(TypedDict):
 
 @tool("run_precommit_eval", "Run a minimal mirror-battle regression check before commit. Tests parent, current top opponents, and source H2H weaknesses; blocks obvious crashes or collapses.", {"version": int, "source_v": int, "n_games": int})
 async def run_precommit_eval(args):
-    v = args["version"]
-    source_v = args["source_v"]
+    v, source_v = _resolve_version_args(args)
+    if v is None or source_v is None:
+        return _json_tool_result({"error": "Missing version/source_v and no active pipeline checkpoint"})
+    v = int(v)
+    source_v = int(source_v)
     n_games = max(1, int(args.get("n_games", 1) or 1))
     candidate_name = f"claude_v{v}"
     parent_name = f"claude_v{source_v}"
@@ -190,7 +193,10 @@ class RunInlineEvalInput(TypedDict):
 
 @tool("run_inline_eval", "Run inline evaluation: battle the bot against all active opponents and update Glicko-2 ratings. Use when daemon is not running.", {"version": int, "n_games": int})
 async def run_inline_eval(args):
-    v = args["version"]
+    v, _source_v = _resolve_version_args(args)
+    if v is None:
+        return {"content": [{"type": "text", "text": json.dumps({"error": "Missing version and no active pipeline checkpoint"})}]}
+    v = int(v)
     n_games = args.get("n_games", 5)
     bot_name = f"claude_v{v}"
     bot_dir = get_bot_dir(v)

@@ -1,10 +1,8 @@
-"""Monte Carlo simulation and river exact enumeration for equity estimation."""
-
 import bisect
 import itertools
 import random
 
-from card_utils import clamp, evaluate_7
+from card_utils import evaluate_7, clamp
 from state import estimate_preflop_strength
 from postflop import made_hand_metric, draw_potential
 

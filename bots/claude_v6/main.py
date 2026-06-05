@@ -1,10 +1,7 @@
-"""Bot 5 entry point — slim wrapper importing modular components."""
-
+import json
 import sys
 import os
-import json
 
-# Ensure the bot5 directory is on the import path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from state import reconstruct_state, infer_remaining_hands_from_requests

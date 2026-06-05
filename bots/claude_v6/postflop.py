@@ -1,14 +1,9 @@
-"""Postflop analysis: hand metrics, board texture, draws, value tiers, bluffs."""
-
-import random
-
 from constants import HAND_CLASS_SCORE
-from card_utils import clamp, card_suit, card_number
-from state import estimate_preflop_strength
+from card_utils import card_suit, card_number, evaluate_best, clamp
+from state import get_hand_index
 
 
 def made_hand_metric(hole_cards, public_cards):
-    from card_utils import evaluate_best
     if len(public_cards) < 3:
         return 0.0
     score = evaluate_best(hole_cards + public_cards)
@@ -20,7 +15,6 @@ def made_hand_metric(hole_cards, public_cards):
 
 
 def pair_board_profile(hole_cards, public_cards):
-    from card_utils import evaluate_best
     info = {
         "made_class": -1,
         "pair_rank": None,
@@ -194,7 +188,6 @@ def board_texture_profile(public_cards):
 
 
 def paired_board_outcome_profile(hole_cards, public_cards):
-    from card_utils import evaluate_best
     info = {
         "board_paired": False,
         "board_pair_rank": 0,
@@ -320,7 +313,6 @@ def bet_size_bucket(last_raise_pot_ratio):
 
 
 def value_hand_tier(hole_cards, public_cards, pair_profile=None, board_texture=None, paired_board_profile=None):
-    from card_utils import evaluate_best
     info = {
         "tier": "none",
         "is_value": False,
@@ -522,7 +514,6 @@ def empty_draw_profile():
 
 
 def draw_profile(hole_cards, public_cards, board_texture=None):
-    from card_utils import evaluate_best
     info = empty_draw_profile()
     if len(public_cards) < 3 or len(public_cards) >= 5:
         return info
@@ -736,7 +727,6 @@ def draw_call_margin(draw_info, board_texture, round_idx, spot_info):
 
 
 def made_flush_profile(hole_cards, public_cards, board_texture=None):
-    from card_utils import evaluate_best
     info = {
         "is_flush": False,
         "flush_suit": None,
@@ -809,7 +799,6 @@ def made_flush_profile(hole_cards, public_cards, board_texture=None):
 
 
 def blocker_bluff_profile(hole_cards, public_cards, pair_profile=None, board_texture=None):
-    from card_utils import evaluate_best
     info = {
         "eligible": False,
         "score": 0.0,
@@ -873,16 +862,17 @@ def blocker_bluff_profile(hole_cards, public_cards, pair_profile=None, board_tex
     return info
 
 
-def allow_low_frequency_blocker_bluff(req, hole_cards, public_cards, blocker_profile, round_idx, bluff_freq_bonus=0.0):
+def allow_low_frequency_blocker_bluff(req, hole_cards, public_cards, blocker_profile, round_idx):
     if not blocker_profile["eligible"]:
         return False
 
-    threshold = clamp(blocker_profile["score"] * 35.0, 5.0, 18.0) + bluff_freq_bonus * 100.0
-    return random.random() * 100 < threshold
+    hand_idx = get_hand_index(req) or 0
+    token = (sum(hole_cards) * 7 + sum(public_cards) * 11 + hand_idx * 13 + round_idx * 17) % 100
+    threshold = int(clamp(blocker_profile["score"] * 35.0, 5.0, 18.0))
+    return token < threshold
 
 
 def nutted_risk_profile(hole_cards, public_cards, pair_profile=None, board_texture=None, value_profile=None, paired_board_profile=None):
-    from card_utils import evaluate_best
     info = {
         "risk": 0.0,
         "label": "none",

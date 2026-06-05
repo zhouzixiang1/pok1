@@ -21,7 +21,7 @@ from evolution_core import (
 )
 from tool_helpers import (
     _get_ui, _json_tool_result,
-    _matching_checkpoint,
+    _matching_checkpoint, _resolve_version_args,
     PROJECT_ROOT,
 )
 from system_log import log_system_event
@@ -40,9 +40,12 @@ class CommitBotInput(TypedDict):
 
 @tool("commit_bot", "Commit a bot generation with git commit and tag. review_approved must be true (set after run_review returns approved:true).", {"version": int, "source_v": int, "strategy": str, "review_approved": bool})
 async def commit_bot(args):
-    v = args["version"]
-    source_v = args["source_v"]
-    strategy = args["strategy"]
+    v, source_v = _resolve_version_args(args)
+    if v is None or source_v is None:
+        return _json_tool_result({"error": "Missing version/source_v and no active pipeline checkpoint"})
+    v = int(v)
+    source_v = int(source_v)
+    strategy = args.get("strategy", "")
     review_approved = args.get("review_approved", False)
 
     bot_dir = get_bot_dir(v)
@@ -191,8 +194,11 @@ async def commit_bot(args):
 
 @tool("run_archivist", "Run post-commit archive audit for a completed generation. Verifies consistency, auto-reaps if needed, optionally calls LLM for strategic assessment.", {"version": int, "source_v": int})
 async def run_archivist(args):
-    v = args["version"]
-    source_v = args["source_v"]
+    v, source_v = _resolve_version_args(args)
+    if v is None or source_v is None:
+        return _json_tool_result({"error": "Missing version/source_v and no active pipeline checkpoint"})
+    v = int(v)
+    source_v = int(source_v)
     ui = _get_ui()
 
     # 1. Verify post-commit consistency
@@ -296,9 +302,14 @@ class RunCrossoverInput(TypedDict):
 
 @tool("run_crossover", "Run crossover between two elite bots to create a child bot.", {"parent_a": int, "parent_b": int, "target_v": int})
 async def run_crossover(args):
-    parent_a = args["parent_a"]
-    parent_b = args["parent_b"]
-    target_v = args["target_v"]
+    parent_a = args.get("parent_a")
+    parent_b = args.get("parent_b")
+    target_v = args.get("target_v")
+    if target_v is None:
+        _v, parent_a = _resolve_version_args(args)
+        target_v = target_v or _v
+    if parent_a is None or parent_b is None or target_v is None:
+        return _json_tool_result({"error": "Missing parent_a/parent_b/target_v"})
 
     # Prepare target directory from parent A
     target_dir = get_bot_dir(target_v)

@@ -143,8 +143,10 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 content = block.content if isinstance(block.content, str) else (
                                     json.dumps(block.content, ensure_ascii=False) if block.content is not None else ""
                                 )
-                                if content and ui:
-                                    ui.log_io(content[:3000], "tool_result", "Orchestrator")
+                                if content:
+                                    lf.write(f"\n[tool_result] {content[:500]}\n")
+                                    if ui:
+                                        ui.log_io(content[:3000], "tool_result", "Orchestrator")
                     elif isinstance(message, ResultMessage):
                         if message.total_cost_usd:
                             cost += message.total_cost_usd
@@ -190,6 +192,23 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     log.error("Cycle timed out after %ss", CYCLE_TIMEOUT)
                 lf.write(f"\n[TIMEOUT] Cycle killed after {CYCLE_TIMEOUT}s\n")
                 _clear_orchestrator_session()
+                # Mark pipeline checkpoint as timed_out so next cycle doesn't repeat
+                # the same stuck state (e.g., repeatedly failing run_precommit_eval)
+                try:
+                    from evolution_core import read_pipeline_checkpoint, write_pipeline_checkpoint
+                    ckpt = read_pipeline_checkpoint()
+                    if ckpt and ckpt.get("stage") not in ("timed_out", "archived"):
+                        write_pipeline_checkpoint(
+                            ckpt.get("next_v"), ckpt.get("source_v"), "timed_out",
+                            master_plan=ckpt.get("master_plan"),
+                        )
+                        if ui:
+                            ui.log_history(
+                                "[Orchestrator] Pipeline checkpoint marked as timed_out — next cycle will restart.",
+                                "warn",
+                            )
+                except Exception:
+                    pass
                 if ui:
                     # Add any partial Orchestrator session cost to UI tracking
                     if total_cost > 0:

@@ -22,7 +22,7 @@ from tool_helpers import (
     _get_ui, _json_tool_result,
     _matching_checkpoint, _record_gate, _gate_payload, _state_blocked,
     _quality_gate_ok, _review_gate_ok, _critic_gate_ok,
-    _py_files_changed_between, PROJECT_ROOT,
+    _py_files_changed_between, _resolve_version_args, PROJECT_ROOT,
 )
 from system_log import log_system_event
 
@@ -47,8 +47,11 @@ class RunQualityGatesInput(TypedDict):
 
 @tool("run_quality_gates", "Run all quality gates on a bot: compile check, smoke test, decision tests, and file size check.", {"version": int, "source_v": int})
 async def run_quality_gates(args):
-    v = args["version"]
-    source_v = args.get("source_v")
+    v, source_v = _resolve_version_args(args)
+    if v is None:
+        return _json_tool_result({"error": "Missing version and no active pipeline checkpoint"})
+    v = int(v)
+    source_v = int(source_v) if source_v is not None else None
     bot_dir = get_bot_dir(v)
 
     # CRITICAL: Check that code actually changed vs source.
@@ -162,8 +165,13 @@ class PrepareNextGenInput(TypedDict):
 
 @tool("prepare_next_gen", "Prepare the next generation directory by copying from source bot.", {"source_v": int, "next_v": int})
 async def prepare_next_gen(args):
-    source_v = args["source_v"]
-    next_v = args["next_v"]
+    source_v = args.get("source_v")
+    next_v = args.get("next_v")
+    if source_v is None or next_v is None:
+        _v, source_v = _resolve_version_args(args)
+        next_v = next_v or _v
+    if source_v is None or next_v is None:
+        return {"content": [{"type": "text", "text": json.dumps({"error": "Missing source_v/next_v and no active checkpoint"})}]}
 
     if next_v <= source_v:
         return {"content": [{"type": "text", "text": json.dumps({"error": f"next_v ({next_v}) must be greater than source_v ({source_v})"})}]}
@@ -222,9 +230,12 @@ class RunReviewInput(TypedDict):
 
 @tool("run_review", "Run Lead Code Reviewer on the bot changes. Returns approval decision with quality score.", {"version": int, "source_v": int, "plan": list})
 async def run_review(args):
-    v = args["version"]
-    source_v = args["source_v"]
-    plan = args["plan"]
+    v, source_v = _resolve_version_args(args)
+    if v is None or source_v is None:
+        return _json_tool_result({"error": "Missing version/source_v and no active pipeline checkpoint"})
+    v = int(v)
+    source_v = int(source_v)
+    plan = args.get("plan", [])
 
     ckpt = _matching_checkpoint(v, source_v)
     if not _quality_gate_ok(ckpt):
@@ -341,9 +352,12 @@ class RunCriticInput(TypedDict):
 
 @tool("run_critic", "Run Poker Strategy Critic on bot changes. Returns score 1-10 and strategic feedback. score ≥ 6 = approved.", {"version": int, "source_v": int, "plan": list, "reviewer_feedback": str, "force_advance": bool})
 async def run_critic(args):
-    v = args["version"]
-    source_v = args["source_v"]
-    plan = args["plan"]
+    v, source_v = _resolve_version_args(args)
+    if v is None or source_v is None:
+        return _json_tool_result({"error": "Missing version/source_v and no active pipeline checkpoint"})
+    v = int(v)
+    source_v = int(source_v)
+    plan = args.get("plan", [])
     reviewer_feedback = args.get("reviewer_feedback", "")
     force_advance = args.get("force_advance", False)
 
