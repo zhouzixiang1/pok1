@@ -13,6 +13,39 @@ from claude_agent_sdk.types import HookMatcher, SyncHookJSONOutput
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
 
+def _inject_master_plan_hint(checkpoint, lines):
+    """Inject master plan task summaries into context.
+
+    Critical: the Orchestrator LLM has no Bash/Read tools — it cannot read
+    pipeline_state.json on its own.  If we only say "Master plan is saved in
+    session history", a fresh (non-resumed) session has NO history and the
+    model spirals calling ToolSearch trying to find Read/Bash.  Instead we
+    inline a compact summary of each task so execute_workers(tasks=...)
+    can be called correctly.
+    """
+    plan = checkpoint.get("master_plan")
+    if not plan:
+        lines.append("WARNING: Master plan NOT in checkpoint — call run_master first, then execute_workers.")
+        return
+    tasks = plan.get("tasks", [])
+    if tasks:
+        lines.append(
+            "Master plan is saved — do NOT call run_master again. "
+            "Pass these tasks to execute_workers:"
+        )
+        for t in tasks:
+            wid = t.get("worker_id", "?")
+            role = t.get("role", "?")
+            targets = ", ".join(t.get("target_files", []))
+            prompt_preview = t.get("worker_prompt", "")[:200]
+            lines.append(
+                f"  Worker {wid} ({role}): targets=[{targets}], "
+                f"prompt=\"{prompt_preview}...\""
+            )
+    else:
+        lines.append("Master plan is saved — do NOT call run_master again.")
+
+
 def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
     """Build context string injected into the orchestrator prompt.
 
@@ -70,10 +103,7 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
                     f"\nPIPELINE CHECKPOINT: v{checkpoint['next_v']} (from v{checkpoint['source_v']}) "
                     f"reached stage='{stage}'. Next step: {hint}."
                 )
-                if checkpoint.get("master_plan"):
-                    lines.append("Master plan is saved in session history — do NOT call run_master again.")
-                else:
-                    lines.append("WARNING: Master plan NOT in checkpoint — call run_master first, then execute_workers.")
+                _inject_master_plan_hint(checkpoint, lines)
         except Exception:
             pass
         return "\n".join(lines)
@@ -162,14 +192,11 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
             }
             stage = checkpoint.get("stage", "unknown")
             hint = stage_hints.get(stage, "call get_status to assess")
-            if checkpoint.get("master_plan"):
-                plan_note = "Master plan is saved in session history — do NOT call run_master again."
-            else:
-                plan_note = "WARNING: Master plan NOT in checkpoint — call run_master first, then execute_workers."
             lines.append(
                 f"PIPELINE CHECKPOINT: v{checkpoint['next_v']} (from v{checkpoint['source_v']}) "
-                f"reached stage='{stage}'. Next step: {hint}. {plan_note}"
+                f"reached stage='{stage}'. Next step: {hint}."
             )
+            _inject_master_plan_hint(checkpoint, lines)
     except Exception:
         pass
 
@@ -229,11 +256,15 @@ def _make_precompact_hook():
                 if checkpoint.get("master_plan"):
                     tasks = checkpoint["master_plan"].get("tasks", [])
                     if tasks:
-                        lines.append("Master plan tasks:")
-                        for i, t in enumerate(tasks):
+                        lines.append("Master plan tasks (pass these to execute_workers):")
+                        for t in tasks:
+                            wid = t.get("worker_id", "?")
+                            role = t.get("role", "?")
+                            targets = ", ".join(t.get("target_files", []))
+                            prompt_preview = t.get("worker_prompt", "")[:200]
                             lines.append(
-                                f"  Worker {t.get('worker_id', i)}: {t.get('role', '?')} "
-                                f"— {t.get('objective', '?')[:100]}"
+                                f"  Worker {wid} ({role}): targets=[{targets}], "
+                                f"prompt=\"{prompt_preview}...\""
                             )
         except Exception:
             pass

@@ -290,6 +290,22 @@ async def execute_workers(args):
             "source_v": source_v,
         })
 
+    # Fallback: if tasks not provided, load from checkpoint master_plan.
+    # This happens when the orchestrator session is fresh (not resumed) and
+    # the LLM doesn't have the task list in its conversation history.
+    if not tasks:
+        tasks = ckpt["master_plan"].get("tasks", [])
+        if tasks:
+            log_system_event("pipeline.workers_tasks_from_checkpoint", "info",
+                             f"Tasks loaded from checkpoint for v{next_v} (LLM omitted tasks arg)",
+                             {"next_v": next_v, "num_tasks": len(tasks)})
+        else:
+            return _json_tool_result({
+                "error": "No tasks provided and checkpoint has no task plan. Call run_master first.",
+                "next_v": next_v,
+                "source_v": source_v,
+            })
+
     # Circuit breaker: limit total worker invocations per generation
     invocation_count = ckpt.get("worker_invocation_count", 0)
     MAX_WORKER_INVOCATIONS = 6
