@@ -1,9 +1,12 @@
 """Pipeline tools: commit, archivist, and crossover."""
 
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Annotated, TypedDict
+
+_log = logging.getLogger("pok.commit")
 
 from claude_agent_sdk import tool
 
@@ -129,8 +132,8 @@ async def commit_bot(args):
     try:
         from tool_helpers import compute_h2h_avg_winrate, _load_h2h_data
         h2h_wr = compute_h2h_avg_winrate(f"claude_v{v}", _load_h2h_data())
-    except Exception:
-        pass
+    except Exception as e:
+        _log.warning("H2H win rate computation failed for v%d: %s", v, e)
     wr_str = f" h2h_avg_wr={h2h_wr:.2%}" if h2h_wr is not None else ""
     rating_info = f"rating: r={p.r:.1f} rd={p.rd:.1f}{wr_str}" if p else ""
 
@@ -155,16 +158,16 @@ async def commit_bot(args):
         archive_generation(v, source_v, ckpt)
         archive_rotate_files(v)
         archive_old_logs()
-    except Exception:
-        pass
+    except Exception as e:
+        _log.warning("Archive generation failed for v%d: %s", v, e)
 
     clear_pipeline_checkpoint()
 
     try:
         from server.state import app_state
         app_state.set_generation(v, v + 1)
-    except Exception:
-        pass
+    except Exception as e:
+        _log.warning("App state update failed for v%d: %s", v, e)
 
     # Signal daemon to pick up the new bot
     reap_signal = RESULTS_DIR / ".reap_signal"
@@ -176,8 +179,8 @@ async def commit_bot(args):
         from evolution_infra import locked_file
         with locked_file(priority_file, "w") as f:
             json.dump({"bot": f"claude_v{v}", "min_games": 100, "since": time.time()}, f)
-    except Exception:
-        pass
+    except Exception as e:
+        _log.warning("Priority eval signal write failed for v%d: %s", v, e)
 
     result = {"committed": True, "version": v, "source_v": source_v, "push_ok": push_ok}
     active_bots = get_active_bots()
@@ -191,15 +194,19 @@ async def commit_bot(args):
 # Archivist Stage
 # ──────────────────────────────────────────────
 
-def _append_experience_updates(version: int, updates: list[str]):
-    """Append archivist experience_updates to experience_pool.md under RECENT_LESSONS."""
+def _append_experience_updates(version: int, updates: list[str],
+                                strategic_advice: str = "", generation_assessment: str = ""):
+    """Append archivist experience_updates, strategic_advice, and assessment to experience_pool.md."""
     from evolution_infra import EXPERIENCE_FILE, locked_file
-
-    if not updates:
-        return
 
     # Build the lines to insert
     new_lines = [f"- **v{version}**: {u}" for u in updates if u.strip()]
+
+    # Add strategic_advice as a separate line so Master sees it
+    if strategic_advice and strategic_advice.strip():
+        label = f" ({generation_assessment})" if generation_assessment and generation_assessment != "neutral" else ""
+        new_lines.append(f"- **v{version} 归档建议{label}**: {strategic_advice.strip()}")
+
     if not new_lines:
         return
 
@@ -283,11 +290,17 @@ async def run_archivist(args):
             with locked_file(archive_path, "w") as f:
                 json.dump(snapshot, f, indent=2, ensure_ascii=False)
 
-        # Write experience_updates to experience_pool.md
+        # Write experience_updates + strategic_advice to experience_pool.md
         if llm_result and isinstance(llm_result, dict):
             updates = llm_result.get("experience_updates", [])
-            if updates:
-                _append_experience_updates(v, updates)
+            advice = llm_result.get("strategic_advice", "")
+            assessment = llm_result.get("generation_assessment", "")
+            if updates or (advice and advice.strip()):
+                _append_experience_updates(
+                    v, updates,
+                    strategic_advice=advice,
+                    generation_assessment=assessment,
+                )
     except Exception as e:
         llm_result = {"error": str(e)}
 

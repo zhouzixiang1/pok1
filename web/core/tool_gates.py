@@ -27,11 +27,12 @@ from tool_helpers import (
 from system_log import log_system_event
 
 
-def _record_quality_failure(gen, worker_id, role, error):
+def _record_quality_failure(gen, worker_id, role, error, **extra):
     """Record a quality gate rejection (reviewer/critic) to worker_failures.jsonl."""
     import time
     from evolution_core import WORKER_FAILURES_FILE, locked_file
     entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error, "timestamp": time.time()}
+    entry.update({k: v for k, v in extra.items() if v is not None and v is not False})
     with locked_file(WORKER_FAILURES_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
@@ -408,7 +409,9 @@ async def run_critic(args):
     )
     if not approved:
         _record_quality_failure(v, "critic", "Strategy Critic",
-                                f"Rejected (score={score_num}): {data.get('feedback', '')[:2000]}")
+                                f"Rejected (score={score_num}): {data.get('feedback', '')[:2000]}",
+                                local_optima_warning=data.get("local_optima_warning", False),
+                                local_optima_reason=data.get("local_optima_reason"))
 
     log_system_event(
         "pipeline.critic_passed" if approved else "pipeline.critic_rejected",
