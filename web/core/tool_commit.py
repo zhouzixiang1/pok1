@@ -278,6 +278,40 @@ async def run_archivist(args):
         except Exception:
             pass
 
+    # Inject reviewer context into snapshot — prefer archive data (checkpoint is cleared by commit_bot)
+    review_info = ""
+    reviewer_context = snapshot.get("reviewer_context", "")
+    if reviewer_context:
+        review_info = reviewer_context
+    else:
+        # Fallback: try checkpoint (only works if run_archivist is called before commit clears it)
+        try:
+            from tool_helpers import read_pipeline_checkpoint
+            ckpt = read_pipeline_checkpoint()
+            if ckpt:
+                review_gate = ckpt.get("gate_results", {}).get("review", {})
+                cs = review_gate.get("change_summary", "")
+                ra = review_gate.get("risk_areas", [])
+                if cs:
+                    review_info += f"\nReviewer Change Summary: {cs}"
+                if ra:
+                    review_info += f"\nReviewer Risk Areas: {', '.join(ra) if isinstance(ra, list) else str(ra)}"
+        except Exception:
+            pass
+
+    # Also extract reviewer info from archive snapshot fields
+    if not review_info:
+        cs = snapshot.get("reviewer_change_summary", "")
+        ra = snapshot.get("reviewer_risk_areas", [])
+        if cs:
+            review_info += f"\nReviewer Change Summary: {cs}"
+        if ra:
+            review_info += f"\nReviewer Risk Areas: {', '.join(ra) if isinstance(ra, list) else str(ra)}"
+
+    # Inject review info into snapshot for archivist LLM
+    if review_info:
+        snapshot["reviewer_context"] = review_info
+
     # 4. LLM archivist analysis — run every commit to populate experience pool
     llm_result = None
     try:

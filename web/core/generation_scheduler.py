@@ -141,6 +141,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         stagnation_info=stagnation_text,
         match_analysis=match_text,
         performance_verification=perf_text,
+        gen_count=current_v,
     )
 
 

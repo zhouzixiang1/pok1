@@ -62,9 +62,11 @@ def _statistical_stagnation_check(source_v, ratings):
         return None  # Let LLM decide
 
     if abs(delta) < 5:
-        return (True, "high", delta)
-    elif abs(delta) > 20:
-        return (False, "high", delta)
+        return (True, "high", delta)  # Flat — stagnant
+    elif delta > 20:
+        return (False, "high", delta)  # Clearly improving
+    elif delta < -20:
+        return (True, "high", delta)  # Clearly declining — needs intervention
     else:
         return None  # Ambiguous — needs LLM
 
@@ -240,8 +242,8 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
                 if bot_name not in (a_name, b_name):
                     continue
                 opponent = b_name if bot_name == a_name else a_name
-                bot_w = v.get(a_name, 0) if bot_name == a_name else v.get(b_name, 0)
-                opp_w = v.get(b_name, 0) if bot_name == a_name else v.get(a_name, 0)
+                bot_w = v.get("a_wins", 0) if bot_name == a_name else v.get("b_wins", 0)
+                opp_w = v.get("b_wins", 0) if bot_name == a_name else v.get("a_wins", 0)
                 total = bot_w + opp_w
                 if total > 0:
                     wr = bot_w / total

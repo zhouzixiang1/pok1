@@ -222,7 +222,10 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
 
         # Atomic write: tmp + fsync + rename, all under the same lock
         tmp = PIPELINE_STATE_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, indent=2))
+        with open(tmp, "w") as f:
+            f.write(json.dumps(state, indent=2))
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(str(tmp), str(PIPELINE_STATE_FILE))
 
 
@@ -603,9 +606,17 @@ def archive_generation(version, source_v, ckpt):
     if ckpt:
         gate_results = ckpt.get("gate_results", {})
         if gate_results.get("review"):
-            snapshot["review_score"] = gate_results["review"].get("quality_score", 0)
+            review_data = gate_results["review"]
+            snapshot["review_score"] = review_data.get("quality_score", 0)
+            if review_data.get("change_summary"):
+                snapshot["reviewer_change_summary"] = review_data["change_summary"]
+            if review_data.get("risk_areas"):
+                snapshot["reviewer_risk_areas"] = review_data["risk_areas"]
         if gate_results.get("critic"):
-            snapshot["critic_score"] = gate_results["critic"].get("score", 0)
+            critic_data = gate_results["critic"]
+            snapshot["critic_score"] = critic_data.get("score", 0)
+            if critic_data.get("strategic_assessment"):
+                snapshot["critic_data"] = critic_data
         precommit = gate_results.get("precommit_eval", {})
         if precommit:
             snapshot["precommit_eval"] = {"passed": precommit.get("passed", False)}
