@@ -699,9 +699,11 @@ def draw_call_margin(draw_info, board_texture, round_idx, spot_info):
         if board_texture["flush_pressure"] >= 0.75 and draw_type == "open_ended_straight_draw":
             margin += 0.008
 
+    # Mutation: Gutshot equity ~17% OTF, ~9% OTT, 0% OTR — scale margins accordingly
+    # Non-gutshot draws retain original margins (flush ~35% OTF, OESD ~32% OTF)
     if round_idx == 2:
         if draw_type == "gutshot":
-            margin += 0.020
+            margin += 0.025  # Gutshot OTT equity (~17%) much weaker than flush (~35%), tighter margin
         elif draw_type == "flush_draw":
             if draw_info.get("near_nut_flush_draw", False) and size_bucket != "large" and (board_texture is None or not board_texture["paired"]):
                 margin += 0.000
@@ -710,7 +712,10 @@ def draw_call_margin(draw_info, board_texture, round_idx, spot_info):
             else:
                 margin += 0.020
     elif round_idx == 3:
-        margin += 0.050
+        if draw_type == "gutshot":
+            margin += 0.060  # Missed gutshot OTR has 0% equity, must fold aggressively
+        else:
+            margin += 0.050
 
     if size_bucket == "large":
         if draw_type == "gutshot":
