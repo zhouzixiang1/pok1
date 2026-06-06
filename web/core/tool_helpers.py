@@ -396,7 +396,12 @@ def load_h2h_avg_winrates_with_coverage():
     return result
 
 
-def _select_precommit_opponents(version, source_v, max_top=3, max_weak=2):
+def _select_precommit_opponents(version, source_v, max_top=2, max_weak=1):
+    """Select opponents for precommit eval. Default: 1 parent + 2 top + 1 weak = 4 opponents max.
+
+    With mirror_battle taking ~10-15 min per opponent and a 3600s cycle timeout,
+    4 opponents ≈ 40-60 min which fits within the limit.
+    """
     candidate = f"claude_v{version}"
     parent = f"claude_v{source_v}"
     active = [b for b in get_active_bots() if b != candidate and _bot_main(b).exists()]

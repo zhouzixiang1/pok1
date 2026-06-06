@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Annotated, TypedDict
@@ -107,15 +108,19 @@ async def run_precommit_eval(args):
         }
         try:
             loop = _asyncio.get_running_loop()
-            match_wins, draws, n_played, _ = await loop.run_in_executor(
-                None,
-                lambda: mirror_battle(
-                    str(candidate_main),
-                    str(opponent_main),
-                    n_games=n_games,
-                    verbose=False,
-                    save_log=False,
+            # Per-opponent timeout: 15 minutes max per mirror battle
+            match_wins, draws, n_played, _ = await _asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: mirror_battle(
+                        str(candidate_main),
+                        str(opponent_main),
+                        n_games=n_games,
+                        verbose=False,
+                        save_log=False,
+                    ),
                 ),
+                timeout=900,  # 15 minutes per opponent
             )
             matchup.update({
                 "wins": int(match_wins[0]),
@@ -138,6 +143,13 @@ async def run_precommit_eval(args):
                     "opponent": opponent,
                     "details": f"{matchup['wins']}-{matchup['losses']}-{matchup['draws']}",
                 })
+        except _asyncio.TimeoutError:
+            matchup["error"] = "Mirror battle timed out (900s limit)"
+            blockers.append({
+                "reason": "match_timeout",
+                "opponent": opponent,
+                "details": f"Mirror battle against {opponent} exceeded 900s timeout",
+            })
         except Exception as exc:
             matchup["error"] = str(exc)[:500]
             blockers.append({
@@ -306,10 +318,30 @@ async def run_inline_eval(args):
     if all_results:
         ratings[bot_name] = update_rating_period(ratings[bot_name], all_results)
 
-    # Save updated ratings
-    data = {name: p.to_dict() for name, p in ratings.items()}
-    with locked_file(RATINGS_FILE, "w") as f:
+    # Save updated ratings (atomic write — consistent with daemon)
+    from datetime import datetime as _dt
+    data = {}
+    for name, p in ratings.items():
+        d = p.to_dict()
+        d["last_period"] = _dt.now().isoformat(timespec="seconds")
+        data[name] = d
+    tmp = RATINGS_FILE.with_suffix(".tmp")
+    with open(tmp, "w") as f:
         json.dump(data, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(str(tmp), str(RATINGS_FILE))
+
+    # Append rating history snapshot (consistent with daemon save_ratings)
+    history_file = RESULTS_DIR / "rating_history.jsonl"
+    snapshot = {
+        "period": f"inline_v{v}",
+        "timestamp": _dt.now().isoformat(timespec="seconds"),
+        "ratings": {name: {"r": p.r, "rd": p.rd} for name, p in ratings.items()},
+        "source": "inline_eval",
+    }
+    with locked_file(history_file, "a") as f:
+        f.write(json.dumps(snapshot) + "\n")
 
     # Save H2H with win_rate computed
     h2h_out = {}
