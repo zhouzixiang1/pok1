@@ -43,7 +43,7 @@ class HoldemRLConfig:
     # DMC core: cycle-based training
     replay_buffer_size: int = 100_000  # N
     replay_buffer_diversity: int = 2   # k
-    train_steps_per_cycle: int = 8     # S
+    train_steps_per_cycle: int = 16    # S (was 8, doubled for better buffer utilization)
     batch_size: int = 2048
 
     # Data collection: hands per actor per cycle
@@ -56,7 +56,7 @@ class HoldemRLConfig:
     exploration: str = "eps_greedy"  # eps_greedy or boltzmann
     eps_start: float = 0.3
     eps_end: float = 0.01
-    eps_decay_steps: int = 100_000
+    eps_decay_steps: int = 5_000     # decay within ~500 cycles (8 steps/cycle)
     boltzmann_temp: float = 1.0
 
     # Reward shaping
