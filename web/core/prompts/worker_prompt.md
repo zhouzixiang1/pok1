@@ -27,8 +27,8 @@ CRITICAL ENFORCEMENT:
 - **Hyperparameter Tuner**: You MUST change at least one numeric constant. Zero changes is a FAILURE. If you cannot find the exact constant mentioned in the plan, search all .py files in the bot directory for it. Never output files identical to the source.
   EVERY change MUST be listed in this exact format before you make the edit:
   ```
-  File: {filename}, Line {N}: {CONSTANT_NAME} = {old_value} → {new_value}
-  Reason: {why this specific value, with reference to match data or equity math}
+  File: <filename>, Line <N>: <CONSTANT_NAME> = <old_value> → <new_value>
+  Reason: <why this specific value, with reference to match data or equity math>
   ```
   Changes not listed in this format will be rejected. Do NOT adjust values in the wrong direction (e.g., decreasing when instructed to increase).
 
