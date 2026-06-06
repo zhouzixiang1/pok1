@@ -1,6 +1,6 @@
 from constants import N_PLAYERS, BIG_BLIND, LOCK_WIN_MARGIN
 from card_utils import clamp, next_player
-from state import reconstruct_state, forced_fold_loss_bound, get_remaining_hands
+from state import reconstruct_state, get_remaining_hands, forced_fold_loss_bound
 
 
 def should_lock_win(req, state, my_id):
