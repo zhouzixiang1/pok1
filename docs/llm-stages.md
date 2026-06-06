@@ -135,7 +135,7 @@ Phase 1 由 `prepare_generation()` 函数编排，每步完成后检查 `shutdow
 | 项目 | 内容 |
 |---|---|
 | **触发者** | `prepare_generation()` 代码层直接调用 |
-| **调用链** | `generation_scheduler.py` → `agent_master.py:_analyze_stagnation()` → `run_claude_query()` |
+| **调用链** | `generation_scheduler.py` → `stagnation_analyzer.py:_analyze_stagnation()` → `run_claude_query()` |
 | **LLM 角色** | STAGNATION ANALYST |
 | **模型** | Sonnet |
 | **工具** | 无（纯 JSON 输出） |
@@ -251,12 +251,14 @@ Phase 1 由 `prepare_generation()` 函数编排，每步完成后检查 `shutdow
 - **有无 LLM**: 无
 - **做什么**: `_decide_strategy(stagnation, perf, current_v, ratings)` — 基于停滞分析和性能验证结果，确定性选择策略
 
-**决策逻辑**:
+**决策逻辑**（`generation_scheduler.py:_decide_strategy()`）:
 ```
-if stagnation.is_stagnant && confidence=="high" && 有可用 crossover parents:
+if stagnation.is_stagnant && confidence != "low" && 有可用 crossover parents:
     → strategy="crossover", source_v=parent_a, parents=(parent_a, parent_b)
 elif stagnation.recommendation=="branch" && branch_from 有效:
     → strategy="master", source_v=branch_from
+elif perf.diversity_needed && 有可用 crossover parents:
+    → strategy="crossover", source_v=parent_a, parents=(parent_a, parent_b)  # 强制多样性注入
 else:
     → strategy="master", source_v=current_v
 ```
@@ -342,7 +344,7 @@ else:
 **校验** (函数 `_validate_master_plan`):
 - tasks 数量 ≤ 3
 - 每个 task 的 target_files ≤ 3
-- 每个 task 的 worker_prompt ≤ 3000 字符
+- 每个 task 的 worker_prompt ≤ 5000 字符（prompt 模板建议 ≤ 2000 字符）
 - Hyperparameter Tuner prompt 会被 `_TUNER_STRUCTURAL_PATTERNS` 检查，含结构化指令（如 "add parameter"、"new function"）时发出边界警告
 
 **输出去向**: 返回给 Orchestrator LLM → Orchestrator 用 `plan["tasks"]` 调用 `execute_workers()`。
@@ -455,7 +457,7 @@ else:
   1. `verify_code()` — 编译检查
   2. `run_smoke_test()` — 冒烟对战
   3. `run_decision_test_details()` — 决策测试（≥70% 通过率 + 关键场景全部通过）
-  4. `check_code_size()` — 文件行数检查（每文件 ≤ 1000 行）
+  4. `check_code_size()` — 文件行数检查（核心策略文件 ≤ 1500 行，辅助文件 ≤ 1200 行）
 - **注意**: 无前置阶段检查 — 质量门禁无条件运行，即使没有 checkpoint 也会执行（此时 `checkpoint_recorded=false`）
 - **输出**: `{compile_ok, smoke_ok, decision_pass_rate, decision_ok, critical_scenarios_passed, size_ok, all_passed}` + 详细字段：`compile_errors, smoke_errors, critical_passed, critical_total, critical_failures, decision_failures, scenario_results, total_lines, oversized_files, checkpoint_recorded`
 - **输出去向**: 全部通过 → 写入 checkpoint `stage="quality_passed"` + gate `quality`
@@ -608,7 +610,7 @@ else:
 - **前置**: checkpoint 中所有 gates 必须存在且通过
 - **做什么** (函数 `commit_bot` 内):
   1. 验证 gate ledger 完整性（quality + review + critic + precommit_eval）
-  2. 运行时守卫：编译检查、冒烟测试、决策测试（≥70%）、文件大小（≤1000行）、`review_approved` 检查
+  2. 运行时守卫：编译检查、冒烟测试、决策测试（≥70%）、文件大小（核心策略 ≤1500行/辅助 ≤1200行）、`review_approved` 检查
   3. `git add` + `git commit` + `git tag bot-v{N}`
   4. 验证 git tag 确实创建成功
   5. 写入 `.completed` 标记文件
@@ -797,9 +799,13 @@ CLI 模式 (`python web/core/orchestrator.py`) 不启动 daemon，直接在 `asy
   └─ finally: stop_daemon()（CLI 模式无 daemon，空操作）
 ```
 
-**关键修复**: `CancelledError` 和 `Exception` handler 均**不再**调用 `_clear_orchestrator_session()`。Session 文件仅在以下两种情况清除：
+**关键修复**: `CancelledError` 和 `Exception` handler（中断信号）均**不再**调用 `_clear_orchestrator_session()`，Session 保留用于恢复。但以下情况**也会**清除 Session：
 1. **自然完成**: `commit_bot` 成功后（`cycle_completed=True`）
 2. **显式放弃**: API 调用 `abandon` 或 `_startup_recovery` 检测到 stale session
+3. **超时**: `TimeoutError` 触发 `_clear_orchestrator_session()`（标记 pipeline 为 `timed_out`）
+4. **529 限流**: API rate-limit 时清除 session 并指数退避重试
+5. **认证错误**: 401/403 错误时清除 session（防止无效 session 循环）
+6. **Orchestrator crash**: 未捕获 `Exception` 时清除 session（竞态条件保护）
 
 ### 3.7 重启恢复流程
 
@@ -853,11 +859,13 @@ orchestrator_loop():
 
 #### Checkpoint 阶段提示映射
 
-`_build_context()` (orchestrator.py:194-219) 根据 checkpoint 的 stage 注入下一步建议：
+`_build_context()` (orchestrator_context.py) 根据 checkpoint 的 stage 注入下一步建议：
 
 | stage | 注入提示 |
 |-------|---------|
-| `prepared` | Workers not yet run → call `execute_workers` |
+| `prepared` | Call `run_direction_audit` first |
+| `direction_audited` | Direction audited → call `run_master` |
+| `master_planned` | Master done → call `execute_workers` |
 | `workers_done` | Workers done → call `run_quality_gates` |
 | `quality_passed` | Quality passed → call `run_review` |
 | `reviewed` | Review passed → call `run_critic` |
@@ -955,7 +963,7 @@ bot 池变更时（`reap_weakest` 工具），写入 `.reap_signal` 文件（含
 
 | 文件 | 写入时机 | 清除时机 | 作用 |
 |------|---------|---------|------|
-| `orchestrator_session.json` | 每次 SDK `ResultMessage` 返回 `session_id` 时 | **仅**自然完成（`commit_bot` 成功）或显式放弃（API abandon / stale session 检测） | LLM 对话 session ID，用于 `resume` 参数 |
+| `orchestrator_session.json` | 每次 SDK `ResultMessage` 返回 `session_id` 时 | 自然完成 / 显式放弃 / 超时 / 529 限流 / 认证错误 / Orchestrator crash | LLM 对话 session ID，用于 `resume` 参数 |
 | `pipeline_state.json` | 每个 pipeline 阶段完成时（`_record_gate`） | `commit_bot` 成功后（`clear_pipeline_checkpoint`） | 阶段断点 + gate 结果 + master plan |
 | `pipeline_state.json` | **原子写入**：`tmp` + `os.replace()`（POSIX 原子操作） | — | 崩溃安全，不会出现半写状态 |
 | `.daemon_pid` | `start_daemon()` spawn 后 | `stop_daemon()` 清理 | daemon 子进程 PID，用于孤儿检测 |
@@ -1140,7 +1148,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
               │run_quality_gates    │
               │(无 LLM)             │
               │compile+smoke+decision│
-              │+size (≤1000行/文件)  │
+              │+size (≤1500/1200行/文件)│
               └────────┬────────────┘
                        │
               ┌────────▼────────────┐
@@ -1199,10 +1207,10 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
   - `mcp__zread__search_doc`
 - **角色边界**: Worker 受 prompt + reviewer 双重约束 — Logic Architect 不改常数，Tuner 不加函数
 - **Gate Ledger**: Pipeline checkpoint 强制阶段顺序 — 每个阶段写入 gate 记录，后续阶段验证前置 gates 完整
-- **阶段常量**: `STAGE_ORDER = [prepared, workers_done, quality_passed, reviewed, critic_checked, verified, archived]`
+- **阶段常量**: `STAGE_ORDER = [prepared, direction_audited, master_planned, workers_done, quality_passed, reviewed, critic_checked, verified, archived]`
 - **ShutdownManager**: `loop.add_signal_handler()` 注册 SIGINT/SIGTERM，设置 `is_shutting_down` 标志，Phase 1/3 检查后优雅退出，Phase 2 等待当前 LLM 调用完成
 - **Pipeline checkpoint 原子写入**: `pipeline_state.json` 使用 tmp + `os.replace()` 原子替换，避免中断导致文件损坏
-- **Session 持久化策略**: `orchestrator_session.json` 仅在自然完成时清除；`CancelledError` / `Exception` 中断时保留 session 到磁盘，下次启动 `_startup_recovery()` 恢复会话
+- **Session 持久化策略**: `orchestrator_session.json` 在自然完成、超时、529 限流、认证错误、Orchestrator crash 时清除；`CancelledError` / 用户中断信号时保留 session 到磁盘，下次启动 `_startup_recovery()` 恢复会话
 - **Daemon 独立生命周期**: `elo_daemon.py` 作为独立子进程运行，orchestrator 停止不影响 daemon 持续评估；daemon 仅通过 `.reap_signal` 文件与 orchestrator 通信
 - **归档阶段**: Phase 3 中 `reap_if_needed()` + `consolidate_experience()` 在 commit 后执行，幂等可安全重跑
 
