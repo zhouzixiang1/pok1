@@ -52,6 +52,8 @@ def main():
     parser.add_argument("--resume", type=str, default=None, help="Checkpoint to resume from")
     parser.add_argument("--eval-every", type=int, default=10, help="Eval every N cycles")
     parser.add_argument("--eval-games", type=int, default=100)
+    parser.add_argument("--hands-per-actor", type=int, default=100,
+                        help="Hands each actor plays per cycle (default: 100)")
     parser.add_argument("--tensorboard", action="store_true", help="Enable TensorBoard logging")
     parser.add_argument("--log-dir", type=str, default="rl/logs", help="TensorBoard log dir")
     args = parser.parse_args()
@@ -63,6 +65,7 @@ def main():
         batch_size=args.batch_size,
         replay_buffer_size=args.buffer_size,
         num_actors=args.num_actors,
+        actor_hands_per_cycle=args.hands_per_actor,
         ckpt_dir=args.ckpt_dir,
         eval_every_cycles=args.eval_every,
         eval_num_games=args.eval_games,
@@ -97,8 +100,8 @@ def main():
     log.info(f"  Buffer:        {config.replay_buffer_size:,}")
     log.info(f"  Cycles:        {args.cycles}")
     log.info(f"  Eval every:    {config.eval_every_cycles} cycles ({config.eval_num_games} games)")
-    log.info(f"  Budget/cycle:  {config.budget_per_cycle:,} hands "
-             f"({config.budget_per_cycle // max(config.num_actors, 1)} per actor)")
+    log.info(f"  Hands/cycle:   {config.actor_hands_per_cycle * config.num_actors:,} "
+             f"({config.actor_hands_per_cycle} × {config.num_actors} actors)")
     log.info(f"{'='*60}")
 
     # Create trainer

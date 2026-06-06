@@ -46,6 +46,12 @@ class HoldemRLConfig:
     train_steps_per_cycle: int = 8     # S
     batch_size: int = 2048
 
+    # Data collection: hands per actor per cycle
+    # Total new data per cycle = actor_hands_per_cycle × num_actors
+    # Each hand produces ~2-5 transitions, ~0.1s per hand on CPU
+    # Recommended: 100-300 hands (10-30s per cycle with 4 actors)
+    actor_hands_per_cycle: int = 100
+
     # Exploration
     exploration: str = "eps_greedy"  # eps_greedy or boltzmann
     eps_start: float = 0.3
@@ -69,7 +75,6 @@ class HoldemRLConfig:
 
     # Actors
     num_actors: int = 4
-    actor_hands_per_cycle: int = 100  # hands each actor plays per cycle
 
     # Game settings
     initial_chips: int = 20000

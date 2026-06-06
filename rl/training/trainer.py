@@ -267,7 +267,7 @@ class DMCTrainer:
         """Execute one training cycle."""
         config = self.config
         epsilon = self._get_epsilon()
-        hands_per_actor = config.budget_per_cycle // max(config.num_actors, 1)
+        hands_per_actor = config.actor_hands_per_cycle
 
         # Phase 1: Collect data
         t0 = time.time()
