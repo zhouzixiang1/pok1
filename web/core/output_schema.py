@@ -86,6 +86,20 @@ class PerformanceResult(BaseModel):
     suggestion: str = ""
 
 
+class CombinedAnalystResult(BaseModel):
+    is_stagnant: bool = False
+    confidence: str = "medium"
+    trend: str = Field(default="stagnant", description="improving, stagnant, or declining")
+    diversity_needed: bool = False
+    diversity_reason: Optional[str] = None
+    recommendation: str = "continue"
+    branch_from: Optional[str] = None
+    verified_improvements: list[str] = []
+    persistent_weaknesses: list[str] = []
+    reason: str = ""
+    suggestion: Optional[str] = None
+
+
 # Map agent names to their Pydantic models
 AGENT_SCHEMAS = {
     "master": MasterPlan,
@@ -95,6 +109,7 @@ AGENT_SCHEMAS = {
     "archivist": ArchivistResult,
     "stagnation_analyst": StagnationResult,
     "performance_analyst": PerformanceResult,
+    "combined_analyst": CombinedAnalystResult,
 }
 
 

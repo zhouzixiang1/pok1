@@ -332,6 +332,18 @@ async def execute_workers(args):
 
     boundary_errors = []
     if success:
+        # Pre-gate: check that code actually changed before proceeding to quality gates.
+        # This catches zero-change workers early, saving Reviewer + Critic LLM calls.
+        src_dir = get_bot_dir(source_v)
+        if src_dir.exists() and next_dir.exists():
+            changed = [p for p in _py_files_changed_between(src_dir, next_dir) if 'backup' not in p]
+            if not changed:
+                success = False
+                log_system_event("pipeline.workers_zero_changes", "error",
+                                 f"Workers reported success but zero .py files changed for v{next_v}",
+                                 {"next_v": next_v, "source_v": source_v})
+
+    if success:
         boundary_errors = _validate_worker_boundaries(tasks, source_v, next_v)
         if boundary_errors:
             success = False

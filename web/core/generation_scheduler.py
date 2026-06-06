@@ -9,6 +9,7 @@ Phase 2 preserves state on interrupt (session + checkpoint files).
 Phase 3 is idempotent (interrupt → re-run safely).
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -82,28 +83,53 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         return None
 
-    # Three analysis LLM calls — each checks shutdown after
-    from stagnation_analyzer import _analyze_stagnation
+    # Load prev critic insights from archive
+    prev_critic_info = ""
+    try:
+        from evolution_infra import RESULTS_DIR
+        archive_dir = RESULTS_DIR / "archive"
+        if archive_dir.exists():
+            archives = sorted(archive_dir.glob("v*.json"), reverse=True)
+            if archives:
+                latest = json.loads(archives[0].read_text())
+                critic_data = latest.get("critic_data", {})
+                if critic_data:
+                    sa = critic_data.get("strategic_assessment", "")
+                    lo = critic_data.get("local_optima_warning", False)
+                    if sa or lo:
+                        prev_critic_info = f"Previous Critic assessment: {sa}"
+                        if lo:
+                            prev_critic_info += "\n⚠ LOCAL OPTIMA WARNING: Critic detected potential local optimum in previous generation."
+    except Exception:
+        pass
+
+    # Combined analysis (stagnation + performance) + match analysis — run in parallel
+    from combined_analyst import _run_combined_analysis
     from agent_master import _analyze_recent_matches
-    from agent_review import _run_performance_verification
 
-    stagnation = await _analyze_stagnation(current_v, active_bots, ratings, ui)
+    combined_result, match_result = await asyncio.gather(
+        _run_combined_analysis(current_v, active_bots, ratings, ui, prev_critic_info),
+        _analyze_recent_matches(current_v, ui),
+        return_exceptions=True,
+    )
+
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         return None
 
-    match_analysis = await _analyze_recent_matches(current_v, ui)
-    if shutdown_mgr and shutdown_mgr.is_shutting_down:
-        return None
+    # Unpack results, treating exceptions as failures
+    combined = combined_result if not isinstance(combined_result, BaseException) else None
+    match_analysis = match_result if not isinstance(match_result, BaseException) else ""
 
-    perf = await _run_performance_verification(current_v, ratings, ui)
-    if shutdown_mgr and shutdown_mgr.is_shutting_down:
-        return None
+    if isinstance(combined_result, BaseException):
+        log.warning("Combined analysis failed: %s", combined_result)
+    if isinstance(match_result, BaseException):
+        log.warning("Match analysis failed: %s", match_result)
 
     # Strategy decision (code-layer, deterministic)
-    strategy, source_v, parents = _decide_strategy(stagnation, perf, current_v, ratings)
+    strategy, source_v, parents = _decide_strategy(combined, current_v, ratings)
 
-    stagnation_text = json.dumps(stagnation, ensure_ascii=False) if stagnation else ""
-    perf_text = perf or ""
+    stagnation_text = json.dumps(combined, ensure_ascii=False) if combined else ""
+    perf_text = stagnation_text  # Combined result serves as both
     match_text = match_analysis or ""
 
     return GenerationContext(
@@ -118,35 +144,31 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     )
 
 
-def _count_consecutive_diversity_needed(perf_text):
-    """Count how many consecutive periods have diversity_needed: true in perf verification."""
-    if not perf_text:
-        return 0
-    import json
-    try:
-        data = json.loads(perf_text) if isinstance(perf_text, str) else perf_text
-    except (json.JSONDecodeError, TypeError):
-        return 0
-    # The performance verification is for the current generation only,
-    # so we can check if diversity_needed is set.
-    return 1 if data.get("diversity_needed") else 0
+def _decide_strategy(combined, current_v, ratings):
+    """Deterministic strategy selection based on combined analysis results.
 
+    The combined analysis merges stagnation and performance data into one dict:
+    - is_stagnant + confidence → branch or crossover
+    - diversity_needed → crossover injection
+    - recommendation + branch_from → branch from specific ancestor
+    """
+    if combined is None:
+        return "master", current_v, ()
 
-def _decide_strategy(stagnation, perf, current_v, ratings):
-    """Deterministic strategy selection based on analysis results."""
-    if stagnation and stagnation.get("is_stagnant") and stagnation.get("confidence") == "high":
+    # Stagnation with high/medium confidence → crossover
+    if combined.get("is_stagnant") and combined.get("confidence") != "low":
         parents = _pick_crossover_parents(ratings, current_v)
         if parents:
             return "crossover", parents[0], parents
 
-    if stagnation and stagnation.get("recommendation") == "branch" and stagnation.get("branch_from"):
-        branch_v = _parse_branch_from(stagnation["branch_from"])
+    # Explicit branch recommendation
+    if combined.get("recommendation") == "branch" and combined.get("branch_from"):
+        branch_v = _parse_branch_from(combined["branch_from"])
         if branch_v is not None:
             return "master", branch_v, ()
 
-    # Force diversity: if performance verification flags diversity_needed,
-    # try crossover to break out of local optima
-    if perf and _count_consecutive_diversity_needed(perf):
+    # Diversity injection
+    if combined.get("diversity_needed"):
         parents = _pick_crossover_parents(ratings, current_v)
         if parents:
             log.info("Diversity injection: forcing crossover (%s, %s) to break local optimum",
@@ -282,7 +304,19 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
     if ctx.gen_count > 0 and ctx.gen_count % 3 == 0:
         try:
             from experience_archivist import _consolidate_experience_pool
-            await _consolidate_experience_pool(ui)
+            # Extract exhausted_directions from pipeline checkpoint
+            exhausted_dirs = ""
+            try:
+                from evolution_infra import read_pipeline_checkpoint
+                ckpt = read_pipeline_checkpoint()
+                if ckpt:
+                    da = ckpt.get("direction_audit", {})
+                    ed = da.get("exhausted_directions", [])
+                    if ed:
+                        exhausted_dirs = ", ".join(ed)
+            except Exception:
+                pass
+            await _consolidate_experience_pool(ui, exhausted_directions=exhausted_dirs)
         except Exception as e:
             if ui:
                 ui.log_history(f"Experience consolidation failed: {e}", "warn")

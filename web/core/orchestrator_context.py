@@ -71,6 +71,21 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         ]
         if gen_ctx.strategy == "crossover" and gen_ctx.crossover_parents:
             lines.append(f"Crossover parents: claude_v{gen_ctx.crossover_parents[0]} x claude_v{gen_ctx.crossover_parents[1]}")
+
+        # Tool reference — prevents ToolSearch when session is fresh/resumed
+        lines.append("\nAVAILABLE TOOLS (call by exact name):")
+        lines.append("  prepare_next_gen(source_v, next_v) — copy source bot dir")
+        lines.append("  run_direction_audit(source_v, next_v) — detect repetitive evolution directions")
+        lines.append("  run_master(source_v, next_v, stagnation_info, match_analysis, performance_verification) — plan worker tasks")
+        lines.append("  execute_workers(tasks, next_v, source_v, reviewer_feedback) — modify bot code sequentially")
+        lines.append("  run_quality_gates(version, source_v) — compile + smoke test + decision tests + file size")
+        lines.append("  run_review(version, source_v, plan) — code quality review (boundaries, size, correctness)")
+        lines.append("  run_critic(version, source_v, plan, reviewer_feedback, force_advance) — strategic assessment (score >= 6)")
+        lines.append("  run_precommit_eval(version, source_v, n_games) — mirror battle regression check")
+        lines.append("  commit_bot(version, source_v, strategy, review_approved=true) — git commit + tag (requires all gates passed)")
+        lines.append("  run_archivist(version, source_v) — archive + cleanup after commit")
+        lines.append("  run_crossover(parent_a, parent_b, target_v) — merge two parent bots (alternative to master+workers)")
+
         if gen_ctx.stagnation_info:
             lines.append(f"\nStagnation analysis:\n{gen_ctx.stagnation_info}")
         if gen_ctx.match_analysis:
@@ -124,6 +139,10 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         f"Active bots: {len(active_bots)}",
         f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}",
     ]
+
+    # Tool reference — prevents ToolSearch in non-gen_ctx path
+    lines.append("\nAVAILABLE TOOLS (call by exact name):")
+    lines.append("  prepare_next_gen | run_direction_audit | run_master | execute_workers | run_quality_gates | run_review | run_critic | run_precommit_eval | commit_bot | run_archivist | run_crossover")
 
     # Current bot rating reliability
     cur_p = ratings.get(f"claude_v{current_v}")

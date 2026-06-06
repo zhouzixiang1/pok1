@@ -6,56 +6,77 @@ import pytest
 class TestDecideStrategy:
     def test_default_master_no_stagnation(self):
         from generation_scheduler import _decide_strategy
-        strategy, source_v, parents = _decide_strategy(None, None, 30, {})
+        strategy, source_v, parents = _decide_strategy(None, 30, {})
         assert strategy == "master"
         assert source_v == 30
         assert parents == ()
 
     def test_default_master_low_confidence(self):
         from generation_scheduler import _decide_strategy
-        stag = {"is_stagnant": True, "confidence": "low"}
-        strategy, source_v, parents = _decide_strategy(stag, None, 30, {})
+        combined = {"is_stagnant": True, "confidence": "low"}
+        strategy, source_v, parents = _decide_strategy(combined, 30, {})
         assert strategy == "master"
         assert source_v == 30
 
     def test_stagnant_high_confidence_triggers_crossover(self, monkeypatch):
         from generation_scheduler import _decide_strategy
-        stag = {"is_stagnant": True, "confidence": "high"}
+        combined = {"is_stagnant": True, "confidence": "high"}
         monkeypatch.setattr(
             "generation_scheduler._pick_crossover_parents",
             lambda ratings, cv: (30, 20),
         )
-        strategy, source_v, parents = _decide_strategy(stag, None, 40, {})
+        strategy, source_v, parents = _decide_strategy(combined, 40, {})
         assert strategy == "crossover"
         assert parents == (30, 20)
 
     def test_stagnant_high_confidence_no_parents_falls_back(self, monkeypatch):
         from generation_scheduler import _decide_strategy
-        stag = {"is_stagnant": True, "confidence": "high"}
+        combined = {"is_stagnant": True, "confidence": "high"}
         monkeypatch.setattr(
             "generation_scheduler._pick_crossover_parents",
             lambda ratings, cv: None,
         )
-        strategy, source_v, parents = _decide_strategy(stag, None, 40, {})
+        strategy, source_v, parents = _decide_strategy(combined, 40, {})
         assert strategy == "master"
         assert source_v == 40
 
     def test_branch_recommendation(self):
         from generation_scheduler import _decide_strategy
-        stag = {"recommendation": "branch", "branch_from": "20"}
-        strategy, source_v, parents = _decide_strategy(stag, None, 30, {})
+        combined = {"recommendation": "branch", "branch_from": "20"}
+        strategy, source_v, parents = _decide_strategy(combined, 30, {})
         assert strategy == "master"
         assert source_v == 20
 
     def test_crossover_takes_priority_over_branch(self, monkeypatch):
         from generation_scheduler import _decide_strategy
-        stag = {"is_stagnant": True, "confidence": "high", "recommendation": "branch", "branch_from": "15"}
+        combined = {"is_stagnant": True, "confidence": "high", "recommendation": "branch", "branch_from": "15"}
         monkeypatch.setattr(
             "generation_scheduler._pick_crossover_parents",
             lambda ratings, cv: (30, 20),
         )
-        strategy, source_v, parents = _decide_strategy(stag, None, 40, {})
+        strategy, source_v, parents = _decide_strategy(combined, 40, {})
         assert strategy == "crossover"
+
+    def test_diversity_needed_triggers_crossover(self, monkeypatch):
+        from generation_scheduler import _decide_strategy
+        combined = {"diversity_needed": True}
+        monkeypatch.setattr(
+            "generation_scheduler._pick_crossover_parents",
+            lambda ratings, cv: (30, 20),
+        )
+        strategy, source_v, parents = _decide_strategy(combined, 40, {})
+        assert strategy == "crossover"
+
+    def test_diversity_needed_no_parents_falls_back(self, monkeypatch):
+        from generation_scheduler import _decide_strategy
+        combined = {"diversity_needed": True}
+        monkeypatch.setattr(
+            "generation_scheduler._pick_crossover_parents",
+            lambda ratings, cv: None,
+        )
+        strategy, source_v, parents = _decide_strategy(combined, 40, {})
+        assert strategy == "master"
+        assert source_v == 40
 
 
 class TestParseBranchFrom:
