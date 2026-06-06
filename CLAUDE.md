@@ -26,7 +26,7 @@ python web/core/orchestrator.py              # Continuous evolution
 python web/core/orchestrator.py --one-gen    # One generation then stop
 
 # Standalone Glicko-2 daemon
-python web/core/elo_daemon.py --workers 14 --pairs 5 -v
+python web/core/elo_daemon.py --workers 28 --pairs 5 -v
 ```
 
 ### Testing

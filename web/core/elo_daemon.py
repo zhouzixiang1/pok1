@@ -6,7 +6,7 @@ updates and maintains a Head-to-Head win/loss matrix. Continuous scheduling
 eliminates idle cores.
 
 Usage:
-    python web/core/elo_daemon.py --pairs 5 --workers 14 --verbose
+    python web/core/elo_daemon.py --pairs 5 --workers 28 --verbose
 """
 
 import os
@@ -16,6 +16,7 @@ import random
 import signal
 import argparse
 import time
+import multiprocessing
 from collections import Counter, deque
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
@@ -94,8 +95,13 @@ def save_ratings(ratings, save_num=None):
         d = p.to_dict()
         d["last_period"] = datetime.now().isoformat(timespec="seconds")
         data[name] = d
-    with locked_file(RATINGS_FILE, "w") as f:
+    # Atomic write: tmp + fsync + rename (crash-safe)
+    tmp = RATINGS_FILE.with_suffix(".tmp")
+    with open(tmp, "w") as f:
         json.dump(data, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(str(tmp), str(RATINGS_FILE))
 
     if save_num is not None:
         history_file = RESULTS_DIR / "rating_history.jsonl"
@@ -201,7 +207,9 @@ def _load_priority_eval():
         return None
 
 
-def pick_matches(active_bots, h2h, ratings, n_picks=14):
+def pick_matches(active_bots, h2h, ratings, n_picks=None):
+    if n_picks is None:
+        n_picks = multiprocessing.cpu_count()
     """Pick match pairs prioritizing under-evaluated and rating-diverse matchups.
 
     Bots with low opponent coverage (< 80%) get extra scheduling slots to
@@ -443,7 +451,7 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
 def main():
     parser = argparse.ArgumentParser(description="Background Rating Daemon")
     parser.add_argument("--pairs", type=int, default=5, help="Mirror pairs per match")
-    parser.add_argument("--workers", type=int, default=14, help="Parallel workers")
+    parser.add_argument("--workers", type=int, default=max(1, int(multiprocessing.cpu_count() * 28 / 32)), help="Parallel workers")
     parser.add_argument("--verbose", "-v", action="store_true", help="Print match results")
     parser.add_argument("--once", action="store_true", help="Run ~14 matches then exit")
     args = parser.parse_args()

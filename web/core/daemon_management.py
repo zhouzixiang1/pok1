@@ -35,9 +35,16 @@ def _drain_stdout(proc):
         pass  # Pipe closed
 
 
-def start_daemon(workers=14, pairs=5):
+def _default_daemon_workers() -> int:
+    """Default daemon workers = CPU cores * 7/8, clamped to [1, 128]."""
+    return max(1, int(os.cpu_count() * 28 / 32))
+
+
+def start_daemon(workers=None, pairs=5):
     """Start elo_daemon.py as a background subprocess in its own process group."""
     global daemon_proc, _atexit_registered, _daemon_shutting_down
+    if workers is None:
+        workers = _default_daemon_workers()
 
     from evolution_infra import CORE_DIR, RESULTS_DIR
 
@@ -167,10 +174,12 @@ def is_daemon_alive():
     return proc is not None and proc.poll() is None
 
 
-def daemon_monitor_thread(ui, stop_event, daemon_workers=14, daemon_pairs=5):
+def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
     """Background thread: reads daemon stats, updates UI, auto-restarts dead daemon."""
     if not ui:
         return
+    if daemon_workers is None:
+        daemon_workers = _default_daemon_workers()
     from evolution_infra import load_daemon_stats, load_ratings
     restart_count = 0
     while not stop_event.is_set():

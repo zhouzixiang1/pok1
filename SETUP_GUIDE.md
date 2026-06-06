@@ -89,7 +89,7 @@ python web/core/orchestrator.py --one-gen
 ### 方式 C：仅 Glicko-2 对弈评测
 
 ```bash
-python web/core/elo_daemon.py --workers 14 --pairs 5 -v
+python web/core/elo_daemon.py --workers 28 --pairs 5 -v
 ```
 
 ## 5. 本地对战测试
@@ -155,7 +155,7 @@ python -m pytest tests/ -v
 |------|------|
 | 启动全栈 | `python web/main.py` |
 | 仅进化 | `python web/core/orchestrator.py` |
-| 仅评测 | `python web/core/elo_daemon.py --workers 14 -v` |
+| 仅评测 | `python web/core/elo_daemon.py --workers 28 -v` |
 | 快速对战 | `python engine/battle.py bots/claude_v5/main.py bots/claude_v4/main.py -n 10` |
 | 天梯赛 | `python engine/ladder.py -n 20 -v` |
 | 前端开发 | `cd web/frontend && npm run dev` |

@@ -239,7 +239,7 @@ class TestConfigClamping:
     def test_daemon_workers_clamped_high(self, client):
         resp = client.put("/api/control/config", json={"daemon_workers": 100})
         assert resp.status_code == 200
-        assert resp.json()["daemon_workers"] <= 32
+        assert resp.json()["daemon_workers"] <= 128
 
     def test_daemon_pairs_clamped_low(self, client):
         resp = client.put("/api/control/config", json={"daemon_pairs": -5})

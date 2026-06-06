@@ -18,7 +18,7 @@ python web/core/orchestrator.py --one-gen    # One generation then stop
 python web/core/orchestrator.py --dry-run    # Status check only
 
 # Standalone Glicko-2 daemon
-python web/core/elo_daemon.py --workers 14 --pairs 5 -v
+python web/core/elo_daemon.py --workers 28 --pairs 5 -v
 
 # Frontend development
 cd web/frontend && npm run dev               # Vite dev server

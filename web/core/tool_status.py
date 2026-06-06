@@ -6,6 +6,7 @@ The `diagnose_environment` tool is the exception — it calls LLM for one-shot a
 
 import json
 import logging
+import os
 import shutil
 import sys
 import time
@@ -199,7 +200,7 @@ class StartDaemonInput(TypedDict):
 
 @tool("start_daemon", "Start the background ELO daemon that continuously runs mirror battles and updates ratings.", {"workers": int, "pairs": int})
 async def start_eval_daemon(args):
-    workers = args.get("workers", 14)
+    workers = args.get("workers", max(1, int(os.cpu_count() * 28 / 32)))
     pairs = args.get("pairs", 5)
     proc = start_daemon(workers=workers, pairs=pairs)
     running = proc.poll() is None

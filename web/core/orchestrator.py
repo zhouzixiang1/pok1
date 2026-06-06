@@ -319,7 +319,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
     return total_cost
 
 
-async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_workers=14, daemon_pairs=5):
+async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_workers=None, daemon_pairs=5):
     """Orchestrator entry point — three-phase generation loop.
 
     Args:
@@ -329,6 +329,8 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
         daemon_workers: Number of parallel workers for the daemon subprocess.
         daemon_pairs: Mirror pairs per match for the daemon subprocess.
     """
+    if daemon_workers is None:
+        daemon_workers = max(1, int(os.cpu_count() * 28 / 32))
     from tools import inject_ui
     inject_ui(ui)
     set_system_log_ui(ui)

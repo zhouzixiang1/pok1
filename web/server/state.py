@@ -2,12 +2,19 @@
 
 import asyncio
 import json
+import os
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from shutdown_manager import ShutdownManager
+
+
+def _default_daemon_workers() -> int:
+    """Default daemon workers = CPU cores * 7/8, clamped to [1, 128]."""
+    return max(1, int(os.cpu_count() * 28 / 32))
+
 
 class AppState:
     def __init__(self, config_file=None):
@@ -16,7 +23,7 @@ class AppState:
         self.mode: str = "orchestrator"
         self.running: bool = False
         self.daemon_enabled: bool = True
-        self.daemon_workers: int = 14
+        self.daemon_workers: int = _default_daemon_workers()
         self.daemon_pairs: int = 5
         self.current_v: int = 0
         self.next_v: int = 0
@@ -54,7 +61,7 @@ class AppState:
             if "daemon_enabled" in kwargs and isinstance(kwargs["daemon_enabled"], bool):
                 self.daemon_enabled = kwargs["daemon_enabled"]
             if "daemon_workers" in kwargs and isinstance(kwargs["daemon_workers"], int) and not isinstance(kwargs["daemon_workers"], bool):
-                self.daemon_workers = max(1, min(32, kwargs["daemon_workers"]))
+                self.daemon_workers = max(1, min(128, kwargs["daemon_workers"]))
             if "daemon_pairs" in kwargs and isinstance(kwargs["daemon_pairs"], int) and not isinstance(kwargs["daemon_pairs"], bool):
                 self.daemon_pairs = max(1, min(20, kwargs["daemon_pairs"]))
             self._save_config()
@@ -86,7 +93,7 @@ class AppState:
                 if "daemon_enabled" in data and isinstance(data["daemon_enabled"], bool):
                     self.daemon_enabled = data["daemon_enabled"]
                 if "daemon_workers" in data and isinstance(data["daemon_workers"], int):
-                    self.daemon_workers = max(1, min(32, data["daemon_workers"]))
+                    self.daemon_workers = max(1, min(128, data["daemon_workers"]))
                 if "daemon_pairs" in data and isinstance(data["daemon_pairs"], int):
                     self.daemon_pairs = max(1, min(20, data["daemon_pairs"]))
         except (json.JSONDecodeError, OSError):

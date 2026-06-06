@@ -183,7 +183,7 @@ python web/tui.py --mode orchestrator
 python web/tui.py --mode classic --no-daemon
 
 # Standalone background daemon
-python web/core/elo_daemon.py --pairs 5 --workers 14 --verbose
+python web/core/elo_daemon.py --pairs 5 --workers 28 --verbose
 
 # Smoke test (1 mirror game vs reference bot)
 python web/core/smoke_tester.py bots/claude_v1/main.py
