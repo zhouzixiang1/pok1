@@ -32,6 +32,8 @@ async def _run_direction_audit(source_v, ui):
                 "confidence": "low", "last_directions": []}
 
     # ── Collect recent generation history ──
+    # Use full commit body (%B) so the LLM can do semantic analysis
+    # on rich strategy descriptions rather than just subject lines.
     history_lines = []
     try:
         from evolution_infra import _git, git_get_parent
@@ -45,11 +47,14 @@ async def _run_direction_audit(source_v, ui):
                 v = int(v_str)
             except ValueError:
                 continue
-            # Get commit message for strategy context
+            # Get full commit body for richer context — LLM will parse semantically
             try:
-                msg = _git("log", tag, "-1", "--format=%s", check=False).strip()
+                body = _git("log", tag, "-1", "--format=%B", check=False).strip()
+                # Use first line as summary, keep full body for LLM context
+                first_line = body.split("\n")[0] if body else "?"
             except Exception:
-                msg = "?"
+                body = ""
+                first_line = "?"
             # Get parent
             parent = None
             try:
@@ -57,7 +62,11 @@ async def _run_direction_audit(source_v, ui):
             except Exception:
                 pass
             parent_str = f" ← v{parent}" if parent else ""
-            history_lines.append(f"  v{v}{parent_str}: {msg}")
+            # Include full body if it has multi-line strategy detail
+            if len(body) > len(first_line) + 10:
+                history_lines.append(f"  v{v}{parent_str}: {first_line}\n    {body[len(first_line):].strip()[:400]}")
+            else:
+                history_lines.append(f"  v{v}{parent_str}: {first_line}")
     except Exception:
         pass
 
@@ -79,6 +88,17 @@ async def _run_direction_audit(source_v, ui):
     # ── Collect recent master plan analysis (from pipeline logs) ──
     master_log_lines = []
     for check_v in range(max(1, source_v - 4), source_v + 1):
+        # Try reading analysis from checkpoint first (more reliable)
+        try:
+            from evolution_infra import read_pipeline_checkpoint
+            ckpt = read_pipeline_checkpoint()
+            if ckpt and "master_plan" in ckpt:
+                analysis_text = ckpt["master_plan"].get("analysis", "")
+                if analysis_text:
+                    master_log_lines.append(f"  v{check_v} Master: {analysis_text[:300]}")
+                    continue  # skip the regex fallback for this version
+        except Exception:
+            pass
         log_file = get_logs_dir(check_v) / "master_io.txt"
         if log_file.exists():
             try:

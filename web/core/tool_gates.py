@@ -398,6 +398,12 @@ async def run_critic(args):
         local_optima_warning=data.get("local_optima_warning", False),
         force_advanced=force_advanced,
     )
+
+    # Track intra-gen retry count: increment when critic rejects (retry_workers)
+    current_attempt = (ckpt.get("generation_attempt", 0) or 0) if ckpt else 0
+    if not approved and not force_advanced:
+        current_attempt += 1
+
     checkpoint_recorded = _record_gate(
         v,
         source_v,
@@ -406,6 +412,7 @@ async def run_critic(args):
         stage="critic_checked" if approved or force_advanced else None,
         master_plan=ckpt.get("master_plan") if ckpt else plan,
         reviewer_feedback=reviewer_feedback,
+        generation_attempt=current_attempt,
     )
     if not approved:
         _record_quality_failure(v, "critic", "Strategy Critic",
@@ -419,6 +426,32 @@ async def run_critic(args):
         f"Critic {'approved' if approved else 'rejected'} v{v} (score={score_num})",
         {"version": v, "score": score_num, "approved": approved},
     )
+
+    # Extract Critic evidence and append to experience pool
+    evidence = data.get("evidence") if isinstance(data, dict) else None
+    if evidence:
+        try:
+            from tool_commit import _append_experience_updates
+            ev_parts = []
+            h2h_w = evidence.get("h2h_weaknesses", [])
+            if h2h_w:
+                ev_parts.append(f"H2H weaknesses: {', '.join(str(w) for w in h2h_w[:5])}")
+            ep_refs = evidence.get("experience_pool_refs", [])
+            if ep_refs:
+                ev_parts.append(f"Experience pool refs: {', '.join(str(r) for r in ep_refs[:3])}")
+            diff_refs = evidence.get("diff_refs", [])
+            if diff_refs:
+                ev_parts.append(f"Diff refs: {', '.join(str(r) for r in diff_refs[:3])}")
+            if ev_parts:
+                evidence_summary = "; ".join(ev_parts)
+                _append_experience_updates(
+                    version=v,
+                    updates=[f"Critic evidence: {evidence_summary}"],
+                    strategic_advice="",
+                    generation_assessment="info",
+                )
+        except Exception:
+            pass  # Non-critical: evidence write failure should not block pipeline
 
     result = {
         **data,

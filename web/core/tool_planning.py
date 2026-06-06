@@ -147,20 +147,17 @@ def _validate_master_plan(plan, next_v=None):
                     )
                     break
 
-    # Check target_files overlap between workers (normalized paths)
-    # NOTE: Downgraded from error to warning because _execute_workers already handles
-    # overlap correctly by running workers sequentially. Rejecting the plan here forces
-    # the orchestrator to re-run Master (costing $0.8-1.0 and 3-5 min per attempt),
-    # which was the primary cause of the 1800s timeout death spiral.
+    # Check target_files overlap between workers (informational only —
+    # workers execute sequentially so overlap is safe, but different files
+    # make each worker's scope clearer)
     all_targets = {}
     for i, task in enumerate(tasks):
         for target in task.get("target_files", []):
             rel = _target_rel(target, next_v) if next_v else target.strip()
             if rel in all_targets:
                 warnings.append(
-                    f"Tasks {all_targets[rel]} and {i} share target_file '{target}' — "
-                    f"workers will execute sequentially instead of in parallel. "
-                    f"For maximum parallelism, assign different files to each worker."
+                    f"Tasks {all_targets[rel]} and {i} share target_file '{target}'. "
+                    f"This is safe (sequential execution) but consider splitting for clarity."
                 )
             else:
                 all_targets[rel] = i

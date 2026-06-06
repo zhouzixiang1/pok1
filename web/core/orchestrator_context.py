@@ -103,6 +103,12 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
                     f"\nPIPELINE CHECKPOINT: v{checkpoint['next_v']} (from v{checkpoint['source_v']}) "
                     f"reached stage='{stage}'. Next step: {hint}."
                 )
+                gen_attempt = checkpoint.get("generation_attempt", 0)
+                if gen_attempt > 0:
+                    lines.append(
+                        f"INTRA-GEN RETRIES: {gen_attempt} previous critic rejection(s). "
+                        f"{'MAX RETRIES REACHED — do NOT retry workers again. Abandon this generation.' if gen_attempt >= 2 else 'You may retry workers at most 1 more time.'}"
+                    )
                 _inject_master_plan_hint(checkpoint, lines)
         except Exception:
             pass
@@ -196,6 +202,12 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
                 f"PIPELINE CHECKPOINT: v{checkpoint['next_v']} (from v{checkpoint['source_v']}) "
                 f"reached stage='{stage}'. Next step: {hint}."
             )
+            gen_attempt = checkpoint.get("generation_attempt", 0)
+            if gen_attempt > 0:
+                lines.append(
+                    f"INTRA-GEN RETRIES: {gen_attempt} previous critic rejection(s). "
+                    f"{'MAX RETRIES REACHED — do NOT retry workers again. Abandon this generation.' if gen_attempt >= 2 else 'You may retry workers at most 1 more time.'}"
+                )
             _inject_master_plan_hint(checkpoint, lines)
     except Exception:
         pass

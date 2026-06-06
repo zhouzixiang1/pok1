@@ -1,7 +1,7 @@
 """Worker agent execution logic.
 
-Handles running individual worker LLM calls with retries, timeout isolation,
-and parallel/serial worker scheduling.
+Handles running individual worker LLM calls with retries and timeout isolation.
+Workers always execute sequentially to avoid race conditions and simplify the pipeline.
 """
 
 import json
@@ -10,15 +10,15 @@ import asyncio
 
 from evolution_infra import (
     run_claude_query, substitute_template, verify_code, run_smoke_test,
-    locked_file, get_bot_dir, get_logs_dir, _get_worker_semaphore,
+    locked_file, get_bot_dir, get_logs_dir,
     find_current_v, _target_rel,
-    WORKER_FAILURES_FILE, MAX_WORKER_RETRIES, WORKER_TIMEOUT, MAX_PARALLEL_WORKERS, _COPY_IGNORE,
+    WORKER_FAILURES_FILE, MAX_WORKER_RETRIES, WORKER_TIMEOUT, _COPY_IGNORE,
 )
 
 
-def _record_worker_failure(gen, worker_id, role, error):
+def _record_worker_failure(gen, worker_id, role, error, failure_type="unknown"):
     """Append a worker failure record to the JSONL file."""
-    entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error}
+    entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error, "failure_type": failure_type}
     with locked_file(WORKER_FAILURES_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     try:
@@ -70,6 +70,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
     compile_errors = []
     smoke_errors = []
     _last_reason = "unknown"
+    _last_failure_type = "unknown"
     ui.log_history(f"Worker {w_id} ({role}) started", "info")
     for attempt in range(MAX_WORKER_RETRIES):
         ui.clear_io()
@@ -101,6 +102,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
         except (asyncio.TimeoutError, Exception) as exc:
             if isinstance(exc, asyncio.TimeoutError):
                 _last_reason = f"timed out after {WORKER_TIMEOUT}s (attempt {attempt+1}/{MAX_WORKER_RETRIES})"
+                _last_failure_type = "timeout"
                 ui.log_history(
                     f"Worker {w_id} ({role}) timed out after {WORKER_TIMEOUT}s. Retrying with simpler task...",
                     "warn",
@@ -116,15 +118,40 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             )
             continue
 
+        # Verify target files were actually modified (catch zero-change workers)
+        target_rels = [_target_rel(f, next_v) for f in task.get("target_files", [])]
+        target_rels = [r for r in target_rels if r]
+        if target_rels and source_v is not None:
+            src_dir = get_bot_dir(source_v)
+            unchanged = []
+            for rel in target_rels:
+                src_file = src_dir / rel
+                dst_file = next_dir / rel
+                src_text = src_file.read_text() if src_file.exists() else ""
+                dst_text = dst_file.read_text() if dst_file.exists() else ""
+                if src_text == dst_text:
+                    unchanged.append(rel)
+            if unchanged:
+                _last_reason = f"zero changes in target files: {', '.join(unchanged)}"
+                _last_failure_type = "zero_changes"
+                base_worker_prompt += (
+                    f"\n\nCRITICAL: Your target files were NOT modified: {', '.join(unchanged)}. "
+                    f"You MUST use the Edit tool to change these files. Do NOT just analyze — make actual edits."
+                )
+                ui.log_history(f"Worker {w_id} ({role}) zero changes in: {', '.join(unchanged)}", "warn")
+                continue
+
         compile_errors = verify_code(next_dir)
         if compile_errors:
             _last_reason = f"compile error: {compile_errors[0][:200]}"
+            _last_failure_type = "compile_error"
             base_worker_prompt += f"\n\nCRITICAL FIX: Fix syntax error:\n{compile_errors[0]}"
             continue
 
         smoke_errors = run_smoke_test(next_dir)
         if smoke_errors:
             _last_reason = f"smoke test error: {smoke_errors[0][:200]}"
+            _last_failure_type = "smoke_error"
             base_worker_prompt += f"\n\nCRITICAL FIX: Fix runtime error:\n{smoke_errors[0]}"
             continue
 
@@ -132,7 +159,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
         return True
 
     # Worker failed all retries — record failure
-    _record_worker_failure(next_v, w_id, role, _last_reason)
+    _record_worker_failure(next_v, w_id, role, _last_reason, failure_type=_last_failure_type)
     return False
 
 
@@ -149,82 +176,16 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             source_v=source_v,
         )
 
-    # Check for target_files overlap — run sequentially if shared files exist
-    target_sets = [set(_target_rel(f, next_v) for f in t.get("target_files", [])) for t in tasks]
-    has_overlap = any(
-        target_sets[i] & target_sets[j]
-        for i in range(len(target_sets))
-        for j in range(i + 1, len(target_sets))
-    )
-    if has_overlap:
-        ui.log_history("Target files overlap between workers — running sequentially to avoid race conditions.", "info")
-        for i, task in enumerate(tasks):
-            ok = await _run_single_worker(
-                task, i, worker_template, next_dir, next_v,
-                context_files, ui, reviewer_feedback,
-                source_v=source_v,
-            )
-            if not ok:
-                return False
-        return True
-
-    # Check for Architect + Tuner dependency — Tuner needs Architect's output first
-    has_architect = any("Architect" in t.get("role", "") for t in tasks)
-    has_tuner = any("Tuner" in t.get("role", "") for t in tasks)
-    if has_architect and has_tuner:
-        ui.log_history("Architect + Tuner detected — running sequentially to respect dependencies.", "info")
-        for i, task in enumerate(tasks):
-            ok = await _run_single_worker(
-                task, i, worker_template, next_dir, next_v,
-                context_files, ui, reviewer_feedback,
-                source_v=source_v,
-            )
-            if not ok:
-                return False
-        return True
-
-    # Try parallel execution (capped at MAX_PARALLEL_WORKERS via semaphore)
-    ui.log_history(f"Launching {len(tasks)} workers in parallel (max {MAX_PARALLEL_WORKERS} concurrent)...", "info")
-
-    async def _guarded_worker(task, i):
-        async with _get_worker_semaphore():
-            return await _run_single_worker(
-                task, i, worker_template, next_dir, next_v,
-                context_files, ui, reviewer_feedback,
-                source_v=source_v,
-            )
-
-    coros = [_guarded_worker(task, i) for i, task in enumerate(tasks)]
-    results = await asyncio.gather(*coros, return_exceptions=True)
-
-    # If cancelled, propagate immediately instead of falling back to serial
-    if any(isinstance(r, asyncio.CancelledError) for r in results):
-        return False
-
-    all_ok = all(r is True for r in results)
-    if all_ok:
-        return True
-
-    # Parallel had issues — fall back to serial with fresh copy
-    ui.log_history("Parallel execution had issues, retrying serially with fresh code copy...", "warn")
-    _source = source_v if source_v is not None else find_current_v()
-    src_dir = get_bot_dir(_source)
-    if next_dir.exists():
-        shutil.rmtree(next_dir)
-    shutil.copytree(src_dir, next_dir, ignore=_COPY_IGNORE)
-    (next_dir / ".completed").unlink(missing_ok=True)
-
-    # Append note so serial workers know prior failures may not apply to fresh copy
-    serial_reviewer_feedback = (reviewer_feedback or "") + (
-        "\n\nNOTE: Previous parallel attempt failed and code was reset from source. "
-        "Prior error messages may reference issues that no longer exist — focus on the current code state."
-    )
-
+    # Check for Architect + Tuner dependency — always run sequentially
+    # Tuner needs Architect's structural output as foundation.
+    # Running all workers sequentially simplifies the pipeline and avoids
+    # race conditions from parallel file edits.
+    ui.log_history(f"Running {len(tasks)} workers sequentially...", "info")
     for i, task in enumerate(tasks):
         ok = await _run_single_worker(
             task, i, worker_template, next_dir, next_v,
-            context_files, ui, serial_reviewer_feedback,
-            source_v=_source,
+            context_files, ui, reviewer_feedback,
+            source_v=source_v,
         )
         if not ok:
             return False

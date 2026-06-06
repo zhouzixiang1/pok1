@@ -155,7 +155,7 @@ def _matching_checkpoint(version, source_v=None):
 
 
 def _record_gate(version, source_v, gate_name, gate_data, stage=None,
-                 master_plan=None, reviewer_feedback=None):
+                 master_plan=None, reviewer_feedback=None, generation_attempt=None):
     ckpt = _matching_checkpoint(version, source_v)
     if not ckpt:
         log.warning("_record_gate: no matching checkpoint for v%s/v%s, gate '%s' dropped", version, source_v, gate_name)
@@ -166,6 +166,9 @@ def _record_gate(version, source_v, gate_name, gate_data, stage=None,
         existing_critic = ckpt.get("gate_results", {}).get("critic")
         if existing_critic and existing_critic.get("score", 0) > 0:
             gate_data = {**gate_data, "prev_critic": existing_critic}
+    # Use provided generation_attempt or preserve existing
+    if generation_attempt is None:
+        generation_attempt = ckpt.get("generation_attempt", 0)
     write_pipeline_checkpoint(
         version,
         source_v,
@@ -176,7 +179,7 @@ def _record_gate(version, source_v, gate_name, gate_data, stage=None,
             if reviewer_feedback is not None
             else ckpt.get("reviewer_feedback", "")
         ),
-        generation_attempt=ckpt.get("generation_attempt", 0),
+        generation_attempt=generation_attempt,
         gate_results={gate_name: gate_data},
         direction_audit=ckpt.get("direction_audit"),
     )
