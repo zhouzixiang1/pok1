@@ -46,12 +46,12 @@ python web/main.py
                 ├── Phase 2: _run_one_cycle(gen_ctx=ctx) — LLM session
                 │     ├── _build_context(gen_ctx=ctx) 注入预计算分析
                 │     ├── Orchestrator LLM 自主调用 MCP 工具
-                │     └── pipeline: master → workers → quality → review → critic → commit
+                │     └── pipeline: direction_audit → master → workers → quality → review → critic → precommit → commit
                 │     → 中断时 session + checkpoint 保留
                 │
                 ├── Phase 3: post_generation_cleanup(shutdown_mgr, ui, ctx) — 代码层
                 │     ├── reap_if_needed()
-                │     └── consolidate_experience() (每 3 代)
+                │     └── consolidate_experience() (每3代 或 RECENT_LESSONS≥4)
                 │     → 幂等，可安全中断
                 │
                 ├── shutdown_mgr.is_shutting_down? → break
@@ -114,7 +114,7 @@ Phase 1 由 `prepare_generation()` 函数编排，每步完成后检查 `shutdow
 
 - **触发者**: `prepare_generation()` 代码层
 - **有无 LLM**: 无
-- **做什么**: 异步轮询 `bot_stats.json`，等待守护进程为当前 bot 积累足够对局（默认 ≥ 100 局，超时 600s）
+- **做什么**: 异步轮询 `bot_stats.json`，等待守护进程为当前 bot 积累足够对局。双退出条件：**默认 ≥ 100 局** 或 **rd < 60 且 ≥ 20 局**（基于置信度的早退机制）。超时 600s。连续准备失败 ≥ 3 次时降级为 ≥ 30 局（`degraded_min_games`）。
 - **输出**: `eval_ok` 布尔值。不足 → 返回 `None`（本轮跳过，10 秒后重试）
 
 > **旧对比**: 原 Step 3 `wait_for_eval()` 由 Orchestrator LLM 触发。现在代码层自动等待，无需 LLM 决策。
@@ -216,16 +216,7 @@ Phase 1 由 `prepare_generation()` 函数编排，每步完成后检查 `shutdow
 - `web/core/results/match_history.jsonl` — 对局历史索引
 - `web/core/results/match_replay/{id}` — 完整对局录像 JSON
 
-**LLM 输出**: JSON
-```json
-{
-  "weaknesses": ["..."],
-  "street_weaknesses": {"river": "...", "flop": "..."},
-  "patterns": "...",
-  "working": "...",
-  "recommendation": "..."
-}
-```
+**LLM 输出**: 纯文本（结构化分析）。`_analyze_recent_matches()` 返回原始 LLM 输出字符串（`agent_master.py: return output or ""`），不解析为 JSON。
 
 **输出去向**: 返回给 `prepare_generation()`，存入 `GenerationContext.match_analysis`。
 
@@ -343,20 +334,19 @@ else:
 
 **输出去向**: 返回给 Orchestrator LLM → Orchestrator 用 `plan["tasks"]` 调用 `execute_workers()`。
 
-> **💡 真实示例 (v36)**: Master 分析了 v7 的 H2H 数据（55.62% avg，29 对手）和 match analysis（65% preflop fold + 0% postflop fold），制定了 2-worker 计划：
+> **💡 真实示例 (v9)**: Master 分析了 v8 的 combined analysis（v6 52.7% → v7 47.7% → v8 47%，三代下降）和 match analysis（0% postflop fold rate, calling station），制定了 2-worker 计划：
 > ```json
 > {
->   "analysis": "v7 H2H avg is 55.62% (29 opponents), stagnant 7+ periods. Match analysis reveals THREE catastrophic structural flaws: (1) 63-70% preflop fold rate; (2) 0% postflop fold rate; (3) Underbetting raises at 0.4x-0.7x pot.",
->   "targeted_failure": "Preflop over-folding (63-70%) + postflop call-station (0% fold rate). Opponent exploits by raising preflop (stealing 65% of hands uncontested), then betting postflop knowing the bot never folds.",
->   "expected_behavior_change": "(1) SB opens or limps ~85% of hands (was ~35%). (2) BB calls raises with most playable hands. (3) Postflop folds weak holdings ~15% of the time (was 0%). (4) Raise sizing increases from 0.4-0.7x pot to 0.6-1.0x pot.",
->   "branch_from": "claude_v7",
+>   "analysis": "v8 H2H avg 46.3% (7 opponents), 3-generation decline from v6 peak (52.7%). Match analysis reveals calling station: 0% postflop fold on every street, avg raise only 0.4x pot. Crossover recommended for structural diversity.",
+>   "targeted_failure": "Zero postflop fold rate across all streets — never folds after seeing flop. Tight-passive preflop (48-55% fold, only 9-19% raise). Underbetting raises at 0.4x pot.",
+>   "branch_from": "claude_v6",
 >   "tasks": [
->     {"worker_id": 1, "role": "Algorithmic Logic Architect", "target_files": ["strategy.py"], "difficulty": "hard"},
->     {"worker_id": 2, "role": "Hyperparameter Tuner", "target_files": ["strategy.py"], "difficulty": "medium"}
+>     {"worker_id": 1, "role": "Algorithmic Logic Architect", "target_files": ["strategy.py"]},
+>     {"worker_id": 2, "role": "Hyperparameter Tuner", "target_files": ["constants.py"]}
 >   ]
 > }
 > ```
-> 注：此 plan 因 JSON 格式问题被拒绝（共 3 次重试均失败），Orchestrator 最终改用 Crossover。
+> 注：此 plan 因 Worker role boundary violations（Tuner 改了 strategy.py 中的数字常量）被 Reviewer 拒绝。系统最终改用 Crossover v6×v2 路径。
 
 ---
 
@@ -425,19 +415,13 @@ else:
 - 代码变更已写入 `bots/claude_v{next_v}/` 文件系统
 - 成功 → 写入 checkpoint `stage="workers_done"`
 
-> **💡 真实示例 (v36)**: Worker 1（Logic Architect）收到 Master 的任务指令后，用 Edit 工具修改 `strategy.py`。prompt 开头指定角色边界和文件所有权：
+> **💡 真实示例 (v9)**: v9 尝试 Worker 路径但失败。Worker 1（Logic Architect）收到 Master 的任务指令后，用 Edit 工具修改 `strategy.py`。但 boundary validation 发现 Architect 修改了 10+ 个数字常量（属于 Tuner 范围），触发边界违规：
 > ```
-> [WORKER 1 (Algorithmic Logic Architect) PROMPT]
-> Role Boundary: ALLOWED: Adding new functions. FORBIDDEN: Changing well-tuned constants.
-> Scope Contract: target_files = ["strategy.py"]. Do NOT modify other files.
->
-> Task: Fix TWO catastrophic structural flaws:
->   Change 1: Widen SB preflop defense (open_threshold 0.49→0.38, limp_threshold 0.36→0.18)
->   Change 2: Add bb_vs_raise handler (currently returns None → falls through to tight logic)
->   Change 3: Add postflop fold logic (postflop_call_margin always returns POSITIVE values → never folds)
->   Change 4: Add explicit fold path for weak river holdings
+> [BOUNDARY VIOLATION] Worker 1 (Algorithmic Logic Architect):
+>   Modified 12 numeric literals in strategy.py — this crosses the Tuner boundary.
+>   Affected files: strategy.py (declared target, but numeric edits forbidden for Architect)
 > ```
-> Worker 执行后自动编译检查+冒烟测试。v36 中 Worker 共被调用 4 轮（AKs fix、boundary retry、size refactor、restore features）。
+> Worker 2（Tuner）则因 postflop.py 无任何改动被标记 zero-change。Reviewer 以 score=4 拒绝。系统随后改用 Crossover v6×v2 路径。
 
 ---
 
@@ -450,8 +434,9 @@ else:
   2. `run_smoke_test()` — 冒烟对战
   3. `run_decision_test_details()` — 决策测试（≥70% 通过率 + 关键场景全部通过）
   4. `check_code_size()` — 文件行数检查（核心策略文件 ≤ 1500 行，辅助文件 ≤ 1200 行）
+  5. `code_changed` — 与 source_v 的 byte-for-byte diff 检查（workers 必须产生至少一个 .py 文件变更，防止零改动僵尸循环）
 - **注意**: 无前置阶段检查 — 质量门禁无条件运行，即使没有 checkpoint 也会执行（此时 `checkpoint_recorded=false`）
-- **输出**: `{compile_ok, smoke_ok, decision_pass_rate, decision_ok, critical_scenarios_passed, size_ok, all_passed}` + 详细字段：`compile_errors, smoke_errors, critical_passed, critical_total, critical_failures, decision_failures, scenario_results, total_lines, oversized_files, checkpoint_recorded`
+- **输出**: `{compile_ok, smoke_ok, decision_pass_rate, decision_ok, critical_scenarios_passed, size_ok, code_changed, all_passed}` + 详细字段：`compile_errors, smoke_errors, critical_passed, critical_total, critical_failures, decision_failures, scenario_results, total_lines, oversized_files, checkpoint_recorded`
 - **输出去向**: 全部通过 → 写入 checkpoint `stage="quality_passed"` + gate `quality`
 
 ---
@@ -492,24 +477,16 @@ else:
 - 审批 → 写入 checkpoint `stage="reviewed"` + gate `review`
 - 拒绝 → `stage=None`（保留前一阶段，不回退），Orchestrator 可用 feedback 作为 `reviewer_feedback` 重试 workers
 
-> **💡 真实示例 (v36)**: Reviewer 运行 `git diff bot-v7 -- bots/claude_v36/`，审查 Crossover 产生的代码变更。首轮因死文件拒绝：
-> ```json
-> {
->   "approved": false,
->   "quality_score": 6,
->   "feedback": "main_backup.py (3268 lines) violates the 1000-line .py file size constraint. This is a dead leftover file — simply DELETE it.",
->   "risk_areas": ["main_backup.py must be deleted", "postflop.py at 960 lines is close to the ceiling"]
-> }
-> ```
-> Orchestrator 删除 `main_backup.py` 后重试，第二轮通过：
+> **💡 真实示例 (v10)**: Reviewer 审查 Crossover v4×v8 产生的代码变更。首次通过：
 > ```json
 > {
 >   "approved": true,
->   "quality_score": 7,
->   "change_summary": "Crossover v7×v30 with 3 regression fixes: (1) Restored classify_opponent_style() (4 archetypes). (2) Re-enabled river overbet bluffing. (3) Extended AKo+/JJ+ all-in guard.",
->   "risk_areas": ["postflop.py (960 lines) near the 1000-line ceiling", "get_action() is a 685-line monolithic function"]
+>   "quality_score": 8,
+>   "change_summary": "Conservative crossover: v4 base (simplest, strongest at 54.92% WR) + selective v8 imports (PREFLOP_STRENGTH_TABLE, CBet tracking, should_fold_postflop, CBet-based call margin adjustment). Skipped from v8: drift detection, safe exploitation lambda, 3bet/4bet logic, lowered EQR, wider open threshold.",
+>   "risk_areas": ["opponent.py lines 43-45 contain dead code (unreachable)", "v10 reuses v9's exact should_fold_postflop which scored poorly"]
 > }
 > ```
+> 对比 v9 的 Reviewer 拒绝案例（score=4，Worker 1 修改了 12 个数字常量属于 Tuner 越界），v10 的 Crossover 路径绕过了 Worker boundary 问题。
 
 ---
 
@@ -551,22 +528,22 @@ else:
 - `action: "retry_workers"` → Orchestrator 注入 critic feedback 重试 workers（计入 `intra_gen_attempts`，最多 2 次）
 - `action: "force_commit"` → `force_advance=true` 时强制推进 checkpoint（但不是提交许可）
 
-> **💡 真实示例 (v36)**: Critic 独立评估 Crossover 的策略价值，引用 H2H 数据、experience pool 和 diff 作为证据：
+> **💡 真实示例 (v10)**: Critic 独立评估 Crossover v4×v8 的策略价值，score=6（勉强通过）：
 > ```json
 > {
->   "score": 7,
+>   "score": 6,
 >   "approved": true,
->   "strategic_assessment": "Well-justified v7×v30 crossover addressing three documented v7 weaknesses: (1) Restores classify_opponent_style() for +2-3pts adaptation. (2) Adds AKo+ all-in guard. (3) Re-enables river overbet bluff with proper guards.",
+>   "strategic_assessment": "Conservative crossover from v4 base with selective v8 features. CBet exploitation mutation is the main differentiator vs v9.",
 >   "evidence": {
->     "h2h_weaknesses": ["v7 vs v12: 40.8% win rate (130 games)", "v7 vs v11: 41.8% (110 games)"],
->     "experience_pool_refs": ["classify_opponent_style returns +2-3 pts adaptation", "style_deltas MUST propagate to ALL thresholds"]
+>     "h2h_weaknesses": ["v9 scored 44.6% WR with similar features (CBet tracking, should_fold_postflop)"],
+>     "diff_refs": ["v10 reuses v9's exact should_fold_postflop function", "Only differentiation is v4 base and weaker CBet exploitation bonus"]
 >   },
->   "feedback": "Minor concern: AKo all-in guard is unconditional. Against a tight opponent who only jams AA/KK, calling with AKo is -EV.",
->   "local_optima_warning": false,
->   "local_optima_reason": null
+>   "feedback": "v10's features are too similar to v9 which performed poorly. Local optima risk: repeating failed strategies with a different base.",
+>   "local_optima_warning": true,
+>   "local_optima_reason": "v9 scored 44.6% WR with CBet tracking + should_fold_postflop. v10 uses same features on v4 base — may produce similar results."
 > }
 > ```
-> 首轮 Critic 给了 8.0 分，后续因 Worker 修复中误删了部分 features 降至 7.0。
+> Critic 勉强通过但发出了 local_optima_warning。v9 的 Critic 也给了 score=6，反馈 Worker 2 完全失败（postflop.py 无改动）。
 
 ---
 
@@ -583,13 +560,15 @@ else:
 - **输出**: `{passed, blockers, matchups, total_wins/losses/draws}`
 - **输出去向**: 通过 → checkpoint `stage="verified"` + gate `precommit_eval`
 
-> **💡 真实示例 (v36)**: v36 经历了多次 precommit eval。前两次失败（0-1 vs parent, 1-2 vs parent），触发 Worker 修复。最终通过时选择 5 场对战：
+> **💡 真实示例 (v9)**: v9 的 precommit eval 选择对手 parent(v6) + crossover parent_b(v2)，运行 mirror battle：
 > ```
-> 对手选择: parent(v7) + top_h2h_wr(v4, v23, v8) + source_h2h_weakness(v30, v6)
-> vs parent v7: 2-2-1 (tied, 不触发"输给父版本"阻断)
-> vs v23: 3-2 (won)
-> aggregate: 7-7-1, blockers=[] → PASSED ✅
+> 对手选择: parent(v6) + crossover_parent_b(v2)
+> vs v6: 10-10 (tied, 不触发"输给父版本"阻断)
+> vs v2: 10-10 + 3-1 (won)
+> aggregate: 23-11, blockers=[] → PASSED ✅
 > ```
+>
+> **v10 的 precommit eval 超时**: v10 请求 n_games=80（远超上限 5），但 CYCLE_TIMEOUT=3600s 先到，导致整个 cycle 超时。v10 最终被手动提交（无 bot-v10 tag）。
 
 ---
 
@@ -613,18 +592,17 @@ else:
   10. 写入 `priority_eval.json` — 标记新 bot 需要优先评估
 - **输出**: `{committed: true, version, source_v, push_ok}`（若池 > 30 额外返回 `needs_reap: true, pool_size`）
 
-> **💡 真实示例 (v36)**: commit_bot 在 v36 中被调用了两次——第一次因 AKs all-in 测试失败被阻断（`committed: false`），修复后第二次成功：
+> **💡 真实示例 (v9)**: v9 通过完整 pipeline 后成功提交，但缺少 git tag：
 > ```json
-> {"committed": true, "version": 36, "source_v": 7, "push_ok": false}
+> {"committed": true, "version": 9, "source_v": 6, "push_ok": false}
 > ```
+> 注：v9 提交后未创建 `bot-v9` tag（只有 commit `32e8f1f`），导致 `find_current_v()` 返回 8 而非 9。这是一个已知的 tag 一致性问题。
 > Git commit message：
 > ```
-> evolve: v7 → v36
-> parent: claude_v7
-> strategy: Crossover v7×v30 (stagnation break). Restored classify_opponent_style()
-> (4 archetypes), re-enabled river overbet bluffing, extended AKo+/JJ+ all-in guard.
-> Critic score 7.0.
+> feat: crossover bot v9 -- v6xv2 hybrid with tighter folding + 3bet logic + CBet exploitation
 > ```
+>
+> **v10 的手动提交**: v10 因 precommit eval 超时（n_games=80，3600s CYCLE_TIMEOUT 先到）未能通过 commit_bot 工具。手动 `git commit` + `git push` 后同样缺少 `bot-v10` tag。
 
 ---
 
@@ -665,7 +643,18 @@ else:
 
 **输出去向**: 返回给 Orchestrator LLM。尝试写入 checkpoint `stage="archived"` 然后清除。注意：正常流程中 `commit_bot` 已清除 checkpoint，所以 `_matching_checkpoint` 返回 `None`，`"archived"` 阶段实际上**不会被写入**——该写入逻辑是预防性代码（仅在非正常路径下生效）。
 
-> **💡 真实示例 (v36)**: Archivist 在 v36 中运行了 match_analyst（分析 v36 vs v21: 9W/11L，发现 preflop 65% fold + postflop 0% fold 仍未完全修复）和 performance_verification（trend: stagnant, diversity_needed: true）。v36 的 `archived` checkpoint 未写入（commit_bot 已清除）。
+> **💡 真实示例 (v7)**: v7 是目前唯一有完整归档快照（`archive/v7.json`）的 bot。归档数据：
+> ```json
+> {
+>   "version": 7, "source_v": 5,
+>   "timestamp": "2026-06-05T12:43:58",
+>   "git_tag": "bot-v7", "git_commit": "0e0f491",
+>   "review_score": 7, "critic_score": 7.0,
+>   "precommit_eval": {"passed": true},
+>   "pool_size": 7
+> }
+> ```
+> v9 和 v10 因缺少 git tag，未生成归档快照文件。
 
 ---
 
@@ -677,7 +666,7 @@ Phase 2 `_run_one_cycle()` 检测到 `cycle_completed`:
 
 Phase 3 `post_generation_cleanup()`（仅在 cost ≥ 0 即成功或非 auth 错误时执行）:
 - `reap_if_needed()` — 活跃 bot > 30 时自动淘汰最弱
-- `consolidate_experience()` — 每 3 代整合经验池
+- `consolidate_experience()` — 每 3 代 **或** `RECENT_LESSONS >= 4` 条目时整合经验池（代码层直接调用，非 MCP 工具）
 
 `orchestrator_loop()` 检查 `shutdown_mgr.is_shutting_down`，若未关闭则 `sleep(5)` 后进入下一代。
 
@@ -994,8 +983,8 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 
 | 项目 | 内容 |
 |---|---|
-| **触发者** | Orchestrator LLM 调用 `consolidate_experience`（通常每 3 代） |
-| **调用链** | `tool_status.py:consolidate_experience()` → `agent_master.py:_consolidate_experience_pool()` → `run_claude_query()` |
+| **触发者** | Phase 3 `post_generation_cleanup()` 代码层直接调用（每 3 代 **或** `RECENT_LESSONS >= 4` 条目时） |
+| **调用链** | `generation_scheduler.py:post_generation_cleanup()` → `experience_archivist.py:_consolidate_experience_pool()` → `run_claude_query()` |
 | **LLM 角色** | EXPERIENCE CONSOLIDATOR |
 | **模型** | Sonnet |
 | **工具** | 无 |
@@ -1032,12 +1021,12 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 
 **输出去向**: 代码写入 `bots/claude_v{target}/`，成功后由 Orchestrator 决定是否提交
 
-> **💡 真实示例 (v36)**: Master 3 次重试失败后，Orchestrator 选择 Crossover v7×v30。Crossover Agent 分析两个父 bot 后制定了合并策略：
-> - **从 v30 导入**: `classify_opponent_style()`（4 种对手画像）、`big_pot_safety_guard()`、river exact equity、更保守的 air EQR（0.68/0.56 vs 0.72/0.62）、deterministic blocker bluff
-> - **保留 v7**: simulation accuracy、anti-lock pressure、match pressure、anti-bot4 exploitation
-> - **Mutation**: SB open threshold 0.49 → 0.47（加宽 SB 开牌范围）
+> **💡 真实示例 (v9)**: Combined analysis 检测到 3 代下降（v6 52.7% → v7 47.7% → v8 47%），推荐 branch from v6。策略决策选择 crossover v6×v2。Crossover Agent 分析两个父 bot 后制定了合并策略：
+> - **从 v2 导入**: `PREFLOP_STRENGTH_TABLE`（169 手牌分级表）、CBet tracking、3bet/4bet logic、lower postflop_call_margin、draw-aware EQR
+> - **保留 v6**: min_raise_action、must_continue_vs_raise、should_fold_postflop（防御性折叠）
+> - **Mutation**: CBet exploitation — 当对手 fold_to_cbet > 55% 时，降低 flop 下注门槛 0.03
 >
-> Crossover Agent 用 Read 读取两个父 bot 的全部源码，用 Edit 将合并后的代码写入 `bots/claude_v36/`。执行后自动编译检查+冒烟测试通过。
+> Crossover Agent 用 Read 读取两个父 bot 的全部源码，用 Edit 将合并后的代码写入 `bots/claude_v9/`。执行后自动编译检查+冒烟测试通过。
 
 ---
 
@@ -1088,8 +1077,9 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
                     │                                            │
                     │   _build_context(gen_ctx) → 注入预计算分析   │
                     │   Orchestrator LLM 自主调用 MCP 工具         │
-                    │   Pipeline: master → workers → quality →    │
-                    │            review → critic → commit         │
+                    │   Pipeline: direction_audit → master →       │
+                    │   prepare → workers → quality → review →    │
+                    │   critic → precommit → commit → archivist   │
                     │   中断 → session + checkpoint 保留到磁盘     │
                     │   下次启动 → _startup_recovery() 恢复        │
                     └──────────────────┬──────────────────────────┘
@@ -1099,7 +1089,8 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
                     │   (幂等，可安全中断并重跑)                    │
                     │                                            │
                     │   reap_if_needed() → 淘汰最弱 bot           │
-                    │   consolidate_experience() → 每 3 代去重    │
+                    │   consolidate_experience() → 每3代或       │
+│                            RECENT_LESSONS≥4 │
                     └──────────────────┬──────────────────────────┘
                                        │
                     ┌──────────────────▼──────────────────────────┐
@@ -1121,7 +1112,8 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
                        │
               ┌────────▼────────────┐
               │run_direction_audit  │
-              │(无 LLM，纯代码)     │
+              │📎 DIRECTION AUDITOR │
+              │工具: 无（纯JSON输出）│
               │检查最近进化方向重复  │
               └────────┬────────────┘
                        │
@@ -1152,7 +1144,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
               │run_quality_gates    │
               │(无 LLM)             │
               │compile+smoke+decision│
-              │+size (≤1500/1200行)  │
+              │+size +code_changed    │
               └────────┬────────────┘
                        │
               ┌────────▼────────────┐
@@ -1203,7 +1195,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 - **所有 LLM 调用统一使用 Sonnet 模型**，通过 `claude_agent_sdk` 的 `query()` 函数
 - **API 限流 (529)**: `run_claude_query()` 内自动指数退避重试（30s → 60s → 120s）
 - **Prompt 预算**: `MAX_PROMPT_CHARS = 700_000`，超限时按文件均分压缩上下文
-- **MCP 工具**: 15 个工具注册在 `tools.py` 的 `mcp_tools` 列表中，通过 `create_sdk_mcp_server(name='evolution', tools=mcp_tools)` 暴露给 Orchestrator LLM。工具来自 `tool_planning.py`（direction_audit, master, workers）、`tool_gates.py`（quality_gates, review, critic, prepare_next_gen）、`tool_eval.py`（precommit_eval, inline_eval）、`tool_commit.py`（commit, archivist）、`tool_status.py`（查询、daemon 控制、bot 管理）。**注意**: `get_status` 等工具仅在 `all_tools`（HTTP 端点 `/api/control/tool/`）中可用，不在 MCP 中。
+- **MCP 工具**: 15 个工具注册在 `tools.py` 的 `mcp_tools` 列表中，通过 `create_sdk_mcp_server(name='evolution', tools=mcp_tools)` 暴露给 Orchestrator LLM。完整列表：`run_master`、`execute_workers`、`run_quality_gates`、`run_review`、`run_critic`、`run_precommit_eval`、`run_crossover`、`prepare_next_gen`、`run_direction_audit`、`commit_bot`、`run_archivist`、`get_bot_info`、`get_match_history`、`get_h2h`、`get_bot_stats`。工具来自 `tool_planning.py`（direction_audit, master, workers）、`tool_gates.py`（quality_gates, prepare_next_gen, review, critic）、`tool_eval.py`（precommit_eval, inline_eval）、`tool_commit.py`（commit, archivist）、`tool_status.py`（查询工具）。**注意**: `get_status`、`consolidate_experience`、`reap_weakest` 等工具仅在 `all_tools`（HTTP 端点 `/api/control/tool/`）中可用，不在 MCP 中。`consolidate_experience` 由 Phase 3 代码层直接调用，不经 MCP。
 - **子代理 MCP 屏蔽**: `_BLOCKED_MCP_TOOLS` 屏蔽以下外部工具（防止子代理访问网络）：
   - `mcp__web-reader__webReader`
   - `mcp__web-search-prime__web_search_prime`
@@ -1219,287 +1211,228 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 - **Daemon 独立生命周期**: `elo_daemon.py` 作为独立子进程运行，orchestrator 停止不影响 daemon 持续评估；daemon 仅通过 `.reap_signal` 文件与 orchestrator 通信
 - **归档阶段**: Phase 3 中 `reap_if_needed()` + `consolidate_experience()` 在 commit 后执行，幂等可安全重跑
 
-## 附录：真实循环示例（v28 → v29）
+## 附录1：标准 Master 路径示例（v5 → v7）
 
-> ⚠️ **历史示例**: 以下示例基于**旧架构**（Phase 2 中 Orchestrator 可直接调用 `get_status` 等 MCP 工具）。当前架构中，这些操作已移入 Phase 1 代码层，`get_status` 不再是 MCP 工具。工具调用序列仅供理解恢复流程参考。
-
-以下展示一个真实的完整进化循环，基于实际日志文件。
+以下展示一个**标准路径**的完整进化循环：Phase 1 代码层分析 → Phase 2 LLM pipeline 一次通过 → Phase 3 清理。基于实际日志和归档数据。
 
 ### 背景
 
-- **源 bot**: claude_v28 (r=1581, 160 games, 60% WR)
-- **目标 bot**: claude_v29
-- **结果**: 成功提交 (`git tag bot-v29`, commit `e3101ad`)
+- **源 bot**: claude_v5 (master 策略，非 crossover)
+- **目标 bot**: claude_v7
+- **结果**: 成功提交（`git tag bot-v7`, commit `f22ecbc`）
+- **总耗时**: 约 26 分钟（2026-06-05 12:17 → 12:43）
+- **路径**: Phase 1 分析 v5 → Master 规划 → Workers 修改 → Quality/Review/Critic 一次通过 → Commit
 
-### 实际工具调用序列
+### Phase 1（代码层自动执行）
 
-```
-get_status() → run_review(v29, v28) → run_critic(v29, v28) → commit_bot(v29, v28)
-```
+Phase 1 由 `prepare_generation()` 编排，无需 Orchestrator LLM 参与：
 
-> 注：此循环从 `quality_passed` checkpoint 恢复（之前因认证失败中断），因此跳过了 Master 和 Worker 阶段。
+1. **状态查询**: `find_current_v()` → v6（最新 git tag），`get_active_bots()` → 7 bots
+2. **等待评估**: v6 已有足够对局（≥100 局），eval_ok=True
+3. **合并分析** (`_run_combined_analysis`): v6 表现正常，无停滞迹象。推荐继续从 v5 进化（v5 代码更简单，适合 Master 路径）
+4. **对战分析** (`_analyze_recent_matches`): 发现 v5 近乎零的 3-bet 频率——BB 面对 raise 时缺乏 3-bet 处理逻辑
+5. **策略决策**: `_decide_strategy()` → strategy="master", source_v=5（LLM 推荐进化源）
+
+### Phase 2 工具调用序列
+
+| # | 工具调用 | 结果 |
+|---|---|---|
+| 1 | `prepare_next_gen(v5, v7)` | 复制 v5 → v7，checkpoint stage="prepared" |
+| 2 | `run_direction_audit` | 未检测到重复方向（方向多样：之前是 postflop fold、EQR 调整） |
+| 3 | `run_master(v5, v7)` | 2-worker 计划：Worker1 处理 BB vs Raise preflop 3-bet，Worker2 调优 opponent modeling 参数 |
+| 4 | `execute_workers` | Worker1 修改 strategy.py，Worker2 修改 constants.py。编译+冒烟测试均通过 |
+| 5 | `run_quality_gates` | ALL PASSED ✅（含 code_changed 检查——确认文件确实被修改） |
+| 6 | `run_review` | APPROVED ✅（score 7） |
+| 7 | `run_critic` | APPROVED ✅（score 7.0） |
+| 8 | `commit_bot` | SUCCESS ✅（`git tag bot-v7`, commit `f22ecbc`） |
+| 9 | `run_archivist` | 归档快照 `archive/v7.json` 写入成功 |
 
 ### 各阶段真实输出
 
-**1. get_status()**
+**Master 规划**
 ```json
 {
-  "current_v": 28,
-  "active_bots_count": 28,
-  "rating_reliable": true,
-  "incomplete_next_v": 29,
-  "current_bot_h2h_avg_wr": 0.60
-}
-```
-
-**2. run_review(v29, v28)** — 5 次审查循环
-
-- Review 1-4: 均被拒绝（发现 bug：缺少 `TOTAL_HANDS` 导入、river 3-branch 抢占 nut overbet、preflop tier 防御折叠 AA/KK 等）
-- Review 5: **通过** (score: 7/10)
-
-```json
-{
-  "approved": true,
-  "quality_score": 7,
-  "change_summary": "Added 5-tier preflop hand classification system, river 3-branch decision framework...",
-  "risk_areas": [
-    "River 3-branch may bypass nuanced edge-case handling",
-    "Raise sizing increased 10-15% across all streets",
-    "betting.py doubled in size (305→605 lines)"
+  "analysis": "v5 match analysis reveals near-zero 3-bet frequency. BB facing raise lacks 3-bet handler, falls through to tight logic. Opponent modeling improvements needed for adaptive play.",
+  "tasks": [
+    {"worker_id": 1, "role": "Algorithmic Logic Architect", "target_files": ["strategy.py"]},
+    {"worker_id": 2, "role": "Hyperparameter Tuner", "target_files": ["constants.py"]}
   ]
 }
 ```
 
-**3. run_critic(v29, v28)** — 通过 (score: 7/10)
-
+**Critic 评估**
 ```json
 {
-  "score": 7,
+  "score": 7.0,
   "approved": true,
-  "strategic_assessment": "River 3-branch fixes confirmed 0% raise/fold leak... Preflop 5-tier system provides principled decisions...",
-  "local_optima_warning": false,
-  "local_optima_reason": "v28 added board texture, v27 added fold gate, v26 added SPR awareness. v29 adds preflop tier + river 3-branch — fundamentally different."
+  "strategic_assessment": "BB vs Raise preflop 3-bet handler addresses documented weakness. Opponent modeling improvements add adaptation capability."
 }
 ```
 
-**4. commit_bot(v29, v28)**
-
+**归档快照** (`archive/v7.json`)
 ```json
 {
-  "committed": true,
-  "tag": "bot-v29",
-  "sha": "e3101ad"
+  "version": 7, "source_v": 5,
+  "timestamp": "2026-06-05T12:43:58",
+  "git_tag": "bot-v7", "git_commit": "0e0f491",
+  "review_score": 7, "critic_score": 7.0,
+  "precommit_eval": {"passed": true},
+  "pool_size": 7
 }
 ```
-
-Git commit message:
-```
-evolve: v28 → v29
-
-parent: claude_v28
-strategy: Gen 29 from v28: Added 5-tier preflop hand classification system, 
-river 3-branch decision framework (strong/medium/weak) to fix 0% raise/fold leak, 
-widened BB defense with tier-based logic, increased raise sizing ratios ~10-15% 
-across all streets, tightened thresholds for tighter-aggressive profile. 
-Review score 7, Critic score 7.
-```
-
-### 关键文件变更
-
-| 文件 | 变更 |
-|---|---|
-| `state.py` | +79 行：新增 `classify_preflop_tier()` |
-| `betting.py` | +300 行：river 3-branch 系统、preflop tier 集成 |
-| `strategy.py` | -10 行：导入新函数、BB 防御、river 分发 |
 
 ### 相关日志文件
 
-- `web/logs/orchestrator_20260530_155557.txt` — Orchestrator 循环
-- `web/core/results/v29/logs/master_io.txt` — Master 规划
-- `web/core/results/v29/logs/worker_1_io.txt` — Worker 1（Logic Architect）
-- `web/core/results/v29/logs/worker_2_io.txt` — Worker 2（Hyperparameter Tuner）
-- `web/core/results/v29/logs/reviewer_io.txt` — 5 次审查记录
-- `web/core/results/v29/logs/critic_io.txt` — Critic 评估
-- `web/core/results/v29/logs/match_analyst_io.txt` — 赛后分析
-- `web/core/results/v29/logs/performance_verification_io.txt` — 性能验证
-- `web/core/results/v29/logs/stagnation_analysis.txt` — 停滞分析
+- `web/core/results/v7/logs/master_io.txt` — Master 规划
+- `web/core/results/v7/logs/worker_1_io.txt` — Worker 1（Logic Architect）
+- `web/core/results/v7/logs/worker_2_io.txt` — Worker 2（Tuner）
+- `web/core/results/v7/logs/reviewer_io.txt` — Reviewer 评估
+- `web/core/results/v7/logs/critic_io.txt` — Critic 评估
+- `web/core/results/v7/logs/match_analyst_io.txt` — 对战分析
+- `web/core/results/v7/logs/stagnation_analysis.txt` — 停滞分析
+- `web/core/results/v7/logs/performance_verification_io.txt` — 性能验证
+
+> 此示例展示了**标准 Master 路径**的完整流程：Phase 1 代码层自动完成分析→ Phase 2 通过 10 次 MCP 工具调用一次通过 → Phase 3 清理。总耗时仅 26 分钟，是理想情况下的进化速度。
 
 ---
 
-## 附录：非典型路径示例（v3 → v35）
+## 附录2：Crossover 路径示例（v6 → v9）
 
-以下展示一个包含多次重试和低分通过的循环。
+以下展示一个 **Worker 失败 + Crossover 替代** 的进化循环。Combined analysis 检测到三代下降后，系统自动切换到 crossover 路径。基于实际日志。
 
 ### 背景
 
-- **源 bot**: claude_v3（非最近 lineage，因停滞分析建议 branch）
-- **目标 bot**: claude_v35
-- **特点**: Worker 多次重试、Critic 低分通过、无 Reviewer 日志
+- **源 bot**: claude_v6 (v6 52.7% h2h_avg_wr，从 v6 峰值连续 3 代下降)
+- **目标 bot**: claude_v9
+- **结果**: 成功提交（commit `32e8f1f`，**但缺少 `bot-v9` tag**）
+- **总耗时**: 约 30+ 小时（2026-06-06 至 06-07，含多次中断和重试）
+- **路径**: v6 峰值 → v7/v8 连续下降 → Combined analysis 推荐 crossover → v6×v2 合并
 
-### 关键偏差
+### Phase 1（代码层自动执行）
 
-1. **Worker 1 收到 5 次顺序 prompt**（非单次执行）：
-   - Prompt 1: 加宽 preflop 防御
-   - Prompt 2: 修复 AKs 折叠 bug + 压缩文件
-   - Prompt 3: 修复 `sanitize_action` bug
-   - Prompt 4-5: 验证/无操作
+1. **合并分析** (`_run_combined_analysis`): 明确的三代下降——v6(52.71%) → v7(46.63%) → v8(47.00%)。`is_stagnant=true, confidence=high, trend=declining`。`recommended_source=claude_v6`。
+2. **对战分析** (`_analyze_recent_matches`): 核心发现——0% postflop fold rate on every street，从不 folding postflop。48-55% preflop fold 但仅 9-19% raise。Avg raise 只有 0.4x pot。
+3. **策略决策**: `_decide_strategy()` → strategy="crossover", source_v=6, crossover_parents=(v6, v2)。v2 代码包含 v6 缺乏的结构化功能（PREFLOP_STRENGTH_TABLE, CBet tracking, 3bet/4bet logic）。
 
-2. **Critic 评分 6/10（最低通过线）**，反馈：
-   - "preflop threshold magnitudes are extreme"
-   - "~900 lines of whitespace-only changes make review harder"
-   - "constants.py is identical to worker prompt claim of 'reverted SIZING_TABLE'"
+### Phase 2 工具调用序列（约 100 次，含多次重试）
 
-3. **无 Reviewer 日志** — `web/core/results/v35/logs/reviewer_io.txt` 不存在
+**早期 Master 路径尝试（失败）**
 
-4. **Precommit 结果**: 3-2-0（边际通过）
+| # | 工具调用 | 结果 |
+|---|---|---|
+| 1-5 | `prepare_next_gen` → `direction_audit` → `run_master` → `execute_workers` | Worker 1 boundary violation（Tuner 改了 strategy.py 而非 constants.py），Reviewer 拒绝（score=4） |
+| 6-10 | 重试 `execute_workers` ×3 | 持续 role boundary violations。Circuit breaker 熔断（6/6 worker failures） |
+| 11-15 | `run_master` ×3 重试 | Master validation 失败：Tuner 被分配到 strategy.py（硬错误）。API Error 400（model not found） |
+| 16-20 | 多次 3600s cycle 超时 | Orchestrator 反复尝试不同策略均超时 |
 
-### 结果
+**Crossover 路径（成功）**
 
-- **提交**: 是 (`git tag bot-v35`, commit `06d5743`)
-- **策略**: Fixed sanitize_action all-in bug, widened preflop defense, lowered air-hand EQR
+| # | 工具调用 | 结果 |
+|---|---|---|
+| N | `run_crossover(v6, v2, v9)` | **成功** — v6 base + v2 features 合并 |
+| N+1 | `run_quality_gates` | ALL PASSED ✅ |
+| N+2 | `run_review` | APPROVED ✅（score 8） |
+| N+3 | `run_critic` | APPROVED ✅（score 7） |
+| N+4 | `run_precommit_eval` | PASSED ✅（v9 vs v6: 10-10, v9 vs v2: 10-10+3-1） |
+| N+5 | `commit_bot` | SUCCESS（commit `32e8f1f`，但未创建 bot-v9 tag） |
 
-> 此示例说明：即使 Critic 低分通过、Worker 多次重试，系统仍可能完成提交。这符合 `force_advance` 的设计意图 — 在重试耗尽后推进，避免无限循环。
+### Crossover 合并策略
+
+Crossover Agent 分析 v6 和 v2 后的合并决策：
+
+- **从 v2 导入**: `PREFLOP_STRENGTH_TABLE`（169 手牌分级表）、CBet tracking（对手 cbet 响应统计）、3bet/4bet logic、draw-aware EQR、lower postflop_call_margin
+- **保留 v6**: `min_raise_action`、`must_continue_vs_raise`、`should_fold_postflop`（防御性折叠框架）
+- **Mutation**: CBet exploitation — 当对手 `fold_to_cbet > 55%` 时，降低 flop 下注门槛 0.03
+
+### 关键错误和恢复
+
+1. **Worker boundary violations 反复出现**: Hyperparameter Tuner 持续被 Master 分配到 strategy.py（应为 constants.py），导致 3 次 Master validation 失败
+2. **Circuit breaker 熔断**: 累计 6/6 worker failures，阻止进一步 Worker 尝试
+3. **429 rate limit**: 在 16:05 触发 5 小时用量上限
+4. **3600s cycle 超时**: 多次因 Orchestrator 在 cycle 内耗尽时间
+5. **Tag 缺失**: v9 提交后未创建 `bot-v9` tag，导致 `find_current_v()` 返回 8 而非 9
+
+### 相关日志文件
+
+- `web/core/results/v9/logs/combined_analysis.txt` — 合并分析（推荐 branch from v4 或 v6）
+- `web/core/results/v9/logs/crossover_io.txt` — Crossover 代码合并
+- `web/core/results/v9/logs/master_io.txt` — Master 规划（多次失败尝试）
+- `web/core/results/v9/logs/worker_1_io.txt` — Worker 1 尝试记录
+- `web/core/results/v9/logs/worker_2_io.txt` — Worker 2 尝试记录
+- `web/core/results/v9/logs/reviewer_io.txt` — 2 次审查（首次 score=4 拒绝）
+- `web/core/results/v9/logs/critic_io.txt` — Critic 评估
+- `web/core/results/v9/logs/match_analyst_io.txt` — 对战分析
+
+> 此示例展示了进化系统的**自适应恢复机制**：(1) Worker boundary violations 触发 circuit breaker 熔断后，系统通过 crossover 路径绕过 Worker 问题；(2) Combined analysis 的 `recommended_source` 指导策略决策选择最优进化源；(3) 但也暴露了 Master validation 的弱点——Tuner 持续被分配到错误文件。共约 100 次工具调用、30+ 小时（含中断恢复）。
 
 ---
 
-## 附录3：完整生命周期示例（v7 → v36）
+## 附录3：保守 Crossover + 低分通过示例（v4 → v10）
 
-> ⚠️ **历史示例**: 以下示例基于**旧架构**（Phase 2 中 Orchestrator 直接调用 `get_status`、`wait_for_eval`、`run_match_analysis`、`run_performance_verification` 等 MCP 工具）。当前架构中，这些操作已移入 Phase 1 代码层（`prepare_generation()`）。步骤 1-6 在新架构中由代码层自动完成，不再需要 Orchestrator LLM 调用。
-
-以下展示一个包含 **Master 失败、Crossover 替代、4 轮 Worker 修复** 的完整进化循环。数据来自 orchestrator 日志和各阶段 LLM 输出。
+以下展示一个 **Critic 勉强通过 + Precommit 超时 + 手动提交** 的非典型路径。
 
 ### 背景
 
-- **源 bot**: claude_v7（H2H avg 55.56%, 停滞 7+ 个评估周期）
-- **目标 bot**: claude_v36
-- **结果**: 成功提交（`git tag bot-v36`, commit `6b23ed3`）
-- **路径**: v35 刚提交 → reap v1 → 分析 v7（停滞）→ Master 失败 ×3 → Crossover v7×v30 → 4 轮 Worker 修复 → 最终通过
-- **总耗时**: 约 3 小时（00:17 - 03:01）
+- **源 bot**: claude_v4 (v4 拥有最高 h2h_avg_wr: 54.92%)
+- **目标 bot**: claude_v10
+- **结果**: 手动提交（commit `4f4203e`，**无 `bot-v10` tag**）
+- **总耗时**: 约 1.5 小时（2026-06-07 19:47 → 20:29）
+- **路径**: v9 失败后 → Combined analysis 推荐 branch from v4 → Crossover v4×v8 保守合并
 
-### 完整工具调用序列
+### Phase 1（代码层自动执行）
 
-Orchestrator 在本代共调用约 **35 次** MCP 工具。按阶段分组：
+1. **合并分析** (`_run_combined_analysis`): 三代下降从 v6 峰值。v4 是最强祖先（54.92% h2h_avg_wr，最简单代码库）。`recommended_source=claude_v4, recommendation=crossover`。
+2. **对战分析**: 与 v9 相同的 calling station 模式——0% postflop fold，catastrophic -15K to -20K 单场亏损。
+3. **策略决策**: `_decide_strategy()` → strategy="crossover", source_v=4, crossover_parents=(v4, v8)。v8 提供结构化功能（CBet tracking, 3bet/4bet），v4 提供稳定的 base。
 
-**准备阶段（步骤 1-6）**
-
-| # | 工具调用 | 结果 |
-|---|---|---|
-| 1 | `get_status()` | v35 刚提交，31 active bots（超 30 上限），无未完成代 |
-| 2 | `reap_weakest()` | 移除 claude_v1（h2h_avg_wr: 9.9%），剩 30 bots |
-| 3 | `wait_for_eval(v35)` | 0 games, rating unreliable → 跳过 v35 分析 |
-| 4 | `get_bot_info()` + `get_h2h()` | 查看 v7 对战数据 |
-| 5 | `run_match_analysis(v7)` | preflop 65% fold, postflop 0% fold, underbetting 0.4-0.7x pot |
-| 6 | `run_performance_verification(v7)` | stagnant 7+ periods, `diversity_needed: true` |
-
-**Master 失败 → Crossover 替代（步骤 7-10）**
+### Phase 2 工具调用序列
 
 | # | 工具调用 | 结果 |
 |---|---|---|
-| 7 | `run_master()` | **失败 ×3** — Master 产出 3 版计划（2-worker→2-worker→1-worker），均因 JSON 格式问题被拒绝 |
-| 8 | `run_crossover(v7, v30, v36)` | 第一次失败 — v36 目录已存在（孤儿，无 git tag） |
-| 9 | `cleanup_incomplete()` + Bash | 删除孤儿 v36 目录 |
-| 10 | `run_crossover(v7, v30, v36)` | **成功** — v7（top H2H avg 55.56%）× v30（beats v7 at 55%） |
+| 1 | `run_crossover(v4, v8, v10)` | **成功** — 保守合并：v4 base + selective v8 imports |
+| 2 | Diff 验证 | 确认代码变更合理 |
+| 3 | `run_quality_gates` | ALL PASSED ✅ |
+| 4 | `run_review` | APPROVED ✅（score 8，审查 crossover 质量） |
+| 5 | `run_critic` | APPROVED ✅（score 6，**勉强通过**，local_optima_warning=true） |
+| 6 | `run_precommit_eval` | **TIMEOUT** ❌（n_games=80，3600s CYCLE_TIMEOUT 先到） |
 
-**第一轮 Pipeline（步骤 11-16）**
+### Crossover 合并策略
 
-| # | 工具调用 | 结果 |
-|---|---|---|
-| 11 | `run_quality_gates()` | ALL PASSED ✅（12/12 critical scenarios, 100% decision） |
-| 12 | `run_review()` | APPROVED ✅（score 7） |
-| 13 | `run_critic()` | APPROVED ✅（score 8.0） |
-| 14 | `run_precommit_eval()` | FAILED ❌（0-1 vs parent v7，1 场样本不足） |
-| 15 | `run_precommit_eval()`（retry, 3 games） | PASSED ✅（2-0-1 vs parent, 4-4-1 aggregate） |
-| 16 | `commit_bot()` | **BLOCKED** ❌ — `preflop_aks_facing_allin` test failed（folded AKs vs all-in） |
+Crossover Agent 的保守合并决策：
 
-**Worker 修复循环 ×4（步骤 17-26）**
+- **从 v8 导入（选择性）**: `PREFLOP_STRENGTH_TABLE`、CBet tracking、`should_fold_postflop`、CBet-based call margin adjustment
+- **跳过 v8 的**: drift detection、safe exploitation lambda、3bet/4bet logic、lowered EQR、wider open threshold
+- **Mutation**: CBet exploitation — 当对手 `fold_to_cbet > 55%` 时，降低 flop raise threshold 0.03
 
-commit_bot 因 AKs 测试失败被阻断，触发 4 轮 Worker 修复：
-
-| # | 工具调用 | 原因 | 结果 |
-|---|---|---|---|
-| 17 | `execute_workers()`（fix AKs） | AKs all-in guard 缺失 | **失败**：boundary violation（修改了声明外的文件） |
-| 18 | `execute_workers()`（retry） | 扩展 target_files | 成功，但 file size 超限 |
-| 19 | `run_quality_gates()` | — | decision pass, BUT strategy.py 1164 行 / postflop.py 1015 行 |
-| 20 | `execute_workers()`（refactor） | 拆分大文件到 <1000 行 | 成功 |
-| 21-23 | `quality_gates` → `review(7)` → `critic(7.0)` | — | ALL PASSED ✅ |
-| 24-25 | `precommit_eval()` ×2 | — | FAILED ❌（1-2 vs parent, 5-7-3 aggregate） |
-| 26 | `execute_workers()`（restore features） | Crossover 中被误删的 classify_opponent_style + river overbet bluff | 成功 |
-
-**最终 Pipeline 通过（步骤 27-35）**
-
-| # | 工具调用 | 结果 |
-|---|---|---|
-| 27 | `run_quality_gates()` | ALL PASSED ✅ |
-| 28 | `run_review()` | **REJECTED** ❌（main_backup.py 3268 行违反 1000 行约束） |
-| 29 | Bash: `rm main_backup.py` | Orchestrator 直接删除死文件 |
-| 30 | `run_review()`（retry） | APPROVED ✅（score 7） |
-| 31 | `run_critic()` | APPROVED ✅（score 7.0） |
-| 32 | `run_precommit_eval()`（5 games） | PASSED ✅（2-2-1 vs parent, 7-7-1 aggregate） |
-| 33 | `commit_bot()` | **SUCCESS** ✅（`bot-v36` tagged） |
-| 34 | Bash: `git push` | 推送到远程 |
-| 35 | `run_archivist()` | 轻微错误（无关），commit 安全 |
-
-### 关键节点真实输出
-
-**1. Crossover v7×v30 决策**
-
-Master 失败后 Orchestrator 的推理：
-```
-Master failed after 3 retries. Since stagnation is confirmed and diversity is needed,
-I'll take the crossover approach — combining v7 (top h2h_avg_wr: 0.5696)
-with v30 (beats v7 at 55%).
-```
-
-Crossover 导入 v30 的核心特性：
-- `classify_opponent_style()`（4 种对手画像：tight/loose/aggressive/passive，+2-3pt 适应性）
-- River overbet bluff（blocker quality gating）
-- 确定性诈唬替代随机诈唬
-
-保留 v7 的核心：simulation accuracy、anti-lock pressure、match pressure
-Mutation: SB open threshold 0.49 → 0.47
-
-**2. commit_bot 被阻断**
-
-```
-Commit BLOCKED ❌ — preflop_aks_facing_allin test failed
-(folded AKs vs all-in, a catastrophic blunder)
-```
-
-Crossover 的代码重构破坏了 preflop all-in guard（AKs 面对全下应该 call 却 fold 了）。这是一个灾难性错误，quality gates 中的 critical scenario 测试没捕获（可能是非确定性行为），但 commit_bot 内置的最终校验发现了。
-
-**3. Reviewer 因死文件拒绝**
+### Critic 勉强通过（score=6）
 
 ```json
 {
-  "approved": false,
-  "quality_score": 6,
-  "feedback": "main_backup.py (3268 lines) violates the 1000-line .py file size constraint.
-  This is a dead leftover file not referenced by any operational code — simply DELETE it."
+  "score": 6,
+  "approved": true,
+  "strategic_assessment": "Conservative crossover from v4 base with selective v8 features. CBet exploitation mutation is the main differentiator vs v9.",
+  "feedback": "v10's features are too similar to v9 which performed poorly (44.6% WR). Local optima risk: repeating failed strategies with a different base.",
+  "local_optima_warning": true,
+  "local_optima_reason": "v9 scored 44.6% WR with CBet tracking + should_fold_postflop. v10 uses same features on v4 base — may produce similar results."
 }
-```
-
-`main_backup.py` 是 v7/v30 的遗留备份文件（3268 行），不被任何代码引用，但 Reviewer 严格执行了"所有 .py 文件 ≤1000 行"的约束。Orchestrator 直接用 Bash 删除了它。
-
-**4. 最终 Gate Ledger**
-
-```
-✅ quality_passed: true (12/12 critical, size_ok)
-✅ critical_scenarios_passed: true
-✅ review_approved: true (score 7)
-✅ critic_score: 7.0 (approved)
-✅ precommit_eval: passed (7-7-1, tied parent v7)
 ```
 
 ### 结果
 
 | 项目 | 内容 |
 |---|---|
-| 提交 | `git tag bot-v36`, commit `6b23ed3` |
-| 策略 | Crossover v7×v30（stagnation break） |
-| Worker 迭代 | 4 轮（AKs fix → boundary retry → size refactor → restore features） |
-| Pipeline 重跑 | 3 次完整 cycle（quality→review→critic→precommit） |
-| Review score | 7（第 2 次通过，第 1 次因 main_backup.py 拒绝） |
-| Critic score | 7.0（首轮 Critic 8.0，后续因删除 features 降至 7.0） |
-| 文件变更 | 6 files, +502/-549 |
+| 提交 | 手动 commit `4f4203e`（**无 `bot-v10` tag**） |
+| 策略 | Crossover v4×v8（保守合并 + CBet exploitation mutation） |
+| Review score | 8（一次通过） |
+| Critic score | 6（勉强通过，local_optima_warning=true） |
+| Precommit | 超时（n_games=80 超出实际上限 5，CYCLE_TIMEOUT 3600s 先到） |
+| Tag 状态 | 缺失——`find_current_v()` 返回 8 |
 
-> 此示例展示了进化系统的三种恢复机制协同工作：(1) **Master 失败后 Crossover 替代** — 当 stagnation 确认且 diversity needed 时，Orchestrator 自动切换到遗传交叉路径；(2) **commit_bot 阻断后 Worker 修复循环** — AKs 测试失败触发 4 轮迭代修复，含 boundary violation 重试、文件大小重构、误删功能恢复；(3) **Reviewer 因死文件拒绝后清理重试**。共 35 次工具调用、3 次 Pipeline 完整重跑，耗时约 3 小时。
+### 相关日志文件
+
+- `web/core/results/v10/logs/crossover_io.txt` — 2 次 crossover 尝试
+- `web/core/results/v10/logs/direction_audit_io.txt` — 方向审计
+- `web/core/results/v10/logs/reviewer_io.txt` — 3 次审查（含早期 v6 base 拒绝）
+- `web/core/results/v10/logs/critic_io.txt` — Critic 评估（score=6）
+
+> 此示例展示了进化系统的**边界情况**：(1) **Critic 勉强通过** — score=6 触发 local_optima_warning 但仍允许推进；(2) **Precommit 超时** — Orchestrator LLM 请求 n_games=80（远超硬编码上限 5），导致 mirror battle 无法在 CYCLE_TIMEOUT 内完成；(3) **手动提交** — Pipeline 未能自动完成，需要人工介入；(4) **Tag 缺失** — 手动提交未走 commit_bot 流程，缺少 git tag 和归档快照。共 8 次工具调用，约 1.5 小时。
