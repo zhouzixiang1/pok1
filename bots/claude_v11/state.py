@@ -1,4 +1,4 @@
-from constants import N_PLAYERS, INITIAL_CHIPS, SMALL_BLIND, BIG_BLIND, TOTAL_HANDS, PREFLOP_STRENGTH_TABLE
+from constants import N_PLAYERS, INITIAL_CHIPS, SMALL_BLIND, BIG_BLIND, TOTAL_HANDS
 from card_utils import card_suit, card_number, next_player, clamp
 
 
@@ -7,14 +7,9 @@ def estimate_preflop_strength(my_cards):
     r2 = card_number(my_cards[1])
     high = max(r1, r2)
     low = min(r1, r2)
-    suited = card_suit(my_cards[0]) == card_suit(my_cards[1])
-    key = (high, low, suited and high != low)
-    result = PREFLOP_STRENGTH_TABLE.get(key)
-    if result is not None:
-        return result
-    # Fallback to formula for missing entries
     gap = high - low
     pair = r1 == r2
+    suited = card_suit(my_cards[0]) == card_suit(my_cards[1])
     score = 0.0
     score += (high - 2) / 16.0
     score += (low - 2) / 28.0
@@ -33,7 +28,8 @@ def estimate_preflop_strength(my_cards):
         score += 0.04
         if low >= 10:
             score += 0.04
-    return clamp(score, 0.0, 1.0)
+    cap = 0.80 if not pair else 1.0
+    return clamp(score, 0.0, cap)
 
 
 def preflop_hand_profile(my_cards):

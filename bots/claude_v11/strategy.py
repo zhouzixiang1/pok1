@@ -207,17 +207,6 @@ def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength
     else:
         margin -= confidence * max(0.0, opponent_model["postflop_aggr"] - 0.50) * 0.008
 
-    # Crossover from v10: CBet-based call margin adjustment
-    # Wire opponent CBet tracking into fold/call decisions
-    if round_idx == 1 and spot_info["facing_postflop_aggression"] and confidence >= 0.20:
-        cbet_rate = opponent_model.get("cbet_rate", 0.55)
-        if cbet_rate > 0.65:
-            # Opponent CBets air frequently -> their flop bet is less credible -> call more
-            margin -= 0.02
-        elif cbet_rate < 0.40:
-            # Opponent only CBets strong hands -> their flop bet is credible -> fold more
-            margin += 0.02
-
     return clamp(margin, 0.0, 0.08)
 
 
@@ -379,10 +368,10 @@ def choose_raise(
 
     if round_idx == 0 and preflop_strength is not None:
         if spot_name == "sb_open":
-            desired_total = int((2.5 + max(0.0, preflop_strength - 0.58) * 1.8) * BIG_BLIND)
+            desired_total = int((2.5 + max(0.0, preflop_strength - 0.58) * 2.2) * BIG_BLIND)
             amount = max(amount, desired_total - my_round_bet)
         elif spot_name == "bb_vs_limp":
-            desired_total = int((3.2 + max(0.0, preflop_strength - 0.60) * 1.8) * BIG_BLIND)
+            desired_total = int((3.2 + max(0.0, preflop_strength - 0.60) * 2.2) * BIG_BLIND)
             amount = max(amount, desired_total - my_round_bet)
 
     amount = max(min_raise, amount)
@@ -452,46 +441,6 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
         return 0
 
     return None
-
-
-# Mutation: Pot-odds-calibrated structured folding
-# Replaces v10's arbitrary per-street thresholds with experience pool formula:
-# pot_odds_boost = max(0, pot_odds - 0.25) * 0.12
-# This makes fold thresholds adapt to actual bet sizing
-def should_fold_postflop_pot_odds(round_idx, made_strength, draw_strength, value_profile, spot_info, pot_odds):
-    if round_idx <= 0:
-        return False
-    tier = value_profile.get("tier", "none") if value_profile else "none"
-    if tier in ("strong", "nut"):
-        return False
-    has_draw = draw_strength >= 0.14
-    if not spot_info["facing_postflop_aggression"]:
-        return False
-    size_bucket = bet_size_bucket(spot_info["last_raise_pot_ratio"])
-    opp_bets = spot_info.get("opp_current_round_bet_count", 0)
-
-    # Pot-odds calibrated boost: fold more readily vs large bets
-    pot_odds_boost = max(0.0, pot_odds - 0.25) * 0.12
-
-    if round_idx == 1:
-        threshold = 0.22 + pot_odds_boost
-        if made_strength < threshold and not has_draw and size_bucket in ("medium", "large"):
-            return True
-        if made_strength < threshold + 0.02 and not has_draw and opp_bets >= 2:
-            return True
-    if round_idx == 2:
-        threshold = 0.28 + pot_odds_boost
-        if made_strength < threshold and not has_draw and size_bucket in ("medium", "large"):
-            return True
-        if made_strength < threshold + 0.03 and not has_draw and opp_bets >= 2:
-            return True
-    if round_idx == 3:
-        threshold = 0.38 + pot_odds_boost
-        if made_strength < threshold and not has_draw and size_bucket in ("medium", "large"):
-            return True
-        if made_strength < threshold + 0.05 and not has_draw and opp_bets >= 2:
-            return True
-    return False
 
 
 def get_action(req, requests):
@@ -823,10 +772,6 @@ def get_action(req, requests):
             if not anti_lock_call_continue and not strong_made_continue:
                 return -1
         if fragile_pair_raise_fold:
-            if not anti_lock_call_continue and not strong_made_continue:
-                return -1
-        # Mutation: Pot-odds-calibrated structured fold (experience pool formula)
-        if should_fold_postflop_pot_odds(round_idx, made_strength, draw_strength, value_profile, spot_info, pot_odds):
             if not anti_lock_call_continue and not strong_made_continue:
                 return -1
         if hard_repressure_fold or paired_board_stackoff["severe"]:
