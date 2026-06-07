@@ -112,7 +112,7 @@ async def run_precommit_eval(args):
         try:
             loop = _asyncio.get_running_loop()
             # Per-opponent timeout: scale with n_games (each mirror pair ~90s)
-            per_game_timeout = max(300, n_games * 120)
+            per_game_timeout = max(180, n_games * 90)
             match_wins, draws, n_played, _ = await _asyncio.wait_for(
                 loop.run_in_executor(
                     None,
@@ -148,11 +148,11 @@ async def run_precommit_eval(args):
                     "details": f"{matchup['wins']}-{matchup['losses']}-{matchup['draws']}",
                 })
         except _asyncio.TimeoutError:
-            matchup["error"] = "Mirror battle timed out (900s limit)"
+            matchup["error"] = f"Mirror battle timed out ({per_game_timeout}s limit)"
             blockers.append({
                 "reason": "match_timeout",
                 "opponent": opponent,
-                "details": f"Mirror battle against {opponent} exceeded 900s timeout",
+                "details": f"Mirror battle against {opponent} exceeded {per_game_timeout}s timeout",
             })
         except Exception as exc:
             matchup["error"] = str(exc)[:500]

@@ -42,6 +42,8 @@ Use fewer workers when data is uncertain (few games), more workers when the bot 
 | Opponent Modeler | Opponent tracking only | Per-street stats, bet sizing patterns, exploitative adjustments | Changing overall decision flow or non-opponent-model logic |
 
 **IMPORTANT: File ownership** — Workers execute SEQUENTIALLY (one at a time). This means later workers can build on earlier workers' changes. If Worker 1 modifies strategy.py, Worker 2 can see and use those modifications. However, each worker still has a specific role — do NOT assign overlapping scope to different workers.
+
+**CRITICAL: Hyperparameter Tuner target_files rule** — The Tuner can ONLY be assigned `target_files: ["constants.py"]`. Assigning the Tuner to strategy.py, postflop.py, opponent.py, or ANY other file will cause AUTOMATIC REJECTION at the Master stage. This rule has been violated 20+ times in recent generations. No exceptions. If the Tuner needs to change a constant that lives in a different file, assign the Logic Architect to move it to constants.py first.
 </worker_guidance>
 
 <worker_prompt_quality>

@@ -115,6 +115,9 @@ async def run_quality_gates(args):
         failed_gates_detail.append("smoke_test")
     if not decision_ok:
         failed_gates_detail.append(f"decision_tests({decision_rate:.0%})")
+    if not critical_ok:
+        crit_names = [f["id"] for f in critical_failures]
+        failed_gates_detail.append(f"CRITICAL decision tests FAILED: {', '.join(crit_names)}")
     if not code_changed:
         failed_gates_detail.append(f"no_code_changes(v{v} identical to v{source_v})")
     if oversized:
@@ -125,7 +128,8 @@ async def run_quality_gates(args):
         "success" if all_passed else "error",
         f"Quality gates {'passed' if all_passed else 'failed'} for v{v}: {', '.join(failed_gates_detail) or 'all checks passed'}",
         {"version": v, "pass_rate": round(decision_rate, 2), "all_passed": all_passed,
-         "failed_gates": failed_gates_detail if not all_passed else []},
+         "failed_gates": failed_gates_detail if not all_passed else [],
+         "critical_failures": critical_failures if not all_passed and not critical_ok else []},
     )
 
     _ckpt = _matching_checkpoint(v, source_v) if source_v is not None else _matching_checkpoint(v)

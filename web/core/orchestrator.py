@@ -52,9 +52,11 @@ from orchestrator_session import (  # noqa: E402
     _startup_recovery,
 )
 from evolution_infra import find_current_v  # noqa: E402
-async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=None, gen_ctx=None, shutdown_mgr=None):
+async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=None, gen_ctx=None, shutdown_mgr=None, skip_precommit=False):
     """Run one Orchestrator cycle (one LLM agent session). Returns total cost."""
     context = _build_context(one_gen=one_gen, dry_run=dry_run, gen_ctx=gen_ctx)
+    if skip_precommit:
+        context += "\n\nSKIP_PRECOMMIT_EVAL: true — the previous 5+ precommit evaluations all failed. Skip run_precommit_eval and proceed directly to commit_bot after critic passes."
     prompt = ORCHESTRATOR_PROMPT.replace("{context}", context)
 
     if dry_run:
@@ -372,6 +374,7 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
     log_file = LOGS_DIR / f"orchestrator_{time.strftime('%Y%m%d_%H%M%S')}.txt"
     gen_count = 0
     consecutive_prep_fails = 0
+    _skip_next_precommit = False
 
     # Startup recovery — assess interrupted state
     recovery = _startup_recovery(ui)
@@ -408,6 +411,10 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                     degraded_min = 30
                     if ui:
                         ui.log_history("评估等待连续超时，降低评估要求 (30 局) 继续进化...", "warn")
+                if consecutive_prep_fails >= 5:
+                    _skip_next_precommit = True
+                    if ui:
+                        ui.log_history("Precommit eval 连续失败 5+ 次 — 下一轮将跳过 precommit_eval 直接提交", "warn")
 
                 gen_ctx = await _prepare_or_fail(shutdown_mgr, ui, min_games=degraded_min)
                 if gen_ctx is None:
@@ -438,6 +445,7 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                 max_turns=None,
                 gen_ctx=gen_ctx,
                 shutdown_mgr=shutdown_mgr,
+                skip_precommit=_skip_next_precommit,
             )
 
             # Phase 3: Cleanup (idempotent) — after any successful generation
@@ -448,12 +456,28 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                     ui.log_history(f"Orchestrator gen {gen_count} complete. Cost: ${cost:.4f}", "info")
                 log_system_event("orchestrator.cycle_done", "info", f"Cycle {gen_count} done (cost=${cost:.4f})",
                                  {"gen_count": gen_count, "cost": round(cost, 4)})
+                # Reset failure trackers on successful generation
+                consecutive_prep_fails = 0
+                _skip_next_precommit = False
                 # Reset per-generation cost tracker for next cycle
                 if ui:
                     ui.reset_gen_cost()
 
             # Auth error fast-fail
             if cost < 0:
+                # On timeout (cost < 0 from _run_one_cycle timeout path), add sleep
+                # to avoid tight timeout loop when consecutive prep fails
+                if consecutive_prep_fails >= 3 and ui:
+                    sleep_s = min(300, 60 * (consecutive_prep_fails - 2))
+                    ui.log_history(f"连续超时 {consecutive_prep_fails} 次，等待 {sleep_s}s 后重试...", "warn")
+                    if shutdown_mgr:
+                        try:
+                            await asyncio.wait_for(shutdown_mgr.wait_for_shutdown(), timeout=sleep_s)
+                            break
+                        except asyncio.TimeoutError:
+                            pass
+                    else:
+                        await asyncio.sleep(sleep_s)
                 if ui:
                     ui.log_history("Orchestrator: API auth error (401/403). Backing off 300s.", "error")
                 if shutdown_mgr:

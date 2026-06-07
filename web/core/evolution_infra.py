@@ -55,7 +55,7 @@ MAX_ACTIVE_BOTS = 30
 
 # Evaluation & quality thresholds
 DAEMON_EVAL_TIMEOUT = 600
-MIN_GAMES_FOR_EVAL = 100
+MIN_GAMES_FOR_EVAL = 40           # Lowered from 100 — daemon restarts reset game counts, making 100 unreachable
 MAX_LINES_PER_FILE = 1500       # Core strategy files (strategy.py, postflop.py)
 MAX_LINES_HELPER = 1200         # All other .py files
 CORE_STRATEGY_FILES = {"strategy.py", "postflop.py"}

@@ -326,7 +326,7 @@ async def execute_workers(args):
 
     # Circuit breaker: limit total worker failures per generation
     failure_count = ckpt.get("worker_failure_count", ckpt.get("worker_invocation_count", 0))
-    MAX_WORKER_FAILURES = 6
+    MAX_WORKER_FAILURES = 4
     if failure_count + len(tasks) > MAX_WORKER_FAILURES:
         return _json_tool_result({
             "error": f"CIRCUIT BREAKER: {failure_count} worker failures already recorded this generation (max {MAX_WORKER_FAILURES}). Abandon this generation and start a new one.",
@@ -407,7 +407,7 @@ async def execute_workers(args):
         plan = ckpt.get("master_plan", tasks) if ckpt else tasks
         write_pipeline_checkpoint(next_v, source_v, "workers_done",
                                   master_plan=plan, reviewer_feedback=reviewer_feedback,
-                                  worker_failure_count=failure_count)
+                                  worker_failure_count=0)  # Reset on success
     else:
         # Increment failure count on worker failure; successful batches do not consume the budget.
         from evolution_infra import write_pipeline_checkpoint

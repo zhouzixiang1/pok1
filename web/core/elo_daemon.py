@@ -366,17 +366,20 @@ def process_result(result, ratings, h2h, bot_stats, verbose=False):
             if verbose:
                 log.warning("Error saving replay %s vs %s: %s", a, b, e)
 
-    # Per-game Glicko-2 updates (use live opponent ratings each game)
+    # Per-game Glicko-2 updates (snapshot both ratings before updates to avoid cascading bias)
+    from copy import deepcopy
     _default = Glicko2Player()
+    snap_a = deepcopy(ratings.get(a, _default))
+    snap_b = deepcopy(ratings.get(b, _default))
     for _ in range(wins_a):
-        ratings[a] = update_single_game(ratings[a], ratings.get(b, _default), 1.0)
-        ratings[b] = update_single_game(ratings[b], ratings.get(a, _default), 0.0)
+        ratings[a] = update_single_game(ratings[a], snap_b, 1.0)
+        ratings[b] = update_single_game(ratings[b], snap_a, 0.0)
     for _ in range(wins_b):
-        ratings[a] = update_single_game(ratings[a], ratings.get(b, _default), 0.0)
-        ratings[b] = update_single_game(ratings[b], ratings.get(a, _default), 1.0)
+        ratings[a] = update_single_game(ratings[a], snap_b, 0.0)
+        ratings[b] = update_single_game(ratings[b], snap_a, 1.0)
     for _ in range(draws):
-        ratings[a] = update_single_game(ratings[a], ratings.get(b, _default), 0.5)
-        ratings[b] = update_single_game(ratings[b], ratings.get(a, _default), 0.5)
+        ratings[a] = update_single_game(ratings[a], snap_b, 0.5)
+        ratings[b] = update_single_game(ratings[b], snap_a, 0.5)
 
     # Update H2H
     k = pair_key(a, b)
@@ -537,9 +540,27 @@ def main():
     played_bots_this_cycle = set()
 
     try:
-        while running and in_flight and recovery_count < MAX_POOL_RECOVERIES:
+        while running and recovery_count < MAX_POOL_RECOVERIES:
             try:
-                while running and in_flight:
+                while running:
+                    # Refill in_flight if empty (e.g., after reap signal cleared it)
+                    if not in_flight:
+                        if not active_bots:
+                            log.info("No active bots remaining, exiting daemon")
+                            break
+                        if not match_queue:
+                            matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
+                            for a, b in matches:
+                                match_queue.append((a, b, bot_path(a), bot_path(b), n_pairs))
+                        while len(in_flight) < n_workers and match_queue:
+                            m = match_queue.popleft()
+                            fut = executor.submit(run_single_match, m)
+                            in_flight[fut] = (m[0], m[1])
+                        if not in_flight:
+                            log.warning("Could not schedule any matches, waiting...")
+                            time.sleep(5)
+                        continue
+
                     done, _ = wait(in_flight.keys(), timeout=POLL_TIMEOUT, return_when=FIRST_COMPLETED)
 
                     for fut in done:
