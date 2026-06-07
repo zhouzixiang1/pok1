@@ -14,7 +14,7 @@ from evolution_infra import (
 )
 
 
-async def _analyze_stagnation(source_v, active_bots, ratings, ui):
+async def _analyze_stagnation(source_v, active_bots, ratings, ui, prev_critic_info: str = ""):
     """Use LLM to analyze rating trends and determine if stagnation is real.
 
     Returns a dict with: is_stagnant, confidence, recommendation, branch_from, reason.
@@ -136,6 +136,7 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui):
         "lineage": (f"Lineage (parent chain):\n" + "\n".join(lineage_lines)) if lineage_lines else "",
         "daemon_history": (f"Daemon period history (last 10 periods, top-3):\n{history_ctx}") if history_ctx else "",
         "failure_context": failure_ctx,
+        "critic_insights": prev_critic_info,
     })
 
     log_file = get_logs_dir(source_v) / "stagnation_analysis.txt"

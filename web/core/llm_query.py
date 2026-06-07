@@ -27,6 +27,10 @@ log = logging.getLogger("pok.infra")
 
 
 def _is_rate_limited(output: str) -> bool:
+    # Long responses are never rate-limit errors — avoid false positives
+    # when LLM discusses "rate limit" or "overloaded" in normal output.
+    if len(output) > 2000:
+        return False
     return (
         "overloaded" in output.lower()
         or "该模型当前访问量过大" in output
@@ -43,6 +47,55 @@ def _trim_to_budget(text: str, max_chars: int, tail: bool = False) -> str:
     if tail:
         return note + text[-(max_chars - len(note)):]
     return text[:max_chars - len(note)] + note
+
+
+async def _process_stream(query_gen, log_file_path, ui, role_name):
+    """Process a streaming LLM query, returning (texts, cost_usd, usage).
+
+    Handles TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, and ResultMessage.
+    Writes to log file and emits UI events as they arrive.
+    """
+    texts = []
+    cost_usd = None
+    usage = None
+    try:
+        async for message in query_gen:
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        text = block.text
+                        texts.append(text)
+                        with open(log_file_path, "a") as lf:
+                            lf.write(text + "\n")
+                        ui.log_io(text, "claude", role_name)
+                    elif isinstance(block, ThinkingBlock):
+                        thinking = block.thinking or "[thinking...]"
+                        with open(log_file_path, "a") as lf:
+                            lf.write(f"\n[THINKING] {thinking[:2000]}\n")
+                        ui.log_io(thinking, "thinking", role_name)
+                    elif isinstance(block, ToolUseBlock):
+                        args_str = json.dumps(block.input, ensure_ascii=False, indent=2)[:2000]
+                        with open(log_file_path, "a") as lf:
+                            lf.write(f"\n[TOOL_CALL] {block.name}\n[ARGS] {args_str}\n")
+                        ui.log_io(f"\n[tool: {block.name}]", "tool", role_name)
+                        ui.emit_tool_call(block.name, block.input, role_name)
+                    elif isinstance(block, ToolResultBlock):
+                        content = block.content if isinstance(block.content, str) else (
+                            json.dumps(block.content, ensure_ascii=False) if block.content is not None else ""
+                        )
+                        if content:
+                            with open(log_file_path, "a") as lf:
+                                lf.write(f"\n[TOOL_RESULT] {content[:3000]}\n")
+                            ui.log_io(content[:3000], "tool_result", role_name)
+            elif isinstance(message, ResultMessage):
+                cost_usd = message.total_cost_usd
+                usage = message.usage
+    except (CLINotFoundError, ProcessError) as e:
+        ui.log_io(f"[ERROR] {e}", "error", role_name)
+    except asyncio.CancelledError:
+        ui.log_io(f"\n[{role_name} CANCELLED]", "error", role_name)
+        raise
+    return texts, cost_usd, usage
 
 
 async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, model="sonnet", tools=None):
@@ -104,59 +157,9 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         thinking={"type": "adaptive", "display": "summarized"},
     )
 
-    full_text = []
-    cost_usd = None
-    usage = None
-
-    query_gen = None
-    try:
-        query_gen = claude_query(prompt=full_prompt, options=options)
-        async for message in query_gen:
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        text = block.text
-                        full_text.append(text)
-                        with open(log_file_path, "a") as lf:
-                            lf.write(text + "\n")
-                        ui.log_io(text, "claude", role_name)
-                    elif isinstance(block, ThinkingBlock):
-                        thinking = block.thinking or "[thinking...]"
-                        with open(log_file_path, "a") as lf:
-                            lf.write(f"\n[THINKING] {thinking[:2000]}\n")
-                        ui.log_io(thinking, "thinking", role_name)
-                    elif isinstance(block, ToolUseBlock):
-                        args_str = json.dumps(block.input, ensure_ascii=False, indent=2)[:2000]
-                        with open(log_file_path, "a") as lf:
-                            lf.write(f"\n[TOOL_CALL] {block.name}\n[ARGS] {args_str}\n")
-                        ui.log_io(f"\n[tool: {block.name}]", "tool", role_name)
-                        ui.emit_tool_call(block.name, block.input, role_name)
-                    elif isinstance(block, ToolResultBlock):
-                        content = block.content if isinstance(block.content, str) else (
-                            json.dumps(block.content, ensure_ascii=False) if block.content is not None else ""
-                        )
-                        if content:
-                            with open(log_file_path, "a") as lf:
-                                lf.write(f"\n[TOOL_RESULT] {content[:3000]}\n")
-                            ui.log_io(content[:3000], "tool_result", role_name)
-            elif isinstance(message, ResultMessage):
-                cost_usd = message.total_cost_usd
-                usage = message.usage
-    except (CLINotFoundError, ProcessError) as e:
-        ui.log_io(f"[ERROR] {e}", "error", role_name)
-        if query_gen is not None:
-            try:
-                await query_gen.aclose()
-            except Exception:
-                pass
-    except asyncio.CancelledError:
-        ui.log_io(f"\n[{role_name} CANCELLED]", "error", role_name)
-        if query_gen is not None:
-            try:
-                await query_gen.aclose()
-            except Exception:
-                pass
-        raise
+    # Initial query
+    query_gen = claude_query(prompt=full_prompt, options=options)
+    full_text, cost_usd, usage = await _process_stream(query_gen, log_file_path, ui, role_name)
 
     output = "\n".join(full_text)
 
@@ -166,60 +169,22 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
             ui.log_history(f"API rate limited (529). Retrying in {backoff}s...", "warn")
             await asyncio.sleep(backoff)
             full_text.clear()
-            retry_gen = None
-            try:
-                retry_gen = claude_query(prompt=full_prompt, options=options)
-                async for message in retry_gen:
-                    if isinstance(message, AssistantMessage):
-                        for block in message.content:
-                            if isinstance(block, TextBlock):
-                                text = block.text
-                                full_text.append(text)
-                                with open(log_file_path, "a") as lf:
-                                    lf.write(text + "\n")
-                                ui.log_io(text, "claude", role_name)
-                            elif isinstance(block, ThinkingBlock):
-                                thinking = block.thinking or "[thinking...]"
-                                with open(log_file_path, "a") as lf:
-                                    lf.write(f"\n[THINKING] {thinking[:2000]}\n")
-                                ui.log_io(thinking, "thinking", role_name)
-                            elif isinstance(block, ToolUseBlock):
-                                args_str = json.dumps(block.input, ensure_ascii=False, indent=2)[:2000]
-                                with open(log_file_path, "a") as lf:
-                                    lf.write(f"\n[TOOL_CALL] {block.name}\n[ARGS] {args_str}\n")
-                                ui.log_io(f"\n[tool: {block.name}]", "tool", role_name)
-                                ui.emit_tool_call(block.name, block.input, role_name)
-                            elif isinstance(block, ToolResultBlock):
-                                content = block.content if isinstance(block.content, str) else (
-                                    json.dumps(block.content, ensure_ascii=False) if block.content is not None else ""
-                                )
-                                if content:
-                                    with open(log_file_path, "a") as lf:
-                                        lf.write(f"\n[TOOL_RESULT] {content[:3000]}\n")
-                                    ui.log_io(content[:3000], "tool_result", role_name)
-                    elif isinstance(message, ResultMessage):
-                        cost_usd = (cost_usd or 0) + (message.total_cost_usd or 0)
-                        if usage is None:
-                            usage = message.usage
-                        elif message.usage:
-                            merged = {}
-                            for k in ("input_tokens", "output_tokens"):
-                                merged[k] = (usage.get(k, 0) or 0) + (message.usage.get(k, 0) or 0)
-                            usage = merged
-            except (CLINotFoundError, ProcessError) as e:
-                ui.log_io(f"[ERROR] {e}", "error", role_name)
-                if retry_gen is not None:
-                    try:
-                        await retry_gen.aclose()
-                    except Exception:
-                        pass
-            except asyncio.CancelledError:
-                if retry_gen is not None:
-                    try:
-                        await retry_gen.aclose()
-                    except Exception:
-                        pass
-                raise
+            retry_gen = claude_query(prompt=full_prompt, options=options)
+            retry_texts, retry_cost, retry_usage = await _process_stream(
+                retry_gen, log_file_path, ui, role_name,
+            )
+            if retry_texts:
+                full_text.extend(retry_texts)
+            if retry_cost:
+                cost_usd = (cost_usd or 0) + retry_cost
+            if retry_usage:
+                if usage is None:
+                    usage = retry_usage
+                else:
+                    merged = {}
+                    for k in ("input_tokens", "output_tokens"):
+                        merged[k] = (usage.get(k, 0) or 0) + (retry_usage.get(k, 0) or 0)
+                    usage = merged
 
             output = "\n".join(full_text)
             if not _is_rate_limited(output):

@@ -675,14 +675,14 @@ def draw_call_margin(draw_info, board_texture, round_idx, spot_info):
     elif draw_type == "double_gutshot":
         margin -= 0.006
     elif draw_type == "gutshot":
-        margin += 0.040
+        margin += 0.058
     elif draw_type == "flush_draw" and not draw_info["nut_flush_draw"]:
         if draw_info.get("near_nut_flush_draw", False):
             margin -= 0.010
         elif draw_info.get("high_flush_draw", False):
-            margin += 0.004
+            margin += 0.012
         else:
-            margin += 0.020
+            margin += 0.032
 
     if (
         draw_type == "flush_draw"
@@ -699,36 +699,31 @@ def draw_call_margin(draw_info, board_texture, round_idx, spot_info):
         if board_texture["flush_pressure"] >= 0.75 and draw_type == "open_ended_straight_draw":
             margin += 0.008
 
-    # Mutation: Gutshot equity ~17% OTF, ~9% OTT, 0% OTR — scale margins accordingly
-    # Non-gutshot draws retain original margins (flush ~35% OTF, OESD ~32% OTF)
     if round_idx == 2:
         if draw_type == "gutshot":
-            margin += 0.025  # Gutshot OTT equity (~17%) much weaker than flush (~35%), tighter margin
+            margin += 0.030
         elif draw_type == "flush_draw":
             if draw_info.get("near_nut_flush_draw", False) and size_bucket != "large" and (board_texture is None or not board_texture["paired"]):
                 margin += 0.000
             elif draw_info.get("high_flush_draw", False) and size_bucket == "small" and (board_texture is None or not board_texture["paired"]):
                 margin += 0.006
             else:
-                margin += 0.020
+                margin += 0.028
     elif round_idx == 3:
-        if draw_type == "gutshot":
-            margin += 0.060  # Missed gutshot OTR has 0% equity, must fold aggressively
-        else:
-            margin += 0.050
+        margin += 0.065
 
     if size_bucket == "large":
         if draw_type == "gutshot":
-            margin += 0.018
+            margin += 0.028
         elif draw_type == "flush_draw":
             if draw_info.get("near_nut_flush_draw", False):
                 margin += 0.006
             elif draw_info.get("high_flush_draw", False):
                 margin += 0.012
             else:
-                margin += 0.018
+                margin += 0.026
 
-    return clamp(margin, -0.04, 0.08)
+    return clamp(margin, -0.04, 0.12)
 
 
 def made_flush_profile(hole_cards, public_cards, board_texture=None):

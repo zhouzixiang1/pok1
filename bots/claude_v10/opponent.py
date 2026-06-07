@@ -1,6 +1,6 @@
-from constants import N_PLAYERS, BIG_BLIND
+from constants import BIG_BLIND
 from card_utils import clamp, next_player
-from state import get_hand_index, get_remaining_hands, collect_latest_requests_by_hand
+from state import collect_latest_requests_by_hand
 from tournament import opponent_can_lock_win
 
 
@@ -177,8 +177,8 @@ def build_opponent_model(requests, my_id):
 
     result = {
         "confidence": confidence,
-        "vpip": smooth_rate(voluntary_preflop, preflop_opportunities, 0.52, 4.0),
-        "pfr": smooth_rate(preflop_raise, preflop_opportunities, 0.24, 4.0),
+        "vpip": smooth_rate(voluntary_preflop, preflop_opportunities, 0.58, 4.0),
+        "pfr": smooth_rate(preflop_raise, preflop_opportunities, 0.28, 4.0),
         "allin_rate": smooth_rate(allin_actions, total_actions, 0.05, 8.0),
         "postflop_aggr": smooth_rate(postflop_aggressive, postflop_actions, 0.36, 5.0),
         "postflop_check_rate": smooth_rate(postflop_checks, postflop_actions, 0.42, 5.0),

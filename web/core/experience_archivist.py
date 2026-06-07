@@ -14,7 +14,7 @@ from evolution_infra import (
 )
 
 
-async def _consolidate_experience_pool(ui):
+async def _consolidate_experience_pool(ui, exhausted_directions: str = ""):
     """Use LLM to deduplicate and consolidate the experience pool.
 
     Reads the current experience_pool.md, asks LLM to merge redundant entries,
@@ -39,7 +39,7 @@ async def _consolidate_experience_pool(ui):
     consolidate_prompt = template_file.read_text()
     consolidate_prompt = substitute_template(consolidate_prompt, {
         "pool_content": content,
-        "exhausted_directions": "",
+        "exhausted_directions": exhausted_directions,
     })
     log_file = get_logs_dir(0) / "experience_consolidation_io.txt"
 

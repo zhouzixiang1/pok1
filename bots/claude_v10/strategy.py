@@ -179,14 +179,14 @@ def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength
     size_bucket = bet_size_bucket(spot_info["last_raise_pot_ratio"])
 
     if weak_showdown:
-        margin += 0.012
+        margin += 0.020
     if air_hand:
-        margin += 0.018
+        margin += 0.028
 
     if spot_info["facing_postflop_aggression"]:
         margin += 0.008
         if size_bucket == "small":
-            margin += 0.020
+            margin += 0.032
         elif size_bucket == "medium":
             margin += 0.010
         else:
@@ -195,9 +195,9 @@ def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength
         if spot_info.get("opp_postflop_bet_count", 0) >= 2:
             margin += 0.024 if size_bucket == "small" else 0.014
         if round_idx >= 2 and air_hand:
-            margin += 0.010
-        if round_idx == 3 and size_bucket == "large":
             margin += 0.020
+        if round_idx == 3 and size_bucket == "large":
+            margin += 0.032
 
     if not has_position:
         margin += 0.008
@@ -230,7 +230,7 @@ def realized_postflop_equity(
     big_pot = pot > 3000
 
     if air_hand:
-        eqr = 0.68 if has_position else 0.56
+        eqr = 0.65 if has_position else 0.55
 
         if double_barrel:
             eqr -= 0.10
@@ -243,7 +243,7 @@ def realized_postflop_equity(
         if big_pot:
             eqr -= 0.03
 
-        eqr = clamp(eqr, 0.40, 0.85)
+        eqr = clamp(eqr, 0.45, 0.85)
         return win_rate * eqr
 
     is_draw = draw_strength >= 0.08 and made_strength < 0.18
@@ -263,7 +263,7 @@ def realized_postflop_equity(
         pair_type = pair_profile["pair_type"]
 
         if pair_type in ("middle_pair", "bottom_pair", "underpair", "board_pair"):
-            eqr = 0.84 if has_position else 0.73
+            eqr = 0.82 if has_position else 0.72
 
             if pair_profile["weak_kicker"]:
                 eqr -= 0.05
@@ -276,11 +276,11 @@ def realized_postflop_equity(
             if big_pot:
                 eqr -= 0.03
 
-            eqr = clamp(eqr, 0.60, 0.92)
+            eqr = clamp(eqr, 0.65, 0.92)
             return win_rate * eqr
 
         if pair_type == "top_pair" and pair_profile["weak_kicker"]:
-            eqr = 0.92 if has_position else 0.86
+            eqr = 0.88 if has_position else 0.80
             if double_barrel:
                 eqr -= 0.04
                 if not has_position:
@@ -552,6 +552,8 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
 
         # Call with decent hands facing 3bet
         if preflop_strength >= 0.60 and to_call <= my_chips * 0.15:
+            return 0
+        if spot_info.get("facing_allin") and preflop_strength >= 0.60:
             return 0
         return -1
 

@@ -13,6 +13,8 @@ Current bot: {bot_name} (coverage: {opp_eval}/{opp_total} opponents = {opp_cover
 Top 5 bots by H2H avg win rate:
 {top_bots}
 
+{critic_insights}
+
 {generation_trend}
 
 {lineage}

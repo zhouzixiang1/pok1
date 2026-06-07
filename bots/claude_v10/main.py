@@ -10,7 +10,7 @@ from strategy import get_action
 
 def sanitize_action(action, state, my_chips):
     if state["opponent_allin"]:
-        return action if action in (-1, -2) else -1
+        return action if action in (-1, -2, 0) else -1
 
     if state["to_call"] >= my_chips:
         return -2 if action == -2 else -1
