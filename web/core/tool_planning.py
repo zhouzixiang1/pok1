@@ -117,13 +117,16 @@ def _validate_master_plan(plan, next_v=None):
             errors.append(f"Task {i}: worker_prompt too long ({len(prompt)} > 5000 chars)")
         role = str(task.get("role", "")).lower()
         if "hyperparameter" in role or "tuner" in role:
-            # Tuners should only modify constants.py — warn if target_files includes other files
+            # Tuners MUST only modify constants.py — error if target_files includes other files.
+            # This prevents the shared-file boundary validation false positive (Bug 1)
+            # where two workers target the same file, causing all changes to be incorrectly
+            # reverted as a Tuner boundary violation.
             tuner_only_files = {"constants.py"}
             non_tuner_files = [t for t in targets if Path(t).name not in tuner_only_files]
             if non_tuner_files:
-                warnings.append(
+                errors.append(
                     f"Task {i}: Hyperparameter Tuner targets non-constants file(s) {non_tuner_files}. "
-                    f"Tuners should only modify constants.py."
+                    f"Tuners MUST only modify constants.py. Assign {non_tuner_files} to a Logic Architect task."
                 )
             prompt_lower = prompt.lower()
             # Skip structural keywords that appear in constraint/negative contexts
@@ -147,13 +150,21 @@ def _validate_master_plan(plan, next_v=None):
                     )
                     break
 
-    # Check target_files overlap between workers (informational only —
-    # workers execute sequentially so overlap is safe, but different files
-    # make each worker's scope clearer)
+    # Check target_files overlap between workers.
+    # Architect-Tuner overlap on any file is a hard error (causes boundary false positives).
+    # Other overlaps are informational — workers execute sequentially so overlap is safe,
+    # but different files make each worker's scope clearer.
+    architect_targets = {}
+    tuner_targets = {}
     all_targets = {}
     for i, task in enumerate(tasks):
+        role = str(task.get("role", "")).lower()
         for target in task.get("target_files", []):
             rel = _target_rel(target, next_v) if next_v else target.strip()
+            if "architect" in role:
+                architect_targets.setdefault(rel, []).append(i)
+            elif "tuner" in role or "hyperparameter" in role:
+                tuner_targets.setdefault(rel, []).append(i)
             if rel in all_targets:
                 warnings.append(
                     f"Tasks {all_targets[rel]} and {i} share target_file '{target}'. "
@@ -161,6 +172,16 @@ def _validate_master_plan(plan, next_v=None):
                 )
             else:
                 all_targets[rel] = i
+
+    # Hard error: Architect and Tuner sharing any file causes boundary validation
+    # false positives because the Tuner check sees the Architect's structural changes.
+    overlap = set(architect_targets.keys()) & set(tuner_targets.keys())
+    if overlap:
+        errors.append(
+            f"Architect and Tuner share target file(s): {sorted(overlap)}. "
+            f"This causes boundary validation false positives (Tuner check sees Architect's changes). "
+            f"Assign constants.py to Tuner only; other files go to Architect."
+        )
 
     return errors, warnings
 
@@ -324,7 +345,7 @@ async def execute_workers(args):
         )
 
     ui = _get_ui()
-    success = await _execute_workers(
+    success, worker_snapshots = await _execute_workers(
         tasks, worker_template, next_dir, next_v,
         [], ui, reviewer_feedback=reviewer_feedback,
         source_v=source_v,
@@ -344,7 +365,8 @@ async def execute_workers(args):
                                  {"next_v": next_v, "source_v": source_v})
 
     if success:
-        boundary_errors = _validate_worker_boundaries(tasks, source_v, next_v)
+        boundary_errors = _validate_worker_boundaries(tasks, source_v, next_v,
+                                                          worker_snapshots=worker_snapshots)
         if boundary_errors:
             success = False
             # Selective reset: only revert files modified by violating workers
@@ -352,9 +374,14 @@ async def execute_workers(args):
             if src_dir.exists() and next_dir.exists():
                 violated_files = set()
                 for err in boundary_errors:
-                    f = err.get("file", "")
-                    if f:
-                        violated_files.add(f)
+                    # Only revert files from hyperparameter boundary violations.
+                    # target_file_violation and new_file_violation are logged but should
+                    # not trigger selective reset — they may flag files that the Architect
+                    # correctly modified outside declared targets.
+                    if err.get("type") == "hyperparameter_boundary_violation":
+                        f = err.get("file", "")
+                        if f:
+                            violated_files.add(f)
                 for rel in violated_files:
                     src_file = src_dir / rel
                     dst_file = next_dir / rel
@@ -379,6 +406,16 @@ async def execute_workers(args):
         # rather than replacing it with the raw tasks list
         plan = ckpt.get("master_plan", tasks) if ckpt else tasks
         write_pipeline_checkpoint(next_v, source_v, "workers_done",
+                                  master_plan=plan, reviewer_feedback=reviewer_feedback,
+                                  worker_invocation_count=invocation_count + len(tasks))
+    else:
+        # Always increment invocation count even on failure so the circuit breaker works.
+        # Without this, boundary validation false positives (Bug 1) cause infinite retries
+        # because the breaker never sees the count increase.
+        from evolution_infra import write_pipeline_checkpoint
+        plan = ckpt.get("master_plan", tasks) if ckpt else tasks
+        write_pipeline_checkpoint(next_v, source_v,
+                                  ckpt.get("stage", "master_planned"),
                                   master_plan=plan, reviewer_feedback=reviewer_feedback,
                                   worker_invocation_count=invocation_count + len(tasks))
 

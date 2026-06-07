@@ -470,7 +470,17 @@ def _numbers_only_changed(before, after):
     return _NUMERIC_LITERAL_RE.sub("<NUM>", before) == _NUMERIC_LITERAL_RE.sub("<NUM>", after)
 
 
-def _validate_worker_boundaries(tasks, source_v, next_v):
+def _validate_worker_boundaries(tasks, source_v, next_v, worker_snapshots=None):
+    """Validate that workers respected their role boundaries.
+
+    Args:
+        tasks: List of worker task dicts with role, target_files, etc.
+        source_v: Source bot version number.
+        next_v: Target bot version number.
+        worker_snapshots: Optional dict mapping (task_idx, file_rel) -> file content
+            before that worker ran. Enables accurate per-worker boundary checking
+            when multiple workers share a target file.
+    """
     source_dir = get_bot_dir(source_v)
     next_dir = get_bot_dir(next_v)
     all_targets = set()
@@ -504,7 +514,7 @@ def _validate_worker_boundaries(tasks, source_v, next_v):
                     "message": "Worker created a new file outside declared target_files.",
                 })
 
-    for task in tasks:
+    for task_idx, task in enumerate(tasks):
         role = str(task.get("role", ""))
         if "Hyperparameter Tuner" not in role:
             continue
@@ -512,9 +522,16 @@ def _validate_worker_boundaries(tasks, source_v, next_v):
             rel = _target_rel(target, next_v)
             if not rel:
                 continue
-            src = source_dir / rel
+            # Use worker snapshot if available: this compares the file state BEFORE
+            # this worker ran vs AFTER, isolating this worker's changes from those
+            # of preceding workers (who may have modified the same shared file).
+            # Falls back to source version for backward compatibility.
+            if worker_snapshots and (task_idx, rel) in worker_snapshots:
+                before = worker_snapshots[(task_idx, rel)]
+            else:
+                src = source_dir / rel
+                before = src.read_text() if src.exists() else ""
             dst = next_dir / rel
-            before = src.read_text() if src.exists() else ""
             after = dst.read_text() if dst.exists() else ""
             if before != after and not _numbers_only_changed(before, after):
                 diff = "\n".join(difflib.unified_diff(

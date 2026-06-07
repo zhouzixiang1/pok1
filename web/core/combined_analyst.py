@@ -93,6 +93,8 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
         "persistent_weaknesses": [],
         "reason": "Analysis failed, defaulting to continue",
         "suggestion": None,
+        "recommended_source": "",
+        "source_rationale": "",
     }
 
     h2h_winrates = load_h2h_avg_winrates()
@@ -130,6 +132,8 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
                 "persistent_weaknesses": [],
                 "reason": f"Statistical check: rating delta={delta:.1f} (recent 3 vs previous 3 periods). {'Stagnation detected' if is_stagnant else 'Improvement trend'}.",
                 "suggestion": None,
+                "recommended_source": "",
+                "source_rationale": "Statistical pre-check did not evaluate source recommendation — LLM call was skipped.",
             }
 
     # ── Build context data (merged from both old analysts) ──
@@ -313,6 +317,8 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
                 result.setdefault("persistent_weaknesses", [])
                 result.setdefault("reason", "")
                 result.setdefault("suggestion", None)
+                result.setdefault("recommended_source", "")
+                result.setdefault("source_rationale", "")
                 return result
             ui.log_history(f"Combined analyst returned empty (attempt {attempt+1}/3), retrying...", "warn")
         except Exception as e:

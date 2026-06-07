@@ -98,6 +98,8 @@ class CombinedAnalystResult(BaseModel):
     persistent_weaknesses: list[str] = []
     reason: str = ""
     suggestion: Optional[str] = None
+    recommended_source: str = ""
+    source_rationale: str = ""
 
 
 # Map agent names to their Pydantic models

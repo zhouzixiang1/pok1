@@ -60,7 +60,16 @@ Output ONLY a JSON block:
   "verified_improvements": ["list of things that actually helped recent gens"],
   "persistent_weaknesses": ["list of recurring problems not yet fixed"],
   "reason": "brief explanation combining stagnation assessment and performance trend",
-  "suggestion": "one concrete high-priority suggestion for next gen"
+  "suggestion": "one concrete high-priority suggestion for next gen",
+  "recommended_source": "claude_vN",
+  "source_rationale": "why this bot is the best choice for evolution source"
 }
 ```
+
+**recommended_source**: Which bot should be used as the evolution source for the next generation?
+- Consider ALL active bots, not just the latest version.
+- Prioritize bots with the highest h2h_avg_wr AND adequate opponent coverage (≥80%).
+- A bot with high Glicko rating but low h2h_avg_wr should NOT be preferred — h2h_avg_wr is the canonical skill metric.
+- If multiple bots have similar h2h_avg_wr, prefer the one with more games (more reliable rating).
+- Example: "claude_v6" if v6 has 52.4% h2h_avg_wr vs v8's 46.5%, even though v8 is the latest version.
 </output_format>

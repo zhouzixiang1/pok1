@@ -165,7 +165,7 @@ def _decide_strategy(combined, current_v, ratings):
     # Explicit branch recommendation
     if combined.get("recommendation") == "branch" and combined.get("branch_from"):
         branch_v = _parse_branch_from(combined["branch_from"])
-        if branch_v is not None:
+        if branch_v is not None and branch_v >= 1:
             return "master", branch_v, ()
 
     # Diversity injection
@@ -176,6 +176,23 @@ def _decide_strategy(combined, current_v, ratings):
                      f"v{parents[0]}", f"v{parents[1]}")
             return "crossover", parents[0], parents
 
+    # Default path: use the LLM's recommended source bot, not just the latest version.
+    # The Combined Analyst evaluates all bots' h2h_avg_wr, coverage, and trends to pick
+    # the best evolution source. This avoids evolving from a poor-performing latest bot.
+    rec_source = combined.get("recommended_source", "")
+    if rec_source:
+        rec_v = _parse_branch_from(rec_source)
+        # Bounds check: reject invalid version numbers (negative, zero, or nonexistent)
+        if rec_v is not None and rec_v >= 1:
+            from evolution_infra import get_bot_dir
+            if get_bot_dir(rec_v).exists():
+                if rec_v != current_v:
+                    rationale = combined.get("source_rationale", "")
+                    log.info("LLM recommended source: v%d (instead of latest v%d). %s",
+                             rec_v, current_v, rationale[:200])
+                return "master", rec_v, ()
+
+    # Fallback: LLM did not recommend a source, use current_v
     return "master", current_v, ()
 
 
@@ -301,8 +318,25 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         return
 
-    # Experience pool consolidation (every 3 generations)
-    if ctx.gen_count > 0 and ctx.gen_count % 3 == 0:
+    # Experience pool consolidation (every 3 generations, or when too many unconsolidated entries)
+    should_consolidate = ctx.gen_count > 0 and ctx.gen_count % 3 == 0
+    if not should_consolidate:
+        # Also trigger when RECENT_LESSONS has too many entries (prevents stale/contradictory data)
+        from evolution_infra import EXPERIENCE_FILE
+        if EXPERIENCE_FILE.exists():
+            try:
+                content = EXPERIENCE_FILE.read_text()
+                recent_section = content.split("## RECENT_LESSONS")[-1] if "## RECENT_LESSONS" in content else ""
+                recent_entries = [line for line in recent_section.split("\n")
+                                  if line.strip().startswith("- **")]
+                if len(recent_entries) >= 4:
+                    should_consolidate = True
+                    log.info("Triggering experience consolidation: %d RECENT_LESSONS entries (threshold: 4)",
+                             len(recent_entries))
+            except Exception:
+                pass
+
+    if should_consolidate:
         try:
             from experience_archivist import _consolidate_experience_pool
             # Extract exhausted_directions from pipeline checkpoint

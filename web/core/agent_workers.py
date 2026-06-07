@@ -166,27 +166,47 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
 async def _execute_workers(tasks, worker_template, next_dir, next_v,
                             context_files, ui, reviewer_feedback,
                             source_v=None):
-    """Execute worker tasks. Runs sequentially when Architect+Tuner roles coexist,
-    otherwise tries parallel first with serial fallback."""
+    """Execute worker tasks sequentially, capturing per-worker file snapshots.
+
+    Returns (success, worker_snapshots) where worker_snapshots maps
+    (task_idx, file_rel) -> file_content_before_worker_ran, used for
+    accurate per-worker boundary validation.
+    """
+    # Snapshots: (task_idx, file_rel) -> file content before that worker ran.
+    # This enables the boundary validator to check only the Tuner's own changes
+    # rather than seeing all preceding workers' changes mixed in.
+    worker_snapshots = {}
+
     if len(tasks) <= 1:
-        # Single task — run directly
-        return await _run_single_worker(
+        # Single task — snapshot before running
+        for target in tasks[0].get("target_files", []):
+            rel = _target_rel(target, next_v)
+            if rel:
+                fpath = next_dir / rel
+                worker_snapshots[(0, rel)] = fpath.read_text() if fpath.exists() else ""
+        ok = await _run_single_worker(
             tasks[0], 0, worker_template, next_dir, next_v,
             context_files, ui, reviewer_feedback,
             source_v=source_v,
         )
+        return ok, worker_snapshots
 
-    # Check for Architect + Tuner dependency — always run sequentially
-    # Tuner needs Architect's structural output as foundation.
-    # Running all workers sequentially simplifies the pipeline and avoids
-    # race conditions from parallel file edits.
+    # Sequential execution: snapshot each worker's target files BEFORE it runs.
+    # This way the boundary check can compare each worker's input vs output,
+    # not source vs output (which would include all preceding workers' changes).
     ui.log_history(f"Running {len(tasks)} workers sequentially...", "info")
     for i, task in enumerate(tasks):
+        # Capture file state before this worker runs
+        for target in task.get("target_files", []):
+            rel = _target_rel(target, next_v)
+            if rel:
+                fpath = next_dir / rel
+                worker_snapshots[(i, rel)] = fpath.read_text() if fpath.exists() else ""
         ok = await _run_single_worker(
             task, i, worker_template, next_dir, next_v,
             context_files, ui, reviewer_feedback,
             source_v=source_v,
         )
         if not ok:
-            return False
-    return True
+            return False, worker_snapshots
+    return True, worker_snapshots

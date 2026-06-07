@@ -680,7 +680,7 @@ def main():
                         break
                 break  # normal exit from inner while
 
-            except BrokenProcessPool as e:
+            except (BrokenProcessPool, ConnectionRefusedError, OSError) as e:
                 recovery_count += 1
                 log.error("ProcessPool broken (recovery %d/%d): %s", recovery_count, MAX_POOL_RECOVERIES, e)
                 for fut in list(in_flight):
