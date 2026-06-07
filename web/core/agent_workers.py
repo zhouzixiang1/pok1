@@ -11,7 +11,7 @@ import asyncio
 from evolution_infra import (
     run_claude_query, substitute_template, verify_code, run_smoke_test,
     locked_file, get_bot_dir, get_logs_dir,
-    find_current_v, _target_rel,
+    _target_rel,
     WORKER_FAILURES_FILE, MAX_WORKER_RETRIES, WORKER_TIMEOUT, _COPY_IGNORE,
 )
 

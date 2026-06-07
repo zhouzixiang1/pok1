@@ -9,7 +9,7 @@ from typing import Annotated, TypedDict
 from claude_agent_sdk import tool
 
 from evolution_core import (
-    get_active_bots, get_bot_dir, find_current_v, load_ratings,
+    get_active_bots, get_bot_dir, find_current_v, find_latest_active_v, load_ratings,
     clear_pipeline_checkpoint, git_has_tag,
     MAX_ACTIVE_BOTS, RESULTS_DIR, REPLAY_DIR,
     Glicko2Player,
@@ -36,7 +36,7 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
 
     ratings = load_ratings()
     h2h_winrates = load_h2h_avg_winrates()
-    current_bot = f"claude_v{find_current_v()}"
+    current_bot = f"claude_v{find_latest_active_v()}"
 
     # Load bot stats to protect untested bots from reaping
     from tool_helpers import _read_json

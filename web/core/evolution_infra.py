@@ -162,7 +162,8 @@ def substitute_template(template, replacements):
 
 def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                reviewer_feedback="", generation_attempt=0,
-                               gate_results=None, worker_invocation_count=None,
+                               gate_results=None, worker_failure_count=None,
+                               worker_invocation_count=None,
                                parent2_v=None, direction_audit=None):
     """Write pipeline stage checkpoint so a killed process can resume.
 
@@ -182,7 +183,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
 
         # Merge with existing — preserve gate_results, master_plan, etc.
         existing_gate_results = {}
-        existing_invocation_count = 0
+        existing_failure_count = 0
         existing_master_plan = master_plan
         existing_reviewer_feedback = reviewer_feedback
         existing_generation_attempt = generation_attempt
@@ -191,7 +192,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
 
         if existing and existing.get("next_v") == next_v and existing.get("source_v") == source_v:
             existing_gate_results = existing.get("gate_results", {}) or {}
-            existing_invocation_count = existing.get("worker_invocation_count", 0)
+            existing_failure_count = existing.get("worker_failure_count", existing.get("worker_invocation_count", 0))
             if master_plan is None:
                 existing_master_plan = existing.get("master_plan")
             if not reviewer_feedback:
@@ -204,8 +205,10 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
 
         if gate_results:
             existing_gate_results.update(gate_results)
-        if worker_invocation_count is not None:
-            existing_invocation_count = worker_invocation_count
+        if worker_failure_count is not None:
+            existing_failure_count = worker_failure_count
+        elif worker_invocation_count is not None:
+            existing_failure_count = worker_invocation_count
         if direction_audit is not None:
             existing_direction_audit = direction_audit
 
@@ -213,7 +216,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "next_v": next_v, "source_v": source_v, "stage": stage,
             "master_plan": existing_master_plan, "reviewer_feedback": existing_reviewer_feedback,
             "generation_attempt": existing_generation_attempt,
-            "worker_invocation_count": existing_invocation_count,
+            "worker_failure_count": existing_failure_count,
             "gate_results": existing_gate_results,
             "parent2_v": existing_parent2_v,
             "direction_audit": existing_direction_audit,
@@ -355,6 +358,16 @@ def find_current_v():
                     pass
 
     return max(versions) if versions else 0
+
+
+def find_latest_active_v():
+    """Find the highest version among ACTIVE bots (not graveyard).
+    Returns 0 if no active bots exist.
+    """
+    active = get_active_bots()
+    if not active:
+        return 0
+    return max(int(b.split("_v")[1]) for b in active)
 
 
 # ──────────────────────────────────────────────

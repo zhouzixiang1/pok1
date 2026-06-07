@@ -371,7 +371,7 @@ else:
   4. 拒绝覆盖已完成的 bot（有 `.completed`）
   5. `shutil.copytree()` 将 `bots/claude_v{source_v}/` 复制为 `bots/claude_v{next_v}/`
   6. 删除 `.completed` 标记文件
-  7. 写入 pipeline checkpoint：`stage="prepared"`、`worker_invocation_count=0`
+  7. 写入 pipeline checkpoint：`stage="prepared"`、`worker_failure_count=0`
 - **输出**: `{prepared: true, next_v, source_v}`
 
 ---
@@ -410,7 +410,7 @@ else:
 
 **⚠️ 重要机制补充**:
 
-1. **Worker Circuit Breaker**: 每代最多允许 6 次 worker 调用（`MAX_WORKER_INVOCATIONS = 6`）。计数器持久化在 pipeline checkpoint 中（`worker_invocation_count` 字段），**跨 `execute_workers` 调用累计**。无论成功或失败都会递增计数并写入 checkpoint，防止无限重试。见 `tool_planning.py` 中 `invocation_count` 检查。
+1. **Worker Circuit Breaker**: 每代最多允许 6 次 worker 失败（`MAX_WORKER_FAILURES = 6`）。计数器持久化在 pipeline checkpoint 中（`worker_failure_count` 字段），**跨 `execute_workers` 调用累计**。仅在失败时递增计数，成功的 worker 批次不消耗预算，防止无限重试的同时允许有价值的迭代改进。见 `tool_planning.py` 中 `failure_count` 检查。
 
 3. **Worker Boundary Validation**: Worker 完成后自动检查：
    - 是否修改了未声明的 target_files 外的已有文件
@@ -1145,7 +1145,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
               │📎 WORKERS (串行)    │
               │工具: Bash, Read, Edit│
               │自检: compile+smoke   │
-              │熔断: invocation≤6   │
+              │熔断: failures≤6    │
               └────────┬────────────┘
                        │
               ┌────────▼────────────┐

@@ -40,3 +40,6 @@ Thumbs.db
 
 # LLM credentials
 .env
+rl/checkpoints/
+rl/checkpoints/
+rl/checkpoints/

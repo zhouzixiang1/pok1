@@ -697,3 +697,160 @@ class TestPipelineStateTransitions:
         assert ckpt["gate_results"]["quality"]["all_passed"] is True
         assert ckpt["gate_results"]["review"]["approved"] is True
         assert ckpt["stage"] == "reviewed"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Worker Circuit Breaker — failure-only counting
+# ══════════════════════════════════════════════════════════════════════
+
+class TestWorkerFailureCircuitBreaker:
+    """Verify the circuit breaker counts only failed worker invocations."""
+
+    def _setup_checkpoint(self, tmp_path, monkeypatch, failure_count=0,
+                          invocation_count=None, stage="master_planned"):
+        """Helper: create a checkpoint file with the given state."""
+        import evolution_infra
+
+        ckpt_file = tmp_path / "pipeline_state.json"
+        monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", ckpt_file)
+        monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
+
+        state = {
+            "next_v": 11,
+            "source_v": 10,
+            "stage": stage,
+            "master_plan": {
+                "tasks": [
+                    {"worker_id": 1, "role": "Algorithmic Logic Architect",
+                     "target_files": ["strategy.py"], "worker_prompt": "test"},
+                    {"worker_id": 2, "role": "Hyperparameter Tuner",
+                     "target_files": ["constants.py"], "worker_prompt": "test"},
+                ]
+            },
+            "worker_failure_count": failure_count,
+            "gate_results": {},
+        }
+        # Support old-format checkpoints with worker_invocation_count only
+        if invocation_count is not None:
+            state.pop("worker_failure_count", None)
+            state["worker_invocation_count"] = invocation_count
+
+        ckpt_file.write_text(json.dumps(state))
+        return ckpt_file
+
+    def test_successful_workers_do_not_increment_count(self, tmp_path, monkeypatch):
+        """Successful worker batches should NOT increase the failure counter."""
+        import asyncio
+        import evolution_infra
+        import tool_planning
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, failure_count=2)
+        _handler = tool_planning.execute_workers.handler
+
+        async def _run():
+            with patch.object(tool_planning, '_execute_workers', new_callable=AsyncMock) as mock_exec, \
+                 patch.object(tool_planning, '_validate_worker_boundaries', return_value=[]), \
+                 patch.object(tool_planning, '_py_files_changed_between', return_value=['strategy.py']):
+                mock_exec.return_value = (True, {})
+                await _handler({"tasks": [
+                    {"worker_id": 1, "role": "arch", "target_files": ["a.py"], "worker_prompt": "x"},
+                    {"worker_id": 2, "role": "tuner", "target_files": ["b.py"], "worker_prompt": "y"},
+                ], "next_v": 11, "source_v": 10})
+
+        asyncio.run(_run())
+
+        # Verify checkpoint still has failure_count=2 (unchanged)
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["worker_failure_count"] == 2
+
+    def test_failed_workers_increment_count(self, tmp_path, monkeypatch):
+        """Failed worker batches should increase the failure counter by len(tasks)."""
+        import asyncio
+        import evolution_infra
+        import tool_planning
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, failure_count=2)
+        _handler = tool_planning.execute_workers.handler
+
+        async def _run():
+            with patch.object(tool_planning, '_execute_workers', new_callable=AsyncMock) as mock_exec:
+                mock_exec.return_value = (False, {})
+                await _handler({"tasks": [
+                    {"worker_id": 1, "role": "arch", "target_files": ["a.py"], "worker_prompt": "x"},
+                    {"worker_id": 2, "role": "tuner", "target_files": ["b.py"], "worker_prompt": "y"},
+                ], "next_v": 11, "source_v": 10})
+
+        asyncio.run(_run())
+
+        # Verify checkpoint has failure_count=4 (2 + 2 tasks)
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["worker_failure_count"] == 4
+
+    def test_circuit_breaker_trips_at_threshold(self, tmp_path, monkeypatch):
+        """Circuit breaker should block when failure_count + len(tasks) > 6."""
+        import asyncio
+        import tool_planning
+
+        self._setup_checkpoint(tmp_path, monkeypatch, failure_count=5)
+        _handler = tool_planning.execute_workers.handler
+
+        async def _run():
+            return await _handler({"tasks": [
+                {"worker_id": 1, "role": "arch", "target_files": ["a.py"], "worker_prompt": "x"},
+                {"worker_id": 2, "role": "tuner", "target_files": ["b.py"], "worker_prompt": "y"},
+            ], "next_v": 11, "source_v": 10})
+
+        result = asyncio.run(_run())
+
+        result_text = result["content"][0]["text"]
+        result_data = json.loads(result_text)
+        assert "CIRCUIT BREAKER" in result_data["error"]
+        assert result_data["failure_count"] == 5
+
+    def test_circuit_breaker_allows_at_exact_threshold(self, tmp_path, monkeypatch):
+        """When failure_count + len(tasks) == 6 (not >6), workers should execute."""
+        import asyncio
+        import tool_planning
+
+        self._setup_checkpoint(tmp_path, monkeypatch, failure_count=4)
+        _handler = tool_planning.execute_workers.handler
+
+        mock_exec = None
+
+        async def _run():
+            nonlocal mock_exec
+            with patch.object(tool_planning, '_execute_workers', new_callable=AsyncMock) as mock_exec_inner:
+                mock_exec = mock_exec_inner
+                mock_exec_inner.return_value = (True, {})
+                await _handler({"tasks": [
+                    {"worker_id": 1, "role": "arch", "target_files": ["a.py"], "worker_prompt": "x"},
+                    {"worker_id": 2, "role": "tuner", "target_files": ["b.py"], "worker_prompt": "y"},
+                ], "next_v": 11, "source_v": 10})
+
+        asyncio.run(_run())
+
+        # Should NOT have been blocked — execute_workers was called
+        mock_exec.assert_called_once()
+
+    def test_backward_compat_old_invocation_count_key(self, tmp_path, monkeypatch):
+        """Old checkpoint with worker_invocation_count (no worker_failure_count) should be read."""
+        import asyncio
+        import tool_planning
+
+        # Write old-format checkpoint: only worker_invocation_count, no worker_failure_count
+        self._setup_checkpoint(tmp_path, monkeypatch, invocation_count=5)
+        _handler = tool_planning.execute_workers.handler
+
+        async def _run():
+            return await _handler({"tasks": [
+                {"worker_id": 1, "role": "arch", "target_files": ["a.py"], "worker_prompt": "x"},
+                {"worker_id": 2, "role": "tuner", "target_files": ["b.py"], "worker_prompt": "y"},
+            ], "next_v": 11, "source_v": 10})
+
+        result = asyncio.run(_run())
+
+        # 5 (old count) + 2 (tasks) = 7 > 6 → circuit breaker should trip
+        result_text = result["content"][0]["text"]
+        result_data = json.loads(result_text)
+        assert "CIRCUIT BREAKER" in result_data["error"]
+        assert result_data["failure_count"] == 5

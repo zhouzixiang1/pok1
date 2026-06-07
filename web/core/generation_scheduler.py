@@ -36,17 +36,18 @@ class GenerationContext:
 async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> GenerationContext | None:
     """Phase 1: Analyze state, decide strategy. Disposable on interrupt."""
     from evolution_infra import (
-        MAX_ACTIVE_BOTS, MIN_GAMES_FOR_EVAL, find_current_v, get_active_bots, load_ratings,
+        MAX_ACTIVE_BOTS, MIN_GAMES_FOR_EVAL, find_current_v, find_latest_active_v, get_active_bots, load_ratings,
         wait_for_daemon_eval,
     )
 
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         return None
 
-    current_v = find_current_v()
+    current_v = find_current_v()       # 版本编号（含 graveyard），用于 next_v
+    active_v = find_latest_active_v()  # 活跃 bot（排除 graveyard），用于 eval/分析
     active_bots = get_active_bots()
     ratings = load_ratings()
-    bot_name = f"claude_v{current_v}"
+    bot_name = f"claude_v{active_v}"   # 等待活跃 bot 的 eval（核心 fix）
 
     # Reap bots if pool exceeds limit — reduces starvation in match selection
     if len(active_bots) > MAX_ACTIVE_BOTS:
@@ -108,8 +109,8 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     from agent_master import _analyze_recent_matches
 
     combined_result, match_result = await asyncio.gather(
-        _run_combined_analysis(current_v, active_bots, ratings, ui, prev_critic_info),
-        _analyze_recent_matches(current_v, ui),
+        _run_combined_analysis(active_v, active_bots, ratings, ui, prev_critic_info),
+        _analyze_recent_matches(active_v, ui),
         return_exceptions=True,
     )
 
@@ -126,14 +127,14 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         log.warning("Match analysis failed: %s", match_result)
 
     # Strategy decision (code-layer, deterministic)
-    strategy, source_v, parents = _decide_strategy(combined, current_v, ratings)
+    strategy, source_v, parents = _decide_strategy(combined, active_v, ratings)
 
     stagnation_text = json.dumps(combined, ensure_ascii=False) if combined else ""
     perf_text = stagnation_text  # Combined result serves as both
     match_text = match_analysis or ""
 
     return GenerationContext(
-        current_v=current_v,
+        current_v=active_v,
         next_v=current_v + 1,
         strategy=strategy,
         source_v=source_v,

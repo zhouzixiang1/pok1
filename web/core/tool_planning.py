@@ -64,7 +64,7 @@ async def run_direction_audit(args):
         next_v, source_v, "direction_audited",
         direction_audit=direction_audit_payload,
         master_plan=existing_plan,
-        worker_invocation_count=_ckpt.get("worker_invocation_count", 0) if _ckpt else 0,
+        worker_failure_count=_ckpt.get("worker_failure_count", _ckpt.get("worker_invocation_count", 0)) if _ckpt else 0,
     )
 
     event_type = "pipeline.direction_audit_warning" if repetition else "pipeline.direction_audit_passed"
@@ -259,7 +259,7 @@ async def run_master(args):
     write_pipeline_checkpoint(next_v, source_v, "master_planned",
                               master_plan=data,
                               direction_audit=existing_audit,
-                              worker_invocation_count=_ckpt.get("worker_invocation_count", 0) if _ckpt else 0)
+                              worker_failure_count=_ckpt.get("worker_failure_count", _ckpt.get("worker_invocation_count", 0)) if _ckpt else 0)
 
     log_system_event("pipeline.master_done", "info", f"Master planned v{next_v}: {len(data.get('tasks', []))} tasks",
                      {"next_v": next_v, "source_v": source_v, "num_tasks": len(data.get("tasks", []))})
@@ -324,13 +324,13 @@ async def execute_workers(args):
                 "source_v": source_v,
             })
 
-    # Circuit breaker: limit total worker invocations per generation
-    invocation_count = ckpt.get("worker_invocation_count", 0)
-    MAX_WORKER_INVOCATIONS = 6
-    if invocation_count + len(tasks) > MAX_WORKER_INVOCATIONS:
+    # Circuit breaker: limit total worker failures per generation
+    failure_count = ckpt.get("worker_failure_count", ckpt.get("worker_invocation_count", 0))
+    MAX_WORKER_FAILURES = 6
+    if failure_count + len(tasks) > MAX_WORKER_FAILURES:
         return _json_tool_result({
-            "error": f"CIRCUIT BREAKER: {invocation_count} worker invocations already used this generation (max {MAX_WORKER_INVOCATIONS}). Abandon this generation and start a new one.",
-            "invocation_count": invocation_count,
+            "error": f"CIRCUIT BREAKER: {failure_count} worker failures already recorded this generation (max {MAX_WORKER_FAILURES}). Abandon this generation and start a new one.",
+            "failure_count": failure_count,
             "next_v": next_v,
             "source_v": source_v,
         })
@@ -407,17 +407,15 @@ async def execute_workers(args):
         plan = ckpt.get("master_plan", tasks) if ckpt else tasks
         write_pipeline_checkpoint(next_v, source_v, "workers_done",
                                   master_plan=plan, reviewer_feedback=reviewer_feedback,
-                                  worker_invocation_count=invocation_count + len(tasks))
+                                  worker_failure_count=failure_count)
     else:
-        # Always increment invocation count even on failure so the circuit breaker works.
-        # Without this, boundary validation false positives (Bug 1) cause infinite retries
-        # because the breaker never sees the count increase.
+        # Increment failure count on worker failure; successful batches do not consume the budget.
         from evolution_infra import write_pipeline_checkpoint
         plan = ckpt.get("master_plan", tasks) if ckpt else tasks
         write_pipeline_checkpoint(next_v, source_v,
                                   ckpt.get("stage", "master_planned"),
                                   master_plan=plan, reviewer_feedback=reviewer_feedback,
-                                  worker_invocation_count=invocation_count + len(tasks))
+                                  worker_failure_count=failure_count + len(tasks))
 
     sev = "success" if success else "error"
     log_system_event("pipeline.workers_done", sev,

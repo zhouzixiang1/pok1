@@ -38,7 +38,7 @@ from evolution_infra import (  # noqa: F401
     # UI
     BaseUI,
     # Bot directory
-    get_bot_dir, get_logs_dir, get_active_bots, find_current_v,
+    get_bot_dir, get_logs_dir, get_active_bots, find_current_v, find_latest_active_v,
     # Ratings
     load_ratings, load_daemon_stats, wait_for_daemon_eval,
     # Git

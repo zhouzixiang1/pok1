@@ -211,7 +211,7 @@ async def prepare_next_gen(args):
 
     # Write "prepared" checkpoint so a kill+restart shows "Workers not yet run → call execute_workers"
     from evolution_infra import write_pipeline_checkpoint
-    write_pipeline_checkpoint(next_v, source_v, "prepared", worker_invocation_count=0)
+    write_pipeline_checkpoint(next_v, source_v, "prepared", worker_failure_count=0)
 
     log_system_event("pipeline.prepare", "info", f"Prepared v{next_v} from v{source_v}",
                      {"next_v": next_v, "source_v": source_v})
