@@ -33,11 +33,13 @@ python web/main.py
           ├── _startup_recovery() — 评估中断状态（4 种情况）
           └── while True:
                 ├── Phase 1: prepare_generation(shutdown_mgr, ui) — 代码层
+                │     ├── reap_if_needed() — 池 > 30 时自动淘汰
                 │     ├── wait_for_daemon_eval()
                 │     ├── _cleanup_incomplete()
-                │     ├── _analyze_stagnation() 📎 LLM
-                │     ├── _analyze_recent_matches() 📎 LLM
-                │     ├── _run_performance_verification() 📎 LLM
+                │     ├── asyncio.gather(
+                │     │     _run_combined_analysis() 📎 LLM,   ← 合并停滞+性能
+                │     │     _analyze_recent_matches() 📎 LLM  ← 对战分析
+                │     │   )
                 │     └── _decide_strategy() — 纯代码决策
                 │     → 返回 GenerationContext | None
                 │
@@ -101,8 +103,8 @@ Phase 1 由 `prepare_generation()` 函数编排，每步完成后检查 `shutdow
 
 - **触发者**: `prepare_generation()` 代码层
 - **有无 LLM**: 无
-- **做什么**: 调用 `find_current_v()`（从 git tags 读取最新 bot 版本）+ `load_ratings()`（读取 `glicko_ratings.json`）+ `get_active_bots()`（扫描 `bots/` 目录）
-- **输出**: `current_v`、`active_bots`、`ratings` 字典，存入 GenerationContext
+- **做什么**: 调用 `find_current_v()`（从 git tags 读取最新 bot 版本）+ `load_ratings()`（读取 `glicko_ratings.json`）+ `get_active_bots()`（扫描 `bots/` 目录）。若活跃 bot 数 > `MAX_ACTIVE_BOTS`(30)，**先自动淘汰**最弱 bot（`_do_reap_weakest`，最多 10 轮）。
+- **输出**: `current_v`、`active_bots`、`ratings` 字典（中间变量，仅 `current_v` 存入 GenerationContext）
 
 > **旧对比**: 原 Step 1 `get_status()` 由 Orchestrator LLM 触发，返回 13 个字段的 JSON 快照。现在这些数据直接在代码层获取，不再经过 LLM。
 
@@ -123,48 +125,71 @@ Phase 1 由 `prepare_generation()` 函数编排，每步完成后检查 `shutdow
 
 - **触发者**: `prepare_generation()` 代码层
 - **有无 LLM**: 无
-- **做什么**: `_cleanup_incomplete()` — 删除无 `.completed` 且无 git tag 的残留 bot 目录
+- **做什么**: `_cleanup_incomplete()` — 删除无 `.completed` 且无 git tag 的残留 bot 目录。**Checkpoint 感知**: 若目录版本与活跃 `pipeline_state.json` 的 `next_v` 匹配且 stage 不为 None/archived，则**跳过删除**（保护中断恢复状态）。
 - **输出**: 无（副作用：清理文件系统）
 
 > **旧对比**: 原 Step 2 `housekeeping()` 由 Orchestrator LLM 按需调用。现在代码层自动执行，每代循环开头清理一次。
 
 ---
 
-#### Phase 1.4：停滞分析 📎 `_analyze_stagnation(current_v, active_bots, ratings, ui)`
+#### Phase 1.4：合并分析（停滞+性能）📎 `_run_combined_analysis(source_v, active_bots, ratings, ui)`
 
 | 项目 | 内容 |
 |---|---|
 | **触发者** | `prepare_generation()` 代码层直接调用 |
-| **调用链** | `generation_scheduler.py` → `stagnation_analyzer.py:_analyze_stagnation()` → `run_claude_query()` |
-| **LLM 角色** | STAGNATION ANALYST |
+| **调用链** | `generation_scheduler.py` → `combined_analyst.py:_run_combined_analysis()` → `run_claude_query()` |
+| **LLM 角色** | COMBINED ANALYST |
 | **模型** | Sonnet |
 | **工具** | 无（纯 JSON 输出） |
 
-**输入构建** (函数 `_analyze_stagnation` 内):
-1. 读取 `rating_history.jsonl` 最近 10 个周期，提取每个周期的 top H2H 胜率或 top rating
-2. 计算 Top 5 活跃 bot 的 H2H 平均胜率 + rating + rd
-3. 拼装 prompt："You are a rating trend analyst..." + 趋势数据 + Top 5 bot 列表
-4. 要求 JSON 输出
+**前置优化** — 统计预检查（纯代码，可能跳过 LLM）:
+1. `_statistical_stagnation_check()` 对最近 6 个 rating 周期做滑动窗口比较
+2. 若趋势明显（delta < 5 = 停滞，delta > 20 = 改善），**直接返回**，跳过 LLM 调用
+3. RD > 150 时统计检查不可靠，回退到 LLM
+
+**输入构建** (函数 `_run_combined_analysis` 内):
+1. 读取 `rating_history.jsonl` 最近 10 个周期，提取 top H2H 胜率
+2. 读取 `head_to_head.json` → `load_h2h_avg_winrates_with_coverage()` — H2H 胜率 + 对手覆盖率
+3. 读取 `bot_stats.json` 获取总体胜率和场次
+4. 计算 Top 5 活跃 bot 列表（含 RD 警告）
+5. 从 git tags 提取最近 8 代进化趋势（vN: h2h_avg_wr + coverage）
+6. 从 git history 提取 lineage（vN ← parent: vM）
+7. 读取 `worker_failures.jsonl` 最近 5 条失败记录
+8. 加载上代 Critic 洞察（`archive/vN.json` → critic_data.strategic_assessment）
+9. 拼装 prompt：`combined_analyst.md` 模板 + 全部数据
 
 **输入数据来源**:
 - `web/core/results/rating_history.jsonl` — Rating 历史快照
 - `web/core/results/head_to_head.json` → `load_h2h_avg_winrates()` — H2H 胜率
 - `web/core/results/glicko_ratings.json` — 当前 ratings
+- `web/core/results/bot_stats.json` — 总体统计
+- `web/core/results/archive/vN.json` — 上代 Critic 洞察
+- `web/core/results/worker_failures.jsonl` — Worker 失败记录
 
-**LLM 输出**: JSON
+**对手覆盖率检查**: 若覆盖率 < 80%，直接返回 safe_default（跳过 LLM），等待更多 daemon 评估。
+
+**LLM 输出**: JSON（经 `output_schema.py` 验证）
 ```json
 {
   "is_stagnant": true/false,
   "confidence": "high/medium/low",
+  "trend": "improving|stagnant|declining",
+  "diversity_needed": true/false,
+  "diversity_reason": "...",
   "recommendation": "continue|branch|crossover",
   "branch_from": "claude_vN" 或 null,
-  "reason": "简短解释"
+  "verified_improvements": ["..."],
+  "persistent_weaknesses": ["..."],
+  "reason": "简短解释",
+  "suggestion": "...",
+  "recommended_source": "claude_vN",
+  "source_rationale": "解释为何选择此 bot 作为进化源"
 }
 ```
 
-**输出去向**: 返回给 `prepare_generation()`，存入 `GenerationContext.stagnation_info`。
+**输出去向**: 返回给 `prepare_generation()`，同时存入 `GenerationContext.stagnation_info` 和 `GenerationContext.performance_verification`（两者设为**相同值**，因为合并分析替代了原来的两个独立调用）。
 
-> **旧对比**: 原 Step 4 由 Orchestrator LLM 调用 MCP 工具触发，输出返回给 Orchestrator 做决策。现在由代码层直接调用，输出传给 `_decide_strategy()` 做确定性决策。
+> **合并历史**: 原 Phase 1 有 3 个独立 LLM 调用（`_analyze_stagnation` + `_analyze_recent_matches` + `_run_performance_verification`），现合并为 2 个并行调用（`_run_combined_analysis` + `_analyze_recent_matches`）。`combined_analyst.py` 文件头明确说明: "Replaces two separate LLM calls (_analyze_stagnation + _run_performance_verification) with a single call."
 
 ---
 
@@ -172,11 +197,13 @@ Phase 1 由 `prepare_generation()` 函数编排，每步完成后检查 `shutdow
 
 | 项目 | 内容 |
 |---|---|
-| **触发者** | `prepare_generation()` 代码层直接调用 |
+| **触发者** | `prepare_generation()` 代码层直接调用（与 Phase 1.4 **并行**执行） |
 | **调用链** | `generation_scheduler.py` → `agent_master.py:_analyze_recent_matches()` → `run_claude_query()` |
 | **LLM 角色** | MATCH ANALYST |
 | **模型** | Sonnet |
 | **工具** | 无（纯 JSON 输出） |
+
+> **注意**: Phase 1.4 和 Phase 1.5 通过 `asyncio.gather()` 并行执行，而非顺序执行。
 
 **输入构建** (函数 `_analyze_recent_matches` 内):
 1. 读取 `match_history.jsonl`，筛选当前 bot 的对局
@@ -206,61 +233,24 @@ Phase 1 由 `prepare_generation()` 函数编排，每步完成后检查 `shutdow
 
 ---
 
-#### Phase 1.6：性能验证 📎 `_run_performance_verification(current_v, ratings, ui)`
-
-| 项目 | 内容 |
-|---|---|
-| **触发者** | `prepare_generation()` 代码层直接调用 |
-| **调用链** | `generation_scheduler.py` → `agent_review.py:_run_performance_verification()` → `run_claude_query()` |
-| **LLM 角色** | PERFORMANCE ANALYST |
-| **模型** | Sonnet |
-| **工具** | 无（纯 JSON 输出） |
-
-**输入构建** (函数 `_run_performance_verification` 内):
-1. 读取 `rating_history.jsonl` 最近 10 个周期的 top H2H 胜率或 top rating
-2. 读取 `match_history.jsonl` 最近 100 条计算当前 bot 近期胜率
-3. 读取 `head_to_head.json` 提取每对手胜负，标注 STRENGTH/WEAKNESS
-4. 读取 `bot_stats.json` 获取总体胜率和场次
-5. 计算 Top 5 活跃 bot 列表
-6. 拼装 prompt："You are a Performance Verification Analyst..." + 全部数据
-
-**输入数据来源**:
-- `rating_history.jsonl`, `match_history.jsonl`, `head_to_head.json`, `bot_stats.json`
-
-**LLM 输出**: JSON
-```json
-{
-  "trend": "improving|stagnant|declining",
-  "verified_improvements": ["..."],
-  "persistent_weaknesses": ["..."],
-  "diversity_needed": true/false,
-  "diversity_reason": "...",
-  "suggestion": "..."
-}
-```
-
-**输出去向**: 返回给 `prepare_generation()`，存入 `GenerationContext.performance_verification`。
-
-> **旧对比**: 原 Step 6 由 Orchestrator LLM 调用 MCP 工具触发。现在由代码层直接调用。
-
----
-
-#### Phase 1.7：策略决策（纯代码，无 LLM）
+#### Phase 1.6：策略决策（纯代码，无 LLM）
 
 - **触发者**: `prepare_generation()` 代码层
 - **有无 LLM**: 无
-- **做什么**: `_decide_strategy(stagnation, perf, current_v, ratings)` — 基于停滞分析和性能验证结果，确定性选择策略
+- **做什么**: `_decide_strategy(combined, current_v, ratings)` — 基于合并分析结果，确定性选择策略
 
 **决策逻辑**（`generation_scheduler.py:_decide_strategy()`）:
 ```
-if stagnation.is_stagnant && confidence != "low" && 有可用 crossover parents:
+if combined.is_stagnant && confidence != "low" && 有可用 crossover parents:
     → strategy="crossover", source_v=parent_a, parents=(parent_a, parent_b)
-elif stagnation.recommendation=="branch" && branch_from 有效:
+elif combined.recommendation=="branch" && branch_from 有效:
     → strategy="master", source_v=branch_from
-elif perf.diversity_needed && 有可用 crossover parents:
+elif combined.diversity_needed && 有可用 crossover parents:
     → strategy="crossover", source_v=parent_a, parents=(parent_a, parent_b)  # 强制多样性注入
+elif combined.recommended_source 有效 (bounds check: ≥1 且 bot 目录存在):
+    → strategy="master", source_v=recommended_source  # LLM 推荐最佳进化源
 else:
-    → strategy="master", source_v=current_v
+    → strategy="master", source_v=current_v  # 回退
 ```
 
 **输出**: `(strategy, source_v, crossover_parents)` 三元组，存入 GenerationContext。
@@ -280,10 +270,12 @@ else:
 | `strategy` | str | `_decide_strategy()` |
 | `source_v` | int | `_decide_strategy()` |
 | `crossover_parents` | tuple | `_decide_strategy()` |
-| `stagnation_info` | str | `_analyze_stagnation()` → JSON |
+| `stagnation_info` | str | `_run_combined_analysis()` → JSON |
 | `match_analysis` | str | `_analyze_recent_matches()` → JSON |
-| `performance_verification` | str | `_run_performance_verification()` → JSON |
+| `performance_verification` | str | `_run_combined_analysis()` → JSON（与 `stagnation_info` 相同） |
 | `gen_count` | int | 循环计数器 |
+
+> **注意**: `stagnation_info` 和 `performance_verification` 被设为**相同值**（`perf_text = stagnation_text`），因为合并分析替代了原来的两个独立调用。
 
 ---
 
@@ -345,7 +337,9 @@ else:
 - tasks 数量 ≤ 3
 - 每个 task 的 target_files ≤ 3
 - 每个 task 的 worker_prompt ≤ 5000 字符（prompt 模板建议 ≤ 2000 字符）
-- Hyperparameter Tuner prompt 会被 `_TUNER_STRUCTURAL_PATTERNS` 检查，含结构化指令（如 "add parameter"、"new function"）时发出边界警告
+- **Tuner 目标文件限制**: Hyperparameter Tuner 的 `target_files` 必须仅含 `constants.py`，指向其他文件会触发**硬错误**（阻断 plan，非警告）
+- **Architect-Tuner 文件重叠检测**: 若 Architect 和 Tuner 共享任何 target_file，触发硬错误（因为 Tuner 边界检查会看到 Architect 的结构性改动，导致误判为越界）
+- Hyperparameter Tuner prompt 会被 `_TUNER_STRUCTURAL_PATTERNS` 检查，含结构化指令（如 "add parameter"、"new function"）时发出边界警告（非阻断，reviewer/critic 执行实际约束）
 
 **输出去向**: 返回给 Orchestrator LLM → Orchestrator 用 `plan["tasks"]` 调用 `execute_workers()`。
 
@@ -382,17 +376,17 @@ else:
 
 ---
 
-### 步骤 9：Worker 并行编码 📎 `execute_workers(tasks, next_v, source_v, reviewer_feedback)`
+### 步骤 9：Worker 编码 📎 `execute_workers(tasks, next_v, source_v, reviewer_feedback)`
 
 | 项目 | 内容 |
 |---|---|
 | **触发者** | Orchestrator LLM 调用 MCP 工具 `execute_workers` |
-| **调用链** | `tool_pipeline.py:execute_workers()` → `agent_workers.py:_execute_workers()` → `_run_single_worker()` × N → `run_claude_query()` |
+| **调用链** | `tool_planning.py:execute_workers()` → `agent_workers.py:_execute_workers()` → `_run_single_worker()` × N → `run_claude_query()` |
 | **LLM 角色** | WORKER {id} ({role}) |
 | **模型** | Sonnet |
 | **工具** | Bash, Read, Edit |
 | **Prompt 模板** | `prompts/worker_prompt.md` |
-| **并发** | 最多 3 个并行（`_get_worker_semaphore()` 创建 `Semaphore(MAX_PARALLEL_WORKERS)`） |
+| **执行方式** | **纯串行** — Workers 始终按顺序逐个执行（避免竞态条件） |
 | **重试** | 每个 worker 最多 4 次 (`MAX_WORKER_RETRIES`) |
 | **超时** | 1000 秒 (`WORKER_TIMEOUT`) |
 
@@ -412,13 +406,11 @@ else:
 - `verify_code()` — `py_compile` 编译检查，失败则注入错误信息重试
 - `run_smoke_test()` — 运行 1 局冒烟对战，失败则注入错误信息重试
 
-**并行→串行回退**: 若并行中任一 worker 失败，清除目标目录，从源 bot 重新复制，串行重试全部 tasks。
+**Worker 失败记忆**: 注入最近 **5 条** worker 失败记录（从 `worker_failures.jsonl` 读取，`_load_recent_failures(5)`）。
 
 **⚠️ 重要机制补充**:
 
-1. **Architect + Tuner 串行执行**: 当 tasks 中同时包含 role 含 "Architect" 和 role 含 "Tuner" 时，系统自动串行执行（Tuner 需要 Architect 的输出作为基础）。见 `agent_workers.py` 中 `has_architect and has_tuner` 检测逻辑。
-
-2. **Worker Circuit Breaker**: 每代最多允许 6 次 worker 调用（`MAX_WORKER_INVOCATIONS = 6`，`execute_workers` 内局部变量），防止无限重试。见 `tool_pipeline.py` 中 `invocation_count` 检查。
+1. **Worker Circuit Breaker**: 每代最多允许 6 次 worker 调用（`MAX_WORKER_INVOCATIONS = 6`）。计数器持久化在 pipeline checkpoint 中（`worker_invocation_count` 字段），**跨 `execute_workers` 调用累计**。无论成功或失败都会递增计数并写入 checkpoint，防止无限重试。见 `tool_planning.py` 中 `invocation_count` 检查。
 
 3. **Worker Boundary Validation**: Worker 完成后自动检查：
    - 是否修改了未声明的 target_files 外的已有文件
@@ -584,10 +576,10 @@ else:
 - **有无 LLM**: 无
 - **前置**: checkpoint 中 quality + review + critic gate 全部通过
 - **做什么** (函数 `run_precommit_eval` 内):
-  1. 重新编译检查 + 冒烟测试
-  2. 选择对手：父版本 bot + 当前 Top 3 + H2H 弱点对手（最多 2 个）
-  3. 与每个对手运行 `mirror_battle(n_games=1)`
-  4. 阻断条件：编译/冒烟失败、输给父版本、**总输≥3 且 总输≥赢+2**、对局超时、无对手可选（`no_opponents`）、对局异常（`match_exception`）
+  1. 选择对手：父版本 bot + 当前 Top 2 H2H 胜率 + H2H 弱点对手（最多 1 个）+ crossover parent_b（若适用）= 最多 4 个
+  2. 与每个对手运行 `mirror_battle(n_games)` — **n_games 硬性上限 5**（`min(max(1, n_games), 5)`），防止 Orchestrator LLM 传入过大值导致超时
+  3. Per-opponent timeout 随 n_games 缩放: `max(300s, n_games × 120s)`
+  4. 阻断条件：输给父版本、**总输≥3 且 总输≥赢+2**、对局超时、无对手可选（`no_opponents`）、对局异常（`match_exception`）
 - **输出**: `{passed, blockers, matchups, total_wins/losses/draws}`
 - **输出去向**: 通过 → checkpoint `stage="verified"` + gate `precommit_eval`
 
@@ -610,13 +602,15 @@ else:
 - **前置**: checkpoint 中所有 gates 必须存在且通过
 - **做什么** (函数 `commit_bot` 内):
   1. 验证 gate ledger 完整性（quality + review + critic + precommit_eval）
-  2. 运行时守卫：编译检查、冒烟测试、决策测试（≥70%）、文件大小（核心策略 ≤1500行/辅助 ≤1200行）、`review_approved` 检查
-  3. `git add` + `git commit` + `git tag bot-v{N}`
+  2. 验证 `review_approved=true`（quality gates 已在 checkpoint 中验证，**不重新运行** compile/smoke/decision/size）
+  3. `git_commit_bot()` — `git add` + `git commit` + `git tag bot-v{N}`
   4. 验证 git tag 确实创建成功
   5. 写入 `.completed` 标记文件
   6. 归档调用：`archive_generation()` 生成快照、`archive_rotate_files()` 归档轮转、`archive_old_logs()` 日志压缩
-  7. 清除 pipeline checkpoint
-  8. 发送 `.reap_signal` 通知守护进程刷新 bot 列表
+  7. 清除 pipeline checkpoint（`clear_pipeline_checkpoint()`）
+  8. `app_state.set_generation(v)` — 更新 Web UI 生成计数
+  9. 发送 `.reap_signal` 通知守护进程刷新 bot 列表
+  10. 写入 `priority_eval.json` — 标记新 bot 需要优先评估
 - **输出**: `{committed: true, version, source_v, push_ok}`（若池 > 30 额外返回 `needs_reap: true, pool_size`）
 
 > **💡 真实示例 (v36)**: commit_bot 在 v36 中被调用了两次——第一次因 AKs all-in 测试失败被阻断（`committed: false`），修复后第二次成功：
@@ -640,7 +634,7 @@ else:
 |---|---|
 | **触发者** | Orchestrator LLM 调用 MCP 工具 `run_archivist` |
 | **调用链** | `tool_pipeline.py:run_archivist()` → 确定性归档 + 条件性 `agent_master.py:_run_archivist_analysis()` → `run_claude_query()` |
-| **有无 LLM** | 条件性（仅连续 3 代评分下降 或 `EVOLUTION_ALWAYS_ARCHIVE_LLM=1` 时调用 LLM） |
+| **有无 LLM** | 有（每次 commit 都调用 LLM，无条件触发） |
 | **LLM 角色** | CYCLE ARCHIVIST |
 | **模型** | Sonnet |
 | **工具** | Bash, Read（通过 `_run_archivist_analysis` 传入 `run_claude_query`） |
@@ -650,10 +644,10 @@ else:
 2. **自动 reap**：若活跃 bot > `MAX_ACTIVE_BOTS`(30)，自动调用 `reap_weakest`
 3. **加载归档快照**：读取 `results/archive/v{N}.json`（由 `commit_bot` 内的 `archive_generation()` 创建）
 
-**条件性 LLM 分析**（仅在评分下降时触发）:
-- 检查最近 5 代的归档快照，判断是否连续 3 代评分下降
-- 触发时调用 `_run_archivist_analysis(version, source_v, snapshot, ui)`
+**LLM 分析**（**每次 commit 都调用**，无条件触发）:
+- 调用 `_run_archivist_analysis(version, source_v, snapshot, ui)` — 分析归档快照，生成本代评估和经验更新
 - LLM 输出追加到归档快照的 `archivist_notes` 字段
+- 目的：持续积累经验池，非仅用于异常诊断
 
 **输入数据来源**:
 - `results/archive/v{N}.json` — 本代归档快照（rating, H2H, review/critic scores, diff stats）
@@ -681,7 +675,7 @@ Phase 2 `_run_one_cycle()` 检测到 `cycle_completed`:
 - 清除 `orchestrator_session.json`
 - 返回花费给 `orchestrator_loop()`
 
-Phase 3 `post_generation_cleanup()`（仅在 cost ≥ 0.05 即成功提交后执行）:
+Phase 3 `post_generation_cleanup()`（仅在 cost ≥ 0 即成功或非 auth 错误时执行）:
 - `reap_if_needed()` — 活跃 bot > 30 时自动淘汰最弱
 - `consolidate_experience()` — 每 3 代整合经验池
 
@@ -724,15 +718,20 @@ Critic 返回 score < 6:
 全部 4 次失败 → 记录到 worker_failures.jsonl → 返回 False
 ```
 
-### 3.3 并行→串行回退
+### 3.3 Worker 串行执行
+
+Workers **始终按顺序逐个执行**（`agent_workers.py` 中 `_execute_workers` 使用简单的 for 循环），不使用并行。这避免了多 Worker 同时修改同一文件导致的竞态条件。
 
 ```
 _execute_workers():
-  并行运行所有 tasks (Semaphore(3))
+  for task in tasks:  ← 顺序逐个执行
       │
-      ├── 全部成功 → 返回 True
-      └── 任一失败 → 清除目标目录，从源 bot 重新复制
-                      串行逐个执行 tasks → 返回结果
+      ├── _run_single_worker(task)
+      │     ├── 尝试 1-4: run_claude_query + verify_code + run_smoke_test
+      │     ├── 成功 → 返回 True
+      │     └── 全部失败 → 记录到 worker_failures.jsonl → 返回 False
+      │
+      └── 任一 worker 失败 → 标记 success=False
 ```
 
 ### 3.4 进程层级
@@ -930,8 +929,8 @@ Web UI 显式 stop:
 3 秒轮询:
   ├─ daemon_proc.poll() is not None? (已退出)
   │     ├─ restart_count > 5 → 停止自动重启，日志报错
-  │     ├─ backoff = min(3 * 2^(n-1), 120) 秒
-  │     │     → 3, 6, 12, 24, 48, 96, 120...
+  │     ├─ backoff = min(3 * 2^(restart_count-1), 120) 秒
+  │     │     → 3, 6, 12, 24, 48 (最多 5 次重启，到 48s 后停止)
   │     ├─ _daemon_stop.wait(backoff)  ← 等待期间可被停止信号中断
   │     └─ start_daemon() 重启
   └─ daemon 正常运行 → restart_count 归零
@@ -1070,16 +1069,17 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
                     │   Phase 1: prepare_generation() — 代码层     │
                     │   (可丢弃，中断后重算)                        │
                     │                                            │
+                    │   reap_if_needed() → 池 > 30 时淘汰          │
                     │   wait_for_daemon_eval() → 等待足够对局      │
                     │   _cleanup_incomplete() → 清理孤儿目录       │
-                    │   _analyze_stagnation() 📎 STAGNATION LLM   │
-                    │   _analyze_recent_matches() 📎 MATCH LLM   │
-                    │   _run_performance_verification() 📎 PERF LLM│
+                    │   asyncio.gather(                           │
+                    │     _run_combined_analysis() 📎 COMBINED LLM,│
+                    │     _analyze_recent_matches() 📎 MATCH LLM  │
+                    │   )                                         │
                     │   _decide_strategy() → 纯代码策略决策        │
                     │                                            │
                     │   输出: GenerationContext (strategy, source_v,│
-                    │          stagnation_info, match_analysis,   │
-                    │          performance_verification)          │
+                    │          stagnation_info, match_analysis)   │
                     └──────────────────┬──────────────────────────┘
                                        │
                     ┌──────────────────▼──────────────────────────┐
@@ -1114,22 +1114,26 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 ```
     ┌──────────────────▼──────────────────────────┐
     │   Orchestrator LLM 会话                      │
-    │   输入: _build_context() → ratings/tags/     │
-    │         stagnation/match/perf 分析结果        │
-    │   工具: ~15 MCP tools (详见 tool_pipeline.py) │
+    │   输入: _build_context() → combined分析/     │
+    │         match分析 + checkpoint 断点           │
+    │   工具: 15 MCP tools (见 tools.py mcp_tools) │
     └──────────────────┬──────────────────────────┘
                        │
-         ┌─────────────┼─────────────────────────────┐
-         │             │                              │
-    ┌────▼─────┐  ┌────▼──────────┐         ┌────────▼────────┐
-    │get_status │  │run_master     │         │housekeeping     │
-    │(无 LLM)   │  │📎 MASTER     │         │(无 LLM)         │
-    │读取:      │  │工具: Bash,Read │         │reap/cleanup/trim│
-    │ratings,   │  │输入: 预计算分析│         └─────────────────┘
-    │bot_stats, │  │输出: tasks[]  │
-    │daemon_stats│ └────┬──────────┘
-    └───────────┘      │ plan["tasks"]
               ┌────────▼────────────┐
+              │run_direction_audit  │
+              │(无 LLM，纯代码)     │
+              │检查最近进化方向重复  │
+              └────────┬────────────┘
+                       │
+              ┌────────▼────────────┐
+              │run_master           │
+              │📎 MASTER            │
+              │工具: Bash, Read      │
+              │输入: 预计算分析      │
+              │输出: tasks[]         │
+              └────┬────────────────┘
+                   │ plan["tasks"]
+              ┌────▼────────────────┐
               │prepare_next_gen      │
               │(无 LLM)              │
               │复制 bots/claude_v{N}/│
@@ -1138,17 +1142,17 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
                        │
               ┌────────▼────────────┐
               │execute_workers      │
-              │📎 WORKERS (并行≤3)  │
+              │📎 WORKERS (串行)    │
               │工具: Bash, Read, Edit│
               │自检: compile+smoke   │
-              │回退: parallel→serial │
+              │熔断: invocation≤6   │
               └────────┬────────────┘
                        │
               ┌────────▼────────────┐
               │run_quality_gates    │
               │(无 LLM)             │
               │compile+smoke+decision│
-              │+size (≤1500/1200行/文件)│
+              │+size (≤1500/1200行)  │
               └────────┬────────────┘
                        │
               ┌────────▼────────────┐
@@ -1169,6 +1173,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
               │run_precommit_eval   │
               │(无 LLM)             │
               │镜像对战: vs父+Top    │
+              │n_games上限: 5       │
               └────────┬────────────┘
                        │
               ┌────────▼────────────┐
@@ -1198,7 +1203,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 - **所有 LLM 调用统一使用 Sonnet 模型**，通过 `claude_agent_sdk` 的 `query()` 函数
 - **API 限流 (529)**: `run_claude_query()` 内自动指数退避重试（30s → 60s → 120s）
 - **Prompt 预算**: `MAX_PROMPT_CHARS = 700_000`，超限时按文件均分压缩上下文
-- **MCP 工具精简**: ~15 个工具（pre-gen 分析工具已移出 MCP，仅通过 HTTP 端点可用），`tool_pipeline.py` + `tool_status.py` 注册
+- **MCP 工具**: 15 个工具注册在 `tools.py` 的 `mcp_tools` 列表中，通过 `create_sdk_mcp_server(name='evolution', tools=mcp_tools)` 暴露给 Orchestrator LLM。工具来自 `tool_planning.py`（direction_audit, master, workers）、`tool_gates.py`（quality_gates, review, critic, prepare_next_gen）、`tool_eval.py`（precommit_eval, inline_eval）、`tool_commit.py`（commit, archivist）、`tool_status.py`（查询、daemon 控制、bot 管理）。**注意**: `get_status` 等工具仅在 `all_tools`（HTTP 端点 `/api/control/tool/`）中可用，不在 MCP 中。
 - **子代理 MCP 屏蔽**: `_BLOCKED_MCP_TOOLS` 屏蔽以下外部工具（防止子代理访问网络）：
   - `mcp__web-reader__webReader`
   - `mcp__web-search-prime__web_search_prime`
@@ -1215,6 +1220,8 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 - **归档阶段**: Phase 3 中 `reap_if_needed()` + `consolidate_experience()` 在 commit 后执行，幂等可安全重跑
 
 ## 附录：真实循环示例（v28 → v29）
+
+> ⚠️ **历史示例**: 以下示例基于**旧架构**（Phase 2 中 Orchestrator 可直接调用 `get_status` 等 MCP 工具）。当前架构中，这些操作已移入 Phase 1 代码层，`get_status` 不再是 MCP 工具。工具调用序列仅供理解恢复流程参考。
 
 以下展示一个真实的完整进化循环，基于实际日志文件。
 
@@ -1356,6 +1363,8 @@ Review score 7, Critic score 7.
 ---
 
 ## 附录3：完整生命周期示例（v7 → v36）
+
+> ⚠️ **历史示例**: 以下示例基于**旧架构**（Phase 2 中 Orchestrator 直接调用 `get_status`、`wait_for_eval`、`run_match_analysis`、`run_performance_verification` 等 MCP 工具）。当前架构中，这些操作已移入 Phase 1 代码层（`prepare_generation()`）。步骤 1-6 在新架构中由代码层自动完成，不再需要 Orchestrator LLM 调用。
 
 以下展示一个包含 **Master 失败、Crossover 替代、4 轮 Worker 修复** 的完整进化循环。数据来自 orchestrator 日志和各阶段 LLM 输出。
 
