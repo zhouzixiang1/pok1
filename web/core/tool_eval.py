@@ -43,7 +43,10 @@ async def run_precommit_eval(args):
         return _json_tool_result({"error": "Missing version/source_v and no active pipeline checkpoint"})
     v = int(v)
     source_v = int(source_v)
-    n_games = max(1, int(args.get("n_games", 1) or 1))
+    # Cap n_games: precommit eval is a quick regression check (1 mirror pair suffices).
+    # The daemon does proper evaluation later. LLM may pass excessive values (e.g. 100)
+    # which cannot complete within the 900s per-opponent timeout.
+    n_games = min(max(1, int(args.get("n_games", 1) or 1)), 5)
     candidate_name = f"claude_v{v}"
     parent_name = f"claude_v{source_v}"
     candidate_main = _bot_main(candidate_name)
@@ -108,7 +111,8 @@ async def run_precommit_eval(args):
         }
         try:
             loop = _asyncio.get_running_loop()
-            # Per-opponent timeout: 15 minutes max per mirror battle
+            # Per-opponent timeout: scale with n_games (each mirror pair ~90s)
+            per_game_timeout = max(300, n_games * 120)
             match_wins, draws, n_played, _ = await _asyncio.wait_for(
                 loop.run_in_executor(
                     None,
@@ -120,7 +124,7 @@ async def run_precommit_eval(args):
                         save_log=False,
                     ),
                 ),
-                timeout=900,  # 15 minutes per opponent
+                timeout=per_game_timeout,
             )
             matchup.update({
                 "wins": int(match_wins[0]),
