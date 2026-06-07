@@ -1,22 +1,23 @@
-from constants import N_PLAYERS, INITIAL_CHIPS, SMALL_BLIND, BIG_BLIND, TOTAL_HANDS
-from card_utils import card_suit, card_number, next_player, clamp
+from constants import N_PLAYERS, INITIAL_CHIPS, SMALL_BLIND, BIG_BLIND, TOTAL_HANDS, PREFLOP_STRENGTH_TABLE
+from card_utils import clamp, card_suit, card_number, next_player
 
 
 def estimate_preflop_strength(my_cards):
     r1 = card_number(my_cards[0])
     r2 = card_number(my_cards[1])
-    s1 = card_suit(my_cards[0])
-    s2 = card_suit(my_cards[1])
     high = max(r1, r2)
     low = min(r1, r2)
+    suited = card_suit(my_cards[0]) == card_suit(my_cards[1])
+    key = (high, low, suited and high != low)
+    result = PREFLOP_STRENGTH_TABLE.get(key)
+    if result is not None:
+        return result
+    # Fallback to formula for missing entries
     gap = high - low
-    suited = s1 == s2
     pair = r1 == r2
-
     score = 0.0
     score += (high - 2) / 16.0
     score += (low - 2) / 28.0
-
     if pair:
         score += 0.25 + (high - 2) / 30.0
     else:
@@ -28,12 +29,10 @@ def estimate_preflop_strength(my_cards):
             score += 0.03
         elif gap >= 4:
             score -= 0.04
-
     if high == 14:
         score += 0.04
         if low >= 10:
             score += 0.04
-
     return clamp(score, 0.0, 1.0)
 
 
@@ -184,7 +183,7 @@ def reconstruct_state(req):
         if record_round != current_round:
             current_round = record_round
             round_bet = 0
-            last_raise_to = SMALL_BLIND
+            last_raise_to = BIG_BLIND // 2
             round_contrib = [0] * N_PLAYERS
 
         if action_type == "fold":
@@ -223,7 +222,7 @@ def reconstruct_state(req):
 
     if current_round != round_idx:
         round_bet = 0
-        last_raise_to = SMALL_BLIND
+        last_raise_to = BIG_BLIND // 2
         round_contrib = [0] * N_PLAYERS
 
     player_bets = [0] * N_PLAYERS
@@ -239,7 +238,7 @@ def reconstruct_state(req):
     opponent_allin = allin[opponent_id] and alive[opponent_id]
     my_round_bet = 0 if player_bets[my_id] < 0 else player_bets[my_id]
     to_call = max(0, round_bet - my_round_bet)
-    min_raise_action = max(0, 2 * last_raise_to - my_round_bet)
+    round_raise = max(0, 2 * last_raise_to - my_round_bet)
     allin_call_amount = max(
         0,
         min(committed[opponent_id], committed[my_id] + stacks[my_id]) - committed[my_id],
@@ -248,9 +247,8 @@ def reconstruct_state(req):
     return {
         "round": round_idx,
         "round_bet": round_bet,
-        "round_raise": last_raise_to,
-        "judge_round_raise": last_raise_to,
-        "min_raise_action": min_raise_action,
+        "round_raise": round_raise,
+        "min_raise_action": round_raise,
         "round_contrib": round_contrib,
         "player_bets": player_bets,
         "stacks": stacks,

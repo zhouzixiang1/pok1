@@ -675,14 +675,14 @@ def draw_call_margin(draw_info, board_texture, round_idx, spot_info):
     elif draw_type == "double_gutshot":
         margin -= 0.006
     elif draw_type == "gutshot":
-        margin += 0.058
+        margin += 0.040
     elif draw_type == "flush_draw" and not draw_info["nut_flush_draw"]:
         if draw_info.get("near_nut_flush_draw", False):
             margin -= 0.010
         elif draw_info.get("high_flush_draw", False):
-            margin += 0.012
+            margin += 0.004
         else:
-            margin += 0.032
+            margin += 0.020
 
     if (
         draw_type == "flush_draw"
@@ -701,29 +701,29 @@ def draw_call_margin(draw_info, board_texture, round_idx, spot_info):
 
     if round_idx == 2:
         if draw_type == "gutshot":
-            margin += 0.030
+            margin += 0.020
         elif draw_type == "flush_draw":
             if draw_info.get("near_nut_flush_draw", False) and size_bucket != "large" and (board_texture is None or not board_texture["paired"]):
                 margin += 0.000
             elif draw_info.get("high_flush_draw", False) and size_bucket == "small" and (board_texture is None or not board_texture["paired"]):
                 margin += 0.006
             else:
-                margin += 0.028
+                margin += 0.020
     elif round_idx == 3:
-        margin += 0.065
+        margin += 0.050
 
     if size_bucket == "large":
         if draw_type == "gutshot":
-            margin += 0.028
+            margin += 0.018
         elif draw_type == "flush_draw":
             if draw_info.get("near_nut_flush_draw", False):
                 margin += 0.006
             elif draw_info.get("high_flush_draw", False):
                 margin += 0.012
             else:
-                margin += 0.026
+                margin += 0.018
 
-    return clamp(margin, -0.04, 0.12)
+    return clamp(margin, -0.04, 0.08)
 
 
 def made_flush_profile(hole_cards, public_cards, board_texture=None):
