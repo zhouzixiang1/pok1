@@ -1,0 +1,9 @@
+- [x] 项目整体架构已理解（三个独立子系统：Poker Evolution / DanLM / TCP Server）
+- [x] 双人德州扑克引擎已详解（judge.py 状态机、牌力评估、动作编码、Bot 协议）
+- [x] 对战系统已理解（标准对战、镜像对战公平性机制、进程管理）
+- [x] ELO/Glicko-2 评分系统已理解
+- [x] Bot 结构和策略已理解（模块化、sanitize_action、蒙特卡洛模拟）
+- [x] LLM 进化管线已详解（三阶段周期、Agent 角色、质量门控、Worker 边界）
+- [x] 决策测试场景和经验池已记录
+- [x] Botzone 平台集成和 TCP 竞赛服务器已理解
+- [x] 两个引擎的差异（raise 语义、花色映射、动作格式）已确认

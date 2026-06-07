@@ -1,0 +1,14 @@
+- [ ] HoldemRound 类正确封装 Holdem，支持 get_observation() / step() / done / winner
+- [ ] HoldemObservation 包含 player / legal_actions / stage / pot / hole_cards / public_cards / is_new_stage
+- [ ] HoldemGame 管理多手牌对局，庄家轮转、筹码累积、50手结束
+- [ ] 卡牌工具正确：发牌、Card↔int 转换、显示字符串
+- [ ] 动作工具正确：合法性判定、合法动作列表、最低加注规则
+- [ ] HoldemGameSession 管理完整的 Web 对战会话（idle → playing → hand_over → game_over）
+- [ ] HoldemUIAgent 封装 bot 子进程，支持 select_play()
+- [ ] FastAPI 后端提供 /api/new-game / /api/state / /api/play / /api/action-options / /api/hint
+- [ ] 前端显示 2 人对位、手牌、公共牌、奖池、筹码、操作按钮
+- [ ] test_hand_eval 覆盖所有牌型判定和踢脚牌比较
+- [ ] test_round 覆盖盲注、四轮下注、所有动作类型
+- [ ] test_game 覆盖 50 手对局、庄家轮转、筹码累积
+- [ ] test_settlement 覆盖摊牌比牌、弃牌、边池计算
+- [ ] 设计文档记录所有改造点和接口变更

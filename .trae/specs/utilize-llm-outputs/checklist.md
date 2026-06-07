@@ -1,0 +1,11 @@
+- [x] Critic `strategic_assessment` + `local_optima_warning` 被注入 Stagnation Analyzer 的 prompt 上下文
+- [x] Critic `evidence` 字段（h2h_weaknesses, experience_pool_refs, diff_refs）被提取并写入 experience_pool.md
+- [x] Reviewer `change_summary` + `risk_areas` 被注入 Archivist prompt
+- [x] Direction Auditor 的 `exhausted_directions` 被正确传入 Consolidator（非空字符串）
+- [x] Critic 重试时 `prev_critic` 能正确从 checkpoint 读取前次反馈
+- [x] Direction Auditor 从 checkpoint 直接读取 Master analysis（而非仅依赖日志正则）
+- [x] `_decide_strategy` 在 Stagnation `confidence == "low"` 时不触发 crossover
+- [x] `worker_failures.jsonl` 记录包含 `failure_type` 结构化字段
+- [x] 所有修改文件通过 `py_compile` 语法检查
+- [x] experience_pool.md 写入格式保持正确的 section headers
+- [x] pipeline_state.json 结构向后兼容（新字段为可选）

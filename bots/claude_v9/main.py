@@ -1,13 +1,3 @@
-"""
-Bot 2 - Bot23-based with 7 directed improvements:
-1) Interface fix + decide_action (3 input formats)
-2) Preflop 169-hand lookup table
-3) CBet / Fold-to-CBet tracking
-4) Opponent concept drift detection
-5) Improved equity realization
-6) 3Bet/4Bet dedicated logic
-7) Safe exploitation framework
-"""
 import json
 import sys
 import os
@@ -27,9 +17,10 @@ def sanitize_action(action, state, my_chips):
 
     if action > 0:
         raise_to_total = action + state["my_round_bet"]
+        min_raise = state.get("min_raise_action", state["round_raise"])
         if action >= my_chips:
             return -2
-        if action < state["round_raise"] or raise_to_total <= state["round_bet"]:
+        if action < min_raise or raise_to_total <= state["round_bet"]:
             return 0
         return raise_to_total
 
@@ -39,46 +30,19 @@ def sanitize_action(action, state, my_chips):
     return action
 
 
-# Improvement 1: normalize_payload supporting 3 input formats
-def normalize_payload(payload):
-    if isinstance(payload, dict) and "requests" in payload:
-        requests = list(payload.get("requests") or [])
-        responses = list(payload.get("responses") or [])
-        return requests, responses
-
-    if isinstance(payload, dict) and payload.get("command") == "request" and "content" in payload:
-        content = payload.get("content") or {}
-        if content:
-            key = next(iter(content.keys()))
-            return [content[key]], []
-        return [], []
-
-    if isinstance(payload, dict):
-        return [payload], []
-
-    return [], []
-
-
-def decide_action(payload):
-    requests, responses = normalize_payload(payload)
-    if not requests:
-        return -1
-    req = dict(requests[-1])
-    if "remaining_hands" not in req:
-        req["remaining_hands"] = infer_remaining_hands_from_requests(requests)
-    action = get_action(req, requests)
-    state = reconstruct_state(req)
-    action = sanitize_action(action, state, req["my_chips"])
-    return int(action)
-
-
 def main():
     for line in sys.stdin:
         line = line.strip()
         if not line:
             break
         payload = json.loads(line)
-        action = decide_action(payload)
+        requests = payload["requests"]
+        req = dict(requests[-1])
+        if "remaining_hands" not in req:
+            req["remaining_hands"] = infer_remaining_hands_from_requests(requests)
+        action = get_action(req, requests)
+        state = reconstruct_state(req)
+        action = sanitize_action(action, state, req["my_chips"])
         print(json.dumps({"response": int(action)}))
         sys.stdout.flush()
 

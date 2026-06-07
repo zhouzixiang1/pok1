@@ -1,5 +1,5 @@
 from constants import N_PLAYERS, INITIAL_CHIPS, SMALL_BLIND, BIG_BLIND, TOTAL_HANDS, PREFLOP_STRENGTH_TABLE
-from card_utils import clamp, card_suit, card_number, next_player
+from card_utils import card_suit, card_number, next_player, clamp
 
 
 def estimate_preflop_strength(my_cards):
@@ -12,7 +12,6 @@ def estimate_preflop_strength(my_cards):
     result = PREFLOP_STRENGTH_TABLE.get(key)
     if result is not None:
         return result
-    # Fallback to formula for missing entries
     gap = high - low
     pair = r1 == r2
     score = 0.0
@@ -183,7 +182,7 @@ def reconstruct_state(req):
         if record_round != current_round:
             current_round = record_round
             round_bet = 0
-            last_raise_to = BIG_BLIND // 2
+            last_raise_to = SMALL_BLIND
             round_contrib = [0] * N_PLAYERS
 
         if action_type == "fold":
@@ -222,7 +221,7 @@ def reconstruct_state(req):
 
     if current_round != round_idx:
         round_bet = 0
-        last_raise_to = BIG_BLIND // 2
+        last_raise_to = SMALL_BLIND
         round_contrib = [0] * N_PLAYERS
 
     player_bets = [0] * N_PLAYERS
@@ -238,7 +237,7 @@ def reconstruct_state(req):
     opponent_allin = allin[opponent_id] and alive[opponent_id]
     my_round_bet = 0 if player_bets[my_id] < 0 else player_bets[my_id]
     to_call = max(0, round_bet - my_round_bet)
-    round_raise = max(0, 2 * last_raise_to - my_round_bet)
+    min_raise_action = max(0, 2 * last_raise_to - my_round_bet)
     allin_call_amount = max(
         0,
         min(committed[opponent_id], committed[my_id] + stacks[my_id]) - committed[my_id],
@@ -247,8 +246,9 @@ def reconstruct_state(req):
     return {
         "round": round_idx,
         "round_bet": round_bet,
-        "round_raise": round_raise,
-        "min_raise_action": round_raise,
+        "round_raise": last_raise_to,
+        "judge_round_raise": last_raise_to,
+        "min_raise_action": min_raise_action,
         "round_contrib": round_contrib,
         "player_bets": player_bets,
         "stacks": stacks,
