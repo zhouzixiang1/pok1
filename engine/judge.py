@@ -331,9 +331,11 @@ class Holdem:
                     action_type = "call"
             else:  # inc <= 0 → check
                 # 规则 4：flop/turn/river 非第一个行为 check → 非法（按 fold 处理）
-                # 文档原文："flop、turn、river 阶段非第一个行为出现 check，属于非法行为"
-                if self.round != Holdem.PRE_FLOP and round_actions > 0:
-                    return self.player_action(Holdem.FOLD)
+                # 但 check-check（对手已 check 且下注匹配）是合法的轮结束
+                # 注意：inc==0 说明无需跟注，此时如果对手已行动过 = 对手 check 了
+                # 所以 postflop round_actions>0 时，若 inc==0 则是 check-check，不应判非法
+                # 实际上 inc<=0 且 round_actions>0 的情况只有 check-check，
+                # 因为如果有待跟注额 inc 会 > 0，不会走到这个 else 分支
                 self.round_player_bet[self.round_idx] = self.round_bet
                 action_type = "check"
         elif bet > 0:  # raise, 加注到指定金额（raise-to-total）
@@ -353,8 +355,8 @@ class Holdem:
             # 非法: 筹码不足
             if self.player_chips[self.round_idx] < additional:
                 return self.player_action(Holdem.FOLD)
-            # 非法: 加注到的金额不满足最低加注规则（≥ last_raise_to * 2）
-            if raise_to < self.last_raise_to * 2:
+            # 非法: 加注到的金额不满足最低加注规则（> last_raise_to * 2，严格大于）
+            if raise_to <= self.last_raise_to * 2:
                 return self.player_action(Holdem.FOLD)
             self.last_raise_to = raise_to
             self.round_player_bet[self.round_idx] = raise_to

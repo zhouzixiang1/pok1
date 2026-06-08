@@ -82,19 +82,37 @@ class BotProcess:
         )
         logger.info(f"Bot started: {self.script} (PID {self.proc.pid})")
 
-    def send_and_recv(self, payload):
-        """发送 payload dict，接收 response dict。"""
+    def send_and_recv(self, payload, timeout=60):
+        """发送 payload dict，接收 response dict。带超时保护。"""
         msg = json.dumps(payload, ensure_ascii=False)
         try:
             self.proc.stdin.write(msg + "\n")
             self.proc.stdin.flush()
-            line = self.proc.stdout.readline()
-            if not line:
-                logger.error("Bot returned empty output")
-                return None
-            return json.loads(line.strip())
-        except (BrokenPipeError, ConnectionResetError, json.JSONDecodeError) as e:
-            logger.error(f"Bot communication error: {e}")
+        except (BrokenPipeError, ConnectionResetError):
+            logger.error("Bot stdin write failed")
+            return None
+
+        import threading
+        result = [None]
+        def _read():
+            try:
+                result[0] = self.proc.stdout.readline()
+            except Exception:
+                pass
+
+        t = threading.Thread(target=_read, daemon=True)
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            logger.error(f"Bot timeout after {timeout}s in send_and_recv")
+            return None
+        if not result[0]:
+            logger.error("Bot returned empty output")
+            return None
+        try:
+            return json.loads(result[0].strip())
+        except json.JSONDecodeError as e:
+            logger.error(f"Bot JSON decode error: {e}")
             return None
 
     def close(self):
@@ -423,23 +441,31 @@ class BotAdapter:
         fold/check: 不扣减
         """
         if action_type == "call":
-            # 计算对手当前阶段下注额
-            opp_id = 1 - self._my_id
-            stage_map = {"preflop": 0, "flop": 1, "turn": 2, "river": 3}
-            round_num = stage_map.get(self._stage, 0)
-            opp_bet = self._my_stage_bet  # 默认与己方相同
-            for h in reversed(self._history):
-                if h["round"] == round_num and h["player_id"] == opp_id:
-                    a = h["action"]
-                    if h["action_type"] == "raise":
-                        opp_bet = a
-                    elif h["action_type"] == "allin":
-                        opp_bet = self._my_stage_bet + self._my_chips + opp_bet  # 无法精确，用全部
-                    break
-            diff = opp_bet - self._my_stage_bet
-            actual = min(diff, self._my_chips)
-            self._my_chips -= actual
-            self._my_stage_bet += actual
+            # 特殊处理：preflop SB 首次 call（无对手 action 记录）
+            # 此时对手 BB 的盲注 100 是隐式下注，history 中无记录
+            if self._stage == "preflop" and self._is_sb and self._my_action_count <= 1:
+                diff = BIG_BLIND - self._my_stage_bet  # 100 - 50 = 50
+                actual = min(diff, self._my_chips)
+                self._my_chips -= actual
+                self._my_stage_bet += actual
+            else:
+                # 计算对手当前阶段下注额
+                opp_id = 1 - self._my_id
+                stage_map = {"preflop": 0, "flop": 1, "turn": 2, "river": 3}
+                round_num = stage_map.get(self._stage, 0)
+                opp_bet = self._my_stage_bet  # 默认与己方相同
+                for h in reversed(self._history):
+                    if h["round"] == round_num and h["player_id"] == opp_id:
+                        a = h["action"]
+                        if h["action_type"] == "raise":
+                            opp_bet = a
+                        elif h["action_type"] == "allin":
+                            opp_bet = self._my_stage_bet + self._my_chips + opp_bet  # 无法精确，用全部
+                        break
+                diff = opp_bet - self._my_stage_bet
+                actual = min(diff, self._my_chips)
+                self._my_chips -= actual
+                self._my_stage_bet += actual
         elif action_type == "raise":
             needed = amount - self._my_stage_bet
             self._my_chips -= needed
@@ -448,7 +474,7 @@ class BotAdapter:
             self._my_stage_bet += self._my_chips
             self._my_chips = 0
 
-    def _convert_action(self, action_int):
+    def _convert_action(self, action):
         """judge.py 整数 → (TCP 字符串, action_type, amount)。
 
         judge.py 中 0 = call 或 check（不区分）。
@@ -457,6 +483,12 @@ class BotAdapter:
           - 无需跟注 → check
         判断依据：history 中对手在本阶段是否有 raise/allin。
         """
+        # 类型保护：非整数输入按 fold 处理
+        try:
+            action_int = int(action)
+        except (TypeError, ValueError):
+            logger.warning(f"Invalid action type: {action!r}, folding")
+            return "fold", "fold", None
         if action_int == -1:
             return "fold", "fold", None
         if action_int == -2:

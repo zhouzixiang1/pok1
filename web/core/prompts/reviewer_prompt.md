@@ -21,6 +21,11 @@ Bot directory: `bots/claude_v{version}/`
 Parent version tag: `bot-v{parent_version}`
 </context>
 
+<action_semantics>
+When reviewing diffs, verify that positive return values represent raise-to-total (NOT raise-by-increment).
+A return of 0 means call/check (context-dependent). The minimum valid re-raise after raise X is X*2+1 (strictly >2x).
+</action_semantics>
+
 <your_scope>
 You check ONLY these four areas:
 

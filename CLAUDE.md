@@ -315,7 +315,9 @@ Both `engine/judge.py` and `sever/` use the same raise-to-total convention:
 | Tracking variable | `last_raise_to` (last raise-to total) | `last_raise_to` (last raise-to total) |
 | Preflop first raise | total ≥ 200 (derived from `big_blind`) | total ≥ 200 (explicit check) |
 | Postflop first raise | total ≥ 100 (derived from `big_blind // 2`) | total ≥ 100 (explicit check) |
-| Re-raise minimum | total ≥ `last_raise_to * 2` | total ≥ `last_raise_to * 2` |
+| Re-raise minimum | total > `last_raise_to * 2` (strictly greater) | total > `last_raise_to * 2` (strictly greater) |
+
+**Re-raise boundary clarification**: "一倍以上" in 非法行为说明.docx means strictly >2x, NOT >=2x. The 补充说明.docx example uses raise 400 → raise 801 (not 800), confirming the strictly-greater interpretation. E.g., after raise 400, minimum re-raise is 801.
 
 **`bot_adapter.py` bridge:** Converts bot integer output directly: `>0` → `raise {value}`. Since both engines use raise-to-total, the adapter works correctly without conversion.
 

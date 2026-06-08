@@ -71,8 +71,13 @@ def validate_action(action_type: str, action_amount: int | None,
             return True, ""
         # flop/turn/river
         # 规则 4：非第一个行为出现 check → 非法
+        # 但 check-check（对手已 check 且下注匹配）是合法的轮结束
         if not is_first_in_stage:
-            return False, "check is illegal for non-first action in flop/turn/river"
+            opponent_bet = game_state["opponent_bet"]
+            player_bet = game_state["player_bet"]
+            if opponent_bet > player_bet:
+                return False, "check is illegal when there is a pending bet to call"
+            # 对手下注 ≤ 自己下注 → 合法 check-check
         return True, ""
 
     # ── allin 相关规则 ─────────────────────────────────────
@@ -111,8 +116,8 @@ def validate_action(action_type: str, action_amount: int | None,
                         if amount < MIN_RAISE_PREFLOP:
                             return False, f"preflop BB raise must be >= {MIN_RAISE_PREFLOP} after SB call"
                     elif last_action[0] == "raise":
-                        # SB raise 后 BB raise 必须 ≥ 2× SB raise-to
-                        if amount < last_action[1] * RAISE_MULTIPLIER:
+                        # SB raise 后 BB raise 必须 > 2× SB raise-to（严格大于）
+                        if amount <= last_action[1] * RAISE_MULTIPLIER:
                             return False, f"preflop BB raise must be >= {RAISE_MULTIPLIER}x SB raise ({last_action[1]})"
         else:
             # 规则 9：flop/turn/river 第一个 raise 必须 ≥ 100
@@ -120,10 +125,10 @@ def validate_action(action_type: str, action_amount: int | None,
                 if amount < MIN_RAISE_POSTFLOP:
                     return False, f"first raise in {stage} must be >= {MIN_RAISE_POSTFLOP}"
 
-        # 规则 8：连续 raise 必须 ≥ 2× 上一次 raise-to
+        # 规则 8：连续 raise 必须 > 2× 上一次 raise-to（严格大于）
         last_raise = _last_raise_amount(actions)
         if last_raise is not None:
-            if amount < last_raise * RAISE_MULTIPLIER:
+            if amount <= last_raise * RAISE_MULTIPLIER:
                 return False, f"consecutive raise must be >= {RAISE_MULTIPLIER}x previous ({last_raise})"
 
         return True, ""

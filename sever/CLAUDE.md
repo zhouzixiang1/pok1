@@ -52,7 +52,7 @@ records/                   # THP 棋谱文件输出目录
 - **Card format**: `<suit,rank>` where suit 0-3=♠♥♦♣, rank 0-12=2-A
 - **Match**: 70 hands, 20000 chips per hand (reset each hand), blinds 50/100
 - **Action order**: Preflop SB first; Flop/Turn/River BB first
-- **Raise semantics**: `raise X` = raise TO X (total stage bet), consecutive ≥ 2× previous
+- **Raise semantics**: `raise X` = raise TO X (total stage bet), consecutive > 2× previous (strictly greater)
 - **Timeout**: 60 seconds per action → fold
 - **Illegal action → fold**: 13 rules covering bet/call/check/raise/allin restrictions
 

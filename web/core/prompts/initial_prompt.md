@@ -1,3 +1,9 @@
+# Game Parameters
+- 70 hands per match, 20000 starting chips per hand (一局一复位)
+- Blinds: small blind 50, big blind 100
+- Heads-up: dealer=SB acts first preflop; BB acts first on all postflop streets
+- Players alternate SB/BB roles each hand
+
 # Task
 Create a robust, multi-file Texas Hold'em poker bot in the `bots/claude_v1/` directory.
 
