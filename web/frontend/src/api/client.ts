@@ -157,6 +157,6 @@ export const api = {
   clearOrchestratorSession: () => deleteReq<{ cleared: boolean; message: string }>(`${BASE}/control/orchestrator/session`),
 
   // Evolution reset
-  resetEvolution: () => postJSON<{ status: string; details: Record<string, unknown> }>(`${BASE}/control/reset`),
+  resetEvolution: () => postJSON<{ status: string; details?: Record<string, unknown>; warning?: string }>(`${BASE}/control/reset`),
 };
 

@@ -11,6 +11,8 @@ export type EvolutionEventType =
   | "cost"
   | "metrics"
   | "tool_call"
+  | "log_event"
+  | "system_event"
   | "ping";
 
 export interface EvolutionState {
@@ -59,6 +61,8 @@ export function useEvolutionSSE(
     }) => void;
     onMetrics?: (metrics: Record<string, number>) => void;
     onToolCall?: (data: { tool_name: string; args: Record<string, unknown>; ts: number; role?: string }) => void;
+    onLogEvent?: (data: { level: string; logger: string; msg: string; ts: number }) => void;
+    onSystemEvent?: (data: { ts: number; type: string; severity: string; message: string; data?: Record<string, unknown> }) => void;
     onConnect?: () => void;
   },
   enabled = true
@@ -78,6 +82,7 @@ export function useEvolutionSSE(
       const eventTypes: EvolutionEventType[] = [
         "history", "status", "io", "clear_io",
         "eval_table", "daemon", "header", "cost", "metrics", "tool_call",
+        "log_event", "system_event",
       ];
 
       eventTypes.forEach((eventType) => {
@@ -114,6 +119,12 @@ export function useEvolutionSSE(
                 break;
               case "tool_call":
                 handlers.onToolCall?.(data);
+                break;
+              case "log_event":
+                handlers.onLogEvent?.(data);
+                break;
+              case "system_event":
+                handlers.onSystemEvent?.(data);
                 break;
             }
           } catch { /* ignore parse errors */ }

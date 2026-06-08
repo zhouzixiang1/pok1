@@ -1,6 +1,6 @@
 export interface BotRating {
   name: string;
-  rank: number;
+  rank?: number;
   rating: number;
   rd: number;
   sigma: number;

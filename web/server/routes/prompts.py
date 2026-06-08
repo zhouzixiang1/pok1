@@ -27,6 +27,7 @@ ALLOWED_PROMPTS = {
     "stagnation_analyzer",
     "experience_consolidator",
     "archivist",
+    "combined_analyst",
 }
 
 PROMPT_ROLES = {
@@ -43,6 +44,7 @@ PROMPT_ROLES = {
     "stagnation_analyzer": "Stagnation Analyzer — detects whether evolution is stuck in a local optimum",
     "experience_consolidator": "Experience Consolidator — deduplicates and trims the experience pool",
     "archivist": "Cycle Archivist — audits completed generations and produces strategic summaries",
+    "combined_analyst": "Combined Analyst — merged stagnation detection + performance verification",
 }
 
 router = APIRouter(prefix="/api/prompts", tags=["prompts"])
@@ -51,7 +53,7 @@ router = APIRouter(prefix="/api/prompts", tags=["prompts"])
 def _prompt_path(name: str) -> Path:
     # Special names that don't follow the "{name}_prompt.md" convention
     exact_names = {"orchestrator", "archivist", "match_analyst", "performance_analyst",
-                   "stagnation_analyzer", "experience_consolidator"}
+                   "stagnation_analyzer", "experience_consolidator", "combined_analyst"}
     if name in exact_names:
         return PROMPTS_DIR / f"{name}.md"
     return PROMPTS_DIR / f"{name}_prompt.md"

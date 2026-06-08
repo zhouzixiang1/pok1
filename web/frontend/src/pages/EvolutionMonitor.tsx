@@ -533,7 +533,7 @@ export default function EvolutionMonitor() {
                       {leaderboard.slice(0, 10).map((bot) => (
                         <div key={bot.name} className="flex justify-between text-xs items-center">
                           <span className="text-gray-600 dark:text-gray-400 truncate">
-                            {bot.rank <= 3 ? (
+                            {(bot.rank ?? 0) <= 3 ? (
                               <span className={cn(
                                 "inline-flex items-center justify-center w-4 h-4 rounded-full text-[9px] font-bold mr-1",
                                 bot.rank === 1 && "bg-amber-400 text-amber-900",

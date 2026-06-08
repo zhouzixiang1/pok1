@@ -278,7 +278,7 @@ export default function Overview() {
                       "inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold",
                       bot.rank === 2 && "bg-gray-300 text-gray-700",
                       bot.rank === 3 && "bg-orange-400 text-orange-900",
-                      bot.rank >= 4 && "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400",
+                      (bot.rank ?? 0) >= 4 && "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400",
                     )}>
                       {bot.rank}
                     </span>
