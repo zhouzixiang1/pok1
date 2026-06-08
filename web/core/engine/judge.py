@@ -352,9 +352,20 @@ class Holdem:
             # 非法: 筹码不足
             if self.player_chips[self.round_idx] < additional:
                 return self.player_action(Holdem.FOLD)
-            # 非法: 加注到的金额不满足最低加注规则（> last_raise_to * 2，严格大于）
-            if raise_to <= self.last_raise_to * 2:
-                return self.player_action(Holdem.FOLD)
+            # 非法: 加注到的金额不满足最低加注规则
+            # 区分首次加注（允许恰好 2x baseline）和再加注（严格 >2x 玩家加注）
+            if self.round == Holdem.PRE_FLOP:
+                baseline = self.big_blind      # 100, deal_cards_and_blind 设置
+            else:
+                baseline = self.big_blind // 2  # 50, _next_round 设置
+            if self.last_raise_to > baseline:
+                # 再加注: 必须严格 > 2x 上一次加注到的金额
+                if raise_to <= self.last_raise_to * 2:
+                    return self.player_action(Holdem.FOLD)
+            else:
+                # 首次加注或盲注: 允许恰好 2x baseline
+                if raise_to < self.last_raise_to * 2:
+                    return self.player_action(Holdem.FOLD)
             self.last_raise_to = raise_to
             self.round_player_bet[self.round_idx] = raise_to
             self.round_bet = max(self.round_bet, raise_to)

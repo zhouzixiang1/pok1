@@ -443,7 +443,7 @@ class BotAdapter:
         if action_type == "call":
             # 特殊处理：preflop SB 首次 call（无对手 action 记录）
             # 此时对手 BB 的盲注 100 是隐式下注，history 中无记录
-            if self._stage == "preflop" and self._is_sb and self._my_action_count <= 1:
+            if self._stage == "preflop" and self._is_sb and self._my_action_count == 0:
                 diff = BIG_BLIND - self._my_stage_bet  # 100 - 50 = 50
                 actual = min(diff, self._my_chips)
                 self._my_chips -= actual

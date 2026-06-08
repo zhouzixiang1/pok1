@@ -118,7 +118,7 @@ def validate_action(action_type: str, action_amount: int | None,
                     elif last_action[0] == "raise":
                         # SB raise 后 BB raise 必须 > 2× SB raise-to（严格大于）
                         if amount <= last_action[1] * RAISE_MULTIPLIER:
-                            return False, f"preflop BB raise must be >= {RAISE_MULTIPLIER}x SB raise ({last_action[1]})"
+                            return False, f"preflop BB raise must be > {RAISE_MULTIPLIER}x SB raise ({last_action[1]})"
         else:
             # 规则 9：flop/turn/river 第一个 raise 必须 ≥ 100
             if is_first_in_stage:
@@ -129,7 +129,7 @@ def validate_action(action_type: str, action_amount: int | None,
         last_raise = _last_raise_amount(actions)
         if last_raise is not None:
             if amount <= last_raise * RAISE_MULTIPLIER:
-                return False, f"consecutive raise must be >= {RAISE_MULTIPLIER}x previous ({last_raise})"
+                return False, f"consecutive raise must be > {RAISE_MULTIPLIER}x previous ({last_raise})"
 
         return True, ""
 
