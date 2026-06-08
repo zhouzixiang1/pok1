@@ -2,13 +2,13 @@
 Lessons from previous iterations. Read before planning next generation.
 
 ## OPPONENT_MODELING
-- Opponent tracking data must be wired into decision logic, not just collected. v15 added per-street profiling (flop/turn/river aggr, barrel_freq) with magnitudes 4-10x larger (0.06, 0.08, clamp [-0.12, 0.15]). Awaiting eval for impact. [POSSIBLY EXHAUSTED]
+- Per-street profiling (flop/turn/river aggr, barrel_freq) wired into pressure_adjustment/EQR — magnitudes 4-10x prior (0.06–0.08, clamp [-0.12, 0.15]). Awaiting eval. [POSSIBLY EXHAUSTED]
 - CBet fold-more exploitation has max effect ~0.015 — too small to matter alone. [POSSIBLY EXHAUSTED]
 
 ## POSTFLOP_STRATEGY
-- should_fold_postflop() rewritten in v15 to pot-odds formula (pot_odds + street_overlay + size_scale + aggression_adjustment) replacing 6 hardcoded thresholds. Awaiting eval. [POSSIBLY EXHAUSTED]
+- should_fold_postflop() rewritten to pot-odds formula replacing 6 hardcoded thresholds. Needs opponent_model parameter to modulate fold thresholds by barrel_freq — high barrel_freq (≥0.60) opponents should see medium-strength hands folded more readily. [POSSIBLY EXHAUSTED]
 - Draw call margins must be grounded in equity math vs pot odds. Use has_draw guards in tier-based fold systems. Avoid overlapping fold gates.
-- repeated_raise_trap: 3-tier fold/call/raise logic (v14) still leaks vs v4 (51.2%). must_continue_vs_raise() needs texture-aware pot_odds scaling. All fold/raise guards must verify branch consistency within the same decision block.
+- repeated_raise_trap: 3-tier fold/call/raise logic (v14) still leaks vs v4 (~51%). All fold/raise guards must verify branch consistency within same decision block.
 
 ## BLUFF_CALIBRATION
 
@@ -26,8 +26,11 @@ Lessons from previous iterations. Read before planning next generation.
 - Trust early negative critic signals — first-rejection scores are often more strategically accurate than retry approvals. Preflop cap removal risks over-inflating AK/AQ.
 
 ## RECENT_LESSONS
-- **v15**: Per-street opponent tracking (flop/turn/river aggr, barrel_freq, avg raise BB) wired into opponent_pressure_adjustment() and realized_postflop_equity(). Magnitudes 4-10x prior (0.06–0.08, clamp [-0.12, 0.15]). Pot-odds should_fold_postflop() rewrite replaces hardcoded thresholds. No eval data yet.
-- **v15 gap**: Preflop gap handlers (bb_vs_raise, sb_vs_reraise) from v11 still missing — high-value recovery target. should_fold_postflop() has no opponent_model parameter.
-- **v15 H2H**: Weakest matchups: v4 (50.7–52.0%, tight/aggressive), v5 (53.3%), v14 (54.5%). v4 has highest overall win rate (59.3%) — per-street reads targeting it may yield most gain.
-- **v14 context**: v14 (1726.9) failed to beat v13 (1735.0). repeated_raise_trap 3-tier fix + texture-aware must_continue_vs_raise() still insufficient vs v4. Missing strong_made_continue guard may leak chips vs river barrels.
+- **v16**: Critic evidence: H2H weaknesses: v15 weakest matchups: v5 (50%), v6 (50%), v8 (50%). v15 vs v4 improved to 70% (from v14's ~51%). The changes target postflop over-folding vs aggression, which primarily affects v5/v6/v8 type opponents who barrel frequently.; Experience pool refs: v15 lesson: 'should_fold_postflop() rewritten to pot-odds formula. Needs opponent_model parameter to modulate fold thresholds by barrel_freq — high barrel_freq (≥0.60) opponents should see medium-strength hands folded more readily. [POSSIBLY EXHAUSTED]' — This change directly implements this lesson., v15 gap: 'Preflop gap handlers (bb_vs_raise, sb_vs_reraise) from v11 still missing — high-value recovery target' — NOT addressed in this generation.; Diff refs: strategy.py: should_fold_postflop() rewritten (lines 582-614): 6-branch if/else → single threshold formula with opp_bets and barrel-freq modifiers., strategy.py line 594: New tiny bet guard 'if last_raise_pot_ratio <= 0.20: return False' replaces v15's bet_size_bucket('small'=≤0.30) check., strategy.py line 589-590: New draw early return 'if has_draw: return False' replaces scattered 'not has_draw' conditions in v15.
+- **v15**: Per-street profiling wired. should_fold_postflop() rewritten to pot-odds formula. No eval data yet. Highest-value next step: add opponent_model parameter to modulate fold thresholds by barrel_freq — directly targets v4 matchup (50.7–52.0%).
+- **v15**: _aligned_signal_boost (geometric mean of per-street/aggregate deviations) is sound but coefficients (1.5x, 0.100 barrel) ungrounded — calibrate against actual fold-equity data once eval arrives.
+- **v15 gap**: Preflop gap handlers (bb_vs_raise, sb_vs_reraise) from v11 still missing — high-value recovery target.
+- **v15 H2H**: Weakest matchups: v4 (50.7–52.0%), v5 (53.3%), v14 (54.5%). v4 has highest overall win rate (59.3%) — per-street reads targeting it may yield most gain.
+- **v14**: Failed to beat v13 (1726.9 vs 1735.0). repeated_raise_trap 3-tier fix + texture-aware must_continue_vs_raise() still insufficient vs v4.
 - **v13**: v11×v6 fold-discipline crossover failed twice (v12→r=1667, v13→unevaluated). Preflop gap handlers lost and not recovered.
+
