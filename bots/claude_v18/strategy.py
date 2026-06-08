@@ -553,7 +553,7 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
     return None
 
 
-def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile, spot_info):
+def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile, spot_info, opponent_model=None, spr=999.0):
     if round_idx <= 0:
         return False
     tier = value_profile.get("tier", "none") if value_profile else "none"
@@ -579,6 +579,29 @@ def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile,
             return True
         if made_strength < 0.40 and not has_draw and opp_bets >= 2:
             return True
+
+    # SPR commitment: fold weak uncommitted hands on late streets
+    if spr > 4.0 and not has_draw:
+        if round_idx >= 2 and made_strength < 0.28 and size_bucket in ('medium', 'large'):
+            return True
+        if round_idx == 3 and made_strength < 0.35 and size_bucket == 'large':
+            return True
+
+    # Opponent-model-aware fold: value-heavy opponents
+    if opponent_model is not None and opponent_model.get('confidence', 0) >= 0.15:
+        barrel = opponent_model.get('barrel_freq', 0.45)
+        post_aggr = opponent_model.get('postflop_aggr', 0.36)
+        opp_value_heavy = barrel >= 0.50 or post_aggr >= 0.42
+        if opp_value_heavy:
+            if round_idx >= 2 and made_strength < 0.28 and not has_draw and size_bucket in ('medium', 'large'):
+                return True
+            if round_idx == 3 and opp_bets >= 2 and made_strength < 0.34 and not has_draw:
+                return True
+
+    # River multi-barrel fold: very weak hands even vs small bets
+    if round_idx == 3 and made_strength < 0.20 and not has_draw and opp_bets >= 2:
+        return True
+
     return False
 
 
@@ -914,7 +937,8 @@ def get_action(req, requests):
         if fragile_pair_raise_fold:
             if not anti_lock_call_continue and not strong_made_continue:
                 return -1
-        if should_fold_postflop(round_idx, made_strength, draw_strength, value_profile, spot_info):
+        _spr = my_chips / pot if pot > 0 else 999.0
+        if should_fold_postflop(round_idx, made_strength, draw_strength, value_profile, spot_info, opponent_model=opponent_model, spr=_spr):
             if not anti_lock_call_continue and not strong_made_continue:
                 return -1
         if hard_repressure_fold or paired_board_stackoff["severe"]:
@@ -924,6 +948,9 @@ def get_action(req, requests):
             if not anti_lock_call_continue and not strong_made_continue:
                 return -1
         if repeated_raise_trap and (value_profile is None or value_profile["tier"] != "nut"):
+            trap_size = bet_size_bucket(spot_info["last_raise_pot_ratio"])
+            if made_strength < 0.25 and draw_strength < 0.14 and trap_size in ("medium", "large"):
+                return -1
             return 0
 
         raise_fold_threshold = 0.56 - 0.30 * match_profile["bluff_delta"]
