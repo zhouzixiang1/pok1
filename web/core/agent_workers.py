@@ -1,7 +1,8 @@
 """Worker agent execution logic.
 
 Handles running individual worker LLM calls with retries and timeout isolation.
-Workers always execute sequentially to avoid race conditions and simplify the pipeline.
+Workers execute in parallel when target files don't overlap, falling back to
+sequential execution when they do.
 """
 
 import json
@@ -11,7 +12,7 @@ import asyncio
 from evolution_infra import (
     run_claude_query, substitute_template, verify_code, run_smoke_test,
     locked_file, get_bot_dir, get_logs_dir,
-    _target_rel,
+    _target_rel, get_model_for_role,
     WORKER_FAILURES_FILE, MAX_WORKER_RETRIES, WORKER_TIMEOUT, _COPY_IGNORE,
 )
 
@@ -46,10 +47,28 @@ def _load_recent_failures(n=5):
     return entries[-n:]
 
 
+def _files_overlap(tasks):
+    """Check if any two tasks share target files (normalized)."""
+    all_targets = set()
+    for task in tasks:
+        task_targets = set()
+        for f in task.get("target_files", []):
+            rel = f.replace("\\", "/")
+            # Normalize: strip leading bots/claude_vN/ prefix if present
+            parts = rel.split("/")
+            if len(parts) > 2 and parts[0] == "bots" and parts[1].startswith("claude_v"):
+                rel = "/".join(parts[2:])
+            task_targets.add(rel)
+        if task_targets & all_targets:
+            return True
+        all_targets |= task_targets
+    return False
+
+
 async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                               context_files, ui, reviewer_feedback,
                               source_v=None):
-    """Run a single worker task with retries. Returns True on success."""
+    """Run a single worker task with retries. Returns (bool, int) = (success, task_idx)."""
     w_id = task.get("worker_id", idx + 1)
     role = task.get("role", f"Expert Coder {w_id}")
     base_worker_prompt = task.get("worker_prompt", task.get("instruction", ""))
@@ -96,6 +115,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             llm_task = asyncio.create_task(run_claude_query(
                 worker_prompt, context_files, ui,
                 f"WORKER {w_id} ({role})", worker_log_file,
+                model=get_model_for_role("worker"),
                 tools=["Bash", "Read", "Edit"],
             ))
             await asyncio.wait_for(llm_task, timeout=WORKER_TIMEOUT)
@@ -156,57 +176,84 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             continue
 
         ui.log_history(f"Worker {w_id} ({role}) done", "info")
-        return True
+        return True, idx
 
     # Worker failed all retries — record failure
     _record_worker_failure(next_v, w_id, role, _last_reason, failure_type=_last_failure_type)
-    return False
+    return False, idx
+
+
+def _snapshot_target_files(tasks, next_dir, next_v):
+    """Capture file content for all task target files before any worker runs."""
+    snapshots = {}
+    for i, task in enumerate(tasks):
+        for target in task.get("target_files", []):
+            rel = _target_rel(target, next_v)
+            if rel:
+                fpath = next_dir / rel
+                snapshots[(i, rel)] = fpath.read_text() if fpath.exists() else ""
+    return snapshots
 
 
 async def _execute_workers(tasks, worker_template, next_dir, next_v,
                             context_files, ui, reviewer_feedback,
                             source_v=None):
-    """Execute worker tasks sequentially, capturing per-worker file snapshots.
+    """Execute worker tasks — in parallel when target files don't overlap.
 
     Returns (success, worker_snapshots) where worker_snapshots maps
     (task_idx, file_rel) -> file_content_before_worker_ran, used for
     accurate per-worker boundary validation.
     """
-    # Snapshots: (task_idx, file_rel) -> file content before that worker ran.
-    # This enables the boundary validator to check only the Tuner's own changes
-    # rather than seeing all preceding workers' changes mixed in.
-    worker_snapshots = {}
+    # Always capture snapshots before any worker runs
+    worker_snapshots = _snapshot_target_files(tasks, next_dir, next_v)
 
     if len(tasks) <= 1:
-        # Single task — snapshot before running
-        for target in tasks[0].get("target_files", []):
-            rel = _target_rel(target, next_v)
-            if rel:
-                fpath = next_dir / rel
-                worker_snapshots[(0, rel)] = fpath.read_text() if fpath.exists() else ""
-        ok = await _run_single_worker(
+        # Single task — just run it
+        ok, _ = await _run_single_worker(
             tasks[0], 0, worker_template, next_dir, next_v,
             context_files, ui, reviewer_feedback,
             source_v=source_v,
         )
         return ok, worker_snapshots
 
-    # Sequential execution: snapshot each worker's target files BEFORE it runs.
-    # This way the boundary check can compare each worker's input vs output,
-    # not source vs output (which would include all preceding workers' changes).
-    ui.log_history(f"Running {len(tasks)} workers sequentially...", "info")
-    for i, task in enumerate(tasks):
-        # Capture file state before this worker runs
-        for target in task.get("target_files", []):
-            rel = _target_rel(target, next_v)
-            if rel:
-                fpath = next_dir / rel
-                worker_snapshots[(i, rel)] = fpath.read_text() if fpath.exists() else ""
-        ok = await _run_single_worker(
-            task, i, worker_template, next_dir, next_v,
-            context_files, ui, reviewer_feedback,
-            source_v=source_v,
-        )
-        if not ok:
-            return False, worker_snapshots
-    return True, worker_snapshots
+    # Check for file overlap — if found, fall back to sequential
+    if _files_overlap(tasks):
+        ui.log_history(f"Target files overlap — running {len(tasks)} workers sequentially...", "info")
+        for i, task in enumerate(tasks):
+            ok, _ = await _run_single_worker(
+                task, i, worker_template, next_dir, next_v,
+                context_files, ui, reviewer_feedback,
+                source_v=source_v,
+            )
+            if not ok:
+                return False, worker_snapshots
+        return True, worker_snapshots
+
+    # Parallel execution — all target files are disjoint
+    ui.log_history(f"Running {len(tasks)} workers in parallel (no file overlap)...", "info")
+    results = await asyncio.gather(
+        *[
+            _run_single_worker(
+                task, i, worker_template, next_dir, next_v,
+                context_files, ui, reviewer_feedback,
+                source_v=source_v,
+            )
+            for i, task in enumerate(tasks)
+        ],
+        return_exceptions=True,
+    )
+
+    # Process results — check for failures
+    all_ok = True
+    for result in results:
+        if isinstance(result, Exception):
+            ui.log_history(f"Worker parallel execution error: {result}", "error")
+            all_ok = False
+        elif isinstance(result, tuple):
+            ok, idx = result
+            if not ok:
+                all_ok = False
+        else:
+            all_ok = False
+
+    return all_ok, worker_snapshots

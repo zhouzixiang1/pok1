@@ -327,7 +327,7 @@ async def execute_workers(args):
     # Circuit breaker: limit total worker failures per generation
     failure_count = ckpt.get("worker_failure_count", ckpt.get("worker_invocation_count", 0))
     MAX_WORKER_FAILURES = 4
-    if failure_count + len(tasks) > MAX_WORKER_FAILURES:
+    if failure_count >= MAX_WORKER_FAILURES:
         return _json_tool_result({
             "error": f"CIRCUIT BREAKER: {failure_count} worker failures already recorded this generation (max {MAX_WORKER_FAILURES}). Abandon this generation and start a new one.",
             "failure_count": failure_count,

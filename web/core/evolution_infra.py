@@ -56,6 +56,7 @@ MAX_ACTIVE_BOTS = 30
 # Evaluation & quality thresholds
 DAEMON_EVAL_TIMEOUT = 600
 MIN_GAMES_FOR_EVAL = 40           # Lowered from 100 — daemon restarts reset game counts, making 100 unreachable
+PRIORITY_EVAL_MIN_GAMES = 50      # Priority eval target — slightly above MIN_GAMES_FOR_EVAL to ensure stable RD
 MAX_LINES_PER_FILE = 1500       # Core strategy files (strategy.py, postflop.py)
 MAX_LINES_HELPER = 1200         # All other .py files
 CORE_STRATEGY_FILES = {"strategy.py", "postflop.py"}
@@ -65,8 +66,24 @@ MAX_WORKER_RETRIES = 4
 MAX_MASTER_RETRIES = 3
 MAX_CROSSOVER_RETRIES = 3
 MAX_GENESIS_RETRIES = 3
-WORKER_TIMEOUT = 1000         # Seconds before a hung worker call is aborted + retried
+WORKER_TIMEOUT = 600          # Seconds before a hung worker call is aborted (reduced from 1000s)
 MAX_PARALLEL_WORKERS = 3      # Hard cap on simultaneous LLM worker calls (Semaphore)
+
+# Per-role model routing — allows using different models for different pipeline stages
+# Set MODEL_OVERRIDES env var as JSON: {"master": "opus", "critic": "opus", "worker": "sonnet"}
+# Or configure in app_config.json under "model_overrides" key
+import json as _json_for_model
+_MODEL_OVERRIDES = {}
+try:
+    _env_overrides = os.environ.get("MODEL_OVERRIDES", "")
+    if _env_overrides:
+        _MODEL_OVERRIDES = _json_for_model.loads(_env_overrides)
+except Exception:
+    pass
+
+def get_model_for_role(role: str) -> str:
+    """Get the model to use for a given pipeline role. Defaults to 'sonnet'."""
+    return _MODEL_OVERRIDES.get(role, "sonnet")
 
 # Prompt size limits — Sonnet supports 200K tokens (~800K chars); leave generous headroom
 MAX_PROMPT_CHARS = 700_000
@@ -475,7 +492,10 @@ async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=
                         ui.log_history(f"Daemon 已终止 (rc={proc.returncode})，无法获取评估数据", "error")
                     return False
 
-        await asyncio.sleep(5)
+        # Exponential polling: start fast, slow down over time
+        elapsed = time.time() - start
+        poll_interval = 2 if elapsed < 60 else (5 if elapsed < 180 else 10)
+        await asyncio.sleep(poll_interval)
     if ui:
         games = cached_bot_stats.get(bot_name, {}).get("games", 0)
         ui.log_history(f"评估超时 {bot_name}: 仅 {games}/{min_games} 场 ({int(time.time()-start)}s)", "warn")

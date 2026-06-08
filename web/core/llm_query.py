@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
 
 from claude_agent_sdk import (
@@ -163,11 +164,12 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
 
     output = "\n".join(full_text)
 
-    # Auto-retry on API rate limit (529) with exponential backoff
+    # Auto-retry on API rate limit (529) with exponential backoff + jitter
     if _is_rate_limited(output):
-        for backoff in [30, 60, 120]:
-            ui.log_history(f"API rate limited (529). Retrying in {backoff}s...", "warn")
-            await asyncio.sleep(backoff)
+        for backoff in [10, 25, 50]:
+            jitter = backoff * (0.5 + random.random() * 0.5)
+            ui.log_history(f"API rate limited (529). Retrying in {jitter:.0f}s...", "warn")
+            await asyncio.sleep(jitter)
             full_text.clear()
             retry_gen = claude_query(prompt=full_prompt, options=options)
             retry_texts, retry_cost, retry_usage = await _process_stream(

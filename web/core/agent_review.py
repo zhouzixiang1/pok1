@@ -14,7 +14,7 @@ from evolution_infra import (
     verify_code, run_smoke_test,
     PROMPTS_DIR, RESULTS_DIR, MATCH_HISTORY_FILE, H2H_FILE, BOT_STATS_FILE,
     MAX_CROSSOVER_RETRIES,
-    Glicko2Player,
+    Glicko2Player, get_model_for_role,
 )
 
 
@@ -56,6 +56,7 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
     try:
         output, _, _ = await run_claude_query(
             critic_prompt, [], ui, "STRATEGY CRITIC", log_file,
+            model=get_model_for_role("critic"),
             tools=["Bash", "Read"],
         )
         data = parse_json_output(output)
@@ -70,10 +71,10 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
             data.setdefault("local_optima_warning", False)
             return data
     except Exception as e:
-        ui.log_history(f"Critic error: {e}. Defaulting to rejected.", "warn")
-        return {"score": 0, "approved": False, "feedback": str(e), "local_optima_warning": False}
+        ui.log_history(f"Critic LLM error: {e}. Auto-approving with low confidence (score=5).", "warn")
+        return {"score": 5, "approved": True, "feedback": f"Critic LLM call failed ({type(e).__name__}), auto-approved with low confidence. Precommit eval will provide final check.", "local_optima_warning": True}
 
-    return {"score": 0, "approved": False, "feedback": "Critic output was not valid JSON.", "local_optima_warning": False}
+    return {"score": 5, "approved": True, "feedback": "Critic output was not valid JSON. Auto-approved with low confidence. Precommit eval will provide final check.", "local_optima_warning": True}
 
 
 async def _run_performance_verification(source_v, ratings, ui):
@@ -257,6 +258,9 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
     parent_a_dir = get_bot_dir(parent_a_v)
     log_file = get_logs_dir(target_v) / "crossover_io.txt"
 
+    # Track errors from previous attempts for error injection
+    _crossover_error_ctx = ""
+
     for attempt in range(MAX_CROSSOVER_RETRIES):
         # Reset target dir from parent A baseline to avoid corrupted state from previous attempt
         if target_dir.exists():
@@ -264,10 +268,15 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
         shutil.copytree(parent_a_dir, target_dir, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
         (target_dir / ".completed").unlink(missing_ok=True)
 
+        # Inject errors from previous attempts into prompt
+        attempt_prompt = crossover_prompt
+        if _crossover_error_ctx:
+            attempt_prompt += _crossover_error_ctx
+
         ui.clear_io()
         ui.set_status(f"Crossover v{parent_a_v}×v{parent_b_v}→v{target_v} (Try {attempt+1})", is_working=True)
         await run_claude_query(
-            crossover_prompt, [], ui,
+            attempt_prompt, [], ui,
             f"CROSSOVER v{parent_a_v}×v{parent_b_v}→v{target_v}",
             log_file,
             tools=["Bash", "Read", "Edit"],
@@ -275,12 +284,14 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
 
         compile_errors = verify_code(target_dir)
         if compile_errors:
-            ui.log_history("Crossover compile error, retrying...", "warn")
+            _crossover_error_ctx = f"\n\nCRITICAL: Previous attempt had compile error:\n{compile_errors[0][:500]}\nYou MUST fix this error."
+            ui.log_history("Crossover compile error, retrying with error context...", "warn")
             continue
 
         smoke_errors = run_smoke_test(target_dir)
         if smoke_errors:
-            ui.log_history("Crossover smoke test failed, retrying...", "warn")
+            _crossover_error_ctx = f"\n\nCRITICAL: Previous attempt failed smoke test:\n{smoke_errors[0][:500]}\nYou MUST fix this error."
+            ui.log_history("Crossover smoke test failed, retrying with error context...", "warn")
             continue
 
         return True

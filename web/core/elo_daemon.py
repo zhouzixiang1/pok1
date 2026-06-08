@@ -48,7 +48,7 @@ MAX_REPLAY_FILES = 200
 # Match selection priority weights
 UNDER_EVAL_WEIGHT = 0.6
 DIVERSITY_WEIGHT = 0.4
-UNDER_EVAL_BASELINE = 50
+UNDER_EVAL_BASELINE = 200   # Games per pair needed for stable Glicko-2 RD (<50)
 RATING_GAP_SCALE = 200
 DIVERSITY_COUNT_DECAY = 100
 
@@ -520,6 +520,7 @@ def main():
     matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
     for a, b in matches:
         match_queue.append((a, b, bot_path(a), bot_path(b), n_pairs))
+    _matches_dirty = False  # Set True after save_cycle; triggers pick_matches recalc
 
     executor = ProcessPoolExecutor(max_workers=n_workers)
     in_flight = {}  # future -> (bot_a, bot_b)
@@ -544,7 +545,9 @@ def main():
             try:
                 while running:
                     # Refill in_flight if empty (e.g., after reap signal cleared it)
-                    if not in_flight:
+                    # Skip refill if precommit eval has paused scheduling
+                    pause_signal = Path(__file__).parent / "results" / ".pause_signal"
+                    if not in_flight and not pause_signal.exists():
                         if not active_bots:
                             log.info("No active bots remaining, exiting daemon")
                             break
@@ -579,16 +582,22 @@ def main():
                         played_bots_this_cycle.add(a)
                         played_bots_this_cycle.add(b)
 
-                        # Replenish: submit next match
-                        if match_queue:
+                        # Replenish: submit next match (unless paused by precommit eval)
+                        pause_signal = Path(__file__).parent / "results" / ".pause_signal"
+                        if pause_signal.exists():
+                            # Precommit eval is running — don't submit new battles
+                            pass
+                        elif match_queue:
                             m = match_queue.popleft()
                             if m[0] not in active_bots or m[1] not in active_bots:
                                 continue
                             new_fut = executor.submit(run_single_match, m)
                             in_flight[new_fut] = (m[0], m[1])
                         else:
-                            # Refill queue when empty
-                            matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
+                            # Refill queue when empty — use cached scores if ratings unchanged
+                            if _matches_dirty or not match_queue:
+                                matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
+                                _matches_dirty = False
                             for ma, mb in matches:
                                 match_queue.append((ma, mb, bot_path(ma), bot_path(mb), n_pairs))
                             if match_queue:
@@ -609,6 +618,7 @@ def main():
                                 games_since_save = 0
                                 played_bots_this_cycle = set()
                                 last_save_time = now
+                                _matches_dirty = True  # Ratings changed — recalc match scores
                     except Exception as e:
                         log.warning("Save error (non-fatal): %s", e)
 
@@ -662,6 +672,7 @@ def main():
                                 games_since_save = 0
                                 played_bots_this_cycle = set()
                                 last_save_time = time.time()
+                                _matches_dirty = True
                             if args.verbose:
                                 log.info("Reap signal processed, active bots: %d", len(active_bots))
                     except Exception as e:

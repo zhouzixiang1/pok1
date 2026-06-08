@@ -325,6 +325,6 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
             ui.log_history(f"Combined analyst failed: {e} (attempt {attempt+1}/3)", "warn")
         if attempt < 2:
             import asyncio
-            await asyncio.sleep(30 * (attempt + 1))
+            await asyncio.sleep(5 * (attempt + 1))
 
     return safe_default

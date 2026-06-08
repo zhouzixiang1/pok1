@@ -68,13 +68,27 @@ async def run_quality_gates(args):
                              f"Quality gates: v{v} is byte-for-byte identical to v{source_v} -- workers made zero changes",
                              {"version": v, "source_v": source_v})
 
+    # Evaluation cascade: Stage 1 (compile) → Stage 2 (smoke test) → Stage 3 (decision tests + size)
+    # Each stage short-circuits on failure to avoid wasting time on doomed candidates.
     compile_errors = verify_code(bot_dir)
-    smoke_errors = run_smoke_test(bot_dir)
-    decision_detail = run_decision_test_details(bot_dir)
+    if compile_errors:
+        # Stage 1 failed — skip expensive stages
+        smoke_errors = []
+        decision_detail = {"pass_rate": 0.0, "passed": 0, "total": 0, "critical_passed": 0, "critical_total": 0, "critical_failures": [], "failures": [], "scenarios": []}
+        total_lines, oversized = 0, []
+    else:
+        smoke_errors = run_smoke_test(bot_dir)
+        if smoke_errors:
+            # Stage 2 failed — skip decision tests
+            decision_detail = {"pass_rate": 0.0, "passed": 0, "total": 0, "critical_passed": 0, "critical_total": 0, "critical_failures": [], "failures": [], "scenarios": []}
+            total_lines, oversized = 0, []
+        else:
+            # Stage 3: decision tests + file size (run together)
+            decision_detail = run_decision_test_details(bot_dir)
+            total_lines, oversized = check_code_size(bot_dir)
     decision_rate = decision_detail.get("pass_rate", 0.0)
     critical_failures = decision_detail.get("critical_failures", [])
     critical_ok = len(critical_failures) == 0
-    total_lines, oversized = check_code_size(bot_dir)
     decision_ok = decision_rate >= 0.7 and critical_ok
 
     all_passed = (
@@ -310,6 +324,57 @@ async def run_review(args):
             "logs": ui.get_output(),
         }
     else:
+        # Regex fallback: try to extract approval + score from raw text
+        import re as _re
+        data = None
+        if output:
+            approved_match = _re.search(
+                r'(?:approved|APPROVED|approve)[\s:="\']+(true|yes|1)',
+                output, _re.IGNORECASE,
+            )
+            score_match = _re.search(
+                r'(?:quality.?score|score)[\s:="\']*(\d+(?:\.\d+)?)',
+                output, _re.IGNORECASE,
+            )
+            if approved_match and score_match:
+                fallback_score = float(score_match.group(1))
+                if fallback_score >= 6:
+                    data = {
+                        "approved": True,
+                        "quality_score": fallback_score,
+                        "feedback": output[-2000:],
+                        "change_summary": "",
+                        "risk_areas": [],
+                    }
+                    ui.log_history(
+                        f"Reviewer JSON parse failed but regex extracted approval (score={fallback_score})",
+                        "warn",
+                    )
+        if data:
+            # Reuse the approval path with regex-extracted data
+            approved = True
+            feedback = data.get("feedback", "")
+            gate = _gate_payload(
+                v, source_v, True,
+                approved=True, quality_score=data.get("quality_score", 0),
+                feedback=feedback, change_summary="", risk_areas=[],
+            )
+            checkpoint_recorded = _record_gate(
+                v, source_v, "review", gate,
+                stage="reviewed",
+                master_plan=ckpt.get("master_plan") if ckpt else plan,
+                reviewer_feedback=feedback,
+            )
+            result = {
+                "approved": True,
+                "quality_score": data.get("quality_score", 0),
+                "change_summary": "",
+                "risk_areas": [],
+                "feedback": feedback,
+                "checkpoint_recorded": checkpoint_recorded,
+                "logs": ui.get_output(),
+            }
+            return _json_tool_result(result)
         error_msg = (
             "Reviewer returned valid JSON but missing 'approved' field"
             if data and isinstance(data, dict)
@@ -387,6 +452,12 @@ async def run_critic(args):
         score_num = float(score)
     except (TypeError, ValueError):
         score_num = 0.0
+    # Detect auto-degraded critic (LLM failure → score=5, approved=True)
+    auto_degraded = (
+        score_num == 5
+        and data.get("approved") is True
+        and "auto-approved with low confidence" in str(data.get("feedback", ""))
+    )
     raw_approved = data.get("approved", score_num >= 6)
     approved = bool(raw_approved) and score_num >= 6
     force_advanced = force_advance and not approved

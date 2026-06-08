@@ -25,6 +25,10 @@ from tool_helpers import (
     PROJECT_ROOT,
 )
 
+# Pause signal file — daemon checks this to stop scheduling new battles
+from evolution_infra import RESULTS_DIR
+_PAUSE_SIGNAL = RESULTS_DIR / ".pause_signal"
+
 
 # ──────────────────────────────────────────────
 # Precommit Eval
@@ -78,6 +82,12 @@ async def run_precommit_eval(args):
 
     # compile/smoke already verified by quality gates (required by _quality_gate_ok above)
 
+    # Signal daemon to pause scheduling new battles during precommit eval (CPU contention)
+    try:
+        _PAUSE_SIGNAL.write_text(str(asyncio.get_event_loop().time()))
+    except Exception:
+        pass
+
     opponents = _select_precommit_opponents(v, source_v)
     # Add crossover parent_b if applicable
     if ckpt and ckpt.get("parent2_v"):
@@ -98,7 +108,10 @@ async def run_precommit_eval(args):
     # Defensive: ensure asyncio is available even if MCP server cached a stale module
     import asyncio as _asyncio
 
-    for item in opponents:
+    per_game_timeout = max(180, n_games * 90)
+
+    async def _battle_one_opponent(item):
+        """Battle one opponent, returning (matchup_dict, item_blockers)."""
         opponent = item["name"]
         opponent_main = _bot_main(opponent)
         matchup = {
@@ -109,19 +122,14 @@ async def run_precommit_eval(args):
             "draws": 0,
             "n_played": 0,
         }
+        item_blockers = []
         try:
             loop = _asyncio.get_running_loop()
-            # Per-opponent timeout: scale with n_games (each mirror pair ~90s)
-            per_game_timeout = max(180, n_games * 90)
             match_wins, draws, n_played, _ = await _asyncio.wait_for(
                 loop.run_in_executor(
                     None,
-                    lambda: mirror_battle(
-                        str(candidate_main),
-                        str(opponent_main),
-                        n_games=n_games,
-                        verbose=False,
-                        save_log=False,
+                    lambda _c=str(candidate_main), _o=str(opponent_main): mirror_battle(
+                        _c, _o, n_games=n_games, verbose=False, save_log=False,
                     ),
                 ),
                 timeout=per_game_timeout,
@@ -132,42 +140,76 @@ async def run_precommit_eval(args):
                 "draws": int(draws),
                 "n_played": int(n_played),
             })
-            total_wins += matchup["wins"]
-            total_losses += matchup["losses"]
-            total_draws += matchup["draws"]
             if n_played < n_games:
-                blockers.append({
+                item_blockers.append({
                     "reason": "incomplete_or_timeout",
                     "opponent": opponent,
                     "details": f"Only {n_played}/{n_games} mirror pairs completed.",
                 })
-            if opponent == parent_name and matchup["wins"] < matchup["losses"]:
-                blockers.append({
-                    "reason": "lost_to_parent",
-                    "opponent": opponent,
-                    "details": f"{matchup['wins']}-{matchup['losses']}-{matchup['draws']}",
-                })
         except _asyncio.TimeoutError:
             matchup["error"] = f"Mirror battle timed out ({per_game_timeout}s limit)"
-            blockers.append({
+            item_blockers.append({
                 "reason": "match_timeout",
                 "opponent": opponent,
                 "details": f"Mirror battle against {opponent} exceeded {per_game_timeout}s timeout",
             })
         except Exception as exc:
             matchup["error"] = str(exc)[:500]
-            blockers.append({
+            item_blockers.append({
                 "reason": "match_exception",
                 "opponent": opponent,
                 "details": str(exc)[:500],
             })
-        matchups.append(matchup)
+        return matchup, item_blockers
+
+    # Run all opponent battles in parallel
+    if opponents:
+        battle_results = await _asyncio.gather(
+            *[_battle_one_opponent(item) for item in opponents],
+            return_exceptions=True,
+        )
+        for result in battle_results:
+            if isinstance(result, Exception):
+                matchups.append({
+                    "opponent": "unknown",
+                    "reason": "parallel_error",
+                    "wins": 0, "losses": 0, "draws": 0, "n_played": 0,
+                    "error": str(result)[:500],
+                })
+                blockers.append({
+                    "reason": "match_exception",
+                    "opponent": "unknown",
+                    "details": str(result)[:500],
+                })
+                continue
+            matchup, item_blockers = result
+            matchups.append(matchup)
+            blockers.extend(item_blockers)
+            total_wins += matchup["wins"]
+            total_losses += matchup["losses"]
+            total_draws += matchup["draws"]
+
+    # Post-collection checks (must run after all results gathered)
+    for matchup in matchups:
+        opp_name = matchup.get("opponent", "")
+        if opp_name == parent_name and matchup["wins"] < matchup["losses"]:
+            blockers.append({
+                "reason": "lost_to_parent",
+                "opponent": opp_name,
+                "details": f"{matchup['wins']}-{matchup['losses']}-{matchup['draws']}",
+            })
 
     if total_losses >= 3 and total_losses >= total_wins + 2:
         blockers.append({
             "reason": "aggregate_precommit_regression",
             "details": f"Aggregate mirror result {total_wins}-{total_losses}-{total_draws}.",
         })
+
+    # Remove pause signal — daemon may resume normal scheduling
+    try:
+        _PAUSE_SIGNAL.unlink(missing_ok=True)
+    except Exception:
+        pass
 
     passed = len(blockers) == 0
     result = {

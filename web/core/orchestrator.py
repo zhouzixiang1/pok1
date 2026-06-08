@@ -175,7 +175,27 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     print(f"\n[ERROR] {e}")
             return "".join(texts), cost, ok, gen, auth_err
 
-        CYCLE_TIMEOUT = 3600  # 60 minutes max per cycle (was 1800s, increased for retry cycles)
+        # Dynamic cycle timeout: base 5400s + extra for retries/precommit opponents
+        def _compute_cycle_timeout():
+            base = 5400  # 90 minutes base
+            try:
+                from evolution_infra import RESULTS_DIR
+                import json as _json
+                ckpt_file = RESULTS_DIR / "pipeline_state.json"
+                if ckpt_file.exists():
+                    with open(ckpt_file) as _f:
+                        ckpt = _json.load(_f)
+                    gen_attempt = ckpt.get("generation_attempt", 0)
+                    if gen_attempt >= 1:
+                        base += 1800
+                    precommit = ckpt.get("precommit_opponents", [])
+                    if isinstance(precommit, list):
+                        base += len(precommit) * 120
+            except Exception:
+                pass
+            return min(base, 9000)  # Cap at 2.5 hours
+
+        CYCLE_TIMEOUT = _compute_cycle_timeout()
         query_gen = None
         try:
             try:
@@ -221,41 +241,13 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     return ui.gen_cost_total - _cost_at_start
                 return total_cost
 
-            # 529 rate-limit retry with exponential backoff
+            # 529 rate-limit detection — sub-agents handle retries internally,
+            # so just log and let the cycle end naturally (next cycle retries).
             if _is_rate_limited(full_output):
                 _clear_orchestrator_session()
-                retry_opts = ClaudeAgentOptions(
-                    model="sonnet",
-                    permission_mode="bypassPermissions",
-                    cwd=str(PROJECT_ROOT),
-                    mcp_servers={"evolution": evolution_server},
-                    strict_mcp_config=True,
-                    disallowed_tools=_BLOCKED_MCP_TOOLS,
-                    hooks=_make_precompact_hook(),
-                    max_turns=max_turns,
-                    thinking={"type": "adaptive", "display": "summarized"},
-                )
-                for backoff in [30, 60, 120]:
-                    if ui:
-                        ui.log_history(f"Orchestrator rate limited (529). Retrying in {backoff}s...", "warn")
-                    lf.write(f"\n[529 RETRY] backing off {backoff}s\n")
-                    if shutdown_mgr:
-                        try:
-                            await asyncio.wait_for(shutdown_mgr.wait_for_shutdown(), timeout=backoff)
-                            return total_cost
-                        except asyncio.TimeoutError:
-                            pass
-                    else:
-                        await asyncio.sleep(backoff)
-                    if query_gen is not None:
-                        try:
-                            await query_gen.aclose()
-                        except Exception:
-                            pass
-                    full_output, retry_cost, cycle_completed, query_gen, auth_error = await _stream_response(retry_opts)
-                    total_cost += retry_cost
-                    if not _is_rate_limited(full_output):
-                        break
+                if ui:
+                    ui.log_history("Orchestrator hit rate limit (529). Sub-agents already retrried; ending cycle.", "warn")
+                lf.write("\n[529 DETECTED] sub-agent retries handled internally, ending cycle\n")
 
             if ui:
                 ui.update_cost("Orchestrator", total_cost, None)

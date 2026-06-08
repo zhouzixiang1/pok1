@@ -178,7 +178,8 @@ async def commit_bot(args):
     try:
         from evolution_infra import locked_file
         with locked_file(priority_file, "w") as f:
-            json.dump({"bot": f"claude_v{v}", "min_games": 100, "since": time.time()}, f)
+            from evolution_infra import PRIORITY_EVAL_MIN_GAMES
+            json.dump({"bot": f"claude_v{v}", "min_games": PRIORITY_EVAL_MIN_GAMES, "since": time.time()}, f)
     except Exception as e:
         _log.warning("Priority eval signal write failed for v%d: %s", v, e)
 

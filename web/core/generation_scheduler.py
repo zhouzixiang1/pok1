@@ -67,24 +67,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                 break
             reap_count += 1
 
-    # Wait for sufficient evaluation
-    eval_kwargs = {"ui": ui, "shutdown_event": shutdown_mgr}
-    if min_games is not None:
-        eval_kwargs["min_games"] = min_games
-    eval_ok = await wait_for_daemon_eval(bot_name, **eval_kwargs)
-    if shutdown_mgr and shutdown_mgr.is_shutting_down:
-        return None
-    if not eval_ok:
-        if ui:
-            ui.log_history("Waiting for evaluation (insufficient games)...", "info")
-        return None
-
-    # Cleanup incomplete bot dirs from previous interrupted cycles
-    _cleanup_incomplete()
-    if shutdown_mgr and shutdown_mgr.is_shutting_down:
-        return None
-
-    # Load prev critic insights from archive
+    # Load prev critic insights from archive (lightweight, runs before parallel section)
     prev_critic_info = ""
     try:
         from evolution_infra import RESULTS_DIR
@@ -104,16 +87,33 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     except Exception:
         pass
 
-    # Combined analysis (stagnation + performance) + match analysis — run in parallel
+    # Wait for sufficient evaluation AND run analysis in parallel
+    # This overlaps the LLM analysis calls with daemon eval time
+    eval_kwargs = {"ui": ui, "shutdown_event": shutdown_mgr}
+    if min_games is not None:
+        eval_kwargs["min_games"] = min_games
+
     from combined_analyst import _run_combined_analysis
     from agent_master import _analyze_recent_matches
 
-    combined_result, match_result = await asyncio.gather(
+    eval_ok, combined_result, match_result = await asyncio.gather(
+        wait_for_daemon_eval(bot_name, **eval_kwargs),
         _run_combined_analysis(active_v, active_bots, ratings, ui, prev_critic_info),
         _analyze_recent_matches(active_v, ui),
         return_exceptions=True,
     )
 
+    if shutdown_mgr and shutdown_mgr.is_shutting_down:
+        return None
+    if not eval_ok or isinstance(eval_ok, BaseException):
+        if isinstance(eval_ok, BaseException):
+            log.warning("Daemon eval error: %s", eval_ok)
+        if ui:
+            ui.log_history("Waiting for evaluation (insufficient games)...", "info")
+        return None
+
+    # Cleanup incomplete bot dirs from previous interrupted cycles
+    _cleanup_incomplete()
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         return None
 
