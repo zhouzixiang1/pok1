@@ -336,12 +336,12 @@ async def execute_workers(args):
             "source_v": source_v,
         })
 
-    # When critic has rejected >= 2 times with the same master plan, force re-planning.
+    # When critic has rejected, force re-planning on 2nd+ rejection.
     # Re-using the same plan that the critic already rejected guarantees repeated failure.
     generation_attempt = ckpt.get("generation_attempt", 0)
-    if reviewer_feedback and generation_attempt >= 2:
+    if reviewer_feedback and generation_attempt >= 1:
         return _json_tool_result({
-            "error": f"generation_attempt={generation_attempt}. The critic has rejected the same plan {generation_attempt} times. "
+            "error": f"generation_attempt={generation_attempt}. The critic rejected the plan {generation_attempt} time(s). "
                      f"You MUST call run_master first to generate a NEW plan incorporating the critic feedback, "
                      f"then call execute_workers with the new plan.",
             "require_new_plan": True,
