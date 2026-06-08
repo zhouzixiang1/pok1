@@ -2,7 +2,7 @@ from constants import N_PLAYERS, BIG_BLIND, TOTAL_HANDS, SIMULATIONS_BY_PUBLIC_C
 from card_utils import clamp
 from state import (
     reconstruct_state, get_remaining_hands, estimate_preflop_strength,
-    is_preflop_3bet_candidate, is_preflop_trash_hand,
+    is_preflop_3bet_candidate, is_preflop_trash_hand, get_hand_index,
 )
 from tournament import (
     should_lock_win, fold_gives_opponent_lock, match_risk_adjustment,
@@ -177,16 +177,15 @@ def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength
     weak_showdown = made_strength < 0.22
     size_bucket = bet_size_bucket(spot_info["last_raise_pot_ratio"])
 
-    # Crossover from v6: higher call margins for fold discipline
     if weak_showdown:
-        margin += 0.020
+        margin += 0.012
     if air_hand:
-        margin += 0.028
+        margin += 0.018
 
     if spot_info["facing_postflop_aggression"]:
         margin += 0.008
         if size_bucket == "small":
-            margin += 0.032
+            margin += 0.020
         elif size_bucket == "medium":
             margin += 0.010
         else:
@@ -195,9 +194,9 @@ def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength
         if spot_info.get("opp_postflop_bet_count", 0) >= 2:
             margin += 0.024 if size_bucket == "small" else 0.014
         if round_idx >= 2 and air_hand:
-            margin += 0.020
+            margin += 0.010
         if round_idx == 3 and size_bucket == "large":
-            margin += 0.032
+            margin += 0.020
 
     if not has_position:
         margin += 0.008
@@ -441,6 +440,54 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
             return raise_amount
         return 0
 
+    if spot_info['preflop_spot'] == 'bb_vs_raise':
+        fold_to_raise = opponent_model.get('fold_to_raise', 0.44)
+        if preflop_strength >= 0.60:
+            raise_amount = choose_raise(
+                state['min_raise_action'], my_chips, state['my_round_bet'],
+                to_call, state['pot'], max(win_rate, preflop_strength), 0,
+                spot_info['preflop_spot'], preflop_strength, spot_info['has_position'],
+                opponent_model, match_sizing_delta=match_profile['sizing_delta'])
+            if raise_amount is not None and raise_amount > to_call:
+                return raise_amount
+            return 0
+        if 0.38 <= preflop_strength <= 0.54 and confidence >= 0.25 and fold_to_raise > 0.48:
+            hand_idx = get_hand_index(req) or 0
+            freq_token = (sum(req['my_cards']) * 13 + hand_idx * 7) % 100
+            bluff_freq = clamp((fold_to_raise - 0.48) * 1.5, 0.0, 0.5)
+            if freq_token < int(bluff_freq * 100):
+                raise_amount = choose_raise(
+                    state['min_raise_action'], my_chips, state['my_round_bet'],
+                    to_call, state['pot'], max(win_rate, preflop_strength), 0,
+                    spot_info['preflop_spot'], preflop_strength, spot_info['has_position'],
+                    opponent_model, match_sizing_delta=match_profile['sizing_delta'])
+                if raise_amount is not None and raise_amount > to_call:
+                    return raise_amount
+        call_threshold = 0.37 + match_adjust - loose_bonus
+        call_threshold -= confidence * max(0.0, fold_to_raise - 0.50) * 0.03
+        if preflop_strength >= call_threshold:
+            return 0
+        if preflop_strength < 0.32 and to_call > BIG_BLIND * 3:
+            return -1
+        return 0
+
+    if spot_info['preflop_spot'] == 'sb_vs_reraise':
+        if preflop_strength >= 0.78:
+            pot_after_call = state['pot'] + to_call
+            target = int(to_call + pot_after_call * 0.55)
+            target = max(state['min_raise_action'], target)
+            if target >= my_chips * 0.50:
+                return -2
+            target = min(target, my_chips - 1)
+            if target > to_call and target >= state['min_raise_action'] and target < my_chips:
+                return target
+            return -2
+        if preflop_strength >= 0.55 and to_call <= my_chips * 0.15:
+            return 0
+        if preflop_strength >= 0.45 and to_call <= my_chips * 0.20:
+            return 0
+        return -1
+
     return None
 
 
@@ -465,20 +512,23 @@ def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile,
         if board_texture["straight_pressure"] >= 1.0:
             texture_bonus += 0.02
 
+    # Derived offset to reduce over-folding — raises all fold thresholds
+    _fold_conservatism = 0.05
+
     if round_idx == 1:
-        if made_strength < 0.20 + texture_bonus and not has_draw and size_bucket in ("medium", "large"):
+        if made_strength < 0.20 + _fold_conservatism + texture_bonus and not has_draw and size_bucket in ("medium", "large"):
             return True
-        if made_strength < 0.22 + texture_bonus and not has_draw and opp_bets >= 2:
+        if made_strength < 0.22 + _fold_conservatism + texture_bonus and not has_draw and opp_bets >= 2:
             return True
     if round_idx == 2:
-        if made_strength < 0.25 + texture_bonus and not has_draw and size_bucket in ("medium", "large"):
+        if made_strength < 0.25 + _fold_conservatism + texture_bonus and not has_draw and size_bucket in ("medium", "large"):
             return True
-        if made_strength < 0.28 + texture_bonus and not has_draw and opp_bets >= 2:
+        if made_strength < 0.28 + _fold_conservatism + texture_bonus and not has_draw and opp_bets >= 2:
             return True
     if round_idx == 3:
-        if made_strength < 0.35 + texture_bonus and not has_draw and size_bucket in ("medium", "large"):
+        if made_strength < 0.35 + _fold_conservatism + texture_bonus and not has_draw and size_bucket in ("medium", "large"):
             return True
-        if made_strength < 0.40 + texture_bonus and not has_draw and opp_bets >= 2:
+        if made_strength < 0.40 + _fold_conservatism + texture_bonus and not has_draw and opp_bets >= 2:
             return True
     return False
 
