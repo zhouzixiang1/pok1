@@ -24,10 +24,18 @@ def build_opponent_model(requests, my_id):
     fold_to_raise_opportunities = 0
     fold_to_raise = 0
     raise_sizes = []
+    flop_bets = 0; turn_bets = 0; river_bets = 0
+    flop_acts = 0; turn_acts = 0; river_acts = 0
+    flop_raise_bb = []; turn_raise_bb = []; river_raise_bb = []
+    barrel_hands = 0; barrel_continue = 0
+    opp_bet_flop = False; opp_bet_turn = False
 
     for req in hand_requests:
         if opponent_can_lock_win(req, my_id):
             continue
+
+        opp_bet_flop = False
+        opp_bet_turn = False
 
         history = req.get("history", [])
         if not history:
@@ -69,6 +77,26 @@ def build_opponent_model(requests, my_id):
                     postflop_aggressive += 1
                 if action_type == "check":
                     postflop_checks += 1
+                if round_idx == 1:
+                    flop_acts += 1
+                    if action_type in ('raise', 'allin'):
+                        flop_bets += 1
+                        opp_bet_flop = True
+                    if action_type == 'raise':
+                        flop_raise_bb.append(action / BIG_BLIND)
+                elif round_idx == 2:
+                    turn_acts += 1
+                    if action_type in ('raise', 'allin'):
+                        turn_bets += 1
+                        opp_bet_turn = True
+                    if action_type == 'raise':
+                        turn_raise_bb.append(action / BIG_BLIND)
+                elif round_idx == 3:
+                    river_acts += 1
+                    if action_type in ('raise', 'allin'):
+                        river_bets += 1
+                    if action_type == 'raise':
+                        river_raise_bb.append(action / BIG_BLIND)
 
             if action_type == "raise":
                 raise_sizes.append(action / BIG_BLIND)
@@ -78,6 +106,11 @@ def build_opponent_model(requests, my_id):
                 if action_type == "fold":
                     fold_to_raise += 1
                 pending_my_pressure = False
+
+        if opp_bet_flop:
+            barrel_hands += 1
+            if opp_bet_turn:
+                barrel_continue += 1
 
     confidence = clamp((total_actions - 5) / 35.0, 0.0, 1.0)
     avg_raise_bb = sum(raise_sizes) / len(raise_sizes) if raise_sizes else 2.6
@@ -92,6 +125,13 @@ def build_opponent_model(requests, my_id):
         "fold_to_raise": smooth_rate(fold_to_raise, fold_to_raise_opportunities, 0.44, 4.0),
         "aggression": smooth_rate(aggressive_actions, total_actions, 0.30, 6.0),
         "avg_raise_bb": avg_raise_bb,
+        "flop_aggr": smooth_rate(flop_bets, flop_acts, 0.36, 5.0),
+        "turn_aggr": smooth_rate(turn_bets, turn_acts, 0.32, 5.0),
+        "river_aggr": smooth_rate(river_bets, river_acts, 0.28, 5.0),
+        "avg_flop_raise_bb": sum(flop_raise_bb)/len(flop_raise_bb) if flop_raise_bb else 3.0,
+        "avg_turn_raise_bb": sum(turn_raise_bb)/len(turn_raise_bb) if turn_raise_bb else 4.5,
+        "avg_river_raise_bb": sum(river_raise_bb)/len(river_raise_bb) if river_raise_bb else 5.5,
+        "barrel_freq": smooth_rate(barrel_continue, barrel_hands, 0.45, 4.0),
     }
 
 

@@ -23,6 +23,26 @@ from simulation import (
 )
 
 
+def _per_street_diverges(opponent_model, per_street_key, per_street_prior, aggregate_key, aggregate_prior):
+    per_street_val = opponent_model.get(per_street_key, per_street_prior)
+    aggregate_val = opponent_model.get(aggregate_key, aggregate_prior)
+    ps_above = per_street_val > per_street_prior
+    ag_above = aggregate_val > aggregate_prior
+    return ps_above != ag_above
+
+
+def _aligned_signal_boost(opponent_model, per_street_key, per_street_prior, aggregate_key, aggregate_prior):
+    per_street_val = opponent_model.get(per_street_key, per_street_prior)
+    aggregate_val = opponent_model.get(aggregate_key, aggregate_prior)
+    ps_above = per_street_val > per_street_prior
+    ag_above = aggregate_val > aggregate_prior
+    if ps_above != ag_above:
+        return 0.0
+    ps_dev = abs(per_street_val - per_street_prior) / per_street_prior
+    ag_dev = abs(aggregate_val - aggregate_prior) / aggregate_prior
+    return (ps_dev * ag_dev) ** 0.5
+
+
 def opponent_pressure_adjustment(opponent_model, spot_info, round_idx):
     confidence = opponent_model["confidence"]
     adjustment = 0.0
@@ -35,7 +55,40 @@ def opponent_pressure_adjustment(opponent_model, spot_info, round_idx):
         adjustment -= confidence * max(0.0, opponent_model["postflop_aggr"] - 0.48) * 0.05
         adjustment += min(0.04, spot_info["last_raise_pot_ratio"] * 0.04)
 
-    return clamp(adjustment, -0.05, 0.07)
+    # Per-street opponent profiling — unconditional adjustments
+    if confidence >= 0.15:
+        if round_idx == 2:
+            barrel = opponent_model.get('barrel_freq', 0.45)
+            if barrel >= 0.60:
+                adjustment -= confidence * (barrel - 0.50) * 0.100
+            elif barrel <= 0.30:
+                adjustment += confidence * (0.40 - barrel) * 0.060
+        elif round_idx == 3:
+            river_bb = opponent_model.get('avg_river_raise_bb', 5.5)
+            river_aggr = opponent_model.get('river_aggr', 0.28)
+            if river_bb >= 8.0 and river_aggr >= 0.32:
+                adjustment += confidence * 0.060
+            elif river_bb <= 3.0 and river_aggr <= 0.22:
+                adjustment -= confidence * 0.050
+    # Aligned-signal boost
+    if confidence >= 0.15:
+        if round_idx == 2:
+            barrel = opponent_model.get('barrel_freq', 0.45)
+            alignment = _aligned_signal_boost(opponent_model, 'barrel_freq', 0.45, 'postflop_aggr', 0.36)
+            if alignment > 0:
+                if barrel >= 0.60:
+                    adjustment -= confidence * alignment * barrel * 1.5
+                elif barrel <= 0.30:
+                    adjustment += confidence * alignment * (1.0 - barrel) * 1.5
+        elif round_idx == 3:
+            river_aggr = opponent_model.get('river_aggr', 0.28)
+            alignment = _aligned_signal_boost(opponent_model, 'river_aggr', 0.28, 'postflop_aggr', 0.36)
+            if alignment > 0:
+                if river_aggr >= 0.32:
+                    adjustment += confidence * alignment * 1.5
+                elif river_aggr <= 0.22:
+                    adjustment -= confidence * alignment * 1.5
+    return clamp(adjustment, -0.12, 0.15)
 
 
 def aggressive_line_strength(spot_info, board_texture):
@@ -218,6 +271,7 @@ def realized_postflop_equity(
     has_position,
     spot_info,
     pair_profile=None,
+    opponent_model=None,
 ):
     air_hand = made_strength < 0.18 and draw_strength < 0.08
     if round_idx <= 0:
@@ -236,6 +290,32 @@ def realized_postflop_equity(
             eqr -= 0.12
 
         eqr = clamp(eqr, 0.45, 0.85)
+        if opponent_model is not None and round_idx >= 2:
+            opp_conf = opponent_model.get('confidence', 0.0)
+            if opp_conf >= 0.15:
+                barrel = opponent_model.get('barrel_freq', 0.45)
+                if barrel >= 0.60:
+                    eqr -= 0.06
+                if round_idx == 3:
+                    river_bb = opponent_model.get('avg_river_raise_bb', 5.5)
+                    if river_bb <= 3.0:
+                        eqr -= 0.08
+                # Aligned-signal boost (additive, harmless)
+                barrel_align = _aligned_signal_boost(opponent_model, 'barrel_freq', 0.45, 'postflop_aggr', 0.36)
+                if barrel_align > 0:
+                    if barrel >= 0.60:
+                        eqr -= barrel_align * opp_conf * 1.5
+                    elif barrel <= 0.30:
+                        eqr += barrel_align * opp_conf * 1.5
+                if round_idx == 3:
+                    river_aggr = opponent_model.get('river_aggr', 0.28)
+                    river_align = _aligned_signal_boost(opponent_model, 'river_aggr', 0.28, 'postflop_aggr', 0.36)
+                    if river_align > 0:
+                        if river_aggr >= 0.32:
+                            eqr -= river_align * opp_conf * 1.5
+                        elif river_aggr <= 0.22:
+                            eqr += river_align * opp_conf * 1.5
+            eqr = clamp(eqr, 0.45, 0.85)
         return win_rate * eqr
 
     if pair_profile is not None and pair_profile["made_class"] == 1:
@@ -499,9 +579,7 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
     return None
 
 
-def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile, spot_info, pot_odds=0.0):
-    """Pot-odds-calibrated fold gate. Replaces hardcoded thresholds with
-    equity-vs-pot-odds comparison scaled by street, bet size, and aggression."""
+def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile, spot_info):
     if round_idx <= 0:
         return False
     tier = value_profile.get("tier", "none") if value_profile else "none"
@@ -510,28 +588,24 @@ def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile,
     has_draw = draw_strength >= 0.14
     if not spot_info["facing_postflop_aggression"]:
         return False
-
-    # Base equity needed to continue — derived from pot odds with street overlay
-    # Earlier streets need less equity (implied odds from draws), later need more
-    street_overlay = {1: -0.06, 2: -0.02, 3: 0.02}
-    base_equity_needed = pot_odds + street_overlay.get(round_idx, 0.0)
-
-    # Scale by bet size: larger bets raise the fold threshold
     size_bucket = bet_size_bucket(spot_info["last_raise_pot_ratio"])
-    size_scale = {"small": 0.0, "medium": 0.04, "large": 0.07}
-    equity_needed = base_equity_needed + size_scale.get(size_bucket, 0.0)
-
-    # Repeated aggression raises the bar (opponent is polarized toward value)
     opp_bets = spot_info.get("opp_current_round_bet_count", 0)
-    if opp_bets >= 2:
-        equity_needed += 0.05
-
-    # Use made_strength as the proxy for equity (draw_strength adds implied value)
-    effective_strength = made_strength
-    if has_draw:
-        effective_strength += draw_strength * 0.5  # partial credit for draw equity
-
-    return effective_strength < equity_needed
+    if round_idx == 1:
+        if made_strength < 0.20 and not has_draw and size_bucket in ("medium", "large"):
+            return True
+        if made_strength < 0.22 and not has_draw and opp_bets >= 2:
+            return True
+    if round_idx == 2:
+        if made_strength < 0.25 and not has_draw and size_bucket in ("medium", "large"):
+            return True
+        if made_strength < 0.28 and not has_draw and opp_bets >= 2:
+            return True
+    if round_idx == 3:
+        if made_strength < 0.35 and not has_draw and size_bucket in ("medium", "large"):
+            return True
+        if made_strength < 0.40 and not has_draw and opp_bets >= 2:
+            return True
+    return False
 
 
 def get_action(req, requests):
@@ -802,6 +876,7 @@ def get_action(req, requests):
                 spot_info["has_position"],
                 spot_info,
                 pair_profile,
+                opponent_model,
             )
         if anti_lock_pressure:
             call_margin -= 0.07
@@ -865,7 +940,7 @@ def get_action(req, requests):
         if fragile_pair_raise_fold:
             if not anti_lock_call_continue and not strong_made_continue:
                 return -1
-        if should_fold_postflop(round_idx, made_strength, draw_strength, value_profile, spot_info, pot_odds):
+        if should_fold_postflop(round_idx, made_strength, draw_strength, value_profile, spot_info):
             if not anti_lock_call_continue and not strong_made_continue:
                 return -1
         if hard_repressure_fold or paired_board_stackoff["severe"]:
