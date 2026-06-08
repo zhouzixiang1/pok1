@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
 import { Link } from "react-router";
-import { useRatings, useMatchStats, useDaemonStatus, useBots, useRecentMatches, useH2H, useGenerations } from "../context/DataProvider";
+import { useRatings, useMatchStats, useDaemonStatus, useRateLimit, useBots, useRecentMatches, useH2H, useGenerations } from "../context/DataProvider";
 import { api } from "../api/client";
 import { controlApi, type ControlStatus } from "../api/control";
 import type { PipelineCheckpoint } from "../api/types";
@@ -171,9 +171,26 @@ export default function Overview() {
     ? daemonAge < 0 ? "从未" : daemonAge < 60 ? `${Math.round(daemonAge)}秒前` : `${Math.round(daemonAge / 60)}分钟前`
     : "—";
 
+  const rateLimit = useRateLimit();
+
   return (
     <>
       <PageMeta title="总览 — Bot 自进化" description="Bot 种群概览" />
+
+      {/* 429 rate-limit warning banner */}
+      {rateLimit?.blocked && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-2.5 mb-4 flex items-center gap-3">
+          <span className="text-amber-400 text-lg">⏳</span>
+          <div>
+            <p className="text-amber-300 text-sm font-medium">API 配额已耗尽，进化暂停</p>
+            <p className="text-amber-400/70 text-xs">
+              将在 {rateLimit.reset_time} 自动恢复
+              {rateLimit.wait_seconds != null && `（剩余 ${Math.ceil(rateLimit.wait_seconds / 60)} 分钟）`}
+            </p>
+          </div>
+          <span className="text-amber-400/50 text-xs ml-auto">Daemon 继续运行中</span>
+        </div>
+      )}
 
       {/* Compact metric strip */}
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">

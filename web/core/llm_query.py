@@ -36,6 +36,21 @@ def _is_rate_limited(output: str) -> bool:
         or "该模型当前访问量过大" in output
         or "rate limit" in output.lower()
         or re.search(r'(?:status["\s:=]+529|HTTP/\d\.?\d?\s+529|error.*529)', output, re.IGNORECASE) is not None
+        or "Request rejected (429)" in output
+    )
+
+
+def _is_quota_exceeded(output: str) -> bool:
+    """Detect 429 quota exhaustion (distinct from 529 overloaded).
+
+    Matches the GLM API error pattern:
+        "Request rejected (429) · [1308][已达到 5 小时的使用上限...]"
+    """
+    if len(output) > 2000:
+        return False
+    return (
+        "Request rejected (429)" in output
+        or ("已达到" in output and "使用上限" in output)
     )
 
 
@@ -104,6 +119,16 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
     tools: list of built-in tool names (e.g. ["Bash", "Read"]) or a ToolsPreset dict.
            When None, no built-in tools are exposed to the model.
     """
+    # Pre-check: if already rate-limited, wait before making any API call
+    from rate_limiter import rate_limiter
+    if rate_limiter.is_blocked():
+        if ui:
+            ui.log_history(
+                f"API 配额受限，等待至 {rate_limiter.reset_time_str()}...",
+                "warn",
+            )
+        await rate_limiter.wait_until_reset()
+
     from evolution_infra import PROJECT_ROOT, MAX_PROMPT_CHARS, _BLOCKED_MCP_TOOLS
 
     # Build (path, content) pairs for context files
@@ -189,6 +214,35 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
             output = "\n".join(full_text)
             if not _is_rate_limited(output):
                 break
+
+    # 429 quota exhaustion — parse reset time, block until reset, then retry once
+    if _is_quota_exceeded(output):
+        if rate_limiter.parse_429(output):
+            wait = rate_limiter.wait_seconds()
+            ui.log_history(
+                f"API 配额耗尽 (429)。等待 {wait:.0f}s 至 {rate_limiter.reset_time_str()}",
+                "error",
+            )
+            await rate_limiter.wait_until_reset()
+            # Retry after reset
+            full_text.clear()
+            retry_gen = claude_query(prompt=full_prompt, options=options)
+            retry_texts, retry_cost, retry_usage = await _process_stream(
+                retry_gen, log_file_path, ui, role_name,
+            )
+            if retry_texts:
+                full_text.extend(retry_texts)
+            if retry_cost:
+                cost_usd = (cost_usd or 0) + retry_cost
+            if retry_usage:
+                if usage is None:
+                    usage = retry_usage
+                else:
+                    merged = {}
+                    for k in ("input_tokens", "output_tokens"):
+                        merged[k] = (usage.get(k, 0) or 0) + (retry_usage.get(k, 0) or 0)
+                    usage = merged
+            output = "\n".join(full_text)
 
     ui.update_cost(role_name, cost_usd, usage)
 

@@ -137,6 +137,19 @@ async def data_stream(request: Request):
                             _event("bots", _get_bots()),
                             _event("stats", _get_match_stats()),
                         ]
+                        # 429 rate-limit status (push alongside daemon every 3s)
+                        try:
+                            from rate_limiter import rate_limiter
+                            if rate_limiter.is_blocked():
+                                events.append(_event("rate_limit", {
+                                    "blocked": True,
+                                    "reset_time": rate_limiter.reset_time_str(),
+                                    "wait_seconds": round(rate_limiter.wait_seconds(), 0),
+                                }))
+                            else:
+                                events.append(_event("rate_limit", {"blocked": False}))
+                        except Exception:
+                            pass
                     except Exception as e:
                         _log.warning("SSE data fetch error (3s): %s", e)
                         events = []

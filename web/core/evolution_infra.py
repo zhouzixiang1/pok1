@@ -733,9 +733,10 @@ from daemon_management import (  # noqa: F401, E402
     _drain_stdout,
 )
 from llm_query import (  # noqa: F401, E402
-    _is_rate_limited, _trim_to_budget,
+    _is_rate_limited, _is_quota_exceeded, _trim_to_budget,
     run_claude_query, parse_json_output,
 )
+from rate_limiter import rate_limiter, RateLimiter  # noqa: F401, E402
 from code_verification import (  # noqa: F401, E402
     verify_code, check_code_size, run_smoke_test,
     run_decision_test_details, seed_initial_bots,

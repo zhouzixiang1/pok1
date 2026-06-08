@@ -1,13 +1,14 @@
 import { createContext, useContext, useState, useEffect, useRef, type ReactNode } from "react";
 import type {
   BotRating, MatchStats, MatchMatrix, HistoryEntry, GenerationLog,
-  MatchSummary, DaemonStatus, BotSummary, H2HEntry, BotStatsEntry,
+  MatchSummary, DaemonStatus, RateLimitStatus, BotSummary, H2HEntry, BotStatsEntry,
 } from "../api/types";
 
 export type DataStore = {
   ratings: BotRating[];
   stats: MatchStats | null;
   daemon: DaemonStatus | null;
+  rateLimit: RateLimitStatus | null;
   bots: { active: BotSummary[]; graveyard: BotSummary[] };
   matches: MatchSummary[];
   matrix: MatchMatrix | null;
@@ -21,6 +22,7 @@ const initial: DataStore = {
   ratings: [],
   stats: null,
   daemon: null,
+  rateLimit: null,
   bots: { active: [], graveyard: [] },
   matches: [],
   matrix: null,
@@ -46,6 +48,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       const handlers: Record<string, (data: unknown) => void> = {
         ratings: (data) => setStore((s) => ({ ...s, ratings: data as BotRating[] })),
         daemon: (data) => setStore((s) => ({ ...s, daemon: data as DaemonStatus })),
+        rate_limit: (data) => setStore((s) => ({ ...s, rateLimit: data as RateLimitStatus })),
         bots: (data) => setStore((s) => ({ ...s, bots: data as DataStore["bots"] })),
         stats: (data) => setStore((s) => ({ ...s, stats: data as MatchStats })),
         matches: (data) => setStore((s) => ({ ...s, matches: data as MatchSummary[] })),
@@ -89,6 +92,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
 export const useRatings = () => useContext(DataContext).ratings;
 export const useMatchStats = () => useContext(DataContext).stats;
 export const useDaemonStatus = () => useContext(DataContext).daemon;
+export const useRateLimit = () => useContext(DataContext).rateLimit;
 export const useBots = () => useContext(DataContext).bots;
 export const useRecentMatches = () => useContext(DataContext).matches;
 export const useMatchMatrix = () => useContext(DataContext).matrix;

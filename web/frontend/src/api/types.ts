@@ -66,6 +66,12 @@ export interface DaemonStatus {
   daemon_enabled: boolean;
 }
 
+export interface RateLimitStatus {
+  blocked: boolean;
+  reset_time?: string;
+  wait_seconds?: number;
+}
+
 export interface MatchSummary {
   id: string;
   timestamp: string;

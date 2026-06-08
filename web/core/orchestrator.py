@@ -162,7 +162,15 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                             lf.write(f"\n[API ERROR] {error_text}\n")
                             if ui:
                                 ui.log_history(f"[Orchestrator] API error: {error_text[:200]}", "error")
-                            _clear_orchestrator_session()
+                            # 429 quota exhaustion: parse reset time but PRESERVE session
+                            # so _run_one_cycle can resume via saved_session_id after the wait.
+                            is_429 = "429" in error_text or ("已达到" in error_text and "使用上限" in error_text)
+                            if is_429:
+                                from rate_limiter import rate_limiter
+                                rate_limiter.parse_429(error_text)
+                                # Do NOT clear session — preserve for resume after reset
+                            else:
+                                _clear_orchestrator_session()
                             if any(code in error_text for code in ["401", "403"]):
                                 auth_err = True
             except (CLINotFoundError, ProcessError) as e:
@@ -254,6 +262,18 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     total_cost += retry_cost
                     if not _is_rate_limited(full_output):
                         break
+
+            # 429 quota detected — exit cycle cleanly so orchestrator_loop can block
+            from rate_limiter import rate_limiter
+            if rate_limiter.is_blocked() and not cycle_completed:
+                if ui:
+                    ui.log_history(
+                        "[Orchestrator] 429 配额耗尽。Session 保留，等待恢复后继续。",
+                        "warn",
+                    )
+                if total_cost > 0:
+                    ui.update_cost("Orchestrator", total_cost, None)
+                return (ui.gen_cost_total - _cost_at_start) if ui else total_cost
 
             if ui:
                 ui.update_cost("Orchestrator", total_cost, None)
@@ -381,6 +401,20 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
             if shutdown_mgr and shutdown_mgr.is_shutting_down:
                 break
 
+            # 429 quota exhaustion check — block until reset, then resume
+            from rate_limiter import rate_limiter
+            if rate_limiter.is_blocked():
+                wait = rate_limiter.wait_seconds()
+                if ui:
+                    ui.log_history(
+                        f"⏳ API 配额耗尽，暂停进化。将在 {rate_limiter.reset_time_str()} 自动恢复 ({wait:.0f}s)",
+                        "warn",
+                    )
+                    ui.set_status(f"⏳ 配额等待中 → {rate_limiter.reset_time_str()}", is_working=False)
+                await rate_limiter.wait_until_reset(shutdown_mgr=shutdown_mgr)
+                # Do NOT clear session — next _run_one_cycle() will resume via saved session
+                continue
+
             gen_count += 1
             log_system_event("orchestrator.cycle_start", "info", f"Cycle {gen_count} starting",
                              {"gen_count": gen_count})
@@ -452,8 +486,12 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                 if ui:
                     ui.reset_gen_cost()
 
-            # Auth error fast-fail
+            # Auth error fast-fail (also catches 429 via negative cost from _stream_response)
             if cost < 0:
+                # 429 quota — rate_limiter already set, loop top will handle blocking
+                from rate_limiter import rate_limiter
+                if rate_limiter.is_blocked():
+                    continue
                 if ui:
                     ui.log_history("Orchestrator: API auth error (401/403). Backing off 300s.", "error")
                 if shutdown_mgr:
