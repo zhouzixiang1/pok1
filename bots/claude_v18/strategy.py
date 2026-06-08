@@ -663,6 +663,14 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
     return None
 
 
+def _spr_commitment_guard(round_idx, my_chips, pot, made_strength):
+    """At low SPR, pot odds force commitment even with medium/weak made hands."""
+    if round_idx < 1 or pot <= 0 or my_chips <= 0:
+        return False
+    spr = my_chips / pot
+    return spr <= 1.0 and made_strength > 0.10
+
+
 def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile, spot_info, opponent_model=None):
     if round_idx <= 0:
         return False
@@ -1034,6 +1042,20 @@ def get_action(req, requests):
             nutted_risk,
             board_texture,
         )
+        spr_commit = _spr_commitment_guard(round_idx, my_chips, pot, made_strength)
+        sizing_fold_signal = (
+            round_idx >= 1
+            and spot_info["facing_postflop_aggression"]
+            and bet_size_bucket(spot_info["last_raise_pot_ratio"]) == "large"
+            and opponent_model["confidence"] >= 0.15
+            and made_strength < 0.30
+            and draw_strength < 0.14
+            and (
+                (round_idx == 1 and opponent_model.get("flop_big_bet_rate", 0.15) >= 0.25)
+                or (round_idx == 2 and opponent_model.get("turn_big_bet_rate", 0.12) >= 0.25)
+                or (round_idx == 3 and opponent_model.get("river_big_bet_rate", 0.10) >= 0.25)
+            )
+        )
         anti_lock_attack = None
         if anti_lock_pressure:
             anti_lock_attack = choose_anti_lock_pressure_action(
@@ -1078,14 +1100,14 @@ def get_action(req, requests):
         if fragile_pair_raise_fold:
             if not anti_lock_call_continue and not strong_made_continue:
                 return -1
-        if should_fold_postflop(round_idx, made_strength, draw_strength, value_profile, spot_info, opponent_model):
-            if not anti_lock_call_continue and not strong_made_continue:
+        if should_fold_postflop(round_idx, made_strength, draw_strength, value_profile, spot_info, opponent_model) or sizing_fold_signal:
+            if not anti_lock_call_continue and not strong_made_continue and not spr_commit:
                 return -1
         if hard_repressure_fold or paired_board_stackoff["severe"]:
-            if not anti_lock_call_continue and not strong_made_continue:
+            if not anti_lock_call_continue and not strong_made_continue and not spr_commit:
                 return -1
         if realized_rate < pot_odds + call_margin:
-            if not anti_lock_call_continue and not strong_made_continue:
+            if not anti_lock_call_continue and not strong_made_continue and not spr_commit:
                 return -1
         if repeated_raise_trap and (value_profile is None or value_profile["tier"] != "nut"):
             if made_strength < 0.15 and draw_strength < 0.12 and pot_odds > 0.20:

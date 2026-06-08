@@ -28,6 +28,7 @@ def build_opponent_model(requests, my_id):
     flop_acts = 0; turn_acts = 0; river_acts = 0
     flop_raise_bb = []; turn_raise_bb = []; river_raise_bb = []
     barrel_hands = 0; barrel_continue = 0
+    flop_big_bets = 0; turn_big_bets = 0; river_big_bets = 0
     opp_bet_flop = False; opp_bet_turn = False
 
     for req in hand_requests:
@@ -84,6 +85,8 @@ def build_opponent_model(requests, my_id):
                         opp_bet_flop = True
                     if action_type == 'raise':
                         flop_raise_bb.append(action / BIG_BLIND)
+                        if action / BIG_BLIND >= 6:
+                            flop_big_bets += 1
                 elif round_idx == 2:
                     turn_acts += 1
                     if action_type in ('raise', 'allin'):
@@ -91,12 +94,16 @@ def build_opponent_model(requests, my_id):
                         opp_bet_turn = True
                     if action_type == 'raise':
                         turn_raise_bb.append(action / BIG_BLIND)
+                        if action / BIG_BLIND >= 8:
+                            turn_big_bets += 1
                 elif round_idx == 3:
                     river_acts += 1
                     if action_type in ('raise', 'allin'):
                         river_bets += 1
                     if action_type == 'raise':
                         river_raise_bb.append(action / BIG_BLIND)
+                        if action / BIG_BLIND >= 10:
+                            river_big_bets += 1
 
             if action_type == "raise":
                 raise_sizes.append(action / BIG_BLIND)
@@ -132,6 +139,9 @@ def build_opponent_model(requests, my_id):
         "avg_turn_raise_bb": sum(turn_raise_bb)/len(turn_raise_bb) if turn_raise_bb else 4.5,
         "avg_river_raise_bb": sum(river_raise_bb)/len(river_raise_bb) if river_raise_bb else 5.5,
         "barrel_freq": smooth_rate(barrel_continue, barrel_hands, 0.45, 4.0),
+        "flop_big_bet_rate": smooth_rate(flop_big_bets, flop_bets, 0.15, 4.0),
+        "turn_big_bet_rate": smooth_rate(turn_big_bets, turn_bets, 0.12, 4.0),
+        "river_big_bet_rate": smooth_rate(river_big_bets, river_bets, 0.10, 4.0),
     }
 
 
