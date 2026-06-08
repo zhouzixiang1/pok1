@@ -113,6 +113,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             auth_err = False
             try:
                 gen = claude_query(prompt=prompt, options=opts)
+                _gen_ref[0] = gen  # Track for asyncio.wait_for timeout cleanup
                 async for message in gen:
                     if isinstance(message, AssistantMessage):
                         for block in message.content:
@@ -183,15 +184,22 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
 
         CYCLE_TIMEOUT = 3600  # 60 minutes max per cycle (was 1800s, increased for retry cycles)
         query_gen = None
+        # Mutable container to track the async generator across scope boundaries.
+        # asyncio.wait_for raises TimeoutError BEFORE tuple unpacking completes,
+        # so query_gen remains None. We store gen here from inside _stream_response.
+        _gen_ref = [None]
         try:
             try:
                 full_output, total_cost, cycle_completed, query_gen, auth_error = (
                     await asyncio.wait_for(_stream_response(options), timeout=CYCLE_TIMEOUT)
                 )
             except asyncio.TimeoutError:
-                if query_gen is not None:
+                # query_gen is always None here (tuple unpacking never completed).
+                # Use _gen_ref which was set at the start of _stream_response.
+                _timed_out_gen = _gen_ref[0] or query_gen
+                if _timed_out_gen is not None:
                     try:
-                        await query_gen.aclose()
+                        await _timed_out_gen.aclose()
                     except Exception:
                         pass
                 if ui:
@@ -258,9 +266,18 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                             await query_gen.aclose()
                         except Exception:
                             pass
-                    full_output, retry_cost, cycle_completed, query_gen, auth_error = (
-                        await asyncio.wait_for(_stream_response(retry_opts), timeout=CYCLE_TIMEOUT)
-                    )
+                    try:
+                        full_output, retry_cost, cycle_completed, query_gen, auth_error = (
+                            await asyncio.wait_for(_stream_response(retry_opts), timeout=CYCLE_TIMEOUT)
+                        )
+                    except asyncio.TimeoutError:
+                        _timed_out_gen = _gen_ref[0]
+                        if _timed_out_gen is not None:
+                            try:
+                                await _timed_out_gen.aclose()
+                            except Exception:
+                                pass
+                        raise  # Re-raise to outer timeout handler
                     total_cost += retry_cost
                     if not _is_rate_limited(full_output):
                         break

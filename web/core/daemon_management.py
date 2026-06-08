@@ -196,12 +196,9 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
                     current_proc = daemon_proc
                 # Determine if this was a crash-recovery restart or intentional stop
                 if current_proc is not None and current_proc is not proc and current_proc.poll() is None:
-                    if rc != 0:
-                        # New process was spawned to replace a crashed one — count it
-                        restart_count += 1
-                    else:
-                        # Clean exit (e.g. stop_daemon call) — don't count
-                        restart_count = 0
+                    # Daemon was replaced by another actor (web UI, orchestrator, etc.)
+                    # Don't count against this monitor's restart budget — it wasn't our restart.
+                    restart_count = 0
                 else:
                     restart_count += 1
 

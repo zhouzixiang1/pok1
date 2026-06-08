@@ -364,13 +364,17 @@ async def execute_workers(args):
                         shutil.rmtree(item)
                     else:
                         item.unlink()
-            # Copy fresh source code
+            # Copy fresh source code (skip .completed, __pycache__, .pyc)
             for item in source_dir_r.iterdir():
-                if item.name != ".completed":
-                    if item.is_dir():
-                        shutil.copytree(item, next_dir / item.name)
-                    else:
-                        shutil.copy2(item, next_dir / item.name)
+                if item.name in (".completed", "__pycache__"):
+                    continue
+                if item.suffix == ".pyc":
+                    continue
+                if item.is_dir():
+                    shutil.copytree(item, next_dir / item.name,
+                                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+                else:
+                    shutil.copy2(item, next_dir / item.name)
         reviewer_feedback += (
             f"\n\nNOTE: This is a retry. The code in bots/claude_v{next_v}/ has been ACTUALLY RESET "
             f"from source bots/claude_v{source_v}/. Any modifications described in the feedback "

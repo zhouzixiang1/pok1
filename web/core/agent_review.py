@@ -60,6 +60,9 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
         )
         data = parse_json_output(output)
         if data and "score" in data:
+            # Coerce non-string feedback to string (LLM sometimes returns null/list/dict)
+            if "feedback" in data and not isinstance(data["feedback"], str):
+                data["feedback"] = str(data["feedback"]) if data["feedback"] is not None else ""
             # Normalise: score >= 6 → approved
             from output_schema import validate_agent_output
             data, errors = validate_agent_output("critic", data)

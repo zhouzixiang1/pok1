@@ -157,26 +157,29 @@ def _decide_strategy(combined, current_v, ratings):
     if combined is None:
         return "master", current_v, ()
 
-    # Priority 1: LLM-recommended source overrides stagnation heuristic.
-    # The analyst evaluates all bots' h2h_avg_wr, coverage, and trends to pick
-    # the best evolution source — trust it over the generic stagnation check.
+    # Priority 1: Stagnation with high/medium confidence → crossover
+    # This is the PRIMARY escape hatch from local optima — must fire before
+    # recommended_source so stagnation always triggers diversity injection.
+    if combined.get("is_stagnant") and combined.get("confidence") != "low":
+        parents = _pick_crossover_parents(ratings, current_v)
+        if parents:
+            return "crossover", parents[0], parents
+
+    # Priority 2: LLM-recommended source (only for non-stagnant systems).
+    # Validates that the recommended bot is active (not in graveyard).
     rec_source = combined.get("recommended_source", "")
     if rec_source:
         rec_v = _parse_branch_from(rec_source)
         if rec_v is not None and rec_v >= 1:
-            from evolution_infra import get_bot_dir
-            if get_bot_dir(rec_v).exists():
+            from evolution_infra import get_active_bots, get_bot_dir
+            # Only accept active bots (not graveyard) as evolution source
+            active = get_active_bots()
+            if f"claude_v{rec_v}" in active:
                 if rec_v != current_v:
                     rationale = combined.get("source_rationale", "")
                     log.info("LLM recommended source: v%d (instead of latest v%d). %s",
                              rec_v, current_v, rationale[:200])
                 return "master", rec_v, ()
-
-    # Priority 2: Stagnation with high/medium confidence → crossover
-    if combined.get("is_stagnant") and combined.get("confidence") != "low":
-        parents = _pick_crossover_parents(ratings, current_v)
-        if parents:
-            return "crossover", parents[0], parents
 
     # Priority 3: Explicit branch recommendation
     if combined.get("recommendation") == "branch" and combined.get("branch_from"):

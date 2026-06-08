@@ -472,19 +472,21 @@ async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=
             ui.log_history(f"等待 {bot_name} 评估: {games}/{min_games} 场 ({elapsed}s{rd_info})", "info")
             last_log = time.time()
 
-            # Check daemon health regardless of game count — daemon may crash
-            # after producing partial results, leaving us waiting the full timeout.
-            if ui and time.time() - last_log >= 30:
-                with _daemon_lock:
-                    proc = daemon_proc
-                if proc is not None and proc.poll() is not None:
-                    if games >= min_games:
-                        if ui:
-                            ui.log_history(f"Daemon 已终止 (rc={proc.returncode})，但已有 {games} 场 (≥{min_games})，继续", "warn")
-                        return True
-                    else:
-                        if ui:
-                            ui.log_history(f"Daemon 已终止 (rc={proc.returncode})，仅 {games}/{min_games} 场，等待重启...", "error")
+        # Check daemon health every iteration — daemon may crash after producing
+        # partial results, leaving us waiting the full timeout.
+        # (Not gated by the 30s log interval — crashes need fast detection.)
+        with _daemon_lock:
+            proc = daemon_proc
+        if proc is not None and proc.poll() is not None:
+            if games >= min_games:
+                if ui:
+                    ui.log_history(f"Daemon 已终止 (rc={proc.returncode})，但已有 {games} 场 (≥{min_games})，继续", "warn")
+                return True
+            else:
+                if ui:
+                    ui.log_history(f"Daemon 已终止 (rc={proc.returncode})，仅 {games}/{min_games} 场，等待重启...", "error")
+                # Don't return False — daemon_monitor_thread may restart it.
+                # Continue waiting until timeout expires.
 
 
         await asyncio.sleep(5)

@@ -561,13 +561,13 @@ def main():
                         played_bots_this_cycle.add(b)
 
                         # Replenish: submit next match
-                        if match_queue:
+                        if match_queue and executor is not None:
                             m = match_queue.popleft()
                             if m[0] not in active_bots or m[1] not in active_bots:
                                 continue
                             new_fut = executor.submit(run_single_match, m)
                             in_flight[new_fut] = (m[0], m[1])
-                        else:
+                        elif executor is not None:
                             # Refill queue when empty
                             matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
                             for ma, mb in matches:
@@ -711,6 +711,7 @@ def main():
                     log.error("Failed to create new process pool after break: %s. Will retry next cycle.", recover_exc)
                     # Don't re-raise — let the daemon continue and retry on next save cycle
                     executor = None
+                    in_flight.clear()  # Prevent next loop iteration from accessing None executor
 
     except Exception as e:
         import traceback
@@ -727,7 +728,8 @@ def main():
     finally:
         # Shutdown executor first (workers + their bot subprocesses)
         try:
-            executor.shutdown(wait=False, cancel_futures=True)
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
             pass
 
