@@ -63,8 +63,11 @@ def validate_action(action_type: str, action_amount: int | None,
     if action_type == "check":
         if stage == "preflop":
             # 规则 5：preflop 只有大盲注第一个行为可以 check
-            if not (is_bb and action_count == 0):
-                return False, "check in preflop only allowed as BB first action"
+            # 且必须没有待处理的下注（即对手没有 raise/allin）
+            opponent_bet = game_state["opponent_bet"]
+            player_bet = game_state["player_bet"]
+            if not (is_bb and action_count == 0 and opponent_bet <= player_bet):
+                return False, "check in preflop only allowed as BB first action with no pending bet"
             return True, ""
         # flop/turn/river
         # 规则 4：非第一个行为出现 check → 非法
