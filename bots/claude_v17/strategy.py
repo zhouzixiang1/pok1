@@ -24,14 +24,6 @@ from simulation import (
 )
 
 
-def _per_street_diverges(opponent_model, per_street_key, per_street_prior, aggregate_key, aggregate_prior):
-    per_street_val = opponent_model.get(per_street_key, per_street_prior)
-    aggregate_val = opponent_model.get(aggregate_key, aggregate_prior)
-    ps_above = per_street_val > per_street_prior
-    ag_above = aggregate_val > aggregate_prior
-    return ps_above != ag_above
-
-
 def _aligned_signal_boost(opponent_model, per_street_key, per_street_prior, aggregate_key, aggregate_prior):
     per_street_val = opponent_model.get(per_street_key, per_street_prior)
     aggregate_val = opponent_model.get(aggregate_key, aggregate_prior)
@@ -89,7 +81,7 @@ def opponent_pressure_adjustment(opponent_model, spot_info, round_idx):
                     adjustment += confidence * alignment * 1.5
                 elif river_aggr <= 0.22:
                     adjustment -= confidence * alignment * 1.5
-    return clamp(adjustment, -0.12, 0.15)
+    return clamp(adjustment, -0.05, 0.07)
 
 
 def aggressive_line_strength(spot_info, board_texture):
@@ -1096,8 +1088,9 @@ def get_action(req, requests):
             if not anti_lock_call_continue and not strong_made_continue:
                 return -1
         if repeated_raise_trap and (value_profile is None or value_profile["tier"] != "nut"):
-            if made_strength < 0.24 and draw_strength < 0.14:
-                return -1
+            if made_strength < 0.15 and draw_strength < 0.12 and pot_odds > 0.20:
+                if not anti_lock_call_continue:
+                    return -1
             return 0
 
         raise_fold_threshold = 0.56 - 0.30 * match_profile["bluff_delta"]
