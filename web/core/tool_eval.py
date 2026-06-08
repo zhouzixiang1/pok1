@@ -148,11 +148,11 @@ async def run_precommit_eval(args):
                     "details": f"{matchup['wins']}-{matchup['losses']}-{matchup['draws']}",
                 })
         except _asyncio.TimeoutError:
-            matchup["error"] = "Mirror battle timed out (900s limit)"
+            matchup["error"] = f"Mirror battle timed out ({per_game_timeout}s limit)"
             blockers.append({
                 "reason": "match_timeout",
                 "opponent": opponent,
-                "details": f"Mirror battle against {opponent} exceeded 900s timeout",
+                "details": f"Mirror battle against {opponent} exceeded {per_game_timeout}s timeout",
             })
         except Exception as exc:
             matchup["error"] = str(exc)[:500]
@@ -242,7 +242,7 @@ async def run_inline_eval(args):
     results_summary = []
     all_results = []
 
-    from evolution_core import RATINGS_FILE, H2H_FILE, BOT_STATS_FILE, MATCH_HISTORY_FILE, locked_file, pair_key
+    from evolution_core import RATINGS_FILE, H2H_FILE, BOT_STATS_FILE, MATCH_HISTORY_FILE, RESULTS_DIR, locked_file, pair_key
     h2h = {}
     if H2H_FILE.exists():
         try:

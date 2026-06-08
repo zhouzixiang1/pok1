@@ -324,31 +324,37 @@ def get_active_bots():
 def find_current_v():
     """Find the latest completed bot version.
 
-    Cascading sources: git tags > .completed sentinel files > directory names.
+    Cascading sources: git tags > .completed sentinel files (backed by tag) > directory names.
+    .completed files without a corresponding git tag are NOT trusted as complete.
     """
     versions = set()
+    tag_versions = set()
 
     # Source 1: git tags (most authoritative)
     tags = _git("tag", "-l", "bot-v*", check=False).strip().splitlines()
     for tag in tags:
         try:
-            versions.add(int(tag.replace("bot-v", "")))
+            v = int(tag.replace("bot-v", ""))
+            versions.add(v)
+            tag_versions.add(v)
         except ValueError:
             pass
 
-    # Source 2: .completed sentinel files
+    # Source 2: .completed sentinel files — only trust if backed by a git tag
     if BOTS_DIR.exists():
         for d in os.listdir(BOTS_DIR):
             if d.startswith("claude_v") and (BOTS_DIR / d / ".completed").exists():
                 try:
-                    versions.add(int(d.split("_v")[1]))
+                    v = int(d.split("_v")[1])
+                    if v in tag_versions:
+                        versions.add(v)
                 except (ValueError, IndexError):
                     pass
 
     if versions:
         return max(versions)
 
-    # Source 3: any claude_v* directory (no tags, no .completed)
+    # Source 3: any claude_v* directory (fallback for version numbering only)
     if BOTS_DIR.exists():
         for d in os.listdir(BOTS_DIR):
             if d.startswith("claude_v") and os.path.isdir(BOTS_DIR / d):
@@ -466,14 +472,20 @@ async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=
             ui.log_history(f"等待 {bot_name} 评估: {games}/{min_games} 场 ({elapsed}s{rd_info})", "info")
             last_log = time.time()
 
-            # Early exit if daemon is dead and no games are being produced
-            if games == 0:
+            # Check daemon health regardless of game count — daemon may crash
+            # after producing partial results, leaving us waiting the full timeout.
+            if ui and time.time() - last_log >= 30:
                 with _daemon_lock:
                     proc = daemon_proc
                 if proc is not None and proc.poll() is not None:
-                    if ui:
-                        ui.log_history(f"Daemon 已终止 (rc={proc.returncode})，无法获取评估数据", "error")
-                    return False
+                    if games >= min_games:
+                        if ui:
+                            ui.log_history(f"Daemon 已终止 (rc={proc.returncode})，但已有 {games} 场 (≥{min_games})，继续", "warn")
+                        return True
+                    else:
+                        if ui:
+                            ui.log_history(f"Daemon 已终止 (rc={proc.returncode})，仅 {games}/{min_games} 场，等待重启...", "error")
+
 
         await asyncio.sleep(5)
     if ui:

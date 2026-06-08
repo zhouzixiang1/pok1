@@ -1,6 +1,7 @@
 """Pipeline tools: direction audit, master planning, and worker execution."""
 
 import json
+import logging
 import shutil
 import time
 from pathlib import Path
@@ -335,11 +336,43 @@ async def execute_workers(args):
             "source_v": source_v,
         })
 
-    # When retrying after workers already ran, code has been reset from source.
-    # Warn workers that previous modifications no longer exist.
-    if reviewer_feedback and ckpt.get("stage") == "workers_done":
+    # When critic has rejected >= 2 times with the same master plan, force re-planning.
+    # Re-using the same plan that the critic already rejected guarantees repeated failure.
+    generation_attempt = ckpt.get("generation_attempt", 0)
+    if reviewer_feedback and generation_attempt >= 2:
+        return _json_tool_result({
+            "error": f"generation_attempt={generation_attempt}. The critic has rejected the same plan {generation_attempt} times. "
+                     f"You MUST call run_master first to generate a NEW plan incorporating the critic feedback, "
+                     f"then call execute_workers with the new plan.",
+            "require_new_plan": True,
+            "generation_attempt": generation_attempt,
+            "next_v": next_v,
+            "source_v": source_v,
+        })
+
+    # When retrying after workers already ran, actually reset code from source first.
+    # Previous claim that code was reset was FALSE — now we actually do it.
+    if reviewer_feedback and ckpt.get("stage") in ("workers_done", "reviewed", "critic_checked"):
+        import shutil
+        source_dir_r = get_bot_dir(source_v)
+        if source_dir_r.exists() and next_dir.exists():
+            logging.getLogger(__name__).info(f"Resetting v{next_v} code from source v{source_v} before worker retry")
+            # Remove all files except .completed
+            for item in next_dir.iterdir():
+                if item.name != ".completed":
+                    if item.is_dir():
+                        shutil.rmtree(item)
+                    else:
+                        item.unlink()
+            # Copy fresh source code
+            for item in source_dir_r.iterdir():
+                if item.name != ".completed":
+                    if item.is_dir():
+                        shutil.copytree(item, next_dir / item.name)
+                    else:
+                        shutil.copy2(item, next_dir / item.name)
         reviewer_feedback += (
-            f"\n\nNOTE: This is a retry. The code in bots/claude_v{next_v}/ has been reset "
+            f"\n\nNOTE: This is a retry. The code in bots/claude_v{next_v}/ has been ACTUALLY RESET "
             f"from source bots/claude_v{source_v}/. Any modifications described in the feedback "
             f"above no longer exist in the code — you must re-implement them from scratch."
         )

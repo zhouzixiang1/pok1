@@ -157,33 +157,12 @@ def _decide_strategy(combined, current_v, ratings):
     if combined is None:
         return "master", current_v, ()
 
-    # Stagnation with high/medium confidence → crossover
-    if combined.get("is_stagnant") and combined.get("confidence") != "low":
-        parents = _pick_crossover_parents(ratings, current_v)
-        if parents:
-            return "crossover", parents[0], parents
-
-    # Explicit branch recommendation
-    if combined.get("recommendation") == "branch" and combined.get("branch_from"):
-        branch_v = _parse_branch_from(combined["branch_from"])
-        if branch_v is not None and branch_v >= 1:
-            return "master", branch_v, ()
-
-    # Diversity injection
-    if combined.get("diversity_needed"):
-        parents = _pick_crossover_parents(ratings, current_v)
-        if parents:
-            log.info("Diversity injection: forcing crossover (%s, %s) to break local optimum",
-                     f"v{parents[0]}", f"v{parents[1]}")
-            return "crossover", parents[0], parents
-
-    # Default path: use the LLM's recommended source bot, not just the latest version.
-    # The Combined Analyst evaluates all bots' h2h_avg_wr, coverage, and trends to pick
-    # the best evolution source. This avoids evolving from a poor-performing latest bot.
+    # Priority 1: LLM-recommended source overrides stagnation heuristic.
+    # The analyst evaluates all bots' h2h_avg_wr, coverage, and trends to pick
+    # the best evolution source — trust it over the generic stagnation check.
     rec_source = combined.get("recommended_source", "")
     if rec_source:
         rec_v = _parse_branch_from(rec_source)
-        # Bounds check: reject invalid version numbers (negative, zero, or nonexistent)
         if rec_v is not None and rec_v >= 1:
             from evolution_infra import get_bot_dir
             if get_bot_dir(rec_v).exists():
@@ -192,6 +171,26 @@ def _decide_strategy(combined, current_v, ratings):
                     log.info("LLM recommended source: v%d (instead of latest v%d). %s",
                              rec_v, current_v, rationale[:200])
                 return "master", rec_v, ()
+
+    # Priority 2: Stagnation with high/medium confidence → crossover
+    if combined.get("is_stagnant") and combined.get("confidence") != "low":
+        parents = _pick_crossover_parents(ratings, current_v)
+        if parents:
+            return "crossover", parents[0], parents
+
+    # Priority 3: Explicit branch recommendation
+    if combined.get("recommendation") == "branch" and combined.get("branch_from"):
+        branch_v = _parse_branch_from(combined["branch_from"])
+        if branch_v is not None and branch_v >= 1:
+            return "master", branch_v, ()
+
+    # Priority 4: Diversity injection
+    if combined.get("diversity_needed"):
+        parents = _pick_crossover_parents(ratings, current_v)
+        if parents:
+            log.info("Diversity injection: forcing crossover (%s, %s) to break local optimum",
+                     f"v{parents[0]}", f"v{parents[1]}")
+            return "crossover", parents[0], parents
 
     # Fallback: LLM did not recommend a source, use current_v
     return "master", current_v, ()

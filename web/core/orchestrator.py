@@ -258,7 +258,9 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                             await query_gen.aclose()
                         except Exception:
                             pass
-                    full_output, retry_cost, cycle_completed, query_gen, auth_error = await _stream_response(retry_opts)
+                    full_output, retry_cost, cycle_completed, query_gen, auth_error = (
+                        await asyncio.wait_for(_stream_response(retry_opts), timeout=CYCLE_TIMEOUT)
+                    )
                     total_cost += retry_cost
                     if not _is_rate_limited(full_output):
                         break

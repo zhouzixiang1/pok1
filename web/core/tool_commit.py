@@ -382,6 +382,10 @@ async def run_crossover(args):
     if parent_a is None or parent_b is None or target_v is None:
         return _json_tool_result({"error": "Missing parent_a/parent_b/target_v"})
 
+    # Guard: prevent self-crossover
+    if parent_a == parent_b:
+        return _json_tool_result({"error": "Cannot crossover with self (parent_a == parent_b)"})
+
     # Prepare target directory from parent A
     target_dir = get_bot_dir(target_v)
 
@@ -389,14 +393,25 @@ async def run_crossover(args):
     if target_dir.exists() and (target_dir / ".completed").exists():
         return _json_tool_result({"error": f"Target v{target_v} already exists and is completed. Refusing to overwrite."})
 
-    # Guard: parent must exist
+    # Guard: parent must exist and be completed
     parent_a_dir = get_bot_dir(parent_a)
     if not parent_a_dir.exists():
         return _json_tool_result({"error": f"Parent A bot v{parent_a} not found"})
+    if not (parent_a_dir / ".completed").exists():
+        return _json_tool_result({"error": f"Parent A bot v{parent_a} is incomplete (no .completed sentinel)"})
 
     parent_b_dir = get_bot_dir(parent_b)
     if not parent_b_dir.exists():
         return _json_tool_result({"error": f"Parent B bot v{parent_b} not found"})
+    if not (parent_b_dir / ".completed").exists():
+        return _json_tool_result({"error": f"Parent B bot v{parent_b} is incomplete (no .completed sentinel)"})
+
+    # Guard: both parents must have git tags (authoritative commit proof)
+    from evolution_infra import git_has_tag
+    if not git_has_tag(parent_a):
+        return _json_tool_result({"error": f"Parent A v{parent_a} has no git tag 'bot-v{parent_a}'. Cannot use uncommitted code."})
+    if not git_has_tag(parent_b):
+        return _json_tool_result({"error": f"Parent B v{parent_b} has no git tag 'bot-v{parent_b}'. Cannot use uncommitted code."})
 
     ui = _get_ui()
     success = await _run_crossover(parent_a, parent_b, target_v, ui)

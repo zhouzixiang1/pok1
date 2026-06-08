@@ -689,16 +689,26 @@ def main():
                     except Exception:
                         pass
                 in_flight.clear()
-                executor.shutdown(wait=False, cancel_futures=True)
-                executor = ProcessPoolExecutor(max_workers=n_workers)
-                match_queue = deque()
-                matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
-                for a, b in matches:
-                    match_queue.append((a, b, bot_path(a), bot_path(b), n_pairs))
-                while len(in_flight) < n_workers and match_queue:
-                    m = match_queue.popleft()
-                    fut = executor.submit(run_single_match, m)
-                    in_flight[fut] = (m[0], m[1])
+                try:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
+                try:
+                    import multiprocessing as _mp
+                    mp_ctx = _mp.get_context("spawn")
+                    executor = ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_ctx)
+                    match_queue = deque()
+                    matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
+                    for a, b in matches:
+                        match_queue.append((a, b, bot_path(a), bot_path(b), n_pairs))
+                    while len(in_flight) < n_workers and match_queue:
+                        m = match_queue.popleft()
+                        fut = executor.submit(run_single_match, m)
+                        in_flight[fut] = (m[0], m[1])
+                except (ConnectionRefusedError, OSError) as recover_exc:
+                    log.error("Failed to create new process pool after break: %s. Will retry next cycle.", recover_exc)
+                    # Don't re-raise — let the daemon continue and retry on next save cycle
+                    executor = None
 
     except Exception as e:
         import traceback

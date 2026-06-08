@@ -86,7 +86,16 @@ def _startup_recovery(ui=None) -> dict:
     stage = checkpoint.get("stage", "unknown")
     next_v = checkpoint.get("next_v")
 
-    # archived or prepared with no master_plan = no real work to recover
+    # archived, prepared with no master_plan, or timed_out = no real work to recover
+    if stage == "timed_out":
+        if ui:
+            ui.log_history(f"[Recovery] v{next_v} timed out — clearing stale checkpoint.", "warn")
+        else:
+            log.warning("v%s timed out — clearing stale checkpoint.", next_v)
+        clear_pipeline_checkpoint()
+        _clear_orchestrator_session()
+        return {"action": "fresh_start"}
+
     if stage == "archived" or (stage == "prepared" and not checkpoint.get("master_plan")):
         if ui:
             ui.log_history(f"[Recovery] Pipeline at '{stage}' for v{next_v}. Clearing stale checkpoint.", "warn")

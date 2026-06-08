@@ -29,6 +29,8 @@ class TestPrepareNextGen:
 
         monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 99)
         monkeypatch.setattr(tool_gates, "find_current_v", lambda: 99)
+        # git_has_tag is checked by prepare_next_gen to verify source bot commit
+        monkeypatch.setattr(evolution_infra, "git_has_tag", lambda v: True)
 
         resp = client.post("/api/control/tool/prepare_next_gen",
                            json={"args": {"source_v": 99, "next_v": 100}})

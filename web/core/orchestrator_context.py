@@ -111,6 +111,7 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
                     "critic_checked":    "Critic done → call run_precommit_eval",
                     "verified":          "Precommit eval passed → call commit_bot",
                     "archived":          "Committed & archived → done",
+                    "timed_out":         "Previous cycle timed out and was discarded. Call prepare_next_gen to start a fresh generation. Do NOT attempt to resume timed-out work.",
                 }
                 stage = checkpoint.get("stage", "unknown")
                 hint = stage_hints.get(stage, "call get_status to assess")

@@ -195,13 +195,18 @@ async def prepare_next_gen(args):
     if not (source_dir / ".completed").exists():
         return {"content": [{"type": "text", "text": json.dumps({"error": f"Source bot v{source_v} is not marked completed. Cannot use incomplete code as source."})}]}
 
+    # Guard: verify git tag exists for source bot (authoritative commit proof)
+    from evolution_infra import git_has_tag
+    if not git_has_tag(source_v):
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"Source bot v{source_v} has .completed but no git tag 'bot-v{source_v}'. Cannot evolve from uncommitted code. Try a different source version."})}]}
+
     # Guard: refuse to overwrite a completed bot
     if next_dir.exists() and (next_dir / ".completed").exists():
         return {"content": [{"type": "text", "text": json.dumps({"error": f"Target v{next_v} already exists and is completed. Refusing to overwrite."})}]}
 
     # Guard: refuse to re-prepare if pipeline has already progressed past "prepared"
     _ckpt = _matching_checkpoint(next_v, source_v)
-    if _ckpt and _ckpt.get("stage") not in (None, "prepared"):
+    if _ckpt and _ckpt.get("stage") not in (None, "prepared", "timed_out"):
         return {"content": [{"type": "text", "text": json.dumps({"error": f"Pipeline for v{next_v} already at stage '{_ckpt['stage']}'. Refusing to overwrite worker output. Call abandon_generation first if you want to restart."})}]}
 
     if next_dir.exists():
