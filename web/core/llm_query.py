@@ -29,6 +29,8 @@ log = logging.getLogger("pok.infra")
 def _is_rate_limited(output: str) -> bool:
     # Long responses are never rate-limit errors — avoid false positives
     # when LLM discusses "rate limit" or "overloaded" in normal output.
+    # NOTE: 429 "Request rejected" is handled separately by _is_quota_exceeded()
+    # to avoid triggering the 529 exponential-backoff retry loop.
     if len(output) > 2000:
         return False
     return (
@@ -36,7 +38,6 @@ def _is_rate_limited(output: str) -> bool:
         or "该模型当前访问量过大" in output
         or "rate limit" in output.lower()
         or re.search(r'(?:status["\s:=]+529|HTTP/\d\.?\d?\s+529|error.*529)', output, re.IGNORECASE) is not None
-        or "Request rejected (429)" in output
     )
 
 

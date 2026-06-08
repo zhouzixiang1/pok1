@@ -29,7 +29,6 @@ class AppState:
         self.next_v: int = 0
         self.generation_count: int = 0
         self.decisions: list = []
-        self.rate_limit_until: float | None = None  # Unix timestamp for 429 reset
         self._evolution_task: asyncio.Task | None = None
         self._shutdown_mgr: "ShutdownManager | None" = None
         self._load_config()
@@ -46,7 +45,6 @@ class AppState:
                 "next_v": self.next_v,
                 "generation_count": self.generation_count,
                 "decisions": self.decisions[-50:],
-                "rate_limit_until": self.rate_limit_until,
             }
 
     def get_config(self) -> dict:
@@ -153,10 +151,6 @@ class AppState:
             })
             if len(self.decisions) > 100:
                 self.decisions = self.decisions[-100:]
-
-    def set_rate_limit(self, until_ts: float | None):
-        with self._lock:
-            self.rate_limit_until = until_ts
 
 
 app_state = AppState()

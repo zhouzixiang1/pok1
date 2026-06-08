@@ -176,9 +176,10 @@ class TestIsQuotaExceeded:
 
 
 class TestIsRateLimited:
-    def test_now_detects_429(self):
+    def test_does_not_match_429(self):
+        """429 is handled exclusively by _is_quota_exceeded, NOT _is_rate_limited."""
         from llm_query import _is_rate_limited
-        assert _is_rate_limited("Request rejected (429)")
+        assert not _is_rate_limited("Request rejected (429)")
 
     def test_still_detects_529(self):
         from llm_query import _is_rate_limited
@@ -188,4 +189,4 @@ class TestIsRateLimited:
 
     def test_long_text_false(self):
         from llm_query import _is_rate_limited
-        assert not _is_rate_limited("Request rejected (429)" + "x" * 3000)
+        assert not _is_rate_limited("overloaded" + "x" * 3000)
