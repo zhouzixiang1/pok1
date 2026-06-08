@@ -518,7 +518,9 @@ def main():
     for a, b in matches:
         match_queue.append((a, b, bot_path(a), bot_path(b), n_pairs))
 
-    executor = ProcessPoolExecutor(max_workers=n_workers)
+    import multiprocessing as _mp
+    mp_ctx = _mp.get_context("spawn")
+    executor = ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_ctx)
     in_flight = {}  # future -> (bot_a, bot_b)
 
     # Fill initial pool
