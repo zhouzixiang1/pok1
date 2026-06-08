@@ -7,7 +7,7 @@
 卡牌转换:
   TCP 协议: <suit,rank>, suit 0-3=♠♥♦♣, rank 0-12=2-A
   judge.py: 整数 0-51, number = card // 4 + 2, suit = card % 4 (♥=0,♦=1,♠=2,♣=3)
-  转换公式: judge_int = rank * 4 + suit
+  转换公式: judge_int = rank * 4 + _TCP_TO_JUDGE_SUIT[tcp_suit]
 
 行为转换:
   judge.py 输出:  0=call, -1=fold, -2=allin, >0=raise-to-total
@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from server.protocol import parse_preflop, parse_stage_cards, parse_action
 from engine.deck import Card
+from engine.validator import SMALL_BLIND, BIG_BLIND
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s",
                     datefmt="%H:%M:%S")
@@ -35,18 +36,25 @@ logger = logging.getLogger("bot_adapter")
 
 # ── 卡牌转换 ──
 
+# TCP suit → judge.py suit 映射
+# TCP: 0=♠, 1=♥, 2=♦, 3=♣
+# judge.py: 0=♥, 1=♦, 2=♠, 3=♣
+_TCP_TO_JUDGE_SUIT = {0: 2, 1: 0, 2: 1, 3: 3}
+_JUDGE_TO_TCP_SUIT = {v: k for k, v in _TCP_TO_JUDGE_SUIT.items()}
+
+
 def tcp_card_to_int(card):
-    """TCP Card 对象 → judge.py 整数。"""
-    return card.rank * 4 + card.suit
+    """TCP Card 对象 → judge.py 整数。suit 经映射转换。"""
+    judge_suit = _TCP_TO_JUDGE_SUIT[card.suit]
+    return card.rank * 4 + judge_suit
 
 
 def int_to_tcp_card_str(card_int):
-    """judge.py 整数 → TCP 协议字符串 '<suit,rank>'。"""
-    # 注意：judge.py suit = card_int % 4 (♥=0,♦=1,♠=2,♣=3)
-    # TCP suit 编码不同 (♠=0,♥=1,♦=2,♣=3)，但直接用 rank*4+suit
+    """judge.py 整数 → TCP 协议字符串 '<suit,rank>'。suit 经反向映射。"""
     rank = card_int // 4
-    suit = card_int % 4
-    return f"<{suit},{rank}>"
+    judge_suit = card_int % 4
+    tcp_suit = _JUDGE_TO_TCP_SUIT[judge_suit]
+    return f"<{tcp_suit},{rank}>"
 
 
 # ── Bot 进程管理 ──
@@ -129,6 +137,8 @@ class BotAdapter:
         self._my_id = 0           # 本局 my_id（由 SB/BB 决定）
         self._dealer_id = 0
         self._my_action_count = 0  # 本阶段已行动次数
+        self._my_chips = self.INITIAL_CHIPS  # 当前剩余筹码
+        self._my_stage_bet = 0    # 本阶段已下注额
 
         # 持久化状态
         self._bot_data = None     # bot 返回的 data（跨决策持久化）
@@ -189,6 +199,13 @@ class BotAdapter:
             self._history = []
             self._bot_data = None  # 新手牌重置 bot data
             self._my_action_count = 0
+            self._my_chips = self.INITIAL_CHIPS  # 一局一复位
+            if self._is_sb:
+                self._my_chips -= SMALL_BLIND
+                self._my_stage_bet = SMALL_BLIND
+            else:
+                self._my_chips -= BIG_BLIND
+                self._my_stage_bet = BIG_BLIND
 
             # 确定 my_id 和 dealer_id
             # 在 TCP 协议中：SB 先行动（preflop first actor = SB）
@@ -212,6 +229,7 @@ class BotAdapter:
                 self._public_cards.append(tcp_card_to_int(c))
             self._stage = msg.split("|")[0]
             self._my_action_count = 0  # 新阶段重置
+            self._my_stage_bet = 0     # 新阶段下注归零
             logger.info(f"Stage: {self._stage}, public count: {len(self._public_cards)}")
 
             # postflop: BB 先行动
@@ -359,7 +377,7 @@ class BotAdapter:
             "num_players": 2,
             "dealer_id": self._dealer_id,
             "my_id": self._my_id,
-            "my_chips": self.INITIAL_CHIPS,  # 一局一复位
+            "my_chips": self._my_chips,
             "my_cards": self._my_cards,
             "public_cards": self._public_cards,
             "history": list(self._history),
@@ -393,7 +411,42 @@ class BotAdapter:
         action_str, tcp_type, tcp_amount = self._convert_action(response)
         await self._send_line(action_str)
         self._record_my_action(tcp_type, tcp_amount)
+        self._update_chips(tcp_type, tcp_amount)
         self._my_action_count += 1
+
+    def _update_chips(self, action_type, amount):
+        """根据发出的动作更新筹码追踪。
+
+        call: 补齐到对手下注额（或剩余全部）
+        raise to X: 扣减 X - my_stage_bet
+        allin: 筹码归零
+        fold/check: 不扣减
+        """
+        if action_type == "call":
+            # 计算对手当前阶段下注额
+            opp_id = 1 - self._my_id
+            stage_map = {"preflop": 0, "flop": 1, "turn": 2, "river": 3}
+            round_num = stage_map.get(self._stage, 0)
+            opp_bet = self._my_stage_bet  # 默认与己方相同
+            for h in reversed(self._history):
+                if h["round"] == round_num and h["player_id"] == opp_id:
+                    a = h["action"]
+                    if h["action_type"] == "raise":
+                        opp_bet = a
+                    elif h["action_type"] == "allin":
+                        opp_bet = self._my_stage_bet + self._my_chips + opp_bet  # 无法精确，用全部
+                    break
+            diff = opp_bet - self._my_stage_bet
+            actual = min(diff, self._my_chips)
+            self._my_chips -= actual
+            self._my_stage_bet += actual
+        elif action_type == "raise":
+            needed = amount - self._my_stage_bet
+            self._my_chips -= needed
+            self._my_stage_bet = amount
+        elif action_type == "allin":
+            self._my_stage_bet += self._my_chips
+            self._my_chips = 0
 
     def _convert_action(self, action_int):
         """judge.py 整数 → (TCP 字符串, action_type, amount)。

@@ -34,14 +34,16 @@ main.py                    # 入口：并发启动 TCP + Web
 engine/
   deck.py                  # Card(suit,rank) + Deck
   evaluator.py             # 手牌评估（9级牌型 + kicker）
-  game.py                  # GameEngine：单手牌局生命周期
+  game.py                  # GameEngine：单手牌局生命周期 + THP 记录
   validator.py             # 13 条非法行为规则验证
+  thp_recorder.py          # THP 棋谱记录器（国赛标准格式）
 server/
-  tcp_server.py            # asyncio TCP 服务器 + MatchManager
+  tcp_server.py            # asyncio TCP 服务器 + MatchManager + THP 导出
   protocol.py              # 消息编解码
 web/
-  app.py                   # FastAPI + SSE 仪表板
+  app.py                   # FastAPI + SSE 仪表板 + THP 下载 API
   static/                  # 前端（HTML/CSS/JS）
+records/                   # THP 棋谱文件输出目录
 ```
 
 ## Key Protocol Rules
@@ -59,4 +61,17 @@ web/
 TCP 协议: `(suit, rank)` where suit=0-3=♠♥♦♣, rank=0-12
 engine/judge.py: integer 0-51, `number = card // 4 + 2`, `suit = card % 4` (♥=0,♦=1,♠=2,♣=3)
 
-bot_adapter.py 转换: `card_int = rank * 4 + suit` (直接映射)
+bot_adapter.py 转换: `card_int = rank * 4 + _TCP_TO_JUDGE_SUIT[tcp_suit]` (经映射表转换)
+  映射表: TCP 0=♠→judge 2=♠, TCP 1=♥→judge 0=♥, TCP 2=♦→judge 1=♦, TCP 3=♣→judge 3=♣
+
+## THP Record Format
+
+比赛结束后自动生成国赛标准 THP 棋谱文件到 `records/` 目录。
+- 文件命名: `THP-{teamA} vs {teamB}-{winner}胜-{yyyymmddHHMM}.txt`
+- 格式: `STATE:N:actions:cards:earnings:players;` (每手一行，GB2312 编码)
+- 卡牌: `{rank}{suit}` (rank=23456789TJQKA, suit=shdc)
+- 动作: `r{amount}`=raise, `c`=call/check, `f`=fold, 阶段用`/`分隔
+- 手牌: BB手牌|SB手牌/flop/turn/river (大盲注在前)
+- 筹码: `A赢|B赢` (正=赢, 负=输)
+- 文件尾: `{[THP][teamA][teamB][result][datetime][event]}`
+- API: `GET /api/record/thp` 列表, `GET /api/record/thp/{filename}` 下载

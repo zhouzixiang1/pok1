@@ -5,15 +5,15 @@ BIG_BLIND = 100
 TOTAL_HANDS = 50
 LOCK_WIN_MARGIN = 1500
 
-HAND_CLASS_SCORE = [0.08, 0.22, 0.40, 0.58, 0.69, 0.76, 0.84, 0.93, 0.98]
+HAND_CLASS_SCORE = [0.08, 0.24, 0.42, 0.60, 0.69, 0.76, 0.84, 0.93, 0.98]
 SIMULATIONS_BY_PUBLIC_COUNT = {
-    0: 500,
-    3: 700,
-    4: 900,
+    0: 650,
+    3: 850,
+    4: 1100,
     5: 0,
 }
 EXTRA_SIMULATIONS_BY_PUBLIC_COUNT = {
-    0: 200,
-    3: 220,
-    4: 180,
+    0: 400,
+    3: 500,
+    4: 350,
 }

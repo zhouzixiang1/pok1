@@ -17,6 +17,7 @@ from postflop import (
     draw_call_margin, made_flush_profile, blocker_bluff_profile,
     allow_low_frequency_blocker_bluff, nutted_risk_profile,
     check_probe_resistance_margin, must_continue_vs_raise,
+    _board_completion_risk, _should_check_river_weak,
 )
 from simulation import (
     build_opponent_range, estimate_weighted_win_rate,
@@ -264,6 +265,187 @@ def realized_postflop_equity(
     return win_rate
 
 
+def _board_texture_equity_modifier(board_texture, hand_category):
+    """Compute how board texture affects equity realization for a hand category.
+
+    Board texture has a structural impact on equity realization:
+    - Wet boards reduce equity for marginal made hands because opponents
+      can draw out more easily
+    - Dynamic boards specifically hurt vulnerable pairs that can't improve
+    - Dry boards preserve equity for made hands
+    - The modifier is multiplicative on the equity realization ratio
+
+    hand_category: "air" | "weak_pair" | "medium_pair" | "top_pair_weak_kicker" | "strong"
+    Returns a multiplicative modifier (typically 0.94-1.00).
+    """
+    if board_texture is None:
+        return 1.0
+
+    wetness = board_texture.get("wetness", 0.0)
+    is_dynamic = board_texture.get("dynamic", False)
+    flush_pressure = board_texture.get("flush_pressure", 0.0)
+    straight_pressure = board_texture.get("straight_pressure", 0.0)
+
+    modifier = 1.0
+
+    if hand_category == "weak_pair":
+        # Weak pairs (bottom, middle, underpair, board pair) are most
+        # vulnerable to board texture — draws completing beat them AND
+        # they can't improve to beat better hands
+        if flush_pressure >= 0.75:
+            modifier -= wetness * 0.06
+        if straight_pressure >= 0.65:
+            modifier -= wetness * 0.04
+        if is_dynamic:
+            modifier -= (wetness - 0.20) * 0.05 if wetness > 0.20 else 0.0
+    elif hand_category == "top_pair_weak_kicker":
+        # Top pair weak kicker is moderately affected — it beats most
+        # draws but can be outdrawn by a better kicker + texture shift
+        if is_dynamic and wetness > 0.30:
+            modifier -= (wetness - 0.30) * 0.03
+    elif hand_category == "air":
+        # Air hands: wet boards mean more semi-bluff potential for us
+        # but also more draws opponent can call with, reducing fold equity
+        if is_dynamic:
+            modifier -= wetness * 0.02
+    # "medium_pair" and "strong": minimal impact from texture alone
+
+    return modifier
+
+
+def _opponent_line_context(spot_info, round_idx, req):
+    """Classify the opponent's betting line pattern across streets.
+
+    Analyzes per-street opponent actions to detect common patterns that
+    provide structural context for call/fold/raise decisions:
+    - triple_barrel: opponent bet all 3 postflop streets → strong value
+    - double_barrel: opponent bet flop + turn → credible value range
+    - float_bet: opponent called flop, then bet turn → polarized range
+    - delayed_aggression: opponent checked flop, bet later street → trap or hit
+    - standard: no particular pattern detected
+
+    Returns dict with:
+      line_type: str pattern name
+      strength_indicator: float 0.0-1.0 (higher = line appears stronger)
+      multi_street_aggr: bool whether opponent showed multi-street aggression
+    """
+    my_id = req["my_id"]
+    opponent_id = (my_id + 1) % N_PLAYERS
+    history = req.get("history", [])
+
+    # Collect per-street opponent actions
+    street_actions = {}
+    for record in history:
+        if record["player_id"] != opponent_id:
+            continue
+        rnd = record["round"]
+        if rnd not in street_actions:
+            street_actions[rnd] = []
+        street_actions[rnd].append(record["action_type"])
+
+    preflop = street_actions.get(0, [])
+    flop = street_actions.get(1, [])
+    turn = street_actions.get(2, [])
+    river = street_actions.get(3, [])
+
+    flop_bet = "raise" in flop or "allin" in flop
+    flop_check = "check" in flop and not flop_bet
+    flop_call = "call" in flop
+    turn_bet = "raise" in turn or "allin" in turn
+    turn_check = "check" in turn and not turn_bet
+    river_bet = "raise" in river or "allin" in river
+
+    line_type = "standard"
+    strength_indicator = 0.50
+    multi_street_aggr = False
+
+    # Triple barrel: bet all three postflop streets — very strong line
+    if flop_bet and turn_bet and river_bet:
+        line_type = "triple_barrel"
+        strength_indicator = 0.85
+        multi_street_aggr = True
+
+    # Double barrel: bet flop + turn — credible value range
+    elif flop_bet and turn_bet and not river_bet:
+        line_type = "double_barrel"
+        strength_indicator = 0.65
+        multi_street_aggr = True
+
+    # Float bet: called flop, then bet turn — polarized (bluff or strong)
+    elif (flop_call or flop_check) and turn_bet and not flop_bet:
+        line_type = "float_bet"
+        strength_indicator = 0.40
+        multi_street_aggr = False
+
+    # Delayed aggression: checked flop, bet turn or river
+    elif flop_check and not flop_bet and (turn_bet or river_bet):
+        line_type = "delayed_aggression"
+        strength_indicator = 0.55
+        multi_street_aggr = turn_bet and river_bet
+
+    # Single street aggression
+    elif flop_bet and not turn_bet and not river_bet:
+        line_type = "single_barrel"
+        strength_indicator = 0.35
+        multi_street_aggr = False
+
+    # Snap re-raise in same street: opponent raised back immediately
+    if spot_info.get("opp_current_round_bet_count", 0) >= 2 and round_idx > 0:
+        line_type = "snap_reraise"
+        strength_indicator = 0.75
+        multi_street_aggr = True
+
+    return {
+        "line_type": line_type,
+        "strength_indicator": strength_indicator,
+        "multi_street_aggr": multi_street_aggr,
+    }
+
+
+def _calibrated_pot_odds(pot_odds, opponent_model, spot_info, round_idx, made_strength, value_profile):
+    """Adjust raw pot-odds based on opponent tendencies and hand strength.
+
+    Against aggressive opponents who bet a wide range, our raw equity
+    realization is better than pot-odds suggest (they have more bluffs).
+    Against passive opponents who only bet strong hands, we need more
+    equity than pot-odds imply (their range is polarized to value).
+    This structural adjustment factors opponent modeling into the
+    call/fold breakpoint without changing any numeric constants elsewhere.
+    """
+    if round_idx <= 0:
+        return pot_odds
+
+    confidence = opponent_model.get("confidence", 0.0)
+    if confidence < 0.15:
+        return pot_odds
+
+    adjusted = pot_odds
+
+    # Passive opponents bet only strong hands → require more equity
+    postflop_aggr = opponent_model.get("postflop_aggr", 0.42)
+    aggr_delta = postflop_aggr - 0.50
+    if aggr_delta < 0 and spot_info.get("facing_postflop_aggression", False):
+        # Passive bettor → their range is strong → increase required odds
+        adjusted += confidence * abs(aggr_delta) * 0.15
+    elif aggr_delta > 0 and spot_info.get("facing_postflop_aggression", False):
+        # Aggressive bettor → wider range including bluffs → relax required odds
+        adjusted -= confidence * aggr_delta * 0.10
+
+    # Late-street refinement: on the river, opponent aggression signal is cleaner
+    if round_idx == 3 and spot_info.get("facing_postflop_aggression", False):
+        opp_bets = spot_info.get("opp_current_round_bet_count", 0)
+        if opp_bets >= 2 and aggr_delta > 0:
+            # Multi-barrel from aggressive player — even more likely to include bluffs
+            adjusted -= confidence * 0.03
+
+    # Strong made hands get a discount on required odds (they beat most of range)
+    tier = value_profile.get("tier", "none") if value_profile else "none"
+    if tier in ("strong", "nut") and made_strength >= 0.55:
+        adjusted -= confidence * 0.02
+
+    return adjusted
+
+
 def choose_raise(
     min_raise,
     my_chips,
@@ -307,11 +489,11 @@ def choose_raise(
     if round_idx == 0:
         ratio = 0.55 if to_call == 0 else 0.75
     elif round_idx == 1:
-        ratio = 0.60
+        ratio = 0.65
     elif round_idx == 2:
         ratio = 0.70
     else:
-        ratio = 0.85
+        ratio = 0.82
 
     ratio += max(0.0, win_rate - 0.55) * (0.90 + 0.20 * round_idx)
     ratio += -0.05 if has_position else 0.05
@@ -357,7 +539,7 @@ def choose_raise(
         ratio = min(ratio, probe_ratio)
     thin_cap = None
     if value_plan.get("thin_control", False) and value_profile.get("tier") != "nut":
-        thin_cap = 0.30 if round_idx <= 2 else 0.38
+        thin_cap = 0.33 if round_idx <= 2 else 0.35
         ratio = min(ratio, thin_cap)
     low_ratio = 0.28 if inducing_value else 0.22 if probe_mode or (blocker_bluff and to_call == 0) else 0.40
     if thin_cap is not None:
@@ -385,6 +567,59 @@ def choose_raise(
     if amount <= to_call or amount < min_raise or amount >= my_chips:
         return None
     return amount
+
+
+def _preflop_facing_raise_decision(req, state, spot_info, opponent_model, preflop_strength, win_rate, match_profile):
+    """Handle bb_vs_raise and sb_vs_reraise preflop spots using opponent modeling."""
+    my_chips = req["my_chips"]
+    to_call = state["to_call"]
+    pot = max(1, state["pot"])
+    pot_odds = to_call / (pot + to_call) if to_call > 0 else 0.0
+    confidence = opponent_model["confidence"]
+    pfr = opponent_model["pfr"]
+    fold_to_raise = opponent_model["fold_to_raise"]
+    match_adjust = match_risk_adjustment(req, req["my_id"], get_remaining_hands(req))
+
+    is_bb = spot_info["preflop_spot"] == "bb_vs_raise"
+    position_offset = -0.02 if is_bb else 0.03
+
+    call_threshold = 0.38 + position_offset + match_adjust
+    fold_threshold = 0.32 + position_offset + match_adjust
+    reraise_threshold = 0.60 - position_offset + match_adjust
+
+    if confidence >= 0.20:
+        call_threshold -= confidence * (pfr - 0.28) * 0.15
+        fold_threshold -= confidence * (pfr - 0.28) * 0.10
+        reraise_threshold -= confidence * (pfr - 0.28) * 0.08
+
+    if preflop_strength <= fold_threshold and not is_preflop_3bet_candidate(req["my_cards"]):
+        return -1
+
+    if is_preflop_3bet_candidate(req["my_cards"]) and preflop_strength >= reraise_threshold:
+        raise_amount = choose_raise(
+            state["min_raise_action"],
+            my_chips,
+            state["my_round_bet"],
+            to_call,
+            pot,
+            max(win_rate, preflop_strength),
+            0,
+            spot_info["preflop_spot"],
+            preflop_strength,
+            spot_info["has_position"],
+            opponent_model,
+            match_sizing_delta=match_profile["sizing_delta"],
+        )
+        if raise_amount is not None:
+            return raise_amount
+
+    if preflop_strength >= call_threshold:
+        return 0
+
+    if preflop_strength <= fold_threshold:
+        return -1
+
+    return 0
 
 
 def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_strength, win_rate, match_profile):
@@ -439,6 +674,11 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
         if not trash_hand and preflop_strength >= iso_threshold and raise_amount is not None:
             return raise_amount
         return 0
+
+    if spot_info["preflop_spot"] in ("bb_vs_raise", "sb_vs_reraise"):
+        return _preflop_facing_raise_decision(
+            req, state, spot_info, opponent_model, preflop_strength, win_rate, match_profile,
+        )
 
     return None
 
@@ -565,6 +805,19 @@ def get_action(req, requests):
         )
     )
 
+    # Detect scare-card completion on turn/river
+    completion_risk = _board_completion_risk(my_cards, public_cards, board_texture)
+    # If a draw just completed and we don't have a nut/strong hand, treat it
+    # like hard_repressure_fold when facing aggression
+    completion_folds = (
+        (completion_risk["completed_flush"] or completion_risk["completed_straight"])
+        and spot_info["facing_postflop_aggression"]
+        and (value_profile is None or value_profile["tier"] not in ("nut", "strong"))
+        and round_idx >= 2
+    )
+    if completion_folds:
+        hard_repressure_fold = True
+
     strong = 0.69 if round_idx == 0 else 0.65 if round_idx == 1 else 0.61 if round_idx == 2 else 0.59
     medium = 0.54 if round_idx == 0 else 0.50 if round_idx == 1 else 0.48
 
@@ -664,7 +917,7 @@ def get_action(req, requests):
 
     if to_call > 0:
         if round_idx == 0:
-            call_margin = 0.005 + (0.010 if not spot_info["has_position"] else 0.0)
+            call_margin = 0.008 + (0.012 if not spot_info["has_position"] else 0.0)
             if preflop_strength is not None and preflop_strength <= 0.40:
                 call_margin += 0.015
             realized_rate = win_rate
@@ -695,7 +948,7 @@ def get_action(req, requests):
                 and pair_profile["made_class"] == 1
                 and pair_profile["pair_type"] in ("middle_pair", "bottom_pair", "underpair")
             ):
-                call_margin += 0.035
+                call_margin += 0.050
             call_margin += line_strength + paired_board_stackoff["line_strength"]
             call_margin += check_resistance
             call_margin += 0.50 * nutted_risk["risk"]
@@ -777,7 +1030,8 @@ def get_action(req, requests):
         if hard_repressure_fold or paired_board_stackoff["severe"]:
             if not anti_lock_call_continue and not strong_made_continue:
                 return -1
-        if realized_rate < pot_odds + call_margin:
+        calibrated_odds = _calibrated_pot_odds(pot_odds, opponent_model, spot_info, round_idx, made_strength, value_profile)
+        if realized_rate < calibrated_odds + call_margin:
             if not anti_lock_call_continue and not strong_made_continue:
                 return -1
         if repeated_raise_trap and (value_profile is None or value_profile["tier"] != "nut"):
@@ -870,63 +1124,13 @@ def get_action(req, requests):
                 return raise_amount
         return 0
 
-    weak_pair_river = (
-        round_idx == 3
-        and pair_profile is not None
-        and pair_profile["made_class"] == 1
-        and pair_profile["pair_type"] in ("middle_pair", "bottom_pair", "underpair", "board_pair")
-    )
-    opp_double_barrel_then_river_check = (
-        round_idx == 3
-        and to_call == 0
-        and spot_info.get("opp_postflop_bet_count", 0) >= 2
-        and spot_info["last_opp_action_type"] == "check"
-    )
-    bad_river_bluff_candidate = (
-        round_idx == 3
-        and to_call == 0
-        and made_strength >= 0.18
-        and made_strength < 0.40
-        and not (blocker_profile and blocker_profile["eligible"])
-        and not (value_profile and value_profile["tier"] in ("strong", "nut"))
-    )
-    weak_bottom_pair_barrel = (
-        round_idx >= 2
-        and to_call == 0
-        and pair_profile is not None
-        and pair_profile["made_class"] == 1
-        and pair_profile["pair_type"] in ("bottom_pair", "underpair", "board_pair")
-        and made_strength < 0.40
-        and draw_strength < 0.12
-    )
-    weak_pair_after_raise_barrel = (
-        round_idx >= 2
-        and to_call == 0
-        and marginal_pair
-        and draw_strength < 0.14
-        and (value_profile is None or value_profile["tier"] not in ("strong", "nut"))
-        and (
-            spot_info.get("opp_previous_round_raise_count", 0) > 0
-            or spot_info.get("opp_prior_postflop_raise_count", 0) > 0
-        )
-    )
-    bad_river_value_bet = (
-        round_idx == 3
-        and to_call == 0
-        and paired_board_profile is not None
-        and paired_board_profile["board_paired"]
-        and paired_board_profile["prefer_check"]
-        and paired_board_profile["hand_class"] == 2
-        and nutted_risk["risk"] >= 0.05
-        and (value_profile is None or value_profile["tier"] != "nut")
-    )
-    bad_stackoff_overpair = (
-        round_idx > 0
-        and to_call == 0
-        and paired_board_stackoff["active"]
-        and pot > 3000
-        and (value_profile is None or value_profile["tier"] != "nut")
-    )
+    # Use consolidated river weak-hand check instead of inline booleans
+    if _should_check_river_weak(
+        round_idx, to_call, pair_profile, made_strength, draw_strength,
+        blocker_profile, value_profile, spot_info, paired_board_profile,
+        nutted_risk, paired_board_stackoff, board_texture, pot, match_profile,
+    ):
+        return 0
     big_pot_threshold = int(clamp(1500 - 350 * match_profile["protect"] + 250 * match_profile["chase"], 1100, 1800))
     big_pot = pot >= big_pot_threshold
     induce_nut_value = (
@@ -965,18 +1169,6 @@ def get_action(req, requests):
         if anti_lock_attack is not None:
             return anti_lock_attack
 
-    if opp_double_barrel_then_river_check and weak_pair_river:
-        return 0
-    if bad_river_bluff_candidate:
-        return 0
-    if weak_bottom_pair_barrel:
-        return 0
-    if weak_pair_after_raise_barrel:
-        return 0
-    if bad_river_value_bet:
-        return 0
-    if bad_stackoff_overpair:
-        return 0
     if big_pot and round_idx == 3 and (value_profile is None or value_profile["tier"] not in ("strong", "nut")):
         if blocker_profile is None or not blocker_profile["eligible"]:
             return 0

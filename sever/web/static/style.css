@@ -96,6 +96,14 @@ body {
 .player-role.sb { background: #ff9800; color: #000; }
 .player-role.bb { background: #2196f3; color: #fff; }
 
+.player-chips {
+  font-size: 11px; padding: 2px 6px; border-radius: 8px;
+  font-weight: 600; background: rgba(255,255,255,0.12);
+  color: var(--gold); font-variant-numeric: tabular-nums;
+}
+.player-chips.low { color: var(--accent); }
+.player-chips.mid { color: #ff9800; }
+
 .player-cards { display: flex; gap: 6px; }
 
 /* ── 扑克牌 ── */

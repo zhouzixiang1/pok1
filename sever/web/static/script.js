@@ -19,6 +19,7 @@ let state = {
   pot: 0,
   stage: "",
   sbIdx: -1,
+  playerChips: [20000, 20000],
 };
 
 // ── DOM 元素 ──
@@ -122,6 +123,12 @@ function handleEvent(data) {
     state.totalEarnings[1] += data.earnings[1];
     updateEarnings();
   }
+
+  // 更新筹码显示
+  if (data.player_chips) {
+    state.playerChips = data.player_chips;
+    updateChips();
+  }
 }
 
 function handleActionEvent(data) {
@@ -221,6 +228,17 @@ function updateEarnings() {
     const val = state.totalEarnings[i];
     el.textContent = (val >= 0 ? "+" : "") + val;
     el.className = "earning-value " + (val > 0 ? "positive" : val < 0 ? "negative" : "");
+  }
+}
+
+function updateChips() {
+  for (let i = 0; i < 2; i++) {
+    const el = $("p" + i + "-chips");
+    if (el) {
+      const chips = state.playerChips[i];
+      el.textContent = "筹码: " + chips;
+      el.className = "player-chips" + (chips < 5000 ? " low" : chips < 10000 ? " mid" : "");
+    }
   }
 }
 
@@ -324,7 +342,8 @@ async function resetMatch() {
   const data = await resp.json();
   addLog("已重置", "info");
   state = { status: "waiting", names: ["", ""], handNum: 0,
-            totalEarnings: [0, 0], communityCards: [], pot: 0, stage: "", sbIdx: -1 };
+            totalEarnings: [0, 0], communityCards: [], pot: 0, stage: "",
+            sbIdx: -1, playerChips: [20000, 20000] };
   updateStatus("waiting", "等待连接");
   updateCommunityCards([]);
   updatePot(0);
@@ -342,6 +361,10 @@ async function resetMatch() {
   $("p1-name").textContent = "玩家 2";
   $("earn-name-0").textContent = "玩家 1";
   $("earn-name-1").textContent = "玩家 2";
+  $("p0-chips").textContent = "筹码: 20000";
+  $("p0-chips").className = "player-chips";
+  $("p1-chips").textContent = "筹码: 20000";
+  $("p1-chips").className = "player-chips";
 }
 
 // ── 初始化 ──

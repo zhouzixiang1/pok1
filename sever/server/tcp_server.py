@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from engine.game import GameEngine, HANDS_PER_MATCH, TIMEOUT_SECONDS
+from engine.thp_recorder import THPRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -126,16 +127,25 @@ class MatchManager:
         c1.name = name1
         logger.info(f"Player 0: {name0}, Player 1: {name1}")
 
+        # 国赛平台要求英文名称，非英文发出警告
+        for i, name in enumerate([name0, name1]):
+            if not name.isascii():
+                logger.warning(f"Player {i} name '{name}' contains non-ASCII characters")
+
         if self.broadcast:
             await self.broadcast({
                 "type": "names",
                 "names": [name0, name1],
             })
 
+        # 创建 THP 棋谱记录器
+        recorder = THPRecorder(team_a_name=name0, team_b_name=name1)
+
         # 创建游戏引擎
         engine = GameEngine(
             send_func=self._send_to_client,
             broadcast_func=self.broadcast,
+            recorder=recorder,
         )
         self.engine = engine
 
@@ -148,6 +158,28 @@ class MatchManager:
             logger.error(f"Match error: {e}", exc_info=True)
             if self.broadcast:
                 await self.broadcast({"type": "error", "message": str(e)})
+        else:
+            # 比赛正常结束，导出 THP 棋谱
+            if recorder.records:
+                import os
+                from datetime import datetime
+                os.makedirs("records", exist_ok=True)
+                winner = name0 if engine.total_earnings[0] > engine.total_earnings[1] else name1
+                if engine.total_earnings[0] == engine.total_earnings[1]:
+                    winner = f"{name0}={name1}"
+                dt = datetime.now().strftime("%Y%m%d%H%M")
+                filename = f"THP-{name0} vs {name1}-{winner}胜-{dt}.txt"
+                filepath = os.path.join("records", filename)
+                try:
+                    recorder.export_file(filepath)
+                    if self.broadcast:
+                        await self.broadcast({
+                            "type": "thp_exported",
+                            "filepath": filepath,
+                            "hands": len(recorder.records),
+                        })
+                except Exception as e:
+                    logger.error(f"THP export error: {e}")
         finally:
             await c0.close()
             await c1.close()

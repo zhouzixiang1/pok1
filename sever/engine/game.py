@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from engine.deck import Deck, Card, cards_to_str
 from engine.evaluator import best_hand, compare_hands, hand_name
 from engine.validator import validate_action, SMALL_BLIND, BIG_BLIND
+from engine.thp_recorder import THPRecorder
 from server.protocol import (
     format_preflop, format_flop, format_turn, format_river,
     format_earn_chips, format_oppo_hands, format_opponent_action,
@@ -61,13 +62,15 @@ class HandResult:
 class GameEngine:
     """管理一场完整的 70 局比赛。"""
 
-    def __init__(self, send_func, broadcast_func=None):
+    def __init__(self, send_func, broadcast_func=None, recorder=None):
         """
         send_func: async send_func(player_idx, message) -> None
         broadcast_func: async broadcast_func(event_dict) -> None  (用于 SSE)
+        recorder: optional THPRecorder for match record generation
         """
         self.send = send_func
         self.broadcast = broadcast_func
+        self.recorder = recorder
         self.players = [PlayerState(idx=0), PlayerState(idx=1)]
         self.hand_num = 0
         self.total_earnings = [0, 0]  # 累计输赢
@@ -122,6 +125,12 @@ class GameEngine:
         sb.blind_type = "SMALLBLIND"
         bb.blind_type = "BIGBLIND"
 
+        # THP: 记录手牌开始和手牌
+        if self.recorder:
+            self.recorder.on_hand_start(hand_num, sb_idx, bb_idx)
+            self.recorder.on_hand_cards(sb_idx, [(c.suit, c.rank) for c in sb.hand_cards])
+            self.recorder.on_hand_cards(bb_idx, [(c.suit, c.rank) for c in bb.hand_cards])
+
         # 下盲注
         sb.chips -= SMALL_BLIND
         bb.chips -= BIG_BLIND
@@ -130,6 +139,8 @@ class GameEngine:
         await self._emit("hand_start", {
             "hand": hand_num, "sb_idx": sb_idx, "bb_idx": bb_idx,
             "names": [p.name for p in self.players],
+            "player_chips": [p.chips for p in self.players],
+            "pot": pot,
         })
 
         # 发送 preflop
@@ -154,14 +165,20 @@ class GameEngine:
                 flop_cards = deck.deal(3)
                 community.extend(flop_cards)
                 await self._send_stage_cards("flop", flop_cards)
+                if self.recorder:
+                    self.recorder.on_stage_cards("flop", [(c.suit, c.rank) for c in flop_cards])
             elif stage_name == "turn":
                 turn_card = deck.deal(1)
                 community.extend(turn_card)
                 await self._send_stage_cards("turn", turn_card)
+                if self.recorder:
+                    self.recorder.on_stage_cards("turn", [(c.suit, c.rank) for c in turn_card])
             elif stage_name == "river":
                 river_card = deck.deal(1)
                 community.extend(river_card)
                 await self._send_stage_cards("river", river_card)
+                if self.recorder:
+                    self.recorder.on_stage_cards("river", [(c.suit, c.rank) for c in river_card])
 
             result = await self._betting_round(
                 stage=stage_name, first_idx=first, second_idx=second,
@@ -244,6 +261,9 @@ class GameEngine:
                 # 超时 → fold
                 logger.info(f"[Hand {self.hand_num}] {stage}: {current.name} timeout → fold")
                 current.folded = True
+                await self.send(waiting_idx, "fold")
+                if self.recorder:
+                    self.recorder.on_action(current_idx, "fold")
                 await self._emit("action", {
                     "player_idx": current_idx, "action": "timeout",
                     "stage": stage, "hand": self.hand_num,
@@ -262,6 +282,9 @@ class GameEngine:
                 logger.info(f"[Hand {self.hand_num}] {stage}: {current.name} "
                             f"illegal '{raw}' ({reason}) → fold")
                 current.folded = True
+                await self.send(waiting_idx, "fold")
+                if self.recorder:
+                    self.recorder.on_action(current_idx, "fold")
                 await self._emit("action", {
                     "player_idx": current_idx, "action": f"illegal:{raw}",
                     "reason": reason, "stage": stage, "hand": self.hand_num,
@@ -276,6 +299,8 @@ class GameEngine:
                 current.folded = True
                 logger.info(f"[Hand {self.hand_num}] {stage}: {current.name} folds")
                 await self.send(waiting_idx, "fold")
+                if self.recorder:
+                    self.recorder.on_action(current_idx, "fold")
                 await self._emit("action", {
                     "player_idx": current_idx, "action": "fold",
                     "stage": stage, "hand": self.hand_num,
@@ -292,6 +317,8 @@ class GameEngine:
                 pot += actual
                 actions.append(("call", None))
                 await self.send(waiting_idx, "call")
+                if self.recorder:
+                    self.recorder.on_action(current_idx, "call")
                 await self._emit("action", {
                     "player_idx": current_idx, "action": "call",
                     "amount": actual, "stage": stage, "hand": self.hand_num,
@@ -320,6 +347,8 @@ class GameEngine:
             if action_type == "check":
                 actions.append(("check", None))
                 await self.send(waiting_idx, "check")
+                if self.recorder:
+                    self.recorder.on_action(current_idx, "check")
                 await self._emit("action", {
                     "player_idx": current_idx, "action": "check",
                     "stage": stage, "hand": self.hand_num,
@@ -330,6 +359,10 @@ class GameEngine:
                 if stage == "preflop" and is_bb and action_counts[current_idx] == 1:
                     if len(actions) >= 2 and actions[-2][0] == "call":
                         break
+
+                # postflop: 对手已行动且双方都 check → 阶段结束
+                if stage != "preflop" and action_counts[waiting_idx] > 0:
+                    break
 
                 current_idx, waiting_idx = waiting_idx, current_idx
                 continue
@@ -343,6 +376,8 @@ class GameEngine:
                 pot += needed
                 actions.append(("raise", amount))
                 await self.send(waiting_idx, f"raise {amount}")
+                if self.recorder:
+                    self.recorder.on_action(current_idx, "raise", needed)
                 await self._emit("action", {
                     "player_idx": current_idx, "action": "raise",
                     "amount": amount, "needed": needed,
@@ -362,6 +397,8 @@ class GameEngine:
                 allin_occurred = True
                 actions.append(("allin", all_in_amount))
                 await self.send(waiting_idx, "allin")
+                if self.recorder:
+                    self.recorder.on_action(current_idx, "allin", all_in_amount)
                 await self._emit("action", {
                     "player_idx": current_idx, "action": "allin",
                     "amount": all_in_amount,
@@ -374,6 +411,9 @@ class GameEngine:
 
             # 未知行为 → fold
             current.folded = True
+            await self.send(waiting_idx, "fold")
+            if self.recorder:
+                self.recorder.on_action(current_idx, "fold")
             return BettingResult(folded=True, winner_idx=waiting_idx,
                                   pot=pot, community=community)
 
@@ -393,6 +433,9 @@ class GameEngine:
 
         await self.send(0, format_earn_chips(earnings[0]))
         await self.send(1, format_earn_chips(earnings[1]))
+
+        if self.recorder:
+            self.recorder.on_settle(earnings)
 
         await self._emit("settle", {
             "hand": self.hand_num, "is_showdown": False,
@@ -441,6 +484,10 @@ class GameEngine:
         # 发送 earnChips（按 player index）
         await self.send(0, format_earn_chips(earnings[0]))
         await self.send(1, format_earn_chips(earnings[1]))
+
+        # THP: 记录 showdown 结算
+        if self.recorder:
+            self.recorder.on_settle(earnings)
 
         # 发送对手手牌
         await self.send(sb.idx, format_oppo_hands(bb.hand_cards))
@@ -492,6 +539,10 @@ class GameEngine:
         raise NotImplementedError
 
     async def _emit(self, event_type: str, data: dict):
-        """广播事件给 Web 前端（SSE）。"""
+        """广播事件给 Web 前端（SSE）。自动注入筹码信息。"""
         if self.broadcast:
-            await self.broadcast({"type": event_type, **data})
+            event = {"type": event_type, **data}
+            # 为 action 和 settle 事件自动注入当前筹码
+            if event_type in ("action", "settle", "stage", "hand_start"):
+                event["player_chips"] = [p.chips for p in self.players]
+            await self.broadcast(event)

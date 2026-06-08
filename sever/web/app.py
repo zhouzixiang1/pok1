@@ -9,7 +9,7 @@ import json
 import logging
 from pathlib import Path
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 logger = logging.getLogger(__name__)
@@ -91,5 +91,25 @@ def create_app(match_manager) -> FastAPI:
     async def reset_match():
         await match_manager.reset()
         return JSONResponse({"status": "reset"})
+
+    @app.get("/api/record/thp")
+    async def get_thp_record():
+        """获取最近一场比赛的 THP 棋谱文件列表或下载。"""
+        import os
+        records_dir = Path("records")
+        if not records_dir.exists():
+            return JSONResponse({"records": []})
+        files = sorted(records_dir.glob("THP-*.txt"), key=lambda f: f.stat().st_mtime, reverse=True)
+        return JSONResponse({
+            "records": [{"name": f.name, "size": f.stat().st_size} for f in files[:20]],
+        })
+
+    @app.get("/api/record/thp/{filename}")
+    async def download_thp_record(filename: str):
+        """下载指定的 THP 棋谱文件。"""
+        filepath = Path("records") / filename
+        if not filepath.exists() or not filepath.is_relative_to(Path("records")):
+            return JSONResponse({"error": "文件不存在"}, status_code=404)
+        return FileResponse(filepath, media_type="text/plain", filename=filename)
 
     return app
