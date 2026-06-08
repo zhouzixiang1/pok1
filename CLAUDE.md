@@ -14,7 +14,7 @@ The project has three independent poker engines serving different purposes:
 Additional modules:
 - `rl/` — Reinforcement learning training framework (DanLM-inspired DMC self-play). Wraps `engine/judge.py` as a Gymnasium environment, supports MLP and Transformer Q-networks.
 - `docs/` — Design documents and analysis reports (RL design, pipeline bottleneck analysis, LLM stages, etc.)
-- `ref/` — Reference implementations: DanLM (token-based poker RL), neuron_poker (gym-based poker), Botzone API docs.
+- `ref/` — Reference implementations: DanLM (token-based card game RL, Transformer + DMC self-play), neuron_poker (Gym-based Hold'em with DQN/equity agents), Botzone platform API docs (`player_api.js`, `TexasHoldem2p.html`).
 - `archive/` — Deprecated code (old dashboard, orchestrator, evolution_workspace).
 
 Top-level documentation:
@@ -500,6 +500,69 @@ DanLM-inspired DMC self-play training framework. Wraps `engine/judge.py` as a Gy
 | `docs/pipeline-bottleneck-analysis.md` | Evolution pipeline bottleneck analysis |
 | `docs/find-current-v-analysis.md` | `find_current_v()` analysis report |
 
+### Reference Implementations (`ref/`)
+
+External projects used as architectural references for the `rl/` module and Botzone integration.
+
+#### DanLM (`ref/DanLM/`)
+
+Game AI for multi-player trick-taking card games (GuanDan, DouDiZhu) that learns entirely from raw game history via self-play RL with zero domain knowledge. Reached #1 on Botzone leaderboards.
+
+- **Paper**: "DanLM: Tokenization Is All You Need to Master Complex Card Games"
+- **Architecture**: TinyLM Encoder (causal Transformer on tokenized play records) + Hand MLP + Q-Value Head with auxiliary NTP loss.
+- **Training**: DMC (Deep Monte Carlo) self-play, cycle-based. Predecessor: DanZero (AAAI 2023, 567-dim hand-crafted features + MLP).
+- **License**: Apache 2.0 + non-commercial restriction (academic/personal use only).
+
+| Subpackage | Role |
+|---|---|
+| `danzero/config_v3.py` | `DanZeroV3Config` dataclass: cycle-based N/k/S hyperparameters |
+| `danzero/encoding/` | State encoding: v0 (567-dim), v1t (964-dim), tokenizer (~90 vocab) |
+| `danzero/engine/` | Core GuanDan game engine (cards, actions, rounds, tribute) |
+| `danzero/model/` | MLP Q-network (DanZero) + Transformer Q-network (DanLM/TinyLM) |
+| `danzero/eval/` | Evaluation: pluggable agent interface, baseline adapter |
+| `danzero/explorer/` | Parallel exploration: 5 strategies (Greedy, ε-Greedy, Boltzmann, Diverse, MCTS) |
+| `scripts/` | evaluate.py, evaluate_game.py, parallel_explore.py |
+| `ui/server.py` | FastAPI interactive play server with AI hints (Q-value estimates) |
+| `baselines/` | 16 competition bots from 1st National GuanDan AI Competition (bugs fixed) |
+| `ckpts/` | 3 model checkpoints (~80MB): DanLM_v1 (Transformer), DanZero_v3 (MLP), DanZero_v3_rep_v1t |
+
+**Relationship to this project's `rl/` module**: Direct architectural adaptation from GuanDan to heads-up NL Hold'em:
+
+| DanLM | `rl/` | Notes |
+|---|---|---|
+| `DanZeroV3Config` | `HoldemRLConfig` | Same N/k/S cycle pattern |
+| `danzero/encoding/tokenizer` | `rl/core/tokenizer.py` | Same tokenization, ~80 vocab for Hold'em |
+| `danzero/model/transformer` | `rl/models/transformer.py` | Same dual-stream TinyLM + Q-Value Head |
+| `danzero/engine/` | `rl/core/holdem_env.py` | Gymnasium env wrapping engine/judge.py |
+| DanZero MLP | `rl/models/q_network.py` | MLP Q-network baseline |
+
+#### neuron_poker (`ref/neuron_poker/`)
+
+Open-source Texas Hold'em AI training framework (MIT, Nicolas Dickreuter). OpenAI Gym environment for No-Limit Hold'em with multiple agent types.
+
+- **Python**: ~=3.11, **License**: MIT, **Game**: NL Hold'em 2-6 players
+- **Action space**: Discrete(8) — fixed raise sizes (3BB, half-pot, pot, 2x pot), no continuous raise
+- **Key difference from `engine/`**: Fixed pot-fraction raises vs arbitrary raise amounts; multi-player with side pots vs heads-up only; stack 500/blinds 1/2 vs 20000/50/100
+
+| Component | Role |
+|---|---|
+| `gym_env/env.py` | `HoldemTable(Env)` — Gym environment with Monte Carlo equity in observations |
+| `agents/` | RandomPlayer, KeyPressPlayer, EquityPlayer (threshold-based), DQNPlayer (keras-rl), Custom_Q1 (stub) |
+| `tools/montecarlo_*` | Equity calculation: Python, NumPy, C++ (~500x faster) |
+| `tools/hand_evaluator.py` | Best 5-card hand evaluation |
+
+Algorithms: random baseline, equity-based threshold, genetic self-improvement (population of equity agents), DQN via keras-rl (3×512 MLP, Boltzmann policy).
+
+#### Botzone Platform API (`ref/player_api.js`, `ref/TexasHoldem2p.html`)
+
+- **`player_api.js`** — Client-side JavaScript API for Botzone game renderers. Two generations: v1 (direct callbacks) and v2 (GSAP TimelineMax animation model). Handles match init, log streaming, player turns, game-over, seek/pause/resume.
+- **`TexasHoldem2p.html`** — Botzone's 2-player NL Hold'em game renderer and authoritative protocol reference:
+  - **Card format**: Integers 0-51, `suit = card % 4` (h/d/s/c), `rank = card // 4` (0=2..12=A). Exactly matches `engine/judge.py`.
+  - **Action format**: `-1`=fold, `-2`=all-in, `0`=check/call, `>0`=raise. Matches `engine/judge.py`.
+  - **Game state model**: `round_player_bet` (per-player bets, -1=folded, -2=all-in), `round` (0-4 for preflop→showdown), `round_raise` (max raise seen), `pot`, `player_chips`, `public_cards`, `player_cards`, `last_action`.
+  - **Match data**: `hand` (0-indexed), `max_hand`, `total_win_chips`, `temp_result`, `final_result`.
+  - **Min raise**: `2 * round_raise` where `round_raise` tracks max raise increment.
+
 ## Key Conventions
 
 - All shared files use `fcntl` file locking for concurrent access between daemon subprocess, orchestrator, and API server
@@ -514,7 +577,7 @@ DanLM-inspired DMC self-play training framework. Wraps `engine/judge.py` as a Gy
 - Test naming: `test_routes_*.py` (HTTP endpoints), `test_logic_*.py` (pure functions), `test_mcp_*.py` (MCP tool handlers)
 - `results/` at project root stores timestamped competition result JSONs (e.g., `20260608_100329_main_vs_main.json`), separate from `web/core/results/` which stores live daemon/orchestrator data
 - `archive/` stores deprecated code: old dashboard (backend+frontend), old orchestrator, old evolution_workspace
-- `ref/` stores external reference implementations: DanLM (git submodule), neuron_poker (git submodule), Botzone API docs
+- `ref/DanLM/` and `ref/neuron_poker/` are git submodules; `ref/player_api.js` and `ref/TexasHoldem2p.html` are Botzone platform API references
 
 ## Post-Task Workflow
 
