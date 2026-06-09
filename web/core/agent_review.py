@@ -52,6 +52,35 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
             f"If improvements were made that address ALL feedback points, raise the score accordingly.\n"
         )
 
+    # --- Meta-3: Critic Bias Calibration ---
+    try:
+        calibration_file = RESULTS_DIR / "critic_calibration.jsonl"
+        if calibration_file.exists():
+            lines = calibration_file.read_text().strip().split('\n')
+            recent = [json.loads(l) for l in lines[-10:] if l.strip()]
+            if len(recent) >= 3:
+                scores = [r.get("critic_score", 0) for r in recent]
+                deltas = [r.get("rating_delta", 0) for r in recent]
+                avg_score = sum(scores) / len(scores)
+                avg_delta = sum(deltas) / len(deltas)
+                if avg_score > 7 and avg_delta < 0:
+                    critic_prompt += (
+                        f"\n\n# Critic Calibration Note\n"
+                        f"Over the last {len(recent)} generations, your average score was {avg_score:.1f} "
+                        f"but actual rating change was {avg_delta:+.0f} points. "
+                        f"You may be OVERESTIMATING improvements, especially in strategy complexity. "
+                        f"Please be more critical this time — demand concrete evidence of improvement.\n"
+                    )
+                elif avg_score < 4 and avg_delta > 0:
+                    critic_prompt += (
+                        f"\n\n# Critic Calibration Note\n"
+                        f"Over the last {len(recent)} generations, your average score was {avg_score:.1f} "
+                        f"but actual rating improved by {avg_delta:+.0f} points. "
+                        f"You may be TOO HARSH. Consider giving credit for small but real improvements.\n"
+                    )
+    except Exception:
+        pass  # Calibration is advisory
+
     log_file = get_logs_dir(next_v) / "critic_io.txt"
     try:
         output, _, _ = await run_claude_query(

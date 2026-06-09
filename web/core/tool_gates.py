@@ -454,6 +454,27 @@ async def run_critic(args):
                                 f"Rejected (score={score_num}): {data.get('feedback', '')[:2000]}",
                                 local_optima_warning=data.get("local_optima_warning", False),
                                 local_optima_reason=data.get("local_optima_reason"))
+        # Meta-2: Trigger Regression Guardian on very low critic score
+        if score_num < 4:
+            try:
+                from audit_agents import _run_regression_guardian
+                from tool_helpers import _matching_checkpoint as _mckpt
+                _c = _mckpt(v, source_v)
+                _history = {
+                    "score": score_num,
+                    "feedback": data.get("feedback", "")[:500],
+                    "strategic_assessment": data.get("strategic_assessment", "")[:500],
+                    "master_plan": _c.get("master_plan", {}) if _c else {},
+                    "gate_results": _c.get("gate_results", {}) if _c else {},
+                }
+                import asyncio as _aio
+                _aio.create_task(_run_regression_guardian(
+                    v, source_v, _history,
+                    f"Critic score {score_num} < 4: {data.get('feedback', '')[:200]}",
+                    _get_ui(),
+                ))
+            except Exception:
+                pass  # Guardian is advisory
 
     log_system_event(
         "pipeline.critic_passed" if approved else "pipeline.critic_rejected",

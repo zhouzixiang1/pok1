@@ -12,6 +12,7 @@ from opponent import build_opponent_model, analyze_current_spot
 from postflop import (
     made_hand_metric, pair_board_profile, pair_domination_margin,
     marginal_pair_under_pressure, board_texture_profile,
+    classify_street_texture,
     paired_board_outcome_profile, bet_size_bucket, value_hand_tier,
     value_bet_plan, empty_draw_profile, draw_profile, draw_potential,
     draw_call_margin, made_flush_profile, blocker_bluff_profile,
@@ -228,7 +229,7 @@ def paired_board_stackoff_profile(pair_profile, paired_board_profile, board_text
     return info
 
 
-def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength, round_idx, has_position):
+def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength, round_idx, has_position, texture_class="none"):
     if round_idx <= 0:
         return 0.0
 
@@ -266,6 +267,11 @@ def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength
         margin -= confidence * max(0.0, opponent_model["postflop_aggr"] - 0.50) * 0.015
     else:
         margin -= confidence * max(0.0, opponent_model["postflop_aggr"] - 0.50) * 0.008
+
+    if texture_class == "dry":
+        margin -= 0.025
+    elif texture_class in ("draw_heavy", "monotone"):
+        margin += 0.020
 
     return clamp(margin, 0.0, 0.08)
 
@@ -572,7 +578,7 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
 # Removed: SPR commitment fold, opponent-model-aware fold, river multi-barrel fold
 # These over-folded vs passive bots — v13's simpler version beats them +5-9%
 
-def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile, spot_info):
+def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile, spot_info, texture_class="none"):
     if round_idx <= 0:
         return False
     tier = value_profile.get("tier", "none") if value_profile else "none"
@@ -597,6 +603,15 @@ def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile,
         if made_strength < 0.35 and not has_draw and size_bucket in ("medium", "large"):
             return True
         if made_strength < 0.40 and not has_draw and opp_bets >= 2:
+            return True
+    # Texture-gated fold branches — new axis based on board texture classification
+    if texture_class == "dry" and not has_draw:
+        if round_idx >= 2 and made_strength < 0.32 and size_bucket in ("medium", "large"):
+            return True
+        if round_idx == 3 and opp_bets >= 2 and made_strength < 0.38:
+            return True
+    if texture_class == "paired" and not has_draw and tier not in ("strong", "nut"):
+        if round_idx >= 2 and made_strength < 0.30 and (size_bucket in ("medium", "large") or opp_bets >= 2):
             return True
     return False
 
@@ -682,6 +697,7 @@ def get_action(req, requests):
     made_strength = made_hand_metric(my_cards, public_cards) if len(public_cards) >= 3 else 0.0
     pair_profile = pair_board_profile(my_cards, public_cards) if len(public_cards) >= 3 else None
     board_texture = board_texture_profile(public_cards) if len(public_cards) >= 3 else None
+    street_texture = classify_street_texture(public_cards) if len(public_cards) >= 3 else {"class": "none", "dry_score": 0.5, "bluff_combos": 0.5}
     draw_info = draw_profile(my_cards, public_cards, board_texture) if len(public_cards) >= 3 else empty_draw_profile()
     draw_strength = draw_info["quality"]
     marginal_pair = marginal_pair_under_pressure(pair_profile, board_texture) if len(public_cards) >= 3 else False
@@ -958,7 +974,7 @@ def get_action(req, requests):
             if not anti_lock_call_continue and not strong_made_continue:
                 return -1
         # v13 simpler fold gate — removed v18's SPR/opponent-model/river-barrel folds
-        if should_fold_postflop(round_idx, made_strength, draw_strength, value_profile, spot_info):
+        if should_fold_postflop(round_idx, made_strength, draw_strength, value_profile, spot_info, texture_class=street_texture["class"]):
             if not anti_lock_call_continue and not strong_made_continue:
                 return -1
         if hard_repressure_fold or paired_board_stackoff["severe"]:

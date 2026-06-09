@@ -243,9 +243,11 @@ async def run_master(args):
         return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed to produce a valid plan after 3 retries", "logs": ui.get_output()})}]}
 
     # --- P0-1: Post-Master Plan Verification Audit ---
+    master_audit_ctx = None
     try:
         from audit_agents import _run_master_plan_audit
         audit_result = await _run_master_plan_audit(data, source_v, ui)
+        master_audit_ctx = audit_result  # Save for audit_context chain
         if not audit_result.get("overall_pass", True):
             log_system_event("pipeline.master_audit_rejected", "warn",
                              f"Master plan audit rejected for v{next_v}: {audit_result.get('feedback', '')[:200]}",
@@ -291,7 +293,8 @@ async def run_master(args):
     write_pipeline_checkpoint(next_v, source_v, "master_planned",
                               master_plan=data,
                               direction_audit=existing_audit,
-                              worker_failure_count=_ckpt.get("worker_failure_count", _ckpt.get("worker_invocation_count", 0)) if _ckpt else 0)
+                              worker_failure_count=_ckpt.get("worker_failure_count", _ckpt.get("worker_invocation_count", 0)) if _ckpt else 0,
+                              audit_context={"master_audit": master_audit_ctx} if master_audit_ctx else None)
 
     log_system_event("pipeline.master_done", "info", f"Master planned v{next_v}: {len(data.get('tasks', []))} tasks",
                      {"next_v": next_v, "source_v": source_v, "num_tasks": len(data.get("tasks", []))})

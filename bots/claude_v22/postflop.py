@@ -187,6 +187,23 @@ def board_texture_profile(public_cards):
     return info
 
 
+def classify_street_texture(public_cards):
+    if len(public_cards) < 3:
+        return {"class": "none", "dry_score": 0.5, "bluff_combos": 0.5}
+    bt = board_texture_profile(public_cards)
+    suits = [c % 4 for c in public_cards]
+    max_suit = max(suits.count(s) for s in set(suits))
+    if max_suit >= 3 and bt["flush_pressure"] >= 0.75:
+        return {"class": "monotone", "dry_score": 0.1, "bluff_combos": 0.85}
+    if bt["paired"]:
+        return {"class": "paired", "dry_score": 0.4, "bluff_combos": 0.3}
+    if bt["flush_pressure"] >= 0.75 or bt["straight_pressure"] >= 0.65 or bt["wetness"] >= 0.45:
+        return {"class": "draw_heavy", "dry_score": 0.15, "bluff_combos": 0.8}
+    if bt["flush_pressure"] >= 0.35 or bt["straight_pressure"] >= 0.28 or bt["wetness"] >= 0.20:
+        return {"class": "semi_connected", "dry_score": 0.35, "bluff_combos": 0.5}
+    return {"class": "dry", "dry_score": 0.85, "bluff_combos": 0.15}
+
+
 def paired_board_outcome_profile(hole_cards, public_cards):
     info = {
         "board_paired": False,

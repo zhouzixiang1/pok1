@@ -164,7 +164,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                reviewer_feedback="", generation_attempt=0,
                                gate_results=None, worker_failure_count=None,
                                worker_invocation_count=None,
-                               parent2_v=None, direction_audit=None):
+                               parent2_v=None, direction_audit=None,
+                               audit_context=None):
     """Write pipeline stage checkpoint so a killed process can resume.
 
     Uses atomic tmp+rename under exclusive lock to prevent concurrent
@@ -189,6 +190,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         existing_generation_attempt = generation_attempt
         existing_parent2_v = parent2_v
         existing_direction_audit = None
+        existing_audit_context = {}
 
         if existing and existing.get("next_v") == next_v and existing.get("source_v") == source_v:
             existing_gate_results = existing.get("gate_results", {}) or {}
@@ -202,6 +204,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             if parent2_v is None:
                 existing_parent2_v = existing.get("parent2_v")
             existing_direction_audit = existing.get("direction_audit")
+            existing_audit_context = existing.get("audit_context", {}) or {}
 
         if gate_results:
             existing_gate_results.update(gate_results)
@@ -211,6 +214,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             existing_failure_count = worker_invocation_count
         if direction_audit is not None:
             existing_direction_audit = direction_audit
+        if audit_context is not None:
+            existing_audit_context.update(audit_context)
 
         state = {
             "next_v": next_v, "source_v": source_v, "stage": stage,
@@ -220,6 +225,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "gate_results": existing_gate_results,
             "parent2_v": existing_parent2_v,
             "direction_audit": existing_direction_audit,
+            "audit_context": existing_audit_context,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
 

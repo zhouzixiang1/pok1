@@ -338,6 +338,32 @@ async def run_archivist(args):
     except Exception as e:
         llm_result = {"error": str(e)}
 
+    # --- Meta-3: Record Critic Calibration Data ---
+    try:
+        _ckpt_cal = _matching_checkpoint(v, source_v)
+        if _ckpt_cal:
+            critic_gate = _ckpt_cal.get("gate_results", {}).get("critic", {})
+            critic_score = critic_gate.get("score", 0)
+            # Calculate rating delta
+            rating_delta = 0
+            ratings_cal = load_ratings()
+            v_rating = ratings_cal.get(f"claude_v{v}", {}).get("r", 0)
+            s_rating = ratings_cal.get(f"claude_v{source_v}", {}).get("r", 0)
+            if v_rating and s_rating:
+                rating_delta = round(v_rating - s_rating, 1)
+            cal_file = RESULTS_DIR / "critic_calibration.jsonl"
+            import time as _time
+            cal_entry = json.dumps({
+                "version": v, "source_v": source_v,
+                "critic_score": critic_score,
+                "rating_delta": rating_delta,
+                "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%S"),
+            })
+            with open(cal_file, "a") as _cf:
+                _cf.write(cal_entry + "\n")
+    except Exception:
+        pass  # Calibration recording is advisory
+
     result = {
         "version": v,
         "source_v": source_v,
