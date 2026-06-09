@@ -39,6 +39,12 @@ You check ONLY these four areas:
 3. **Code correctness** — The bot must compile and output valid `{"response": <int>}` JSON. No `input()`/`print()` for game communication. No unavailable imports (stdlib only). No infinite loops.
 
 4. **No dead code** — No unreachable code, unused imports, or commented-out blocks left behind.
+
+5. **Strategy drift detection** — Check whether the changes introduce unintended side effects OUTSIDE the declared scope:
+   - If the Master plan says "improve postflop aggression", but the diff also modifies preflop fold thresholds, flag this as drift.
+   - If a Tuner changes constants.py values that affect subsystems NOT mentioned in the task, flag this.
+   - Compare the change scope against the declared target_files — changes to undeclared files are drift.
+   - Include any detected drift in the `risk_areas` field of your output.
 </your_scope>
 
 <not_your_scope>

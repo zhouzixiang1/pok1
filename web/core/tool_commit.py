@@ -414,6 +414,26 @@ async def run_crossover(args):
         return _json_tool_result({"error": f"Parent B v{parent_b} has no git tag 'bot-v{parent_b}'. Cannot use uncommitted code."})
 
     ui = _get_ui()
+
+    # --- P1-3: Crossover Parent Compatibility Audit ---
+    try:
+        from audit_agents import _run_crossover_compatibility_audit
+        compat = await _run_crossover_compatibility_audit(parent_a, parent_b, ui)
+        if not compat.get("compatible", True):
+            log_system_event("pipeline.crossover_incompatible", "warn",
+                             f"Parents v{parent_a}×v{parent_b} may be incompatible: {compat.get('conflict_areas', [])[:3]}",
+                             {"parent_a": parent_a, "parent_b": parent_b, "compat": compat})
+            if compat.get("compatibility_score", 10) <= 3:
+                return _json_tool_result({
+                    "error": f"Parents v{parent_a} and v{parent_b} are fundamentally incompatible (score={compat.get('compatibility_score')}). "
+                             f"Conflicts: {', '.join(compat.get('conflict_areas', [])[:3])}. "
+                             f"Suggestion: {compat.get('suggested_merge_approach', 'Select different parents.')}",
+                    "compatibility": compat,
+                })
+    except Exception as e:
+        import logging as _logging
+        _logging.getLogger(__name__).warning("Crossover compat audit error (skipping): %s", e)
+
     success = await _run_crossover(parent_a, parent_b, target_v, ui)
 
     # Write checkpoint so quality gates → review → critic → commit can proceed

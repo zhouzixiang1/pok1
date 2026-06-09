@@ -15,6 +15,7 @@ import logging
 import time
 import traceback
 from dataclasses import dataclass, field
+from pathlib import Path
 
 log = logging.getLogger("pok.scheduler")
 
@@ -129,9 +130,91 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     # Strategy decision (code-layer, deterministic)
     strategy, source_v, parents = _decide_strategy(combined, active_v, ratings)
 
+    # --- P1-1: Continuous Degeneration Diagnosis ---
+    if combined and combined.get("trend") == "declining":
+        try:
+            from audit_agents import _run_degeneration_diagnosis
+            from evolution_infra import _git
+            # Build recent commit history
+            recent_commits_text = ""
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["git", "log", f"bot-v{active_v}", "-5", "--format=%h %s%n%b"],
+                    capture_output=True, text=True, timeout=10,
+                    cwd=str(Path(__file__).resolve().parent.parent.parent),
+                )
+                if result.returncode == 0:
+                    recent_commits_text = result.stdout.strip()[:3000]
+            except Exception:
+                pass
+
+            # Build rating curve
+            rating_curve_text = ""
+            try:
+                from evolution_infra import RATING_HISTORY_FILE
+                if RATING_HISTORY_FILE.exists():
+                    lines = RATING_HISTORY_FILE.read_text().strip().split('\n')
+                    recent_lines = lines[-10:]
+                    rating_curve_text = "\n".join(recent_lines)[:2000]
+            except Exception:
+                pass
+
+            diag = await _run_degeneration_diagnosis(
+                active_v, recent_commits_text, "See commits above", rating_curve_text, ui
+            )
+            if diag.get("urgent_intervention"):
+                log_system_event("pipeline.urgent_degeneration", "error",
+                                 f"Urgent degeneration detected for v{active_v}: {diag.get('root_causes', [])}",
+                                 {"source_v": active_v, "diagnosis": diag})
+                # Override strategy to crossover for recovery
+                if strategy != "crossover":
+                    strategy = "crossover"
+                    log_system_event("pipeline.degeneration_strategy_override", "warn",
+                                     f"Overriding strategy to crossover due to degeneration", {})
+            elif diag.get("is_degenerating"):
+                log_system_event("pipeline.degeneration_detected", "warn",
+                                 f"Degeneration detected for v{active_v}: {diag.get('recommendation', '')}",
+                                 {"source_v": active_v, "diagnosis": diag})
+        except Exception as e:
+            log.warning("Degeneration diagnosis error (skipping): %s", e)
+
     stagnation_text = json.dumps(combined, ensure_ascii=False) if combined else ""
     perf_text = stagnation_text  # Combined result serves as both
     match_text = match_analysis or ""
+
+    # --- P1-2: H2H Anomaly Root Cause Analysis ---
+    if combined:
+        try:
+            from evolution_infra import H2H_FILE
+            if H2H_FILE.exists():
+                h2h_data = json.loads(H2H_FILE.read_text())
+                anomalies = []
+                v_key = f"claude_v{active_v}"
+                for pair_key, pair_data in h2h_data.items():
+                    if v_key in pair_key:
+                        wr = pair_data.get("win_rate", 0.5)
+                        games = pair_data.get("games", 0)
+                        if games >= 20 and abs(wr - 0.5) > 0.15:
+                            opp = pair_key.replace(v_key, "").replace(" vs ", "").strip()
+                            anomalies.append({
+                                "opponent": opp,
+                                "win_rate": wr,
+                                "games": games,
+                                "delta": round(wr - 0.5, 2),
+                            })
+                if anomalies:
+                    log_system_event("pipeline.h2h_anomaly", "warn",
+                                     f"H2H anomalies for v{active_v}: {len(anomalies)} matchups deviate >15%",
+                                     {"source_v": active_v, "anomalies": anomalies[:5]})
+                    # Inject into stagnation_text for Master context
+                    anomaly_text = "\n\n## H2H Anomaly Alert\n"
+                    for a in anomalies[:5]:
+                        anomaly_text += f"- vs {a['opponent']}: WR={a['win_rate']:.1%} (delta={a['delta']:+.0%}, {a['games']} games)\n"
+                    anomaly_text += "These matchups require attention in the next generation.\n"
+                    stagnation_text += anomaly_text
+        except Exception as e:
+            log.warning("H2H anomaly check error (skipping): %s", e)
 
     return GenerationContext(
         current_v=active_v,

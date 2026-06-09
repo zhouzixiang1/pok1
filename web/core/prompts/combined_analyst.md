@@ -14,6 +14,7 @@ Before analysis, assess:
 4. **System deadlock**: If recent failures show critic demanding "structural innovation" but workers keep producing constant-tuning changes, this is a deadlock. Recommend "crossover".
 5. **Diversity trigger**: Set diversity_needed=true if trend is stagnant/declining for 2+ gens, OR last 2 gens applied the same type of change.
 6. **Branch safety**: If recommending branch_from, check lineage — do NOT branch from an ancestor if a later descendant already improved from it.
+7. **Causal reasoning**: For each identified improvement or weakness, explain the CAUSAL chain: what specific code change likely caused the rating movement, with evidence from the generation trend and H2H data. Put this in the `causal_analysis` field.
 </analysis_rules>
 
 <context>
@@ -62,7 +63,8 @@ Output ONLY a JSON block:
   "reason": "brief explanation combining stagnation assessment and performance trend",
   "suggestion": "one concrete high-priority suggestion for next gen",
   "recommended_source": "claude_vN",
-  "source_rationale": "why this bot is the best choice for evolution source"
+  "source_rationale": "why this bot is the best choice for evolution source",
+  "causal_analysis": "For each key rating movement, explain what code change caused it and why, with evidence"
 }
 ```
 

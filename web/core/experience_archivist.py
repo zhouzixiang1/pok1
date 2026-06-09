@@ -43,8 +43,33 @@ async def _consolidate_experience_pool(ui, exhausted_directions: str = ""):
     })
     log_file = get_logs_dir(0) / "experience_consolidation_io.txt"
 
+    # --- P1-4: Experience Pool Quality Audit (pre-consolidation) ---
+    audit_context = ""
+    try:
+        from audit_agents import _run_experience_pool_audit
+        from evolution_infra import load_ratings
+        ratings = load_ratings() or {}
+        audit_result = await _run_experience_pool_audit(content, ratings, ui)
+        if audit_result.get("overall_health") != "healthy":
+            issues = []
+            if audit_result.get("contradictions"):
+                issues.append(f"Contradictions: {'; '.join(audit_result['contradictions'][:3])}")
+            if audit_result.get("stale_entries"):
+                issues.append(f"Stale: {'; '.join(audit_result['stale_entries'][:3])}")
+            if issues:
+                audit_context = (
+                    "\n\n# Pre-consolidation Audit Findings\n"
+                    f"Health: {audit_result.get('overall_health', 'unknown')}\n"
+                    + "\n".join(f"- {i}" for i in issues) + "\n"
+                    "Please address these issues during consolidation.\n"
+                )
+    except Exception:
+        pass  # Audit is advisory — never block consolidation
+
     try:
         ui.clear_io()
+        if audit_context:
+            consolidate_prompt += audit_context
         output, _, _ = await run_claude_query(
             consolidate_prompt, [], ui,
             "EXPERIENCE CONSOLIDATOR", log_file,
