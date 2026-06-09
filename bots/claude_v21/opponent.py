@@ -213,6 +213,11 @@ def analyze_current_spot(req, state):
                 info["preflop_spot"] = "bb_vs_raise"
         elif history and info["my_is_sb"] and history[-1]["player_id"] == opponent_id:
             if history[-1]["action_type"] in ("raise", "allin"):
-                info["preflop_spot"] = "sb_vs_reraise"
+                sb_first = None
+                for rec in history:
+                    if rec["player_id"] == my_id and rec["round"] == 0:
+                        sb_first = rec["action_type"]
+                        break
+                info["preflop_spot"] = "sb_limp_vs_raise" if sb_first == "call" else "sb_vs_reraise"
 
     return info

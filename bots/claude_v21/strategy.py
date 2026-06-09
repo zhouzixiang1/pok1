@@ -3,6 +3,7 @@ from card_utils import clamp
 from state import (
     reconstruct_state, get_remaining_hands, estimate_preflop_strength,
     is_preflop_3bet_candidate, is_preflop_trash_hand,
+    classify_preflop_gap_hand,
 )
 from tournament import (
     should_lock_win, fold_gives_opponent_lock, match_risk_adjustment,
@@ -474,10 +475,17 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
     confidence = opponent_model["confidence"]
     loose_bonus = confidence * max(0.0, opponent_model["vpip"] - 0.55) * 0.03
     trash_hand = is_preflop_trash_hand(req["my_cards"], preflop_strength)
+    gap_hand = classify_preflop_gap_hand(req["my_cards"], preflop_strength)
 
     if spot_info["preflop_spot"] == "sb_open":
         open_threshold = 0.46 + match_adjust + 0.02 + match_profile["open_delta"]
         limp_threshold = 0.36 + match_adjust
+        # Gap Broadway hands: prefer limp over raise to avoid building big pots with dominated holdings
+        if gap_hand and gap_hand["type"] == "broadway_gap" and not trash_hand:
+            if gap_hand["suited"] and preflop_strength >= limp_threshold - 0.05:
+                return 0  # Limp suited gap Broadway
+            if not gap_hand["suited"] and preflop_strength >= open_threshold:
+                return 0  # Limp offsuit gap Broadway instead of raising
         raise_amount = choose_raise(
             state["min_raise_action"],
             my_chips,
@@ -574,6 +582,15 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
         if preflop_strength >= 0.55 and win_rate >= pot_odds_sbr - 0.03:
             return 0
         # Fold everything else
+        return -1
+
+    elif spot_info['preflop_spot'] == 'sb_limp_vs_raise':
+        pot_odds_sl = to_call / (to_call + state['pot']) if to_call > 0 else 0.0
+        # Tight range: we showed weakness by limping
+        if preflop_strength >= 0.62 and not trash_hand:
+            return 0  # Call premiums only
+        if preflop_strength >= 0.35 and pot_odds_sl < 0.25 and not gap_hand:
+            return 0  # Call playable hands at good odds, fold gap Broadway
         return -1
 
     return None
