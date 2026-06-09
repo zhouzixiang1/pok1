@@ -15,8 +15,7 @@ def sanitize_action(action, state, my_chips):
         return -1 if action == -1 else 0
 
     if state["to_call"] >= my_chips:
-        # Engine auto-allins when to_call > chips and action=0 (judge.py:322-329)
-        return -2 if action == -2 else 0
+        return -2 if action == -2 else -1
 
     if action > 0:
         raise_to_total = action + state["my_round_bet"]

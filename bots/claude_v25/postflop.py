@@ -157,10 +157,8 @@ def board_texture_profile(public_cards):
     expanded = set(ranks)
 
     best_straight_pressure = 0.0
-    for start in range(1, 14):
+    for start in range(1, 11):
         window = set(range(start, start + 5))
-        if max(window) > 14:
-            continue
         present = len(expanded & window)
         if present >= 4:
             best_straight_pressure = max(best_straight_pressure, 1.0)
@@ -168,13 +166,6 @@ def board_texture_profile(public_cards):
             best_straight_pressure = max(best_straight_pressure, 0.65)
         elif present == 2 and max(window & expanded, default=start) - min(window & expanded, default=start) <= 3:
             best_straight_pressure = max(best_straight_pressure, 0.28)
-    # Wheel straight: A-2-3-4-5
-    wheel = {14, 2, 3, 4, 5}
-    wheel_present = len(expanded & wheel)
-    if wheel_present >= 4:
-        best_straight_pressure = max(best_straight_pressure, 1.0)
-    elif wheel_present == 3:
-        best_straight_pressure = max(best_straight_pressure, 0.65)
 
     info["straight_pressure"] = best_straight_pressure
 
@@ -485,6 +476,24 @@ def value_bet_plan(value_profile, board_texture, paired_board_profile, pair_prof
     return plan
 
 
+def straight_draw_value(cards):
+    ranks = {card_number(card) for card in cards}
+    expanded = set(ranks)
+
+    best = 0.0
+    for start in range(1, 11):
+        straight = set(range(start, start + 5))
+        present = len(expanded & straight)
+        if present != 4:
+            continue
+        missing = next(iter(straight - expanded))
+        if missing in (start, start + 4):
+            best = max(best, 0.17)
+        else:
+            best = max(best, 0.09)
+    return best
+
+
 def empty_draw_profile():
     return {
         "quality": 0.0,
@@ -571,27 +580,13 @@ def draw_profile(hole_cards, public_cards, board_texture=None):
     gutshot_count = 0
     has_open_ended = False
     has_gutshot = False
-    for start in range(1, 14):
+    for start in range(1, 11):
         window = set(range(start, start + 5))
-        if max(window) > 14:
-            continue
         present = expanded & window
         if len(present) != 4 or not (hole_expanded & present):
             continue
         missing = next(iter(window - present))
         if missing in (start, start + 4):
-            has_open_ended = True
-            straight_quality = max(straight_quality, 0.17)
-        else:
-            has_gutshot = True
-            gutshot_count += 1
-            straight_quality = max(straight_quality, 0.10)
-    # Wheel straight draw: A-2-3-4-5
-    wheel = {14, 2, 3, 4, 5}
-    wheel_present = expanded & wheel
-    if len(wheel_present) == 4 and (hole_expanded & wheel_present):
-        wheel_missing = next(iter(wheel - wheel_present))
-        if wheel_missing in (14, 5):
             has_open_ended = True
             straight_quality = max(straight_quality, 0.17)
         else:

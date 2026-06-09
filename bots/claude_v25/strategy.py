@@ -13,7 +13,7 @@ from postflop import (
     made_hand_metric, pair_board_profile, pair_domination_margin,
     marginal_pair_under_pressure, board_texture_profile,
     paired_board_outcome_profile, bet_size_bucket, value_hand_tier,
-    value_bet_plan, empty_draw_profile, draw_profile,
+    value_bet_plan, empty_draw_profile, draw_profile, draw_potential,
     draw_call_margin, made_flush_profile, blocker_bluff_profile,
     allow_low_frequency_blocker_bluff, nutted_risk_profile,
     check_probe_resistance_margin, must_continue_vs_raise,
@@ -21,6 +21,14 @@ from postflop import (
 from simulation import (
     build_opponent_range, estimate_weighted_win_rate,
 )
+
+
+def _per_street_diverges(opponent_model, per_street_key, per_street_prior, aggregate_key, aggregate_prior):
+    per_street_val = opponent_model.get(per_street_key, per_street_prior)
+    aggregate_val = opponent_model.get(aggregate_key, aggregate_prior)
+    ps_above = per_street_val > per_street_prior
+    ag_above = aggregate_val > aggregate_prior
+    return ps_above != ag_above
 
 
 def _aligned_signal_boost(opponent_model, per_street_key, per_street_prior, aggregate_key, aggregate_prior):
@@ -604,7 +612,9 @@ def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile,
     if round_idx == 3:
         if made_strength < 0.35 and not has_draw and size_bucket in ("medium", "large"):
             return True
-        if made_strength < 0.40 and not has_draw and opp_bets >= 2:
+        if made_strength < 0.40 and not has_draw and opp_bets >= 2 and size_bucket in ("medium", "large"):
+            return True
+        if made_strength < 0.25 and not has_draw and opp_bets >= 2 and size_bucket == "small":
             return True
 
     # SPR commitment: fold weak uncommitted hands on late streets
@@ -624,10 +634,6 @@ def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile,
                 return True
             if round_idx == 3 and opp_bets >= 2 and made_strength < 0.34 and not has_draw:
                 return True
-
-    # River multi-barrel fold: very weak hands even vs small bets
-    if round_idx == 3 and made_strength < 0.20 and not has_draw and opp_bets >= 2:
-        return True
 
     return False
 
