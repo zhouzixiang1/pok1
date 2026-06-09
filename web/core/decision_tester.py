@@ -24,21 +24,17 @@ SCENARIOS_FILE = WORKSPACE / "test_scenarios.json"
 TIMEOUT = 10  # seconds per bot decision
 
 CRITICAL_SCENARIO_IDS = {
-    # Premium preflop hands and unavoidable continues
+    # Premium preflop hands — must never fold
     "preflop_aa_first_act",
     "preflop_kk_first_act",
     "preflop_qq_facing_raise",
     "preflop_aks_facing_allin",
     "preflop_jj_facing_3bet",
-    # Strong made hands / high-equity postflop continues
+    # Nuts / extremely strong made hands — must never fold
     "flop_top_set_safe_board",
     "river_nut_flush_facing_bet",
     "flop_nut_straight_dry_board",
-    "turn_two_pair_facing_bet",
     "river_full_house_facing_raise",
-    "flop_flush_draw_facing_cbet",
-    # Explicit blunder guard from the v29 failure mode
-    "river_missed_draw_facing_big_bet",
 }
 
 

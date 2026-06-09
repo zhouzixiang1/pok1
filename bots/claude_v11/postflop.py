@@ -998,7 +998,7 @@ def check_probe_resistance_margin(spot_info, opponent_model, round_idx):
     return clamp(margin, 0.0, 0.085)
 
 
-def must_continue_vs_raise(value_profile, made_strength, pot_odds, nutted_risk, board_texture):
+def must_continue_vs_raise(value_profile, made_strength, pot_odds, nutted_risk, board_texture, spr=None, round_idx=0):
     tier = value_profile.get("tier", "none") if value_profile is not None else "none"
     risk = nutted_risk.get("risk", 0.0) if nutted_risk is not None else 0.0
     extreme_texture = (
@@ -1008,6 +1008,24 @@ def must_continue_vs_raise(value_profile, made_strength, pot_odds, nutted_risk, 
 
     if tier == "nut":
         return True
+
+    # SPR-based commitment: at low SPR, folding surrenders a large pot relative
+    # to the remaining stack saved. Tier determines the SPR threshold:
+    # - thin hands commit at SPR <= 0.5 (consistent with _spr_commitment_guard)
+    # - strong/nut hands commit at SPR <= 1.0
+    if spr is not None:
+        if spr <= 0.5 and tier in ("strong", "nut", "thin"):
+            thin_extra_risk = 0.02 if tier == "thin" else 0.0
+            return not (extreme_texture and risk >= 0.04 + thin_extra_risk)
+        if spr <= 1.0 and tier in ("strong", "nut"):
+            return not (extreme_texture and risk >= 0.04)
+        # On the river, thin hands commit at SPR <= 1.0 because there are
+        # no more cards to come — the pot equity is fully realized, not
+        # speculative. Uses the same thin_extra_risk pattern as SPR <= 0.5.
+        if round_idx == 3 and spr <= 1.0 and tier == "thin":
+            thin_extra_risk = 0.02
+            return not (extreme_texture and risk >= 0.04 + thin_extra_risk)
+
     if made_strength >= 0.58 and pot_odds <= 0.42 and risk <= 0.07:
         return not (extreme_texture and risk >= 0.04)
     if tier == "strong" and pot_odds <= 0.36 and risk <= 0.05:
@@ -1058,12 +1076,32 @@ def _should_check_river_weak(
     round_idx, to_call, pair_profile, made_strength, draw_strength,
     blocker_profile, value_profile, spot_info, paired_board_profile,
     nutted_risk, paired_board_stackoff, board_texture, pot, match_profile,
+    opponent_model=None, barrel_profile=None,
 ):
     """Consolidate the multiple river/late-street weak-hand checks.
 
     Returns True if the hand is too weak to bet/raise and should check instead.
     Each condition is evaluated independently; any single match means check.
+
+    When opponent_model is provided, the checks become opponent-aware:
+    - Aggressive opponents who check river are more likely trapping
+    - Passive opponents who check river are more honest about weakness
+
+    When barrel_profile is provided, sizing trend modulates decisions:
+    - Declining barrel sizing suggests opponent weakness → suppress checks
+    - Escalating barrel sizing suggests opponent strength → enhance checks
     """
+    # Derive opponent tendency signals for opponent-aware modulation
+    opp_aggr_signal = 0.0
+    if opponent_model is not None:
+        confidence = opponent_model.get("confidence", 0.0)
+        postflop_aggr = opponent_model.get("postflop_aggr", 0.36)
+        fold_to_raise = opponent_model.get("fold_to_raise", 0.44)
+        # Aggressive player checking is suspicious — scale by confidence
+        # to avoid noise from limited samples
+        if postflop_aggr > 0.42:
+            opp_aggr_signal = confidence * (postflop_aggr - 0.42)
+
     # River weak pair: middle/bottom/underpair/board_pair on the river
     weak_pair_river = (
         round_idx == 3
@@ -1073,6 +1111,7 @@ def _should_check_river_weak(
     )
 
     # Opponent double-barreled then checked river — they may be trapping
+    # Opponent-aware: aggressive opponents trapping is more dangerous
     opp_double_barrel_then_river_check = (
         round_idx == 3
         and to_call == 0
@@ -1081,6 +1120,8 @@ def _should_check_river_weak(
     )
 
     # Bad river bluff: middling made hand with no blockers and no value tier
+    # Opponent-aware: if aggressive opponent checks, our middling hand is
+    # more likely beaten (they'd bet hands they want value from)
     bad_river_bluff_candidate = (
         round_idx == 3
         and to_call == 0
@@ -1088,6 +1129,15 @@ def _should_check_river_weak(
         and made_strength < 0.40
         and not (blocker_profile and blocker_profile["eligible"])
         and not (value_profile and value_profile["tier"] in ("strong", "nut"))
+    )
+
+    # Opponent-model trap detection: aggressive player double-barrel then
+    # river check is a strong trap signal. Even without weak_pair_river,
+    # a bad_river_bluff_candidate should check against a trapping aggressor.
+    opp_trap_river = (
+        opp_double_barrel_then_river_check
+        and bad_river_bluff_candidate
+        and opp_aggr_signal > 0.0
     )
 
     # Weak bottom pair / underpair / board pair barrel on turn/river
@@ -1102,7 +1152,6 @@ def _should_check_river_weak(
     )
 
     # Marginal pair after opponent showed prior aggression
-    from postflop import marginal_pair_under_pressure
     marginal_pair = marginal_pair_under_pressure(pair_profile, board_texture)
     weak_pair_after_raise_barrel = (
         round_idx >= 2
@@ -1137,8 +1186,44 @@ def _should_check_river_weak(
         and (value_profile is None or value_profile["tier"] != "nut")
     )
 
+    # Big pot river weak-hand check: in large pots on the river, only strong/nut
+    # hands should bet for value. Weak hands with no blocker equity should check.
+    # Opponent-aware: in big pots, even aggressive opponents are less likely to
+    # bluff-raise, so our weak hands get less fold equity when we bet.
+    big_pot_threshold = int(clamp(
+        1500 - 350 * match_profile.get("protect", 0.0) + 250 * match_profile.get("chase", 0.0),
+        1100, 1800,
+    ))
+    big_pot = pot >= big_pot_threshold
+    big_pot_river_weak = (
+        big_pot
+        and round_idx == 3
+        and (value_profile is None or value_profile["tier"] not in ("strong", "nut"))
+        and (blocker_profile is None or not blocker_profile["eligible"])
+    )
+
     if opp_double_barrel_then_river_check and weak_pair_river:
         return True
+    if opp_trap_river:
+        return True
+
+    # Barrel sizing modulation: when opponent's barrel sizing is declining,
+    # they are likely giving up on semi-bluffs or weakening their range.
+    # Suppress weak-hand checks so we can bet into their weak range for value.
+    declining_barrel = (
+        barrel_profile is not None
+        and barrel_profile.get("sizing_trend") == "declining"
+        and round_idx >= 2
+    )
+    if declining_barrel:
+        # With declining barrels, suppress checks for hands that have some
+        # showdown value — betting into a weak range extracts value from
+        # worse hands that would otherwise check behind.
+        if bad_river_bluff_candidate and made_strength >= 0.25 and not opp_trap_river:
+            return False
+        if weak_bottom_pair_barrel and made_strength >= 0.25:
+            return False
+
     if bad_river_bluff_candidate:
         return True
     if weak_bottom_pair_barrel:
@@ -1148,6 +1233,8 @@ def _should_check_river_weak(
     if bad_river_value_bet:
         return True
     if bad_stackoff_overpair:
+        return True
+    if big_pot_river_weak:
         return True
 
     return False

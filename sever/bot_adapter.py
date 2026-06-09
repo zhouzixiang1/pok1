@@ -474,6 +474,52 @@ class BotAdapter:
             self._my_stage_bet += self._my_chips
             self._my_chips = 0
 
+    def _clamp_raise(self, raise_to):
+        """Client-side raise validation: clamp to legal minimum.
+
+        Rules:
+        - Preflop first raise: >= 200
+        - Postflop first raise: >= 100
+        - Re-raise: > 2 * last_raise_to (strictly greater)
+        - If raise needs all chips, should use allin instead (server rule 11)
+        """
+        MIN_RAISE_PREFLOP = 200
+        MIN_RAISE_POSTFLOP = 100
+
+        stage_map = {"preflop": 0, "flop": 1, "turn": 2, "river": 3}
+        round_num = stage_map.get(self._stage, 0)
+
+        # Find last raise in current stage
+        last_raise_to = None
+        for h in reversed(self._history):
+            if h["round"] != round_num:
+                break
+            if h["action_type"] == "raise":
+                last_raise_to = h["action"]
+                break
+
+        # Determine minimum legal raise-to
+        if last_raise_to is not None:
+            # Re-raise: must be > 2 * last_raise_to
+            min_raise = last_raise_to * 2 + 1
+        elif self._stage == "preflop":
+            min_raise = MIN_RAISE_PREFLOP
+        else:
+            min_raise = MIN_RAISE_POSTFLOP
+
+        # Clamp
+        if raise_to < min_raise:
+            raise_to = min_raise
+
+        # If raise needs all remaining chips, return as-is (server will auto-convert
+        # or reject; but we avoid setting it to exactly chips to prevent rule 11)
+        needed = raise_to - self._my_stage_bet
+        if needed >= self._my_chips:
+            # Would need all or more chips — let server handle via allin
+            return raise_to
+
+        return raise_to
+
     def _convert_action(self, action):
         """judge.py 整数 → (TCP 字符串, action_type, amount)。
 
@@ -494,6 +540,8 @@ class BotAdapter:
         if action_int == -2:
             return "allin", "allin", None
         if action_int > 0:
+            # Client-side raise validation: clamp to legal minimum
+            action_int = self._clamp_raise(action_int)
             return f"raise {action_int}", "raise", action_int
         if action_int == 0:
             # 判断是 call 还是 check

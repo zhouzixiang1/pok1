@@ -250,7 +250,15 @@ def read_pipeline_checkpoint():
 
 
 def clear_pipeline_checkpoint():
-    """Delete pipeline checkpoint (called on successful commit)."""
+    """Delete pipeline checkpoint (called on successful commit).
+
+    Uses exclusive lock to prevent race with concurrent writes.
+    """
+    if not PIPELINE_STATE_FILE.exists():
+        return
+    with locked_file(PIPELINE_STATE_FILE, "w", lock_type=fcntl.LOCK_EX) as f:
+        # Truncate under lock, then unlink
+        f.truncate(0)
     PIPELINE_STATE_FILE.unlink(missing_ok=True)
 
 
@@ -508,11 +516,15 @@ async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=
 
 def _git(*args, check=True):
     """Run git command, return stdout."""
-    result = subprocess.run(
-        ["git"] + list(args),
-        cwd=str(PROJECT_ROOT),
-        capture_output=True, text=True
-    )
+    try:
+        result = subprocess.run(
+            ["git"] + list(args),
+            cwd=str(PROJECT_ROOT),
+            capture_output=True, text=True,
+            timeout=30
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"git {args[0]}: timed out after 30s")
     if check and result.returncode != 0:
         raise RuntimeError(f"git {args[0]}: {result.stderr.strip()}")
     return result.stdout.strip()

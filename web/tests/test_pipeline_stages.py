@@ -764,7 +764,7 @@ class TestWorkerFailureCircuitBreaker:
         assert ckpt["worker_failure_count"] == 2
 
     def test_failed_workers_increment_count(self, tmp_path, monkeypatch):
-        """Failed worker batches should increase the failure counter by len(tasks)."""
+        """Failed worker batches should increase the failure counter by 1 per round."""
         import asyncio
         import evolution_infra
         import tool_planning
@@ -782,16 +782,16 @@ class TestWorkerFailureCircuitBreaker:
 
         asyncio.run(_run())
 
-        # Verify checkpoint has failure_count=4 (2 + 2 tasks)
+        # Verify checkpoint has failure_count=3 (2 previous + 1 per failed round)
         ckpt = json.loads(ckpt_file.read_text())
-        assert ckpt["worker_failure_count"] == 4
+        assert ckpt["worker_failure_count"] == 3
 
     def test_circuit_breaker_trips_at_threshold(self, tmp_path, monkeypatch):
-        """Circuit breaker should block when failure_count + len(tasks) > 6."""
+        """Circuit breaker should block when failure_count >= 6."""
         import asyncio
         import tool_planning
 
-        self._setup_checkpoint(tmp_path, monkeypatch, failure_count=5)
+        self._setup_checkpoint(tmp_path, monkeypatch, failure_count=6)
         _handler = tool_planning.execute_workers.handler
 
         async def _run():
@@ -805,14 +805,14 @@ class TestWorkerFailureCircuitBreaker:
         result_text = result["content"][0]["text"]
         result_data = json.loads(result_text)
         assert "CIRCUIT BREAKER" in result_data["error"]
-        assert result_data["failure_count"] == 5
+        assert result_data["failure_count"] == 6
 
     def test_circuit_breaker_allows_at_exact_threshold(self, tmp_path, monkeypatch):
-        """When failure_count + len(tasks) == 6 (not >6), workers should execute."""
+        """When failure_count < 6, workers should execute."""
         import asyncio
         import tool_planning
 
-        self._setup_checkpoint(tmp_path, monkeypatch, failure_count=4)
+        self._setup_checkpoint(tmp_path, monkeypatch, failure_count=5)
         _handler = tool_planning.execute_workers.handler
 
         mock_exec = None

@@ -182,7 +182,7 @@ def _call_bot(bot_paths, player_id, request_data, bot_requests, bot_responses,
 
 
 def battle(bot0_path, bot1_path, n_games=50, verbose=False, debug_bots=None, save_log=False):
-    """两个 bot 对战 n_games 局，每局 50 手牌，按筹码总量判胜负"""
+    """两个 bot 对战 n_games 局，每局 70 手牌，按筹码总量判胜负"""
     if ENGINE_DIR not in sys.path:
         sys.path.insert(0, ENGINE_DIR)
     from judge import judge as judge_func

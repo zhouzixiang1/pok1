@@ -211,6 +211,229 @@ def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength
     return clamp(margin, 0.0, 0.08)
 
 
+def _per_street_barrel_profile(spot_info, opponent_model, round_idx, req):
+    """Calibrate defense against per-street opponent barrel patterns.
+
+    Analyzes multi-street opponent actions to detect whether the current
+    aggression is a continuation of prior-street aggression (barrel) or
+    a new aggression line. This provides a street-level resolution that
+    complements the broader _opponent_line_context.
+
+    Returns dict with:
+      barrel_count: int — how many postflop streets opponent has bet
+      current_street_barrel: bool — opponent is continuing on this street
+      is_multi_barrel: bool — opponent bet 2+ postflop streets
+      defense_adjustment: float — margin adjustment for call/fold calibration
+        positive = fold more (opponent barrel is credible)
+        negative = call more (opponent barrel is less credible)
+    """
+    my_id = req["my_id"]
+    opponent_id = (my_id + 1) % N_PLAYERS
+    history = req.get("history", [])
+
+    # Collect per-street opponent bet/raise actions and sizing data
+    street_bets = {}
+    street_raise_totals = {}
+    for record in history:
+        if record["player_id"] != opponent_id:
+            continue
+        rnd = record["round"]
+        if rnd <= 0:
+            continue
+        if record["action_type"] in ("raise", "allin"):
+            if rnd not in street_bets:
+                street_bets[rnd] = 0
+            street_bets[rnd] += 1
+            # Track raise sizing for trend detection
+            if rnd not in street_raise_totals:
+                street_raise_totals[rnd] = []
+            if record["action_type"] == "raise":
+                street_raise_totals[rnd].append(record["action"])
+            else:
+                # All-in treated as maximum escalation
+                street_raise_totals[rnd].append(100000)
+
+    barrel_count = len(street_bets)
+    current_street_barrel = round_idx in street_bets and round_idx > 0
+    is_multi_barrel = barrel_count >= 2
+
+    # Derive defense adjustment from opponent model + barrel pattern
+    confidence = opponent_model.get("confidence", 0.0)
+    postflop_aggr = opponent_model.get("postflop_aggr", 0.36)
+
+    defense_adjustment = 0.0
+    if is_multi_barrel and round_idx >= 2:
+        # Multi-barrel on turn/river is a stronger signal
+        # Scale by how much the opponent's aggression exceeds baseline
+        aggr_signal = max(0.0, postflop_aggr - 0.42) * confidence
+        defense_adjustment += aggr_signal * 0.08
+        # Triple barrel (3 streets) is even stronger
+        if barrel_count >= 3:
+            defense_adjustment += confidence * 0.04
+    elif current_street_barrel and round_idx == 1:
+        # Single flop barrel — context depends on opponent tendency
+        # Aggressive opponents barrel wide, passive ones barrel strong only
+        if postflop_aggr < 0.35:
+            # Passive opponent betting flop → stronger range → fold more
+            defense_adjustment += confidence * 0.02
+
+    # Compute sizing trend across streets: escalating / declining / stable
+    # Escalating barrels (bigger bets on later streets) indicate value-heavy
+    # ranges. Declining barrels (smaller bets on later streets) suggest the
+    # opponent is giving up on semi-bluffs or has a weakened range.
+    sizing_trend = "none"
+    sizing_defense_modifier = 0.0
+    sorted_betting_streets = sorted(street_raise_totals.keys())
+    if len(sorted_betting_streets) >= 2:
+        avg_sizings = []
+        for street in sorted_betting_streets:
+            sizes = street_raise_totals[street]
+            avg_sizings.append(sum(sizes) / len(sizes))
+
+        if avg_sizings[0] > 0:
+            normalized_change = (avg_sizings[-1] - avg_sizings[0]) / avg_sizings[0]
+        else:
+            normalized_change = 0.0
+
+        if normalized_change > 0.30:
+            sizing_trend = "escalating"
+            sizing_defense_modifier = confidence * min(0.04, abs(normalized_change) * 0.05)
+        elif normalized_change < -0.30:
+            sizing_trend = "declining"
+            sizing_defense_modifier = -confidence * min(0.03, abs(normalized_change) * 0.04)
+        else:
+            sizing_trend = "stable"
+
+    return {
+        "barrel_count": barrel_count,
+        "current_street_barrel": current_street_barrel,
+        "is_multi_barrel": is_multi_barrel,
+        "defense_adjustment": defense_adjustment + sizing_defense_modifier,
+        "sizing_trend": sizing_trend,
+    }
+
+
+def _line_context_margin_adjustment(line_context, round_idx):
+    """Derive a call-margin adjustment from opponent's betting line pattern.
+
+    The opponent line context encodes multi-street behavioral signals:
+    - Triple barrel (strength_indicator ~0.85) → opponent range is strong → increase fold tendency
+    - Float bet (strength_indicator ~0.40) → opponent is polarized → decrease fold tendency
+    - Single barrel (strength_indicator ~0.35) → weak aggression → minimal adjustment
+
+    The adjustment is derived from the already-computed strength_indicator,
+    centered on its neutral baseline of 0.50. Multi-street aggression compounds
+    the signal on later streets.
+    """
+    if line_context is None or round_idx <= 0:
+        return 0.0
+
+    strength = line_context.get("strength_indicator", 0.50)
+    # Deviation from baseline: positive means opponent line appears stronger
+    adjustment = (strength - 0.50) * 0.04
+
+    # Multi-street aggression is a stronger signal on turn/river
+    if line_context.get("multi_street_aggr", False) and round_idx >= 2:
+        adjustment += 0.02
+
+    return adjustment
+
+
+def _spr_commitment_guard(state, my_chips, value_profile, round_idx=0):
+    """Determine if we're pot-committed based on stack-to-pot ratio.
+
+    At low SPR, the cost of folding (surrendering the pot) is large relative
+    to the remaining stack we'd save. This structural guard prevents
+    over-folding when we've already invested heavily and have a made hand.
+
+    On the river (round_idx == 3), the commitment threshold is widened for
+    thin hands because there are no more cards to come — the pot equity
+    locked in by calling is fully realized, not speculative.
+
+    Returns True if the hand is pot-committed and should not be folded.
+    """
+    pot = max(1, state["pot"])
+    spr = my_chips / pot
+
+    tier = value_profile.get("tier", "none") if value_profile else "none"
+
+    # At very low SPR with any decent made hand, we're pot-committed
+    if spr <= 0.5:
+        return tier in ("strong", "nut", "thin")
+
+    # At low SPR with strong/nut hands, folding is usually a mistake
+    # On the river, include thin hands at this SPR level because there
+    # are no more streets to realize equity — the hand is what it is
+    if spr <= 1.0:
+        if round_idx == 3:
+            return tier in ("strong", "nut", "thin")
+        return tier in ("strong", "nut")
+
+    return False
+
+
+def _opponent_aggression_credibility(opponent_model, spot_info, line_context, round_idx):
+    """Assess how credible the opponent's postflop aggression is.
+
+    Returns a float in [0.0, 1.0] indicating aggression credibility:
+    - High (~0.7+): opponent's aggression likely represents a strong hand
+    - Low (~0.3-): opponent is likely over-aggressive or bluffing
+
+    This modulates fold decisions: against low-credibility aggression,
+    fragile fold checks are suppressed (the bot calls more); against
+    high-credibility aggression, the bot respects the aggression and folds.
+    """
+    confidence = opponent_model.get("confidence", 0.0)
+    if confidence < 0.10:
+        return 0.50  # No model data — neutral assumption
+
+    postflop_aggr = opponent_model.get("postflop_aggr", 0.36)
+    fold_to_raise = opponent_model.get("fold_to_raise", 0.44)
+    aggression = opponent_model.get("aggression", 0.30)
+
+    credibility = 0.50
+
+    # Passive opponents who bet have stronger ranges → higher credibility
+    if postflop_aggr < 0.30:
+        credibility += confidence * (0.30 - postflop_aggr) * 1.2
+    # Aggressive opponents bet wider ranges → lower credibility
+    elif postflop_aggr > 0.48:
+        credibility -= confidence * (postflop_aggr - 0.48) * 1.5
+
+    # Opponents who rarely fold to raises are honest bettors
+    if fold_to_raise < 0.35:
+        credibility += confidence * (0.35 - fold_to_raise) * 0.5
+    # Opponents who fold often may be exploiting with bluffs
+    elif fold_to_raise > 0.55:
+        credibility -= confidence * (fold_to_raise - 0.55) * 0.4
+
+    # Overall aggression rate refinement
+    if aggression > 0.40:
+        credibility -= confidence * (aggression - 0.40) * 0.6
+
+    # Line context: multi-barrel from a passive player is highly credible
+    if line_context is not None:
+        line_type = line_context.get("line_type", "standard")
+        if line_type == "triple_barrel":
+            # Triple barrel is strong, but from aggressive players could be a bluff spree
+            if postflop_aggr < 0.40:
+                credibility += confidence * 0.12
+            else:
+                credibility += confidence * 0.04
+        elif line_type == "double_barrel":
+            if postflop_aggr < 0.38:
+                credibility += confidence * 0.08
+        elif line_type == "float_bet":
+            # Float bet is polarized — moderate credibility reduction
+            credibility -= confidence * 0.04
+        elif line_type == "snap_reraise":
+            # Snap reraise is strong but aggression-scaled
+            if postflop_aggr < 0.35:
+                credibility += confidence * 0.10
+
+    return clamp(credibility, 0.15, 0.85)
+
+
 def realized_postflop_equity(
     win_rate,
     made_strength,
@@ -219,10 +442,31 @@ def realized_postflop_equity(
     has_position,
     spot_info,
     pair_profile=None,
+    board_texture=None,
 ):
     air_hand = made_strength < 0.18 and draw_strength < 0.08
     if round_idx <= 0:
         return win_rate
+
+    # Classify hand category for board texture equity modifier
+    if air_hand:
+        hand_category = "air"
+    elif pair_profile is not None and pair_profile["made_class"] == 1:
+        pair_type = pair_profile["pair_type"]
+        if pair_type in ("middle_pair", "bottom_pair", "underpair", "board_pair"):
+            hand_category = "weak_pair"
+        elif pair_type == "top_pair" and pair_profile["weak_kicker"]:
+            hand_category = "top_pair_weak_kicker"
+        else:
+            hand_category = "medium_pair"
+    elif made_strength >= 0.50:
+        hand_category = "strong"
+    else:
+        hand_category = None
+
+    # Compute texture modifier once — wet/dynamic boards reduce equity
+    # realization for vulnerable hand categories
+    texture_modifier = _board_texture_equity_modifier(board_texture, hand_category) if hand_category else 1.0
 
     eqr = 1.0
 
@@ -237,7 +481,7 @@ def realized_postflop_equity(
             eqr -= 0.12
 
         eqr = clamp(eqr, 0.45, 0.85)
-        return win_rate * eqr
+        return win_rate * eqr * texture_modifier
 
     if pair_profile is not None and pair_profile["made_class"] == 1:
         pair_type = pair_profile["pair_type"]
@@ -253,14 +497,14 @@ def realized_postflop_equity(
                 eqr -= 0.06
 
             eqr = clamp(eqr, 0.65, 0.92)
-            return win_rate * eqr
+            return win_rate * eqr * texture_modifier
 
         if pair_type == "top_pair" and pair_profile["weak_kicker"]:
             eqr = 0.92 if has_position else 0.86
             if spot_info.get("opp_postflop_bet_count", 0) >= 2:
                 eqr -= 0.04
             eqr = clamp(eqr, 0.75, 0.95)
-            return win_rate * eqr
+            return win_rate * eqr * texture_modifier
 
     return win_rate
 
@@ -400,6 +644,57 @@ def _opponent_line_context(spot_info, round_idx, req):
         "strength_indicator": strength_indicator,
         "multi_street_aggr": multi_street_aggr,
     }
+
+
+def _thin_value_feasibility(value_profile, board_texture, draw_strength,
+                            opponent_model, round_idx, pot, to_call,
+                            anti_lock_pressure, match_profile):
+    """Determine whether a thin value hand should bet or check on late streets.
+
+    Unlike the static thin_static_showdown_control, this function incorporates
+    opponent modeling: against calling stations (high vpip, low fold_to_raise),
+    thin value bets are more profitable because the opponent calls with worse.
+    Against tight players (low vpip, high fold_to_raise), thin value bets lose
+    money because the opponent only calls with better hands.
+
+    Returns True if the hand should check (thin value bet is not feasible).
+    Returns False if a thin value bet is warranted.
+    """
+    if round_idx < 2:
+        return False
+    if value_profile is None or value_profile["tier"] != "thin":
+        return False
+    if anti_lock_pressure:
+        return False
+    if board_texture is not None and board_texture["dynamic"]:
+        return False
+    if draw_strength >= 0.12:
+        return False
+    if to_call > 0:
+        return False
+
+    confidence = opponent_model.get("confidence", 0.0)
+    fold_to_raise = opponent_model.get("fold_to_raise", 0.44)
+    vpip = opponent_model.get("vpip", 0.58)
+
+    # Base case: static check for thin hands on dry boards
+    should_check = True
+
+    # Opponent-model overrides:
+    if confidence >= 0.20:
+        # Calling stations (high vpip + low fold_to_raise) call with worse
+        # → thin value bets are profitable → don't check
+        calling_station_score = max(0.0, vpip - 0.55) - max(0.0, fold_to_raise - 0.45)
+        if calling_station_score > 0.10:
+            should_check = False
+        # Tight players (low vpip + high fold_to_raise) only call with better
+        # → thin value bets are unprofitable → check (keep should_check=True)
+
+    # Match pressure modulation: when chasing, thin value bets are less relevant
+    if match_profile.get("chase", 0.0) > 0.50:
+        should_check = True
+
+    return should_check
 
 
 def _calibrated_pot_odds(pot_odds, opponent_model, spot_info, round_idx, made_strength, value_profile):
@@ -777,6 +1072,13 @@ def get_action(req, requests):
         if len(public_cards) >= 3
         else {"active": False, "severe": False, "line_strength": 0.0, "size_bucket": "small"}
     )
+    # Opponent line context: classifies multi-street betting patterns for
+    # fold/call calibration (triple barrel, float bet, delayed aggression, etc.)
+    line_context = _opponent_line_context(spot_info, round_idx, req) if len(public_cards) >= 3 else None
+    # Per-street barrel profile: calibrates defense against multi-barrel patterns
+    barrel_profile = _per_street_barrel_profile(spot_info, opponent_model, round_idx, req) if len(public_cards) >= 3 else None
+    # SPR commitment guard: prevents over-folding at low stack-to-pot ratios
+    spr_committed = _spr_commitment_guard(state, my_chips, value_profile, round_idx) if len(public_cards) >= 3 else False
     repeated_raise_trap = (
         round_idx > 0
         and spot_info["facing_postflop_aggression"]
@@ -952,6 +1254,12 @@ def get_action(req, requests):
             call_margin += line_strength + paired_board_stackoff["line_strength"]
             call_margin += check_resistance
             call_margin += 0.50 * nutted_risk["risk"]
+            # Wire opponent line context into call margin:
+            # triple barrel → more fold-prone (+margin), float bet → less fold-prone (-margin)
+            call_margin += _line_context_margin_adjustment(line_context, round_idx)
+            # Per-street barrel calibration: multi-barrel from credible opponent → fold more
+            if barrel_profile is not None:
+                call_margin += barrel_profile["defense_adjustment"]
             if round_idx == 3 and made_strength < 0.40 and not (blocker_profile and blocker_profile["eligible"]):
                 call_margin += 0.04
             if round_idx == 3 and paired_board_profile is not None and paired_board_profile["fold_to_raise"]:
@@ -964,6 +1272,7 @@ def get_action(req, requests):
                 spot_info["has_position"],
                 spot_info,
                 pair_profile,
+                board_texture,
             )
         if anti_lock_pressure:
             call_margin -= 0.07
@@ -982,6 +1291,8 @@ def get_action(req, requests):
             pot_odds,
             nutted_risk,
             board_texture,
+            spr=my_chips / max(1, pot),
+            round_idx=round_idx,
         )
         anti_lock_attack = None
         if anti_lock_pressure:
@@ -1019,17 +1330,33 @@ def get_action(req, requests):
         )
         if anti_lock_attack is not None:
             return anti_lock_attack
-        # Crossover from v10: include strong_made_continue guard in fragile fold checks
-        # Prevents over-folding genuinely strong hands facing aggression
-        if fragile_river_raise_fold:
-            if not anti_lock_call_continue and not strong_made_continue:
-                return -1
-        if fragile_pair_raise_fold:
-            if not anti_lock_call_continue and not strong_made_continue:
-                return -1
-        if hard_repressure_fold or paired_board_stackoff["severe"]:
-            if not anti_lock_call_continue and not strong_made_continue:
-                return -1
+        # Opponent aggression credibility: modulates fragile fold decisions.
+        # When opponent aggression is not credible (over-aggressive/bluffing),
+        # fragile fold checks are suppressed to avoid over-folding to bluffs.
+        opp_credibility = _opponent_aggression_credibility(
+            opponent_model, spot_info, line_context, round_idx,
+        )
+        # SPR commitment guard: at low SPR with made hands, don't over-fold
+        # This check runs BEFORE fragile fold checks to prevent folding
+        # strong hands that are pot-committed
+        if spr_committed:
+            pass  # Skip fragile fold checks — we're pot-committed
+        elif opp_credibility < 0.35:
+            # Opponent aggression is not credible — suppress fragile folds
+            # to avoid being exploited by over-aggressive players
+            pass
+        else:
+            # Crossover from v10: include strong_made_continue guard in fragile fold checks
+            # Prevents over-folding genuinely strong hands facing aggression
+            if fragile_river_raise_fold:
+                if not anti_lock_call_continue and not strong_made_continue:
+                    return -1
+            if fragile_pair_raise_fold:
+                if not anti_lock_call_continue and not strong_made_continue:
+                    return -1
+            if hard_repressure_fold or paired_board_stackoff["severe"]:
+                if not anti_lock_call_continue and not strong_made_continue:
+                    return -1
         calibrated_odds = _calibrated_pot_odds(pot_odds, opponent_model, spot_info, round_idx, made_strength, value_profile)
         if realized_rate < calibrated_odds + call_margin:
             if not anti_lock_call_continue and not strong_made_continue:
@@ -1129,6 +1456,7 @@ def get_action(req, requests):
         round_idx, to_call, pair_profile, made_strength, draw_strength,
         blocker_profile, value_profile, spot_info, paired_board_profile,
         nutted_risk, paired_board_stackoff, board_texture, pot, match_profile,
+        opponent_model, barrel_profile,
     ):
         return 0
     big_pot_threshold = int(clamp(1500 - 350 * match_profile["protect"] + 250 * match_profile["chase"], 1100, 1800))
@@ -1169,19 +1497,13 @@ def get_action(req, requests):
         if anti_lock_attack is not None:
             return anti_lock_attack
 
-    if big_pot and round_idx == 3 and (value_profile is None or value_profile["tier"] not in ("strong", "nut")):
-        if blocker_profile is None or not blocker_profile["eligible"]:
-            return 0
-    thin_static_showdown_control = (
-        round_idx >= 2
-        and value_profile is not None
-        and value_profile["tier"] == "thin"
-        and board_texture is not None
-        and not board_texture["dynamic"]
-        and draw_strength < 0.12
-        and not anti_lock_pressure
-    )
-    if thin_static_showdown_control:
+    # Big pot river weak-hand check now lives in _should_check_river_weak above
+    # (consolidated into the function for opponent-awareness)
+    if _thin_value_feasibility(
+        value_profile, board_texture, draw_strength,
+        opponent_model, round_idx, pot, to_call,
+        anti_lock_pressure, match_profile,
+    ):
         return 0
 
     river_bluff_threshold = 0.62 - 0.28 * match_profile["bluff_delta"]
