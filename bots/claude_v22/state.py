@@ -85,18 +85,6 @@ def is_preflop_trash_hand(my_cards, preflop_strength=None):
     return False
 
 
-def classify_preflop_gap_hand(my_cards, preflop_strength=None):
-    profile = preflop_hand_profile(my_cards)
-    if profile["pair"]:
-        return None
-    high, low = profile["high"], profile["low"]
-    gap = high - low
-    suited = profile["suited"]
-    if high >= 11 and low <= 6 and gap >= 5:
-        return {"type": "broadway_gap", "suited": suited, "high": high}
-    return None
-
-
 def get_hand_index(req):
     for key in ("hand", "hand_id", "hand_index", "round_id", "round_index", "game_id", "game_index"):
         if key in req:

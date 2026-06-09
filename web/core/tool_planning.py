@@ -242,6 +242,37 @@ async def run_master(args):
     if data is None:
         return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed to produce a valid plan after 3 retries", "logs": ui.get_output()})}]}
 
+    # --- P0-1: Post-Master Plan Verification Audit ---
+    try:
+        from audit_agents import _run_master_plan_audit
+        audit_result = await _run_master_plan_audit(data, source_v, ui)
+        if not audit_result.get("overall_pass", True):
+            log_system_event("pipeline.master_audit_rejected", "warn",
+                             f"Master plan audit rejected for v{next_v}: {audit_result.get('feedback', '')[:200]}",
+                             {"next_v": next_v, "audit": audit_result})
+            if audit_result.get("retry_recommended"):
+                # Inject contradictions and re-run Master once
+                performance_verification += (
+                    f"\n\n# PLAN AUDIT REJECTION\n"
+                    f"The previous plan was rejected by the Plan Verification Auditor.\n"
+                    f"Issues: {audit_result.get('feedback', '')}\n"
+                    f"Contradictions: {', '.join(audit_result.get('contradictions', []))}\n"
+                    f"Direction assessment: {audit_result.get('direction_novelty', 'unknown')}\n"
+                    f"You MUST address these issues in your new plan.\n"
+                )
+                data = await _run_master_analysis(
+                    source_v, next_v, stagnation_info, ui,
+                    match_analysis=match_analysis,
+                    performance_verification=performance_verification,
+                )
+                if data is None:
+                    return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed after audit retry", "logs": ui.get_output()})}]}
+                log_system_event("pipeline.master_audit_retry", "info",
+                                 f"Master re-planned after audit rejection for v{next_v}",
+                                 {"next_v": next_v})
+    except Exception as e:
+        logging.getLogger(__name__).warning("Master plan audit error (skipping): %s", e)
+
     plan_errors, plan_warnings = _validate_master_plan(data, next_v=next_v)
     if plan_warnings:
         log_system_event("pipeline.master_boundary", "warning",
@@ -382,7 +413,7 @@ async def execute_workers(args):
         )
 
     ui = _get_ui()
-    success, worker_snapshots = await _execute_workers(
+    success, worker_snapshots, audit_focus_areas = await _execute_workers(
         tasks, worker_template, next_dir, next_v,
         [], ui, reviewer_feedback=reviewer_feedback,
         source_v=source_v,

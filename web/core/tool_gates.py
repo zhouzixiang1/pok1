@@ -70,7 +70,37 @@ async def run_quality_gates(args):
 
     compile_errors = verify_code(bot_dir)
     smoke_errors = run_smoke_test(bot_dir)
-    decision_detail = run_decision_test_details(bot_dir)
+
+    # --- P0-3: LLM-Generated Dynamic Decision Tests ---
+    dynamic_scenarios = []
+    if source_v is not None and changed_files_list:
+        try:
+            from audit_agents import _generate_dynamic_tests
+            # Get existing scenario IDs to avoid duplicates
+            from decision_tester import SCENARIOS_FILE
+            existing_ids = []
+            if SCENARIOS_FILE.exists():
+                with open(SCENARIOS_FILE) as _f:
+                    for s in json.load(_f):
+                        existing_ids.append(s.get("id", ""))
+            ckpt_dt = _matching_checkpoint(v, source_v)
+            master_plan_dt = ckpt_dt.get("master_plan", {}) if ckpt_dt else {}
+            ui = _get_ui()
+            # Timeout: LLM call should complete in 60s; if not, skip dynamic tests
+            import asyncio as _asyncio
+            dynamic_scenarios = await _asyncio.wait_for(
+                _generate_dynamic_tests(
+                    v, source_v, changed_files_list, master_plan_dt, existing_ids, ui
+                ),
+                timeout=60,
+            )
+        except _asyncio.TimeoutError:
+            pass  # LLM timed out — use only predefined scenarios
+        except Exception as e:
+            import logging as _logging
+            _logging.getLogger(__name__).warning("Dynamic test generation error: %s", e)
+
+    decision_detail = run_decision_test_details(bot_dir, extra_scenarios=dynamic_scenarios or None)
     decision_rate = decision_detail.get("pass_rate", 0.0)
     critical_failures = decision_detail.get("critical_failures", [])
     critical_ok = len(critical_failures) == 0

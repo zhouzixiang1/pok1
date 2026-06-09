@@ -168,14 +168,16 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                             source_v=None):
     """Execute worker tasks sequentially, capturing per-worker file snapshots.
 
-    Returns (success, worker_snapshots) where worker_snapshots maps
+    Returns (success, worker_snapshots, audit_focus_areas) where worker_snapshots maps
     (task_idx, file_rel) -> file_content_before_worker_ran, used for
-    accurate per-worker boundary validation.
+    accurate per-worker boundary validation. audit_focus_areas contains
+    focus areas from P0-2 Worker CoT checks to inject into Reviewer.
     """
     # Snapshots: (task_idx, file_rel) -> file content before that worker ran.
     # This enables the boundary validator to check only the Tuner's own changes
     # rather than seeing all preceding workers' changes mixed in.
     worker_snapshots = {}
+    audit_focus_areas = []  # P0-2: Collected from Worker CoT checks
 
     if len(tasks) <= 1:
         # Single task — snapshot before running
@@ -189,7 +191,18 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             context_files, ui, reviewer_feedback,
             source_v=source_v,
         )
-        return ok, worker_snapshots
+        # P0-2: Worker CoT consistency check
+        if ok:
+            try:
+                from audit_agents import _run_worker_cot_check
+                cot = await _run_worker_cot_check(
+                    tasks[0], 0, next_v, source_v, next_dir, worker_snapshots, ui
+                )
+                if not cot.get("cot_consistent", True):
+                    audit_focus_areas.extend(cot.get("focus_areas", []))
+            except Exception:
+                pass
+        return ok, worker_snapshots, audit_focus_areas
 
     # Sequential execution: snapshot each worker's target files BEFORE it runs.
     # This way the boundary check can compare each worker's input vs output,
@@ -208,5 +221,15 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             source_v=source_v,
         )
         if not ok:
-            return False, worker_snapshots
-    return True, worker_snapshots
+            return False, worker_snapshots, audit_focus_areas
+        # P0-2: Worker CoT consistency check after each successful worker
+        try:
+            from audit_agents import _run_worker_cot_check
+            cot = await _run_worker_cot_check(
+                task, i, next_v, source_v, next_dir, worker_snapshots, ui
+            )
+            if not cot.get("cot_consistent", True):
+                audit_focus_areas.extend(cot.get("focus_areas", []))
+        except Exception:
+            pass
+    return True, worker_snapshots, audit_focus_areas

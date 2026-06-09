@@ -100,7 +100,92 @@ class CombinedAnalystResult(BaseModel):
     suggestion: Optional[str] = None
     recommended_source: str = ""
     source_rationale: str = ""
+    causal_analysis: Optional[str] = None
 
+
+# ──────────────────────────────────────────────
+# Audit Agent Schemas (Phase 0)
+# ──────────────────────────────────────────────
+
+class MasterPlanAuditResult(BaseModel):
+    """P0-1: Post-Master plan verification audit."""
+    plan_coherent: bool = True
+    contradiction_found: bool = False
+    contradictions: list[str] = []
+    experience_alignment: str = "aligned"  # aligned, misaligned, unrelated
+    direction_novelty: str = "novel"       # novel, incremental, repetitive
+    overall_pass: bool = True
+    feedback: str = ""
+    retry_recommended: bool = False
+
+
+class WorkerCoTCheckResult(BaseModel):
+    """P0-2: Worker Chain-of-Thought consistency check."""
+    worker_id: int = 0
+    cot_consistent: bool = True
+    discrepancies: list[str] = []
+    logical_contradictions: list[str] = []
+    boundary_violations: list[str] = []
+    focus_areas: list[str] = []  # Injected into reviewer if issues found
+
+
+class DynamicTestScenario(BaseModel):
+    """P0-3: Single LLM-generated test scenario."""
+    id: str
+    description: str
+    input: dict
+    expected_actions: list[str] = []
+    forbidden_actions: list[str] = []
+    rationale: str = ""
+
+
+class DynamicTestSuite(BaseModel):
+    """P0-3: Collection of LLM-generated test scenarios."""
+    scenarios: list[DynamicTestScenario] = Field(max_length=10)
+
+
+class PrecommitSemanticResult(BaseModel):
+    """P0-4: Semantic interpretation of precommit eval battle results."""
+    win_pattern_analysis: str = ""
+    top_opponent_assessment: str = ""
+    regression_semantics: str = "safe"  # clear_regression, marginal, safe, improvement
+    recommended_action: str = "proceed"  # proceed, caution, block
+    confidence: str = "medium"
+
+
+class DegenerationDiagnosis(BaseModel):
+    """P1-1: Continuous degeneration root cause diagnosis."""
+    is_degenerating: bool = False
+    root_causes: list[str] = []
+    commit_evidence: list[str] = []
+    strategy_drift_evidence: list[str] = []
+    recommendation: str = "continue"  # continue, crossover, branch_from, force_exploration
+    urgent_intervention: bool = False
+
+
+class CrossoverCompatibilityResult(BaseModel):
+    """P1-3: Crossover parent compatibility audit."""
+    compatible: bool = True
+    compatibility_score: int = Field(ge=1, le=10)
+    conflict_areas: list[str] = []
+    suggested_merge_approach: str = ""
+    files_to_take_from_a: list[str] = []
+    files_to_take_from_b: list[str] = []
+
+
+class ExperiencePoolAuditResult(BaseModel):
+    """P1-4: Experience pool quality audit."""
+    stale_entries: list[str] = []
+    contradictions: list[str] = []
+    relevance_issues: list[str] = []
+    recommended_removals: list[str] = []
+    recommended_additions: list[str] = []
+    overall_health: str = "healthy"  # healthy, needs_cleanup, stale
+
+
+# ──────────────────────────────────────────────
+# Schema Registry
+# ──────────────────────────────────────────────
 
 # Map agent names to their Pydantic models
 AGENT_SCHEMAS = {
@@ -112,6 +197,14 @@ AGENT_SCHEMAS = {
     "stagnation_analyst": StagnationResult,
     "performance_analyst": PerformanceResult,
     "combined_analyst": CombinedAnalystResult,
+    # Audit agents
+    "master_plan_auditor": MasterPlanAuditResult,
+    "worker_cot_checker": WorkerCoTCheckResult,
+    "dynamic_test_generator": DynamicTestSuite,
+    "precommit_semantic": PrecommitSemanticResult,
+    "degeneration_diagnosis": DegenerationDiagnosis,
+    "crossover_compatibility": CrossoverCompatibilityResult,
+    "experience_pool_audit": ExperiencePoolAuditResult,
 }
 
 

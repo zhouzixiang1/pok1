@@ -751,7 +751,7 @@ class TestWorkerFailureCircuitBreaker:
             with patch.object(tool_planning, '_execute_workers', new_callable=AsyncMock) as mock_exec, \
                  patch.object(tool_planning, '_validate_worker_boundaries', return_value=[]), \
                  patch.object(tool_planning, '_py_files_changed_between', return_value=['strategy.py']):
-                mock_exec.return_value = (True, {})
+                mock_exec.return_value = (True, {}, [])
                 await _handler({"tasks": [
                     {"worker_id": 1, "role": "arch", "target_files": ["a.py"], "worker_prompt": "x"},
                     {"worker_id": 2, "role": "tuner", "target_files": ["b.py"], "worker_prompt": "y"},
@@ -774,7 +774,7 @@ class TestWorkerFailureCircuitBreaker:
 
         async def _run():
             with patch.object(tool_planning, '_execute_workers', new_callable=AsyncMock) as mock_exec:
-                mock_exec.return_value = (False, {})
+                mock_exec.return_value = (False, {}, [])
                 await _handler({"tasks": [
                     {"worker_id": 1, "role": "arch", "target_files": ["a.py"], "worker_prompt": "x"},
                     {"worker_id": 2, "role": "tuner", "target_files": ["b.py"], "worker_prompt": "y"},
@@ -821,7 +821,7 @@ class TestWorkerFailureCircuitBreaker:
             nonlocal mock_exec
             with patch.object(tool_planning, '_execute_workers', new_callable=AsyncMock) as mock_exec_inner:
                 mock_exec = mock_exec_inner
-                mock_exec_inner.return_value = (True, {})
+                mock_exec_inner.return_value = (True, {}, [])
                 await _handler({"tasks": [
                     {"worker_id": 1, "role": "arch", "target_files": ["a.py"], "worker_prompt": "x"},
                     {"worker_id": 2, "role": "tuner", "target_files": ["b.py"], "worker_prompt": "y"},

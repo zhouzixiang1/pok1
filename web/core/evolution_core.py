@@ -81,3 +81,11 @@ from agent_workers import (  # noqa: F401
 from agent_review import (  # noqa: F401
     _run_critic, _run_performance_verification, _run_crossover,
 )
+
+# ── Audit Agents ──
+from audit_agents import (  # noqa: F401
+    _run_master_plan_audit, _run_worker_cot_check,
+    _generate_dynamic_tests, _run_precommit_semantic,
+    _run_degeneration_diagnosis, _run_crossover_compatibility_audit,
+    _run_experience_pool_audit, _run_regression_guardian,
+)

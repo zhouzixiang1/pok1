@@ -104,7 +104,7 @@ def run_decision_tests(bot_path, verbose=False):
     return result["pass_rate"]
 
 
-def run_decision_tests_detail(bot_path, verbose=False):
+def run_decision_tests_detail(bot_path, verbose=False, extra_scenarios=None):
     """Run all scenarios and return detailed critical/advisory gate data."""
     if not SCENARIOS_FILE.exists():
         if verbose:
@@ -122,6 +122,10 @@ def run_decision_tests_detail(bot_path, verbose=False):
 
     with open(SCENARIOS_FILE) as f:
         scenarios = json.load(f)
+
+    # P0-3: Merge LLM-generated dynamic test scenarios
+    if extra_scenarios:
+        scenarios.extend(extra_scenarios)
 
     if not scenarios:
         return {

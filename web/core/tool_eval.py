@@ -18,12 +18,13 @@ from evolution_core import (
 from glicko2 import Glicko2Player, update_rating_period
 
 from tool_helpers import (
-    _json_tool_result,
+    _json_tool_result, _get_ui,
     _matching_checkpoint, _record_gate, _gate_payload, _state_blocked,
     _quality_gate_ok, _review_gate_ok, _critic_gate_ok,
     _select_precommit_opponents, _bot_main, _resolve_version_args,
     PROJECT_ROOT,
 )
+from system_log import log_system_event
 
 
 # ──────────────────────────────────────────────
@@ -163,11 +164,35 @@ async def run_precommit_eval(args):
             })
         matchups.append(matchup)
 
+    # --- P0-4: Semantic Interpretation of Battle Results ---
+    semantic_result = None
+    if matchups:
+        try:
+            from audit_agents import _run_precommit_semantic
+            ckpt_sem = _matching_checkpoint(v, source_v)
+            master_plan_sem = ckpt_sem.get("master_plan", {}) if ckpt_sem else {}
+            semantic_result = await _run_precommit_semantic(
+                v, source_v, matchups, master_plan_sem, _get_ui()
+            )
+        except Exception:
+            pass
+
     if total_losses >= 3 and total_losses >= total_wins + 2:
         blockers.append({
             "reason": "aggregate_precommit_regression",
             "details": f"Aggregate mirror result {total_wins}-{total_losses}-{total_draws}.",
         })
+
+    # P0-4: Semantic blocker — LLM detects regression patterns that numbers miss
+    if semantic_result and semantic_result.get("recommended_action") == "block":
+        blockers.append({
+            "reason": "semantic_regression",
+            "details": semantic_result.get("regression_semantics", "LLM detected regression pattern"),
+        })
+    elif semantic_result and semantic_result.get("recommended_action") == "caution":
+        log_system_event("pipeline.precommit_caution", "warn",
+                         f"Semantic caution for v{v}: {semantic_result.get('win_pattern_analysis', '')[:200]}",
+                         {"next_v": v, "semantic": semantic_result})
 
     passed = len(blockers) == 0
     result = {

@@ -60,7 +60,7 @@ def run_smoke_test(directory):
     return []
 
 
-def run_decision_test_details(directory):
+def run_decision_test_details(directory, extra_scenarios=None):
     """Run standard decision scenarios. Returns detailed gate results."""
     main_path = os.path.join(directory, "main.py")
     if not os.path.exists(main_path):
@@ -75,7 +75,7 @@ def run_decision_test_details(directory):
             "scenarios": [],
         }
     from decision_tester import run_decision_tests_detail as _run_detail
-    return _run_detail(main_path, verbose=False)
+    return _run_detail(main_path, verbose=False, extra_scenarios=extra_scenarios)
 
 
 def seed_initial_bots(ui):
