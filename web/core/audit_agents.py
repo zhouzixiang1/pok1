@@ -518,9 +518,16 @@ async def _run_experience_pool_audit(pool_content, current_ratings, ui):
         except Exception:
             pass
 
+        # Convert Glicko2Player objects to serializable dicts for prompt injection
+        serializable_ratings = {}
+        for name, r in current_ratings.items():
+            if hasattr(r, 'rating'):
+                serializable_ratings[name] = {"r": round(r.rating, 1), "rd": round(r.rd, 1)}
+            elif isinstance(r, dict):
+                serializable_ratings[name] = r
         prompt = substitute_template(template, {
             "pool_content": pool_content[:5000],
-            "current_ratings": json.dumps(current_ratings, indent=2, ensure_ascii=False)[:2000] if current_ratings else "No rating data",
+            "current_ratings": json.dumps(serializable_ratings, indent=2, ensure_ascii=False)[:2000] if serializable_ratings else "No rating data",
             "recent_outcomes": recent_outcomes or "No recent outcomes",
         })
 
