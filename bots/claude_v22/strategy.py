@@ -874,6 +874,7 @@ def get_action(req, requests):
                 draw_strength,
                 round_idx,
                 spot_info["has_position"],
+                texture_class=street_texture["class"],
             )
             call_margin += pair_domination_margin(
                 pair_profile,
