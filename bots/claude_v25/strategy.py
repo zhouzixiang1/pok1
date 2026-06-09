@@ -13,7 +13,7 @@ from postflop import (
     made_hand_metric, pair_board_profile, pair_domination_margin,
     marginal_pair_under_pressure, board_texture_profile,
     paired_board_outcome_profile, bet_size_bucket, value_hand_tier,
-    value_bet_plan, empty_draw_profile, draw_profile, draw_potential,
+    value_bet_plan, empty_draw_profile, draw_profile,
     draw_call_margin, made_flush_profile, blocker_bluff_profile,
     allow_low_frequency_blocker_bluff, nutted_risk_profile,
     check_probe_resistance_margin, must_continue_vs_raise,
@@ -21,14 +21,6 @@ from postflop import (
 from simulation import (
     build_opponent_range, estimate_weighted_win_rate,
 )
-
-
-def _per_street_diverges(opponent_model, per_street_key, per_street_prior, aggregate_key, aggregate_prior):
-    per_street_val = opponent_model.get(per_street_key, per_street_prior)
-    aggregate_val = opponent_model.get(aggregate_key, aggregate_prior)
-    ps_above = per_street_val > per_street_prior
-    ag_above = aggregate_val > aggregate_prior
-    return ps_above != ag_above
 
 
 def _aligned_signal_boost(opponent_model, per_street_key, per_street_prior, aggregate_key, aggregate_prior):
@@ -88,7 +80,34 @@ def opponent_pressure_adjustment(opponent_model, spot_info, round_idx):
                     adjustment += confidence * alignment * 1.5
                 elif river_aggr <= 0.22:
                     adjustment -= confidence * alignment * 1.5
-    return clamp(adjustment, -0.09, 0.11)
+    # Sizing tendency: adjust based on opponent's per-street sizing pattern
+    if confidence >= 0.20 and round_idx >= 1:
+        size_bkt = bet_size_bucket(spot_info.get('last_raise_pot_ratio', 0.0))
+        if round_idx == 2:
+            turn_tend = opponent_model.get('turn_sizing_tendency', {}).get('type', 'unknown')
+            turn_div = opponent_model.get('turn_sizing_tendency', {}).get('diversity', 0.0)
+            if turn_tend == 'polarized' and turn_div >= 0.25:
+                if size_bkt == 'large':
+                    adjustment += confidence * 0.040
+                elif size_bkt == 'small':
+                    adjustment -= confidence * 0.020
+            elif turn_tend == 'merged':
+                if size_bkt == 'large':
+                    adjustment -= confidence * 0.015
+        elif round_idx == 3:
+            river_tend = opponent_model.get('river_sizing_tendency', {}).get('type', 'unknown')
+            river_div = opponent_model.get('river_sizing_tendency', {}).get('diversity', 0.0)
+            if river_tend == 'polarized' and river_div >= 0.25:
+                if size_bkt == 'large':
+                    adjustment += confidence * 0.050
+                elif size_bkt == 'small':
+                    adjustment -= confidence * 0.025
+            elif river_tend == 'merged':
+                if size_bkt == 'large':
+                    adjustment -= confidence * 0.020
+            elif river_tend == 'heavy':
+                adjustment += confidence * 0.030
+    return clamp(adjustment, -0.11, 0.14)
 
 
 def aggressive_line_strength(spot_info, board_texture):
@@ -319,16 +338,23 @@ def realized_postflop_equity(
 
 
 def sizing_exploit_adjustment(opponent_model, round_idx):
-    """Adjust raise sizing based on opponent bet-size patterns."""
     confidence = opponent_model.get('confidence', 0.0)
     if confidence < 0.15:
         return 0.0
+    delta = 0.0
     sizing_aggr = opponent_model.get('sizing_aggr', 0.35)
     if sizing_aggr >= 0.55:
-        return -0.03 * confidence  # Over-bettors: size down our raises
+        delta -= 0.03 * confidence
     elif sizing_aggr <= 0.20:
-        return 0.04 * confidence   # Under-bettors: size up for value
-    return 0.0
+        delta += 0.04 * confidence
+    # Sizing tendency: adjust our raise sizing based on opponent's river pattern
+    if round_idx >= 2:
+        river_tend = opponent_model.get('river_sizing_tendency', {}).get('type', 'unknown')
+        if river_tend == 'polarized':
+            delta += 0.03 * confidence  # Size up vs polarized (they fold to big bets)
+        elif river_tend == 'merged':
+            delta -= 0.02 * confidence  # Stay standard vs merged
+    return delta
 
 
 def choose_raise(
@@ -635,6 +661,37 @@ def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile,
     if round_idx == 3 and made_strength < 0.20 and not has_draw and opp_bets >= 2:
         return True
 
+    return False
+
+
+def river_bluff_catch_by_sizing(opponent_model, spot_info, made_strength, draw_strength, value_profile):
+    if spot_info.get("last_opp_action_type") not in ("raise", "allin"):
+        return False
+    confidence = opponent_model.get("confidence", 0.0)
+    if confidence < 0.25:
+        return False
+    tier = value_profile.get("tier", "none") if value_profile else "none"
+    if tier in ("strong", "nut"):
+        return False
+    has_draw = draw_strength >= 0.14
+    if made_strength < 0.18 and not has_draw:
+        return False
+    current_bb = spot_info.get("last_raise_bb", 0.0)
+    if current_bb <= 0:
+        return False
+    p25 = opponent_model.get("river_size_p25", 3.0)
+    p75 = opponent_model.get("river_size_p75", 8.0)
+    river_aggr = opponent_model.get("river_aggr", 0.28)
+    # Unusually small bet for this opponent = bluff catch
+    if p25 > 0 and current_bb < p25 * 0.70 and made_strength >= 0.22:
+        return True
+    # Polarized opponent betting small = weak range
+    size_spread = p75 / max(p25, 1.0)
+    if size_spread >= 2.0 and current_bb <= p25 and made_strength >= 0.24:
+        return True
+    # Aggressive river bettor sizing down
+    if river_aggr >= 0.35 and current_bb < p25 * 0.85 and made_strength >= 0.20:
+        return True
     return False
 
 
@@ -977,6 +1034,9 @@ def get_action(req, requests):
         if hard_repressure_fold or paired_board_stackoff["severe"]:
             if not anti_lock_call_continue and not strong_made_continue:
                 return -1
+        if round_idx == 3 and to_call > 0:
+            if river_bluff_catch_by_sizing(opponent_model, spot_info, made_strength, draw_strength, value_profile):
+                return 0
         if realized_rate < pot_odds + call_margin:
             if not anti_lock_call_continue and not strong_made_continue:
                 return -1

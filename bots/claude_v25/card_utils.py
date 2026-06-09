@@ -36,6 +36,10 @@ def evaluate_5(cards):
         if unique_ranks[0] - unique_ranks[4] == 4:
             is_straight = True
             straight_high = unique_ranks[0]
+        # Wheel straight: A-2-3-4-5
+        elif set(unique_ranks) == {14, 2, 3, 4, 5}:
+            is_straight = True
+            straight_high = 5
 
     if is_flush and is_straight:
         return (8, straight_high)

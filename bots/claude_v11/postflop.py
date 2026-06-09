@@ -1033,6 +1033,156 @@ def must_continue_vs_raise(value_profile, made_strength, pot_odds, nutted_risk, 
     return False
 
 
+def _completion_blocker_profile(hole_cards, public_cards, board_texture, completion_risk):
+    """Detect when our hand blocks a draw that just completed on the board.
+
+    When a scare card completes a flush or straight draw, holding key blocking
+    cards makes our bluff more credible because the opponent is less likely to
+    hold the completed hand. This profile identifies such situations for
+    enhanced river bluff decisions.
+
+    Returns dict with:
+      eligible: bool — whether our hand has a meaningful completion blocker
+      score: float — blocker strength (higher = better blocker)
+      type: str — "flush_completion_blocker" or "straight_completion_blocker" or "none"
+      blocked_draw: str — "flush" or "straight" or "none"
+    """
+    info = {
+        "eligible": False,
+        "score": 0.0,
+        "type": "none",
+        "blocked_draw": "none",
+    }
+
+    if completion_risk is None or not (completion_risk.get("completed_flush") or completion_risk.get("completed_straight")):
+        return info
+
+    if board_texture is None or len(public_cards) < 4:
+        return info
+
+    hole_ranks = [card_number(card) for card in hole_cards]
+
+    # Flush completion blocker: we hold a high card of the flush suit
+    if completion_risk.get("completed_flush"):
+        board_suits = [card_suit(card) for card in public_cards]
+        suit_counts = {}
+        for suit in board_suits:
+            suit_counts[suit] = suit_counts.get(suit, 0) + 1
+        target_suit = max(suit_counts, key=suit_counts.get)
+
+        suited_hole_ranks = sorted(
+            (card_number(card) for card in hole_cards if card_suit(card) == target_suit),
+            reverse=True,
+        )
+        if suited_hole_ranks:
+            high_blocker = suited_hole_ranks[0]
+            # Higher blockers are more credible: Ace > King > Queen
+            if high_blocker >= 14:
+                info["score"] += 0.22
+                info["type"] = "flush_completion_blocker"
+                info["blocked_draw"] = "flush"
+            elif high_blocker >= 13:
+                info["score"] += 0.16
+                info["type"] = "flush_completion_blocker"
+                info["blocked_draw"] = "flush"
+            elif high_blocker >= 12:
+                info["score"] += 0.10
+                info["type"] = "flush_completion_blocker"
+                info["blocked_draw"] = "flush"
+
+    # Straight completion blocker: we hold a card that would be needed for the straight
+    if completion_risk.get("completed_straight"):
+        all_ranks = {card_number(card) for card in hole_cards + public_cards}
+        # Find which straights are present on the board
+        best_blocker_score = 0.0
+        for start in range(1, 11):
+            window = set(range(start, start + 5))
+            present = all_ranks & window
+            if len(present) >= 4:
+                # A straight is possible; check if our hole cards contain one of the straight ranks
+                hole_in_straight = [r for r in hole_ranks if r in window]
+                if hole_in_straight:
+                    # The higher our card in the straight, the more it blocks
+                    high_in_straight = max(hole_in_straight)
+                    if high_in_straight >= start + 4:
+                        # We hold the top end — blocks the nut straight
+                        candidate = 0.14
+                    elif high_in_straight >= start + 3:
+                        candidate = 0.10
+                    else:
+                        candidate = 0.06
+                    best_blocker_score = max(best_blocker_score, candidate)
+
+        if best_blocker_score > 0 and info["score"] < best_blocker_score:
+            info["score"] = best_blocker_score
+            info["type"] = "straight_completion_blocker"
+            info["blocked_draw"] = "straight"
+        elif best_blocker_score > 0:
+            # Already have a flush blocker, keep it (flush blockers are usually stronger)
+            pass
+
+    info["eligible"] = info["score"] >= 0.10
+    return info
+
+
+def _completion_risk_call_margin(completion_risk, board_texture, value_profile, round_idx):
+    """Compute a call-margin adjustment when facing a bet on a board where a draw completed.
+
+    When a scare card completes a flush or straight draw on the turn/river,
+    non-nut made hands are much more likely to be beaten by the opponent's
+    betting range. This structural function produces a positive margin
+    adjustment (toward folding) proportional to the number of completed draws
+    and inversely proportional to the hand's tier.
+
+    This is the call-facing counterpart to the blunt `completion_folds` gate
+    in get_action(). While that gate force-folds weak hands when a draw
+    completes, this function provides a graduated adjustment for marginal
+    hands that might still call with sufficient pot odds.
+
+    Returns a float margin delta (positive = fold more, 0.0 = no adjustment).
+    """
+    if completion_risk is None or round_idx < 2:
+        return 0.0
+
+    completed_flush = completion_risk.get("completed_flush", False)
+    completed_straight = completion_risk.get("completed_straight", False)
+    if not completed_flush and not completed_straight:
+        return 0.0
+
+    tier = value_profile.get("tier", "none") if value_profile else "none"
+    # Nut hands are unaffected — they beat all completed draws
+    if tier == "nut":
+        return 0.0
+
+    margin = 0.0
+    draw_count = int(completed_flush) + int(completed_straight)
+
+    # Tier-scaled caution: weaker hands need more margin to call
+    # Strong hands get a small bump; thin/none get the full adjustment
+    if tier == "strong":
+        tier_scale = 0.5
+    elif tier == "thin":
+        tier_scale = 1.0
+    else:
+        tier_scale = 1.2
+
+    if completed_flush:
+        # Flush completion is more dangerous — fewer opponent combos needed
+        margin += 0.02 * draw_count * tier_scale
+    if completed_straight:
+        margin += 0.015 * tier_scale
+
+    # On the river, completions are definitive (no more cards to come)
+    # so the adjustment is structural, not speculative
+    if round_idx == 3:
+        margin *= 1.0
+    else:
+        # On the turn, there's still a river card — less certainty
+        margin *= 0.7
+
+    return clamp(margin, 0.0, 0.06)
+
+
 def _board_completion_risk(hole_cards, public_cards, board_texture):
     """Detect when a draw-completing card has arrived on turn or river.
 
@@ -1070,6 +1220,193 @@ def _board_completion_risk(hole_cards, public_cards, board_texture):
         info["completion_street"] = len(public_cards) - 1
 
     return info
+
+
+def _barrel_value_calibrator(barrel_profile, round_idx, has_position):
+    """Derive value-bet threshold adjustments from opponent barrel sizing trends.
+
+    When an opponent's barrel sizing is declining across streets, they are likely
+    giving up on semi-bluffs or weakening their range. This creates an opportunity
+    to widen our value range by lowering thresholds — we can bet more marginal
+    hands for value against their weakened range.
+
+    When sizing is escalating, the opponent's range is likely value-heavy, so
+    we should tighten our value requirements to avoid value-owning ourselves
+    (betting a hand that only gets called by better).
+
+    The adjustment magnitude is derived from the barrel_profile's defense_adjustment
+    (which already incorporates confidence-weighted aggression signals) and the
+    sizing_trend label, but uses a different calibration than the fold-defense
+    path in _should_check_river_weak.
+
+    Returns dict with:
+      threshold_delta: float — adjustment to add to 'medium'/'strong' thresholds
+        (negative = lower thresholds = bet more aggressively)
+      sizing_signal: str — "declining" | "escalating" | "stable" | "none"
+    """
+    result = {
+        "threshold_delta": 0.0,
+        "sizing_signal": "none",
+    }
+
+    if barrel_profile is None or round_idx < 2:
+        return result
+
+    sizing_trend = barrel_profile.get("sizing_trend", "none")
+    is_multi_barrel = barrel_profile.get("is_multi_barrel", False)
+    defense_adj = barrel_profile.get("defense_adjustment", 0.0)
+
+    result["sizing_signal"] = sizing_trend
+
+    if sizing_trend == "declining" and is_multi_barrel:
+        # Opponent is giving up — lower thresholds to widen value range.
+        # The base adjustment is proportional to the defense_adjustment
+        # (which is negative for declining sizing), but we use the
+        # absolute magnitude as a signal strength indicator.
+        decline_strength = min(0.05, abs(defense_adj) * 1.2)
+        # Position modulates: OOP needs stronger conviction to bet
+        position_factor = 0.8 if not has_position else 1.0
+        result["threshold_delta"] = -decline_strength * position_factor
+
+    elif sizing_trend == "escalating" and is_multi_barrel:
+        # Opponent range is value-heavy — tighten value thresholds.
+        # We raise thresholds so only stronger hands bet for value.
+        escalation_strength = min(0.04, abs(defense_adj) * 0.8)
+        result["threshold_delta"] = escalation_strength
+
+    elif sizing_trend == "stable" and is_multi_barrel:
+        # Stable sizing gives no additional information — neutral
+        # but if defense_adjustment is large, the barrel itself is credible
+        if defense_adj > 0.03:
+            result["threshold_delta"] = min(0.02, defense_adj * 0.5)
+
+    return result
+
+
+def _opponent_range_polarization(spot_info, opponent_model, line_context, board_texture, round_idx):
+    """Classify opponent's current betting range as polarized, condensed, or balanced.
+
+    A polarized range contains mostly nuts or air (bluffs), with few medium-strength
+    hands. Signals include large bet sizing, check-raises, triple barrels, and
+    delayed large bets after checking prior streets.
+
+    A condensed range contains mostly medium-strength hands. Signals include
+    small-to-medium bet sizing, check-calling across streets, and donk betting.
+
+    Against a polarized range, we should call wider with bluff catchers (our
+    medium-strength hands beat their bluffs) but fold non-bluff-catcher medium
+    hands that lose to their value. Against a condensed range, we should bluff
+    more aggressively (they fold medium hands to pressure) and call less with
+    marginal bluff catchers (their range is medium-heavy and beats ours).
+
+    Returns dict with:
+      polarization: str — "polarized" | "condensed" | "balanced"
+      strength: float — confidence weight in [0.0, 1.0]
+      call_adjustment: float — margin delta for call/fold (positive = fold more)
+      bluff_adjustment: float — threshold delta for bluff initiation
+        (negative = bluff more, positive = bluff less)
+    """
+    if round_idx <= 0:
+        return {"polarization": "balanced", "strength": 0.0, "call_adjustment": 0.0, "bluff_adjustment": 0.0}
+
+    confidence = opponent_model.get("confidence", 0.0)
+    if confidence < 0.15:
+        return {"polarization": "balanced", "strength": 0.0, "call_adjustment": 0.0, "bluff_adjustment": 0.0}
+
+    polarization_score = 0.0  # positive = polarized, negative = condensed
+    signals = 0
+
+    # Signal 1: Bet sizing relative to pot
+    size_bucket = bet_size_bucket(spot_info["last_raise_pot_ratio"])
+    if size_bucket == "large":
+        polarization_score += 0.18
+        signals += 1
+    elif size_bucket == "small":
+        polarization_score -= 0.12
+        signals += 1
+
+    # Signal 2: Multi-street aggression pattern
+    if line_context is not None:
+        line_type = line_context.get("line_type", "standard")
+        if line_type == "triple_barrel":
+            polarization_score += 0.22
+            signals += 1
+        elif line_type == "double_barrel":
+            polarization_score += 0.10
+            signals += 1
+        elif line_type == "float_bet":
+            # Float bet is polarized (bluff or strong made hand)
+            polarization_score += 0.14
+            signals += 1
+        elif line_type == "delayed_aggression":
+            polarization_score += 0.16
+            signals += 1
+        elif line_type == "single_barrel":
+            polarization_score -= 0.06
+            signals += 1
+
+    # Signal 3: Same-street check-raise or snap re-raise
+    if spot_info.get("opp_current_round_bet_count", 0) >= 2 and round_idx > 0:
+        polarization_score += 0.20
+        signals += 1
+
+    # Signal 4: Board texture interaction
+    if board_texture is not None:
+        if board_texture["dynamic"]:
+            # Large bets on dynamic boards are more polarized (to nuts or draws)
+            if size_bucket == "large":
+                polarization_score += 0.08
+                signals += 1
+        else:
+            # Small bets on dry boards are more condensed (thin value/probes)
+            if size_bucket == "small":
+                polarization_score -= 0.08
+                signals += 1
+
+    # Signal 5: Opponent's historical tendency vs current action
+    postflop_aggr = opponent_model.get("postflop_aggr", 0.36)
+    if postflop_aggr < 0.32 and spot_info.get("facing_postflop_aggression", False):
+        # Passive player betting = polarized to strong hands
+        polarization_score += 0.10
+        signals += 1
+    elif postflop_aggr > 0.50 and spot_info.get("facing_postflop_aggression", False):
+        # Aggressive player betting = could be wide, but small sizing suggests condensed
+        if size_bucket != "large":
+            polarization_score -= 0.08
+            signals += 1
+
+    if signals == 0:
+        return {"polarization": "balanced", "strength": 0.0, "call_adjustment": 0.0, "bluff_adjustment": 0.0}
+
+    # Normalize by signal count and scale by confidence
+    avg_score = polarization_score / signals
+    scaled_score = clamp(avg_score * confidence, -0.15, 0.15)
+
+    if scaled_score > 0.06:
+        polarization = "polarized"
+        strength = min(1.0, scaled_score / 0.15)
+        # Polarized range: call wider with bluff catchers (reduce fold margin)
+        # but don't bluff into it (they call with nuts or fold air)
+        call_adjustment = -0.02 * strength
+        bluff_adjustment = 0.03 * strength
+    elif scaled_score < -0.06:
+        polarization = "condensed"
+        strength = min(1.0, abs(scaled_score) / 0.15)
+        # Condensed range: fold bluff catchers (increase fold margin), bluff more
+        call_adjustment = 0.02 * strength
+        bluff_adjustment = -0.03 * strength
+    else:
+        polarization = "balanced"
+        strength = 0.0
+        call_adjustment = 0.0
+        bluff_adjustment = 0.0
+
+    return {
+        "polarization": polarization,
+        "strength": strength,
+        "call_adjustment": call_adjustment,
+        "bluff_adjustment": bluff_adjustment,
+    }
 
 
 def _should_check_river_weak(
