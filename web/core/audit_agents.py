@@ -441,13 +441,13 @@ async def _run_crossover_compatibility_audit(parent_a_v, parent_b_v, ui):
             if fb.exists():
                 parent_b_code[fname] = fb.read_text()[:4000]
 
-        # Get ratings
+        # Get ratings (load_ratings returns {name: Glicko2Player} objects)
         from evolution_infra import load_ratings
         ratings = load_ratings() or {}
-        ra = ratings.get(f"claude_v{parent_a_v}", {})
-        rb = ratings.get(f"claude_v{parent_b_v}", {})
-        rating_a = ra.get("rating", "unknown")
-        rating_b = rb.get("rating", "unknown")
+        ra = ratings.get(f"claude_v{parent_a_v}")
+        rb = ratings.get(f"claude_v{parent_b_v}")
+        rating_a = f"{ra.rating:.1f}" if ra and hasattr(ra, 'rating') else "unknown"
+        rating_b = f"{rb.rating:.1f}" if rb and hasattr(rb, 'rating') else "unknown"
 
         prompt = substitute_template(template, {
             "parent_a_version": str(parent_a_v),

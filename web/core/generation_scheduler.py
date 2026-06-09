@@ -16,6 +16,7 @@ import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
+from system_log import log_system_event
 
 log = logging.getLogger("pok.scheduler")
 
