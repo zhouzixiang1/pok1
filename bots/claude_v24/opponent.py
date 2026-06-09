@@ -29,6 +29,8 @@ def build_opponent_model(requests, my_id):
     flop_raise_bb = []; turn_raise_bb = []; river_raise_bb = []
     barrel_hands = 0; barrel_continue = 0
     opp_bet_flop = False; opp_bet_turn = False
+    opp_small_bet_count = 0
+    opp_large_bet_count = 0
 
     for req in hand_requests:
         if opponent_can_lock_win(req, my_id):
@@ -72,6 +74,12 @@ def build_opponent_model(requests, my_id):
                     preflop_raise += 1
 
             if round_idx > 0:
+                if action_type == 'raise':
+                    sizing_bb = action / BIG_BLIND
+                    if sizing_bb >= 8.0:
+                        opp_large_bet_count += 1
+                    else:
+                        opp_small_bet_count += 1
                 postflop_actions += 1
                 if action_type in ("raise", "allin"):
                     postflop_aggressive += 1
@@ -132,6 +140,7 @@ def build_opponent_model(requests, my_id):
         "avg_turn_raise_bb": sum(turn_raise_bb)/len(turn_raise_bb) if turn_raise_bb else 4.5,
         "avg_river_raise_bb": sum(river_raise_bb)/len(river_raise_bb) if river_raise_bb else 5.5,
         "barrel_freq": smooth_rate(barrel_continue, barrel_hands, 0.45, 4.0),
+        "sizing_aggr": smooth_rate(opp_large_bet_count, opp_small_bet_count + opp_large_bet_count, 0.35, 4.0),
     }
 
 
@@ -213,6 +222,15 @@ def analyze_current_spot(req, state):
                 info["preflop_spot"] = "bb_vs_raise"
         elif history and info["my_is_sb"] and history[-1]["player_id"] == opponent_id:
             if history[-1]["action_type"] in ("raise", "allin"):
-                info["preflop_spot"] = "sb_vs_reraise"
+                # Detect if SB limped (call) vs raised (v23 fix)
+                sb_first_action = None
+                for rec in history:
+                    if rec["player_id"] == my_id and rec["round"] == 0:
+                        sb_first_action = rec["action_type"]
+                        break
+                if sb_first_action == "call":
+                    info["preflop_spot"] = "sb_vs_iso_raise"
+                else:
+                    info["preflop_spot"] = "sb_vs_reraise"
 
     return info

@@ -318,6 +318,21 @@ def realized_postflop_equity(
     return win_rate
 
 
+def sizing_exploit_adjustment(opponent_model, round_idx):
+    """Adjust raise sizing based on opponent bet-size patterns.
+    Mutation from v24 crossover: increased delta from 0.03/0.04 to 0.07/0.09
+    per experience pool recommendation to increase to >=0.08."""
+    confidence = opponent_model.get('confidence', 0.0)
+    if confidence < 0.15:
+        return 0.0
+    sizing_aggr = opponent_model.get('sizing_aggr', 0.35)
+    if sizing_aggr >= 0.55:
+        return -0.07 * confidence  # Over-bettors: size down our raises
+    elif sizing_aggr <= 0.20:
+        return 0.09 * confidence   # Under-bettors: size up for value
+    return 0.0
+
+
 def choose_raise(
     min_raise,
     my_chips,
@@ -341,6 +356,7 @@ def choose_raise(
     induce_mode=False,
     nutted_risk_score=0.0,
     match_sizing_delta=0.0,
+    sizing_exploit_delta=0.0,
 ):
     if my_chips <= max(min_raise, to_call) + 1:
         return None
@@ -373,6 +389,7 @@ def choose_raise(
     ratio += value_profile.get("size_bonus", 0.0)
     ratio += value_plan.get("size_delta", 0.0)
     ratio += match_sizing_delta
+    ratio += sizing_exploit_delta
     if round_idx > 0 and value_profile.get("tier") == "strong" and not semi_bluff and not pressure_line:
         if not board_texture["dynamic"]:
             ratio -= 0.05
@@ -523,6 +540,24 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
                     return raise_amount
         # Call with playable hands
         if preflop_strength >= 0.37 or win_rate >= pot_odds_pf - 0.02:
+            return 0
+        return -1
+
+    elif spot_info['preflop_spot'] == 'sb_vs_iso_raise':
+        pot_odds_iso = to_call / (to_call + state['pot']) if to_call > 0 else 0.0
+        # Limp-reraise with strong hands
+        if preflop_strength >= 0.58 and not trash_hand:
+            raise_amount = choose_raise(
+                state['min_raise_action'], my_chips, state['my_round_bet'],
+                to_call, state['pot'], max(win_rate, preflop_strength),
+                0, 'sb_vs_iso_raise', preflop_strength,
+                False, opponent_model,
+                match_sizing_delta=match_profile['sizing_delta'],
+            )
+            if raise_amount is not None:
+                return raise_amount
+        # Call with most limp-range hands
+        if preflop_strength >= 0.34 or win_rate >= pot_odds_iso - 0.03:
             return 0
         return -1
 
@@ -929,8 +964,6 @@ def get_action(req, requests):
         )
         if anti_lock_attack is not None:
             return anti_lock_attack
-        # Crossover from v10: include strong_made_continue guard in fragile fold checks
-        # Prevents over-folding genuinely strong hands facing aggression
         if fragile_river_raise_fold:
             if not anti_lock_call_continue and not strong_made_continue:
                 return -1
@@ -1013,6 +1046,7 @@ def get_action(req, requests):
             and to_call > 0
             and not preflop_3bet_candidate
         )
+        sizing_delta = sizing_exploit_adjustment(opponent_model, round_idx)
         if not preflop_defensive_only and (win_rate >= max(strong, pot_odds + 0.12) or semi_bluff or flop_checkraise_exploit):
             raise_amount = choose_raise(
                 state["min_raise_action"],
@@ -1035,6 +1069,7 @@ def get_action(req, requests):
                 pressure_line=flop_checkraise_exploit,
                 nutted_risk_score=nutted_risk["risk"],
                 match_sizing_delta=match_profile["sizing_delta"],
+                sizing_exploit_delta=sizing_delta,
             )
             if raise_amount is not None and raise_amount > to_call:
                 return raise_amount
@@ -1216,6 +1251,7 @@ def get_action(req, requests):
         and opponent_model["confidence"] >= 0.25
         and opponent_model["fold_to_raise"] > draw_bet_threshold
     )
+    sizing_delta = sizing_exploit_adjustment(opponent_model, round_idx)
     if win_rate >= medium or semi_bluff or blocker_bluff or small_probe or check_probe or made_strength >= 0.62 or (value_profile and value_profile["tier"] in ("strong", "nut")):
         raise_amount = choose_raise(
             state["min_raise_action"],
@@ -1239,6 +1275,7 @@ def get_action(req, requests):
             induce_mode=induce_nut_value or value_plan.get("induce", False),
             nutted_risk_score=nutted_risk["risk"],
             match_sizing_delta=match_profile["sizing_delta"],
+            sizing_exploit_delta=sizing_delta,
         )
         if raise_amount is not None:
             return raise_amount
