@@ -44,10 +44,12 @@ async def run_precommit_eval(args):
         return _json_tool_result({"error": "Missing version/source_v and no active pipeline checkpoint"})
     v = int(v)
     source_v = int(source_v)
-    # Cap n_games: precommit eval is a quick regression check.
-    # LLM may request very large values (e.g. 50-100) — cap at 15 for statistical reliability
-    # while keeping within the per-opponent timeout budget.
-    n_games = min(max(1, int(args.get("n_games", 1) or 1)), 15)
+    # Cap n_games: precommit eval is a quick regression check, NOT a full evaluation.
+    # With ~5 opponents and ~90s per mirror pair (70 hands), n_games directly controls
+    # wall-clock time: n=3 → ~22min, n=5 → ~37min, n=15 → ~112min (exceeds CYCLE_TIMEOUT).
+    # Keep cap at 3 to ensure precommit eval fits within the 3600s cycle budget after
+    # crossover (~20min) + direction_audit (~2min) + quality (~2min) + review (~5min) + critic (~4min).
+    n_games = min(max(1, int(args.get("n_games", 1) or 1)), 3)
     candidate_name = f"claude_v{v}"
     parent_name = f"claude_v{source_v}"
     candidate_main = _bot_main(candidate_name)
@@ -143,10 +145,11 @@ async def run_precommit_eval(args):
                     "details": f"Only {n_played}/{n_games} mirror pairs completed.",
                 })
             if opponent == parent_name and matchup["wins"] < matchup["losses"]:
-                # Only block on parent loss if sample is statistically meaningful (≥10 games).
-                # With <10 mirror pairs, a 2-3 result is well within normal variance (~37% chance
-                # for a true 50% WR bot), causing costly false-positive worker retries.
-                if matchup["n_played"] >= 10:
+                # Only block on parent loss if sample is statistically meaningful (≥4 games).
+                # With n_games=3 (cap), each opponent plays 3 mirror pairs = 6 games total.
+                # A 1-5 result in 6 games has ~10% chance for a true 50% WR bot — borderline
+                # but actionable. <4 games is pure noise (e.g. 0-2 in 2 games).
+                if matchup["n_played"] >= 4:
                     blockers.append({
                         "reason": "lost_to_parent",
                         "opponent": opponent,
