@@ -1,4 +1,4 @@
-from constants import BIG_BLIND
+from constants import BIG_BLIND, N_PLAYERS
 from card_utils import clamp, next_player
 from state import collect_latest_requests_by_hand
 from tournament import opponent_can_lock_win
@@ -6,29 +6,6 @@ from tournament import opponent_can_lock_win
 
 def smooth_rate(successes, total, prior_mean, prior_weight):
     return (successes + prior_mean * prior_weight) / (total + prior_weight)
-
-
-def _classify_sizing_tendency(sizes_bb):
-    """Classify opponent's per-street sizing pattern."""
-    if len(sizes_bb) < 3:
-        return {"type": "unknown", "diversity": 0.0, "large_ratio": 0.0, "medium_ratio": 0.0, "small_ratio": 0.0}
-    small = sum(1 for s in sizes_bb if s < 4.0)
-    medium = sum(1 for s in sizes_bb if 4.0 <= s < 8.0)
-    large = sum(1 for s in sizes_bb if s >= 8.0)
-    n = len(sizes_bb)
-    large_r = large / n
-    medium_r = medium / n
-    small_r = small / n
-    diversity = 1.0 - max(small_r, medium_r, large_r)
-    if diversity >= 0.30 and large_r >= 0.20 and small_r >= 0.15:
-        t = "polarized"
-    elif medium_r >= 0.50:
-        t = "merged"
-    elif large_r >= 0.50:
-        t = "heavy"
-    else:
-        t = "mixed"
-    return {"type": t, "diversity": diversity, "large_ratio": large_r, "medium_ratio": medium_r, "small_ratio": small_r}
 
 
 def build_opponent_model(requests, my_id):
@@ -103,7 +80,6 @@ def build_opponent_model(requests, my_id):
                         opp_large_bet_count += 1
                     else:
                         opp_small_bet_count += 1
-                # allin: action=-2 (Holdem.ALLIN), 无法获取实际筹码量，跳过 sizing 分类
                 postflop_actions += 1
                 if action_type in ("raise", "allin"):
                     postflop_aggressive += 1
@@ -147,14 +123,6 @@ def build_opponent_model(requests, my_id):
     confidence = clamp((total_actions - 5) / 35.0, 0.0, 1.0)
     avg_raise_bb = sum(raise_sizes) / len(raise_sizes) if raise_sizes else 2.6
 
-    flop_tendency = _classify_sizing_tendency(flop_raise_bb)
-    turn_tendency = _classify_sizing_tendency(turn_raise_bb)
-    river_tendency = _classify_sizing_tendency(river_raise_bb)
-
-    river_sorted = sorted(river_raise_bb) if river_raise_bb else []
-    river_p25 = river_sorted[len(river_sorted)//4] if len(river_sorted) >= 4 else 3.0
-    river_p75 = river_sorted[3*len(river_sorted)//4] if len(river_sorted) >= 4 else 8.0
-
     return {
         "confidence": confidence,
         "vpip": smooth_rate(voluntary_preflop, preflop_opportunities, 0.58, 4.0),
@@ -173,11 +141,6 @@ def build_opponent_model(requests, my_id):
         "avg_river_raise_bb": sum(river_raise_bb)/len(river_raise_bb) if river_raise_bb else 5.5,
         "barrel_freq": smooth_rate(barrel_continue, barrel_hands, 0.45, 4.0),
         "sizing_aggr": smooth_rate(opp_large_bet_count, opp_small_bet_count + opp_large_bet_count, 0.35, 4.0),
-        "flop_sizing_tendency": flop_tendency,
-        "turn_sizing_tendency": turn_tendency,
-        "river_sizing_tendency": river_tendency,
-        "river_size_p25": river_p25,
-        "river_size_p75": river_p75,
     }
 
 
@@ -259,7 +222,7 @@ def analyze_current_spot(req, state):
                 info["preflop_spot"] = "bb_vs_raise"
         elif history and info["my_is_sb"] and history[-1]["player_id"] == opponent_id:
             if history[-1]["action_type"] in ("raise", "allin"):
-                # Detect if SB limped (call) vs raised
+                # Detect if SB limped (call) vs raised (v23 fix)
                 sb_first_action = None
                 for rec in history:
                     if rec["player_id"] == my_id and rec["round"] == 0:
