@@ -45,7 +45,7 @@ log = logging.getLogger("pok.orchestrator")
 ORCHESTRATOR_PROMPT = (Path(__file__).parent / "prompts" / "orchestrator.md").read_text()
 LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
 
-from orchestrator_context import _build_context, _make_precompact_hook  # noqa: E402
+from orchestrator_context import _build_context, _make_precompact_hook, set_cycle_start_time  # noqa: E402
 from orchestrator_session import (  # noqa: E402
     _rotate_orchestrator_logs, _is_rate_limited,
     _save_orchestrator_session, _load_orchestrator_session, _clear_orchestrator_session,
@@ -54,6 +54,7 @@ from orchestrator_session import (  # noqa: E402
 from evolution_infra import find_current_v  # noqa: E402
 async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=None, gen_ctx=None, shutdown_mgr=None):
     """Run one Orchestrator cycle (one LLM agent session). Returns total cost."""
+    set_cycle_start_time(time.time())
     context = _build_context(one_gen=one_gen, dry_run=dry_run, gen_ctx=gen_ctx)
     prompt = ORCHESTRATOR_PROMPT.replace("{context}", context)
 

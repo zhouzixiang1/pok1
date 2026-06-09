@@ -39,6 +39,16 @@ async def run_direction_audit(args):
     if source_v is None or next_v is None:
         return _json_tool_result({"error": "Missing source_v/next_v and no active checkpoint"})
 
+    # Cache guard: skip LLM call if already completed for this (next_v, source_v)
+    _existing = _matching_checkpoint(next_v, source_v)
+    if _existing and _existing.get("stage") == "direction_audited" and _existing.get("direction_audit"):
+        ui = _get_ui()
+        ui.log_history("Direction audit: using cached result (already completed)", "info")
+        return _json_tool_result({
+            "direction_audit": _existing["direction_audit"],
+            "logs": ui.get_output(),
+        })
+
     ui = _get_ui()
     result = await _run_direction_audit(source_v, ui)
 

@@ -12,6 +12,31 @@ from claude_agent_sdk.types import HookMatcher, SyncHookJSONOutput
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
+# Module-level cycle start time — set by orchestrator._run_one_cycle at cycle start,
+# read by _build_context and PreCompact hook for time-budget awareness.
+_cycle_start_time = None
+CYCLE_TIMEOUT = 3600  # Must match orchestrator.py
+
+
+def set_cycle_start_time(t):
+    """Called from orchestrator._run_one_cycle to mark the cycle start."""
+    global _cycle_start_time
+    _cycle_start_time = t
+
+
+def _get_time_budget_info():
+    """Return a string describing cycle time budget, or empty string if not in a cycle."""
+    if _cycle_start_time is None:
+        return ""
+    elapsed = int(time.time() - _cycle_start_time)
+    remaining = max(0, CYCLE_TIMEOUT - elapsed)
+    pct = int(elapsed / CYCLE_TIMEOUT * 100)
+    return (
+        f"CYCLE TIME BUDGET: {elapsed}s elapsed / {CYCLE_TIMEOUT}s total "
+        f"({remaining}s remaining, {pct}% used). "
+        f"{'⚠️ Less than 15 minutes remaining — do NOT start new retry loops.' if remaining < 900 else ''}"
+    )
+
 
 def _inject_master_plan_hint(checkpoint, lines):
     """Inject master plan task summaries into context.
@@ -254,6 +279,11 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
     else:
         lines.append("MODE: Continuous evolution. After completing one generation, immediately start the next.")
 
+    # Cycle time budget — helps Orchestrator avoid starting retry loops near timeout
+    time_budget = _get_time_budget_info()
+    if time_budget:
+        lines.append(time_budget)
+
     return "\n".join(lines)
 
 
@@ -300,5 +330,9 @@ def _make_precompact_hook():
                             )
         except Exception:
             pass
+        # Cycle time budget for compaction survival
+        time_budget = _get_time_budget_info()
+        if time_budget:
+            lines.append(time_budget)
         return SyncHookJSONOutput(reason="\n".join(lines))
     return {"PreCompact": [HookMatcher(matcher="*", hooks=[handler])]}

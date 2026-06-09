@@ -5,9 +5,9 @@ Lessons from previous iterations. Read before planning next generation.
 - Per-street profiling infrastructure — tune coefficients, don't rebuild. [POSSIBLY EXHAUSTED]
 - CBet/exploitation micro-adjustments max ~0.015 effect; betsize exploit ±0.04 too small alone. [POSSIBLY EXHAUSTED]
 - Light 4-bet and check-raise trap need structural reads (PFR + aggression), not threshold micro-adjustments.
-- v18+ already dominates passive bots (v3/v4/v7 WR 0.62–0.70). Weakest matchups are mid-tier: v12 (WR=0.321), v11 (WR=0.390), v10 (WR=0.417). Prioritize exploitative adjustments vs mid-tier non-passive bots.
+- v18+ dominates passive bots (v3/v4/v7 WR 0.62–0.70). Weakest matchups are mid-tier non-passive: v13 (WR=0.462), v12 (0.321), v11 (0.390), v10 (0.417), v14/v16/v20 (~0.48–0.50). Prioritize exploitative adjustments vs these close-range opponents.
 - Per-street big-bet tracking with smooth_rate priors is data input, not fold gate.
-- passive_exploit_thin_value bypasses thin_static_showdown_control on turn vs confirmed passive opponents (7 guards) — structural path beyond exhausted fold-margin tuning. Extends to river for all opponents.
+- passive_exploit_thin_value bypasses thin_static_showdown_control on turn vs confirmed passive opponents (7 guards) — structural path beyond exhausted fold-margin tuning.
 - _is_passive_opponent() 3-factor detection (postflop_aggr ≤ 0.30 + vpip ≥ 0.50 + barrel_freq ≤ 0.35, confidence ≥ 0.25) — well-grounded passive identifier.
 
 ## POSTFLOP_STRATEGY
@@ -15,9 +15,8 @@ Lessons from previous iterations. Read before planning next generation.
 - Overlapping fold gates with close thresholds create redundancy — use unified threshold tables or priority-ordered gates.
 - Draw call margins must be grounded in equity math vs pot odds. Use has_draw guards in tier-based fold systems.
 - Unconditional river fold (including small bets) is exploitable — opponent can min-bet with air and bot folds bottom/middle pair.
-- Board texture classification (5-tier) is a high-value structural axis — combine texture with SPR/opponent-model rather than replace.
+- Board texture classification (5-tier) is a high-value structural axis — combine texture with SPR/opponent-model rather than replace. [POSSIBLY EXHAUSTED]
 - Check-raise trap on dry flops needs safety threshold on opponent confidence before trapping.
-- Board texture-based fold decisions [POSSIBLY EXHAUSTED] — monitor whether texture-gated folding worsens specific H2H matchups.
 
 ## BLUFF_CALIBRATION
 
@@ -41,8 +40,8 @@ Lessons from previous iterations. Read before planning next generation.
 - New river/pot-odds fold gates must be validated against existing should_fold_postflop() and realized_postflop_equity checks before insertion — avoid inserting simpler gates upstream of sophisticated ones.
 
 ## RECENT_LESSONS
-- **v23**: Critic evidence: H2H weaknesses: v18's weakest matchup: vs v13 (WR=0.462, 130 games). Mid-tier matchups (v14/v16) cluster around 0.48–0.50 — tight margins where better preflop play in limp-iso spots could shift outcomes.; Experience pool refs: EXPERIENCE_POOL: 'SB limp-then-face-raise misclassified as sb_vs_reraise — keep limp-raise and raise-reraise paths distinct.' — Directly addressed by sb_vs_iso_raise., EXPERIENCE_POOL: 'CBet/exploitation micro-adjustments max ~0.015 effect; betsize exploit ±0.04 too small alone. [POSSIBLY EXHAUSTED]' — The sizing_exploit_adjustment falls exactly in this exhausted zone.; Diff refs: opponent.py: New sb_first_action detection (lines 225-234) correctly distinguishes limp-then-iso from raise-then-3bet. Verified absent in v21 and v22., strategy.py: New sb_vs_iso_raise handler (lines 544-560) with pot-odds-aware calling (0.34 threshold or pot_odds_iso - 0.03) and 0.58+ limp-reraise — much wider than old sb_vs_reraise's 0.55+ call / 0.78+ raise., strategy.py: sizing_exploit_adjustment() (lines 321-331) returns max ±0.04 at full confidence — too small to measure in mirror battles per experience pool.
-- **v23**: Opponent-model EQR adjustments (aggressive penalty, passive bonus, lower clamps) + river thin value for all opponents + pot_odds_engine river gate. Critic 7.0 approved. Key risk: lower EQR clamps (0.45→0.38, 0.65→0.55) overlap with exhausted fold-margin tuning; pot_odds river gate inserted BEFORE should_fold_postflop() — may bypass existing guards. H2H samples still small (~340 games total). Branch from v18 (not texture-gated v22 which regressed to WR 0.563).
-- **v22**: Fold-path restructuring without H2H evidence of over-folding is risky — v18's fold gates were deliberate. Board texture classification (5-tier) added but regressed vs v18. Monitor H2H vs v16 for texture-gated folding impact.
+- **v23**: SB limp-iso-raise was misclassified as sb_vs_reraise for multiple gens — when evolving preflop handlers, explicitly audit whether spot labels match actual action sequences. Fixed with new sb_vs_iso_raise handler (pot-odds-aware 0.34 call threshold, 0.58+ limp-reraise).
+- **v23**: sizing_exploit_adjustment() returns max ±0.04 — in the exhausted micro-adjustment zone. Either abandon this axis or increase delta to ≥0.08; focus on v18's weakest matchups (v13 46.2%, v14 50.0%, v20 48.8%) where river/turn barrel frequency matters more than sizing tweaks.
+- **v23**: Opponent-model EQR adjustments (aggressive penalty, passive bonus, lower clamps 0.45→0.38, 0.65→0.55) + river thin value for all opponents + pot_odds_engine river gate. Critic 7.0. Key risk: lower EQR clamps overlap with exhausted fold-margin tuning; pot_odds river gate inserted BEFORE should_fold_postflop() may bypass guards. H2H samples still small (~340 games). Branch from v18 (not texture-gated v22 which regressed to WR 0.563).
+- **v22**: Board texture classification added but regressed vs v18 (WR 0.563). Fold-path restructuring without H2H evidence of over-folding is risky — v18's fold gates were deliberate.
 - **v21**: Gap Broadway limp (J4s+/Q3s+/K2s+/T5s+) and wider pressure clamp (-0.12, 0.15) — watch H2H vs v16.
-

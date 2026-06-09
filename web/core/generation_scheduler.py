@@ -240,6 +240,20 @@ def _decide_strategy(combined, current_v, ratings):
     if combined is None:
         return "master", current_v, ()
 
+    # Source-v loop detection: if recent generations all branched from the same
+    # ancestor (typically because LLM analysis anchors on a "stable" intermediate),
+    # force branching from the Glicko-rated leader instead.
+    _source_loop = _detect_source_loop(n=3)
+    if _source_loop:
+        leader_v = _get_glicko_leader_v(ratings)
+        if leader_v is not None and leader_v != _source_loop:
+            log.warning(
+                "Source-v loop detected (last 3+ gens from v%d). "
+                "Forcing source_v=%d (Glicko leader) to break the loop.",
+                _source_loop, leader_v,
+            )
+            return "master", leader_v, ()
+
     # Priority 1: Stagnation with high/medium confidence → crossover
     # This is the PRIMARY escape hatch from local optima — must fire before
     # recommended_source so stagnation always triggers diversity injection.
@@ -293,6 +307,49 @@ def _parse_branch_from(branch_str: str) -> int | None:
         pass
     try:
         return int(branch_str.lstrip("v"))
+    except (ValueError, IndexError):
+        return None
+
+
+def _detect_source_loop(n=3):
+    """Check if the last n generations all used the same source_v.
+
+    Reads system_events.jsonl for pipeline.prepare events to extract source_v history.
+    Returns the repeated source_v if a loop is detected, None otherwise.
+    """
+    try:
+        import json as _json
+        from evolution_infra import RESULTS_DIR
+        events_file = RESULTS_DIR / "system_events.jsonl"
+        if not events_file.exists():
+            return None
+        sources = []
+        with open(events_file, "r") as f:
+            for line in f:
+                try:
+                    evt = _json.loads(line)
+                    if evt.get("type") == "pipeline.prepare":
+                        sv = evt.get("data", {}).get("source_v")
+                        if sv is not None:
+                            sources.append(sv)
+                except (ValueError, KeyError):
+                    continue
+        # Check last n entries
+        recent = sources[-(n + 1):] if len(sources) >= n + 1 else sources[-n:] if len(sources) >= n else []
+        if len(recent) >= n and len(set(recent)) == 1:
+            return recent[0]
+    except Exception:
+        pass
+    return None
+
+
+def _get_glicko_leader_v(ratings):
+    """Return the version number of the highest-rated active bot."""
+    if not ratings:
+        return None
+    best_bot = max(ratings, key=lambda b: ratings[b].get("r", 0))
+    try:
+        return int(best_bot.split("_v")[1])
     except (ValueError, IndexError):
         return None
 

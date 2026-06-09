@@ -110,8 +110,17 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             else:
                 _last_reason = f"unexpected error: {type(exc).__name__}: {str(exc)[:200]}"
                 ui.log_history(f"Worker {w_id} ({role}) error: {exc}", "error")
-            # Note: do NOT reset next_dir here during parallel execution — other workers
-            # may still be editing files. The serial fallback path handles full reset.
+            # Roll back target files from source to avoid partial-edit contamination.
+            # Workers run sequentially, so this is safe.
+            if source_v is not None:
+                src_dir = get_bot_dir(source_v)
+                for target in task.get("target_files", []):
+                    rel = _target_rel(target, next_v)
+                    if rel:
+                        src_file = src_dir / rel
+                        dst_file = next_dir / rel
+                        if src_file.exists():
+                            dst_file.write_text(src_file.read_text())
             base_worker_prompt += (
                 "\n\nPREVIOUS ATTEMPT TIMED OUT. Start fresh with a minimal, focused implementation. "
                 "Implement only the single most impactful change — do NOT try to do everything at once."

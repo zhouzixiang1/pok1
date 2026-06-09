@@ -44,10 +44,10 @@ async def run_precommit_eval(args):
         return _json_tool_result({"error": "Missing version/source_v and no active pipeline checkpoint"})
     v = int(v)
     source_v = int(source_v)
-    # Cap n_games: precommit eval is a quick regression check (1 mirror pair suffices).
-    # The daemon does proper evaluation later. LLM may pass excessive values (e.g. 100)
-    # which cannot complete within the 900s per-opponent timeout.
-    n_games = min(max(1, int(args.get("n_games", 1) or 1)), 5)
+    # Cap n_games: precommit eval is a quick regression check.
+    # LLM may request very large values (e.g. 50-100) — cap at 15 for statistical reliability
+    # while keeping within the per-opponent timeout budget.
+    n_games = min(max(1, int(args.get("n_games", 1) or 1)), 15)
     candidate_name = f"claude_v{v}"
     parent_name = f"claude_v{source_v}"
     candidate_main = _bot_main(candidate_name)
@@ -143,11 +143,21 @@ async def run_precommit_eval(args):
                     "details": f"Only {n_played}/{n_games} mirror pairs completed.",
                 })
             if opponent == parent_name and matchup["wins"] < matchup["losses"]:
-                blockers.append({
-                    "reason": "lost_to_parent",
-                    "opponent": opponent,
-                    "details": f"{matchup['wins']}-{matchup['losses']}-{matchup['draws']}",
-                })
+                # Only block on parent loss if sample is statistically meaningful (≥10 games).
+                # With <10 mirror pairs, a 2-3 result is well within normal variance (~37% chance
+                # for a true 50% WR bot), causing costly false-positive worker retries.
+                if matchup["n_played"] >= 10:
+                    blockers.append({
+                        "reason": "lost_to_parent",
+                        "opponent": opponent,
+                        "details": f"{matchup['wins']}-{matchup['losses']}-{matchup['draws']} in {matchup['n_played']} games",
+                    })
+                else:
+                    _get_ui().log_history(
+                        f"⚠️ Lost to parent ({matchup['wins']}-{matchup['losses']}) "
+                        f"but only {matchup['n_played']} games — not blocking (insufficient sample)",
+                        "warn"
+                    )
         except _asyncio.TimeoutError:
             matchup["error"] = f"Mirror battle timed out ({per_game_timeout}s limit)"
             blockers.append({

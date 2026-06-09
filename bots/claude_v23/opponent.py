@@ -74,12 +74,13 @@ def build_opponent_model(requests, my_id):
                     preflop_raise += 1
 
             if round_idx > 0:
-                if action_type in ('raise', 'allin'):
+                if action_type == 'raise':
                     sizing_bb = action / BIG_BLIND
                     if sizing_bb >= 8.0:
                         opp_large_bet_count += 1
                     else:
                         opp_small_bet_count += 1
+                # allin: action=-2 (Holdem.ALLIN), 无法获取实际筹码量，跳过 sizing 分类
                 postflop_actions += 1
                 if action_type in ("raise", "allin"):
                     postflop_aggressive += 1
