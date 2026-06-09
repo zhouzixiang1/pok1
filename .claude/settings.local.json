@@ -21,7 +21,8 @@
       "Bash(awk '{print $2}')",
       "Bash(xargs kill)",
       "Bash(kill 83224 *)",
-      "Bash(kill *)"
+      "Bash(kill *)",
+      "Bash(./pokctl.sh status *)"
     ]
   }
 }
