@@ -28,6 +28,12 @@ web/server/static/
 # Bot graveyard
 bots/graveyard/
 
+# Bot sentinel files (local-only, daemon uses to track active bots)
+*.completed
+
+# Claude Code worktrees
+.claude/worktrees/
+
 # OS
 .DS_Store
 Thumbs.db
