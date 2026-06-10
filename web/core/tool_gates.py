@@ -101,7 +101,59 @@ async def run_quality_gates(args):
             import logging as _logging
             _logging.getLogger(__name__).warning("Dynamic test generation error: %s", e)
 
-    decision_detail = run_decision_test_details(bot_dir, extra_scenarios=dynamic_scenarios or None)
+    # --- B3: Heuristic Dynamic Regression Tests from Diff ---
+    heuristic_scenarios = []
+    if source_v is not None and changed_files_list:
+        try:
+            import difflib as _difflib
+            from decision_tester import generate_scenarios_from_diff, save_dynamic_scenarios, load_dynamic_scenarios
+            from decision_tester import DYNAMIC_SCENARIOS_FILE
+            _src_dir = get_bot_dir(source_v)
+            _dst_dir = get_bot_dir(v)
+
+            # Build diff text from changed files
+            _diff_parts = []
+            for _rel in changed_files_list:
+                _src_file = _src_dir / _rel
+                _dst_file = _dst_dir / _rel
+                _before = _src_file.read_text() if _src_file.exists() else ""
+                _after = _dst_file.read_text() if _dst_file.exists() else ""
+                if _before != _after:
+                    _diff = _difflib.unified_diff(
+                        _before.splitlines(keepends=True),
+                        _after.splitlines(keepends=True),
+                        fromfile=f"v{source_v}/{_rel}", tofile=f"v{v}/{_rel}",
+                        n=2,
+                    )
+                    _diff_text = "".join(_diff)
+                    if _diff_text:
+                        _diff_parts.append(_diff_text)
+
+            if _diff_parts:
+                _full_diff = "\n".join(_diff_parts)[-8000:]
+                heuristic_scenarios = generate_scenarios_from_diff(
+                    _full_diff, str(_src_dir), str(_dst_dir)
+                )
+                if heuristic_scenarios:
+                    # Persist to file for future runs
+                    _existing = load_dynamic_scenarios()
+                    _existing_ids = {s.get("id") for s in _existing}
+                    _new_to_save = [s for s in heuristic_scenarios
+                                    if s.get("id") not in _existing_ids]
+                    save_dynamic_scenarios(_existing + _new_to_save)
+                    import logging as _logging2
+                    _logging2.getLogger(__name__).info(
+                        "B3: Generated %d heuristic scenarios from diff for v%d",
+                        len(heuristic_scenarios), v
+                    )
+        except Exception as e:
+            import logging as _logging
+            _logging.getLogger(__name__).warning("B3 heuristic scenario generation error: %s", e)
+
+    # Combine both dynamic sources
+    _all_dynamic = (dynamic_scenarios or []) + heuristic_scenarios
+
+    decision_detail = run_decision_test_details(bot_dir, extra_scenarios=_all_dynamic or None)
     decision_rate = decision_detail.get("pass_rate", 0.0)
     critical_failures = decision_detail.get("critical_failures", [])
     critical_ok = len(critical_failures) == 0
