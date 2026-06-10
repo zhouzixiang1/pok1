@@ -6,6 +6,7 @@ PIPE-002 (_git timeout), and PIPE-003 (checkpoint lock).
 """
 
 import json
+import re
 import subprocess
 import sys
 import os
@@ -13,9 +14,24 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-# Bot paths
-BOT_V25 = Path(__file__).resolve().parent.parent.parent / "bots" / "claude_v25"
-BOT6 = Path(__file__).resolve().parent.parent.parent / "bots" / "bot6"
+# Bot paths — dynamically find latest claude_v* bot
+_BOT_ROOT = Path(__file__).resolve().parent.parent.parent / "bots"
+
+
+def _find_latest_bot_dir():
+    bot_dirs = []
+    for p in _BOT_ROOT.glob("claude_v*"):
+        m = re.search(r'v(\d+)$', p.name)
+        if m:
+            bot_dirs.append((int(m.group(1)), p))
+    if not bot_dirs:
+        pytest.skip("No claude_v* bot directories found")
+    bot_dirs.sort()
+    return bot_dirs[-1][1]
+
+
+BOT_LATEST = _find_latest_bot_dir()
+BOT6 = _BOT_ROOT / "bot6"
 ENGINE_DIR = Path(__file__).resolve().parent.parent.parent / "engine"
 
 
@@ -38,7 +54,7 @@ class TestWheelStraight:
 
     def test_v25_wheel_straight_is_straight(self):
         """A-2-3-4-5 must be evaluated as a straight (class 4)."""
-        evaluate_5 = self._import_evaluate_5(BOT_V25)
+        evaluate_5 = self._import_evaluate_5(BOT_LATEST)
         # Cards: A♥(0*4+0=0), 2♦(0*4+1=1), 3♠(1*4+2=6), 4♣(2*4+3=11), 5♥(3*4+0=12)
         # Using direct card integers: number = card//4+2
         # A=12(rank 14), 2=0(rank 2), 3=4(rank 3), 4=8(rank 4), 5=12(rank 5)
@@ -55,7 +71,7 @@ class TestWheelStraight:
 
     def test_v25_wheel_straight_flush(self):
         """A-2-3-4-5 suited must be a straight flush (class 8)."""
-        evaluate_5 = self._import_evaluate_5(BOT_V25)
+        evaluate_5 = self._import_evaluate_5(BOT_LATEST)
         # All hearts (suit=0): A=48, 2=0, 3=4, 4=8, 5=12
         cards = [48, 0, 4, 8, 12]  # A♥, 2♥, 3♥, 4♥, 5♥
         result = evaluate_5(cards)
@@ -64,7 +80,7 @@ class TestWheelStraight:
 
     def test_v25_normal_straight_still_works(self):
         """Regular straight 10-J-Q-K-A still works correctly."""
-        evaluate_5 = self._import_evaluate_5(BOT_V25)
+        evaluate_5 = self._import_evaluate_5(BOT_LATEST)
         # rank 10: (10-2)*4 = 32, rank 11: 36, rank 12: 40, rank 13: 44, rank 14: 48
         cards = [32, 37, 42, 47, 48]  # 10♥, J♦, Q♠, K♣, A♥
         result = evaluate_5(cards)
@@ -81,7 +97,7 @@ class TestWheelStraight:
 
     def test_v25_non_straight_not_false_positive(self):
         """A-2-3-4-6 is NOT a straight (should be high card or other)."""
-        evaluate_5 = self._import_evaluate_5(BOT_V25)
+        evaluate_5 = self._import_evaluate_5(BOT_LATEST)
         # rank 2,3,4,5,6: cards with consecutive ranks but missing A
         # rank 2=0, 3=4, 4=8, 5=12, 6=16
         cards = [0, 4, 8, 12, 16]  # 2♥, 3♥, 4♥, 5♥, 6♥
@@ -91,11 +107,11 @@ class TestWheelStraight:
 
     def test_v25_evaluate_7_includes_wheel(self):
         """evaluate_7 should find wheel straight from 7 cards."""
-        sys.path.insert(0, str(BOT_V25))
+        sys.path.insert(0, str(BOT_LATEST))
         try:
             from card_utils import evaluate_7
         finally:
-            sys.path.remove(str(BOT_V25))
+            sys.path.remove(str(BOT_LATEST))
         # 7 cards: A♥, 2♦, 3♠, 4♣, 5♥, 9♦, K♠
         cards = [48, 1, 6, 11, 12, 33, 46]
         result = evaluate_7(cards)
@@ -178,7 +194,7 @@ class TestSanitizeAction:
 
     def test_call_when_short_stacked_returns_zero(self):
         """When to_call >= my_chips and action=0, should return 0 (not -1 fold)."""
-        sanitize = self._import_sanitize(BOT_V25)
+        sanitize = self._import_sanitize(BOT_LATEST)
         state = {
             "opponent_allin": False,
             "to_call": 5000,
@@ -190,7 +206,7 @@ class TestSanitizeAction:
 
     def test_call_normal_returns_zero(self):
         """Normal call with enough chips returns 0."""
-        sanitize = self._import_sanitize(BOT_V25)
+        sanitize = self._import_sanitize(BOT_LATEST)
         state = {
             "opponent_allin": False,
             "to_call": 200,
@@ -202,7 +218,7 @@ class TestSanitizeAction:
 
     def test_allin_when_short_stacked(self):
         """When short-stacked and action=-2, should return -2."""
-        sanitize = self._import_sanitize(BOT_V25)
+        sanitize = self._import_sanitize(BOT_LATEST)
         state = {
             "opponent_allin": False,
             "to_call": 5000,
@@ -214,7 +230,7 @@ class TestSanitizeAction:
 
     def test_fold_stays_fold(self):
         """Fold action stays fold."""
-        sanitize = self._import_sanitize(BOT_V25)
+        sanitize = self._import_sanitize(BOT_LATEST)
         state = {
             "opponent_allin": False,
             "to_call": 200,
@@ -233,11 +249,11 @@ class TestTotalHands:
     """Verify TOTAL_HANDS is 70 for both v25 and bot6."""
 
     def test_v25_total_hands(self):
-        sys.path.insert(0, str(BOT_V25))
+        sys.path.insert(0, str(BOT_LATEST))
         try:
             from constants import TOTAL_HANDS
         finally:
-            sys.path.remove(str(BOT_V25))
+            sys.path.remove(str(BOT_LATEST))
         assert TOTAL_HANDS == 70, f"v25 TOTAL_HANDS should be 70, got {TOTAL_HANDS}"
 
     def test_bot6_total_hands(self):
@@ -444,7 +460,7 @@ class TestDeadCodeRemoved:
 
     def test_straight_draw_value_removed(self):
         """straight_draw_value() should no longer exist in v25 postflop.py."""
-        postflop_path = BOT_V25 / "postflop.py"
+        postflop_path = BOT_LATEST / "postflop.py"
         content = postflop_path.read_text()
         assert "def straight_draw_value(" not in content, (
             "straight_draw_value() should have been deleted from v25/postflop.py"
@@ -452,7 +468,7 @@ class TestDeadCodeRemoved:
 
     def test_per_street_diverges_removed(self):
         """_per_street_diverges() should no longer exist in v25 strategy.py."""
-        strategy_path = BOT_V25 / "strategy.py"
+        strategy_path = BOT_LATEST / "strategy.py"
         content = strategy_path.read_text()
         assert "def _per_street_diverges(" not in content, (
             "_per_street_diverges() should have been deleted from v25/strategy.py"
@@ -460,7 +476,7 @@ class TestDeadCodeRemoved:
 
     def test_draw_potential_not_imported(self):
         """draw_potential should not be imported in v25 strategy.py."""
-        strategy_path = BOT_V25 / "strategy.py"
+        strategy_path = BOT_LATEST / "strategy.py"
         content = strategy_path.read_text()
         assert "draw_potential" not in content, (
             "draw_potential should not be imported in v25/strategy.py"
@@ -468,7 +484,7 @@ class TestDeadCodeRemoved:
 
     def test_opponent_no_unused_n_players(self):
         """N_PLAYERS should not be imported in v25 opponent.py."""
-        opponent_path = BOT_V25 / "opponent.py"
+        opponent_path = BOT_LATEST / "opponent.py"
         content = opponent_path.read_text()
         assert "N_PLAYERS" not in content, (
             "N_PLAYERS should not be imported in v25/opponent.py"

@@ -836,9 +836,41 @@ class TestWorkerFailureCircuitBreaker:
         """Old checkpoint with worker_invocation_count (no worker_failure_count) should be read."""
         import asyncio
         import tool_planning
+        from unittest.mock import AsyncMock, patch
 
         # Write old-format checkpoint: only worker_invocation_count, no worker_failure_count
         self._setup_checkpoint(tmp_path, monkeypatch, invocation_count=5)
+        _handler = tool_planning.execute_workers.handler
+
+        mock_exec = None
+
+        async def _run():
+            nonlocal mock_exec
+            with patch.object(tool_planning, '_execute_workers', new_callable=AsyncMock) as mock_exec_inner, \
+                 patch.object(tool_planning, '_validate_worker_boundaries', return_value=[]), \
+                 patch.object(tool_planning, '_py_files_changed_between', return_value=['strategy.py']):
+                mock_exec = mock_exec_inner
+                mock_exec.return_value = (True, {}, [])
+                return await _handler({"tasks": [
+                    {"worker_id": 1, "role": "arch", "target_files": ["a.py"], "worker_prompt": "x"},
+                    {"worker_id": 2, "role": "tuner", "target_files": ["b.py"], "worker_prompt": "y"},
+                ], "next_v": 11, "source_v": 10})
+
+        result = asyncio.run(_run())
+
+        # New behavior (PIPE-001): failure_count = 5, threshold = 6 → NOT tripped
+        # Workers should execute (mock verified by success result)
+        result_text = result["content"][0]["text"]
+        result_data = json.loads(result_text)
+        assert "error" not in result_data, f"Expected no error, got: {result_data}"
+        mock_exec.assert_called_once()
+
+    def test_backward_compat_old_invocation_count_trips_at_threshold(self, tmp_path, monkeypatch):
+        """Old checkpoint with worker_invocation_count >= 6 should trip circuit breaker."""
+        import asyncio
+        import tool_planning
+
+        self._setup_checkpoint(tmp_path, monkeypatch, invocation_count=7)
         _handler = tool_planning.execute_workers.handler
 
         async def _run():
@@ -849,8 +881,8 @@ class TestWorkerFailureCircuitBreaker:
 
         result = asyncio.run(_run())
 
-        # 5 (old count) + 2 (tasks) = 7 > 6 → circuit breaker should trip
+        # 7 >= 6 → circuit breaker should trip
         result_text = result["content"][0]["text"]
         result_data = json.loads(result_text)
         assert "CIRCUIT BREAKER" in result_data["error"]
-        assert result_data["failure_count"] == 5
+        assert result_data["failure_count"] == 7
