@@ -44,6 +44,7 @@ from glicko2 import Glicko2Player, update_single_game, decay_rd
 from engine.battle import mirror_battle
 from evolution_infra import locked_file, pair_key
 from bot_action_stats import compute_bot_action_stats
+from eval_rounds import EvalRoundManager
 import logging
 
 log = logging.getLogger("pok.daemon")
@@ -546,6 +547,9 @@ def main():
     for a, b in matches:
         match_queue.append((a, b, bot_path(a), bot_path(b), n_pairs))
 
+    # Eval round manager for deterministic evaluation cycles
+    eval_round_mgr = EvalRoundManager()
+
     import multiprocessing as _mp
     mp_ctx = _mp.get_context("spawn")
     executor = ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_ctx)
@@ -658,6 +662,25 @@ def main():
                         played_bots_this_cycle.add(a)
                         played_bots_this_cycle.add(b)
 
+                        # Eval round tracking
+                        try:
+                            if eval_round_mgr.is_active:
+                                eval_round_mgr.record_result(
+                                    result[0], result[1],
+                                    result[2], result[3], result[4],
+                                )
+                            else:
+                                trigger = eval_round_mgr.count_game(n)
+                                if trigger and len(active_bots) >= 2:
+                                    eval_pairs = eval_round_mgr.start_round(active_bots)
+                                    for ea, eb in eval_pairs:
+                                        match_queue.append((ea, eb, bot_path(ea), bot_path(eb), n_pairs))
+                                    if args.verbose:
+                                        log.info("Eval round triggered: %d pairs queued", len(eval_pairs))
+                        except Exception as er_err:
+                            if args.verbose:
+                                log.warning("Eval round tracking error (non-fatal): %s", er_err)
+
                         # Replenish: submit next match
                         if match_queue and executor is not None:
                             m = match_queue.popleft()
@@ -704,6 +727,14 @@ def main():
                                 last_save_time = now
                     except Exception as e:
                         log.warning("Save error (non-fatal): %s", e)
+
+                    # Eval round finalization check
+                    try:
+                        if eval_round_mgr.is_active and eval_round_mgr.is_round_complete():
+                            eval_round_mgr.finish_round(h2h_data=h2h)
+                    except Exception as er_err:
+                        if args.verbose:
+                            log.warning("Eval round finalization error (non-fatal): %s", er_err)
 
                     # Parent alive check — exit if orphaned
                     now = time.time()
@@ -879,6 +910,12 @@ def main():
         try:
             if executor is not None:
                 executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+
+        # Cancel any in-progress eval round
+        try:
+            eval_round_mgr.cancel_round()
         except Exception:
             pass
 

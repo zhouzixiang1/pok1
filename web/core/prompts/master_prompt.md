@@ -123,6 +123,9 @@ return None
 
 ## Bot Action Statistics
 {bot_action_stats}
+
+## Eval Round Summary
+{eval_round_summary}
 </injected_context>
 
 <diversity_rule>

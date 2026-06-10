@@ -119,6 +119,17 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
             lines.append(f"\nReplay spotlight:\n{gen_ctx.replay_spotlight}")
         if gen_ctx.performance_verification:
             lines.append(f"\nPerformance verification:\n{gen_ctx.performance_verification}")
+
+        # Eval round summary (deterministic cross-generation performance data)
+        try:
+            from eval_rounds import EvalRoundManager
+            _erm = EvalRoundManager()
+            bot_name = f"claude_v{gen_ctx.source_v}"
+            eval_summary = _erm.get_last_round_summary(bot_name)
+            if eval_summary:
+                lines.append(f"\n{eval_summary}")
+        except Exception:
+            pass
         if one_gen:
             lines.append("MODE: Run exactly ONE generation, then stop.")
         else:

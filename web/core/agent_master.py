@@ -39,6 +39,21 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         "performance_verification": perf_trimmed,
         "source_v": str(source_v),
     })
+    # Inject eval round summary if available
+    try:
+        from eval_rounds import EvalRoundManager
+        _erm = EvalRoundManager()
+        _eval_summary = _erm.get_last_round_summary(f"claude_v{source_v}")
+        if _eval_summary:
+            master_prompt = master_prompt.replace(
+                "{eval_round_summary}", _eval_summary
+            )
+    except Exception:
+        pass
+    # Clean up any remaining unsubstituted eval_round_summary placeholder
+    master_prompt = master_prompt.replace(
+        "{eval_round_summary}", "No eval round data available yet."
+    )
     master_ctx = (
         f"Current evolution: v{source_v} → v{next_v}\n"
         f"Bot directory: bots/claude_v{source_v}/\n"

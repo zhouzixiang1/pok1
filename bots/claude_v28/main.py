@@ -32,13 +32,59 @@ def sanitize_action(action, state, my_chips):
     return action
 
 
+def _decode_json_like(value):
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return value
+    return value
+
+
+def _flatten_requests(value):
+    value = _decode_json_like(value)
+    if isinstance(value, dict):
+        if "requests" in value:
+            return _flatten_requests(value["requests"])
+        if "request" in value:
+            return _flatten_requests(value["request"])
+        return [value]
+    if isinstance(value, (list, tuple)):
+        flattened = []
+        for item in value:
+            flattened.extend(_flatten_requests(item))
+        return flattened
+    return []
+
+
+def _normalize_request_dict(req):
+    req = dict(req)
+    for key in ("history", "public_cards", "my_cards"):
+        value = _decode_json_like(req.get(key, []))
+        if not isinstance(value, list):
+            value = [value] if value else []
+        req[key] = value
+    return req
+
+
+def _normalize_payload(payload):
+    payload = _decode_json_like(payload)
+    if not isinstance(payload, dict):
+        return []
+    raw_requests = payload.get("requests", payload.get("request", payload))
+    requests = [_normalize_request_dict(req) for req in _flatten_requests(raw_requests) if isinstance(req, dict)]
+    if not requests:
+        requests = [_normalize_request_dict(payload)]
+    return requests
+
+
 def main():
     for line in sys.stdin:
         line = line.strip()
         if not line:
             break
         payload = json.loads(line)
-        requests = payload["requests"]
+        requests = _normalize_payload(payload)
         req = dict(requests[-1])
         if "remaining_hands" not in req:
             req["remaining_hands"] = infer_remaining_hands_from_requests(requests)

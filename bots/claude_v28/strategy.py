@@ -72,16 +72,6 @@ from overbet import should_overbet, overbet_sizing
 from donk_probe import should_donk_bet, should_probe_bet, donk_probe_sizing
 
 
-# ── v18 per-street signal helpers ──────────────────────────────────────────────
-
-def _per_street_diverges(opponent_model, per_street_key, per_street_prior, aggregate_key, aggregate_prior):
-    per_street_val = opponent_model.get(per_street_key, per_street_prior)
-    aggregate_val = opponent_model.get(aggregate_key, aggregate_prior)
-    ps_above = per_street_val > per_street_prior
-    ag_above = aggregate_val > aggregate_prior
-    return ps_above != ag_above
-
-
 def _aligned_signal_boost(opponent_model, per_street_key, per_street_prior, aggregate_key, aggregate_prior):
     per_street_val = opponent_model.get(per_street_key, per_street_prior)
     aggregate_val = opponent_model.get(aggregate_key, aggregate_prior)
@@ -93,8 +83,6 @@ def _aligned_signal_boost(opponent_model, per_street_key, per_street_prior, aggr
     ag_dev = abs(aggregate_val - aggregate_prior) / aggregate_prior
     return (ps_dev * ag_dev) ** 0.5
 
-
-# ── v18 per-street adjustments + v13 tighter clamp ────────────────────────────
 
 def opponent_pressure_adjustment(opponent_model, spot_info, round_idx):
     confidence = opponent_model["confidence"]
@@ -629,10 +617,6 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
     return None
 
 
-# ── v13 simpler should_fold_postflop (no v18 extra fold gates) ─────────────────
-# Removed: SPR commitment fold, opponent-model-aware fold, river multi-barrel fold
-# These over-folded vs passive bots — v13's simpler version beats them +5-9%
-
 def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile, spot_info, texture_class="none"):
     if round_idx <= 0:
         return False
@@ -672,7 +656,6 @@ def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile,
 
 
 def _is_passive_opponent(opponent_model, confidence_gate=PASSIVE_CONFIDENCE_GATE):
-    """Detect confirmed passive opponent for exploitative adjustments."""
     if opponent_model["confidence"] < confidence_gate:
         return False
     post_aggr = opponent_model.get("postflop_aggr", PRIOR_POSTFLOP_AGGR)
@@ -682,15 +665,6 @@ def _is_passive_opponent(opponent_model, confidence_gate=PASSIVE_CONFIDENCE_GATE
 
 
 def _is_fourbet_light_candidate(my_cards):
-    """Check if the hand is a good candidate for a light 4-bet.
-
-    Suitable hands have strong postflop playability and blocker value,
-    but are not strong enough for a value 4-bet:
-    - Small pairs 22-44: set-mine potential, easy to play postflop
-    - Suited connectors 45s-JTs: excellent postflop playability
-    - Suited one-gappers 46s-9Js: good connectivity and flush potential
-    - Suited A2s-A5s: ace blocker + wheel straight draw potential
-    """
     profile = preflop_hand_profile(my_cards)
     high = profile["high"]
     low = profile["low"]
@@ -711,15 +685,6 @@ def _is_fourbet_light_candidate(my_cards):
 
 
 def _should_4bet_light(my_cards, preflop_strength, opponent_model, state, my_chips):
-    """Determine whether to make a light 4-bet and return the sizing.
-
-    Returns a raise-to total (int) if a light 4-bet is appropriate, or 0 otherwise.
-
-    A light 4-bet exploits opponents who 3-bet too wide by re-raising with
-    hands that have good postflop playability but aren't strong enough to
-    4-bet for value. The sizing is ~2.5x the opponent's 3-bet, capped at
-    25% of effective stack to maintain fold equity without over-committing.
-    """
     if state.get("opponent_allin", False):
         return 0
 
@@ -761,13 +726,6 @@ def _should_4bet_light(my_cards, preflop_strength, opponent_model, state, my_chi
 
 
 def _should_checkraise_trap(value_profile, round_idx, board_texture, opponent_model, my_cards, public_cards):
-    """Determine if we should check (trap) with a strong hand on a dry flop
-    instead of betting immediately, to induce action from aggressive opponents.
-
-    Returns True to activate the trap line: check flop -> call opponent bet -> raise turn.
-    Only fires on the flop (round 1) with strong/nut hands on dry boards against
-    aggressive opponents. Uses hand-based seed for ~25% activation frequency.
-    """
     if round_idx != 1:
         return False
 
@@ -804,15 +762,6 @@ def _should_checkraise_trap(value_profile, round_idx, board_texture, opponent_mo
 
 
 def pot_odds_call_threshold(pot_odds, has_position, round_idx, draw_info, spr):
-    """Compute minimum equity needed to call based on pot odds with adjustments.
-
-    Base: equity must exceed pot_odds to be profitable.
-    Adjustments:
-    - Position: IP needs ~2% less equity (better realization)
-    - Draw implied odds: strong draws need less equity
-    - SPR commitment: low SPR means already committed
-    - Street: less future action = less implied odds
-    """
     threshold = pot_odds
 
     # Position adjustment
@@ -1586,7 +1535,6 @@ def get_action(req, requests):
 
 
 def thin_static_showdown_control_check(round_idx, value_profile, board_texture, draw_strength, anti_lock_pressure):
-    """Extracted check for reuse in passive-exploit bypass path."""
     return (
         round_idx >= 2
         and value_profile is not None
