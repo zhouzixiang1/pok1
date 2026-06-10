@@ -24,6 +24,7 @@ from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 # Battle Scheduler integration (optional)
 try:
     from battle_scheduler import (
+        BattleResult,
         drain_pending_jobs,
         requeue_unclaimed_on_startup,
         write_result,
@@ -578,10 +579,20 @@ def main():
                             if _first_iteration:
                                 recovered = requeue_unclaimed_on_startup()
                                 for job in recovered:
-                                    match_queue.appendleft(job)
+                                    match_queue.appendleft((
+                                        "external", job["job_id"],
+                                        job["bot_a_name"], job["bot_b_name"],
+                                        job["bot_a_path"], job["bot_b_path"],
+                                        job["n_pairs"],
+                                    ))
                             pending = drain_pending_jobs()
                             for job in pending:
-                                match_queue.appendleft(job)
+                                match_queue.appendleft((
+                                    "external", job["job_id"],
+                                    job["bot_a_name"], job["bot_b_name"],
+                                    job["bot_a_path"], job["bot_b_path"],
+                                    job["n_pairs"],
+                                ))
                             _first_iteration = False
 
                     done, _ = wait(in_flight.keys(), timeout=POLL_TIMEOUT, return_when=FIRST_COMPLETED)
@@ -595,24 +606,29 @@ def main():
                             try:
                                 result = fut.result()
                                 if _SCHEDULER_AVAILABLE:
-                                    write_result(
-                                        ext_job_id,
-                                        {
-                                            "bot_a": a,
-                                            "bot_b": b,
-                                            "result": result,
-                                        },
-                                    )
+                                    try:
+                                        write_result(BattleResult(
+                                            job_id=ext_job_id,
+                                            wins_a=result[2], wins_b=result[3],
+                                            draws=result[4], total=result[5],
+                                            error=result[6] if len(result) > 6 and result[6] else None,
+                                            completed_at=time.time(),
+                                            source="scheduler",
+                                        ))
+                                    except Exception as wr_err:
+                                        log.warning("write_result failed for %s: %s", ext_job_id, wr_err)
                             except Exception as e:
                                 if _SCHEDULER_AVAILABLE:
-                                    write_result(
-                                        ext_job_id,
-                                        {
-                                            "bot_a": a,
-                                            "bot_b": b,
-                                            "error": str(e),
-                                        },
-                                    )
+                                    try:
+                                        write_result(BattleResult(
+                                            job_id=ext_job_id,
+                                            wins_a=0, wins_b=0, draws=0, total=0,
+                                            error=str(e),
+                                            completed_at=time.time(),
+                                            source="scheduler",
+                                        ))
+                                    except Exception as wr_err:
+                                        log.warning("write_result(error) failed for %s: %s", ext_job_id, wr_err)
                             continue
 
                         a, b = entry
@@ -789,14 +805,16 @@ def main():
                     if len(entry) == 3:
                         a, b, ext_job_id = entry
                         if _SCHEDULER_AVAILABLE:
-                            write_result(
-                                ext_job_id,
-                                {
-                                    "bot_a": a,
-                                    "bot_b": b,
-                                    "error": "daemon_pool_broken",
-                                },
-                            )
+                            try:
+                                write_result(BattleResult(
+                                    job_id=ext_job_id,
+                                    wins_a=0, wins_b=0, draws=0, total=0,
+                                    error="daemon_pool_broken",
+                                    completed_at=time.time(),
+                                    source="scheduler",
+                                ))
+                            except Exception as wr_err:
+                                log.warning("write_result(recovery) failed for %s: %s", ext_job_id, wr_err)
                     try:
                         fut.result(timeout=1)
                     except Exception:
