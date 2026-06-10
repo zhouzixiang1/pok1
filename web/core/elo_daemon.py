@@ -535,8 +535,6 @@ def main():
     executor = ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_ctx)
     in_flight = {}  # future -> (bot_a, bot_b) or (bot_a, bot_b, ext_job_id)
 
-    # External job queue state
-    _external_job_ids = set()
     _first_iteration = True
     _capacity = max(1, n_workers // 4)
 
@@ -550,7 +548,6 @@ def main():
             ext_job_id = m[1]
             fut = executor.submit(run_single_match, exec_args)
             in_flight[fut] = (exec_args[0], exec_args[1], ext_job_id)
-            _external_job_ids.add(frozenset({exec_args[0], exec_args[1]}))
         else:
             if m[0] not in active_bots or m[1] not in active_bots:
                 continue
@@ -602,7 +599,6 @@ def main():
                         is_external = len(entry) == 3
                         if is_external:
                             a, b, ext_job_id = entry
-                            _external_job_ids.discard(frozenset({a, b}))
                             try:
                                 result = fut.result()
                                 if _SCHEDULER_AVAILABLE:
@@ -655,7 +651,6 @@ def main():
                                 ext_job_id = m[1]
                                 new_fut = executor.submit(run_single_match, exec_args)
                                 in_flight[new_fut] = (exec_args[0], exec_args[1], ext_job_id)
-                                _external_job_ids.add(frozenset({exec_args[0], exec_args[1]}))
                             else:
                                 if m[0] not in active_bots or m[1] not in active_bots:
                                     continue
@@ -674,7 +669,6 @@ def main():
                                     ext_job_id = m[1]
                                     new_fut = executor.submit(run_single_match, exec_args)
                                     in_flight[new_fut] = (exec_args[0], exec_args[1], ext_job_id)
-                                    _external_job_ids.add(frozenset({exec_args[0], exec_args[1]}))
                                 else:
                                     if m[0] not in active_bots or m[1] not in active_bots:
                                         continue
@@ -820,7 +814,6 @@ def main():
                     except Exception:
                         pass
                 in_flight.clear()
-                _external_job_ids.clear()
                 try:
                     executor.shutdown(wait=False, cancel_futures=True)
                 except Exception:
@@ -829,8 +822,10 @@ def main():
                     import multiprocessing as _mp
                     mp_ctx = _mp.get_context("spawn")
                     executor = ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_ctx)
-                    match_queue = deque()
-                    # Rebuild internal matches only; external jobs requeued via startup
+                    # Preserve external jobs from old queue before discarding
+                    old_external = [m for m in match_queue if isinstance(m, tuple) and len(m) == 7 and m[0] == "external"]
+                    match_queue = deque(old_external)
+                    # Rebuild internal matches on top of preserved externals
                     matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
                     for a, b in matches:
                         match_queue.append((a, b, bot_path(a), bot_path(b), n_pairs))

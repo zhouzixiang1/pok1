@@ -52,8 +52,20 @@ def mock_scheduler(tmp_path, monkeypatch):
             claimed_file.unlink()
         return jobs
 
-    def _write_result(job_id, payload):
-        entry = {"job_id": job_id, **payload}
+    def _write_result(result_obj):
+        """Accept BattleResult-like object (has .job_id, .wins_a, etc)."""
+        from dataclasses import asdict
+        try:
+            entry = asdict(result_obj)
+        except Exception:
+            entry = {"job_id": getattr(result_obj, "job_id", None),
+                     "wins_a": getattr(result_obj, "wins_a", 0),
+                     "wins_b": getattr(result_obj, "wins_b", 0),
+                     "draws": getattr(result_obj, "draws", 0),
+                     "total": getattr(result_obj, "total", 0),
+                     "error": getattr(result_obj, "error", None),
+                     "completed_at": getattr(result_obj, "completed_at", 0),
+                     "source": getattr(result_obj, "source", "scheduler")}
         with open(result_file, "a") as f:
             f.write(json.dumps(entry) + "\n")
 
@@ -108,16 +120,28 @@ def test_daemon_drains_external_jobs(monkeypatch, mock_scheduler):
 
     recovered = mock_scheduler["requeue"]()
     for job in recovered:
-        match_queue.appendleft(job)
+        match_queue.appendleft((
+            "external", job["job_id"],
+            job.get("a", job.get("bot_a_name")),
+            job.get("b", job.get("bot_b_name")),
+            "", "", 1,
+        ))
 
     pending = mock_scheduler["drain"]()
     for job in pending:
-        match_queue.appendleft(job)
+        match_queue.appendleft((
+            "external", job["job_id"],
+            job.get("a", job.get("bot_a_name")),
+            job.get("b", job.get("bot_b_name")),
+            "", "", 1,
+        ))
 
     assert len(match_queue) == 2
     for m in match_queue:
-        assert isinstance(m, dict)
-        assert m.get("job_id", "").startswith("j")
+        assert isinstance(m, tuple)
+        assert len(m) == 7
+        assert m[0] == "external"
+        assert m[1].startswith("j")
 
 
 def test_external_job_skips_ratings_update(monkeypatch, mock_scheduler):
@@ -125,10 +149,12 @@ def test_external_job_skips_ratings_update(monkeypatch, mock_scheduler):
     import elo_daemon as ed
 
     # Simulate a completed external match result
-    result = ("bot_a", "bot_b", 3, 2, 0, 5, None, [])
     ext_job_id = "ext-123"
 
-    mock_scheduler["write"](ext_job_id, {"bot_a": "bot_a", "bot_b": "bot_b", "result": result})
+    mock_scheduler["write"](SimpleNamespace(
+        job_id=ext_job_id, wins_a=3, wins_b=2, draws=0, total=5,
+        error=None, completed_at=0, source="scheduler",
+    ))
 
     results = []
     if mock_scheduler["result_file"].exists():
@@ -137,7 +163,8 @@ def test_external_job_skips_ratings_update(monkeypatch, mock_scheduler):
 
     assert len(results) == 1
     assert results[0]["job_id"] == ext_job_id
-    assert results[0]["result"] == list(result)
+    assert results[0]["wins_a"] == 3
+    assert results[0]["wins_b"] == 2
 
 
 def test_reap_preserves_external_jobs():
@@ -163,30 +190,27 @@ def test_pool_recovery_writes_error_for_external(monkeypatch, mock_scheduler):
     import elo_daemon as ed
 
     in_flight = {}
-    _external_job_ids = set()
 
     # Create a mock future that raises on result()
     mock_fut = MagicMock()
     mock_fut.result.side_effect = Exception("pool broken")
 
     in_flight[mock_fut] = ("bot_a", "bot_b", "ext-456")
-    _external_job_ids.add(frozenset({"bot_a", "bot_b"}))
 
     # Simulate recovery logic: iterate in_flight, write errors for external
     for fut in list(in_flight):
         entry = in_flight[fut]
         if len(entry) == 3:
             a, b, ext_job_id = entry
-            mock_scheduler["write"](
-                ext_job_id,
-                {"bot_a": a, "bot_b": b, "error": "daemon_pool_broken"},
-            )
+            mock_scheduler["write"](SimpleNamespace(
+                job_id=ext_job_id, wins_a=0, wins_b=0, draws=0, total=0,
+                error="daemon_pool_broken", completed_at=0, source="scheduler",
+            ))
         try:
             fut.result(timeout=1)
         except Exception:
             pass
     in_flight.clear()
-    _external_job_ids.clear()
 
     results = []
     if mock_scheduler["result_file"].exists():
@@ -209,7 +233,14 @@ def test_startup_requeues_orphaned_claimed(mock_scheduler):
     match_queue = deque()
     recovered = mock_scheduler["requeue"]()
     for job in recovered:
-        match_queue.appendleft(job)
+        match_queue.appendleft((
+            "external", job[1] if isinstance(job, (list, tuple)) else job.get("job_id", "j-orphan"),
+            job[2] if isinstance(job, (list, tuple)) else job.get("bot_a_name", ""),
+            job[3] if isinstance(job, (list, tuple)) else job.get("bot_b_name", ""),
+            job[4] if isinstance(job, (list, tuple)) else job.get("bot_a_path", ""),
+            job[5] if isinstance(job, (list, tuple)) else job.get("bot_b_path", ""),
+            job[6] if isinstance(job, (list, tuple)) else job.get("n_pairs", 1),
+        ))
 
     assert len(match_queue) == 1
     assert match_queue[0][0] == "external"
