@@ -15,6 +15,7 @@ from evolution_infra import (
     locked_file, get_bot_dir, get_logs_dir,
     _target_rel, _get_worker_semaphore,
     WORKER_FAILURES_FILE, MAX_WORKER_RETRIES, WORKER_TIMEOUT, _COPY_IGNORE,
+    EXPERIENCE_FILE,
 )
 
 
@@ -48,6 +49,42 @@ def _load_recent_failures(n=5):
     return entries[-n:]
 
 
+def _extract_exhausted_block():
+    """Read experience_pool.md and extract [POSSIBLY EXHAUSTED] entries as a constraint block.
+
+    Returns a formatted forbidden_directions XML block string, or empty string
+    if no EXHAUSTED entries are found. This block is prepended to worker prompts
+    so workers cannot claim they never saw the constraints.
+    """
+    if not EXPERIENCE_FILE.exists():
+        return ""
+
+    try:
+        text = EXPERIENCE_FILE.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+    exhausted_lines = []
+    for line in text.splitlines():
+        if "[POSSIBLY EXHAUSTED]" in line:
+            # Strip the leading markdown header markers and the marker itself
+            cleaned = line.replace("[POSSIBLY EXHAUSTED]", "").strip(" -•")
+            if cleaned:
+                exhausted_lines.append(cleaned)
+
+    if not exhausted_lines:
+        return ""
+
+    items = "\n".join(f"  - {entry}" for entry in exhausted_lines)
+    return (
+        "<forbidden_directions>\n"
+        "These evolution directions are EXHAUSTED. Do NOT implement changes in these areas:\n"
+        f"{items}\n"
+        "Violating these constraints will result in automatic rejection.\n"
+        "</forbidden_directions>\n\n"
+    )
+
+
 def _target_rel_set(task, next_v):
     """Extract the set of relative file paths from a task's target_files.
 
@@ -73,6 +110,13 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
 
     if reviewer_feedback:
         base_worker_prompt = f"CRITICAL REVISION NEEDED:\n{reviewer_feedback}\n\nORIGINAL:\n{base_worker_prompt}"
+
+    # Inject EXHAUSTED constraint block from experience pool.
+    # Prepended (not appended) so it appears before the worker's task instructions
+    # and cannot be missed or dismissed as a footnote.
+    exhausted_block = _extract_exhausted_block()
+    if exhausted_block:
+        base_worker_prompt = exhausted_block + base_worker_prompt
 
     # Inject recent worker failure memory
     recent_failures = _load_recent_failures(5)

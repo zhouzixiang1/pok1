@@ -14,6 +14,7 @@ from evolution_core import (
     _run_master_analysis,
     _run_direction_audit,
     _execute_workers,
+    EXPERIENCE_FILE,
 )
 from tool_helpers import (
     _get_ui, _json_tool_result,
@@ -317,6 +318,32 @@ async def run_master(args):
 # Worker Stage
 # ──────────────────────────────────────────────
 
+def _extract_exhausted_keywords():
+    """Extract keyword phrases from EXHAUSTED experience pool entries.
+
+    Returns a list of lowercase keyword strings extracted from lines containing
+    [POSSIBLY EXHAUSTED] in experience_pool.md. Keywords are derived by removing
+    common stop-words and the EXHAUSTED marker, yielding the core topic phrase.
+    Returns an empty list if the file doesn't exist or has no EXHAUSTED entries.
+    """
+    if not EXPERIENCE_FILE.exists():
+        return []
+    try:
+        text = EXPERIENCE_FILE.read_text(encoding="utf-8")
+    except Exception:
+        return []
+
+    keywords = []
+    for line in text.splitlines():
+        if "[POSSIBLY EXHAUSTED]" not in line:
+            continue
+        cleaned = line.replace("[POSSIBLY EXHAUSTED]", "").strip(" -•")
+        if not cleaned:
+            continue
+        keywords.append(cleaned.lower())
+    return keywords
+
+
 class ExecuteWorkersInput(TypedDict):
     tasks: Annotated[list, "List of worker task dicts from Master plan"]
     next_v: Annotated[int, "Target bot version"]
@@ -426,11 +453,49 @@ async def execute_workers(args):
         if applied or skipped:
             log_fix_application(applied, skipped, next_dir, source_v)
 
+        # Write intermediate checkpoint so pipeline state reflects the in-progress retry.
+        # Without this, a crash between code reset and worker execution would leave
+        # the checkpoint at a stale stage (e.g. "reviewed" or "critic_checked")
+        # while the actual code has been wiped back to source.
+        from evolution_infra import write_pipeline_checkpoint
+        write_pipeline_checkpoint(next_v, source_v, "master_planned",
+                                  master_plan=ckpt.get("master_plan"),
+                                  reviewer_feedback=reviewer_feedback,
+                                  worker_failure_count=ckpt.get("worker_failure_count",
+                                                                ckpt.get("worker_invocation_count", 0)))
+
         reviewer_feedback += (
             f"\n\nNOTE: This is a retry. The code in bots/claude_v{next_v}/ has been ACTUALLY RESET "
             f"from source bots/claude_v{source_v}/. Any modifications described in the feedback "
             f"above no longer exist in the code — you must re-implement them from scratch."
         )
+
+    # P2: Validate worker prompts against EXHAUSTED directions from experience pool.
+    # If a worker_prompt contains keywords matching an EXHAUSTED direction, append
+    # a prominent warning. This is a safety net — the primary enforcement is the
+    # <forbidden_directions> block injected by agent_workers.py.
+    exhausted_keywords = _extract_exhausted_keywords()
+    if exhausted_keywords:
+        for task in tasks:
+            prompt_text = task.get("worker_prompt", task.get("instruction", "")).lower()
+            for kw in exhausted_keywords:
+                # Use word-level tokens from the keyword for fuzzy matching
+                # (full-sentence matching is too brittle across rephrasings).
+                tokens = [t for t in kw.split() if len(t) > 3]
+                if tokens and all(t in prompt_text for t in tokens):
+                    original = task.get("worker_prompt", task.get("instruction", ""))
+                    task["worker_prompt"] = (
+                        original +
+                        "\n\n⚠️ WARNING: This task may violate an EXHAUSTED direction. "
+                        "Verify carefully — the experience pool marks this area as exhausted "
+                        "with no measurable H2H gain. Consider an alternative approach."
+                    )
+                    log_system_event(
+                        "pipeline.worker_exhausted_warning", "warn",
+                        f"Worker {task.get('worker_id', '?')} prompt matches EXHAUSTED keyword: {kw[:80]}",
+                        {"next_v": next_v, "keyword": kw[:120]},
+                    )
+                    break  # One warning per task is sufficient
 
     ui = _get_ui()
     success, worker_snapshots, audit_focus_areas = await _execute_workers(
@@ -498,10 +563,13 @@ async def execute_workers(args):
                                   worker_failure_count=failure_count)
     else:
         # Increment failure count on worker failure; successful batches do not consume the budget.
+        # Always set stage to 'master_planned' on failure — this clearly indicates
+        # that workers need re-execution, rather than preserving a stale stage
+        # from before the failure (e.g. "reviewed" or "critic_checked").
         from evolution_infra import write_pipeline_checkpoint
         plan = ckpt.get("master_plan", tasks) if ckpt else tasks
         write_pipeline_checkpoint(next_v, source_v,
-                                  ckpt.get("stage", "master_planned"),
+                                  "master_planned",
                                   master_plan=plan, reviewer_feedback=reviewer_feedback,
                                   worker_failure_count=failure_count + 1)
 
