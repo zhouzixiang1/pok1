@@ -11,7 +11,7 @@ import shutil
 import asyncio
 
 from evolution_infra import (
-    run_claude_query, substitute_template, verify_code, run_smoke_test,
+    run_claude_query, substitute_template, verify_code,
     locked_file, get_bot_dir, get_logs_dir,
     _target_rel, _get_worker_semaphore,
     WORKER_FAILURES_FILE, MAX_WORKER_RETRIES, WORKER_TIMEOUT, _COPY_IGNORE,
@@ -85,7 +85,6 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
     worker_log_file = get_logs_dir(next_v) / f"worker_{w_id}_io.txt"
 
     compile_errors = []
-    smoke_errors = []
     _last_reason = "unknown"
     _last_failure_type = "unknown"
     ui.log_history(f"Worker {w_id} ({role}) started", "info")
@@ -174,13 +173,8 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             base_worker_prompt += f"\n\nCRITICAL FIX: Fix syntax error:\n{compile_errors[0]}"
             continue
 
-        smoke_errors = run_smoke_test(next_dir)
-        if smoke_errors:
-            _last_reason = f"smoke test error: {smoke_errors[0][:200]}"
-            _last_failure_type = "smoke_error"
-            base_worker_prompt += f"\n\nCRITICAL FIX: Fix runtime error:\n{smoke_errors[0]}"
-            continue
-
+        # Smoke test is NOT run here — it is deferred to the quality gate
+        # (run_quality_gates in tool_gates.py) to save ~60-120s per retry attempt.
         ui.log_history(f"Worker {w_id} ({role}) done", "info")
         return True
 
