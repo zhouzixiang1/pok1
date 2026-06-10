@@ -1,4 +1,14 @@
-from constants import BIG_BLIND, N_PLAYERS
+from constants import (
+    BIG_BLIND, N_PLAYERS,
+    PRIOR_VPIP, PRIOR_PFR, PRIOR_ALLIN_RATE, PRIOR_POSTFLOP_AGGR,
+    PRIOR_POSTFLOP_CHECK, PRIOR_FOLD_TO_RAISE, PRIOR_AGGRESSION,
+    PRIOR_FLOP_AGGR, PRIOR_TURN_AGGR, PRIOR_RIVER_AGGR, PRIOR_BARREL_FREQ,
+    PRIOR_VPID_WEIGHT, PRIOR_PFR_WEIGHT, PRIOR_ALLIN_WEIGHT,
+    PRIOR_POSTFLOP_AGGR_WEIGHT, PRIOR_POSTFLOP_CHECK_WEIGHT, PRIOR_FTR_WEIGHT, PRIOR_AGGRESSION_WEIGHT,
+    PRIOR_FLOP_AGGR_WEIGHT, PRIOR_TURN_AGGR_WEIGHT, PRIOR_RIVER_AGGR_WEIGHT, PRIOR_BARREL_WEIGHT,
+    DEFAULT_AVG_RAISE_BB, DEFAULT_FLOP_RAISE_BB, DEFAULT_TURN_RAISE_BB, DEFAULT_RIVER_RAISE_BB,
+    CONFIDENCE_OFFSET, CONFIDENCE_SCALE,
+)
 from card_utils import clamp, next_player
 from state import collect_latest_requests_by_hand
 from tournament import opponent_can_lock_win
@@ -112,26 +122,26 @@ def build_opponent_model(requests, my_id):
             if opp_bet_turn:
                 barrel_continue += 1
 
-    confidence = clamp((total_actions - 5) / 35.0, 0.0, 1.0)
-    avg_raise_bb = sum(raise_sizes) / len(raise_sizes) if raise_sizes else 2.6
+    confidence = clamp((total_actions - CONFIDENCE_OFFSET) / CONFIDENCE_SCALE, 0.0, 1.0)
+    avg_raise_bb = sum(raise_sizes) / len(raise_sizes) if raise_sizes else DEFAULT_AVG_RAISE_BB
 
     return {
         "confidence": confidence,
-        "vpip": smooth_rate(voluntary_preflop, preflop_opportunities, 0.58, 4.0),
-        "pfr": smooth_rate(preflop_raise, preflop_opportunities, 0.28, 4.0),
-        "allin_rate": smooth_rate(allin_actions, total_actions, 0.05, 8.0),
-        "postflop_aggr": smooth_rate(postflop_aggressive, postflop_actions, 0.36, 5.0),
-        "postflop_check_rate": smooth_rate(postflop_checks, postflop_actions, 0.42, 5.0),
-        "fold_to_raise": smooth_rate(fold_to_raise, fold_to_raise_opportunities, 0.44, 4.0),
-        "aggression": smooth_rate(aggressive_actions, total_actions, 0.30, 6.0),
+        "vpip": smooth_rate(voluntary_preflop, preflop_opportunities, PRIOR_VPIP, PRIOR_VPID_WEIGHT),
+        "pfr": smooth_rate(preflop_raise, preflop_opportunities, PRIOR_PFR, PRIOR_PFR_WEIGHT),
+        "allin_rate": smooth_rate(allin_actions, total_actions, PRIOR_ALLIN_RATE, PRIOR_ALLIN_WEIGHT),
+        "postflop_aggr": smooth_rate(postflop_aggressive, postflop_actions, PRIOR_POSTFLOP_AGGR, PRIOR_POSTFLOP_AGGR_WEIGHT),
+        "postflop_check_rate": smooth_rate(postflop_checks, postflop_actions, PRIOR_POSTFLOP_CHECK, PRIOR_POSTFLOP_CHECK_WEIGHT),
+        "fold_to_raise": smooth_rate(fold_to_raise, fold_to_raise_opportunities, PRIOR_FOLD_TO_RAISE, PRIOR_FTR_WEIGHT),
+        "aggression": smooth_rate(aggressive_actions, total_actions, PRIOR_AGGRESSION, PRIOR_AGGRESSION_WEIGHT),
         "avg_raise_bb": avg_raise_bb,
-        "flop_aggr": smooth_rate(flop_bets, flop_acts, 0.36, 5.0),
-        "turn_aggr": smooth_rate(turn_bets, turn_acts, 0.32, 5.0),
-        "river_aggr": smooth_rate(river_bets, river_acts, 0.28, 5.0),
-        "avg_flop_raise_bb": sum(flop_raise_bb)/len(flop_raise_bb) if flop_raise_bb else 3.0,
-        "avg_turn_raise_bb": sum(turn_raise_bb)/len(turn_raise_bb) if turn_raise_bb else 4.5,
-        "avg_river_raise_bb": sum(river_raise_bb)/len(river_raise_bb) if river_raise_bb else 5.5,
-        "barrel_freq": smooth_rate(barrel_continue, barrel_hands, 0.45, 4.0),
+        "flop_aggr": smooth_rate(flop_bets, flop_acts, PRIOR_FLOP_AGGR, PRIOR_FLOP_AGGR_WEIGHT),
+        "turn_aggr": smooth_rate(turn_bets, turn_acts, PRIOR_TURN_AGGR, PRIOR_TURN_AGGR_WEIGHT),
+        "river_aggr": smooth_rate(river_bets, river_acts, PRIOR_RIVER_AGGR, PRIOR_RIVER_AGGR_WEIGHT),
+        "avg_flop_raise_bb": sum(flop_raise_bb)/len(flop_raise_bb) if flop_raise_bb else DEFAULT_FLOP_RAISE_BB,
+        "avg_turn_raise_bb": sum(turn_raise_bb)/len(turn_raise_bb) if turn_raise_bb else DEFAULT_TURN_RAISE_BB,
+        "avg_river_raise_bb": sum(river_raise_bb)/len(river_raise_bb) if river_raise_bb else DEFAULT_RIVER_RAISE_BB,
+        "barrel_freq": smooth_rate(barrel_continue, barrel_hands, PRIOR_BARREL_FREQ, PRIOR_BARREL_WEIGHT),
     }
 
 

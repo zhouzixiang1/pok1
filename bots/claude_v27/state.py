@@ -1,4 +1,7 @@
-from constants import N_PLAYERS, INITIAL_CHIPS, SMALL_BLIND, BIG_BLIND, TOTAL_HANDS
+from constants import (
+    N_PLAYERS, INITIAL_CHIPS, SMALL_BLIND, BIG_BLIND, TOTAL_HANDS,
+    TRASH_STRENGTH_THRESHOLD,
+)
 from card_utils import card_suit, card_number, next_player, clamp
 
 
@@ -74,7 +77,7 @@ def is_preflop_trash_hand(my_cards, preflop_strength=None):
     if high >= 11 and low >= 8 and gap <= 4:
         return False
 
-    if strength <= 0.30:
+    if strength <= TRASH_STRENGTH_THRESHOLD:
         return True
     if not suited and high <= 10 and low <= 5 and gap >= 3:
         return True

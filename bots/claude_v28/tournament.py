@@ -1,4 +1,16 @@
-from constants import N_PLAYERS, BIG_BLIND, LOCK_WIN_MARGIN
+from constants import (
+    N_PLAYERS, BIG_BLIND, LOCK_WIN_MARGIN,
+    LATE_HANDS_THRESHOLD, LATE_HANDS_SCALE,
+    CHASE_BB_SCALE, CHASE_BB_OFFSET,
+    PROTECT_BB_SCALE, PROTECT_BB_OFFSET,
+    CHASE_DESPERATE_HANDS, CHASE_DESPERATE_BB, CHASE_MAX_NORMAL,
+    PROTECT_THRESHOLD_DELTA, CHASE_THRESHOLD_DELTA,
+    PROTECT_SIZING_DELTA, CHASE_SIZING_DELTA,
+    PROTECT_OPEN_DELTA, CHASE_OPEN_DELTA,
+    PROTECT_BLUFF_DELTA, CHASE_BLUFF_DELTA,
+    ANTI_LOCK_CHASE, ANTI_LOCK_THRESHOLD,
+    ANTI_LOCK_SIZING, ANTI_LOCK_OPEN, ANTI_LOCK_BLUFF,
+)
 from card_utils import clamp, next_player
 from state import reconstruct_state, get_remaining_hands, forced_fold_loss_bound
 
@@ -103,36 +115,36 @@ def match_pressure_profile(req, my_id, remaining_hands):
         return profile
 
     hands = max(1, int(remaining_hands))
-    late_factor = clamp((12 - hands) / 10.0, 0.0, 1.0)
+    late_factor = clamp((LATE_HANDS_THRESHOLD - hands) / LATE_HANDS_SCALE, 0.0, 1.0)
     if late_factor <= 0.0:
         return profile
 
     behind_per_hand = max(0.0, -lead) / hands
     ahead_per_hand = max(0.0, lead) / hands
 
-    chase = clamp((behind_per_hand - 0.8 * BIG_BLIND) / (3.5 * BIG_BLIND), 0.0, 1.0)
-    protect = clamp((ahead_per_hand - 0.8 * BIG_BLIND) / (3.0 * BIG_BLIND), 0.0, 1.0)
+    chase = clamp((behind_per_hand - CHASE_BB_OFFSET * BIG_BLIND) / (CHASE_BB_SCALE * BIG_BLIND), 0.0, 1.0)
+    protect = clamp((ahead_per_hand - PROTECT_BB_OFFSET * BIG_BLIND) / (PROTECT_BB_SCALE * BIG_BLIND), 0.0, 1.0)
     chase *= late_factor
     protect *= late_factor
-    if not (hands <= 8 and lead < -8 * BIG_BLIND):
-        chase = min(chase, 0.25)
+    if not (hands <= CHASE_DESPERATE_HANDS and lead < -CHASE_DESPERATE_BB * BIG_BLIND):
+        chase = min(chase, CHASE_MAX_NORMAL)
 
     profile["protect"] = protect
     profile["chase"] = chase
-    profile["threshold_delta"] = 0.055 * protect - 0.055 * chase
-    profile["sizing_delta"] = -0.10 * protect + 0.16 * chase
-    profile["open_delta"] = 0.020 * protect - 0.030 * chase
-    profile["bluff_delta"] = -0.08 * protect + 0.10 * chase
+    profile["threshold_delta"] = PROTECT_THRESHOLD_DELTA * protect - CHASE_THRESHOLD_DELTA * chase
+    profile["sizing_delta"] = PROTECT_SIZING_DELTA * protect + CHASE_SIZING_DELTA * chase
+    profile["open_delta"] = PROTECT_OPEN_DELTA * protect + CHASE_OPEN_DELTA * chase
+    profile["bluff_delta"] = PROTECT_BLUFF_DELTA * protect + CHASE_BLUFF_DELTA * chase
     return profile
 
 
 def apply_anti_lock_pressure(match_profile):
     match_profile["protect"] = 0.0
-    match_profile["chase"] = max(match_profile["chase"], 0.90)
-    match_profile["threshold_delta"] = min(match_profile["threshold_delta"], -0.075)
-    match_profile["sizing_delta"] = max(match_profile["sizing_delta"], 0.18)
-    match_profile["open_delta"] = min(match_profile["open_delta"], -0.045)
-    match_profile["bluff_delta"] = max(match_profile["bluff_delta"], 0.13)
+    match_profile["chase"] = max(match_profile["chase"], ANTI_LOCK_CHASE)
+    match_profile["threshold_delta"] = min(match_profile["threshold_delta"], ANTI_LOCK_THRESHOLD)
+    match_profile["sizing_delta"] = max(match_profile["sizing_delta"], ANTI_LOCK_SIZING)
+    match_profile["open_delta"] = min(match_profile["open_delta"], ANTI_LOCK_OPEN)
+    match_profile["bluff_delta"] = max(match_profile["bluff_delta"], ANTI_LOCK_BLUFF)
     return match_profile
 
 
