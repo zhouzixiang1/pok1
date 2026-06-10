@@ -297,23 +297,45 @@ def collect_results(job_ids: list[str]) -> dict[str, dict]:
     Reads all results, returns a dict mapping job_id to result dict for
     the requested ids, and atomically writes back only the uncollected
     results so that repeated calls are idempotent.
+
+    The entire read-filter-write sequence runs under a single LOCK_EX to
+    prevent TOCTOU: if we released the lock between read and write, the
+    daemon could append a new result via write_result that would then be
+    silently lost when we os.replace the file with stale data.
     """
     if not job_ids:
         return {}
 
     job_id_set = set(job_ids)
-    all_results = _read_jsonl(BATTLE_RESULTS_FILE)
     collected: dict[str, dict] = {}
     uncollected: list[dict] = []
 
-    for rec in all_results:
-        jid = rec.get("job_id", "")
-        if jid in job_id_set:
-            collected[jid] = rec
-        else:
-            uncollected.append(rec)
+    # Single LOCK_EX for the entire read-filter-write to prevent TOCTOU.
+    if not BATTLE_RESULTS_FILE.exists():
+        return {}
+    with locked_file(BATTLE_RESULTS_FILE, "a+", lock_type=fcntl.LOCK_EX) as f:
+        f.seek(0)
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            jid = rec.get("job_id", "")
+            if jid in job_id_set:
+                collected[jid] = rec
+            else:
+                uncollected.append(rec)
+        # Truncate and rewrite uncollected — all under the same lock.
+        f.seek(0)
+        f.truncate()
+        for rec in uncollected:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
 
-    _write_jsonl_atomic(BATTLE_RESULTS_FILE, uncollected)
     log.info("Collected %d/%d requested results", len(collected), len(job_ids))
     return collected
 
@@ -324,21 +346,38 @@ def cleanup_stale(max_age_sec: int = 3600) -> int:
     Returns the number of records removed.
     """
     now = time.time()
-    all_results = _read_jsonl(BATTLE_RESULTS_FILE)
     kept: list[dict] = []
     removed = 0
 
-    for rec in all_results:
-        completed_at = rec.get("completed_at", 0)
-        if not completed_at:
-            completed_at = now
-        if now - completed_at > max_age_sec:
-            removed += 1
-        else:
-            kept.append(rec)
+    if not BATTLE_RESULTS_FILE.exists():
+        return 0
+    # Single LOCK_EX for the entire read-filter-write to prevent TOCTOU.
+    with locked_file(BATTLE_RESULTS_FILE, "a+", lock_type=fcntl.LOCK_EX) as f:
+        f.seek(0)
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            completed_at = rec.get("completed_at", 0)
+            if not completed_at:
+                completed_at = now
+            if now - completed_at > max_age_sec:
+                removed += 1
+            else:
+                kept.append(rec)
+        if removed:
+            f.seek(0)
+            f.truncate()
+            for rec in kept:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
 
     if removed:
-        _write_jsonl_atomic(BATTLE_RESULTS_FILE, kept)
         log.info("Cleaned up %d stale result records", removed)
     return removed
 

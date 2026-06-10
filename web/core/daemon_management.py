@@ -242,7 +242,9 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
                         break
                     if _daemon_shutting_down:
                         break
-                    start_daemon(workers=daemon_workers, pairs=daemon_pairs)
+                    # Preserve original scheduler_capable flag on restart
+                    was_scheduler_capable = is_daemon_scheduler_capable()
+                    start_daemon(workers=daemon_workers, pairs=daemon_pairs, scheduler_capable=was_scheduler_capable)
             else:
                 restart_count = 0
             stats = load_daemon_stats()
