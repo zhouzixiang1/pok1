@@ -1,7 +1,9 @@
 """Worker agent execution logic.
 
 Handles running individual worker LLM calls with retries and timeout isolation.
-Workers always execute sequentially to avoid race conditions and simplify the pipeline.
+When worker target_files are disjoint, workers execute in parallel via asyncio.gather
+for higher throughput. Falls back to sequential execution when files overlap or when
+there is only one worker task.
 """
 
 import json
@@ -11,7 +13,7 @@ import asyncio
 from evolution_infra import (
     run_claude_query, substitute_template, verify_code, run_smoke_test,
     locked_file, get_bot_dir, get_logs_dir,
-    _target_rel,
+    _target_rel, _get_worker_semaphore,
     WORKER_FAILURES_FILE, MAX_WORKER_RETRIES, WORKER_TIMEOUT, _COPY_IGNORE,
 )
 
@@ -44,6 +46,21 @@ def _load_recent_failures(n=5):
                 except json.JSONDecodeError:
                     pass
     return entries[-n:]
+
+
+def _target_rel_set(task, next_v):
+    """Extract the set of relative file paths from a task's target_files.
+
+    Returns a set of strings (relative paths within the bot directory) that
+    the worker is expected to modify. Used for disjointness checks to decide
+    whether parallel execution is safe.
+    """
+    result = set()
+    for target in task.get("target_files", []):
+        rel = _target_rel(target, next_v)
+        if rel:
+            result.add(rel)
+    return result
 
 
 async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
@@ -175,7 +192,11 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
 async def _execute_workers(tasks, worker_template, next_dir, next_v,
                             context_files, ui, reviewer_feedback,
                             source_v=None):
-    """Execute worker tasks sequentially, capturing per-worker file snapshots.
+    """Execute worker tasks, capturing per-worker file snapshots.
+
+    When all workers have disjoint target_files, executes in parallel via
+    asyncio.gather for higher throughput. Falls back to sequential execution
+    when target files overlap or any task has no target_files.
 
     Returns (success, worker_snapshots, audit_focus_areas) where worker_snapshots maps
     (task_idx, file_rel) -> file_content_before_worker_ran, used for
@@ -213,10 +234,100 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                 pass
         return ok, worker_snapshots, audit_focus_areas
 
-    # Sequential execution: snapshot each worker's target files BEFORE it runs.
-    # This way the boundary check can compare each worker's input vs output,
-    # not source vs output (which would include all preceding workers' changes).
-    ui.log_history(f"Running {len(tasks)} workers sequentially...", "info")
+    # ── Disjointness check: can we safely run workers in parallel? ──
+    # Compute per-task target file sets and check for intersections.
+    task_file_sets = [_target_rel_set(task, next_v) for task in tasks]
+    all_disjoint = True
+    seen = set()
+    for i, fset in enumerate(task_file_sets):
+        if not fset:
+            # A task with no target files cannot be parallelized safely
+            # (its edits are unpredictable).
+            all_disjoint = False
+            break
+        if fset & seen:
+            all_disjoint = False
+            break
+        seen |= fset
+
+    if all_disjoint:
+        # ── Parallel path: all target_files are disjoint ──
+        # Pre-snapshot all target files at once — safe because no two workers
+        # touch the same file.
+        ui.log_history(
+            f"Running {len(tasks)} workers in PARALLEL (disjoint target files)...", "info"
+        )
+        for i, task in enumerate(tasks):
+            for target in task.get("target_files", []):
+                rel = _target_rel(target, next_v)
+                if rel:
+                    fpath = next_dir / rel
+                    worker_snapshots[(i, rel)] = (
+                        fpath.read_text() if fpath.exists() else ""
+                    )
+
+        # Wrap each worker call with semaphore gating for concurrency control.
+        async def _gated_worker(task, i):
+            sem = _get_worker_semaphore()
+            async with sem:
+                return await _run_single_worker(
+                    task, i, worker_template, next_dir, next_v,
+                    context_files, ui, reviewer_feedback,
+                    source_v=source_v,
+                )
+
+        results = await asyncio.gather(
+            *[_gated_worker(task, i) for i, task in enumerate(tasks)],
+            return_exceptions=True,
+        )
+
+        # Check results — roll back failed workers' target files from source.
+        # Since files are disjoint, rolling back one worker cannot corrupt another.
+        any_failed = False
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                any_failed = True
+                ui.log_history(
+                    f"Worker {tasks[i].get('worker_id', i+1)} raised exception: {result}",
+                    "error",
+                )
+                # Roll back this worker's target files from source
+                if source_v is not None:
+                    src_dir = get_bot_dir(source_v)
+                    for target in tasks[i].get("target_files", []):
+                        rel = _target_rel(target, next_v)
+                        if rel:
+                            src_file = src_dir / rel
+                            dst_file = next_dir / rel
+                            if src_file.exists():
+                                dst_file.write_text(src_file.read_text())
+            elif not result:
+                any_failed = True
+                # _run_single_worker already recorded the failure and rolled back
+                # target files during its retry loop.
+
+        if any_failed:
+            return False, worker_snapshots, audit_focus_areas
+
+        # P0-2: Run Worker CoT checks sequentially (they are fast, read-only).
+        for i, task in enumerate(tasks):
+            try:
+                from audit_agents import _run_worker_cot_check
+                cot = await _run_worker_cot_check(
+                    task, i, next_v, source_v, next_dir, worker_snapshots, ui
+                )
+                if not cot.get("cot_consistent", True):
+                    audit_focus_areas.extend(cot.get("focus_areas", []))
+            except Exception:
+                pass
+
+        return True, worker_snapshots, audit_focus_areas
+
+    # ── Sequential fallback: target files overlap or empty sets ──
+    # Snapshot each worker's target files BEFORE it runs. This way the
+    # boundary check can compare each worker's input vs output, not source
+    # vs output (which would include all preceding workers' changes).
+    ui.log_history(f"Running {len(tasks)} workers SEQUENTIALLY (overlapping files)...", "info")
     for i, task in enumerate(tasks):
         # Capture file state before this worker runs
         for target in task.get("target_files", []):
