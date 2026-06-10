@@ -105,7 +105,7 @@ async def run_quality_gates(args):
     decision_rate = decision_detail.get("pass_rate", 0.0)
     critical_failures = decision_detail.get("critical_failures", [])
     critical_ok = len(critical_failures) == 0
-    total_lines, oversized = check_code_size(bot_dir)
+    total_lines, oversized = check_code_size(bot_dir, source_dir=source_dir)
     decision_ok = decision_rate >= 0.7 and critical_ok
 
     all_passed = (

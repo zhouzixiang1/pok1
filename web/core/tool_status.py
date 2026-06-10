@@ -133,12 +133,13 @@ async def get_bot_info(args):
         "parent_v": parent,
     }
 
-    # Code size info
+    # Code size info — use parent as source_dir for adaptive limits
     if bot_dir.exists():
         py_files = list(bot_dir.glob("*.py"))
         result["files"] = [f.name for f in py_files]
         result["total_lines"] = sum(count_lines(f) for f in py_files)
-        _, oversized = check_code_size(bot_dir)
+        source_dir = get_bot_dir(parent) if parent else None
+        _, oversized = check_code_size(bot_dir, source_dir=source_dir)
         if oversized:
             result["oversized_files"] = {name: lines for name, lines in oversized}
 

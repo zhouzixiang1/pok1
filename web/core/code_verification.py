@@ -7,9 +7,38 @@ import sys
 
 from evolution_infra import (
     CORE_DIR, REFERENCE_DIR, RESULTS_DIR,
-    MAX_LINES_PER_FILE, MAX_LINES_HELPER, CORE_STRATEGY_FILES, _COPY_IGNORE,
+    MAX_LINES_PER_FILE, MAX_LINES_HELPER, MAX_LINES_HARD_CAP,
+    LINE_GROWTH_BUDGET, CORE_STRATEGY_FILES, _COPY_IGNORE,
     get_bot_dir,
 )
+
+
+def _count_file_lines(path):
+    """Count lines in a file."""
+    with open(path) as fh:
+        return sum(1 for _ in fh)
+
+
+def _get_adaptive_limit(filename, base_limit, source_dir=None):
+    """Compute adaptive line limit for a file.
+
+    If source_dir is provided and the source file exists, allow growth from
+    the source file's size. The limit is:
+        max(base_limit, source_lines * (1 + LINE_GROWTH_BUDGET))
+    capped at MAX_LINES_HARD_CAP.
+
+    Without source_dir, returns base_limit (backward compatible).
+    """
+    if source_dir is None:
+        return base_limit
+
+    source_path = os.path.join(source_dir, filename)
+    if not os.path.exists(source_path):
+        return base_limit
+
+    source_lines = _count_file_lines(source_path)
+    adaptive = max(base_limit, int(source_lines * (1 + LINE_GROWTH_BUDGET)))
+    return min(adaptive, MAX_LINES_HARD_CAP)
 
 
 def verify_code(directory, target_files=None):
@@ -36,11 +65,15 @@ def verify_code(directory, target_files=None):
     return errors
 
 
-def check_code_size(directory, max_lines_per_file=None):
+def check_code_size(directory, max_lines_per_file=None, source_dir=None):
     """Check single-file LOC limits (excluding backup files). Returns (total, oversized_files).
 
     Uses tiered limits: CORE_STRATEGY_FILES (strategy.py, postflop.py) get
-    MAX_LINES_PER_FILE (1500), all others get MAX_LINES_HELPER (1200).
+    MAX_LINES_PER_FILE (2000), all others get MAX_LINES_HELPER (1500).
+
+    When source_dir is provided, applies adaptive limits based on the source
+    bot's file sizes plus a growth budget (LINE_GROWTH_BUDGET = 15%).
+    All limits are capped at MAX_LINES_HARD_CAP (2500).
     """
     oversized_files = []
     total = 0
@@ -48,12 +81,17 @@ def check_code_size(directory, max_lines_per_file=None):
         for f in files:
             if f.endswith(".py") and "backup" not in f:
                 path = os.path.join(root, f)
-                with open(path) as fh:
-                    lines = sum(1 for _ in fh)
+                lines = _count_file_lines(path)
                 total += lines
-                limit = MAX_LINES_PER_FILE if f in CORE_STRATEGY_FILES else MAX_LINES_HELPER
+
+                # Compute limit: base → adaptive (if source_dir) → override (if max_lines_per_file)
+                base_limit = MAX_LINES_PER_FILE if f in CORE_STRATEGY_FILES else MAX_LINES_HELPER
+                limit = _get_adaptive_limit(f, base_limit, source_dir)
+
+                # Explicit override wins (backward compatibility)
                 if max_lines_per_file is not None:
                     limit = max_lines_per_file
+
                 if lines > limit:
                     oversized_files.append((f, lines, limit))
     return total, oversized_files

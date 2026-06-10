@@ -56,8 +56,10 @@ MAX_ACTIVE_BOTS = 30
 # Evaluation & quality thresholds
 DAEMON_EVAL_TIMEOUT = 600
 MIN_GAMES_FOR_EVAL = 100
-MAX_LINES_PER_FILE = 1500       # Core strategy files (strategy.py, postflop.py)
-MAX_LINES_HELPER = 1200         # All other .py files
+MAX_LINES_PER_FILE = 2000       # Core strategy files (strategy.py, postflop.py) — base limit
+MAX_LINES_HELPER = 1500         # All other .py files — base limit
+MAX_LINES_HARD_CAP = 2500       # Hard cap: no .py file may exceed this, even with adaptive budget
+LINE_GROWTH_BUDGET = 0.15       # Adaptive limit = max(base, source_lines * (1 + budget))
 CORE_STRATEGY_FILES = {"strategy.py", "postflop.py"}
 MIN_DECISION_PASS_RATE = 0.7
 MIN_CROSSOVER_DECISION_RATE = 0.6
