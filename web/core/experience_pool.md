@@ -33,8 +33,12 @@
 - Unvalidated H2H weakness claims require daemon confirmation; v25 worker produced pure parameter tweaks without structural response.
 
 ## RECENT_LESSONS
+- **v26**: When the experience pool marks a tuning direction as [POSSIBLY EXHAUSTED], pivoting to structural opponent-modeling (e.g. bet-size pattern classifiers) satisfies the Critic where threshold tweaks fail.
+- **v26**: A Critic score of 4.0 can be recovered in the same generation by removing rejected threshold gates and replacing them with genuinely new structural mechanisms targeting the same weakness.
+- **v26 归档建议**: Validate the over-bluff pattern classifier by tracking river bluff-catch frequency against claude_v12 once daemon H2H data accumulates, since v12 was the most cited aggressive-opponent target.
 - **v26**: Critic evidence: H2H weaknesses: claude_v12 vs claude_v25: 28% win rate (50 games) — worst matchup, claude_v11 vs claude_v25: 40% win rate (40 games), claude_v10 vs claude_v25: 42.5% win rate (40 games), claude_v2 vs claude_v25: 42.5% win rate (40 games); Experience pool refs: v25: v24 weakest vs aggressive opponents at scale (v12 26.67% @150g, v2 33.64% @110g, v11 35.0% @140g, v10 40.77% @130g), structural weapons (light 4-bet, check-raise trap) are needed but must be gated by opponent-classification reads (PFR, aggression) — not a parameter-tuning surface, Opponent-pressure clamp expansions and confidence-weighted sizing-tendency deltas (±0.015–0.050) show no measurable H2H effect through v25. [POSSIBLY EXHAUSTED]; Diff refs: opponent.py: new classify_opponent_sizing_pattern() with over_bluff detection (large_rate>0.55 AND postflop_aggr>0.42) targeting aggressive profiles, strategy.py: pattern_exploit_adjustment() gives +0.05 bluff_catch_boost vs over_bluff, +0.04 vs polarized large bets (lrr>0.75), and -0.03 vs merged, strategy.py: realized_rate fold check modified to (realized_rate + pattern_adj['bluff_catch_boost']) < pot_odds + call_margin — equity-grounded
 - **v25**: v24 weakest vs aggressive opponents at scale (v12 26.67% @150g, v2 33.64% @110g, v11 35.0% @140g, v10 40.77% @130g). Critic blocked pot_odds bypass gates.
 - **v24**: Crossover v18×v23, rating 1666.9. sizing_aggr metric added. Persistent weakness vs tight mid-tier (v15 47.06%, v17 48.82%, v14 49.57%).
 - **v23**: Recovered from v22 regression (WR 0.563) by branching from stable v18; opponent-model EQR + river thin value + pot_odds gate. Critic 7.0.
+
 
