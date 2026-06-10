@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Annotated, TypedDict
@@ -245,23 +246,37 @@ async def run_precommit_eval(args):
         else:
             _use_scheduler = False
 
-    # ── Serial fallback (original loop, preserved verbatim) ──
+    # ── Parallel fallback using asyncio.gather (replaces serial loop) ──
     if not _use_scheduler and opponents:
         if matchups:
-            # We already have some results from scheduler; only run serial for missing opponents
             log_system_event(
                 "pipeline.precommit_eval.fallback", "info",
-                f"v{v}: running serial fallback for {len(opponents)} missing opponent(s)",
+                f"v{v}: running parallel fallback for {len(opponents)} missing opponent(s)",
                 {"version": v, "source_v": source_v, "opponents": [o['name'] for o in opponents]}
             )
         else:
             log_system_event(
-                "pipeline.precommit_eval.serial_start", "info",
-                f"v{v}: scheduler unavailable, running {len(opponents)} serial mirror battle(s)",
+                "pipeline.precommit_eval.parallel_start", "info",
+                f"v{v}: scheduler unavailable, running {len(opponents)} parallel mirror battle(s)",
                 {"version": v, "source_v": source_v, "opponents": [o['name'] for o in opponents], "n_games": n_games}
             )
 
-        for item in opponents:
+        # Semaphore caps concurrent subprocess battles to avoid CPU overwhelm.
+        # Each mirror_battle spawns subprocesses, so they are truly parallel
+        # (not GIL-bound), but too many concurrent battles saturate CPU.
+        max_concurrent = min(len(opponents), os.cpu_count() or 8)
+        _battle_sem = _asyncio.Semaphore(max_concurrent)
+
+        per_game_timeout = max(300, n_games * 120)
+        loop = _asyncio.get_running_loop()
+
+        async def _run_single_mirror_battle(item):
+            """Run one mirror battle in executor with per-opponent timeout.
+
+            Returns a matchup dict with wins/losses/draws populated on success,
+            or with 'error' key set on timeout/exception. Also returns any
+            blockers as a list in the 'blockers' key.
+            """
             opponent = item["name"]
             opponent_main = _bot_main(opponent)
             matchup = {
@@ -272,45 +287,36 @@ async def run_precommit_eval(args):
                 "draws": 0,
                 "n_played": 0,
             }
+            item_blockers = []
             try:
-                loop = _asyncio.get_running_loop()
-                # Per-opponent timeout: scale with n_games (each mirror pair ~90s)
-                per_game_timeout = max(300, n_games * 120)
-                match_wins, draws, n_played, _ = await _asyncio.wait_for(
-                    loop.run_in_executor(
-                        None,
-                        lambda: mirror_battle(
-                            str(candidate_main),
-                            str(opponent_main),
-                            n_games=n_games,
-                            verbose=False,
-                            save_log=False,
+                async with _battle_sem:
+                    match_wins, draws, n_played, _ = await _asyncio.wait_for(
+                        loop.run_in_executor(
+                            None,
+                            lambda _cm=str(candidate_main), _om=str(opponent_main): mirror_battle(
+                                _cm, _om,
+                                n_games=n_games,
+                                verbose=False,
+                                save_log=False,
+                            ),
                         ),
-                    ),
-                    timeout=per_game_timeout,
-                )
+                        timeout=per_game_timeout,
+                    )
                 matchup.update({
                     "wins": int(match_wins[0]),
                     "losses": int(match_wins[1]),
                     "draws": int(draws),
                     "n_played": int(n_played),
                 })
-                total_wins += matchup["wins"]
-                total_losses += matchup["losses"]
-                total_draws += matchup["draws"]
                 if n_played < n_games:
-                    blockers.append({
+                    item_blockers.append({
                         "reason": "incomplete_or_timeout",
                         "opponent": opponent,
                         "details": f"Only {n_played}/{n_games} mirror pairs completed.",
                     })
                 if opponent == parent_name and matchup["wins"] < matchup["losses"]:
-                    # Only block on parent loss if sample is statistically meaningful (>=4 games).
-                    # With n_games=3 (cap), each opponent plays 3 mirror pairs = 6 games total.
-                    # A 1-5 result in 6 games has ~10% chance for a true 50% WR bot — borderline
-                    # but actionable. <4 games is pure noise (e.g. 0-2 in 2 games).
                     if matchup["n_played"] >= 4:
-                        blockers.append({
+                        item_blockers.append({
                             "reason": "lost_to_parent",
                             "opponent": opponent,
                             "details": f"{matchup['wins']}-{matchup['losses']}-{matchup['draws']} in {matchup['n_played']} games",
@@ -323,18 +329,33 @@ async def run_precommit_eval(args):
                         )
             except _asyncio.TimeoutError:
                 matchup["error"] = f"Mirror battle timed out ({per_game_timeout}s limit)"
-                blockers.append({
+                item_blockers.append({
                     "reason": "match_timeout",
                     "opponent": opponent,
                     "details": f"Mirror battle against {opponent} exceeded {per_game_timeout}s timeout",
                 })
             except Exception as exc:
                 matchup["error"] = str(exc)[:500]
-                blockers.append({
+                item_blockers.append({
                     "reason": "match_exception",
                     "opponent": opponent,
                     "details": str(exc)[:500],
                 })
+            matchup["blockers"] = item_blockers
+            return matchup
+
+        # Launch all opponents in parallel via gather
+        matchup_results = await _asyncio.gather(
+            *[_run_single_mirror_battle(item) for item in opponents]
+        )
+
+        # Aggregate results from all parallel matchups
+        for matchup in matchup_results:
+            item_blockers = matchup.pop("blockers", [])
+            blockers.extend(item_blockers)
+            total_wins += matchup["wins"]
+            total_losses += matchup["losses"]
+            total_draws += matchup["draws"]
             matchups.append(matchup)
 
     # --- P0-4: Semantic Interpretation of Battle Results ---

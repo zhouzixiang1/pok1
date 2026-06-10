@@ -1,40 +1,35 @@
 ## OPPONENT_MODELING
-- _is_passive_opponent() 3-factor detection (postflop_aggr ≤0.30 + vpip ≥0.50 + barrel_freq ≤0.35, confidence≥0.25) — validated passive identifier.
-- v18+ dominates passive bots but struggles vs non-passive profiles; structural weapons (light 4-bet, check-raise trap) must be gated by opponent-classification reads (PFR, aggression) — not a parameter-tuning surface.
-- passive_exploit_thin_value bypasses thin_static_showdown_control on turn vs confirmed passive opponents — structural path beyond parameter tuning.
+- v18+ dominates passive bots but struggles vs non-passive profiles; structural weapons must be gated by opponent-classification reads — not a parameter-tuning surface.
 - Per-street big-bet tracking with smooth_rate priors is data input, not fold gate.
-- Opponent-pressure clamp expansions and confidence-weighted sizing-tendency deltas (±0.015–0.050) show no measurable H2H effect through v25. [POSSIBLY EXHAUSTED]
-- sizing_aggr deltas ≥0.08 may produce measurable H2H shifts; inconclusive since v24 without validation through v26. [POSSIBLY EXHAUSTED]
+- Opponent-pressure clamp and sizing-tendency deltas (±0.015–0.050) show no measurable H2H effect through v27. [POSSIBLY EXHAUSTED]
+- sizing_aggr deltas ≥0.08 inconclusive since v24 without validation through v27. [POSSIBLY EXHAUSTED]
+- classify_opponent_sizing_pattern() + pattern_exploit_adjustment() (bet-size pattern classification, bluff_catch_boost) — structural but unvalidated through v27; needs daemon H2H confirmation vs aggressive opponents (v12 most cited target). [POSSIBLY EXHAUSTED]
 
 ## POSTFLOP_STRATEGY
-- should_fold_postflop() is THE primary fold gate. Overrides before it are dangerous and must be validated against existing equity checks; structural exceptions require explicit confidence gating.
+- should_fold_postflop() is THE primary fold gate. Overrides before it are dangerous; structural exceptions require explicit confidence gating.
 - Overlapping fold gates with close thresholds create redundancy — use unified threshold tables or priority-ordered gates.
 - Draw call margins must be grounded in equity math vs pot odds. Use has_draw guards in tier-based fold systems.
-- Unconditional river fold (including small bets) is exploitable — opponent can min-bet with air and bot folds bottom/middle pair.
-- Check-raise trap on dry flops needs safety threshold on opponent confidence before trapping.
-- New river/pot-odds fold gates must be validated against existing should_fold_postflop() and realized_postflop_equity checks before insertion; v25 critic flagged bypass risk when gates precede jam_odds/shove_odds.
+- Unconditional river fold (including small bets) is exploitable — opponent can min-bet with air.
+- Check-raise trap on dry flops needs safety threshold on opponent confidence.
+- New river/pot-odds fold gates must validate against existing should_fold_postflop() and realized_postflop_equity before insertion.
 
 ## BLUFF_CALIBRATION
 
 ## PARAMETER_TUNING
 - Postflop sizing ratios (flop 0.60, turn 0.70, river 0.85) well-tuned. sizing_aggr enables opponent-aware sizing.
 - Preflop 3bet threshold 0.60 (TT+, AKs) solid. Never call off 100BB with 51% hand vs over-shove.
-- Fold margin / clamp / EQR / SPR-commitment fold guard tuning repeatedly attempted with no measurable gain through v25. [POSSIBLY EXHAUSTED]
-- passive_opponent_exploit_bonus (capped 0.08, confidence≥0.20) — gate wider thresholds behind higher confidence (≥0.35) if regresses vs aggressive bots.
+- Fold margin / clamp / EQR / SPR-commitment fold guard tuning repeatedly attempted with no measurable gain through v27. [POSSIBLY EXHAUSTED]
 
 ## GENERAL
 - Worker role boundaries CRITICAL: Tuner must change ≥1 constant; Architect must NOT touch constants.
 - Crossover bots need full pipeline (gates→review→critic→commit→archivist) for git tags and version tracking.
 - Trust early negative critic signals — first-rejection scores often more accurate than retry approvals.
-- H2H weakness data unreliable with small samples (<100 games). Use directional signal only; require ≥100-game backing before committing.
-- Single-file crossover is clean and low-risk when combining genuinely new structural features; target divergence in 1-2 files.
-- Crossover recombination of v15/v18 lineages produced v24 (rating 1666.9) but shows diminishing returns; future crossovers need genuinely new structural features. [POSSIBLY EXHAUSTED]
-- Avoid branching from regressed versions — v22 texture-gated system regressed to WR 0.563; v23 recovered by branching from stable v18 with opponent-model EQR + river thin value + pot_odds gate (Critic 7.0).
-- Unvalidated H2H weakness claims require daemon confirmation; v25 worker produced pure parameter tweaks without structural response.
+- H2H weakness data unreliable with small samples (<100 games). Use directional signal only; require ≥100-game backing.
+- Single-file crossover is clean and low-risk when combining genuinely new structural features.
+- Crossover recombination of v15/v18 lineages shows diminishing returns; future crossovers need genuinely new structural features. [POSSIBLY EXHAUSTED]
+- Unvalidated H2H weakness claims require daemon confirmation; workers producing pure parameter tweaks without structural response waste generations.
 
 ## RECENT_LESSONS
-- **v26**: Pivoting from [POSSIBLY EXHAUSTED] tuning directions to structural opponent-modeling (bet-size pattern classifiers) satisfies Critic where threshold tweaks fail; 4.0→7.0 recovered in same generation by replacing rejected gates with genuinely new structural mechanisms.
-- **v26**: New `classify_opponent_sizing_pattern()` detects over_bluff (large_rate>0.55 AND postflop_aggr>0.42); `pattern_exploit_adjustment()` applies equity-grounded bluff_catch_boost (+0.05 over_bluff, +0.04 polarized, -0.03 merged) to realized_rate fold check.
-- **v26**: Validate over-bluff pattern classifier vs claude_v12 once daemon H2H data accumulates (v12 = most cited aggressive opponent target).
-- **v25**: v24 weakest vs aggressive opponents at scale (v12 26.67% @150g, v2 33.64% @110g, v11 35.0% @140g, v10 40.77% @130g). Critic blocked pot_odds bypass gates.
-- **v24**: Crossover v18×v23, rating 1666.9. sizing_aggr metric added. Persistent weakness vs tight mid-tier (v15 47.06%, v17 48.82%, v14 49.57%).
+- **v26**: Pivoting from [POSSIBLY EXHAUSTED] tuning to structural opponent-modeling (bet-size pattern classifiers) satisfies Critic where threshold tweaks fail; 4.0→7.0 recovered by replacing rejected gates with genuinely new structural mechanisms.
+- **v26**: classify_opponent_sizing_pattern() detects over_bluff (large_rate>0.55 AND postflop_aggr>0.42); pattern_exploit_adjustment() applies bluff_catch_boost (+0.05 over_bluff, +0.04 polarized, -0.03 merged). Unvalidated — needs daemon H2H data. [POSSIBLY EXHAUSTED]
+- **v25**: v24 weakest vs aggressive opponents at scale (v12 26.67% @150g, v2 33.64% @110g, v11 35.0% @140g). Critic blocked pot_odds bypass gates.

@@ -37,6 +37,28 @@ def patch_scheduler_files(monkeypatch, tmp_path):
     monkeypatch.setattr(battle_scheduler, "BATTLE_RESULTS_FILE", tmp_path / "battle_results.jsonl")
 
 
+@pytest.fixture(autouse=True)
+def mock_precommit_semantic(monkeypatch):
+    """Mock _run_precommit_semantic to prevent real LLM API calls.
+
+    The audit_agents._run_precommit_semantic calls run_claude_query which
+    makes real Claude API calls and hangs forever in tests.
+    Safe default: recommended_action="proceed" (non-blocking).
+    """
+    async def _fake_semantic(v, source_v, matchups, master_plan, ui):
+        return {
+            "win_pattern_analysis": "",
+            "top_opponent_assessment": "",
+            "regression_semantics": "safe",
+            "recommended_action": "proceed",
+            "confidence": "low",
+        }
+
+    # Patch on the audit_agents module so the import inside tool_eval finds it
+    import audit_agents
+    monkeypatch.setattr(audit_agents, "_run_precommit_semantic", _fake_semantic)
+
+
 @pytest.fixture
 def mock_ui():
     """Return a mock UI object with log_history."""
@@ -51,9 +73,11 @@ def mock_checkpoint():
     return {
         "version": 99,
         "source_v": 98,
-        "quality_gate": {"passed": True},
-        "review_gate": {"passed": True},
-        "critic_gate": {"passed": True},
+        "gate_results": {
+            "quality": {"all_passed": True, "critical_scenarios_passed": True},
+            "review": {"approved": True},
+            "critic": {"approved": True, "score": 7},
+        },
     }
 
 
@@ -181,10 +205,7 @@ class TestSchedulerPathUsedWhenCapable:
         monkeypatch.setattr(battle_scheduler, "collect_results", fake_collect)
 
         # Patch mirror_battle so serial path is never hit
-        monkeypatch.setattr(
-            "engine.mirror_battle",
-            lambda *a, **k: (_raise("should not be called"),),
-        )
+        _patch_mirror_battle(monkeypatch, lambda *a, **k: (_raise("should not be called"),))
 
         result = await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 3})
         text = result["content"][0]["text"]
@@ -213,7 +234,7 @@ class TestSchedulerPathUsedWhenCapable:
             serial_calls.append((a, b, n_games))
             return ([2, 1], 0, n_games, None)
 
-        monkeypatch.setattr("engine.mirror_battle", fake_mirror)
+        _patch_mirror_battle(monkeypatch, fake_mirror)
 
         result = await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 3})
         text = result["content"][0]["text"]
@@ -241,7 +262,7 @@ class TestSchedulerPathUsedWhenCapable:
             serial_calls.append((a, b, n_games))
             return ([1, 2], 0, n_games, None)
 
-        monkeypatch.setattr("engine.mirror_battle", fake_mirror)
+        _patch_mirror_battle(monkeypatch, fake_mirror)
 
         def fake_submit(jobs):
             return [j.job_id for j in jobs]
@@ -267,6 +288,25 @@ class TestSchedulerPathUsedWhenCapable:
             }
 
         monkeypatch.setattr(battle_scheduler, "collect_results", fake_collect)
+
+        # Mock time so the polling loop runs at least once then exits.
+        # Calls 1-2: submitted_at for each BattleJob
+        # Call 3: deadline calculation
+        # Call 4: while loop check (should return small so loop enters)
+        # Call 5+: return large to exceed deadline → loop exits
+        import tool_eval
+        _call_count = [0]
+        class _FakeTime:
+            def time(self):
+                _call_count[0] += 1
+                if _call_count[0] <= 4:
+                    return 100.0
+                return 999999.0
+        monkeypatch.setattr(tool_eval, "time", _FakeTime())
+
+        # Speed up polling sleep
+        _real_sleep = asyncio.sleep
+        monkeypatch.setattr(asyncio, "sleep", lambda t: _real_sleep(0))
 
         result = await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 3})
         text = result["content"][0]["text"]
@@ -296,7 +336,7 @@ class TestSchedulerPathUsedWhenCapable:
         def fake_mirror(a, b, n_games=1, verbose=False, save_log=False):
             return ([2, 1], 0, n_games, None)
 
-        monkeypatch.setattr("engine.mirror_battle", fake_mirror)
+        _patch_mirror_battle(monkeypatch, fake_mirror)
 
         def fake_submit(jobs):
             return [j.job_id for j in jobs]
@@ -352,7 +392,7 @@ class TestSchedulerPathUsedWhenCapable:
             serial_calls.append((a, b, n_games))
             return ([2, 1], 0, n_games, None)
 
-        monkeypatch.setattr("engine.mirror_battle", fake_mirror)
+        _patch_mirror_battle(monkeypatch, fake_mirror)
 
         def fake_submit(_jobs):
             raise RuntimeError("Pending job limit exceeded")
@@ -382,7 +422,7 @@ class TestSchedulerPathUsedWhenCapable:
             events.append({"type": event_type, "level": level, "message": message})
             return original_log(event_type, level, message, extra)
 
-        monkeypatch.setattr(system_log, "log_system_event", capture_event)
+        monkeypatch.setattr("tool_eval.log_system_event", capture_event)
         monkeypatch.setattr("tool_eval.is_daemon_scheduler_capable", lambda: True)
         monkeypatch.setattr("tool_eval._matching_checkpoint", lambda _v, _sv: mock_checkpoint)
         monkeypatch.setattr("tool_eval._get_ui", lambda: mock_ui)
@@ -407,10 +447,7 @@ class TestSchedulerPathUsedWhenCapable:
             }
 
         monkeypatch.setattr(battle_scheduler, "collect_results", fake_collect)
-        monkeypatch.setattr(
-            "engine.mirror_battle",
-            lambda *a, **k: (_raise("should not be called"),),
-        )
+        _patch_mirror_battle(monkeypatch, lambda *a, **k: (_raise("should not be called"),))
 
         await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 3})
 
@@ -436,7 +473,7 @@ class TestSchedulerPathUsedWhenCapable:
             serial_calls.append((a, b, n_games))
             return ([2, 1], 0, n_games, None)
 
-        monkeypatch.setattr("engine.mirror_battle", fake_mirror)
+        _patch_mirror_battle(monkeypatch, fake_mirror)
 
         def fake_submit(jobs):
             return [j.job_id for j in jobs]
@@ -446,9 +483,27 @@ class TestSchedulerPathUsedWhenCapable:
         # Never return results → timeout → fallback
         monkeypatch.setattr(battle_scheduler, "collect_results", lambda _ids: {})
 
-        # Speed up polling so test doesn't take forever
+        # Mock time so the polling loop exits quickly after deadline.
+        # The code calls time.time() in several places before the while loop:
+        #   - submitted_at for each BattleJob (2 opponents = 2 calls)
+        #   - deadline = time.time() + per_game_timeout * len(opponents) (1 call)
+        # So the first 3 calls should return a small value so deadline is reasonable,
+        # then subsequent calls return a large value to exceed deadline.
+        # With 2 opponents: deadline = 100.0 + max(300,1*120)*2 = 100 + 600 = 700
         import tool_eval
-        monkeypatch.setattr(tool_eval, "time", lambda: 0)
+        _call_count = [0]
+        class _FakeTime:
+            def time(self):
+                _call_count[0] += 1
+                if _call_count[0] <= 3:
+                    return 100.0   # deadline = 100 + 600 = 700
+                return 999999.0    # way past deadline → loop exits
+        monkeypatch.setattr(tool_eval, "time", _FakeTime())
+
+        # Speed up polling sleep so test doesn't actually wait.
+        # Save original before patching to avoid infinite recursion.
+        _real_sleep = asyncio.sleep
+        monkeypatch.setattr(asyncio, "sleep", lambda t: _real_sleep(0))
 
         result = await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 1})
         text = result["content"][0]["text"]
@@ -472,7 +527,7 @@ class TestSchedulerPathUsedWhenCapable:
         def fake_mirror(a, b, n_games=1, verbose=False, save_log=False):
             return ([0, 3], 0, n_games, None)
 
-        monkeypatch.setattr("engine.mirror_battle", fake_mirror)
+        _patch_mirror_battle(monkeypatch, fake_mirror)
 
         def fake_submit(jobs):
             return [j.job_id for j in jobs]
@@ -513,3 +568,15 @@ class TestSchedulerPathUsedWhenCapable:
 
 def _raise(msg):
     raise AssertionError(msg)
+
+
+def _patch_mirror_battle(monkeypatch, fn):
+    """Patch mirror_battle on the engine.battle module.
+
+    String-based monkeypatch like "engine.battle.mirror_battle" fails because
+    engine.__init__ re-exports the 'battle' function, so engine.battle resolves
+    to the function, not the module.  We must patch via sys.modules instead.
+    """
+    import engine.battle as _mod  # noqa: F811 – forces module into sys.modules
+    _battle_module = sys.modules["engine.battle"]
+    monkeypatch.setattr(_battle_module, "mirror_battle", fn)

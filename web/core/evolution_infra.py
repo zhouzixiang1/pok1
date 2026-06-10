@@ -87,6 +87,10 @@ STAGE_GATE_ALLOWLIST = {
 
 EVOLUTION_BRANCH = "main"
 
+# Watchdog: if no pipeline stage change occurs within this many seconds,
+# the orchestrator watchdog will clear the session and restart from checkpoint.
+WATCHDOG_TIMEOUT = 1200  # 20 minutes
+
 # MCP servers to block for sub-agents (keep zai-mcp-server for vision, block the rest)
 _BLOCKED_MCP_TOOLS = [
     "mcp__web-reader__webReader",
@@ -217,6 +221,17 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         if audit_context is not None:
             existing_audit_context.update(audit_context)
 
+        # Merge last_stage_change_ts: take max of existing vs current time.
+        # This preserves the most recent genuine stage-change time on partial re-writes
+        # (e.g. gate_results update without stage change).
+        existing_stage_ts = 0.0
+        if existing:
+            existing_stage_ts = existing.get("last_stage_change_ts", 0.0)
+        now_ts = time.time()
+        # Only bump the timestamp if the stage actually changed
+        old_stage = existing.get("stage") if existing else None
+        new_stage_ts = now_ts if (old_stage != stage) else existing_stage_ts
+
         state = {
             "next_v": next_v, "source_v": source_v, "stage": stage,
             "master_plan": existing_master_plan, "reviewer_feedback": existing_reviewer_feedback,
@@ -227,6 +242,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "direction_audit": existing_direction_audit,
             "audit_context": existing_audit_context,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "last_stage_change_ts": new_stage_ts,
         }
 
         # Atomic write: tmp + fsync + rename, all under the same lock

@@ -7,6 +7,7 @@ log rotation, and rate-limit detection.
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 log = logging.getLogger("pok.orchestrator")
@@ -85,6 +86,30 @@ def _startup_recovery(ui=None) -> dict:
 
     stage = checkpoint.get("stage", "unknown")
     next_v = checkpoint.get("next_v")
+
+    # Watchdog recovery: if checkpoint is stale (no stage change for > WATCHDOG_TIMEOUT)
+    # and we're at a recoverable stage, treat as stale session and force new LLM session.
+    recoverable_stages = {"direction_audited", "master_planned", "workers_done",
+                          "quality_passed", "reviewed", "critic_checked", "verified"}
+    last_stage_ts = checkpoint.get("last_stage_change_ts", 0.0)
+    if stage in recoverable_stages and last_stage_ts > 0:
+        from evolution_infra import WATCHDOG_TIMEOUT
+        elapsed = time.time() - last_stage_ts
+        if elapsed > WATCHDOG_TIMEOUT:
+            msg = (f"[Watchdog Recovery] v{next_v} at stage '{stage}' with no progress "
+                   f"for {elapsed:.0f}s (>{WATCHDOG_TIMEOUT}s). Clearing stale session, "
+                   f"will resume from checkpoint with new LLM session.")
+            if ui:
+                ui.log_history(msg, "warn")
+            else:
+                log.warning(msg)
+            from system_log import log_system_event
+            log_system_event("pipeline.watchdog_recovery", "warn", msg,
+                             {"next_v": next_v, "stage": stage, "elapsed_s": round(elapsed, 1),
+                              "watchdog_timeout": WATCHDOG_TIMEOUT})
+            # Clear session to force new LLM conversation, but keep checkpoint for stage resume
+            _clear_orchestrator_session()
+            # Fall through to recovery below — session_id will be None → Case B
 
     # archived, prepared with no master_plan, or timed_out = no real work to recover
     if stage == "timed_out":

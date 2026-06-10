@@ -42,6 +42,11 @@ import logging
 
 log = logging.getLogger("pok.orchestrator")
 
+# Module-level flag set by the watchdog coroutine when it detects a stuck pipeline.
+# The main orchestrator_loop checks this flag at the top of each iteration and forces
+# a fresh _run_one_cycle (discarding the stale session) when set.
+_watchdog_triggered = False
+
 ORCHESTRATOR_PROMPT = (Path(__file__).parent / "prompts" / "orchestrator.md").read_text()
 LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
 
@@ -359,6 +364,76 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
     return total_cost
 
 
+async def _watchdog_coroutine(ui, shutdown_mgr, check_interval=60):
+    """Background coroutine that monitors pipeline_state.json for stuck stages.
+
+    Every `check_interval` seconds, reads the pipeline checkpoint and checks
+    `last_stage_change_ts`. If more than WATCHDOG_TIMEOUT seconds have elapsed
+    with no stage change, clears the orchestrator session and sets the
+    _watchdog_triggered flag so the main loop will restart from the checkpoint.
+
+    Only triggers when:
+      - A session file exists (orchestrator is actively running a cycle)
+      - The checkpoint stage is in the recoverable set
+      - No stage change for > WATCHDOG_TIMEOUT seconds
+    """
+    global _watchdog_triggered
+    from evolution_infra import WATCHDOG_TIMEOUT
+    from evolution_core import read_pipeline_checkpoint
+
+    recoverable_stages = {"direction_audited", "master_planned", "workers_done",
+                          "quality_passed", "reviewed", "critic_checked", "verified"}
+
+    while True:
+        if shutdown_mgr and shutdown_mgr.is_shutting_down:
+            return
+        try:
+            await asyncio.sleep(check_interval)
+            if shutdown_mgr and shutdown_mgr.is_shutting_down:
+                return
+
+            # Only trigger if orchestrator session exists (cycle is active)
+            session_id = _load_orchestrator_session()
+            if not session_id:
+                continue
+
+            checkpoint = read_pipeline_checkpoint()
+            if not checkpoint:
+                continue
+
+            stage = checkpoint.get("stage", "unknown")
+            if stage not in recoverable_stages:
+                continue
+
+            last_ts = checkpoint.get("last_stage_change_ts", 0.0)
+            if last_ts <= 0:
+                continue
+
+            elapsed = time.time() - last_ts
+            if elapsed > WATCHDOG_TIMEOUT:
+                next_v = checkpoint.get("next_v", "?")
+                msg = (f"[Watchdog] Pipeline stuck at '{stage}' for v{next_v} "
+                       f"({elapsed:.0f}s > {WATCHDOG_TIMEOUT}s). "
+                       f"Clearing session to force restart.")
+                if ui:
+                    ui.log_history(msg, "warn")
+                else:
+                    log.warning(msg)
+                log_system_event("pipeline.watchdog_recovery", "warn",
+                                 "Watchdog triggered: clearing stale orchestrator session",
+                                 {"next_v": next_v, "stage": stage,
+                                  "elapsed_s": round(elapsed, 1),
+                                  "watchdog_timeout": WATCHDOG_TIMEOUT})
+                _clear_orchestrator_session()
+                _watchdog_triggered = True
+                # Exit — the main loop will detect the flag and restart
+                return
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            log.debug("Watchdog check error (non-fatal): %s", e)
+
+
 async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_workers=None, daemon_pairs=5):
     """Orchestrator entry point — three-phase generation loop.
 
@@ -416,10 +491,43 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
     # Startup recovery — assess interrupted state
     recovery = _startup_recovery(ui)
 
+    # Launch background watchdog coroutine to detect stuck pipelines
+    _watchdog_task = asyncio.create_task(
+        _watchdog_coroutine(ui, shutdown_mgr, check_interval=60)
+    )
+
     try:
         while True:
             if shutdown_mgr and shutdown_mgr.is_shutting_down:
                 break
+
+            # Watchdog recovery: if background watchdog detected a stuck pipeline,
+            # clear state and force a fresh cycle from the checkpoint stage.
+            global _watchdog_triggered
+            if _watchdog_triggered:
+                _watchdog_triggered = False
+                if ui:
+                    ui.log_history("[Watchdog] Restarting cycle from checkpoint stage.", "warn")
+                # Re-read checkpoint to get current stage, construct recovery context
+                from evolution_core import read_pipeline_checkpoint
+                ckpt = read_pipeline_checkpoint()
+                if ckpt and ckpt.get("stage") not in ("archived", "timed_out"):
+                    from generation_scheduler import GenerationContext
+                    parent2_v = ckpt.get("parent2_v")
+                    strategy = "crossover" if parent2_v else "master"
+                    recovery = {
+                        "action": "resume",
+                        "checkpoint": ckpt,
+                        "session_id": None,  # Force new LLM session
+                        "stage": ckpt.get("stage"),
+                        "next_v": ckpt.get("next_v"),
+                        "source_v": ckpt.get("source_v"),
+                    }
+                # Restart watchdog for the new cycle
+                if _watchdog_task.done():
+                    _watchdog_task = asyncio.create_task(
+                        _watchdog_coroutine(ui, shutdown_mgr, check_interval=60)
+                    )
 
             # 429 quota exhaustion check — block until reset, then resume
             from rate_limiter import rate_limiter
@@ -554,6 +662,12 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
         except Exception:
             pass
     finally:
+        if not _watchdog_task.done():
+            _watchdog_task.cancel()
+            try:
+                await _watchdog_task
+            except asyncio.CancelledError:
+                pass
         if _daemon_stop is not None:
             _daemon_stop.set()
         # Don't stop daemon — it runs independently and survives orchestrator restarts
