@@ -12,15 +12,27 @@ from evolution_infra import (
 )
 
 
-def verify_code(directory):
+def verify_code(directory, target_files=None):
+    """Verify Python files compile. When target_files is given, only check those
+    files instead of walking the entire directory — avoids false compile errors
+    from other workers mid-edit in parallel mode."""
     errors = []
-    for root, _, files in os.walk(directory):
-        for f in files:
-            if f.endswith(".py"):
-                path = os.path.join(root, f)
+    if target_files:
+        for tf in target_files:
+            path = os.path.join(directory, tf) if not os.path.isabs(tf) else tf
+            if os.path.exists(path) and path.endswith(".py"):
                 proc = subprocess.run([sys.executable, "-m", "py_compile", path], capture_output=True, text=True)
                 if proc.returncode != 0:
                     errors.append(proc.stderr.strip())
+    else:
+        # Original behavior unchanged - walk entire directory
+        for root, _, files in os.walk(directory):
+            for f in files:
+                if f.endswith(".py"):
+                    path = os.path.join(root, f)
+                    proc = subprocess.run([sys.executable, "-m", "py_compile", path], capture_output=True, text=True)
+                    if proc.returncode != 0:
+                        errors.append(proc.stderr.strip())
     return errors
 
 

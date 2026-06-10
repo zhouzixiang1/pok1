@@ -348,7 +348,7 @@ def _get_glicko_leader_v(ratings):
     """Return the version number of the highest-rated active bot."""
     if not ratings:
         return None
-    best_bot = max(ratings, key=lambda b: ratings[b].get("r", 0))
+    best_bot = max(ratings, key=lambda b: ratings[b].r)
     try:
         return int(best_bot.split("_v")[1])
     except (ValueError, IndexError):

@@ -239,7 +239,7 @@ def reconstruct_state(req):
     opponent_allin = allin[opponent_id] and alive[opponent_id]
     my_round_bet = 0 if player_bets[my_id] < 0 else player_bets[my_id]
     to_call = max(0, round_bet - my_round_bet)
-    min_raise_action = max(0, 2 * last_raise_to - my_round_bet + 1)
+    min_raise_action = max(0, 2 * last_raise_to - my_round_bet)
     allin_call_amount = max(
         0,
         min(committed[opponent_id], committed[my_id] + stacks[my_id]) - committed[my_id],
