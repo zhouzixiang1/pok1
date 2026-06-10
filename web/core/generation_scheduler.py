@@ -516,3 +516,27 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
         except Exception as e:
             if ui:
                 ui.log_history(f"Experience consolidation failed: {e}", "warn")
+
+    # Exploitability probes against the new bot
+    if shutdown_mgr and shutdown_mgr.is_shutting_down:
+        return
+    try:
+        from exploitability_prober import run_exploitability_probes_async
+        from evolution_infra import get_bot_dir
+        new_bot_dir = get_bot_dir(f"claude_v{ctx.next_v}")
+        new_bot_main = new_bot_dir / "main.py"
+        if new_bot_main.exists():
+            probe_result = await run_exploitability_probes_async(
+                str(new_bot_main), num_hands=10, workers=2, ui=ui,
+            )
+            overall = probe_result.get("overall_score", 0.5)
+            weaknesses = probe_result.get("weaknesses", [])
+            log_system_event(
+                "pipeline.exploitability_probe", "info",
+                f"v{ctx.next_v} exploitability: {overall:.2f}/1.0, {len(weaknesses)} weaknesses",
+                {"version": ctx.next_v, "overall_score": overall, "weaknesses": weaknesses},
+            )
+    except Exception as e:
+        log.warning("Exploitability probe failed: %s\n%s", e, traceback.format_exc())
+        if ui:
+            ui.log_history(f"Exploitability probe failed: {e}", "warn")
