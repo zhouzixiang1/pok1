@@ -20,6 +20,17 @@ import multiprocessing
 from collections import Counter, deque
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
+
+# Battle Scheduler integration (optional)
+try:
+    from battle_scheduler import (
+        drain_pending_jobs,
+        requeue_unclaimed_on_startup,
+        write_result,
+    )
+    _SCHEDULER_AVAILABLE = True
+except Exception:
+    _SCHEDULER_AVAILABLE = False
 from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime
 
@@ -521,13 +532,29 @@ def main():
     import multiprocessing as _mp
     mp_ctx = _mp.get_context("spawn")
     executor = ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_ctx)
-    in_flight = {}  # future -> (bot_a, bot_b)
+    in_flight = {}  # future -> (bot_a, bot_b) or (bot_a, bot_b, ext_job_id)
+
+    # External job queue state
+    _external_job_ids = set()
+    _first_iteration = True
+    _capacity = max(1, n_workers // 4)
 
     # Fill initial pool
     while len(in_flight) < n_workers and match_queue:
         m = match_queue.popleft()
-        fut = executor.submit(run_single_match, m)
-        in_flight[fut] = (m[0], m[1])
+        # Detect external jobs: ("external", job_id, a, b, path_a, path_b, n_pairs)
+        is_external = len(m) == 7 and m[0] == "external"
+        if is_external:
+            exec_args = m[2:7]
+            ext_job_id = m[1]
+            fut = executor.submit(run_single_match, exec_args)
+            in_flight[fut] = (exec_args[0], exec_args[1], ext_job_id)
+            _external_job_ids.add(frozenset({exec_args[0], exec_args[1]}))
+        else:
+            if m[0] not in active_bots or m[1] not in active_bots:
+                continue
+            fut = executor.submit(run_single_match, m)
+            in_flight[fut] = (m[0], m[1])
 
     games_since_save = 0
     last_save_time = time.time()
@@ -542,10 +569,53 @@ def main():
         while running and in_flight and recovery_count < MAX_POOL_RECOVERIES:
             try:
                 while running and in_flight:
+                    # Poll external job queue
+                    if _SCHEDULER_AVAILABLE:
+                        ext_in_queue = sum(
+                            1 for m in match_queue if len(m) == 7 and m[0] == "external"
+                        )
+                        if ext_in_queue < _capacity:
+                            if _first_iteration:
+                                recovered = requeue_unclaimed_on_startup()
+                                for job in recovered:
+                                    match_queue.appendleft(job)
+                            pending = drain_pending_jobs()
+                            for job in pending:
+                                match_queue.appendleft(job)
+                            _first_iteration = False
+
                     done, _ = wait(in_flight.keys(), timeout=POLL_TIMEOUT, return_when=FIRST_COMPLETED)
 
                     for fut in done:
-                        a, b = in_flight.pop(fut)
+                        entry = in_flight.pop(fut)
+                        is_external = len(entry) == 3
+                        if is_external:
+                            a, b, ext_job_id = entry
+                            _external_job_ids.discard(frozenset({a, b}))
+                            try:
+                                result = fut.result()
+                                if _SCHEDULER_AVAILABLE:
+                                    write_result(
+                                        ext_job_id,
+                                        {
+                                            "bot_a": a,
+                                            "bot_b": b,
+                                            "result": result,
+                                        },
+                                    )
+                            except Exception as e:
+                                if _SCHEDULER_AVAILABLE:
+                                    write_result(
+                                        ext_job_id,
+                                        {
+                                            "bot_a": a,
+                                            "bot_b": b,
+                                            "error": str(e),
+                                        },
+                                    )
+                            continue
+
+                        a, b = entry
                         # Skip results for bots that have been reaped
                         if a not in active_bots or b not in active_bots:
                             try:
@@ -563,10 +633,18 @@ def main():
                         # Replenish: submit next match
                         if match_queue and executor is not None:
                             m = match_queue.popleft()
-                            if m[0] not in active_bots or m[1] not in active_bots:
-                                continue
-                            new_fut = executor.submit(run_single_match, m)
-                            in_flight[new_fut] = (m[0], m[1])
+                            is_ext = len(m) == 7 and m[0] == "external"
+                            if is_ext:
+                                exec_args = m[2:7]
+                                ext_job_id = m[1]
+                                new_fut = executor.submit(run_single_match, exec_args)
+                                in_flight[new_fut] = (exec_args[0], exec_args[1], ext_job_id)
+                                _external_job_ids.add(frozenset({exec_args[0], exec_args[1]}))
+                            else:
+                                if m[0] not in active_bots or m[1] not in active_bots:
+                                    continue
+                                new_fut = executor.submit(run_single_match, m)
+                                in_flight[new_fut] = (m[0], m[1])
                         elif executor is not None:
                             # Refill queue when empty
                             matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
@@ -574,10 +652,18 @@ def main():
                                 match_queue.append((ma, mb, bot_path(ma), bot_path(mb), n_pairs))
                             if match_queue:
                                 m = match_queue.popleft()
-                                if m[0] not in active_bots or m[1] not in active_bots:
-                                    continue
-                                new_fut = executor.submit(run_single_match, m)
-                                in_flight[new_fut] = (m[0], m[1])
+                                is_ext = len(m) == 7 and m[0] == "external"
+                                if is_ext:
+                                    exec_args = m[2:7]
+                                    ext_job_id = m[1]
+                                    new_fut = executor.submit(run_single_match, exec_args)
+                                    in_flight[new_fut] = (exec_args[0], exec_args[1], ext_job_id)
+                                    _external_job_ids.add(frozenset({exec_args[0], exec_args[1]}))
+                                else:
+                                    if m[0] not in active_bots or m[1] not in active_bots:
+                                        continue
+                                    new_fut = executor.submit(run_single_match, m)
+                                    in_flight[new_fut] = (m[0], m[1])
 
                     # Periodic save
                     try:
@@ -625,14 +711,20 @@ def main():
                                 if b not in ratings:
                                     ratings[b] = Glicko2Player()
                             active_bots = new_bots
-                            # Filter match_queue and cancel in-flight futures for reaped bots
+                            # Filter match_queue: preserve external jobs (len==7, m[0]=="external")
                             if removed:
                                 match_queue = deque(
                                     m for m in match_queue
-                                    if m[0] not in removed and m[1] not in removed
+                                    if (len(m) == 7 and m[0] == "external")
+                                    or (m[0] not in removed and m[1] not in removed)
                                 )
                                 for fut in list(in_flight):
-                                    a, b = in_flight[fut]
+                                    entry = in_flight[fut]
+                                    is_ext = len(entry) == 3
+                                    if is_ext:
+                                        a, b, _ = entry
+                                    else:
+                                        a, b = entry
                                     if a in removed or b in removed:
                                         fut.cancel()
                                         del in_flight[fut]
@@ -669,10 +761,16 @@ def main():
                             if removed:
                                 match_queue = deque(
                                     m for m in match_queue
-                                    if m[0] not in removed and m[1] not in removed
+                                    if (len(m) == 7 and m[0] == "external")
+                                    or (m[0] not in removed and m[1] not in removed)
                                 )
                                 for fut in list(in_flight):
-                                    fa, fb = in_flight[fut]
+                                    entry = in_flight[fut]
+                                    is_ext = len(entry) == 3
+                                    if is_ext:
+                                        fa, fb, _ = entry
+                                    else:
+                                        fa, fb = entry
                                     if fa in removed or fb in removed:
                                         fut.cancel()
                                         del in_flight[fut]
@@ -685,12 +783,26 @@ def main():
             except (BrokenProcessPool, ConnectionRefusedError, OSError) as e:
                 recovery_count += 1
                 log.error("ProcessPool broken (recovery %d/%d): %s", recovery_count, MAX_POOL_RECOVERIES, e)
+                # Write error results for any external jobs before clearing
                 for fut in list(in_flight):
+                    entry = in_flight[fut]
+                    if len(entry) == 3:
+                        a, b, ext_job_id = entry
+                        if _SCHEDULER_AVAILABLE:
+                            write_result(
+                                ext_job_id,
+                                {
+                                    "bot_a": a,
+                                    "bot_b": b,
+                                    "error": "daemon_pool_broken",
+                                },
+                            )
                     try:
                         fut.result(timeout=1)
                     except Exception:
                         pass
                 in_flight.clear()
+                _external_job_ids.clear()
                 try:
                     executor.shutdown(wait=False, cancel_futures=True)
                 except Exception:
@@ -700,6 +812,7 @@ def main():
                     mp_ctx = _mp.get_context("spawn")
                     executor = ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_ctx)
                     match_queue = deque()
+                    # Rebuild internal matches only; external jobs requeued via startup
                     matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
                     for a, b in matches:
                         match_queue.append((a, b, bot_path(a), bot_path(b), n_pairs))

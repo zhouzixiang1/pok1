@@ -82,7 +82,7 @@ def start_daemon(workers=None, pairs=5):
             start_new_session=True,  # Independent process group for clean killpg
         )
         tmp_pid = daemon_pid_file.with_suffix(".tmp")
-        tmp_pid.write_text(json.dumps({"pid": daemon_proc.pid, "ppid": os.getpid()}))
+        tmp_pid.write_text(json.dumps({"pid": daemon_proc.pid, "ppid": os.getpid(), "scheduler_capable": True}))
         os.replace(str(tmp_pid), str(daemon_pid_file))
     # Drain daemon stdout to prevent pipe buffer deadlock
     threading.Thread(target=_drain_stdout, args=(daemon_proc,), daemon=True).start()
@@ -172,6 +172,22 @@ def is_daemon_alive():
     with _daemon_lock:
         proc = daemon_proc
     return proc is not None and proc.poll() is None
+
+
+def is_daemon_scheduler_capable():
+    """Check if the running daemon was started with scheduler capability."""
+    from evolution_infra import RESULTS_DIR
+    daemon_pid_file = RESULTS_DIR / ".daemon_pid"
+    if not daemon_pid_file.exists():
+        return False
+    try:
+        raw = daemon_pid_file.read_text().strip()
+        if raw.isdigit():
+            return False
+        info = json.loads(raw)
+        return info.get("scheduler_capable", False)
+    except (json.JSONDecodeError, KeyError, TypeError, OSError):
+        return False
 
 
 def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
