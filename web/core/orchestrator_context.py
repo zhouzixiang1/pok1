@@ -170,6 +170,29 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
     lines.append("\nAVAILABLE TOOLS (call by exact name):")
     lines.append("  prepare_next_gen | run_direction_audit | run_master | execute_workers | run_quality_gates | run_review | run_critic | run_precommit_eval | commit_bot | run_archivist | run_crossover")
 
+    # Current bot action stats (fold/call/raise frequencies by street)
+    bot_action_stats_file = RESULTS_DIR / "bot_action_stats.json"
+    if bot_action_stats_file.exists():
+        try:
+            with open(bot_action_stats_file, "r") as f:
+                action_stats = json.load(f)
+            bot_stats = action_stats.get(bot_name)
+            if bot_stats:
+                lines.append(f"\nCurrent bot action stats ({bot_name}):")
+                for street in ("preflop", "flop", "turn", "river"):
+                    st = bot_stats.get(street)
+                    if st:
+                        total = st.get("total", 0)
+                        if total > 0:
+                            fold_pct = st.get("fold", 0) / total * 100
+                            call_pct = st.get("call", 0) / total * 100
+                            raise_pct = st.get("raise", 0) / total * 100
+                            lines.append(
+                                f"  {street}: total={total}, fold={fold_pct:.1f}%, call={call_pct:.1f}%, raise={raise_pct:.1f}%"
+                            )
+        except Exception:
+            pass
+
     # Current bot rating reliability
     cur_p = ratings.get(f"claude_v{current_v}")
     bot_name = f"claude_v{current_v}"

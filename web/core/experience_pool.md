@@ -1,6 +1,6 @@
 ## OPPONENT_MODELING
 - v22+ dominates aggressive opponents (v12 73.7% @460g, v11 62.4% @380g); aggressive-opponent weakness from v24 lineage is resolved.
-- Bet-size pattern classification (classify_opponent_sizing_pattern + pattern_exploit_adjustment) was structural but showed no measurable H2H effect through v27. [POSSIBLY EXHAUSTED]
+- Bet-size pattern classification (classify_opponent_sizing_pattern + pattern_exploit_adjustment) showed no measurable H2H effect through v27. [POSSIBLY EXHAUSTED]
 - Opponent-pressure clamp and sizing-tendency deltas (±0.015–0.050) show no measurable H2H effect through v27. [POSSIBLY EXHAUSTED]
 - Per-street big-bet tracking with smooth_rate priors is data input, not fold gate.
 
@@ -28,8 +28,9 @@
 - Single-file crossover is clean and low-risk when combining genuinely new structural features.
 - Crossover recombination of v15/v18 lineages shows diminishing returns; future crossovers need genuinely new structural features. [POSSIBLY EXHAUSTED]
 - Unvalidated H2H weakness claims require daemon confirmation; workers producing pure parameter tweaks without structural response waste generations.
+- Structural changes may inflate Critic scores without translating to battle performance; verify H2H effect before declaring success.
 
 ## RECENT_LESSONS
-- **v27**: Added barrel modulation (±0.03-0.04), tiny-bet protection, and 4-bet light mechanism. Barrel modulation belongs to the same exhausted tuning class as sizing-tendency deltas. Critic evidence: v22 dominates aggressive opponents (v12 73.7% @460g, v11 62.4% @380g); true weak matchups are post-v18 lineage (v21 46.5% @170g, v20 48.1% @160g, v14 47.3% @220g, v10 46.5% @340g). 4-bet light misdirected by stale v24 weakness data. Require ≥100-game backing before acting on weakness claims.
-- **v26**: Pivoting from exhausted threshold tuning to structural opponent-modeling (bet-size pattern classifiers) satisfies Critic where threshold tweaks fail; 4.0→7.0 recovered by replacing rejected gates with genuinely new structural mechanisms.
-- **v25**: v24 weakest vs aggressive opponents at scale (v12 26.67% @150g, v2 33.64% @110g, v11 35.0% @140g). Critic blocked pot_odds bypass gates.
+- **v27**: Added barrel modulation (±0.03-0.04), tiny-bet protection, and 4-bet light mechanism. Barrel modulation belongs to the same exhausted tuning class as sizing-tendency deltas. True weak matchups are post-v18 lineage (v21 46.5% @170g, v20 48.1% @160g, v14 47.3% @220g, v10 46.5% @340g). 4-bet light misdirected by stale v24 weakness data; require ≥100-game backing before acting on weakness claims.
+- **v26**: Structural pivot from exhausted threshold tuning to opponent-modeling (bet-size pattern classifiers) recovered Critic score 4.0→7.0, but v27 verification showed no measurable H2H effect — Critic approval alone does not guarantee battle performance.
+- **v25**: Bet-size-aware river fold gating accepted; pot_odds bypass gates blocked by Critic. Aggressive-opponent weakness claims from v24 lineage are resolved per v22+ data and should not drive future evolution.

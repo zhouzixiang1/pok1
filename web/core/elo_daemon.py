@@ -43,6 +43,7 @@ sys.path.insert(0, str(CORE_DIR))
 from glicko2 import Glicko2Player, update_single_game, decay_rd
 from engine.battle import mirror_battle
 from evolution_infra import locked_file, pair_key
+from bot_action_stats import compute_bot_action_stats
 import logging
 
 log = logging.getLogger("pok.daemon")
@@ -443,6 +444,21 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
     save_stats(stats)
 
     cleanup_old_replays()
+
+    # Compute and write bot action stats from replay files
+    try:
+        bot_action_stats = {}
+        for bot_name in active_bots:
+            bot_action_stats[bot_name] = compute_bot_action_stats(bot_name, REPLAY_DIR)
+        action_stats_file = RESULTS_DIR / "bot_action_stats.json"
+        tmp = action_stats_file.with_suffix(".tmp")
+        with open(tmp, "w") as f:
+            json.dump(bot_action_stats, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(str(tmp), str(action_stats_file))
+    except Exception as e:
+        log.warning("Bot action stats computation failed (non-fatal): %s", e)
 
     if verbose:
         # Compute H2H avg win rates for leaderboard

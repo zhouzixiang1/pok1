@@ -117,6 +117,9 @@ return None
 
 ## Recent Match Analysis
 {match_analysis}
+
+## Bot Action Statistics
+{bot_action_stats}
 </injected_context>
 
 <diversity_rule>
