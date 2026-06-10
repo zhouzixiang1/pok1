@@ -51,6 +51,35 @@ Then score against the criteria below. Ground your score in cited evidence:
 - Score > 8 requires citing all three
 </analysis>
 
+<poker_quality_checklist>
+Before scoring, verify the change against this checklist. Flag any item that fails.
+
+**Strategic Soundness Checklist**
+- **P1 — Pot-odds discipline**: Does the bot compare call cost to pot odds (or at least approximate them) rather than calling arbitrarily?
+- **P2 — EQR grounding**: Are expected-quantity-of-risk (EQR) or equity-based thresholds derived from math, not hand-tuned constants?
+- **P3 — Range-aware thinking**: Does the change consider opponent ranges (value vs bluff proportion) rather than treating every bet the same?
+- **P4 — Sizing coherence**: Do bet sizes map to hand strength / range polarization? Are sizings consistent with the story they tell?
+- **P5 — MDF compliance**: When facing bets, does the bot defend at least at minimum-defense-frequency (or explicitly exploit over-folding) with a clear reason?
+- **P6 — Draw equity math**: Are draws evaluated by outs × 2 (or better) vs pot odds, not by static hand categories?
+- **P7 — Commitment awareness**: Does the bot recognize when it is pot-committed (or should commit) vs when it should fold?
+- **P8 — No unconditional actions**: Are there no unconditional folds/calls/raises (e.g., "always fold underpair on river") without situational modifiers?
+
+**Common Bot Weaknesses to Flag**
+1. Over-folding to river aggression without range consideration
+2. Under-bluffing on scare cards (missed draws, paired boards)
+3. Static bet sizing regardless of board texture or opponent type
+4. Ignoring SPR (stack-to-pot ratio) when deciding commitment
+5. Calling too wide out of position without pot-odds justification
+6. Value-betting too thin on wet boards where opponent has many bluff-catchers
+7. Failing to re-raise polarized ranges preflop or on flop
+8. Treating all opponents the same (no exploitative adjustment)
+
+**Scoring interaction rules**
+- If any P1–P8 fails AND the change is in that dimension, cap score at 6 unless the failure is explicitly acknowledged as an intentional exploit with evidence.
+- If 2+ Common Weaknesses are introduced or worsened, cap score at 5.
+- If the change fixes 2+ Common Weaknesses with clear evidence, boost floor by +1 (e.g., floor 5→6).
+</poker_quality_checklist>
+
 <how_to_evaluate>
 1. List changed files: `diff -rq bots/claude_v{parent_version}/ bots/claude_v{version}/`
 2. Diff each changed file: `diff bots/claude_v{parent_version}/FILE bots/claude_v{version}/FILE`

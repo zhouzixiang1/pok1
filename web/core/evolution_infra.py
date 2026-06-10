@@ -72,17 +72,18 @@ MAX_PARALLEL_WORKERS = 3      # Hard cap on simultaneous LLM worker calls (Semap
 MAX_PROMPT_CHARS = 700_000
 
 # Pipeline stage constants
-STAGE_ORDER = ["prepared", "direction_audited", "master_planned", "workers_done", "quality_passed", "reviewed", "critic_checked", "verified", "archived"]
+STAGE_ORDER = ["prepared", "direction_audited", "master_planned", "workers_done", "quality_passed", "spot_verified", "reviewed", "critic_checked", "verified", "archived"]
 STAGE_GATE_ALLOWLIST = {
     "prepared": set(),
     "direction_audited": set(),
     "master_planned": set(),
     "workers_done": set(),
     "quality_passed": {"quality"},
-    "reviewed": {"quality", "review"},
-    "critic_checked": {"quality", "review", "critic"},
-    "verified": {"quality", "review", "critic", "precommit_eval"},
-    "archived": {"quality", "review", "critic", "precommit_eval"},
+    "spot_verified": {"quality", "spot_verified"},
+    "reviewed": {"quality", "spot_verified", "review"},
+    "critic_checked": {"quality", "spot_verified", "review", "critic"},
+    "verified": {"quality", "spot_verified", "review", "critic", "precommit_eval"},
+    "archived": {"quality", "spot_verified", "review", "critic", "precommit_eval"},
 }
 
 EVOLUTION_BRANCH = "main"

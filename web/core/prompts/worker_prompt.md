@@ -67,6 +67,20 @@ opp_stats[street]['vpip'] += 1
 You have access to `web/core/reference_bots/` (bot1–bot6). You may read them as reference.
 </reference>
 
+<poker_math>
+- pot_odds: to_call / (pot + to_call + to_call)
+- EQR (equity realization): 0-1 scalar for how much raw equity converts to actual EV; high on dry boards, low on wet/connected boards
+- SPR (stack-to-pot ratio): my_chips / pot; high = deep-stacked, low = commitment threshold
+- MDF (minimum defense frequency): pot / (pot + to_call); fold less than this vs balanced opponents
+- made_strength: 0-1 hand strength vs random (pairs 0.3, top pair 0.5, set 0.8, straight+ 0.95)
+- draw_strength: 0-1 based on outs (gutshot 0.08, OESD 0.17, flush draw 0.19, combo 0.35)
+- win_rate: made_strength * 0.7 + draw_strength * 0.3 (approximate)
+- preflop_strength: 0-1 for hole cards vs random (AA=1.0, 72o=0.0)
+- action encoding: 0=check/call, -1=fold, -2=allin, >0=raise-to-total
+- round_idx: 0=preflop, 1=flop, 2=turn, 3=river
+- to_call: chips needed to call; pot: current pot; my_chips: remaining stack
+</poker_math>
+
 <scope_contract>
 Before editing, write a short plan:
 1. Planned modified files and functions/constants

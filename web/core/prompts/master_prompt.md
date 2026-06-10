@@ -39,6 +39,34 @@ Heads-up: dealer=SB acts first preflop; BB acts first postflop.
 Minimum raise: preflop first raise-to >= 200, postflop first raise-to >= 100, re-raise must be >2x previous raise-to (strictly greater).
 </game_rules>
 
+<poker_theory_reference>
+Core concepts workers may reference when designing logic or tuning thresholds. Keep implementations concise and directly tied to decision points.
+
+- Pot Odds: Call if hand equity >= (call amount) / (pot + call amount + opponent bet). Use as a floor, not the sole reason to call.
+- Implied Odds: Estimate extra chips you can win on later streets if you hit. Required when current pot odds alone don't justify a call with a drawing hand. Be conservative in heads-up; opponent may shut down.
+- Equity Realization (EQR): Actual win rate vs raw equity. EQR drops out of position, on disconnected boards, or when SPR is low. Favor checking/defending more when EQR < 0.7; be more aggressive when EQR > 0.85.
+- Combinatorial Analysis: Count combos for value, bluffs, and draws. In heads-up, ranges are wide — a "strong" range may be only top 15-20% of hands. Use combo counts to size bluff:value ratios on each street.
+- Range Advantage: Which player has more strong hands on this board texture? With range advantage, use larger sizings and more aggression. Without it, check more and use smaller sizings.
+- Minimum Defense Frequency (MDF): 1 - (bet / (pot + bet)). Defend at least this often to prevent opponent from auto-profiting with any two cards. In practice, defend slightly more than MDF out of position and slightly less in position.
+- SPR (Stack-to-Pot Ratio): Effective stack / current pot. High SPR (>10): deep postflop play, implied odds matter. Low SPR (<3): commitment decisions preflop/flop, favor all-in or fold. Medium SPR (3-10): standard street-by-street planning.
+
+Key Strategic Patterns:
+- Overbet: Bet > pot. Use with polarized range (nuts or air) on scary runouts or when opponent's range is capped.
+- Donk: Lead into aggressor postflop. Use sparingly on boards that favor your range or when opponent checks back too often.
+- Probe: Bet after missed c-bet. Effective when opponent's checking range is weak and you have some equity or blockers.
+- Delayed c-bet: Check flop as aggressor, bet turn. Use when flop favors caller's range or when you want to control pot with marginal holdings.
+- Squeeze: Re-raise after a raise and one or more calls. In heads-up, this is a 3-bet; apply with strong value and some bluffs with blockers.
+- Blocker value: Holding cards that reduce opponent's probability of having the nuts. Use to select bluff candidates (e.g., bluff with Ace-high on A-x-x boards).
+- Position: In-position (dealer/SB preflop, BB postflop) allows checking back to realize equity and control pot size. Out-of-position requires more proactive defense.
+
+Sizing Principles:
+- Preflop open: 2.5x-3x BB (200-300 total).
+- C-bet flop: 33-75% pot depending on board texture and range advantage.
+- Turn/river value bet: 50-100% pot; overbet only with clear polarization.
+- Bluff sizing: Match value bet sizing to remain balanced; avoid small bluffs that give good pot odds.
+- Adjust down when ranges are weak or boards are dry; adjust up when ranges are strong or draws are present.
+</poker_theory_reference>
+
 <worker_guidance>
 Use fewer workers when data is uncertain (few games), more workers when the bot is well-evaluated.
 
@@ -52,10 +80,12 @@ Use fewer workers when data is uncertain (few games), more workers when the bot 
 </worker_guidance>
 
 <worker_prompt_quality>
-Each `worker_prompt` MUST be under 2000 characters. Focus on essential changes only:
+Each `worker_prompt` MUST be under 4000 characters. Focus on essential changes only:
 - Which function to modify/add (file name + function name)
+- WHY this change is needed (1-2 sentences linking to H2H weakness or match data)
 - For structural tasks: include a **code skeleton** showing the function signature and key logic (5-10 lines of Python). Workers struggle with pure natural-language instructions — concrete code templates dramatically improve execution reliability.
 - For tuning tasks: list exact constants with current → new values (e.g., "Change `BLUFF_THRESHOLD` from 0.15 to 0.20")
+- Reference opponent weakness: if targeting a specific opponent pattern, cite the H2H win rate or bet-sizing pattern that justifies the adjustment
 - Do NOT include: general poker strategy, opponent analysis, match data summaries — workers don't need context, they need instructions.
 
 BAD worker_prompt: "Add a bb_vs_raise handler that 3bets strong hands and calls playable hands."
