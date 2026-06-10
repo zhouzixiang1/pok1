@@ -803,6 +803,46 @@ def _should_checkraise_trap(value_profile, round_idx, board_texture, opponent_mo
     return True
 
 
+def pot_odds_call_threshold(pot_odds, has_position, round_idx, draw_info, spr):
+    """Compute minimum equity needed to call based on pot odds with adjustments.
+
+    Base: equity must exceed pot_odds to be profitable.
+    Adjustments:
+    - Position: IP needs ~2% less equity (better realization)
+    - Draw implied odds: strong draws need less equity
+    - SPR commitment: low SPR means already committed
+    - Street: less future action = less implied odds
+    """
+    threshold = pot_odds
+
+    # Position adjustment
+    if has_position:
+        threshold -= 0.02
+
+    # Draw implied odds
+    if draw_info is not None:
+        if draw_info.get("type") == "combo_draw":
+            threshold -= 0.06
+        elif draw_info.get("nut_flush_draw"):
+            threshold -= 0.04
+        elif draw_info.get("type") == "open_ended_straight_draw":
+            threshold -= 0.03
+
+    # SPR commitment
+    if spr < 3:
+        threshold -= 0.03
+    elif spr < 6:
+        threshold -= 0.01
+
+    # Turn/river: less future action = less implied odds
+    if round_idx == 3:
+        threshold += 0.02
+    elif round_idx == 2:
+        threshold += 0.01
+
+    return max(0.05, threshold)
+
+
 def get_action(req, requests):
     my_id = req["my_id"]
     my_chips = req["my_chips"]
@@ -1042,7 +1082,10 @@ def get_action(req, requests):
             if preflop_strength is not None and preflop_strength <= PREFLOP_TRASH_STRENGTH:
                 call_margin += PREFLOP_CALL_TRASH_BONUS
             realized_rate = win_rate
+            call_threshold = pot_odds + call_margin
         else:
+            spr = my_chips / max(1, pot)
+            base_threshold = pot_odds_call_threshold(pot_odds, spot_info["has_position"], round_idx, draw_info, spr)
             call_margin = postflop_call_margin(
                 spot_info,
                 opponent_model,
@@ -1088,8 +1131,9 @@ def get_action(req, requests):
                 pair_profile,
                 opponent_model,
             )
+            call_threshold = base_threshold + call_margin
         if anti_lock_pressure:
-            call_margin -= 0.07
+            call_threshold -= 0.07
         anti_lock_call_continue = anti_lock_can_continue(
             anti_lock_pressure,
             win_rate,
@@ -1157,7 +1201,7 @@ def get_action(req, requests):
         if hard_repressure_fold or paired_board_stackoff["severe"]:
             if not anti_lock_call_continue and not strong_made_continue:
                 return -1
-        if realized_rate < pot_odds + call_margin:
+        if realized_rate < call_threshold:
             if not anti_lock_call_continue and not strong_made_continue:
                 return -1
         # Removed v18 trap fold (line 951-953) — over-folded vs passive opponents

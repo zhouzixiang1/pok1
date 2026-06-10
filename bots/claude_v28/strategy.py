@@ -158,26 +158,6 @@ def aggressive_line_strength(spot_info, board_texture):
     return clamp(strength, 0.0, 0.15)
 
 
-def _should_avoid_explicit_allin(round_idx, made_strength, draw_strength, value_profile, spot_info):
-    """Block explicit allin (-2) on turn/river with medium-weak hands."""
-    if round_idx < 2:
-        return False
-    tier = value_profile.get("tier", "none") if value_profile else "none"
-    if tier == "nut":
-        return False
-    if made_strength >= 0.65:
-        return False
-    if round_idx == 2:
-        if made_strength < 0.48 and draw_strength < 0.12:
-            return True
-    if round_idx == 3:
-        if made_strength < 0.55 and tier not in ("strong", "nut"):
-            return True
-        if spot_info.get("facing_allin", False) and made_strength < 0.58 and tier not in ("strong", "nut"):
-            return True
-    return False
-
-
 def choose_anti_lock_pressure_action(
     state,
     my_chips,
@@ -218,10 +198,6 @@ def choose_anti_lock_pressure_action(
     )
     if tier in ("strong", "nut") or has_draw:
         emergency_jam = emergency_jam and hands_left <= 3
-    if emergency_jam and round_idx >= 2:
-        tier = value_profile.get("tier", "none") if value_profile else "none"
-        if tier not in ("strong", "nut") and (preflop_strength is None or preflop_strength < 0.65):
-            emergency_jam = False
 
     if emergency_jam:
         return -2
@@ -249,8 +225,6 @@ def choose_anti_lock_pressure_action(
 
     amount = max(min_raise_action, target)
     if amount >= my_chips * ANTI_LOCK_JAM_STACK_RATIO:
-        if round_idx >= 2:
-            return None
         return -2
     amount = min(amount, my_chips - 1)
     if amount <= to_call or amount < min_raise_action:
@@ -681,11 +655,9 @@ def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile,
         if made_strength < 0.28 and not has_draw and opp_bets >= 2:
             return True
     if round_idx == 3:
-        if made_strength < 0.42 and not has_draw and size_bucket in ("medium", "large"):
+        if made_strength < 0.35 and not has_draw and size_bucket in ("medium", "large"):
             return True
-        if made_strength < 0.48 and not has_draw and opp_bets >= 2:
-            return True
-        if spot_info.get("facing_allin", False) and made_strength < 0.52 and tier not in ("strong", "nut"):
+        if made_strength < 0.40 and not has_draw and opp_bets >= 2:
             return True
     # Texture-gated fold branches — new axis based on board texture classification
     if texture_class == "dry" and not has_draw:
@@ -831,6 +803,46 @@ def _should_checkraise_trap(value_profile, round_idx, board_texture, opponent_mo
     return True
 
 
+def pot_odds_call_threshold(pot_odds, has_position, round_idx, draw_info, spr):
+    """Compute minimum equity needed to call based on pot odds with adjustments.
+
+    Base: equity must exceed pot_odds to be profitable.
+    Adjustments:
+    - Position: IP needs ~2% less equity (better realization)
+    - Draw implied odds: strong draws need less equity
+    - SPR commitment: low SPR means already committed
+    - Street: less future action = less implied odds
+    """
+    threshold = pot_odds
+
+    # Position adjustment
+    if has_position:
+        threshold -= 0.02
+
+    # Draw implied odds
+    if draw_info is not None:
+        if draw_info.get("type") == "combo_draw":
+            threshold -= 0.06
+        elif draw_info.get("nut_flush_draw"):
+            threshold -= 0.04
+        elif draw_info.get("type") == "open_ended_straight_draw":
+            threshold -= 0.03
+
+    # SPR commitment
+    if spr < 3:
+        threshold -= 0.03
+    elif spr < 6:
+        threshold -= 0.01
+
+    # Turn/river: less future action = less implied odds
+    if round_idx == 3:
+        threshold += 0.02
+    elif round_idx == 2:
+        threshold += 0.01
+
+    return max(0.05, threshold)
+
+
 def get_action(req, requests):
     my_id = req["my_id"]
     my_chips = req["my_chips"]
@@ -967,8 +979,8 @@ def get_action(req, requests):
         and (nutted_risk["risk"] <= 0.05)
     )
 
-    strong = 0.69 if round_idx == 0 else 0.65 if round_idx == 1 else 0.61 if round_idx == 2 else 0.62
-    medium = 0.54 if round_idx == 0 else 0.50 if round_idx == 1 else 0.52
+    strong = STRONG_THRESHOLD[round_idx]
+    medium = MEDIUM_THRESHOLD[round_idx]
 
     if spot_info["has_position"]:
         strong += THRESHOLD_POS_IP_STRONG
@@ -1036,8 +1048,6 @@ def get_action(req, requests):
             if not anti_lock_jam_continue:
                 return -1
         jam_buffer = clamp(jam_buffer, -0.05 if anti_lock_pressure else 0.0, JAM_BUFFER_CAP)
-        if _should_avoid_explicit_allin(round_idx, made_strength, draw_strength, value_profile, spot_info) and not anti_lock_jam_continue:
-            return -1
         return -2 if win_rate >= jam_odds + jam_buffer or anti_lock_jam_continue else -1
 
     if to_call >= my_chips:
@@ -1064,8 +1074,6 @@ def get_action(req, requests):
             if not anti_lock_shove_continue:
                 return -1
         shove_buffer = clamp(shove_buffer, -0.05 if anti_lock_pressure else 0.0, JAM_BUFFER_CAP)
-        if _should_avoid_explicit_allin(round_idx, made_strength, draw_strength, value_profile, spot_info) and not anti_lock_shove_continue:
-            return -1
         return -2 if win_rate >= shove_odds + shove_buffer or anti_lock_shove_continue else -1
 
     if to_call > 0:
