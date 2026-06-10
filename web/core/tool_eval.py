@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 from typing import Annotated, TypedDict
 
@@ -25,6 +26,46 @@ from tool_helpers import (
     PROJECT_ROOT,
 )
 from system_log import log_system_event
+from daemon_management import is_daemon_scheduler_capable
+
+
+# ──────────────────────────────────────────────
+# Battle Scheduler Client
+# ──────────────────────────────────────────────
+
+class BattleSchedulerClient:
+    """Async wrapper around the file-based battle_scheduler module.
+
+    All blocking file operations are run in the default executor so that
+    the event loop stays responsive.
+    """
+
+    def __init__(self):
+        self._loop = asyncio.get_running_loop()
+
+    async def is_available(self) -> bool:
+        """Return True if the daemon was started with scheduler capability."""
+        return await self._loop.run_in_executor(None, is_daemon_scheduler_capable)
+
+    async def submit(self, jobs: list) -> list[str]:
+        """Submit battle jobs to the scheduler queue.
+
+        Returns the list of job_ids that were accepted.
+        """
+        import battle_scheduler
+        return await self._loop.run_in_executor(
+            None, lambda: battle_scheduler.submit_jobs(jobs)
+        )
+
+    async def collect(self, job_ids: list[str]) -> dict[str, dict]:
+        """Collect results for the given job_ids.
+
+        Returns a dict mapping job_id -> result dict.
+        """
+        import battle_scheduler
+        return await self._loop.run_in_executor(
+            None, lambda: battle_scheduler.collect_results(job_ids)
+        )
 
 
 # ──────────────────────────────────────────────
@@ -46,7 +87,7 @@ async def run_precommit_eval(args):
     source_v = int(source_v)
     # Cap n_games: precommit eval is a quick regression check, NOT a full evaluation.
     # With ~5 opponents and ~90s per mirror pair (70 hands), n_games directly controls
-    # wall-clock time: n=3 → ~22min, n=5 → ~37min, n=15 → ~112min (exceeds CYCLE_TIMEOUT).
+    # wall-clock time: n=3 -> ~22min, n=5 -> ~37min, n=15 -> ~112min (exceeds CYCLE_TIMEOUT).
     # Keep cap at 3 to ensure precommit eval fits within the 3600s cycle budget after
     # crossover (~20min) + direction_audit (~2min) + quality (~2min) + review (~5min) + critic (~4min).
     n_games = min(max(1, int(args.get("n_games", 1) or 1)), 3)
@@ -101,81 +142,200 @@ async def run_precommit_eval(args):
     # Defensive: ensure asyncio is available even if MCP server cached a stale module
     import asyncio as _asyncio
 
-    for item in opponents:
-        opponent = item["name"]
-        opponent_main = _bot_main(opponent)
-        matchup = {
-            "opponent": opponent,
-            "reason": item["reason"],
-            "wins": 0,
-            "losses": 0,
-            "draws": 0,
-            "n_played": 0,
-        }
+    # ── Dual-path: Battle Scheduler vs Serial fallback ──
+    scheduler_client = BattleSchedulerClient()
+    _use_scheduler = await scheduler_client.is_available()
+
+    if _use_scheduler and opponents:
+        log_system_event(
+            "pipeline.precommit_eval.scheduler_start", "info",
+            f"v{v}: submitting {len(opponents)} opponent battle(s) to scheduler",
+            {"version": v, "source_v": source_v, "opponents": [o['name'] for o in opponents], "n_games": n_games}
+        )
+
+        from battle_scheduler import BattleJob
+        jobs = []
+        job_id_to_opponent = {}
+        for item in opponents:
+            opponent = item["name"]
+            opponent_main = _bot_main(opponent)
+            job_id = str(uuid.uuid4())
+            job_id_to_opponent[job_id] = item
+            jobs.append(BattleJob(
+                job_id=job_id,
+                bot_a_name=candidate_name,
+                bot_b_name=opponent,
+                bot_a_path=str(candidate_main),
+                bot_b_path=str(opponent_main),
+                n_pairs=n_games,
+                submitted_at=time.time(),
+                submitted_by="precommit_eval",
+                priority=1,
+                timeout_sec=max(300, n_games * 120),
+                update_ratings=False,
+            ))
+
         try:
-            loop = _asyncio.get_running_loop()
-            # Per-opponent timeout: scale with n_games (each mirror pair ~90s)
-            per_game_timeout = max(300, n_games * 120)
-            match_wins, draws, n_played, _ = await _asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    lambda: mirror_battle(
-                        str(candidate_main),
-                        str(opponent_main),
-                        n_games=n_games,
-                        verbose=False,
-                        save_log=False,
-                    ),
-                ),
-                timeout=per_game_timeout,
-            )
-            matchup.update({
-                "wins": int(match_wins[0]),
-                "losses": int(match_wins[1]),
-                "draws": int(draws),
-                "n_played": int(n_played),
-            })
-            total_wins += matchup["wins"]
-            total_losses += matchup["losses"]
-            total_draws += matchup["draws"]
-            if n_played < n_games:
-                blockers.append({
-                    "reason": "incomplete_or_timeout",
-                    "opponent": opponent,
-                    "details": f"Only {n_played}/{n_games} mirror pairs completed.",
-                })
-            if opponent == parent_name and matchup["wins"] < matchup["losses"]:
-                # Only block on parent loss if sample is statistically meaningful (≥4 games).
-                # With n_games=3 (cap), each opponent plays 3 mirror pairs = 6 games total.
-                # A 1-5 result in 6 games has ~10% chance for a true 50% WR bot — borderline
-                # but actionable. <4 games is pure noise (e.g. 0-2 in 2 games).
-                if matchup["n_played"] >= 4:
-                    blockers.append({
-                        "reason": "lost_to_parent",
-                        "opponent": opponent,
-                        "details": f"{matchup['wins']}-{matchup['losses']}-{matchup['draws']} in {matchup['n_played']} games",
-                    })
-                else:
-                    _get_ui().log_history(
-                        f"⚠️ Lost to parent ({matchup['wins']}-{matchup['losses']}) "
-                        f"but only {matchup['n_played']} games — not blocking (insufficient sample)",
-                        "warn"
-                    )
-        except _asyncio.TimeoutError:
-            matchup["error"] = f"Mirror battle timed out ({per_game_timeout}s limit)"
-            blockers.append({
-                "reason": "match_timeout",
-                "opponent": opponent,
-                "details": f"Mirror battle against {opponent} exceeded {per_game_timeout}s timeout",
-            })
+            submitted_ids = await scheduler_client.submit(jobs)
         except Exception as exc:
-            matchup["error"] = str(exc)[:500]
-            blockers.append({
-                "reason": "match_exception",
+            log_system_event(
+                "pipeline.precommit_eval.scheduler_rejected", "warn",
+                f"v{v}: scheduler submit failed ({exc}), falling back to serial",
+                {"version": v, "source_v": source_v, "error": str(exc)[:200]}
+            )
+            _use_scheduler = False
+            submitted_ids = []
+
+        if _use_scheduler and submitted_ids:
+            # Poll for results with deadline
+            per_game_timeout = max(300, n_games * 120)
+            deadline = time.time() + per_game_timeout * len(opponents)
+            poll_interval = 2.0
+            collected_results = {}
+
+            while time.time() < deadline:
+                partial = await scheduler_client.collect(submitted_ids)
+                collected_results.update(partial)
+                if len(collected_results) >= len(submitted_ids):
+                    break
+                await _asyncio.sleep(poll_interval)
+
+            # Build matchups from scheduler results
+            missing_opponents = []
+            for job_id, item in job_id_to_opponent.items():
+                opponent = item["name"]
+                if job_id in collected_results:
+                    res = collected_results[job_id]
+                    matchup = {
+                        "opponent": opponent,
+                        "reason": item["reason"],
+                        "wins": int(res.get("wins_a", 0)),
+                        "losses": int(res.get("wins_b", 0)),
+                        "draws": int(res.get("draws", 0)),
+                        "n_played": int(res.get("total", 0)),
+                    }
+                    if res.get("error"):
+                        matchup["error"] = res["error"]
+                        blockers.append({
+                            "reason": "scheduler_error",
+                            "opponent": opponent,
+                            "details": res["error"],
+                        })
+                    total_wins += matchup["wins"]
+                    total_losses += matchup["losses"]
+                    total_draws += matchup["draws"]
+                    matchups.append(matchup)
+                else:
+                    missing_opponents.append(item)
+
+            if missing_opponents:
+                log_system_event(
+                    "pipeline.precommit_eval.scheduler_partial", "warn",
+                    f"v{v}: {len(missing_opponents)}/{len(opponents)} scheduler results missing, falling back to serial",
+                    {"version": v, "source_v": source_v, "missing": [o['name'] for o in missing_opponents]}
+                )
+                _use_scheduler = False
+                opponents = missing_opponents
+            else:
+                log_system_event(
+                    "pipeline.precommit_eval.scheduler_complete", "info",
+                    f"v{v}: all {len(opponents)} scheduler results collected",
+                    {"version": v, "source_v": source_v, "matchups": matchups}
+                )
+        else:
+            _use_scheduler = False
+
+    # ── Serial fallback (original loop, preserved verbatim) ──
+    if not _use_scheduler and opponents:
+        if matchups:
+            # We already have some results from scheduler; only run serial for missing opponents
+            log_system_event(
+                "pipeline.precommit_eval.fallback", "info",
+                f"v{v}: running serial fallback for {len(opponents)} missing opponent(s)",
+                {"version": v, "source_v": source_v, "opponents": [o['name'] for o in opponents]}
+            )
+        else:
+            log_system_event(
+                "pipeline.precommit_eval.serial_start", "info",
+                f"v{v}: scheduler unavailable, running {len(opponents)} serial mirror battle(s)",
+                {"version": v, "source_v": source_v, "opponents": [o['name'] for o in opponents], "n_games": n_games}
+            )
+
+        for item in opponents:
+            opponent = item["name"]
+            opponent_main = _bot_main(opponent)
+            matchup = {
                 "opponent": opponent,
-                "details": str(exc)[:500],
-            })
-        matchups.append(matchup)
+                "reason": item["reason"],
+                "wins": 0,
+                "losses": 0,
+                "draws": 0,
+                "n_played": 0,
+            }
+            try:
+                loop = _asyncio.get_running_loop()
+                # Per-opponent timeout: scale with n_games (each mirror pair ~90s)
+                per_game_timeout = max(300, n_games * 120)
+                match_wins, draws, n_played, _ = await _asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        lambda: mirror_battle(
+                            str(candidate_main),
+                            str(opponent_main),
+                            n_games=n_games,
+                            verbose=False,
+                            save_log=False,
+                        ),
+                    ),
+                    timeout=per_game_timeout,
+                )
+                matchup.update({
+                    "wins": int(match_wins[0]),
+                    "losses": int(match_wins[1]),
+                    "draws": int(draws),
+                    "n_played": int(n_played),
+                })
+                total_wins += matchup["wins"]
+                total_losses += matchup["losses"]
+                total_draws += matchup["draws"]
+                if n_played < n_games:
+                    blockers.append({
+                        "reason": "incomplete_or_timeout",
+                        "opponent": opponent,
+                        "details": f"Only {n_played}/{n_games} mirror pairs completed.",
+                    })
+                if opponent == parent_name and matchup["wins"] < matchup["losses"]:
+                    # Only block on parent loss if sample is statistically meaningful (>=4 games).
+                    # With n_games=3 (cap), each opponent plays 3 mirror pairs = 6 games total.
+                    # A 1-5 result in 6 games has ~10% chance for a true 50% WR bot — borderline
+                    # but actionable. <4 games is pure noise (e.g. 0-2 in 2 games).
+                    if matchup["n_played"] >= 4:
+                        blockers.append({
+                            "reason": "lost_to_parent",
+                            "opponent": opponent,
+                            "details": f"{matchup['wins']}-{matchup['losses']}-{matchup['draws']} in {matchup['n_played']} games",
+                        })
+                    else:
+                        _get_ui().log_history(
+                            f"⚠️ Lost to parent ({matchup['wins']}-{matchup['losses']}) "
+                            f"but only {matchup['n_played']} games — not blocking (insufficient sample)",
+                            "warn"
+                        )
+            except _asyncio.TimeoutError:
+                matchup["error"] = f"Mirror battle timed out ({per_game_timeout}s limit)"
+                blockers.append({
+                    "reason": "match_timeout",
+                    "opponent": opponent,
+                    "details": f"Mirror battle against {opponent} exceeded {per_game_timeout}s timeout",
+                })
+            except Exception as exc:
+                matchup["error"] = str(exc)[:500]
+                blockers.append({
+                    "reason": "match_exception",
+                    "opponent": opponent,
+                    "details": str(exc)[:500],
+                })
+            matchups.append(matchup)
 
     # --- P0-4: Semantic Interpretation of Battle Results ---
     semantic_result = None
@@ -280,7 +440,7 @@ async def run_inline_eval(args):
     results_summary = []
     all_results = []
 
-    from evolution_core import RATINGS_FILE, H2H_FILE, BOT_STATS_FILE, MATCH_HISTORY_FILE, RESULTS_DIR, locked_file, pair_key
+    from evolution_infra import RATINGS_FILE, H2H_FILE, BOT_STATS_FILE, MATCH_HISTORY_FILE, RESULTS_DIR, locked_file, pair_key
     h2h = {}
     if H2H_FILE.exists():
         try:

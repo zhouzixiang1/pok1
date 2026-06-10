@@ -443,6 +443,8 @@ def _select_precommit_opponents(version, source_v, max_top=2, max_weak=1):
 
 
 def _py_files_changed_between(source_dir, next_dir):
+    if not next_dir.exists():
+        return []
     rels = set()
     for base in (source_dir, next_dir):
         if not base.exists():

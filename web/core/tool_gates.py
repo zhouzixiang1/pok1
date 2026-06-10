@@ -54,12 +54,6 @@ async def run_quality_gates(args):
     v = int(v)
     source_v = int(source_v) if source_v is not None else None
     bot_dir = get_bot_dir(v)
-    if not bot_dir.exists():
-        return _json_tool_result({
-            "error": f"Bot directory not found: {bot_dir}",
-            "version": v,
-            "all_passed": False,
-        })
 
     # CRITICAL: Check that code actually changed vs source.
     # Prevents zombie loop where workers reset code but quality gates pass on unchanged (parent) code.
