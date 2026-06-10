@@ -25,6 +25,7 @@ from tool_helpers import (
     _py_files_changed_between, _resolve_version_args, PROJECT_ROOT,
 )
 from system_log import log_system_event
+import spot_analyzer
 
 
 def _record_quality_failure(gen, worker_id, role, error, **extra):
@@ -528,5 +529,58 @@ async def run_critic(args):
         "action": "approve" if approved else ("force_commit" if force_advanced else "retry_workers"),
         "force_advanced": force_advanced,
         "checkpoint_recorded": checkpoint_recorded,
+    }
+    return _json_tool_result(result)
+
+
+# ──────────────────────────────────────────────
+# Spot Check Stage
+# ──────────────────────────────────────────────
+
+class RunSpotCheckInput(TypedDict):
+    parent_version: Annotated[int, "Parent bot version"]
+    current_version: Annotated[int, "Current bot version"]
+    master_plan: Annotated[dict, "Master plan dict with expected_behavior_change"]
+
+
+@tool("run_spot_check", "Run spot check on changed functions: parse diff, generate scenarios, run bot, verify behavior.", {"parent_version": int, "current_version": int, "master_plan": dict})
+async def run_spot_check(args):
+    parent_version = args.get("parent_version")
+    current_version = args.get("current_version")
+    master_plan = args.get("master_plan", {})
+
+    if parent_version is None or current_version is None:
+        return _json_tool_result({"error": "Missing parent_version or current_version"})
+
+    parent_dir = str(get_bot_dir(int(parent_version)))
+    current_dir = str(get_bot_dir(int(current_version)))
+
+    changed_functions = spot_analyzer.parse_diff(parent_dir, current_dir)
+
+    bot_code = {}
+    for change in changed_functions:
+        fp = change.get("file")
+        if fp and Path(fp).exists():
+            bot_code[fp] = Path(fp).read_text()
+
+    scenarios = spot_analyzer.generate_test_scenarios(changed_functions, bot_code)
+
+    bot_main = Path(current_dir) / "main.py"
+    actual_actions = []
+    for scenario in scenarios:
+        result = spot_analyzer.run_bot_scenario(str(bot_main), scenario)
+        actual_actions.append(result)
+
+    verification = spot_analyzer.verify_behavior(master_plan, scenarios, actual_actions)
+
+    result = {
+        "status": "success",
+        "result": {
+            "passed": verification.get("passed", False),
+            "assessment": f"Spot check {verification.get('passed_count', 0)}/{verification.get('total', 0)} passed, confidence={verification.get('confidence', 'unknown')}",
+            "details": verification,
+            "changed_functions": changed_functions,
+            "scenarios_count": len(scenarios),
+        },
     }
     return _json_tool_result(result)
