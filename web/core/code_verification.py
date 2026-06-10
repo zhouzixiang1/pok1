@@ -99,6 +99,11 @@ def seed_initial_bots(ui):
         if not target_dir.exists() and source_dir.exists():
             ui.log_history(f"Seeding claude_v{i} from reference bot{i}...", "info")
             shutil.copytree(source_dir, target_dir, ignore=_COPY_IGNORE)
+            # Apply known fixes to seeded bot
+            from fix_injection import apply_known_fixes, log_fix_application
+            applied, skipped = apply_known_fixes(target_dir)
+            if applied or skipped:
+                log_fix_application(applied, skipped, target_dir, i)
             (target_dir / ".completed").touch()
             seeded = True
     return seeded

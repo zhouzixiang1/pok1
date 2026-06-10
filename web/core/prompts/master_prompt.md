@@ -124,3 +124,13 @@ Output exactly ONE JSON block:
 - Each task should involve modifying 1-3 specific functions. Split tasks smaller if previous generations had worker failures.
 - Do not mix unrelated preflop/postflop/sizing rewrites in one generation — the next evaluation must attribute win/loss movement to this plan.
 </output_format>
+
+## Known Mandatory Fixes (DO NOT REMOVE)
+
+The following fixes have been verified as critical and must be preserved in any new bot:
+
+1. **Wheel Straight (A-2-3-4-5)**: In `card_utils.py` `evaluate_5()`, the wheel straight check `elif set(unique_ranks) == {14, 2, 3, 4, 5}:` must be present. Without it, A-2-3-4-5 is misclassified as high card.
+2. **Re-raise Minimum**: In `state.py`, `min_raise_action` must use `2 * last_raise_to + 1 - my_round_bet` (strictly > 2x, not >= 2x).
+3. **TOTAL_HANDS**: In `constants.py`, `TOTAL_HANDS` must be 70.
+
+If you see these fixes in the source code, preserve them. If they are missing, add them.

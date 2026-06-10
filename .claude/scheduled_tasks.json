@@ -1,0 +1,14 @@
+{
+  "tasks": [
+    {
+      "id": "0be518db",
+      "cron": "*/5 12-23 * * *",
+      "prompt": "Evolution tracking check: \n1. Check orchestrator status: curl -s http://localhost:8000/api/control/status | python3 -m json.tool\n2. Check evolution state: curl -s http://localhost:8000/api/evolution/state | python3 -m json.tool  \n3. Check daemon alive: ps aux | grep elo_daemon | grep -v grep\n4. Check latest bot: ls -d bots/claude_v*/ | sort -t'v' -k2 -n | tail -3\n5. Check pipeline stage: cat web/core/results/pipeline_state.json | python3 -c \"import sys,json; d=json.load(sys.stdin); print(f'Stage: {d[\\\"stage\\\"]}, v{d[\\\"next_v\\\"]}, attempt: {d[\\\"generation_attempt\\\"]}, worker_failures: {d[\\\"worker_failure_count\\\"]}')\"\n6. Check ratings top 5: cat web/core/results/glicko_ratings.json | python3 -c \"import sys,json;d=json.load(sys.stdin);items=sorted(d.items(),key=lambda x:x[1].get('r',1500) if isinstance(x[1],dict) else x[1].r, reverse=True);[print(f'{k}: r={v.get(\\\"r\\\",1500) if isinstance(v,dict) else v.r:.1f}, rd={v.get(\\\"rd\\\",350) if isinstance(v,dict) else v.rd:.1f}') for k,v in items[:5]]\"\n7. Check for errors: grep -c \"error\\|Error\\|CRITICAL\\|Traceback\" web/logs/app.log 2>/dev/null || echo \"0 errors\"\n8. Run tests if a new bot was committed: cd web && python -m pytest tests/ --timeout=60 -q 2>&1 | tail -5\n\nReport all findings concisely. If anything is wrong (daemon dead, orchestrator stuck >30min, tests failing), flag it clearly.",
+      "createdAt": 1781066285608,
+      "recurring": true,
+      "createdBySessionId": "5f8dd19d-854f-4047-986a-30226f7aaa01",
+      "createdByPid": 616643,
+      "createdByProcStart": "27575100"
+    }
+  ]
+}

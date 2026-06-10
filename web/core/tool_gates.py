@@ -242,6 +242,16 @@ async def prepare_next_gen(args):
     if next_dir.exists():
         shutil.rmtree(next_dir)
     shutil.copytree(source_dir, next_dir, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+
+    # Apply known critical fixes regardless of source bot state
+    from fix_injection import apply_known_fixes, log_fix_application
+    applied, skipped = apply_known_fixes(next_dir)
+    if applied or skipped:
+        log_fix_application(applied, skipped, next_dir, source_v)
+    if skipped:
+        import logging as _logging
+        _logging.getLogger(__name__).warning("Fix patches skipped for v%d: %s", next_v, skipped)
+
     (next_dir / ".completed").unlink(missing_ok=True)
 
     # Write "prepared" checkpoint so a kill+restart shows "Workers not yet run → call execute_workers"

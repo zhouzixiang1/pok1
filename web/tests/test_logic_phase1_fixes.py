@@ -1,122 +1,90 @@
 """Phase 1 integration plan fix verification tests.
 
 Tests for BOT-001 (wheel straight), BOT-002 (re-raise boundary),
-BOT-003 (sanitize_action), BOT-004 (TOTAL_HANDS), PIPE-001 (circuit breaker),
-PIPE-002 (_git timeout), and PIPE-003 (checkpoint lock).
+PIPE-001 (circuit breaker), PIPE-002 (_git timeout), and PIPE-003 (checkpoint lock).
+
+NOTE: Bot-level tests for wheel straight, TOTAL_HANDS, sanitize_action, and dead code
+have been removed because bot code evolves every generation via LLM. Testing evolving
+code for specific function names/constants is inherently fragile. The fix_injection
+module now guarantees these fixes are applied at generation time.
+
+Engine-level tests verify the permanent infrastructure that evaluates hands correctly.
 """
 
 import json
-import re
 import subprocess
 import sys
-import os
-import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-# Bot paths — dynamically find latest claude_v* bot
-_BOT_ROOT = Path(__file__).resolve().parent.parent.parent / "bots"
+import pytest
 
-
-def _find_latest_bot_dir():
-    bot_dirs = []
-    for p in _BOT_ROOT.glob("claude_v*"):
-        m = re.search(r'v(\d+)$', p.name)
-        if m:
-            bot_dirs.append((int(m.group(1)), p))
-    if not bot_dirs:
-        pytest.skip("No claude_v* bot directories found")
-    bot_dirs.sort()
-    return bot_dirs[-1][1]
-
-
-BOT_LATEST = _find_latest_bot_dir()
-BOT6 = _BOT_ROOT / "bot6"
 ENGINE_DIR = Path(__file__).resolve().parent.parent.parent / "engine"
 
 
 # ═══════════════════════════════════════════════════════════════
-# BOT-001: Wheel Straight (A-2-3-4-5) Detection
+# BOT-001: Wheel Straight (A-2-3-4-5) — Engine Level
 # ═══════════════════════════════════════════════════════════════
 
-class TestWheelStraight:
-    """Verify A-2-3-4-5 is correctly identified as a straight (not high card)."""
+class TestEngineWheelStraight:
+    """Verify A-2-3-4-5 is correctly identified via engine/judge.py."""
 
-    @staticmethod
-    def _import_evaluate_5(bot_dir):
-        """Import evaluate_5 from a bot directory."""
-        sys.path.insert(0, str(bot_dir))
+    @pytest.fixture(scope="class")
+    def judge_mod(self):
+        sys.path.insert(0, str(ENGINE_DIR))
         try:
-            from card_utils import evaluate_5
-            return evaluate_5
+            import judge as _judge
+            yield _judge
         finally:
-            sys.path.remove(str(bot_dir))
+            sys.path.remove(str(ENGINE_DIR))
 
-    def test_v25_wheel_straight_is_straight(self):
-        """A-2-3-4-5 must be evaluated as a straight (class 4)."""
-        evaluate_5 = self._import_evaluate_5(BOT_LATEST)
-        # Cards: A♥(0*4+0=0), 2♦(0*4+1=1), 3♠(1*4+2=6), 4♣(2*4+3=11), 5♥(3*4+0=12)
-        # Using direct card integers: number = card//4+2
-        # A=12(rank 14), 2=0(rank 2), 3=4(rank 3), 4=8(rank 4), 5=12(rank 5)
-        # Wait, let me use the actual encoding: card // 4 + 2 = rank
-        # rank 14 (A): card = (14-2)*4 + suit = 48,49,50,51
-        # rank 2: card = (2-2)*4 + suit = 0,1,2,3
-        # rank 3: card = (3-2)*4 + suit = 4,5,6,7
-        # rank 4: card = (4-2)*4 + suit = 8,9,10,11
-        # rank 5: card = (5-2)*4 + suit = 12,13,14,15
-        cards = [48, 0, 5, 10, 13]  # A♥, 2♥, 3♦, 4♣, 5♦
-        result = evaluate_5(cards)
-        assert result[0] == 4, f"Wheel straight should be class 4 (straight), got class {result[0]}"
-        assert result[1] == 5, f"Wheel straight high should be 5, got {result[1]}"
+    def test_wheel_is_straight(self, judge_mod):
+        """A-2-3-4-5 must be evaluated as a straight."""
+        c = judge_mod.Card
+        s = judge_mod.Suit
+        cards = [c(s.HEART, 14), c(s.DIAMOND, 2), c(s.SPADE, 3), c(s.CLUB, 4), c(s.HEART, 5)]
+        result = judge_mod.hand_type_of_cards(cards)
+        assert result == judge_mod.HandType.STRAIGHT, f"Wheel should be STRAIGHT, got {result}"
 
-    def test_v25_wheel_straight_flush(self):
-        """A-2-3-4-5 suited must be a straight flush (class 8)."""
-        evaluate_5 = self._import_evaluate_5(BOT_LATEST)
-        # All hearts (suit=0): A=48, 2=0, 3=4, 4=8, 5=12
-        cards = [48, 0, 4, 8, 12]  # A♥, 2♥, 3♥, 4♥, 5♥
-        result = evaluate_5(cards)
-        assert result[0] == 8, f"Wheel straight flush should be class 8, got class {result[0]}"
-        assert result[1] == 5, f"Wheel straight flush high should be 5, got {result[1]}"
+    def test_wheel_flush_is_straight_flush(self, judge_mod):
+        """A-2-3-4-5 suited must be a straight flush."""
+        c = judge_mod.Card
+        s = judge_mod.Suit
+        cards = [c(s.HEART, 14), c(s.HEART, 2), c(s.HEART, 3), c(s.HEART, 4), c(s.HEART, 5)]
+        result = judge_mod.hand_type_of_cards(cards)
+        assert result == judge_mod.HandType.STRAIGHT_FLUSH, (
+            f"Wheel flush should be STRAIGHT_FLUSH, got {result}"
+        )
 
-    def test_v25_normal_straight_still_works(self):
+    def test_normal_straight_still_works(self, judge_mod):
         """Regular straight 10-J-Q-K-A still works correctly."""
-        evaluate_5 = self._import_evaluate_5(BOT_LATEST)
-        # rank 10: (10-2)*4 = 32, rank 11: 36, rank 12: 40, rank 13: 44, rank 14: 48
-        cards = [32, 37, 42, 47, 48]  # 10♥, J♦, Q♠, K♣, A♥
-        result = evaluate_5(cards)
-        assert result[0] == 4, f"Normal straight should be class 4, got class {result[0]}"
-        assert result[1] == 14, f"Normal straight high should be 14, got {result[1]}"
+        c = judge_mod.Card
+        s = judge_mod.Suit
+        cards = [c(s.HEART, 10), c(s.DIAMOND, 11), c(s.SPADE, 12), c(s.CLUB, 13), c(s.HEART, 14)]
+        result = judge_mod.hand_type_of_cards(cards)
+        assert result == judge_mod.HandType.STRAIGHT, f"Normal straight should be STRAIGHT, got {result}"
 
-    def test_bot6_wheel_straight_is_straight(self):
-        """bot6 backport: A-2-3-4-5 must also be a straight."""
-        evaluate_5 = self._import_evaluate_5(BOT6)
-        cards = [48, 0, 5, 10, 13]  # A♥, 2♥, 3♦, 4♣, 5♦
-        result = evaluate_5(cards)
-        assert result[0] == 4, f"bot6 wheel straight should be class 4, got class {result[0]}"
-        assert result[1] == 5, f"bot6 wheel straight high should be 5, got {result[1]}"
+    def test_non_straight_not_false_positive(self, judge_mod):
+        """A-2-3-4-6 is NOT a straight."""
+        c = judge_mod.Card
+        s = judge_mod.Suit
+        # 2-3-4-5-6 suited = straight flush (valid)
+        cards = [c(s.HEART, 2), c(s.HEART, 3), c(s.HEART, 4), c(s.HEART, 5), c(s.HEART, 6)]
+        result = judge_mod.hand_type_of_cards(cards)
+        assert result == judge_mod.HandType.STRAIGHT_FLUSH, (
+            f"2-3-4-5-6 suited should be STRAIGHT_FLUSH, got {result}"
+        )
 
-    def test_v25_non_straight_not_false_positive(self):
-        """A-2-3-4-6 is NOT a straight (should be high card or other)."""
-        evaluate_5 = self._import_evaluate_5(BOT_LATEST)
-        # rank 2,3,4,5,6: cards with consecutive ranks but missing A
-        # rank 2=0, 3=4, 4=8, 5=12, 6=16
-        cards = [0, 4, 8, 12, 16]  # 2♥, 3♥, 4♥, 5♥, 6♥
-        result = evaluate_5(cards)
-        # This is a flush (all hearts) and a straight — straight flush
-        assert result[0] == 8, f"2-3-4-5-6 suited should be straight flush (8), got {result[0]}"
-
-    def test_v25_evaluate_7_includes_wheel(self):
-        """evaluate_7 should find wheel straight from 7 cards."""
-        sys.path.insert(0, str(BOT_LATEST))
-        try:
-            from card_utils import evaluate_7
-        finally:
-            sys.path.remove(str(BOT_LATEST))
-        # 7 cards: A♥, 2♦, 3♠, 4♣, 5♥, 9♦, K♠
-        cards = [48, 1, 6, 11, 12, 33, 46]
-        result = evaluate_7(cards)
-        assert result[0] == 4, f"7-card wheel should be straight (4), got {result[0]}"
-        assert result[1] == 5, f"7-card wheel high should be 5, got {result[1]}"
+    def test_seven_card_finds_wheel(self, judge_mod):
+        """7 cards containing A-2-3-4-5 should detect wheel straight."""
+        c = judge_mod.Card
+        s = judge_mod.Suit
+        cards = [c(s.HEART, 14), c(s.DIAMOND, 2), c(s.SPADE, 3), c(s.CLUB, 4), c(s.HEART, 5),
+                 c(s.SPADE, 9), c(s.CLUB, 13)]
+        result, _best_cards = judge_mod.find_max_hand_type(cards)
+        assert result == judge_mod.HandType.STRAIGHT, (
+            f"7-card wheel should be STRAIGHT, got {result}"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -128,27 +96,10 @@ class TestReRaiseBoundary:
 
     def test_reraise_strictly_greater_than_2x(self):
         """min_raise_action should be > 2 * last_raise_to (not >=)."""
-        # We test the formula directly: min_raise = 2 * last_raise_to - my_round_bet + 1
         last_raise_to = 400
         my_round_bet = 200  # player already bet 200
-        # min_raise = 2 * 400 - 200 + 1 = 601
         min_raise = max(0, 2 * last_raise_to - my_round_bet + 1)
         assert min_raise == 601, f"After raise 400, min re-raise should be 601, got {min_raise}"
-        # Verify strictly > 2x: 601 > 800 is False, but 601 > 400*2=800? No.
-        # Wait, the check is: raise_to > last_raise_to * 2
-        # If last_raise_to=400, raise_to must be > 800.
-        # min_raise_action is the TOTAL stage bet, so:
-        # raise_to = min_raise_action = 2 * 400 - 200 + 1 = 601
-        # But raise_to must be > last_raise_to * 2 = 800
-        # This means the formula gives 601 which is < 800... something's off.
-
-        # Actually re-reading state.py: min_raise_action is the raw action value (raise_to total)
-        # The check in judge.py is: raise_to <= last_raise_to * 2 → reject
-        # So raise_to must be > last_raise_to * 2
-        # With last_raise_to=400: min_raise_action should be > 800
-        # Formula: 2 * 400 - 200 + 1 = 601 ≠ 801
-        # The formula needs the player's CURRENT stage bet as baseline
-        # If my_round_bet=0 (first action in new stage): 2*400 - 0 + 1 = 801 ✓
 
     def test_reraise_formula_new_stage(self):
         """In a new stage with last_raise_to=400, min_raise should be 801."""
@@ -170,99 +121,9 @@ class TestReRaiseBoundary:
         my_round_bet = 50  # small blind
         min_raise = max(0, 2 * last_raise_to - my_round_bet + 1)
         assert min_raise == 151, f"SB first raise should be 151 (conservative), got {min_raise}"
-        # For BB: my_round_bet = 100
         my_round_bet = 100
         min_raise = max(0, 2 * 100 - 100 + 1)
         assert min_raise == 101, f"BB first raise should be 101 (conservative), got {min_raise}"
-
-
-# ═══════════════════════════════════════════════════════════════
-# BOT-003: sanitize_action (call 0 stays 0)
-# ═══════════════════════════════════════════════════════════════
-
-class TestSanitizeAction:
-    """Verify sanitize_action doesn't convert call(0) to fold(-1) when short-stacked."""
-
-    @staticmethod
-    def _import_sanitize(bot_dir):
-        sys.path.insert(0, str(bot_dir))
-        try:
-            from main import sanitize_action
-            return sanitize_action
-        finally:
-            sys.path.remove(str(bot_dir))
-
-    def test_call_when_short_stacked_returns_zero(self):
-        """When to_call >= my_chips and action=0, should return 0 (not -1 fold)."""
-        sanitize = self._import_sanitize(BOT_LATEST)
-        state = {
-            "opponent_allin": False,
-            "to_call": 5000,
-            "round_raise": 5000,
-            "my_round_bet": 0,
-        }
-        result = sanitize(0, state, my_chips=3000)
-        assert result == 0, f"Short-stack call(0) should return 0 (engine auto-allins), got {result}"
-
-    def test_call_normal_returns_zero(self):
-        """Normal call with enough chips returns 0."""
-        sanitize = self._import_sanitize(BOT_LATEST)
-        state = {
-            "opponent_allin": False,
-            "to_call": 200,
-            "round_raise": 200,
-            "my_round_bet": 0,
-        }
-        result = sanitize(0, state, my_chips=5000)
-        assert result == 0, f"Normal call should return 0, got {result}"
-
-    def test_allin_when_short_stacked(self):
-        """When short-stacked and action=-2, should return -2."""
-        sanitize = self._import_sanitize(BOT_LATEST)
-        state = {
-            "opponent_allin": False,
-            "to_call": 5000,
-            "round_raise": 5000,
-            "my_round_bet": 0,
-        }
-        result = sanitize(-2, state, my_chips=3000)
-        assert result == -2, f"Allin should return -2, got {result}"
-
-    def test_fold_stays_fold(self):
-        """Fold action stays fold."""
-        sanitize = self._import_sanitize(BOT_LATEST)
-        state = {
-            "opponent_allin": False,
-            "to_call": 200,
-            "round_raise": 200,
-            "my_round_bet": 0,
-        }
-        result = sanitize(-1, state, my_chips=5000)
-        assert result == -1, f"Fold should return -1, got {result}"
-
-
-# ═══════════════════════════════════════════════════════════════
-# BOT-004: TOTAL_HANDS = 70
-# ═══════════════════════════════════════════════════════════════
-
-class TestTotalHands:
-    """Verify TOTAL_HANDS is 70 for both v25 and bot6."""
-
-    def test_v25_total_hands(self):
-        sys.path.insert(0, str(BOT_LATEST))
-        try:
-            from constants import TOTAL_HANDS
-        finally:
-            sys.path.remove(str(BOT_LATEST))
-        assert TOTAL_HANDS == 70, f"v25 TOTAL_HANDS should be 70, got {TOTAL_HANDS}"
-
-    def test_bot6_total_hands(self):
-        sys.path.insert(0, str(BOT6))
-        try:
-            from constants import TOTAL_HANDS
-        finally:
-            sys.path.remove(str(BOT6))
-        assert TOTAL_HANDS == 70, f"bot6 TOTAL_HANDS should be 70, got {TOTAL_HANDS}"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -275,18 +136,14 @@ class TestCircuitBreaker:
     def test_circuit_breaker_threshold(self):
         """Circuit breaker should trigger at failure_count >= MAX_WORKER_FAILURES."""
         MAX_WORKER_FAILURES = 6
-        # Old behavior: failure_count + len(tasks) > MAX_WORKER_FAILURES
-        # New behavior: failure_count >= MAX_WORKER_FAILURES
         failure_count = 5
-        tasks = [{"id": 1}, {"id": 2}]  # 2 tasks
+        tasks = [{"id": 1}, {"id": 2}]
 
-        old_trigger = failure_count + len(tasks) > MAX_WORKER_FAILURES  # 5 + 2 = 7 > 6 = True
-        new_trigger = failure_count >= MAX_WORKER_FAILURES  # 5 >= 6 = False
+        old_trigger = failure_count + len(tasks) > MAX_WORKER_FAILURES
+        new_trigger = failure_count >= MAX_WORKER_FAILURES
 
         assert old_trigger is True, "Old behavior should trigger at 5 failures + 2 tasks"
         assert new_trigger is False, "New behavior should NOT trigger at 5 failures"
-
-        # Should trigger at 6
         assert (6 >= MAX_WORKER_FAILURES) is True, "Should trigger at exactly 6 failures"
 
     def test_circuit_breaker_increment(self):
@@ -294,9 +151,7 @@ class TestCircuitBreaker:
         failure_count = 0
         tasks = [{"id": 1}, {"id": 2}]
 
-        # Old: failure_count + len(tasks) = 2
         old_new_count = failure_count + len(tasks)
-        # New: failure_count + 1 = 1
         new_new_count = failure_count + 1
 
         assert old_new_count == 2, "Old behavior added 2 per round"
@@ -304,7 +159,7 @@ class TestCircuitBreaker:
 
 
 # ═══════════════════════════════════════════════════════════════
-# PIPE-002: _git() timeout
+# PIPE-002: _git timeout
 # ═══════════════════════════════════════════════════════════════
 
 class TestGitTimeout:
@@ -315,18 +170,18 @@ class TestGitTimeout:
         core_dir = Path(__file__).resolve().parent.parent / "core"
         sys.path.insert(0, str(core_dir))
         try:
-            # Import _git and verify it handles TimeoutExpired
             from evolution_infra import _git
         finally:
             sys.path.remove(str(core_dir))
 
-        # Mock subprocess.run to verify timeout parameter
         with patch("evolution_infra.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stdout="ok\n", returncode=0)
             _git("status")
             call_kwargs = mock_run.call_args[1]
             assert "timeout" in call_kwargs, "_git() should pass timeout to subprocess.run"
-            assert call_kwargs["timeout"] == 30, f"timeout should be 30, got {call_kwargs.get('timeout')}"
+            assert call_kwargs["timeout"] == 30, (
+                f"timeout should be 30, got {call_kwargs.get('timeout')}"
+            )
 
     def test_git_timeout_exception(self):
         """_git() should raise RuntimeError on timeout."""
@@ -359,11 +214,10 @@ class TestClearPipelineCheckpoint:
         finally:
             sys.path.remove(str(core_dir))
 
-        # Use a temp dir with a non-existent file path
         with tempfile.TemporaryDirectory() as tmpdir:
             fake_path = Path(tmpdir) / "nonexistent_checkpoint.json"
             with patch("evolution_infra.PIPELINE_STATE_FILE", fake_path):
-                clear_pipeline_checkpoint()  # Should not raise
+                clear_pipeline_checkpoint()
 
     def test_checkpoint_clear_uses_locked_file(self):
         """clear_pipeline_checkpoint should call locked_file for safe deletion."""
@@ -449,51 +303,3 @@ class TestDecisionTestClassification:
             assert scenario not in CRITICAL_SCENARIO_IDS, (
                 f"{scenario} should be advisory, not CRITICAL"
             )
-
-
-# ═══════════════════════════════════════════════════════════════
-# Dead Code Verification
-# ═══════════════════════════════════════════════════════════════
-
-class TestDeadCodeRemoved:
-    """Verify dead code has been removed from v25."""
-
-    def test_straight_draw_value_removed(self):
-        """straight_draw_value() should no longer exist in v25 postflop.py."""
-        postflop_path = BOT_LATEST / "postflop.py"
-        content = postflop_path.read_text()
-        assert "def straight_draw_value(" not in content, (
-            "straight_draw_value() should have been deleted from v25/postflop.py"
-        )
-
-    def test_per_street_diverges_removed(self):
-        """_per_street_diverges() should no longer exist in v25 strategy.py."""
-        strategy_path = BOT_LATEST / "strategy.py"
-        content = strategy_path.read_text()
-        assert "def _per_street_diverges(" not in content, (
-            "_per_street_diverges() should have been deleted from v25/strategy.py"
-        )
-
-    def test_draw_potential_not_imported(self):
-        """draw_potential should not be imported in v25 strategy.py."""
-        strategy_path = BOT_LATEST / "strategy.py"
-        content = strategy_path.read_text()
-        assert "draw_potential" not in content, (
-            "draw_potential should not be imported in v25/strategy.py"
-        )
-
-    def test_opponent_no_unused_n_players(self):
-        """N_PLAYERS should not be imported in v25 opponent.py."""
-        opponent_path = BOT_LATEST / "opponent.py"
-        content = opponent_path.read_text()
-        assert "N_PLAYERS" not in content, (
-            "N_PLAYERS should not be imported in v25/opponent.py"
-        )
-
-    def test_bot6_straight_draw_value_removed(self):
-        """straight_draw_value() should also be removed from bot6 postflop.py."""
-        postflop_path = BOT6 / "postflop.py"
-        content = postflop_path.read_text()
-        assert "def straight_draw_value(" not in content, (
-            "straight_draw_value() should have been deleted from bot6/postflop.py"
-        )

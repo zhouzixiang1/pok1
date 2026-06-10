@@ -419,6 +419,13 @@ async def execute_workers(args):
                                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
                 else:
                     shutil.copy2(item, next_dir / item.name)
+
+        # Re-apply known fixes after resetting from source (source may be older/unfixed)
+        from fix_injection import apply_known_fixes, log_fix_application
+        applied, skipped = apply_known_fixes(next_dir)
+        if applied or skipped:
+            log_fix_application(applied, skipped, next_dir, source_v)
+
         reviewer_feedback += (
             f"\n\nNOTE: This is a retry. The code in bots/claude_v{next_v}/ has been ACTUALLY RESET "
             f"from source bots/claude_v{source_v}/. Any modifications described in the feedback "

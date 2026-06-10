@@ -294,6 +294,13 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
         if target_dir.exists():
             shutil.rmtree(target_dir)
         shutil.copytree(parent_a_dir, target_dir, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+
+        # Apply known critical fixes to crossover child
+        from fix_injection import apply_known_fixes, log_fix_application
+        applied, skipped = apply_known_fixes(target_dir)
+        if applied or skipped:
+            log_fix_application(applied, skipped, target_dir, parent_a_v)
+
         (target_dir / ".completed").unlink(missing_ok=True)
 
         ui.clear_io()

@@ -44,3 +44,13 @@ Parent A has tight preflop ranges (VPIP 18%) but weak river play. Parent B has a
    - `python web/core/smoke_tester.py bots/claude_v{version}/main.py`
 5. The bot must output `{"response": int}` via stdout. Action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.
 </action>
+
+## Known Mandatory Fixes (DO NOT REMOVE)
+
+The following fixes have been verified as critical and must be preserved in any new bot:
+
+1. **Wheel Straight (A-2-3-4-5)**: In `card_utils.py` `evaluate_5()`, the wheel straight check `elif set(unique_ranks) == {14, 2, 3, 4, 5}:` must be present. Without it, A-2-3-4-5 is misclassified as high card.
+2. **Re-raise Minimum**: In `state.py`, `min_raise_action` must use `2 * last_raise_to + 1 - my_round_bet` (strictly > 2x, not >= 2x).
+3. **TOTAL_HANDS**: In `constants.py`, `TOTAL_HANDS` must be 70.
+
+If you see these fixes in the source code, preserve them. If they are missing, add them.
