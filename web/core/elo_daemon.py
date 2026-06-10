@@ -43,7 +43,7 @@ sys.path.insert(0, str(CORE_DIR))
 from glicko2 import Glicko2Player, update_single_game, decay_rd
 from engine.battle import mirror_battle
 from evolution_infra import locked_file, pair_key
-from bot_action_stats import compute_bot_action_stats
+from bot_action_stats import compute_bot_action_stats, compute_all_bot_stats
 from eval_rounds import EvalRoundManager
 import logging
 
@@ -339,7 +339,7 @@ def cleanup_old_replays():
 
 
 def run_single_match(args):
-    """Run mirror_battle, return per-game independent results from all_logs."""
+    """Run mirror_battle, save replay in-worker, return lightweight result."""
     bot_a_name, bot_b_name, bot_a_path, bot_b_path, n_pairs = args
     try:
         match_wins, draws, n_played, all_logs = mirror_battle(
@@ -356,14 +356,21 @@ def run_single_match(args):
             else:
                 games_draw += 1
         total = games_a + games_b + games_draw
-        return (bot_a_name, bot_b_name, games_a, games_b, games_draw, total, None, all_logs)
+
+        # Save replay inside worker to avoid ~2MB cross-process transfer
+        try:
+            save_match_replay(bot_a_name, bot_b_name, games_a, games_b, games_draw, all_logs)
+        except Exception:
+            pass  # Non-fatal: replay save failure should not affect rating updates
+
+        return (bot_a_name, bot_b_name, games_a, games_b, games_draw, total, None)
     except Exception as e:
-        return (bot_a_name, bot_b_name, 0, 0, 0, 0, str(e), [])
+        return (bot_a_name, bot_b_name, 0, 0, 0, 0, str(e))
 
 
 def process_result(result, ratings, h2h, bot_stats, verbose=False):
-    """Process one completed match: update Elo, H2H, bot_stats, save replay."""
-    a, b, wins_a, wins_b, draws, total, err, replay_data = result
+    """Process one completed match: update Elo, H2H, bot_stats."""
+    a, b, wins_a, wins_b, draws, total, err = result
     if err is not None:
         if verbose:
             log.error("Error in %s vs %s: %s", a, b, err)
@@ -371,14 +378,6 @@ def process_result(result, ratings, h2h, bot_stats, verbose=False):
 
     if verbose:
         log.debug("%s vs %s: %d-%d-%d (%d games)", a, b, wins_a, wins_b, draws, total)
-
-    # Save replay (using per-game counts)
-    if replay_data:
-        try:
-            save_match_replay(a, b, wins_a, wins_b, draws, replay_data)
-        except Exception as e:
-            if verbose:
-                log.warning("Error saving replay %s vs %s: %s", a, b, e)
 
     # Per-game Glicko-2 updates (use live opponent ratings each game)
     _default = Glicko2Player()
@@ -446,11 +445,9 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
 
     cleanup_old_replays()
 
-    # Compute and write bot action stats from replay files
+    # Compute and write bot action stats from replay files (single-pass)
     try:
-        bot_action_stats = {}
-        for bot_name in active_bots:
-            bot_action_stats[bot_name] = compute_bot_action_stats(bot_name, REPLAY_DIR)
+        bot_action_stats = compute_all_bot_stats(active_bots, REPLAY_DIR)
         action_stats_file = RESULTS_DIR / "bot_action_stats.json"
         tmp = action_stats_file.with_suffix(".tmp")
         with open(tmp, "w") as f:

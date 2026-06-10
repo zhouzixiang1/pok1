@@ -347,3 +347,202 @@ def compute_bot_action_stats(bot_name, replays_dir):
     }
 
     return stats
+
+
+def compute_all_bot_stats(active_bots, replays_dir):
+    """
+    Compute aggregate action statistics for ALL active bots in a single pass
+    over the replay directory. Reads each replay file once instead of once per bot.
+
+    Returns a dict mapping bot_name -> stats dict (same shape as compute_bot_action_stats).
+    Bots not found in any replay get an empty dict.
+    """
+    replays_dir = Path(replays_dir)
+    if not replays_dir.exists():
+        return {b: {} for b in active_bots}
+
+    bot_set = set(active_bots)
+
+    # Per-bot counters (mirrors the counters in compute_bot_action_stats)
+    total_hands = {b: 0 for b in active_bots}
+    vpip_opportunities = {b: 0 for b in active_bots}
+    vpip_count = {b: 0 for b in active_bots}
+    pfr_count = {b: 0 for b in active_bots}
+    faced_3bet = {b: 0 for b in active_bots}
+    folded_to_3bet = {b: 0 for b in active_bots}
+    cbet_opportunities = {b: 0 for b in active_bots}
+    cbet_count = {b: 0 for b in active_bots}
+    barrel_opportunities = {b: 0 for b in active_bots}
+    barrel_count = {b: 0 for b in active_bots}
+    river_value_bet_opportunities = {b: 0 for b in active_bots}
+    river_value_bet_count = {b: 0 for b in active_bots}
+    river_bluff_opportunities = {b: 0 for b in active_bots}
+    river_bluff_count = {b: 0 for b in active_bots}
+    faced_river_bet = {b: 0 for b in active_bots}
+    folded_to_river_bet = {b: 0 for b in active_bots}
+    showdowns = {b: 0 for b in active_bots}
+    showdown_wins = {b: 0 for b in active_bots}
+    won_pots = {b: [] for b in active_bots}
+    lost_pots = {b: [] for b in active_bots}
+    wtsd_opportunities = {b: 0 for b in active_bots}
+    wtsd_count = {b: 0 for b in active_bots}
+    aggressive_actions = {b: 0 for b in active_bots}
+    passive_actions = {b: 0 for b in active_bots}
+
+    def _pct(num, den):
+        return round(num / den, 4) if den > 0 else 0.0
+
+    def _avg(vals):
+        return round(sum(vals) / len(vals), 2) if vals else 0.0
+
+    for entry in os.listdir(replays_dir):
+        if not entry.endswith(".json"):
+            continue
+        filepath = replays_dir / entry
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                replay_json = json.load(f)
+        except Exception:
+            continue
+
+        hands = extract_hands_from_replay(replay_json)
+        for hand in hands:
+            actions = hand["actions"]
+            players_in_hand = set(a["player"] for a in actions)
+            # Only process bots that are in active_bots
+            relevant_bots = players_in_hand & bot_set
+            if not relevant_bots:
+                continue
+
+            for bot_name in relevant_bots:
+                total_hands[bot_name] += 1
+
+                # --- VPIP / PFR ---
+                preflop_actions = [a for a in actions if a["stage"] == "preflop"]
+                bot_preflop = [a for a in preflop_actions if a["player"] == bot_name]
+                if bot_preflop:
+                    vpip_opportunities[bot_name] += 1
+                    first_action = bot_preflop[0]["action"]
+                    if first_action in ("raise", "allin"):
+                        vpip_count[bot_name] += 1
+                        pfr_count[bot_name] += 1
+                    elif first_action == "call":
+                        vpip_count[bot_name] += 1
+
+                # --- Fold to 3bet ---
+                preflop_raises = [a for a in preflop_actions if a["action"] in ("raise", "allin")]
+                if len(preflop_raises) >= 2:
+                    bot_last_preflop = None
+                    for a in reversed(preflop_actions):
+                        if a["player"] == bot_name:
+                            bot_last_preflop = a["action"]
+                            break
+                    if bot_last_preflop is not None:
+                        faced_3bet[bot_name] += 1
+                        if bot_last_preflop == "fold":
+                            folded_to_3bet[bot_name] += 1
+
+                # --- C-bet on flop ---
+                if preflop_raises:
+                    last_preflop_raiser = preflop_raises[-1]["player"]
+                    if last_preflop_raiser == bot_name:
+                        flop_actions = [a for a in actions if a["stage"] == "flop"]
+                        if flop_actions:
+                            cbet_opportunities[bot_name] += 1
+                            first_flop = flop_actions[0]
+                            if first_flop["player"] == bot_name and first_flop["action"] in ("raise", "bet", "allin"):
+                                cbet_count[bot_name] += 1
+
+                # --- Turn barrel ---
+                flop_actions = [a for a in actions if a["stage"] == "flop"]
+                if flop_actions and flop_actions[0]["player"] == bot_name and flop_actions[0]["action"] in ("raise", "bet", "allin"):
+                    turn_actions = [a for a in actions if a["stage"] == "turn"]
+                    if turn_actions:
+                        barrel_opportunities[bot_name] += 1
+                        first_turn = turn_actions[0]
+                        if first_turn["player"] == bot_name and first_turn["action"] in ("raise", "bet", "allin"):
+                            barrel_count[bot_name] += 1
+
+                # --- River value bet / bluff ---
+                river_actions = [a for a in actions if a["stage"] == "river"]
+                if river_actions:
+                    for a in river_actions:
+                        if a["player"] == bot_name:
+                            if a["action"] in ("raise", "bet", "allin"):
+                                strength = _classify_hand_strength(hand, bot_name)
+                                if strength == "made":
+                                    river_value_bet_opportunities[bot_name] += 1
+                                    river_value_bet_count[bot_name] += 1
+                                elif strength == "air":
+                                    river_bluff_opportunities[bot_name] += 1
+                                    river_bluff_count[bot_name] += 1
+                            break
+
+                # --- Fold to river bet ---
+                if river_actions:
+                    river_bet_made = any(
+                        a["player"] != bot_name and a["action"] in ("raise", "bet", "allin")
+                        for a in river_actions
+                    )
+                    if river_bet_made:
+                        bot_last_river = None
+                        for a in reversed(river_actions):
+                            if a["player"] == bot_name:
+                                bot_last_river = a["action"]
+                                break
+                        if bot_last_river is not None:
+                            faced_river_bet[bot_name] += 1
+                            if bot_last_river == "fold":
+                                folded_to_river_bet[bot_name] += 1
+
+                # --- Showdown win ---
+                if hand.get("showdown"):
+                    showdowns[bot_name] += 1
+                    if hand.get("winner") == bot_name:
+                        showdown_wins[bot_name] += 1
+
+                # --- Pots won / lost ---
+                if hand.get("winner") == bot_name:
+                    won_pots[bot_name].append(hand.get("pot", 0))
+                elif hand.get("winner") is not None:
+                    lost_pots[bot_name].append(hand.get("pot", 0))
+
+                # --- WTSD (went to showdown) ---
+                if bot_preflop and bot_preflop[-1]["action"] != "fold":
+                    wtsd_opportunities[bot_name] += 1
+                    if hand.get("showdown"):
+                        wtsd_count[bot_name] += 1
+
+                # --- Aggression frequency ---
+                for a in actions:
+                    if a["player"] != bot_name:
+                        continue
+                    act = a["action"]
+                    if act in ("raise", "bet", "allin"):
+                        aggressive_actions[bot_name] += 1
+                    elif act in ("call", "check"):
+                        passive_actions[bot_name] += 1
+
+    # Build per-bot stats dicts
+    result = {}
+    for b in active_bots:
+        if total_hands[b] == 0:
+            result[b] = {}
+            continue
+        result[b] = {
+            "total_hands": total_hands[b],
+            "vpip": _pct(vpip_count[b], vpip_opportunities[b]),
+            "pfr": _pct(pfr_count[b], vpip_opportunities[b]),
+            "fold_to_3bet": _pct(folded_to_3bet[b], faced_3bet[b]),
+            "flop_cbet": _pct(cbet_count[b], cbet_opportunities[b]),
+            "turn_barrel": _pct(barrel_count[b], barrel_opportunities[b]),
+            "river_value_bet": _pct(river_value_bet_count[b], river_value_bet_opportunities[b]),
+            "river_bluff": _pct(river_bluff_count[b], river_bluff_opportunities[b]),
+            "fold_to_river_bet": _pct(folded_to_river_bet[b], faced_river_bet[b]),
+            "showdown_win": _pct(showdown_wins[b], showdowns[b]),
+            "avg_won_pot": _avg(won_pots[b]),
+            "avg_lost_pot": _avg(lost_pots[b]),
+            "wtsd": _pct(wtsd_count[b], wtsd_opportunities[b]),
+            "aggression_freq": _pct(aggressive_actions[b], aggressive_actions[b] + passive_actions[b]),
+        }
+    return result
