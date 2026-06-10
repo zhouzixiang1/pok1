@@ -374,11 +374,12 @@ async def run_master(args):
 # ──────────────────────────────────────────────
 
 def _extract_exhausted_keywords():
-    """Extract keyword phrases from EXHAUSTED experience pool entries.
+    """Extract focused topic keywords from EXHAUSTED experience pool entries.
 
-    Returns a list of lowercase keyword strings extracted from lines containing
-    [POSSIBLY EXHAUSTED] in experience_pool.md. Keywords are derived by removing
-    common stop-words and the EXHAUSTED marker, yielding the core topic phrase.
+    For each [POSSIBLY EXHAUSTED] line, extracts:
+    1. The section header (e.g., OPPONENT_MODELING, PARAMETER_TUNING)
+    2. A cleaned short phrase (first clause before the explanation)
+    Returns a list of (section, phrase) tuples for fuzzy matching.
     Returns an empty list if the file doesn't exist or has no EXHAUSTED entries.
     """
     if not EXPERIENCE_FILE.exists():
@@ -389,14 +390,58 @@ def _extract_exhausted_keywords():
         return []
 
     keywords = []
+    current_section = ""
     for line in text.splitlines():
+        if line.startswith("## "):
+            current_section = line.replace("## ", "").strip()
+            continue
         if "[POSSIBLY EXHAUSTED]" not in line:
             continue
+        # Extract the topic phrase: everything before the explanation
         cleaned = line.replace("[POSSIBLY EXHAUSTED]", "").strip(" -•")
         if not cleaned:
             continue
-        keywords.append(cleaned.lower())
+        # Take the first clause (before common joiners) as the core topic
+        for sep in [" are exhausted", " has not ", " have repeatedly ", " shows "]:
+            if sep in cleaned:
+                cleaned = cleaned[:cleaned.index(sep)]
+                break
+        keywords.append((current_section.lower(), cleaned.lower()))
     return keywords
+
+
+def _fuzzy_match_exhausted(prompt_text: str, keywords: list) -> bool:
+    """Check if prompt_text matches an EXHAUSTED keyword using fuzzy token matching.
+
+    For each (section, phrase) pair:
+    1. Extract alphanumeric tokens (len > 3) from both the phrase and the section name
+    2. Check how many tokens appear in the prompt
+    3. Match if >=2 distinctive tokens from either the phrase OR section match
+
+    This catches prompts like "Adjust fold threshold" matching the PARAMETER_TUNING
+    EXHAUSTED entry about "fold margin, clamp, EQR, SPR-commitment guard, sizing_aggr".
+    """
+    import re
+    prompt_clean = re.sub(r'[^a-z0-9\s]', '', prompt_text.lower())
+    prompt_tokens = set(prompt_clean.split())
+
+    for section, phrase in keywords:
+        # Extract tokens from both section name and topic phrase
+        phrase_tokens = set(re.sub(r'[^a-z0-9]', '', t) for t in phrase.split()
+                            if len(re.sub(r'[^a-z0-9]', '', t)) > 3)
+        section_tokens = set(re.sub(r'[^a-z0-9]', '', t) for t in section.split()
+                             if len(re.sub(r'[^a-z0-9]', '', t)) > 3)
+        all_tokens = phrase_tokens | section_tokens
+
+        if not all_tokens:
+            continue
+
+        # Count matching tokens
+        matches = sum(1 for t in all_tokens if t in prompt_clean)
+        # Match if >=2 distinctive tokens OR >=40% of tokens match
+        if matches >= min(2, len(all_tokens)) and matches >= len(all_tokens) * 0.25:
+            return True
+    return False
 
 
 class ExecuteWorkersInput(TypedDict):
@@ -533,24 +578,20 @@ async def execute_workers(args):
     if exhausted_keywords:
         for task in tasks:
             prompt_text = task.get("worker_prompt", task.get("instruction", "")).lower()
-            for kw in exhausted_keywords:
-                # Use word-level tokens from the keyword for fuzzy matching
-                # (full-sentence matching is too brittle across rephrasings).
-                tokens = [t for t in kw.split() if len(t) > 3]
-                if tokens and all(t in prompt_text for t in tokens):
-                    original = task.get("worker_prompt", task.get("instruction", ""))
-                    task["worker_prompt"] = (
-                        original +
-                        "\n\n⚠️ WARNING: This task may violate an EXHAUSTED direction. "
-                        "Verify carefully — the experience pool marks this area as exhausted "
-                        "with no measurable H2H gain. Consider an alternative approach."
-                    )
-                    log_system_event(
-                        "pipeline.worker_exhausted_warning", "warn",
-                        f"Worker {task.get('worker_id', '?')} prompt matches EXHAUSTED keyword: {kw[:80]}",
-                        {"next_v": next_v, "keyword": kw[:120]},
-                    )
-                    break  # One warning per task is sufficient
+            if _fuzzy_match_exhausted(prompt_text, exhausted_keywords):
+                original = task.get("worker_prompt", task.get("instruction", ""))
+                task["worker_prompt"] = (
+                    original +
+                    "\n\n⚠️ WARNING: This task may violate an EXHAUSTED direction. "
+                    "Verify carefully — the experience pool marks this area as exhausted "
+                    "with no measurable H2H gain. Consider an alternative approach."
+                )
+                log_system_event(
+                    "pipeline.worker_exhausted_warning", "warn",
+                    f"Worker {task.get('worker_id', '?')} prompt matches EXHAUSTED direction",
+                    {"next_v": next_v},
+                )
+                break  # One warning per task is sufficient
 
     ui = _get_ui()
     success, worker_snapshots, audit_focus_areas = await _execute_workers(

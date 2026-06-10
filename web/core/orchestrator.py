@@ -382,7 +382,7 @@ async def _watchdog_coroutine(ui, shutdown_mgr, check_interval=60):
     from evolution_core import read_pipeline_checkpoint
 
     recoverable_stages = {"direction_audited", "master_planned", "workers_done",
-                          "quality_passed", "reviewed", "critic_checked", "verified"}
+                          "quality_passed", "reviewed", "critic_checked", "precommit_failed", "verified"}
 
     while True:
         if shutdown_mgr and shutdown_mgr.is_shutting_down:
