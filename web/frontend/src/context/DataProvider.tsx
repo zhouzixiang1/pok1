@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect, useRef, type ReactNode 
 import type {
   BotRating, MatchStats, MatchMatrix, HistoryEntry, GenerationLog,
   MatchSummary, DaemonStatus, RateLimitStatus, BotSummary, H2HEntry, BotStatsEntry,
+  SchedulerStatus,
 } from "../api/types";
 
 export type DataStore = {
@@ -16,6 +17,7 @@ export type DataStore = {
   generations: GenerationLog[];
   h2h: Record<string, H2HEntry>;
   botStats: Record<string, BotStatsEntry>;
+  scheduler: SchedulerStatus | null;
 };
 
 const initial: DataStore = {
@@ -30,6 +32,7 @@ const initial: DataStore = {
   generations: [],
   h2h: {},
   botStats: {},
+  scheduler: null,
 };
 
 const DataContext = createContext<DataStore>(initial);
@@ -57,6 +60,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         history: (data) => setStore((s) => ({ ...s, history: data as HistoryEntry[] })),
         h2h: (data) => setStore((s) => ({ ...s, h2h: data as Record<string, H2HEntry> })),
         bot_stats: (data) => setStore((s) => ({ ...s, botStats: data as Record<string, BotStatsEntry> })),
+        scheduler: (data) => setStore((s) => ({ ...s, scheduler: data as SchedulerStatus })),
       };
 
       Object.entries(handlers).forEach(([event, handler]) => {
@@ -100,4 +104,5 @@ export const useHistory = () => useContext(DataContext).history;
 export const useGenerations = () => useContext(DataContext).generations;
 export const useH2H = () => useContext(DataContext).h2h;
 export const useBotStats = () => useContext(DataContext).botStats;
+export const useSchedulerStatus = () => useContext(DataContext).scheduler;
 export const useUpdateData = () => useContext(SetDataContext)!;

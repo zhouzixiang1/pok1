@@ -31,6 +31,7 @@ from server.routes.bots import router as bots_router
 from server.routes.pipeline import router as pipeline_router
 from server.routes.prompts import router as prompts_router
 from server.routes.data_stream import router as data_stream_router
+from server.routes.scheduler import router as scheduler_router
 
 
 @pytest.fixture
@@ -46,7 +47,7 @@ def app():
     for r in [
         ratings_router, matches_router, evolution_router, logs_router,
         control_router, bots_router, pipeline_router, prompts_router,
-        data_stream_router,
+        data_stream_router, scheduler_router,
     ]:
         test_app.include_router(r)
     return test_app

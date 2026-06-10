@@ -136,7 +136,7 @@ async def run_precommit_eval(args):
     total_wins = 0
     total_losses = 0
     total_draws = 0
-    _core = CORE_DIR if 'CORE_DIR' in dir() else Path(__file__).resolve().parent
+    _core = CORE_DIR  # imported unconditionally from evolution_core (line 18)
     sys.path.insert(0, str(_core.resolve()))
     from engine.battle import mirror_battle
 
@@ -447,7 +447,7 @@ async def run_inline_eval(args):
         return {"content": [{"type": "text", "text": json.dumps({"error": "Daemon is running. Stop it first with stop_daemon to avoid ratings race condition."})}]}
 
     # Import battle engine
-    _core = CORE_DIR if 'CORE_DIR' in dir() else Path(__file__).resolve().parent
+    _core = CORE_DIR  # imported unconditionally from evolution_core (line 18)
     sys.path.insert(0, str(_core.resolve()))
     from engine.battle import mirror_battle
 

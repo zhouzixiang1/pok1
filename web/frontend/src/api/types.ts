@@ -208,3 +208,10 @@ export interface WorkerFailuresResponse {
   failures: WorkerFailure[];
   total: number;
 }
+
+// Scheduler
+export interface SchedulerStatus {
+  pending_jobs: number;
+  claimed_jobs: number;
+  recent_results: number;
+}

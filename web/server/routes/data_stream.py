@@ -137,6 +137,19 @@ async def data_stream(request: Request):
                             _event("bots", _get_bots()),
                             _event("stats", _get_match_stats()),
                         ]
+                        # Scheduler queue status (push alongside daemon every 3s)
+                        try:
+                            from battle_scheduler import BATTLE_JOBS_FILE, BATTLE_CLAIMED_FILE, BATTLE_RESULTS_FILE, _read_jsonl
+                            _sj = _read_jsonl(BATTLE_JOBS_FILE)
+                            _sc = _read_jsonl(BATTLE_CLAIMED_FILE)
+                            _sr = _read_jsonl(BATTLE_RESULTS_FILE)
+                            events.append(_event("scheduler", {
+                                "pending_jobs": len(_sj),
+                                "claimed_jobs": len(_sc),
+                                "recent_results": len(_sr),
+                            }))
+                        except Exception:
+                            pass
                         # 429 rate-limit status (push alongside daemon every 3s)
                         try:
                             from rate_limiter import rate_limiter

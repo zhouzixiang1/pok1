@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
 import { Link } from "react-router";
-import { useRatings, useMatchStats, useDaemonStatus, useRateLimit, useBots, useRecentMatches, useH2H, useGenerations } from "../context/DataProvider";
+import { useRatings, useMatchStats, useDaemonStatus, useRateLimit, useBots, useRecentMatches, useH2H, useGenerations, useSchedulerStatus } from "../context/DataProvider";
 import { api } from "../api/client";
 import { controlApi, type ControlStatus } from "../api/control";
 import type { PipelineCheckpoint } from "../api/types";
@@ -125,6 +125,7 @@ export default function Overview() {
   const stats = useMatchStats();
   const bots = useBots();
   const daemon = useDaemonStatus();
+  const scheduler = useSchedulerStatus();
   const [summary, setSummary] = useState<Record<string, { peak_rating: number; current_rating: number; trend: number; periods: number; peak_h2h_avg_wr?: number; current_h2h_avg_wr?: number; wr_trend?: number }>>({});
   const [controlStatus, setControlStatus] = useState<ControlStatus | null>(null);
   const [checkpoint, setCheckpoint] = useState<PipelineCheckpoint | null>(null);
@@ -216,6 +217,22 @@ export default function Overview() {
           <DaemonToggle />
           <span className="text-[10px] text-gray-400">{daemonAgeStr}</span>
         </div>
+        {scheduler && (
+          <>
+            <div className="w-px h-5 bg-gray-200 dark:bg-gray-700" />
+            <div className="flex items-center gap-1.5">
+              <Badge variant={scheduler.pending_jobs > 0 ? "warning" : "neutral"} size="sm">
+                {scheduler.pending_jobs} 待处理
+              </Badge>
+              <Badge variant={scheduler.claimed_jobs > 0 ? "success" : "neutral"} size="sm">
+                {scheduler.claimed_jobs} 执行中
+              </Badge>
+              <Badge variant="neutral" size="sm">
+                {scheduler.recent_results} 已完成
+              </Badge>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Top 5 featured + Activity + Pipeline */}
