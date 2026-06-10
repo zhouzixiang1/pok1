@@ -15,7 +15,7 @@ def sanitize_action(action, state, my_chips):
         return -1 if action == -1 else 0
 
     if state["to_call"] >= my_chips:
-        return 0 if action == 0 else (-2 if action == -2 else -1)
+        return -2 if action == -2 else -1
 
     if action > 0:
         raise_to_total = action + state["my_round_bet"]

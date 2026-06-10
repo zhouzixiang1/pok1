@@ -1,4 +1,4 @@
-from constants import BIG_BLIND
+from constants import BIG_BLIND, N_PLAYERS
 from card_utils import clamp, next_player
 from state import collect_latest_requests_by_hand
 from tournament import opponent_can_lock_win
@@ -6,49 +6,6 @@ from tournament import opponent_can_lock_win
 
 def smooth_rate(successes, total, prior_mean, prior_weight):
     return (successes + prior_mean * prior_weight) / (total + prior_weight)
-
-
-def classify_opponent_sizing_pattern(requests, my_id):
-    opponent_id = next_player(my_id, 1)
-    small = medium = large = 0
-    postflop_aggr = 0
-    postflop_actions = 0
-    for req in collect_latest_requests_by_hand(requests):
-        for rec in req.get("history", []):
-            if rec["player_id"] != opponent_id:
-                continue
-            if rec["round"] > 0:
-                postflop_actions += 1
-                if rec["action_type"] in ("raise", "allin"):
-                    postflop_aggr += 1
-            if rec["action_type"] != "raise":
-                continue
-            bb = rec["action"] / BIG_BLIND
-            if bb < 3.0:
-                small += 1
-            elif bb <= 8.0:
-                medium += 1
-            else:
-                large += 1
-    total = small + medium + large
-    if total < 5:
-        return {"pattern": "none", "confidence": 0.0, "large_rate": 0.0,
-                "medium_rate": 0.0, "small_rate": 0.0, "postflop_aggr": 0.0}
-    pa = postflop_aggr / max(1, postflop_actions)
-    lr, mr, sr = large / total, medium / total, small / total
-    conf = clamp((total - 5) / 15.0, 0.0, 1.0)
-    if lr > 0.40 and sr > 0.30 and mr < 0.25:
-        pattern = "polarized"
-    elif mr > 0.50:
-        pattern = "merged"
-    elif lr > 0.55 and pa > 0.42:
-        pattern = "over_bluff"
-    elif sr > 0.55 and pa < 0.30:
-        pattern = "under_value"
-    else:
-        pattern = "none"
-    return {"pattern": pattern, "confidence": conf, "large_rate": lr,
-            "medium_rate": mr, "small_rate": sr, "postflop_aggr": pa}
 
 
 def build_opponent_model(requests, my_id):
@@ -72,8 +29,6 @@ def build_opponent_model(requests, my_id):
     flop_raise_bb = []; turn_raise_bb = []; river_raise_bb = []
     barrel_hands = 0; barrel_continue = 0
     opp_bet_flop = False; opp_bet_turn = False
-    opp_small_bet_count = 0
-    opp_large_bet_count = 0
 
     for req in hand_requests:
         if opponent_can_lock_win(req, my_id):
@@ -117,12 +72,6 @@ def build_opponent_model(requests, my_id):
                     preflop_raise += 1
 
             if round_idx > 0:
-                if action_type == 'raise':
-                    sizing_bb = action / BIG_BLIND
-                    if sizing_bb >= 8.0:
-                        opp_large_bet_count += 1
-                    else:
-                        opp_small_bet_count += 1
                 postflop_actions += 1
                 if action_type in ("raise", "allin"):
                     postflop_aggressive += 1
@@ -165,7 +114,6 @@ def build_opponent_model(requests, my_id):
 
     confidence = clamp((total_actions - 5) / 35.0, 0.0, 1.0)
     avg_raise_bb = sum(raise_sizes) / len(raise_sizes) if raise_sizes else 2.6
-    pattern_info = classify_opponent_sizing_pattern(requests, my_id)
 
     return {
         "confidence": confidence,
@@ -184,13 +132,6 @@ def build_opponent_model(requests, my_id):
         "avg_turn_raise_bb": sum(turn_raise_bb)/len(turn_raise_bb) if turn_raise_bb else 4.5,
         "avg_river_raise_bb": sum(river_raise_bb)/len(river_raise_bb) if river_raise_bb else 5.5,
         "barrel_freq": smooth_rate(barrel_continue, barrel_hands, 0.45, 4.0),
-        "sizing_aggr": smooth_rate(opp_large_bet_count, opp_small_bet_count + opp_large_bet_count, 0.35, 4.0),
-        "sizing_pattern": pattern_info["pattern"],
-        "pattern_confidence": pattern_info["confidence"],
-        "pattern_large_rate": pattern_info["large_rate"],
-        "pattern_medium_rate": pattern_info["medium_rate"],
-        "pattern_small_rate": pattern_info["small_rate"],
-        "pattern_postflop_aggr": pattern_info["postflop_aggr"],
     }
 
 
@@ -272,15 +213,6 @@ def analyze_current_spot(req, state):
                 info["preflop_spot"] = "bb_vs_raise"
         elif history and info["my_is_sb"] and history[-1]["player_id"] == opponent_id:
             if history[-1]["action_type"] in ("raise", "allin"):
-                # Detect if SB limped (call) vs raised (v23 fix)
-                sb_first_action = None
-                for rec in history:
-                    if rec["player_id"] == my_id and rec["round"] == 0:
-                        sb_first_action = rec["action_type"]
-                        break
-                if sb_first_action == "call":
-                    info["preflop_spot"] = "sb_vs_iso_raise"
-                else:
-                    info["preflop_spot"] = "sb_vs_reraise"
+                info["preflop_spot"] = "sb_vs_reraise"
 
     return info
