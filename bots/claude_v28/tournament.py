@@ -10,6 +10,12 @@ from constants import (
     PROTECT_BLUFF_DELTA, CHASE_BLUFF_DELTA,
     ANTI_LOCK_CHASE, ANTI_LOCK_THRESHOLD,
     ANTI_LOCK_SIZING, ANTI_LOCK_OPEN, ANTI_LOCK_BLUFF,
+    PASSIVE_AGGR_MAX, PASSIVE_VPIP_MIN, PASSIVE_BARREL_MAX, PASSIVE_CONFIDENCE_GATE,
+    PRIOR_POSTFLOP_AGGR, PRIOR_VPIP, PRIOR_BARREL_FREQ, PRIOR_FLOP_AGGR,
+    LIGHT_4BET_MIN_CONFIDENCE, LIGHT_4BET_MIN_OPP_PFR, LIGHT_4BET_MAX_OPP_4BET,
+    LIGHT_4BET_STRENGTH_LOW, LIGHT_4BET_STRENGTH_HIGH, LIGHT_4BET_FREQ_ROLL_CAP,
+    LIGHT_4BET_SIZE_MULT, LIGHT_4BET_STACK_CAP, LIGHT_4BET_HALF_STACK_CAP,
+    TRAP_MIN_CONFIDENCE, TRAP_MIN_AGGR, TRAP_MAX_WETNESS, TRAP_FREQ_CAP,
 )
 from card_utils import clamp, next_player
 from state import reconstruct_state, get_remaining_hands, forced_fold_loss_bound
@@ -175,3 +181,105 @@ def anti_lock_can_continue(anti_lock_pressure, win_rate, pot_odds, round_idx, va
     if not anti_lock_pressure:
         return False
     return win_rate >= anti_lock_continue_floor(pot_odds, round_idx, value_profile, draw_info, made_strength)
+
+
+def _is_passive_opponent(opponent_model, confidence_gate=PASSIVE_CONFIDENCE_GATE):
+    if opponent_model["confidence"] < confidence_gate:
+        return False
+    post_aggr = opponent_model.get("postflop_aggr", PRIOR_POSTFLOP_AGGR)
+    vpip = opponent_model.get("vpip", PRIOR_VPIP)
+    barrel = opponent_model.get("barrel_freq", PRIOR_BARREL_FREQ)
+    return post_aggr <= PASSIVE_AGGR_MAX and vpip >= PASSIVE_VPIP_MIN and barrel <= PASSIVE_BARREL_MAX
+
+
+def _is_fourbet_light_candidate(my_cards):
+    from state import preflop_hand_profile
+    profile = preflop_hand_profile(my_cards)
+    high = profile["high"]
+    low = profile["low"]
+    suited = profile["suited"]
+    pair = profile["pair"]
+    gap = high - low
+
+    if pair and high <= 4:
+        return True
+    if suited and gap == 1 and low >= 4 and high <= 11:
+        return True
+    if suited and gap == 2 and low >= 4 and high <= 11:
+        return True
+    if suited and high == 14 and low >= 2 and low <= 5:
+        return True
+
+    return False
+
+
+def _should_4bet_light(my_cards, preflop_strength, opponent_model, state, my_chips):
+    if state.get("opponent_allin", False):
+        return 0
+
+    confidence = opponent_model.get("confidence", 0.0)
+    opp_pfr = opponent_model.get("pfr", 0.28)
+
+    if confidence < LIGHT_4BET_MIN_CONFIDENCE or opp_pfr < LIGHT_4BET_MIN_OPP_PFR:
+        return 0
+
+    opp_4bet = opponent_model.get("four_bet_freq", 0.0)
+    if opp_4bet >= LIGHT_4BET_MAX_OPP_4BET:
+        return 0
+
+    if not _is_fourbet_light_candidate(my_cards):
+        return 0
+
+    if preflop_strength < LIGHT_4BET_STRENGTH_LOW or preflop_strength >= LIGHT_4BET_STRENGTH_HIGH:
+        return 0
+
+    freq_roll = (hash(tuple(my_cards)) % 100) / 100.0
+    if freq_roll >= LIGHT_4BET_FREQ_ROLL_CAP:
+        return 0
+
+    opp_3bet_total = state["round_bet"]
+    fourbet_target = int(opp_3bet_total * LIGHT_4BET_SIZE_MULT)
+
+    min_raise = state.get("min_raise_action", state.get("round_raise", 0))
+    fourbet_target = max(fourbet_target, min_raise)
+
+    if fourbet_target > my_chips * LIGHT_4BET_STACK_CAP:
+        return 0
+
+    if fourbet_target >= my_chips * LIGHT_4BET_HALF_STACK_CAP:
+        return 0
+
+    return fourbet_target
+
+
+def _should_checkraise_trap(value_profile, round_idx, board_texture, opponent_model, my_cards, public_cards):
+    if round_idx != 1:
+        return False
+
+    if value_profile is None or value_profile.get("tier") not in ("strong", "nut"):
+        return False
+
+    if board_texture is None:
+        return False
+    if board_texture.get("dynamic", False):
+        return False
+    if board_texture.get("wetness", 0.0) > TRAP_MAX_WETNESS:
+        return False
+    if board_texture.get("paired", False):
+        return False
+
+    confidence = opponent_model.get("confidence", 0.0)
+    if confidence < TRAP_MIN_CONFIDENCE:
+        return False
+
+    flop_aggr = opponent_model.get("flop_aggr", PRIOR_FLOP_AGGR)
+    postflop_aggr = opponent_model.get("postflop_aggr", PRIOR_POSTFLOP_AGGR)
+    effective_aggr = max(flop_aggr, postflop_aggr)
+    if effective_aggr < TRAP_MIN_AGGR:
+        return False
+
+    seed = (sum(my_cards) * 7 + sum(public_cards) * 13) % 100
+    if seed >= TRAP_FREQ_CAP:
+        return False
+
+    return True
