@@ -244,10 +244,63 @@ async def run_master(args):
         performance_verification = (performance_verification or "") + constraint_block
 
     ui = _get_ui()
+
+    # --- Extract replay_spotlight for Master prompt ---
+    replay_spotlight = ""
+    try:
+        from generation_scheduler import GenerationContext
+        # replay_spotlight is computed in prepare_generation() and stored in
+        # GenerationContext, but the MCP tool layer doesn't have direct access
+        # to the gen_ctx object. Re-compute from the replay files instead.
+        from replay_spotlight import find_critical_hands
+        from evolution_infra import RESULTS_DIR
+        replays_dir = str(RESULTS_DIR / "match_replay")
+        replay_spotlight = find_critical_hands(
+            bot_name=f"claude_v{source_v}",
+            replays_dir=replays_dir,
+            max_hands=10,
+            recent_n_files=20,
+        )
+    except Exception:
+        pass
+
+    # --- Read bot_action_stats for Master prompt ---
+    bot_action_stats = ""
+    try:
+        from evolution_infra import RESULTS_DIR
+        _stats_file = RESULTS_DIR / "bot_action_stats.json"
+        if _stats_file.exists():
+            import json as _json
+            with open(_stats_file, "r") as _f:
+                _all_stats = _json.load(_f)
+            _bot_stats = _all_stats.get(f"claude_v{source_v}")
+            if _bot_stats:
+                # Format as compact text for prompt injection
+                _parts = []
+                for _street in ("preflop", "flop", "turn", "river"):
+                    _st = _bot_stats.get(_street)
+                    if _st and _st.get("total", 0) > 0:
+                        _total = _st["total"]
+                        _parts.append(
+                            f"{_street}: fold={_st.get('fold', 0)/_total:.1%} "
+                            f"call={_st.get('call', 0)/_total:.1%} "
+                            f"raise={_st.get('raise', 0)/_total:.1%} "
+                            f"(n={_total})"
+                        )
+                if _parts:
+                    bot_action_stats = (
+                        f"Action frequencies for claude_v{source_v}:\n"
+                        + "\n".join(_parts)
+                    )
+    except Exception:
+        pass
+
     data = await _run_master_analysis(
         source_v, next_v, stagnation_info, ui,
         match_analysis=match_analysis,
         performance_verification=performance_verification,
+        replay_spotlight=replay_spotlight,
+        bot_action_stats=bot_action_stats,
     )
 
     if data is None:
@@ -277,6 +330,8 @@ async def run_master(args):
                     source_v, next_v, stagnation_info, ui,
                     match_analysis=match_analysis,
                     performance_verification=performance_verification,
+                    replay_spotlight=replay_spotlight,
+                    bot_action_stats=bot_action_stats,
                 )
                 if data is None:
                     return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed after audit retry", "logs": ui.get_output()})}]}

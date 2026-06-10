@@ -23,7 +23,8 @@ from replay_analysis import summarize_replay_for_analysis  # noqa: F401 — re-e
 # ──────────────────────────────────────────────
 
 async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
-                               match_analysis="", performance_verification=""):
+                               match_analysis="", performance_verification="",
+                               replay_spotlight="", bot_action_stats=""):
     """Run Master analysis — can run concurrently with daemon evaluation."""
     master_prompt = (PROMPTS_DIR / "master_prompt.md").read_text()
     # Apply section budgets to avoid experience_pool crowding out match_analysis
@@ -33,27 +34,27 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         else "No performance verification data available.",
         4_000
     )
-    master_prompt = substitute_template(master_prompt, {
-        "stagnation_info": stagnation_info,
-        "match_analysis": match_analysis_trimmed,
-        "performance_verification": perf_trimmed,
-        "source_v": str(source_v),
-    })
-    # Inject eval round summary if available
+
+    # Build eval round summary BEFORE substitute_template so it's included in one pass
+    eval_round_summary = "No eval round data available yet."
     try:
         from eval_rounds import EvalRoundManager
         _erm = EvalRoundManager()
         _eval_summary = _erm.get_last_round_summary(f"claude_v{source_v}")
         if _eval_summary:
-            master_prompt = master_prompt.replace(
-                "{eval_round_summary}", _eval_summary
-            )
+            eval_round_summary = _eval_summary
     except Exception:
         pass
-    # Clean up any remaining unsubstituted eval_round_summary placeholder
-    master_prompt = master_prompt.replace(
-        "{eval_round_summary}", "No eval round data available yet."
-    )
+
+    master_prompt = substitute_template(master_prompt, {
+        "stagnation_info": stagnation_info,
+        "match_analysis": match_analysis_trimmed,
+        "performance_verification": perf_trimmed,
+        "source_v": str(source_v),
+        "replay_spotlight": replay_spotlight or "No replay spotlight data available.",
+        "bot_action_stats": bot_action_stats or "No bot action statistics available.",
+        "eval_round_summary": eval_round_summary,
+    })
     master_ctx = (
         f"Current evolution: v{source_v} → v{next_v}\n"
         f"Bot directory: bots/claude_v{source_v}/\n"
