@@ -831,8 +831,15 @@ def main():
                         match_queue.append((a, b, bot_path(a), bot_path(b), n_pairs))
                     while len(in_flight) < n_workers and match_queue:
                         m = match_queue.popleft()
-                        fut = executor.submit(run_single_match, m)
-                        in_flight[fut] = (m[0], m[1])
+                        is_ext = len(m) == 7 and m[0] == "external"
+                        if is_ext:
+                            exec_args = m[2:7]
+                            ext_job_id = m[1]
+                            fut = executor.submit(run_single_match, exec_args)
+                            in_flight[fut] = (exec_args[0], exec_args[1], ext_job_id)
+                        else:
+                            fut = executor.submit(run_single_match, m)
+                            in_flight[fut] = (m[0], m[1])
                 except (ConnectionRefusedError, OSError) as recover_exc:
                     log.error("Failed to create new process pool after break: %s. Will retry next cycle.", recover_exc)
                     # Don't re-raise — let the daemon continue and retry on next save cycle
