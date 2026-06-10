@@ -115,6 +115,8 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
             lines.append(f"\nStagnation analysis:\n{gen_ctx.stagnation_info}")
         if gen_ctx.match_analysis:
             lines.append(f"\nMatch analysis:\n{gen_ctx.match_analysis}")
+        if gen_ctx.replay_spotlight:
+            lines.append(f"\nReplay spotlight:\n{gen_ctx.replay_spotlight}")
         if gen_ctx.performance_verification:
             lines.append(f"\nPerformance verification:\n{gen_ctx.performance_verification}")
         if one_gen:

@@ -118,6 +118,9 @@ return None
 ## Recent Match Analysis
 {match_analysis}
 
+## Replay Spotlight
+{replay_spotlight}
+
 ## Bot Action Statistics
 {bot_action_stats}
 </injected_context>

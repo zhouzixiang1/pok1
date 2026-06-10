@@ -32,6 +32,7 @@ class GenerationContext:
     stagnation_info: str = ""
     match_analysis: str = ""
     performance_verification: str = ""
+    replay_spotlight: str = ""
     gen_count: int = 0
 
 
@@ -184,6 +185,21 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     perf_text = stagnation_text  # Combined result serves as both
     match_text = match_analysis or ""
 
+    # --- Replay Spotlight Analysis ---
+    spotlight_text = ""
+    try:
+        from replay_spotlight import find_critical_hands
+        from evolution_infra import RESULTS_DIR
+        replays_dir = str(RESULTS_DIR / "match_replay")
+        spotlight_text = find_critical_hands(
+            bot_name=f"claude_v{active_v}",
+            replays_dir=replays_dir,
+            max_hands=10,
+            recent_n_files=20,
+        )
+    except Exception as e:
+        log.warning("Replay spotlight analysis failed: %s", e)
+
     # --- P1-2: H2H Anomaly Root Cause Analysis ---
     if combined:
         try:
@@ -226,6 +242,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         stagnation_info=stagnation_text,
         match_analysis=match_text,
         performance_verification=perf_text,
+        replay_spotlight=spotlight_text,
         gen_count=current_v,
     )
 
