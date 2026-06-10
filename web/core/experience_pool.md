@@ -1,19 +1,17 @@
 ## OPPONENT_MODELING
-- Opponent-pressure clamps and sizing-tendency parameter deltas have shown no measurable H2H gain through v30. [POSSIBLY EXHAUSTED]
-- Structural barrel modules (new functions, new gates) remain viable — v31's should_barrel_turn module was a valid structural addition despite parameter-delta exhaustion.
+- Structural barrel modules (new functions, new gates) remain viable — v31's should_barrel_turn was a valid structural addition despite parameter-delta exhaustion.
 - Per-street big-bet tracking with smooth_rate priors is useful as input data, but should not become a direct fold gate.
-- Do not target aggressive-opponent weakness claims from pre-v22 bots; these were resolved by v22+ fold improvements.
+- Wiring opponent_model into street-specific decision functions (barrel, sizing) is the confirmed incremental path — v33 validated this pattern.
 
 ## POSTFLOP_STRATEGY
-- should_fold_postflop() is the primary fold gate; new exceptions or overrides need explicit confidence, pot-odds, and realized-equity validation.
+- should_fold_postflop() is the primary fold gate; new exceptions need explicit confidence, pot-odds, and realized-equity validation.
 - River fold logic must be bet-size-aware: unconditional river folding, especially versus small bets, is exploitable.
-- Overlapping fold gates with close thresholds create redundancy; prefer unified threshold tables. Workers repeatedly ignore this — v30 added 2 more 'return True' paths (total 11) despite this warning.
+- Overlapping fold gates with close thresholds create redundancy; prefer unified threshold tables. v33 cleaned up to 9 return-True paths — guard against re-growth.
 - Draw-call margins must be grounded in equity vs pot odds and protected by has_draw guards.
 - Dry-flop check-raise traps need opponent-confidence safety thresholds before activation.
 
 ## BLUFF_CALIBRATION
 - Structural bluff modules (4-bet light, donk/probe, overbet expansion, barrel continuation) need ≥100-game H2H backing before targeting a matchup.
-- Bluff/barrel parameter-delta modulation has not produced measurable gains. [POSSIBLY EXHAUSTED]
 
 ## PARAMETER_TUNING
 - Base postflop sizing ratios are stable (flop 0.60, turn 0.70, river 0.85); extend via structural paths, don't retune base values.
@@ -26,14 +24,12 @@
 - Trust early negative Critic signals; first-rejection scores are often more reliable than retry approvals.
 - H2H weakness data below 100 games is directional only; require ≥100-game confirmation before targeting.
 - Structural changes can inflate Critic scores without improving battle performance; verify H2H effect.
-- Recombination of similar-lineage bots shows diminishing returns; crossover should target divergent parents. [POSSIBLY EXHAUSTED]
 - Workers chronically ignore EXHAUSTED and redundancy warnings; add explicit pre-check instructions in worker prompts.
 
 ## RECENT_LESSONS
-- **v33**: Critic evidence: H2H weaknesses: v32 vs v6: 30% WR (10 games — unreliable sample per experience pool warning), v32 vs v2: 30% WR (10 games), v3 vs v32: 20% WR (10 games), All H2H data has only 10 games per pair — below the 100-game reliability threshold stated in experience pool; Experience pool refs: RECENT_LESSONS v31: 'barrel module (should_barrel_turn) added structurally but never queries opponent_model — wire fold_to_barrel/barrel_freq into barrel sizing/frequency decisions', RECENT_LESSONS v32: 'Next evolution should exploit the archetype classifier against v31's weakest matchups', PARAMETER_TUNING: 'Fold margin, clamp, EQR, SPR-commitment guard, sizing_aggr parameter deltas have repeatedly failed through v30. [POSSIBLY EXHAUSTED]'; Diff refs: Lines 731-741: LAG archetype gate + fold_equity gate using opponent_model.fold_to_raise < 0.38, Lines 747-758: Sizing adjustments: nit +0.05, high-FTR +0.04, low-FTR -0.03, heavy-barreler -0.03, Only file changed: strategy.py (1562→1585 lines, +23 lines)
-- **v32**: Opponent archetype classification is now available via build_opponent_model() — future workers should exploit it in more decision points (river fold/call, flop c-bet, check-raise) rather than adding parallel classification systems.
-- **v32**: strategy.py is at 1562 lines and approaching growth limits — future structural additions should target helper modules (opponent.py, postflop.py) rather than strategy.py.
-- **v32**: Next evolution should exploit the archetype classifier against v31's weakest matchups (v4 at 30% WR, v6 at 30% WR) — likely specific archetypes whose leaks could be targeted through archetype-aware adjustments.
+- **v34**: Critic evidence: H2H weaknesses: v33 vs v20: 40% WR (10 games), vs v14: 40% WR (10 games), vs v3: 40% WR (10 games) — all under 100 games so directional only, but consistent pattern of river exploit vulnerability; Experience pool refs: 'v33: River fold/call still lacks archetype awareness — v24/v26/v27 exploit v32's river play (~60% WR). Next evolution should add archetype-aware river logic.' — directly addressed, 'v33: Strategy.py grew to 1585 lines; future additions should target helper modules (opponent.py, postflop.py)' — new gate added to opponent.py, not strategy.py — compliant, 'Overlapping fold gates with close thresholds create redundancy; v33 cleaned up to 9 return-True paths — guard against re-growth' — 13→14 return-1 paths is a concern; Diff refs: opponent.py: new archetype_river_fold_gate() function (lines 63-100) with per-archetype threshold logic grounded in behavioral modeling, strategy.py:501-508: river value sizing cap 0.75x/0.55x for strong/thin tiers, bypassed for nut/overbet/pressure, strategy.py:1186-1194: archetype fold gate integrated after should_fold_postflop, guarded by anti_lock_call_continue + strong_made_continue
+- **v33**: Archetype classifier successfully wired into barrel module — confirms opponent_model integration into street-specific decisions is the right incremental path. Strategy.py grew to 1585 lines; future additions should target helper modules (opponent.py, postflop.py).
+- **v33**: River fold/call still lacks archetype awareness — v24/v26/v27 exploit v32's river play (~60% WR). Next evolution should add archetype-aware river logic.
+- **v32**: Opponent archetype classification is available via build_opponent_model() — exploit it in more decision points (river fold/call, flop c-bet, check-raise) rather than adding parallel classification systems.
 - **v31**: Barrel module (should_barrel_turn) added structurally but never queries opponent_model — wire fold_to_barrel/barrel_freq into barrel sizing/frequency decisions; barrel more against opponents who fold turn barrels >55%, skip against calling stations.
-- **v30**: Workers drifted from assigned Master tasks to executing crossover code. Workers also tuned fold constants despite EXHAUSTED warnings — timed out at 3600s with no H2H validation.
 
