@@ -65,7 +65,7 @@ def _target_rel_set(task, next_v):
 
 async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                               context_files, ui, reviewer_feedback,
-                              source_v=None):
+                              source_v=None, parallel_mode=False):
     """Run a single worker task with retries. Returns True on success."""
     w_id = task.get("worker_id", idx + 1)
     role = task.get("role", f"Expert Coder {w_id}")
@@ -89,8 +89,11 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
     _last_failure_type = "unknown"
     ui.log_history(f"Worker {w_id} ({role}) started", "info")
     for attempt in range(MAX_WORKER_RETRIES):
-        ui.clear_io()
-        ui.set_status(f"[{role}] coding for v{next_v}...", is_working=True)
+        if not parallel_mode:
+            ui.clear_io()
+            ui.set_status(f"[{role}] coding for v{next_v}...", is_working=True)
+        else:
+            ui.log_history(f"[{role}] coding for v{next_v}...", "info")
 
         attempt_note = ""
         if attempt > 0:
@@ -166,7 +169,12 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 ui.log_history(f"Worker {w_id} ({role}) zero changes in: {', '.join(unchanged)}", "warn")
                 continue
 
-        compile_errors = verify_code(next_dir)
+        if parallel_mode:
+            _target_names = [_target_rel(f, next_v) for f in task.get("target_files", [])]
+            _target_names = [r for r in _target_names if r]
+            compile_errors = verify_code(next_dir, target_files=_target_names)
+        else:
+            compile_errors = verify_code(next_dir)
         if compile_errors:
             _last_reason = f"compile error: {compile_errors[0][:200]}"
             _last_failure_type = "compile_error"
@@ -267,7 +275,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                 return await _run_single_worker(
                     task, i, worker_template, next_dir, next_v,
                     context_files, ui, reviewer_feedback,
-                    source_v=source_v,
+                    source_v=source_v, parallel_mode=True,
                 )
 
         results = await asyncio.gather(
@@ -297,8 +305,16 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                                 dst_file.write_text(src_file.read_text())
             elif not result:
                 any_failed = True
-                # _run_single_worker already recorded the failure and rolled back
-                # target files during its retry loop.
+                # _run_single_worker exhausted retries without rolling back
+                if source_v is not None:
+                    src_dir = get_bot_dir(source_v)
+                    for target in tasks[i].get("target_files", []):
+                        rel = _target_rel(target, next_v)
+                        if rel:
+                            src_file = src_dir / rel
+                            dst_file = next_dir / rel
+                            if src_file.exists():
+                                dst_file.write_text(src_file.read_text())
 
         if any_failed:
             return False, worker_snapshots, audit_focus_areas

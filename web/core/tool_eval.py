@@ -132,6 +132,7 @@ async def run_precommit_eval(args):
             opponents.append({"name": parent2_name, "reason": "crossover_parent_b"})
     if not opponents:
         blockers.append({"reason": "no_opponents", "details": "No parent/top/H2H opponents with main.py found."})
+    all_opponents = list(opponents)  # preserve full list for result reporting
 
     total_wins = 0
     total_losses = 0
@@ -393,7 +394,7 @@ async def run_precommit_eval(args):
         "version": v,
         "source_v": source_v,
         "n_games": n_games,
-        "opponents": opponents,
+        "opponents": all_opponents,
         "matchups": matchups,
         "total_wins": total_wins,
         "total_losses": total_losses,

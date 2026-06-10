@@ -40,7 +40,7 @@ def _default_daemon_workers() -> int:
     return max(1, int(os.cpu_count() * 28 / 32))
 
 
-def start_daemon(workers=None, pairs=5):
+def start_daemon(workers=None, pairs=5, scheduler_capable=True):
     """Start elo_daemon.py as a background subprocess in its own process group."""
     global daemon_proc, _atexit_registered, _daemon_shutting_down
     if workers is None:
@@ -82,7 +82,7 @@ def start_daemon(workers=None, pairs=5):
             start_new_session=True,  # Independent process group for clean killpg
         )
         tmp_pid = daemon_pid_file.with_suffix(".tmp")
-        tmp_pid.write_text(json.dumps({"pid": daemon_proc.pid, "ppid": os.getpid(), "scheduler_capable": True}))
+        tmp_pid.write_text(json.dumps({"pid": daemon_proc.pid, "ppid": os.getpid(), "scheduler_capable": scheduler_capable}))
         os.replace(str(tmp_pid), str(daemon_pid_file))
     # Drain daemon stdout to prevent pipe buffer deadlock
     threading.Thread(target=_drain_stdout, args=(daemon_proc,), daemon=True).start()
