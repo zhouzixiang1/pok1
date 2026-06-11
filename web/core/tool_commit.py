@@ -25,6 +25,7 @@ from tool_helpers import (
     _get_ui, _json_tool_result,
     _matching_checkpoint, _resolve_version_args,
     PROJECT_ROOT,
+    _set_pipeline_status,
 )
 from system_log import log_system_event
 
@@ -49,6 +50,8 @@ async def commit_bot(args):
     source_v = int(source_v)
     strategy = args.get("strategy", "")
     review_approved = args.get("review_approved", False)
+
+    _set_pipeline_status(f"Committing v{v}")
 
     bot_dir = get_bot_dir(v)
 
@@ -152,6 +155,8 @@ async def commit_bot(args):
     log_system_event("pipeline.committed", "success", f"Committed v{v} from v{source_v}: {strategy[:80]}",
                      {"version": v, "source_v": source_v, "strategy": strategy[:100]})
 
+    _set_pipeline_status(f"Committed v{v}", is_working=False)
+
     # Archive this generation's state snapshot
     try:
         from evolution_infra import archive_generation, archive_rotate_files, archive_old_logs
@@ -168,6 +173,20 @@ async def commit_bot(args):
         app_state.set_generation(v, v + 1)
     except Exception as e:
         _log.warning("App state update failed for v%d: %s", v, e)
+
+    # ── Update eval table + metrics in evolution state snapshot ──
+    try:
+        ratings = load_ratings()
+        active_bots = get_active_bots()
+        ui = _get_ui()
+        ui.update_eval_table(ratings, active_bots)
+        ui.update_metrics({
+            "current_v": v,
+            "next_v": v + 1,
+            "success_rate": 1.0,  # generation succeeded
+        })
+    except Exception:
+        pass  # non-blocking enrichment
 
     # Signal daemon to pick up the new bot
     reap_signal = RESULTS_DIR / ".reap_signal"
@@ -244,6 +263,9 @@ async def run_archivist(args):
         return _json_tool_result({"error": "Missing version/source_v and no active pipeline checkpoint"})
     v = int(v)
     source_v = int(source_v)
+
+    _set_pipeline_status(f"Archiving v{v}")
+
     ui = _get_ui()
 
     # 1. Verify post-commit consistency
@@ -407,6 +429,8 @@ async def run_crossover(args):
         target_v = target_v or _v
     if parent_a is None or parent_b is None or target_v is None:
         return _json_tool_result({"error": "Missing parent_a/parent_b/target_v"})
+
+    _set_pipeline_status(f"Crossover for v{target_v}")
 
     # Guard: prevent self-crossover
     if parent_a == parent_b:

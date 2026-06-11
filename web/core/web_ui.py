@@ -174,6 +174,15 @@ class WebUI(BaseUI):
         self._emit("history", {"msg": msg, "status": status})
 
     def set_status(self, msg, is_working=False):
+        """Set evolution status message and fine-grained per-task activity flag.
+
+        Args:
+            msg: Human-readable status text broadcast to SSE clients.
+            is_working: Fine-grained activity indicator. True means a specific
+                pipeline task (master/workers/review/critic/commit) is actively
+                running. Distinct from AppState.running which is coarse-grained
+                orchestrator loop control.
+        """
         self._state["status"] = msg
         self._state["is_working"] = is_working
         work_icon = "..." if is_working else "OK"
@@ -227,7 +236,7 @@ class WebUI(BaseUI):
 
     def update_daemon_status(self, stats, ratings):
         pairs = stats.get("pairs", {})
-        self._emit("daemon", {
+        self._emit("daemon_stats", {
             "total_matches": sum(pairs.values()),
             "total_periods": stats.get("total_periods", 0),
             "total_games": stats.get("total_games", 0),
@@ -282,10 +291,19 @@ class WebUI(BaseUI):
         self.gen_cost_total = 0.0
 
     def get_state(self) -> dict:
+        pipeline_stage = None
+        try:
+            from evolution_infra import read_pipeline_checkpoint
+            ckpt = read_pipeline_checkpoint()
+            if ckpt:
+                pipeline_stage = ckpt.get("stage")
+        except Exception:
+            pass
         return {
             **self._state,
             "grand_cost_total": round(self.grand_cost_total, 4),
             "gen_cost_total": round(self.gen_cost_total, 4),
+            "pipeline_stage": pipeline_stage,
         }
 
     def get_output(self):

@@ -21,7 +21,7 @@ class AppState:
         self._lock = threading.RLock()
         self._config_file = config_file or Path(__file__).resolve().parents[1] / "core" / "results" / "app_config.json"
         self.mode: str = "orchestrator"
-        self.running: bool = False
+        self.running: bool = False  # Coarse-grained loop control: True = orchestrator loop is active, False = stopped or idle
         self.daemon_enabled: bool = True
         self.daemon_workers: int = _default_daemon_workers()
         self.daemon_pairs: int = 5
@@ -88,8 +88,10 @@ class AppState:
 
     def _load_config(self):
         try:
+            from evolution_infra import locked_file
             if self._config_file.exists():
-                data = json.loads(self._config_file.read_text())
+                with locked_file(self._config_file, "r") as f:
+                    data = json.load(f)
                 if "daemon_enabled" in data and isinstance(data["daemon_enabled"], bool):
                     self.daemon_enabled = data["daemon_enabled"]
                 if "daemon_workers" in data and isinstance(data["daemon_workers"], int):
@@ -101,12 +103,14 @@ class AppState:
 
     def _save_config(self):
         try:
+            from evolution_infra import locked_file
             self._config_file.parent.mkdir(parents=True, exist_ok=True)
-            self._config_file.write_text(json.dumps({
-                "daemon_enabled": self.daemon_enabled,
-                "daemon_workers": self.daemon_workers,
-                "daemon_pairs": self.daemon_pairs,
-            }, indent=2))
+            with locked_file(self._config_file, "w") as f:
+                json.dump({
+                    "daemon_enabled": self.daemon_enabled,
+                    "daemon_workers": self.daemon_workers,
+                    "daemon_pairs": self.daemon_pairs,
+                }, f, indent=2)
         except OSError:
             pass
 
