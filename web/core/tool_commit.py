@@ -215,6 +215,12 @@ async def commit_bot(args):
     if len(active_bots) > MAX_ACTIVE_BOTS:
         result["needs_reap"] = True
         result["pool_size"] = len(active_bots)
+    try:
+        log_system_event("pipeline.commit_done", "info",
+                         f"Commit finished for v{v} in {time.time() - _t0:.1f}s",
+                         {"version": v, "elapsed_sec": round(time.time() - _t0, 2)})
+    except Exception:
+        pass
     return _json_tool_result(result)
 
 
