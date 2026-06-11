@@ -1,0 +1,133 @@
+{
+  "timestamp": "2026-06-11 14:44:12",
+  "reference_bot": "bot.py (3268 lines, Monte Carlo weighted equity)",
+  "n_mirror_games": 10,
+  "total_matchups": 15,
+  "total_evo_wins": 150,
+  "total_ref_wins": 0,
+  "total_draws": 0,
+  "total_games": 150,
+  "evo_win_rate": "100.0%",
+  "results": [
+    {
+      "bot": "claude_v26",
+      "ref_wins": 0,
+      "evo_wins": 10,
+      "draws": 0,
+      "played": 10,
+      "elapsed": 620.1
+    },
+    {
+      "bot": "claude_v27",
+      "ref_wins": 0,
+      "evo_wins": 10,
+      "draws": 0,
+      "played": 10,
+      "elapsed": 573.8
+    },
+    {
+      "bot": "claude_v29",
+      "ref_wins": 0,
+      "evo_wins": 10,
+      "draws": 0,
+      "played": 10,
+      "elapsed": 546.7
+    },
+    {
+      "bot": "claude_v30",
+      "ref_wins": 0,
+      "evo_wins": 10,
+      "draws": 0,
+      "played": 10,
+      "elapsed": 629.1
+    },
+    {
+      "bot": "claude_v31",
+      "ref_wins": 0,
+      "evo_wins": 10,
+      "draws": 0,
+      "played": 10,
+      "elapsed": 669.3
+    },
+    {
+      "bot": "claude_v33",
+      "ref_wins": 0,
+      "evo_wins": 10,
+      "draws": 0,
+      "played": 10,
+      "elapsed": 638.5
+    },
+    {
+      "bot": "claude_v34",
+      "ref_wins": 0,
+      "evo_wins": 10,
+      "draws": 0,
+      "played": 10,
+      "elapsed": 666.1
+    },
+    {
+      "bot": "claude_v35",
+      "ref_wins": 0,
+      "evo_wins": 10,
+      "draws": 0,
+      "played": 10,
+      "elapsed": 543.7
+    },
+    {
+      "bot": "claude_v36",
+      "ref_wins": 0,
+      "evo_wins": 10,
+      "draws": 0,
+      "played": 10,
+      "elapsed": 656.4
+    },
+    {
+      "bot": "claude_v37",
+      "ref_wins": 0,
+      "evo_wins": 10,
+      "draws": 0,
+      "played": 10,
+      "elapsed": 641.5
+    },
+    {
+      "bot": "claude_v38",
+      "ref_wins": 0,
+      "evo_wins": 10,
+      "draws": 0,
+      "played": 10,
+      "elapsed": 612.2
+    },
+    {
+      "bot": "claude_v39",
+      "ref_wins": 0,
+      "evo_wins": 10,
+      "draws": 0,
+      "played": 10,
+      "elapsed": 672.4
+    },
+    {
+      "bot": "claude_v40",
+      "ref_wins": 0,
+      "evo_wins": 10,
+      "draws": 0,
+      "played": 10,
+      "elapsed": 627.7
+    },
+    {
+      "bot": "claude_v41",
+      "ref_wins": 0,
+      "evo_wins": 10,
+      "draws": 0,
+      "played": 10,
+      "elapsed": 603.6
+    },
+    {
+      "bot": "claude_v42",
+      "ref_wins": 0,
+      "evo_wins": 10,
+      "draws": 0,
+      "played": 10,
+      "elapsed": 655.4
+    }
+  ]
+}
