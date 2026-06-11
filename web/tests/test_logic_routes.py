@@ -10,13 +10,13 @@ import pytest
 # ── ratings.py: Ranking logic ──
 
 class TestRatingsRanking:
+    @pytest.mark.requires_active_bot
     def test_sorted_by_h2h_descending(self, client):
         resp = client.get("/api/ratings")
         assert resp.status_code == 200
         data = resp.json()
-        if len(data) >= 2:
-            wr_values = [r["h2h_avg_wr"] if r["h2h_avg_wr"] is not None else 0.0 for r in data]
-            assert wr_values == sorted(wr_values, reverse=True)
+        wr_values = [r["h2h_avg_wr"] if r["h2h_avg_wr"] is not None else 0.0 for r in data]
+        assert wr_values == sorted(wr_values, reverse=True)
 
     def test_ranks_sequential_from_1(self, client):
         resp = client.get("/api/ratings")
@@ -87,9 +87,8 @@ class TestExperienceAppendLogic:
 # ── ratings.py: H2H filtering ──
 
 class TestH2HFilterLogic:
+    @pytest.mark.requires_active_bot
     def test_filtered_contains_only_specified_bot(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         bot_name = f"claude_v{active_bot_version}"
         resp = client.get(f"/api/h2h?bot_name={bot_name}")
         assert resp.status_code == 200
@@ -110,13 +109,13 @@ class TestMatchReplaySecurity:
 # ── bots.py: Sorting and filtering ──
 
 class TestBotsSorting:
+    @pytest.mark.requires_active_bot
     def test_numerical_sorting(self, client):
         resp = client.get("/api/bots")
         data = resp.json()
         active = data.get("active", [])
-        if len(active) >= 2:
-            versions = [b["version"] for b in active]
-            assert versions == sorted(versions)
+        versions = [b["version"] for b in active]
+        assert versions == sorted(versions)
 
     def test_active_bots_have_completed_sentinel(self, client):
         resp = client.get("/api/bots")
@@ -134,22 +133,19 @@ class TestBotsSorting:
 # ── bots.py: Code reading ──
 
 class TestBotCodeLogic:
+    @pytest.mark.requires_active_bot
     def test_returns_python_source(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.get(f"/api/bots/{active_bot_version}/code/main.py")
         assert resp.status_code == 200
-        assert "def " in resp.text or "import " in resp.text or len(resp.text) > 0
+        assert "def " in resp.text or "import " in resp.text
 
+    @pytest.mark.requires_active_bot
     def test_non_py_rejected(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.get(f"/api/bots/{active_bot_version}/code/main.txt")
         assert resp.status_code == 400
 
+    @pytest.mark.requires_active_bot
     def test_path_separator_rejected(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.get(f"/api/bots/{active_bot_version}/code/sub/dir/main.py")
         assert resp.status_code in (400, 404)
 
@@ -268,7 +264,8 @@ class TestSessionLogic:
     def test_no_session_file_returns_inactive(self, client):
         resp = client.get("/api/control/orchestrator/session")
         data = resp.json()
-        assert data["active"] is False or data["session_id"] is None
+        assert data["active"] is False
+        assert data["session_id"] is None
 
     def test_delete_when_absent(self, client):
         resp = client.delete("/api/control/orchestrator/session")
@@ -285,4 +282,4 @@ class TestToolDispatchLogic:
         assert resp.status_code == 404
         # Response should mention available tools
         detail = resp.json().get("detail", "")
-        assert "Available" in detail or "tool" in detail.lower() or len(detail) > 0
+        assert "Available" in detail or "tool" in detail.lower()

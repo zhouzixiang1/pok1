@@ -155,17 +155,15 @@ class TestComputeH2HAvgWinrate:
 
 
 class TestBotMain:
+    @pytest.mark.requires_active_bot
     def test_valid_version(self, active_bot_version):
-        if active_bot_version is None:
-            return
         from tool_helpers import _bot_main
         path = _bot_main(f"claude_v{active_bot_version}")
         assert path.name == "main.py"
         assert f"claude_v{active_bot_version}" in str(path)
 
+    @pytest.mark.requires_graveyard_bot
     def test_graveyard_fallback(self, graveyard_bot_version):
-        if graveyard_bot_version is None:
-            return
         from tool_helpers import _bot_main
         path = _bot_main(f"claude_v{graveyard_bot_version}")
         assert path.name == "main.py"
@@ -178,9 +176,8 @@ class TestBotMain:
 
 
 class TestSelectPrecommitOpponents:
+    @pytest.mark.requires_active_bot
     def test_basic(self, active_bot_version):
-        if active_bot_version is None:
-            return
         from tool_helpers import _select_precommit_opponents
         opponents = _select_precommit_opponents(active_bot_version + 1, active_bot_version)
         assert isinstance(opponents, list)
@@ -190,9 +187,8 @@ class TestSelectPrecommitOpponents:
 
 
 class TestValidateWorkerBoundaries:
+    @pytest.mark.requires_active_bot
     def test_no_changes(self, monkeypatch, active_bot_version):
-        if active_bot_version is None:
-            return
         from tool_helpers import _validate_worker_boundaries
         from evolution_infra import get_bot_dir
         monkeypatch.setattr("tool_helpers.get_bot_dir", lambda v: get_bot_dir(active_bot_version))
@@ -214,21 +210,19 @@ class TestFindCurrentV:
 
 
 class TestGetBotDir:
+    @pytest.mark.requires_active_bot
     def test_primary(self, active_bot_version):
-        if active_bot_version is None:
-            return
         from evolution_infra import get_bot_dir
         d = get_bot_dir(active_bot_version)
         assert d.exists()
         assert f"claude_v{active_bot_version}" in str(d)
 
+    @pytest.mark.requires_graveyard_bot
     def test_graveyard_fallback(self, graveyard_bot_version):
-        if graveyard_bot_version is None:
-            return
         from evolution_infra import get_bot_dir
         d = get_bot_dir(graveyard_bot_version)
         assert d.exists()
-        assert "graveyard" in str(d) or f"claude_v{graveyard_bot_version}" in str(d)
+        assert "graveyard" in str(d), f"Expected graveyard path, got: {d}"
 
     def test_nonexistent(self):
         from evolution_infra import get_bot_dir

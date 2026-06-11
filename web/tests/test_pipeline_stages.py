@@ -159,7 +159,7 @@ class TestCriticEvidenceToExperiencePool:
 
         summary = "; ".join(ev_parts)
         assert "w0, w1, w2, w3, w4" in summary
-        assert "w5" not in summary or "w5" in summary  # Only first 5
+        assert "w5" not in summary, f"Expected truncation at 5 items, but found w5 in: {summary[:200]}"
         assert summary.count("r0") <= 1
 
     def test_append_experience_updates_writes_to_pool(self, tmp_path, monkeypatch):
