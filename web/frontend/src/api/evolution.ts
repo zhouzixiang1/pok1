@@ -6,7 +6,7 @@ export type EvolutionEventType =
   | "io"
   | "clear_io"
   | "eval_table"
-  | "daemon"
+  | "daemon_stats"
   | "header"
   | "cost"
   | "metrics"
@@ -26,8 +26,14 @@ export interface EvolutionState {
     rating: number;
     rd: number;
     conservative_rating: number;
+    sigma?: number;
+    confidence?: string;
     h2h_avg_wr?: number;
   }>;
+  pipeline_stage?: string | null;
+  current_v?: number;
+  next_v?: number;
+  running?: boolean;
   active_bots: string[];
   grand_cost_total: number;
   gen_cost_total: number;
@@ -49,7 +55,7 @@ export function useEvolutionSSE(
     onIO?: (line: IOLine) => void;
     onClearIO?: () => void;
     onEvalTable?: (rows: EvolutionState["ratings"]) => void;
-    onDaemon?: (data: { total_matches: number; total_periods: number; total_games: number; n_bots: number }) => void;
+    onDaemonStats?: (data: { total_matches: number; total_periods: number; total_games: number; n_bots: number }) => void;
     onHeader?: (msg: string) => void;
     onCost?: (data: {
       role: string;
@@ -81,7 +87,7 @@ export function useEvolutionSSE(
 
       const eventTypes: EvolutionEventType[] = [
         "history", "status", "io", "clear_io",
-        "eval_table", "daemon", "header", "cost", "metrics", "tool_call",
+        "eval_table", "daemon_stats", "header", "cost", "metrics", "tool_call",
         "log_event", "system_event",
       ];
 
@@ -105,8 +111,8 @@ export function useEvolutionSSE(
               case "eval_table":
                 handlers.onEvalTable?.(data.rows);
                 break;
-              case "daemon":
-                handlers.onDaemon?.(data);
+              case "daemon_stats":
+                handlers.onDaemonStats?.(data);
                 break;
               case "header":
                 handlers.onHeader?.(data.msg);

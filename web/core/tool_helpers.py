@@ -46,6 +46,11 @@ def _get_ui():
     return _injected_ui if _injected_ui else ToolUI()
 
 
+def _set_pipeline_status(msg, is_working=True):
+    """Update WebUI status message for pipeline stage visibility."""
+    _get_ui().set_status(msg, is_working=is_working)
+
+
 # ──────────────────────────────────────────────
 # Logging UI Adapter (CLI fallback)
 # ──────────────────────────────────────────────

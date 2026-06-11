@@ -23,6 +23,7 @@ from tool_helpers import (
     _matching_checkpoint, _record_gate, _gate_payload, _state_blocked,
     _quality_gate_ok, _review_gate_ok, _critic_gate_ok,
     _py_files_changed_between, _resolve_version_args, PROJECT_ROOT,
+    _set_pipeline_status,
 )
 from system_log import log_system_event
 import spot_analyzer
@@ -55,6 +56,8 @@ async def run_quality_gates(args):
     v = int(v)
     source_v = int(source_v) if source_v is not None else None
     bot_dir = get_bot_dir(v)
+
+    _set_pipeline_status(f"Running quality gates for v{v}")
 
     # CRITICAL: Check that code actually changed vs source.
     # Prevents zombie loop where workers reset code but quality gates pass on unchanged (parent) code.
@@ -257,6 +260,8 @@ async def prepare_next_gen(args):
     if source_v is None or next_v is None:
         return {"content": [{"type": "text", "text": json.dumps({"error": "Missing source_v/next_v and no active checkpoint"})}]}
 
+    _set_pipeline_status(f"Preparing v{next_v}")
+
     if next_v <= source_v:
         return {"content": [{"type": "text", "text": json.dumps({"error": f"next_v ({next_v}) must be greater than source_v ({source_v})"})}]}
 
@@ -335,6 +340,8 @@ async def run_review(args):
     v = int(v)
     source_v = int(source_v)
     plan = args.get("plan", [])
+
+    _set_pipeline_status(f"Reviewing v{v}")
 
     ckpt = _matching_checkpoint(v, source_v)
     if not _quality_gate_ok(ckpt):
@@ -459,6 +466,8 @@ async def run_critic(args):
     plan = args.get("plan", [])
     reviewer_feedback = args.get("reviewer_feedback", "")
     force_advance = args.get("force_advance", False)
+
+    _set_pipeline_status(f"Critic evaluating v{v}")
 
     ckpt = _matching_checkpoint(v, source_v)
     if not _quality_gate_ok(ckpt) or not _review_gate_ok(ckpt):

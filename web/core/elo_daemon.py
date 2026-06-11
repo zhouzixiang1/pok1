@@ -135,7 +135,7 @@ def save_ratings(ratings, save_num=None):
         snapshot = {
             "period": save_num,
             "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "ratings": {name: {"r": p.r, "rd": p.rd} for name, p in ratings.items()},
+            "ratings": {name: {"r": p.r, "rd": p.rd, "sigma": p.sigma} for name, p in ratings.items()},
             "win_rates": win_rates,
         }
         with locked_file(history_file, "a") as f:

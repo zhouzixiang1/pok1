@@ -5,10 +5,9 @@
 
 ## POSTFLOP_STRATEGY
 - `should_fold_postflop()` is the primary fold gate; exceptions need equity, pot-odds, and confidence validation.
-- Fold gate extraction is done — no new inline branches. Refactoring existing logic (e.g., `river_raise_response()`) into helpers is still viable.
+- New EV-based decision branches (e.g., `select_postflop_facing_bet()`) are acceptable when replacing unconditional returns with grounded EV computation — but must actually use all received parameters in the calculation. (v43)
 - Draw-call margins must be grounded in equity vs pot odds with `has_draw` guards.
 - Removing all-in equity checks is dangerous — preserve pot-odds thresholds for shove situations. (v36)
-- BB defense floor covers ~48% of hands structurally — validate fold-to-steal rate vs v38 in next daemon cycle. (v39)
 
 ## BLUFF_CALIBRATION
 - Structural bluff modules (4-bet light, donk/probe, overbet, barrel) need ≥100-game H2H backing before targeting a matchup.
@@ -20,6 +19,7 @@
 - Preflop 3bet threshold ~0.60 (TT+, AKs) is solid; never call off 100BB with ~51% equity vs over-shove.
 - Fold margin, clamp, EQR, SPR-commitment guard, sizing_aggr deltas have failed v30→v38. [EXHAUSTED] [POSSIBLY EXHAUSTED]
 - Hand-tuned constants in structural modules are still parameter tuning — wiring pre-existing EXHAUSTED constants into new code violates this rule. [EXHAUSTED] [POSSIBLY EXHAUSTED]
+- New constants introduced in EV branches (e.g., pot*0.05, 0.3 implied odds in v43) risk the same EXHAUSTED pattern — avoid adding magic numbers without H2H backing.
 
 ## GENERAL
 - Worker role boundaries: Tuner must change at least one constant; Architect must not touch constants.
@@ -32,12 +32,8 @@
 - Strategy.py capacity pressure is ongoing — extract standalone functions to helper modules before adding new logic.
 
 ## RECENT_LESSONS
-- **v43**: Critic evidence: H2H weaknesses: v42 has only 330 total games at 50.0% win rate — no matchups reach 100-game confidence. All H2H data is directional only.; Experience pool refs: `should_fold_postflop()` is the primary fold gate; exceptions need equity, pot-odds, and confidence validation. — this change adds equity+pot-odds reasoning at the terminal call site., PARAMETER_TUNING: Fold margin, clamp, EQR, SPR-commitment guard, sizing_aggr deltas have failed v30→v38. [EXHAUSTED] — the pot*0.05 raise threshold and 0.3 implied odds constant risk falling into this pattern., BLUFF_CALIBRATION: Archetype-aware bluff cutoff (never bluff CS, boost vs NIT) is highest-confidence change from v40 — but this function doesn't check archetype before suggesting raise.; Diff refs: New function select_postflop_facing_bet() (lines 699-750) computes fold/call/raise EV and selects highest., Inserted at line 1219 in the facing-bet path: replaces unconditional 'return 0' with EV-based decision., Parameters has_position and board_texture are received but never used in EV computation.
-- **v42**: `protective_sizing_floor()` unused `pot` parameter may not account for pot-growth on later streets — verify math for turn scenarios.
-- **v42**: `river_showdown_extraction()` targets wide opponents (VPIP≥0.50) with 25-40% pot bets — evaluate whether thin-value sizing is exploitable by v26 (pool leader) bluff-raises.
+- **v43**: EV-based action selectors must gate raises by opponent archetype — raising into calling stations with nut/strong value bonus is exploitable; Critic flagged this from pool's "never bluff CS" lesson.
+- **v43**: `select_postflop_facing_bet()` receives `has_position` and `board_texture` as parameters but never uses them in EV computation — wiring these is needed to discount OOP raises and adjust fold-equacy on wet textures.
+- **v42**: `river_showdown_extraction()` targets wide opponents (VPIP≥0.50) with 25-40% pot bets — evaluate whether thin-value sizing is exploitable by pool leader bluff-raises.
 - **v41**: Archetype fold deltas integrated as `eff_made = made_strength - archetype_delta` — follow this pattern for future archetype wiring.
-- **v41**: Code reorganization from strategy.py → postflop.py freed ~44 lines; continue extracting standalone functions as capacity recurs.
 - **v41**: Monitor whether archetype classifier reaches confidence ≥ 0.15 within first 30 hands vs lag/CS — if not, fold adjustments never activate.
-- **v40**: LAG check-raise at `made_strength ≥ 0.38` is risky — if 3-bet frequency is high vs LAGs, raise threshold to ≥ 0.45 or add `draw_strength ≥ 0.15` guard.
-- **v40**: Bluff threshold adjustments should modify existing equity variables over adding new conditional branches.
-

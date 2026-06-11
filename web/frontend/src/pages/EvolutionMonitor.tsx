@@ -226,7 +226,7 @@ export default function EvolutionMonitor() {
       });
     },
     onMetrics: (m) => setMetrics(m),
-    onDaemon: () => {},
+    onDaemonStats: () => {},
     onConnect: () => {
       setRoleCosts([]); setMessages([]); setHistoryLines([]); setWorkers([]);
       setFilterRole(""); setActiveRole(""); setKnownRoles([]);

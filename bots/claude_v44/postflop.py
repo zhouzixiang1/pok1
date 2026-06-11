@@ -1,15 +1,9 @@
-"""
-Bot 3 - Postflop analysis: hand metrics, board texture, draw profiles, value tiers,
-bet plans, blocker bluffs, nutted risk, paired board outcomes, postflop call margin,
-realized equity, bet size bucket.
-"""
 from constants import HAND_CLASS_SCORE
-from card_utils import clamp, card_suit, card_number
+from card_utils import card_suit, card_number, evaluate_best, clamp
 from state import get_hand_index
 
 
 def made_hand_metric(hole_cards, public_cards):
-    from card_utils import evaluate_best
     if len(public_cards) < 3:
         return 0.0
     score = evaluate_best(hole_cards + public_cards)
@@ -21,7 +15,6 @@ def made_hand_metric(hole_cards, public_cards):
 
 
 def pair_board_profile(hole_cards, public_cards):
-    from card_utils import evaluate_best
     info = {
         "made_class": -1,
         "pair_rank": None,
@@ -194,8 +187,24 @@ def board_texture_profile(public_cards):
     return info
 
 
+def classify_street_texture(public_cards):
+    if len(public_cards) < 3:
+        return {"class": "none", "dry_score": 0.5, "bluff_combos": 0.5}
+    bt = board_texture_profile(public_cards)
+    suits = [c % 4 for c in public_cards]
+    max_suit = max(suits.count(s) for s in set(suits))
+    if max_suit >= 3 and bt["flush_pressure"] >= 0.75:
+        return {"class": "monotone", "dry_score": 0.1, "bluff_combos": 0.85}
+    if bt["paired"]:
+        return {"class": "paired", "dry_score": 0.4, "bluff_combos": 0.3}
+    if bt["flush_pressure"] >= 0.75 or bt["straight_pressure"] >= 0.65 or bt["wetness"] >= 0.45:
+        return {"class": "draw_heavy", "dry_score": 0.15, "bluff_combos": 0.8}
+    if bt["flush_pressure"] >= 0.35 or bt["straight_pressure"] >= 0.28 or bt["wetness"] >= 0.20:
+        return {"class": "semi_connected", "dry_score": 0.35, "bluff_combos": 0.5}
+    return {"class": "dry", "dry_score": 0.85, "bluff_combos": 0.15}
+
+
 def paired_board_outcome_profile(hole_cards, public_cards):
-    from card_utils import evaluate_best
     info = {
         "board_paired": False,
         "board_pair_rank": 0,
@@ -321,7 +330,6 @@ def bet_size_bucket(last_raise_pot_ratio):
 
 
 def value_hand_tier(hole_cards, public_cards, pair_profile=None, board_texture=None, paired_board_profile=None):
-    from card_utils import evaluate_best
     info = {
         "tier": "none",
         "is_value": False,
@@ -736,7 +744,6 @@ def draw_call_margin(draw_info, board_texture, round_idx, spot_info):
 
 
 def made_flush_profile(hole_cards, public_cards, board_texture=None):
-    from card_utils import evaluate_best
     info = {
         "is_flush": False,
         "flush_suit": None,
@@ -809,7 +816,6 @@ def made_flush_profile(hole_cards, public_cards, board_texture=None):
 
 
 def blocker_bluff_profile(hole_cards, public_cards, pair_profile=None, board_texture=None):
-    from card_utils import evaluate_best
     info = {
         "eligible": False,
         "score": 0.0,
@@ -884,7 +890,6 @@ def allow_low_frequency_blocker_bluff(req, hole_cards, public_cards, blocker_pro
 
 
 def nutted_risk_profile(hole_cards, public_cards, pair_profile=None, board_texture=None, value_profile=None, paired_board_profile=None):
-    from card_utils import evaluate_best
     info = {
         "risk": 0.0,
         "label": "none",
@@ -978,133 +983,6 @@ def nutted_risk_profile(hole_cards, public_cards, pair_profile=None, board_textu
     return info
 
 
-def postflop_call_margin(spot_info, opponent_model, made_strength, draw_strength, round_idx, has_position):
-    if round_idx <= 0:
-        return 0.0
-
-    margin = 0.0
-    air_hand = made_strength < 0.18 and draw_strength < 0.08
-    weak_showdown = made_strength < 0.22
-    size_bucket = bet_size_bucket(spot_info["last_raise_pot_ratio"])
-
-    if weak_showdown:
-        margin += 0.012
-    if air_hand:
-        margin += 0.018
-
-    if spot_info["facing_postflop_aggression"]:
-        margin += 0.008
-        if size_bucket == "small":
-            margin += 0.020
-        elif size_bucket == "medium":
-            margin += 0.010
-        else:
-            margin += 0.024
-
-        if spot_info.get("opp_postflop_bet_count", 0) >= 2:
-            margin += 0.024 if size_bucket == "small" else 0.014
-        if round_idx >= 2 and air_hand:
-            margin += 0.010
-        if round_idx == 3 and size_bucket == "large":
-            margin += 0.020
-
-    if not has_position:
-        margin += 0.008
-
-    confidence = opponent_model["confidence"]
-    if air_hand:
-        margin -= confidence * max(0.0, opponent_model["postflop_aggr"] - 0.50) * 0.015
-    else:
-        margin -= confidence * max(0.0, opponent_model["postflop_aggr"] - 0.50) * 0.008
-
-    return clamp(margin, 0.0, 0.08)
-
-
-def realized_postflop_equity(
-    win_rate,
-    made_strength,
-    draw_strength,
-    round_idx,
-    has_position,
-    spot_info,
-    pair_profile=None,
-    pot=0,
-):
-    air_hand = made_strength < 0.18 and draw_strength < 0.08
-    if round_idx <= 0:
-        return win_rate
-
-    eqr = 1.0
-    double_barrel = spot_info.get("opp_postflop_bet_count", 0) >= 2
-    big_pot = pot > 3000
-
-    if air_hand:
-        # Improvement 5: Lowered air EQR
-        eqr = 0.68 if has_position else 0.56
-
-        if double_barrel:
-            eqr -= 0.10
-            # Extra discount facing double barrel OOP
-            if not has_position:
-                eqr -= 0.05
-        if round_idx == 2:
-            eqr -= 0.05
-        elif round_idx == 3:
-            eqr -= 0.12
-        # Big pot air discount
-        if big_pot:
-            eqr -= 0.03
-
-        eqr = clamp(eqr, 0.40, 0.85)
-        return win_rate * eqr
-
-    # Draw EQR discount for OOP
-    is_draw = draw_strength >= 0.08 and made_strength < 0.18
-    if is_draw and not has_position:
-        if round_idx == 1:
-            eqr = 0.85
-        elif round_idx == 2:
-            eqr = 0.75
-        if double_barrel:
-            eqr -= 0.05
-        if big_pot:
-            eqr -= 0.03
-        eqr = clamp(eqr, 0.60, 0.92)
-        return win_rate * eqr
-
-    if pair_profile is not None and pair_profile["made_class"] == 1:
-        pair_type = pair_profile["pair_type"]
-
-        if pair_type in ("middle_pair", "bottom_pair", "underpair", "board_pair"):
-            # Improvement 5: Lowered marginal pair EQR
-            eqr = 0.84 if has_position else 0.73
-
-            if pair_profile["weak_kicker"]:
-                eqr -= 0.05
-            if double_barrel:
-                eqr -= 0.06
-                if not has_position:
-                    eqr -= 0.05
-            if round_idx == 3:
-                eqr -= 0.06
-            if big_pot:
-                eqr -= 0.03
-
-            eqr = clamp(eqr, 0.60, 0.92)
-            return win_rate * eqr
-
-        if pair_type == "top_pair" and pair_profile["weak_kicker"]:
-            eqr = 0.92 if has_position else 0.86
-            if double_barrel:
-                eqr -= 0.04
-                if not has_position:
-                    eqr -= 0.03
-            eqr = clamp(eqr, 0.75, 0.95)
-            return win_rate * eqr
-
-    return win_rate
-
-
 def check_probe_resistance_margin(spot_info, opponent_model, round_idx):
     if round_idx <= 0 or not spot_info["facing_postflop_aggression"]:
         return 0.0
@@ -1137,46 +1015,183 @@ def check_probe_resistance_margin(spot_info, opponent_model, round_idx):
     return clamp(margin, 0.0, 0.085)
 
 
-def paired_board_stackoff_profile(pair_profile, paired_board_profile, board_texture, spot_info, round_idx):
-    info = {
-        "active": False,
-        "severe": False,
-        "line_strength": 0.0,
-        "size_bucket": "small",
-    }
-
-    if round_idx <= 0 or board_texture is None or not board_texture["paired"]:
-        return info
-
-    size_bucket = bet_size_bucket(spot_info["last_raise_pot_ratio"])
-    line_strength = 0.0
-    active = False
-
-    if paired_board_profile is not None and paired_board_profile["board_two_pair"]:
-        active = True
-        line_strength += 0.05
-    elif pair_profile is not None and pair_profile["pair_type"] == "overpair":
-        active = True
-        line_strength += 0.04
-
-    if not active:
-        return info
-
-    if spot_info["facing_postflop_aggression"]:
-        line_strength += 0.03
-    if spot_info.get("opp_current_round_bet_count", 0) >= 2:
-        line_strength += 0.08
-    elif size_bucket in ("medium", "large"):
-        line_strength += 0.04
-    if round_idx >= 2:
-        line_strength += 0.02
-
-    info["active"] = True
-    info["severe"] = (
-        spot_info["facing_postflop_aggression"]
-        and spot_info.get("opp_current_round_bet_count", 0) >= 2
-        and size_bucket in ("medium", "large")
+def must_continue_vs_raise(value_profile, made_strength, pot_odds, nutted_risk, board_texture, round_idx=3):
+    tier = value_profile.get("tier", "none") if value_profile is not None else "none"
+    risk = nutted_risk.get("risk", 0.0) if nutted_risk is not None else 0.0
+    extreme_texture = (
+        board_texture is not None
+        and (board_texture["flush_pressure"] >= 1.0 or board_texture["straight_pressure"] >= 1.0)
     )
-    info["line_strength"] = clamp(line_strength, 0.0, 0.18)
-    info["size_bucket"] = size_bucket
-    return info
+
+    if tier == "nut":
+        return True
+    if made_strength >= 0.58 and pot_odds <= 0.42 and risk <= 0.07:
+        return not (extreme_texture and risk >= 0.04)
+    # River gate — 'strong' tier on river requires stronger evidence
+    if tier == "strong" and pot_odds <= 0.36 and risk <= 0.05:
+        if round_idx == 3 and made_strength < 0.52 and pot_odds > 0.25:
+            return False
+        return True
+    return False
+
+
+def protective_sizing_floor(board_texture, value_profile, round_idx, pot):
+    """Compute minimum sizing ratio to deny correct odds to most likely draw.
+
+    Pot odds offered to opponent when we bet ratio R of pot:
+      odds = R / (1 + 2*R)
+    We want odds > opponent's max draw equity.
+    """
+    if board_texture is None or value_profile is None:
+        return 0.0
+    tier = value_profile.get('tier', 'none')
+    if tier not in ('strong', 'nut'):
+        return 0.0
+
+    # Estimate worst-case draw equity opponent could have
+    max_draw_equity = 0.0
+    fp = board_texture.get('flush_pressure', 0.0)
+    sp = board_texture.get('straight_pressure', 0.0)
+
+    if round_idx == 1:  # flop — two cards to come
+        if fp >= 0.75:
+            max_draw_equity = max(max_draw_equity, 0.35)
+        elif fp >= 0.35:
+            max_draw_equity = max(max_draw_equity, 0.20)
+        if sp >= 0.65:
+            max_draw_equity = max(max_draw_equity, 0.31)
+        elif sp >= 0.28:
+            max_draw_equity = max(max_draw_equity, 0.17)
+    elif round_idx == 2:  # turn — one card to come
+        if fp >= 0.75:
+            max_draw_equity = max(max_draw_equity, 0.20)
+        elif fp >= 0.35:
+            max_draw_equity = max(max_draw_equity, 0.12)
+        if sp >= 0.65:
+            max_draw_equity = max(max_draw_equity, 0.17)
+        elif sp >= 0.28:
+            max_draw_equity = max(max_draw_equity, 0.09)
+    else:
+        return 0.0  # river — no draws left
+
+    if max_draw_equity <= 0.0:
+        return 0.0
+
+    # Solve: R / (1 + 2*R) >= max_draw_equity + safety_margin
+    # R >= (max_draw_equity + margin) / (1 - 2*(max_draw_equity + margin))
+    target_odds = max_draw_equity + 0.04  # 4% safety margin
+    if target_odds >= 0.45:
+        return 0.0  # can't deny odds economically
+    min_ratio = target_odds / (1.0 - 2.0 * target_odds)
+    return clamp(min_ratio, 0.0, 1.0)
+
+
+def river_showdown_extraction(made_strength, value_profile, opponent_model, board_texture, round_idx, to_call, opp_archetype='unknown'):
+    """Identify river spots where a small bet extracts value from weaker holdings.
+
+    Returns sizing ratio (0.25-0.40) or 0.0 if not applicable.
+    Target: medium-strength hands that win at showdown ~55-70% vs opponent's
+    checking range. Small bet gets called by worse pairs/ace-high.
+    """
+    if round_idx != 3 or to_call != 0:
+        return 0.0
+    # Only for medium-strength made hands
+    if made_strength < 0.35 or made_strength >= 0.62:
+        return 0.0
+    # Must have at least a pair (value_profile exists)
+    if value_profile is None or value_profile.get('tier') == 'none':
+        return 0.0
+    # Don't bet air or strong/nut (those use normal paths)
+    if value_profile.get('tier') in ('strong', 'nut'):
+        return 0.0
+
+    confidence = opponent_model.get('confidence', 0.0)
+    if confidence < 0.20:
+        return 0.0
+
+    vpip = opponent_model.get('vpip', 0.58)
+    fold_to_raise = opponent_model.get('fold_to_raise', 0.44)
+
+    # Never bluff — calling stations call too much, but they also
+    # call small bets with worse, so thin value IS correct vs CS
+    # NITs fold too much — only extract vs wider ranges
+    if opp_archetype == 'nit' and made_strength < 0.50:
+        return 0.0
+
+    # Opponent must plausibly have worse hands that call
+    # High VPIP = wide range = more worse hands that call small bets
+    # Low fold_to_raise = calls often = good for value betting
+    call_freq = 1.0 - fold_to_raise
+    if vpip < 0.50 or call_freq < 0.50:
+        return 0.0
+
+    # Sizing: smaller with weaker hands (more gets called),
+    # larger with stronger (fewer worse hands but they still call)
+    if made_strength >= 0.50:
+        base_ratio = 0.35
+    elif made_strength >= 0.42:
+        base_ratio = 0.30
+    else:
+        base_ratio = 0.25
+
+    # Wet boards: opponent's range is more polarized, small bets risk more
+    if board_texture is not None and board_texture.get('dynamic', False):
+        base_ratio -= 0.05
+
+    # Paired boards: more likely to get called by trips, so bet slightly more
+    if board_texture is not None and board_texture.get('paired', False):
+        base_ratio += 0.03
+
+    return clamp(base_ratio, 0.20, 0.40)
+
+
+# ── v41 archetype-aware should_fold_postflop (extracted from strategy.py) ──────
+
+def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile, spot_info, texture_class="none", opp_archetype='unknown'):
+    if round_idx <= 0:
+        return False
+    tier = value_profile.get("tier", "none") if value_profile else "none"
+    if tier in ("strong", "nut"):
+        return False
+    has_draw = draw_strength >= 0.14
+    # Archetype-aware threshold adjustment — integrate INTO equity checks
+    archetype_delta = 0.0
+    if opp_archetype == 'nit':
+        archetype_delta = -0.04  # NITs only bet strong — fold more
+    elif opp_archetype == 'lag':
+        archetype_delta = 0.03   # LAGs bluff — fold less
+    elif opp_archetype == 'calling_station':
+        archetype_delta = -0.02  # CS bets are honest — fold marginal
+    eff_made = made_strength - archetype_delta
+    if not spot_info["facing_postflop_aggression"]:
+        return False
+    size_bucket = bet_size_bucket(spot_info["last_raise_pot_ratio"])
+    opp_bets = spot_info.get("opp_current_round_bet_count", 0)
+    if round_idx == 1:
+        if eff_made < 0.20 and not has_draw and size_bucket in ("medium", "large"):
+            return True
+        if eff_made < 0.22 and not has_draw and opp_bets >= 2:
+            return True
+    if round_idx == 2:
+        if eff_made < 0.25 and not has_draw and size_bucket in ("medium", "large"):
+            return True
+        if eff_made < 0.28 and not has_draw and opp_bets >= 2:
+            return True
+    if round_idx == 3:
+        if eff_made < 0.35 and not has_draw and size_bucket in ("medium", "large"):
+            return True
+        # v28 fix: require medium/large sizing — folding marginal hands to small
+        # river bets is exploitable (opponents get ~3.3:1 pot odds on blocking bets)
+        if eff_made < 0.40 and not has_draw and opp_bets >= 2 and size_bucket in ("medium", "large"):
+            return True
+    # Texture-gated fold branches — new axis based on board texture classification
+    if texture_class == "dry" and not has_draw:
+        if round_idx >= 2 and eff_made < 0.32 and size_bucket in ("medium", "large"):
+            return True
+        # v28 fix: same bet-size guard for dry texture river folds
+        if round_idx == 3 and opp_bets >= 2 and eff_made < 0.38 and size_bucket in ("medium", "large"):
+            return True
+    if texture_class == "paired" and not has_draw and tier not in ("strong", "nut"):
+        if round_idx >= 2 and eff_made < 0.30 and (size_bucket in ("medium", "large") or opp_bets >= 2):
+            return True
+    return False

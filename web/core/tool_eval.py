@@ -25,6 +25,7 @@ from tool_helpers import (
     _quality_gate_ok, _review_gate_ok, _critic_gate_ok,
     _select_precommit_opponents, _bot_main, _resolve_version_args,
     PROJECT_ROOT,
+    _set_pipeline_status,
 )
 from system_log import log_system_event
 from daemon_management import is_daemon_scheduler_capable
@@ -92,6 +93,9 @@ async def run_precommit_eval(args):
     # Keep cap at 3 to ensure precommit eval fits within the 3600s cycle budget after
     # crossover (~20min) + direction_audit (~2min) + quality (~2min) + review (~5min) + critic (~4min).
     n_games = min(max(1, int(args.get("n_games", 1) or 1)), 3)
+
+    _set_pipeline_status(f"Pre-commit eval for v{v}")
+
     candidate_name = f"claude_v{v}"
     parent_name = f"claude_v{source_v}"
     candidate_main = _bot_main(candidate_name)
@@ -435,6 +439,9 @@ async def run_inline_eval(args):
     v = int(v)
     n_games = args.get("n_games", 5)
     bot_name = f"claude_v{v}"
+
+    _set_pipeline_status(f"Running inline eval for v{v}")
+
     bot_dir = get_bot_dir(v)
 
     if not (bot_dir / "main.py").exists():

@@ -10,6 +10,8 @@ from pathlib import Path
 
 from claude_agent_sdk.types import HookMatcher, SyncHookJSONOutput
 
+from evolution_infra import locked_file
+
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
 # Module-level cycle start time — set by orchestrator._run_one_cycle at cycle start,
@@ -187,7 +189,7 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
     bot_action_stats_file = RESULTS_DIR / "bot_action_stats.json"
     if bot_action_stats_file.exists():
         try:
-            with open(bot_action_stats_file, "r") as f:
+            with locked_file(bot_action_stats_file, "r") as f:
                 action_stats = json.load(f)
             bot_stats = action_stats.get(bot_name)
             if bot_stats:

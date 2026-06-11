@@ -22,6 +22,8 @@ import os
 import time
 from collections import OrderedDict
 
+from evolution_infra import locked_file
+
 log = logging.getLogger("pok.scheduler")
 from pathlib import Path
 
@@ -273,7 +275,7 @@ def load_dynamic_scenarios():
     if not DYNAMIC_SCENARIOS_FILE.exists():
         return []
     try:
-        with open(DYNAMIC_SCENARIOS_FILE) as f:
+        with locked_file(DYNAMIC_SCENARIOS_FILE, "r") as f:
             data = json.load(f)
         if isinstance(data, list):
             return data
@@ -290,7 +292,7 @@ def save_dynamic_scenarios(scenarios):
     scenarios = scenarios[-MAX_DYNAMIC_SCENARIOS:]
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     try:
-        with open(DYNAMIC_SCENARIOS_FILE, "w") as f:
+        with locked_file(DYNAMIC_SCENARIOS_FILE, "w") as f:
             json.dump(scenarios, f, indent=2, ensure_ascii=False)
     except OSError as e:
         log.warning("Failed to save dynamic scenarios: %s", e)

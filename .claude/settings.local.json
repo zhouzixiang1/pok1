@@ -22,7 +22,10 @@
       "Bash(xargs kill)",
       "Bash(kill 83224 *)",
       "Bash(kill *)",
-      "Bash(./pokctl.sh status *)"
+      "Bash(./pokctl.sh status *)",
+      "Bash(curl -s http://localhost:8000/api/control/status)",
+      "Bash(curl -s http://localhost:8000/api/evolution/state)",
+      "Bash(sort -t'v' -k2 -n)"
     ]
   }
 }

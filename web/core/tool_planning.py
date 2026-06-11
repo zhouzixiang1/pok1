@@ -22,6 +22,7 @@ from tool_helpers import (
     _validate_worker_boundaries,
     _target_rel, _py_files_changed_between, _resolve_version_args,
     PROJECT_ROOT,
+    _set_pipeline_status,
 )
 from system_log import log_system_event
 
@@ -39,6 +40,8 @@ async def run_direction_audit(args):
         next_v = next_v or _v
     if source_v is None or next_v is None:
         return _json_tool_result({"error": "Missing source_v/next_v and no active checkpoint"})
+
+    _set_pipeline_status(f"Auditing directions for v{next_v}")
 
     # Cache guard: skip LLM call if already completed for this (next_v, source_v)
     _existing = _matching_checkpoint(next_v, source_v)
@@ -76,7 +79,7 @@ async def run_direction_audit(args):
         next_v, source_v, "direction_audited",
         direction_audit=direction_audit_payload,
         master_plan=existing_plan,
-        worker_failure_count=_ckpt.get("worker_failure_count", _ckpt.get("worker_invocation_count", 0)) if _ckpt else 0,
+        worker_failure_count=_ckpt.get("worker_failure_count", 0) if _ckpt else 0,
     )
 
     event_type = "pipeline.direction_audit_warning" if repetition else "pipeline.direction_audit_passed"
@@ -219,6 +222,8 @@ async def run_master(args):
     performance_verification = args.get("performance_verification", "")
     direction_audit_str = args.get("direction_audit", "")
 
+    _set_pipeline_status(f"Master planning for v{next_v}")
+
     # Parse direction audit from arg or checkpoint
     direction_audit = None
     if direction_audit_str:
@@ -359,7 +364,7 @@ async def run_master(args):
     write_pipeline_checkpoint(next_v, source_v, "master_planned",
                               master_plan=data,
                               direction_audit=existing_audit,
-                              worker_failure_count=_ckpt.get("worker_failure_count", _ckpt.get("worker_invocation_count", 0)) if _ckpt else 0,
+                              worker_failure_count=_ckpt.get("worker_failure_count", 0) if _ckpt else 0,
                               audit_context={"master_audit": master_audit_ctx} if master_audit_ctx else None)
 
     log_system_event("pipeline.master_done", "info", f"Master planned v{next_v}: {len(data.get('tasks', []))} tasks",
@@ -462,6 +467,8 @@ async def execute_workers(args):
         return _json_tool_result({"error": "Missing next_v/source_v and no active checkpoint"})
     reviewer_feedback = args.get("reviewer_feedback", "")
 
+    _set_pipeline_status(f"Executing workers for v{next_v}")
+
     next_dir = get_bot_dir(next_v)
     prompts_dir = PROJECT_ROOT / "web" / "core" / "prompts"
     worker_template = (prompts_dir / "worker_prompt.md").read_text()
@@ -497,7 +504,7 @@ async def execute_workers(args):
             })
 
     # Circuit breaker: limit total worker failures per generation
-    failure_count = ckpt.get("worker_failure_count", ckpt.get("worker_invocation_count", 0))
+    failure_count = ckpt.get("worker_failure_count", 0)
     MAX_WORKER_FAILURES = 6
     if failure_count >= MAX_WORKER_FAILURES:
         return _json_tool_result({
@@ -561,8 +568,7 @@ async def execute_workers(args):
         write_pipeline_checkpoint(next_v, source_v, "master_planned",
                                   master_plan=ckpt.get("master_plan"),
                                   reviewer_feedback=reviewer_feedback,
-                                  worker_failure_count=ckpt.get("worker_failure_count",
-                                                                ckpt.get("worker_invocation_count", 0)))
+                                  worker_failure_count=ckpt.get("worker_failure_count", 0))
 
         reviewer_feedback += (
             f"\n\nNOTE: This is a retry. The code in bots/claude_v{next_v}/ has been ACTUALLY RESET "

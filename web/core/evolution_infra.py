@@ -201,7 +201,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
 
         if existing and existing.get("next_v") == next_v and existing.get("source_v") == source_v:
             existing_gate_results = existing.get("gate_results", {}) or {}
-            existing_failure_count = existing.get("worker_failure_count", existing.get("worker_invocation_count", 0))
+            existing_failure_count = existing.get("worker_failure_count", 0)
             if master_plan is None:
                 existing_master_plan = existing.get("master_plan")
             if not reviewer_feedback:
@@ -429,7 +429,7 @@ def load_daemon_stats():
         with locked_file(STATS_FILE, "r") as f:
             data = json.load(f)
         return data
-    return {"pairs": {}, "total_periods": 0, "total_games": 0}
+    return {"pairs": {}, "total_games": 0}
 
 
 def _is_shutdown(event) -> bool:

@@ -57,7 +57,7 @@ export const controlApi = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(config),
     }),
-  start: () => fetchJSON<{ status: string }>(`${BASE}/start`, { method: "POST" }),
+  start: () => fetchJSON<{ status: string; mode: string }>(`${BASE}/start`, { method: "POST" }),
   stop: () => fetchJSON<{ status: string }>(`${BASE}/stop`, { method: "POST" }),
   callTool: (toolName: string, args: Record<string, unknown> = {}) =>
     fetchJSON<ToolResult>(`${BASE}/tool/${toolName}`, {

@@ -7,6 +7,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
+from evolution_infra import locked_file
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RESULTS_DIR = PROJECT_ROOT / "web" / "core" / "results"
 ORCHESTRATOR_LOGS_DIR = PROJECT_ROOT / "web" / "logs"
@@ -86,28 +88,23 @@ async def get_system_events(
     events_file = SYSTEM_EVENTS_FILE
     if not events_file.exists():
         return {"events": [], "total": 0}
-    import fcntl
     events = []
-    with open(events_file, "r") as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
-        try:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if type and not entry.get("type", "").startswith(type):
-                    continue
-                if severity and entry.get("severity") != severity:
-                    continue
-                if since is not None and entry.get("ts", 0) < since:
-                    continue
-                events.append(entry)
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+    with locked_file(events_file, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if type and not entry.get("type", "").startswith(type):
+                continue
+            if severity and entry.get("severity") != severity:
+                continue
+            if since is not None and entry.get("ts", 0) < since:
+                continue
+            events.append(entry)
     events.reverse()
     total = len(events)
     return {"events": events[offset:offset + limit], "total": total}
@@ -124,26 +121,21 @@ async def get_worker_failures(
     failures_file = WORKER_FAILURES_FILE
     if not failures_file.exists():
         return {"failures": [], "total": 0}
-    import fcntl
     failures = []
-    with open(failures_file, "r") as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
-        try:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if gen is not None and entry.get("gen") != gen:
-                    continue
-                if role and role.lower() not in entry.get("role", "").lower():
-                    continue
-                failures.append(entry)
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+    with locked_file(failures_file, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if gen is not None and entry.get("gen") != gen:
+                continue
+            if role and role.lower() not in entry.get("role", "").lower():
+                continue
+            failures.append(entry)
     failures.reverse()
     total = len(failures)
     return {"failures": failures[offset:offset + limit], "total": total}

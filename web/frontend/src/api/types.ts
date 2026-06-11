@@ -156,6 +156,8 @@ export interface PipelineCheckpoint {
   worker_failure_count?: number;
   parent2_v?: number | null;
   timestamp: string;
+  audit_context?: Record<string, unknown>;
+  last_stage_change_ts?: number;
 }
 
 export interface WorkerFailure {
@@ -214,4 +216,5 @@ export interface SchedulerStatus {
   pending_jobs: number;
   claimed_jobs: number;
   recent_results: number;
+  pending_details?: Record<string, unknown>[];
 }
