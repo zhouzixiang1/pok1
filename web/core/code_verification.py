@@ -41,6 +41,64 @@ def _get_adaptive_limit(filename, base_limit, source_dir=None):
     return min(adaptive, MAX_LINES_HARD_CAP)
 
 
+def _detect_dead_code_ast(directory, target_files=None):
+    """Detect dead code patterns via AST analysis.
+
+    Catches:
+    1. Functions with only 'pass' body (empty stubs from incomplete workers)
+    2. Code after return/raise/break/continue (unreachable)
+    """
+    import ast as _ast
+    errors = []
+    target_paths = []
+    if target_files:
+        for tf in target_files:
+            path = os.path.join(directory, tf) if not os.path.isabs(tf) else tf
+            if os.path.exists(path) and path.endswith(".py"):
+                target_paths.append(path)
+    else:
+        for root, _, files in os.walk(directory):
+            for f in files:
+                if f.endswith(".py"):
+                    target_paths.append(os.path.join(root, f))
+
+    for path in target_paths:
+        try:
+            with open(path) as fh:
+                source = fh.read()
+            tree = _ast.parse(source, filename=path)
+            fname = os.path.basename(path)
+            for node in _ast.walk(tree):
+                # 1. Functions with only 'pass' (empty stubs) — skip dunder methods
+                if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                    body = node.body
+                    if (len(body) == 1
+                        and isinstance(body[0], _ast.Pass)
+                        and not (node.name.startswith("__") and node.name.endswith("__"))):
+                        errors.append(
+                            f"{fname}: function '{node.name}' at line {node.lineno} "
+                            f"contains only 'pass' (empty stub from incomplete worker)"
+                        )
+                # 2. Unreachable code after return/raise/break/continue
+                if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                    stmts = node.body
+                    for idx, stmt in enumerate(stmts):
+                        if isinstance(stmt, (_ast.Return, _ast.Raise, _ast.Break, _ast.Continue)):
+                            # Check for statements after this one (ignore docstrings and ellipsis)
+                            for later in stmts[idx + 1:]:
+                                if isinstance(later, _ast.Expr) and isinstance(later.value, (_ast.Constant,)):
+                                    continue  # docstrings/string constants are ok
+                                errors.append(
+                                    f"{fname}: unreachable code after {type(stmt).__name__.lower()} "
+                                    f"at line {stmt.lineno} in '{node.name}'"
+                                )
+                                break
+                            break  # only flag first dead-code trigger
+        except SyntaxError:
+            pass  # py_compile already catches syntax errors
+    return errors
+
+
 def verify_code(directory, target_files=None):
     """Verify Python files compile. When target_files is given, only check those
     files instead of walking the entire directory — avoids false compile errors
@@ -62,6 +120,14 @@ def verify_code(directory, target_files=None):
                     proc = subprocess.run([sys.executable, "-m", "py_compile", path], capture_output=True, text=True)
                     if proc.returncode != 0:
                         errors.append(proc.stderr.strip())
+
+    # AST-based dead code detection (advisory, non-blocking on failure)
+    try:
+        _ast_errors = _detect_dead_code_ast(directory, target_files)
+        errors.extend(_ast_errors)
+    except Exception:
+        pass  # AST analysis failures must not block the pipeline
+
     return errors
 
 
