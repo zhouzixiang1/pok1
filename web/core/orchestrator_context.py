@@ -166,6 +166,10 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
                         f"{'MAX RETRIES REACHED — do NOT retry workers again. Abandon this generation.' if gen_attempt >= 2 else 'You may retry workers at most 1 more time.'}"
                     )
                 _inject_master_plan_hint(checkpoint, lines)
+                last_update = checkpoint.get("last_update_ts")
+                if last_update:
+                    age = int(time.time() - last_update)
+                    lines.append(f"Last checkpoint activity: {age}s ago")
         except Exception:
             pass
         return "\n".join(lines)
@@ -292,6 +296,10 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
                     f"{'MAX RETRIES REACHED — do NOT retry workers again. Abandon this generation.' if gen_attempt >= 2 else 'You may retry workers at most 1 more time.'}"
                 )
             _inject_master_plan_hint(checkpoint, lines)
+            last_update = checkpoint.get("last_update_ts")
+            if last_update:
+                age = int(time.time() - last_update)
+                lines.append(f"Last checkpoint activity: {age}s ago")
     except Exception:
         pass
 

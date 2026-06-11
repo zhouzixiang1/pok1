@@ -88,6 +88,46 @@ STAGE_GATE_ALLOWLIST = {
     "archived": {"quality", "spot_verified", "review", "critic", "precommit_eval"},
 }
 
+def validate_stage_transition(current_stage, proposed_stage):
+    """Validate that a pipeline stage transition is legal.
+
+    Returns (is_valid, reason).
+    Legal transitions:
+    - Forward progression along STAGE_ORDER
+    - Same stage (re-recording gate data, e.g. idempotent re-calls)
+    - None -> any (first write or checkpoint cleared)
+    - Any -> "timed_out" (watchdog override)
+    - Any -> "prepared" (fresh generation restart)
+    - "workers_done"/"reviewed"/"critic_checked" -> "master_planned" (intra-gen retry)
+    """
+    if proposed_stage is None or current_stage is None:
+        return True, "no_guard"
+
+    if proposed_stage == current_stage:
+        return True, "same_stage"
+
+    if proposed_stage == "timed_out":
+        return True, "timeout_override"
+
+    if proposed_stage == "prepared":
+        return True, "fresh_restart"
+
+    # Allow retry: from later stages back to master_planned (intra-gen retry)
+    retry_sources = {"workers_done", "quality_passed", "spot_verified", "reviewed", "critic_checked"}
+    if proposed_stage == "master_planned" and current_stage in retry_sources:
+        return True, "retry_reset"
+
+    # Forward progression check
+    if current_stage in STAGE_ORDER and proposed_stage in STAGE_ORDER:
+        current_idx = STAGE_ORDER.index(current_stage)
+        proposed_idx = STAGE_ORDER.index(proposed_stage)
+        if proposed_idx > current_idx:
+            return True, "forward_progression"
+        return False, f"backward_transition: {current_stage} -> {proposed_stage}"
+
+    # Unknown stages: allow (backward compat)
+    return True, "unknown_stage"
+
 EVOLUTION_BRANCH = "main"
 
 # Watchdog: if no pipeline stage change occurs within this many seconds,
@@ -231,8 +271,14 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         if existing:
             existing_stage_ts = existing.get("last_stage_change_ts", 0.0)
         now_ts = time.time()
-        # Only bump the timestamp if the stage actually changed
+        # Validate stage transition and update timestamps
         old_stage = existing.get("stage") if existing else None
+        is_valid, reason = validate_stage_transition(old_stage, stage)
+        if not is_valid:
+            log.warning(
+                "Illegal stage transition: %s -> %s (%s). Allowing but logging.",
+                old_stage, stage, reason,
+            )
         new_stage_ts = now_ts if (old_stage != stage) else existing_stage_ts
 
         state = {
@@ -246,6 +292,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "audit_context": existing_audit_context,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "last_stage_change_ts": new_stage_ts,
+            "last_update_ts": now_ts,  # Always bumps on any checkpoint write
         }
 
         # Atomic write: tmp + fsync + rename, all under the same lock
