@@ -78,7 +78,8 @@ class TestApplyKnownFixes:
         assert "BOT-001a" in applied, "Wheel straight fix should be applied"
         assert "BOT-002a" in applied, "Re-raise +1 fix should be applied"
         assert "BOT-004" in applied, "TOTAL_HANDS fix should be applied"
-        assert "BOT-002b" in skipped, "judge_round_raise variant should be skipped (not present)"
+        assert "BOT-002b" not in applied, "BOT-002b is inactive, should not appear"
+        # BOT-002b is inactive (dead template) — it won't appear in skipped either
 
         # Verify file contents
         card_utils = (bare_bot_dir / "card_utils.py").read_text()
@@ -111,8 +112,10 @@ class TestApplyKnownFixes:
 
         applied, skipped = fix_injection.apply_known_fixes(bot_dir)
         assert len(applied) == 0, f"Nothing should be applied when search not found, got {applied}"
-        assert len(skipped) == len(fix_injection.MANDATORY_FIXES), (
-            f"All {len(fix_injection.MANDATORY_FIXES)} fixes should be skipped"
+        # Only active fixes are processed; BOT-002b is inactive so won't be in skipped
+        active_count = sum(1 for f in fix_injection.MANDATORY_FIXES if f.active)
+        assert len(skipped) == active_count, (
+            f"All {active_count} active fixes should be skipped"
         )
 
 
@@ -128,6 +131,10 @@ class TestFixRegistry:
 
     def test_all_fixes_are_active(self, fix_injection):
         for fix in fix_injection.MANDATORY_FIXES:
+            if fix.fix_id == "BOT-002b":
+                # BOT-002b is intentionally inactive (dead template: no bot uses judge_round_raise)
+                assert not fix.active, "BOT-002b should be inactive"
+                continue
             assert fix.active, f"Fix {fix.fix_id} should be active"
 
     def test_all_patches_have_guard(self, fix_injection):

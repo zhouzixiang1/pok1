@@ -2,9 +2,13 @@
 
 import json
 import shutil
+import time
 from typing import Annotated, TypedDict
 
 from claude_agent_sdk import tool
+
+from logging_config import get_logger
+_log = get_logger("gates")
 
 from evolution_core import (
     get_bot_dir,
@@ -50,6 +54,7 @@ class RunQualityGatesInput(TypedDict):
 
 @tool("run_quality_gates", "Run all quality gates on a bot: compile check, smoke test, decision tests, and file size check.", {"version": int, "source_v": int})
 async def run_quality_gates(args):
+    _t0 = time.time()
     v, source_v = _resolve_version_args(args)
     if v is None:
         return _json_tool_result({"error": "Missing version and no active pipeline checkpoint"})
@@ -59,10 +64,21 @@ async def run_quality_gates(args):
 
     _set_pipeline_status(f"Running quality gates for v{v}")
 
+    # Idempotency guard: skip if quality gates already passed for this version
+    _existing_ckpt = _matching_checkpoint(v, source_v)
+    if _existing_ckpt and _existing_ckpt.get("stage") in (
+        "quality_passed", "spot_verified", "reviewed", "critic_checked", "verified", "archived"
+    ):
+        quality_gate = _existing_ckpt.get("gate_results", {}).get("quality", {})
+        if quality_gate.get("all_passed") is True:
+            quality_gate["idempotent_cache"] = True
+            return _json_tool_result(quality_gate)
+
     # CRITICAL: Check that code actually changed vs source.
     # Prevents zombie loop where workers reset code but quality gates pass on unchanged (parent) code.
     code_changed = True
     changed_files_list = []
+    source_dir = None
     if source_v is not None:
         source_dir = get_bot_dir(source_v)
         changed_files_list = [p for p in _py_files_changed_between(source_dir, bot_dir) if 'backup' not in p]
@@ -101,8 +117,7 @@ async def run_quality_gates(args):
         except _asyncio.TimeoutError:
             pass  # LLM timed out — use only predefined scenarios
         except Exception as e:
-            import logging as _logging
-            _logging.getLogger(__name__).warning("Dynamic test generation error: %s", e)
+            _log.warning("Dynamic test generation error: %s", e)
 
     # --- B3: Heuristic Dynamic Regression Tests from Diff ---
     heuristic_scenarios = []
@@ -144,14 +159,12 @@ async def run_quality_gates(args):
                     _new_to_save = [s for s in heuristic_scenarios
                                     if s.get("id") not in _existing_ids]
                     save_dynamic_scenarios(_existing + _new_to_save)
-                    import logging as _logging2
-                    _logging2.getLogger(__name__).info(
+                    _log.info(
                         "B3: Generated %d heuristic scenarios from diff for v%d",
                         len(heuristic_scenarios), v
                     )
         except Exception as e:
-            import logging as _logging
-            _logging.getLogger(__name__).warning("B3 heuristic scenario generation error: %s", e)
+            _log.warning("B3 heuristic scenario generation error: %s", e)
 
     # Combine both dynamic sources
     _all_dynamic = (dynamic_scenarios or []) + heuristic_scenarios
@@ -238,6 +251,13 @@ async def run_quality_gates(args):
     else:
         result["checkpoint_recorded"] = False
 
+    try:
+        log_system_event("pipeline.quality_gates", "info",
+                         f"Quality gates finished for v{v} in {time.time() - _t0:.1f}s",
+                         {"version": v, "all_passed": all_passed, "elapsed_sec": round(time.time() - _t0, 2)})
+    except Exception:
+        pass
+
     return _json_tool_result(result)
 
 
@@ -252,6 +272,7 @@ class PrepareNextGenInput(TypedDict):
 
 @tool("prepare_next_gen", "Prepare the next generation directory by copying from source bot.", {"source_v": int, "next_v": int})
 async def prepare_next_gen(args):
+    _t0 = time.time()
     source_v = args.get("source_v")
     next_v = args.get("next_v")
     if source_v is None or next_v is None:
@@ -307,8 +328,7 @@ async def prepare_next_gen(args):
     if applied or skipped:
         log_fix_application(applied, skipped, next_dir, source_v)
     if skipped:
-        import logging as _logging
-        _logging.getLogger(__name__).warning("Fix patches skipped for v%d: %s", next_v, skipped)
+        _log.info("Fix patches skipped for v%d: %s", next_v, skipped)
 
     (next_dir / ".completed").unlink(missing_ok=True)
 
@@ -316,8 +336,8 @@ async def prepare_next_gen(args):
     from evolution_infra import write_pipeline_checkpoint
     write_pipeline_checkpoint(next_v, source_v, "prepared", worker_failure_count=0)
 
-    log_system_event("pipeline.prepare", "info", f"Prepared v{next_v} from v{source_v}",
-                     {"next_v": next_v, "source_v": source_v})
+    log_system_event("pipeline.prepare_done", "info", f"Prepared v{next_v} from v{source_v}",
+                     {"next_v": next_v, "source_v": source_v, "elapsed_sec": round(time.time() - _t0, 2)})
 
     return {"content": [{"type": "text", "text": json.dumps({"prepared": True, "next_v": next_v, "source_v": source_v})}]}
 
@@ -334,6 +354,7 @@ class RunReviewInput(TypedDict):
 
 @tool("run_review", "Run Lead Code Reviewer on the bot changes. Returns approval decision with quality score.", {"version": int, "source_v": int, "plan": list})
 async def run_review(args):
+    _t0 = time.time()
     v, source_v = _resolve_version_args(args)
     if v is None or source_v is None:
         return _json_tool_result({"error": "Missing version/source_v and no active pipeline checkpoint"})
@@ -342,6 +363,21 @@ async def run_review(args):
     plan = args.get("plan", [])
 
     _set_pipeline_status(f"Reviewing v{v}")
+
+    # Idempotency guard: skip if review already approved
+    _review_ckpt = _matching_checkpoint(v, source_v)
+    if _review_ckpt and _review_ckpt.get("stage") in (
+        "reviewed", "critic_checked", "verified", "archived"
+    ):
+        review_gate = _review_ckpt.get("gate_results", {}).get("review", {})
+        if review_gate.get("approved") is True:
+            return _json_tool_result({
+                "approved": True,
+                "quality_score": review_gate.get("quality_score", 0),
+                "feedback": review_gate.get("feedback", ""),
+                "checkpoint_recorded": True,
+                "idempotent_cache": True,
+            })
 
     ckpt = _matching_checkpoint(v, source_v)
     if not _quality_gate_ok(ckpt):
@@ -441,6 +477,14 @@ async def run_review(args):
             "logs": ui.get_output(),
         }
 
+    try:
+        log_system_event("pipeline.review_done", "info",
+                         f"Review finished for v{v} in {time.time() - _t0:.1f}s",
+                         {"version": v, "approved": result.get("approved", False),
+                          "score": result.get("quality_score", 0), "elapsed_sec": round(time.time() - _t0, 2)})
+    except Exception:
+        pass
+
     return _json_tool_result(result)
 
 
@@ -458,6 +502,7 @@ class RunCriticInput(TypedDict):
 
 @tool("run_critic", "Run Poker Strategy Critic on bot changes. Returns score 1-10 and strategic feedback. score ≥ 6 = approved.", {"version": int, "source_v": int, "plan": list, "reviewer_feedback": str, "force_advance": bool})
 async def run_critic(args):
+    _t0 = time.time()
     v, source_v = _resolve_version_args(args)
     if v is None or source_v is None:
         return _json_tool_result({"error": "Missing version/source_v and no active pipeline checkpoint"})
@@ -468,6 +513,19 @@ async def run_critic(args):
     force_advance = args.get("force_advance", False)
 
     _set_pipeline_status(f"Critic evaluating v{v}")
+
+    # Idempotency guard: skip if critic already approved
+    _critic_ckpt = _matching_checkpoint(v, source_v)
+    if _critic_ckpt and _critic_ckpt.get("stage") in (
+        "critic_checked", "verified", "archived"
+    ):
+        critic_gate = _critic_ckpt.get("gate_results", {}).get("critic", {})
+        if critic_gate.get("approved") is True or critic_gate.get("force_advanced") is True:
+            return _json_tool_result({
+                **critic_gate,
+                "idempotent_cache": True,
+                "checkpoint_recorded": True,
+            })
 
     ckpt = _matching_checkpoint(v, source_v)
     if not _quality_gate_ok(ckpt) or not _review_gate_ok(ckpt):
@@ -591,6 +649,13 @@ async def run_critic(args):
         "force_advanced": force_advanced,
         "checkpoint_recorded": checkpoint_recorded,
     }
+    try:
+        log_system_event("pipeline.critic_done", "info",
+                         f"Critic finished for v{v} in {time.time() - _t0:.1f}s",
+                         {"version": v, "approved": approved, "score": score_num,
+                          "elapsed_sec": round(time.time() - _t0, 2)})
+    except Exception:
+        pass
     return _json_tool_result(result)
 
 

@@ -1,13 +1,15 @@
 """Pipeline tools: direction audit, master planning, and worker execution."""
 
 import json
-import logging
 import shutil
 import time
 from pathlib import Path
 from typing import Annotated, TypedDict
 
 from claude_agent_sdk import tool
+
+from logging_config import get_logger
+_log = get_logger("planning")
 
 from evolution_core import (
     get_bot_dir,
@@ -198,6 +200,24 @@ def _validate_master_plan(plan, next_v=None):
             f"Assign constants.py to Tuner only; other files go to Architect."
         )
 
+    # Check worker prompts against exhausted directions from experience pool.
+    # This is a HARD constraint: plans matching exhausted directions are rejected.
+    exhausted_keywords = _extract_exhausted_keywords()
+    if exhausted_keywords:
+        for i, task in enumerate(tasks):
+            prompt_text = (
+                task.get("worker_prompt", "")
+                + " " + task.get("instruction", "")
+                + " " + str(task.get("targeted_failure", ""))
+            ).lower()
+            if _fuzzy_match_exhausted(prompt_text, exhausted_keywords):
+                errors.append(
+                    f"Task {i}: worker prompt matches an EXHAUSTED direction from experience pool. "
+                    f"This direction has been repeatedly tried with no measurable improvement. "
+                    f"Choose a fundamentally different approach."
+                )
+                break  # one match is enough to block the plan
+
     return errors, warnings
 
 class RunMasterInput(TypedDict):
@@ -210,6 +230,7 @@ class RunMasterInput(TypedDict):
 
 @tool("run_master", "Run Master Architect analysis to plan the next generation. Returns a task plan with worker assignments.", {"source_v": int, "next_v": int, "stagnation_info": str, "match_analysis": str, "performance_verification": str, "direction_audit": str})
 async def run_master(args):
+    _t0 = time.time()
     source_v = args.get("source_v")
     next_v = args.get("next_v")
     if source_v is None or next_v is None:
@@ -344,7 +365,13 @@ async def run_master(args):
                                  f"Master re-planned after audit rejection for v{next_v}",
                                  {"next_v": next_v})
     except Exception as e:
-        logging.getLogger(__name__).warning("Master plan audit error (skipping): %s", e)
+        _log.warning("Master plan audit error (skipping): %s", e)
+        try:
+            log_system_event('pipeline.master_audit_error', 'warn',
+                f'Master plan audit error for v{next_v}: {e}',
+                {"next_v": next_v, "source_v": source_v, "error": str(e)})
+        except Exception:
+            pass
 
     plan_errors, plan_warnings = _validate_master_plan(data, next_v=next_v)
     if plan_warnings:
@@ -368,7 +395,8 @@ async def run_master(args):
                               audit_context={"master_audit": master_audit_ctx} if master_audit_ctx else None)
 
     log_system_event("pipeline.master_done", "info", f"Master planned v{next_v}: {len(data.get('tasks', []))} tasks",
-                     {"next_v": next_v, "source_v": source_v, "num_tasks": len(data.get("tasks", []))})
+                     {"next_v": next_v, "source_v": source_v, "num_tasks": len(data.get("tasks", [])),
+                      "elapsed_sec": round(time.time() - _t0, 2)})
 
     result = {"plan": data, "logs": ui.get_output()}
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
@@ -458,6 +486,7 @@ class ExecuteWorkersInput(TypedDict):
 
 @tool("execute_workers", "Execute worker tasks to modify bot code. Each task has worker_id, role, target_files, worker_prompt.", {"tasks": list, "next_v": int, "source_v": int, "reviewer_feedback": str})
 async def execute_workers(args):
+    _t0 = time.time()
     tasks = args.get("tasks", [])
     next_v = args.get("next_v")
     source_v = args.get("source_v")
@@ -504,9 +533,17 @@ async def execute_workers(args):
             })
 
     # Circuit breaker: limit total worker failures per generation
-    failure_count = ckpt.get("worker_failure_count", 0)
+    # Backward compat: old checkpoints used worker_invocation_count instead of worker_failure_count
+    failure_count = ckpt.get("worker_failure_count", ckpt.get("worker_invocation_count", 0))
     MAX_WORKER_FAILURES = 6
     if failure_count >= MAX_WORKER_FAILURES:
+        try:
+            from system_log import log_system_event
+            log_system_event('pipeline.circuit_breaker', 'error',
+                f'Circuit breaker: {failure_count} worker failures',
+                {'next_v': next_v, 'source_v': source_v, 'failure_count': failure_count})
+        except Exception:
+            pass
         return _json_tool_result({
             "error": f"CIRCUIT BREAKER: {failure_count} worker failures already recorded this generation (max {MAX_WORKER_FAILURES}). Abandon this generation and start a new one.",
             "failure_count": failure_count,
@@ -534,7 +571,7 @@ async def execute_workers(args):
         import shutil
         source_dir_r = get_bot_dir(source_v)
         if source_dir_r.exists() and next_dir.exists():
-            logging.getLogger(__name__).info(f"Resetting v{next_v} code from source v{source_v} before worker retry")
+            _log.info(f"Resetting v{next_v} code from source v{source_v} before worker retry")
             # Remove all files except .completed
             for item in next_dir.iterdir():
                 if item.name != ".completed":
@@ -678,7 +715,8 @@ async def execute_workers(args):
     sev = "success" if success else "error"
     log_system_event("pipeline.workers_done", sev,
                      f"Workers {'passed' if success else 'failed'} for v{next_v}",
-                     {"next_v": next_v, "num_workers": len(tasks), "success": success})
+                     {"next_v": next_v, "num_workers": len(tasks), "success": success,
+                      "elapsed_sec": round(time.time() - _t0, 2)})
 
     result = {
         "success": success,

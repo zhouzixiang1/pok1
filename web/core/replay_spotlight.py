@@ -107,10 +107,7 @@ def _extract_hand_swing(game, bot_idx, opp_idx):
         if isinstance(content, dict):
             player_data = content.get(str(bot_idx), {})
             if isinstance(player_data, dict) and bot_cards is None:
-                hist = player_data.get("history", [])
-                if hist and len(hist) >= 2:
-                    # First two entries are usually hole cards
-                    bot_cards = hist[:2]
+                bot_cards = player_data.get("my_cards")
 
         display = out.get("display", {})
         if not display or not isinstance(display, dict):

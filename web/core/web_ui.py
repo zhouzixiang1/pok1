@@ -33,6 +33,7 @@ class EventBroadcaster:
         self._clients: dict[int, tuple[asyncio.Queue, asyncio.AbstractEventLoop | None]] = {}
         self._ring_buffer: deque[dict] = deque(maxlen=buffer_size)
         self._next_id = 0
+        self._dropped = 0
         self._lock = threading.Lock()
 
     def add_client(self) -> tuple[int, asyncio.Queue]:
@@ -50,6 +51,7 @@ class EventBroadcaster:
                 try:
                     q.put_nowait(event)
                 except asyncio.QueueFull:
+                    self._dropped += 1
                     break
             return cid, q
 
@@ -85,7 +87,7 @@ class EventBroadcaster:
             try:
                 q.put_nowait(item)
             except asyncio.QueueFull:
-                pass
+                self._dropped += 1
         elif q_loop is not None:
             # Cross-thread or no current loop — route through target event loop
             try:
@@ -97,14 +99,17 @@ class EventBroadcaster:
             try:
                 q.put_nowait(item)
             except asyncio.QueueFull:
-                pass
+                self._dropped += 1
 
     @staticmethod
     def _try_put(q, item):
         try:
             q.put_nowait(item)
         except asyncio.QueueFull:
-            pass
+            pass  # dropped in _safe_put caller context is not tracked for static method
+
+    def get_stats(self):
+        return {"dropped_events": self._dropped, "clients": len(self._clients)}
 
 
 class WebUI(BaseUI):
@@ -140,10 +145,10 @@ class WebUI(BaseUI):
                     for line in f:
                         try:
                             total += json.loads(line).get("cost_usd", 0)
-                        except json.JSONDecodeError:
-                            pass
-        except OSError:
-            pass
+                        except json.JSONDecodeError as e:
+                            log.debug("Malformed cost entry: %s", e)
+        except OSError as e:
+            log.debug("Cost file read failed: %s", e)
         # Add archived cost total (preserved during archive_rotate_files)
         try:
             from evolution_infra import ARCHIVE_DIR
@@ -254,15 +259,17 @@ class WebUI(BaseUI):
                 self.costs = self.costs[-500:]
             self.gen_cost_total += cost_usd
             self.grand_cost_total += cost_usd
+            in_tok = usage.get("input_tokens", 0) if usage else 0
+            out_tok = usage.get("output_tokens", 0) if usage else 0
             try:
                 _COSTS_FILE.parent.mkdir(parents=True, exist_ok=True)
                 from evolution_infra import locked_file
                 with locked_file(_COSTS_FILE, "a") as f:
-                    f.write(json.dumps({"role": role, "cost_usd": cost_usd, "grand_total": round(self.grand_cost_total, 6), "ts": time.time()}) + "\n")
-            except OSError:
-                pass
-            in_tok = usage.get("input_tokens", 0) if usage else 0
-            out_tok = usage.get("output_tokens", 0) if usage else 0
+                    f.write(json.dumps({"role": role, "cost_usd": cost_usd, "grand_total": round(self.grand_cost_total, 6), "input_tokens": in_tok, "output_tokens": out_tok, "ts": time.time()}) + "\n")
+            except OSError as e:
+                log.warning("Cost JSONL write failed: %s", e)
+            if usage is None:
+                log.warning("[COST] %s: $%.4f (usage=None - SDK missing token counts)", role, cost_usd)
             log.info("[COST] %s: $%.4f (in=%d out=%d)", role, cost_usd, in_tok, out_tok)
             self._emit("cost", {
                 "role": role,
@@ -297,8 +304,8 @@ class WebUI(BaseUI):
             ckpt = read_pipeline_checkpoint()
             if ckpt:
                 pipeline_stage = ckpt.get("stage")
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("Pipeline checkpoint read failed: %s", e)
         return {
             **self._state,
             "grand_cost_total": round(self.grand_cost_total, 4),

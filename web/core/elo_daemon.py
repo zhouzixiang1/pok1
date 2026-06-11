@@ -30,7 +30,8 @@ try:
         write_result,
     )
     _SCHEDULER_AVAILABLE = True
-except Exception:
+except Exception as e:
+    log.debug("Scheduler module not available: %s", e)
     _SCHEDULER_AVAILABLE = False
 from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime
@@ -217,7 +218,8 @@ def _load_priority_eval():
             PRIORITY_EVAL_FILE.unlink(missing_ok=True)
             return None
         return bot
-    except Exception:
+    except Exception as e:
+        log.debug("Priority eval load failed: %s", e)
         return None
 
 
@@ -281,6 +283,8 @@ def pick_matches(active_bots, h2h, ratings, n_picks=None):
             selected.append((a, b))
             bot_counts[a] += 1
             bot_counts[b] += 1
+    log.info("pick_matches: %d pairs from %d candidates (priority=%s, bots=%d)",
+             len(selected), len(pairs), priority_bot, len(active_bots))
     return selected
 
 
@@ -319,7 +323,8 @@ def save_match_replay(a, b, wins_a, wins_b, draws, replay_data):
         }
         with locked_file(MATCH_HISTORY_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(summary, ensure_ascii=False) + "\n")
-    except Exception:
+    except Exception as e:
+        log.warning("Match history write failed: %s", e)
         try:
             replay_path.unlink()
         except OSError:
@@ -360,8 +365,8 @@ def run_single_match(args):
         # Save replay inside worker to avoid ~2MB cross-process transfer
         try:
             save_match_replay(bot_a_name, bot_b_name, games_a, games_b, games_draw, all_logs)
-        except Exception:
-            pass  # Non-fatal: replay save failure should not affect rating updates
+        except Exception as e:
+            log.debug("Replay save failed: %s", e)
 
         return (bot_a_name, bot_b_name, games_a, games_b, games_draw, total, None)
     except Exception as e:
@@ -372,12 +377,10 @@ def process_result(result, ratings, h2h, bot_stats, verbose=False):
     """Process one completed match: update Elo, H2H, bot_stats."""
     a, b, wins_a, wins_b, draws, total, err = result
     if err is not None:
-        if verbose:
-            log.error("Error in %s vs %s: %s", a, b, err)
+        log.error("Error in %s vs %s: %s", a, b, err)
         return 0
 
-    if verbose:
-        log.debug("%s vs %s: %d-%d-%d (%d games)", a, b, wins_a, wins_b, draws, total)
+    log.debug("%s vs %s: %d-%d-%d (%d games)", a, b, wins_a, wins_b, draws, total)
 
     # Per-game Glicko-2 updates (use live opponent ratings each game)
     _default = Glicko2Player()
@@ -649,8 +652,8 @@ def main():
                         if a not in active_bots or b not in active_bots:
                             try:
                                 fut.result()
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                log.debug("Reaped bot result error: %s", e)
                             continue
                         result = fut.result()
                         n = process_result(result, ratings, h2h, bot_stats, verbose=args.verbose)
@@ -675,8 +678,7 @@ def main():
                                     if args.verbose:
                                         log.info("Eval round triggered: %d pairs queued", len(eval_pairs))
                         except Exception as er_err:
-                            if args.verbose:
-                                log.warning("Eval round tracking error (non-fatal): %s", er_err)
+                            log.warning("Eval round tracking error (non-fatal): %s", er_err)
 
                         # Replenish: submit next match
                         if match_queue and executor is not None:

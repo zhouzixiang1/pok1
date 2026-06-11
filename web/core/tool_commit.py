@@ -1,12 +1,12 @@
 """Pipeline tools: commit, archivist, and crossover."""
 
 import json
-import logging
 import time
 from pathlib import Path
 from typing import Annotated, TypedDict
 
-_log = logging.getLogger("pok.commit")
+from logging_config import get_logger
+_log = get_logger("commit")
 
 from claude_agent_sdk import tool
 
@@ -43,6 +43,7 @@ class CommitBotInput(TypedDict):
 
 @tool("commit_bot", "Commit a bot generation with git commit and tag. review_approved must be true (set after run_review returns approved:true).", {"version": int, "source_v": int, "strategy": str, "review_approved": bool})
 async def commit_bot(args):
+    _t0 = time.time()
     v, source_v = _resolve_version_args(args)
     if v is None or source_v is None:
         return _json_tool_result({"error": "Missing version/source_v and no active pipeline checkpoint"})
@@ -104,6 +105,14 @@ async def commit_bot(args):
             failed_gates.append({"gate": "precommit_eval", "reason": "precommit eval did not pass", "value": precommit})
 
     if missing_gates or failed_gates:
+        try:
+            from system_log import log_system_event
+            log_system_event('pipeline.commit_blocked', 'error',
+                f'Commit blocked for v{v}: missing={missing_gates} failed={failed_gates}',
+                {'version': v, 'source_v': source_v, 'missing_gates': missing_gates,
+                 'failed_gates': failed_gates})
+        except Exception:
+            pass
         return _json_tool_result({
             "error": "COMMIT BLOCKED: gate ledger incomplete or failed.",
             "version": v,
@@ -406,6 +415,15 @@ async def run_archivist(args):
                                   gate_results=_ckpt.get("gate_results"))
     clear_pipeline_checkpoint()
 
+    try:
+        log_system_event('pipeline.archivist_done', 'info',
+            f'Archivist completed for v{v}',
+            {'version': v, 'source_v': source_v,
+             'consistency_ok': len(consistency_issues) == 0,
+             'pool_size': len(active_bots)})
+    except Exception:
+        pass
+
     return _json_tool_result(result)
 
 
@@ -481,8 +499,7 @@ async def run_crossover(args):
                     "compatibility": compat,
                 })
     except Exception as e:
-        import logging as _logging
-        _logging.getLogger(__name__).warning("Crossover compat audit error (skipping): %s", e)
+        _log.warning("Crossover compat audit error (skipping): %s", e)
 
     success = await _run_crossover(parent_a, parent_b, target_v, ui)
 
@@ -491,6 +508,19 @@ async def run_crossover(args):
         from evolution_infra import write_pipeline_checkpoint
         write_pipeline_checkpoint(target_v, parent_a, "workers_done",
                                   parent2_v=parent_b)
+        try:
+            log_system_event('pipeline.crossover_done', 'info',
+                f'Crossover v{parent_a}×v{parent_b} → v{target_v} succeeded',
+                {'target_v': target_v, 'parent_a': parent_a, 'parent_b': parent_b})
+        except Exception:
+            pass
+    else:
+        try:
+            log_system_event('pipeline.crossover_failed', 'error',
+                f'Crossover v{parent_a}×v{parent_b} → v{target_v} failed',
+                {'target_v': target_v, 'parent_a': parent_a, 'parent_b': parent_b})
+        except Exception:
+            pass
 
     result = {"success": success, "logs": ui.get_output()}
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}

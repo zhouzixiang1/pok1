@@ -1,6 +1,7 @@
 """Structured system event logger — writes to system_events.jsonl."""
 
 import json
+import logging
 import time
 
 from evolution_infra import RESULTS_DIR, locked_file
@@ -29,5 +30,5 @@ def log_system_event(event_type: str, severity: str, message: str, data: dict = 
     if _ui is not None:
         try:
             _ui._emit("system_event", entry)
-        except Exception:
-            pass
+        except Exception as e:
+            logging.getLogger(__name__).debug("SSE emit failed for system_event: %s", e)

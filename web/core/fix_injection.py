@@ -88,6 +88,7 @@ MANDATORY_FIXES: list[Fix] = [
                 guard="2 * judge_round_raise + 1 - my_round_bet",
             ),
         ],
+        active=False,  # Dead template: no evolved bot uses judge_round_raise
     ),
     Fix(
         fix_id="BOT-004",
@@ -182,7 +183,7 @@ def log_fix_application(
     """Log fix application results to system events."""
     from system_log import log_system_event
 
-    severity = "warn" if skipped else "info"
+    severity = "warn" if skipped and not applied else "info"
     msg_parts = []
     if applied:
         msg_parts.append(f"Applied fixes: {', '.join(applied)}")

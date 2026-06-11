@@ -4,9 +4,9 @@ These agents evaluate worker output and verify strategic improvements.
 """
 
 import json
-import logging
 
-_log = logging.getLogger(__name__)
+from logging_config import get_logger
+_log = get_logger("review")
 
 from evolution_infra import (
     run_claude_query, parse_json_output, substitute_template,

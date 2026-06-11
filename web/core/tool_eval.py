@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import time
@@ -29,6 +30,8 @@ from tool_helpers import (
 )
 from system_log import log_system_event
 from daemon_management import is_daemon_scheduler_capable
+
+log = logging.getLogger("pok.tool_eval")
 
 
 # ──────────────────────────────────────────────
@@ -82,6 +85,7 @@ class RunPrecommitEvalInput(TypedDict):
 
 @tool("run_precommit_eval", "Run a minimal mirror-battle regression check before commit. Tests parent, current top opponents, and source H2H weaknesses; blocks obvious crashes or collapses.", {"version": int, "source_v": int, "n_games": int})
 async def run_precommit_eval(args):
+    _t0 = time.time()
     v, source_v = _resolve_version_args(args)
     if v is None or source_v is None:
         return _json_tool_result({"error": "Missing version/source_v and no active pipeline checkpoint"})
@@ -373,8 +377,8 @@ async def run_precommit_eval(args):
             semantic_result = await _run_precommit_semantic(
                 v, source_v, matchups, master_plan_sem, _get_ui()
             )
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Precommit semantic analysis failed: %s", e)
 
     if total_losses >= 3 and total_losses >= total_wins + 2:
         blockers.append({
@@ -394,6 +398,17 @@ async def run_precommit_eval(args):
                          {"next_v": v, "semantic": semantic_result})
 
     passed = len(blockers) == 0
+    try:
+        log_system_event("pipeline.precommit_eval", "info" if passed else "warn",
+            f"Precommit eval {'passed' if passed else 'FAILED'} for v{v}: "
+            f"{total_wins}W-{total_losses}L-{total_draws}D vs {len(all_opponents)} opponents",
+            {"version": v, "source_v": source_v, "passed": passed,
+             "total_wins": total_wins, "total_losses": total_losses,
+             "total_draws": total_draws, "blockers": blockers,
+             "n_opponents": len(all_opponents),
+             "elapsed_sec": round(time.time() - _t0, 2)})
+    except Exception:
+        pass
     result = {
         "version": v,
         "source_v": source_v,
@@ -433,6 +448,7 @@ class RunInlineEvalInput(TypedDict):
 
 @tool("run_inline_eval", "Run inline evaluation: battle the bot against all active opponents and update Glicko-2 ratings. Use when daemon is not running.", {"version": int, "n_games": int})
 async def run_inline_eval(args):
+    _inline_eval_start = time.time()
     v, _source_v = _resolve_version_args(args)
     if v is None:
         return {"content": [{"type": "text", "text": json.dumps({"error": "Missing version and no active pipeline checkpoint"})}]}
@@ -475,15 +491,15 @@ async def run_inline_eval(args):
         try:
             with locked_file(H2H_FILE, "r") as f:
                 h2h = json.load(f)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("H2H data load failed: %s", e)
     bot_stats_data = {}
     if BOT_STATS_FILE.exists():
         try:
             with locked_file(BOT_STATS_FILE, "r") as f:
                 bot_stats_data = json.load(f)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("Bot stats load failed: %s", e)
 
     for opp in opponents:
         if opp not in ratings:
@@ -536,8 +552,8 @@ async def run_inline_eval(args):
             }
             with locked_file(MATCH_HISTORY_FILE, "a") as f:
                 f.write(json.dumps(summary) + "\n")
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Match history write failed: %s", e)
 
         for _ in range(w_a):
             all_results.append((ratings[opp], 1.0))
@@ -587,6 +603,16 @@ async def run_inline_eval(args):
     # Save bot_stats
     with locked_file(BOT_STATS_FILE, "w") as f:
         json.dump(bot_stats_data, f, indent=2)
+
+    try:
+        from system_log import log_system_event
+        log_system_event('pipeline.inline_eval', 'info',
+            f'Inline eval for v{v}',
+            {'version': v, 'elapsed_sec': round(time.time() - _inline_eval_start, 1),
+             'opponents_played': len(opponents), 'games_per_opponent': n_games,
+             'rating': round(ratings[bot_name].r, 1), 'rd': round(ratings[bot_name].rd, 1)})
+    except Exception:
+        pass
 
     result = {
         "version": v,

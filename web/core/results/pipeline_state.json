@@ -1,83 +1,27 @@
 {
-  "next_v": 48,
-  "source_v": 47,
-  "stage": "committed",
-  "master_plan": {
-    "analysis": "v47 ranks 6th of 30 (rating 1235.6, rd 75.8) with only 290 games — H2H data is unreliable at 10 games/opponent. Match analysis across the pool identifies TWO structural leaks: (1) ZERO postflop folding — the bot NEVER folds after seeing the flop, paying off every value bet with weak holdings, causing -15k chip losses; (2) Excessive river all-in frequency (22-35%) for non-premium hands, creating catastrophic pot explosions.",
-    "targeted_failure": "ZERO postflop fold rate on flop/turn/river — the bot pays off every bet with weak holdings (bottom pair, underpair, ace-high). Root cause: simulation win_rate (computed vs full opponent range) overestimates equity by 10-15% when facing bets.",
-    "expected_behavior_change": "(1) Bot folds weak hands when facing >0.5x pot bets on turn/river with unfavorable pot odds. Expected fold rate increases from 0% to 10-20%. (2) River all-in frequency for non-premium hands drops from 22-35% to <12%. (3) BB-vs-limp iso-raise actually fires (typo fixed).",
-    "branch_from": null,
-    "tasks": [
-      {
-        "worker_id": 1,
-        "role": "Algorithmic Logic Architect",
-        "target_files": ["strategy.py", "postflop.py"],
-        "difficulty": "medium",
-        "worker_prompt": "Integrate tier-based equity estimation INTO should_fold_postflop()"
-      },
-      {
-        "worker_id": 2,
-        "role": "Algorithmic Logic Architect",
-        "target_files": ["strategy.py"],
-        "difficulty": "easy",
-        "worker_prompt": "Add river raise protection for non-premium hands"
-      }
-    ]
-  },
-  "reviewer_feedback": "Manual commit after MCP server failure. Critic feedback (score 5.0) addressed by integrating equity estimation into should_fold_postflop() instead of parallel fold gate. Worker 2 river raise protection also implemented.",
-  "generation_attempt": 1,
+  "next_v": 49,
+  "source_v": 48,
+  "stage": "timed_out",
+  "master_plan": null,
+  "reviewer_feedback": "",
+  "generation_attempt": 0,
   "worker_failure_count": 0,
-  "gate_results": {
-    "quality": {
-      "version": 48,
-      "source_v": 47,
-      "passed": true,
-      "timestamp": "2026-06-11T21:27:33",
-      "all_passed": true,
-      "critical_scenarios_passed": true,
-      "decision_pass_rate": 1.0,
-      "critical_failures": []
-    },
-    "review": {
-      "version": 48,
-      "source_v": 47,
-      "passed": true,
-      "timestamp": "2026-06-11T21:41:02",
-      "approved": true,
-      "quality_score": 8,
-      "feedback": "All checks pass. Two insertions in strategy.py only."
-    },
-    "critic": {
-      "version": 48,
-      "source_v": 47,
-      "passed": false,
-      "timestamp": "2026-06-11T21:44:23",
-      "approved": false,
-      "raw_approved": false,
-      "score": 5.0,
-      "feedback": "Do NOT add another parallel fold gate. Instead, INTEGRATE into should_fold_postflop().",
-      "note": "Critic feedback was addressed in second worker attempt (integrated equity into should_fold_postflop). MCP server crashed before re-running critic."
-    },
-    "manual_commit": {
-      "version": 48,
-      "source_v": 47,
-      "passed": true,
-      "timestamp": "2026-06-11T22:15:00",
-      "reason": "MCP evolution server connection lost ('Stream closed'). Manual quality checks: compile OK, smoke test OK, 10-game regression 5-5 vs parent. All worker changes verified."
-    }
-  },
+  "gate_results": {},
   "parent2_v": null,
   "direction_audit": {
     "repetition_detected": true,
     "exhausted_directions": [
-      "postflop fold threshold tuning",
-      "fold gate additions",
-      "fold margin adjustments",
-      "parameter-tuning of fold constants"
+      "postflop fold gate/threshold tuning in should_fold_postflop()",
+      "layering additional fold gates (parallel or sequential)",
+      "replacing equity estimation method inside fold logic",
+      "river-specific fold threshold adjustment"
     ],
-    "mandatory_constraints": "Structural changes only: tier-based equity estimation + river raise protection",
-    "resolved": true
+    "mandatory_constraints": "DO NOT modify should_fold_postflop(), add new fold gates, adjust fold thresholds, or change equity estimation inside fold logic. The bot has had 0% postflop fold rate across 4 consecutive generations despite repeated fold-gate modifications \u2014 the problem is UPSTREAM. Instead, target one of: (1) Preflop range tightening \u2014 the bot defends too wide preflop, creating unplayable postflop hands that cannot fold; (2) Street-by-street pot-control \u2014 reduce calling frequency at flop/turn BEFORE the river decision; (3) Build a new opponent action-sequence classifier (e.g., passive-line vs aggression-line detector) that feeds INTO existing decision logic without touching fold gates. The constraint is: zero edits to should_fold_postflop() or any function whose name contains 'fold'.",
+    "suggested_direction": "Investigate WHY the bot reaches postflop with unplayable hands: audit preflop defense ranges and limp/call thresholds. If the bot defends 95%+ of hands preflop, fold logic is irrelevant \u2014 widen preflop fold ranges first. Alternatively, add a flop/turn street-level 'give-up' action (check-fold) in strategy.py's action selection, independent of should_fold_postflop().",
+    "confidence": "high",
+    "resolved": false
   },
-  "timestamp": "2026-06-11T22:15:00",
-  "last_stage_change_ts": 1781186071.9420366
+  "audit_context": {},
+  "timestamp": "2026-06-12T00:06:16",
+  "last_stage_change_ts": 1781193976.3850315
 }

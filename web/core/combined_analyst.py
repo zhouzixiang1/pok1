@@ -7,6 +7,9 @@ Includes optional statistical pre-check to skip LLM for clear-cut cases.
 """
 
 import json
+import logging
+
+log = logging.getLogger('pok.analyst')
 
 from evolution_infra import (
     run_claude_query, parse_json_output, substitute_template,
@@ -156,10 +159,8 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
                 gen_trend_lines.append(f"  v{v}: h2h_avg_wr={wr:.2%} (coverage={cov_pct:.0%})")
             except (ValueError, KeyError):
                 continue
-    except Exception:
-        pass
-
-    # Lineage
+    except Exception as e:
+        log.debug('Generation trend computation failed: %s', e)
     lineage_lines = []
     try:
         from evolution_infra import git_get_parent
@@ -167,10 +168,8 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
             parent = git_get_parent(check_v)
             if parent is not None:
                 lineage_lines.append(f"  v{check_v} ← parent: v{parent}")
-    except Exception:
-        pass
-
-    # Daemon period history
+    except Exception as e:
+        log.debug('Lineage analysis failed: %s', e)
     history_file = RESULTS_DIR / "rating_history.jsonl"
     history_ctx = ""
     if history_file.exists():
@@ -202,10 +201,8 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
                 failure_ctx = "Recent critic/worker rejections:\n"
                 for e in recent:
                     failure_ctx += f"  - v{e.get('gen','?')} {e.get('role','?')}: {e.get('error','')[:120]}\n"
-    except Exception:
-        pass
-
-    # Top 5 bots
+    except Exception as e:
+        log.debug('Worker failure context load failed: %s', e)
     sorted_bots = sorted(active_bots, key=lambda b: h2h_winrates.get(b, 0.0), reverse=True)[:5]
     top_bots_lines = []
     for b in sorted_bots:
@@ -228,8 +225,8 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
             wr = bs.get("win_rate", 0.0)
             if g > 0:
                 bot_stats_line = f"  {bot_name}: {wr:.0%} overall ({g} games)"
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug('Bot stats computation failed: %s', e)
 
     # H2H per-opponent
     h2h_lines = []
@@ -254,8 +251,8 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
                     tag = " STRENGTH" if wr > 0.60 else " WEAKNESS" if wr < 0.40 else ""
                     h2h_lines.append((wr, f"  vs {opponent}: {bot_w}W-{opp_w}L ({wr:.0%}){tag}"))
             h2h_lines.sort(key=lambda x: x[0])
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug('H2H per-opponent analysis failed: %s', e)
 
     # RD warning
     bot_rd = ratings.get(bot_name, Glicko2Player()).rd if ratings else 350

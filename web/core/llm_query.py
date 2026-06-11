@@ -19,8 +19,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
     ToolResultBlock,
     ThinkingBlock,
-    CLINotFoundError,
-    ProcessError,
+    ClaudeSDKError,
 )
 
 log = logging.getLogger("pok.infra")
@@ -106,7 +105,7 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             elif isinstance(message, ResultMessage):
                 cost_usd = message.total_cost_usd
                 usage = message.usage
-    except (CLINotFoundError, ProcessError) as e:
+    except ClaudeSDKError as e:
         ui.log_io(f"[ERROR] {e}", "error", role_name)
     except asyncio.CancelledError:
         ui.log_io(f"\n[{role_name} CANCELLED]", "error", role_name)

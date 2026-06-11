@@ -129,7 +129,6 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                     ui.log_io(block.text, "claude", "Orchestrator")
                                 else:
                                     log.debug("%s", block.text.rstrip())
-                                    print(block.text, end="", flush=True)
                                 lf.write(block.text)
                             elif isinstance(block, ToolUseBlock):
                                 if ui:
@@ -138,7 +137,6 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                     ui.emit_tool_call(block.name, block.input, "Orchestrator")
                                 else:
                                     log.info("Calling tool: %s", block.name)
-                                    print(f"\n[tool: {block.name}]", end=" ", flush=True)
                                 args_str = json.dumps(block.input, ensure_ascii=False, indent=2)[:2000]
                                 lf.write(f"\n[tool: {block.name}]\n[args] {args_str}\n")
                             elif isinstance(block, ThinkingBlock):
@@ -147,7 +145,6 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                     ui.log_io(thinking, "thinking", "Orchestrator")
                                 else:
                                     log.debug("[thinking...]")
-                                    print("[thinking...]", end=" ", flush=True)
                                 lf.write(f"\n[THINKING] {thinking[:2000]}\n")
                             elif isinstance(block, ToolResultBlock):
                                 content = block.content if isinstance(block.content, str) else (
@@ -185,7 +182,6 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     ui.log_io(f"[ERROR] {e}", "error", "Orchestrator")
                 else:
                     log.error("LLM error: %s", e)
-                    print(f"\n[ERROR] {e}")
             return "".join(texts), cost, ok, gen, auth_err
 
         CYCLE_TIMEOUT = 3600  # 60 minutes max per cycle (was 1800s, increased for retry cycles)
@@ -206,8 +202,8 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                 if _timed_out_gen is not None:
                     try:
                         await _timed_out_gen.aclose()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log.debug("gen.aclose failed during timeout: %s", e)
                 if ui:
                     ui.log_history(
                         f"[Orchestrator] Cycle timed out after {CYCLE_TIMEOUT}s — killing stuck session.",
@@ -232,6 +228,14 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 "[Orchestrator] Pipeline checkpoint marked as timed_out — next cycle will restart.",
                                 "warn",
                             )
+                except Exception as e:
+                    log.warning("Failed to mark checkpoint timed_out: %s", e)
+                try:
+                    from system_log import log_system_event
+                    log_system_event("pipeline.cycle_timeout", "error",
+                        f"Orchestrator cycle timed out after {CYCLE_TIMEOUT}s",
+                        {"timeout_sec": CYCLE_TIMEOUT,
+                         "pipeline_stage": ckpt.get("stage") if ckpt else "unknown"})
                 except Exception:
                     pass
                 if ui:
@@ -270,8 +274,8 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     if query_gen is not None:
                         try:
                             await query_gen.aclose()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            log.debug("gen.aclose failed during retry: %s", e)
                     try:
                         full_output, retry_cost, cycle_completed, query_gen, auth_error = (
                             await asyncio.wait_for(_stream_response(retry_opts), timeout=CYCLE_TIMEOUT)
@@ -309,8 +313,8 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             if query_gen is not None:
                 try:
                     await query_gen.aclose()
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.debug("gen.aclose failed during interrupt: %s", e)
             if ui:
                 ui.log_history("[Orchestrator] Interrupted by user.", "warn")
             else:
@@ -321,8 +325,8 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             if query_gen is not None:
                 try:
                     await query_gen.aclose()
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.debug("gen.aclose failed during cancel: %s", e)
             # Session file PRESERVED — next startup can resume from checkpoint
             if ui:
                 ui.log_history("[Orchestrator] Cancelled — session preserved for resume.", "warn")
@@ -335,8 +339,8 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             if query_gen is not None:
                 try:
                     await query_gen.aclose()
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.debug("gen.aclose failed: %s", e)
             # Session file PRESERVED — next startup can assess recovery
             if ui:
                 ui.log_history(f"[Orchestrator] Error: {e}", "error")
@@ -646,8 +650,8 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
         try:
             from server.state import app_state
             app_state.set_running(False)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("Loop cleanup error: %s", e)
     except Exception as e:
         if ui:
             ui.log_history(f"Orchestrator crashed: {e}", "error")
@@ -659,8 +663,8 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
         try:
             from server.state import app_state
             app_state.set_running(False)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("Loop error cleanup: %s", e)
     finally:
         if not _watchdog_task.done():
             _watchdog_task.cancel()

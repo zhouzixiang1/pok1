@@ -9,6 +9,9 @@ there is only one worker task.
 import json
 import shutil
 import asyncio
+import logging
+
+log = logging.getLogger("pok.workers")
 
 from evolution_infra import (
     run_claude_query, substitute_template, verify_code,
@@ -29,8 +32,8 @@ def _record_worker_failure(gen, worker_id, role, error, failure_type="unknown"):
         log_system_event("pipeline.worker_failed", "error",
                          f"Worker {worker_id} ({role}) failed for v{gen}",
                          {"gen": gen, "worker_id": worker_id, "role": role, "error": error[:200]})
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Failed to log worker failure event: %s", e)
 
 
 def _load_recent_failures(n=5):
@@ -44,8 +47,8 @@ def _load_recent_failures(n=5):
             if line:
                 try:
                     entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
+                except json.JSONDecodeError as e:
+                    log.debug("Malformed worker failure entry: %s", line[:80])
     return entries[-n:]
 
 
@@ -276,8 +279,8 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                 )
                 if not cot.get("cot_consistent", True):
                     audit_focus_areas.extend(cot.get("focus_areas", []))
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("CoT audit failed for worker 0: %s", e)
         return ok, worker_snapshots, audit_focus_areas
 
     # ── Disjointness check: can we safely run workers in parallel? ──
@@ -372,8 +375,8 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                 )
                 if not cot.get("cot_consistent", True):
                     audit_focus_areas.extend(cot.get("focus_areas", []))
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("CoT audit failed for worker %d: %s", i, e)
 
         return True, worker_snapshots, audit_focus_areas
 
@@ -404,6 +407,6 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             )
             if not cot.get("cot_consistent", True):
                 audit_focus_areas.extend(cot.get("focus_areas", []))
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("CoT audit failed for worker %d (sequential): %s", i, e)
     return True, worker_snapshots, audit_focus_areas
