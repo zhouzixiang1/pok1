@@ -1,19 +1,19 @@
 ## OPPONENT_MODELING
 - Structural barrel modules remain viable — v31's should_barrel_turn validated despite parameter-delta exhaustion.
 - Wiring opponent_model into street-specific decisions (barrel, sizing) is the confirmed incremental path — v33 validated.
-- Opponent archetype classification should be exploited in more decision points; river fold addressed in v34, flop c-bet and check-raise still open.
+- Archetype classification should be exploited in more decision points; river fold addressed in v34, flop check-raise addressed in v40. Flop c-bet archetype integration still open.
+- Archetype adjustments must integrate INTO equity-based fold checks, not layer as a separate gate. (v34)
 
 ## POSTFLOP_STRATEGY
 - should_fold_postflop() is the primary fold gate; exceptions need equity, pot-odds, and confidence validation.
-- Fold gate sprawl is EXHAUSTED — v39 extracted `_bb_defend_vs_raise()` and `_handle_repeated_raise()` as refactoring. Further extraction of `river_raise_response()` still viable, but do NOT add inline branches. [EXHAUSTED]
+- Fold gate sprawl is EXHAUSTED — v39 extracted `_bb_defend_vs_raise()` and `_handle_repeated_raise()`. Further extraction of `river_raise_response()` still viable, but do NOT add inline branches. [EXHAUSTED]
 - Draw-call margins must be grounded in equity vs pot odds with has_draw guards.
 - Dry-flop check-raise traps need opponent-confidence safety thresholds.
-- Archetype adjustments must integrate INTO equity-based fold checks, not layer as a separate gate. (v34)
 - Removing all-in equity checks is dangerous — preserve pot-odds thresholds for shove situations. (v36)
 
 ## BLUFF_CALIBRATION
 - Structural bluff modules (4-bet light, donk/probe, overbet, barrel continuation) need ≥100-game H2H backing before targeting a matchup.
-- Hash-based randomization for bluff frequency is deterministic (same hole cards → same decision) and exploitable. Prefer game-state entropy (pot size, hand number, opponent pattern). (v37)
+- Hash-based randomization for bluff frequency is deterministic and exploitable — prefer game-state entropy (pot size, hand number, opponent pattern). (v37)
 - Before iterating on specific bluff modules, verify H2H vs top opponents with ≥50 mirror games — if win rate doesn't improve, the leak is likely elsewhere. (v37)
 
 ## PARAMETER_TUNING
@@ -33,12 +33,11 @@
 - thin_control gate exempts nut/strong tiers; strong postflop raises floored at 0.50 pot.
 
 ## RECENT_LESSONS
-- **v40**: Critic evidence: H2H weaknesses: v39 overall win_rate=0.4927 (410 games — below 100-game reliability threshold for per-opponent breakdown). No v39-specific per-opponent H2H data available yet. Experience pool notes v38 lost to v27 (~30% WR), v34/v22/v26/v16/v2 (~40% WR) with no match analysis linking losses to specific decision points — the archetype changes are theoretically motivated rather than data-driven.; Experience pool refs: Experience pool explicitly states: 'Opponent archetype classification should be exploited in more decision points; river fold addressed in v34, flop c-bet and check-raise still open.' — this change directly addresses that open item., Experience pool also warns: 'Archetype adjustments must integrate INTO equity-based fold checks, not layer as a separate gate. (v34)' — Insertion 1 (modifying strong/medium variables) integrates correctly; Insertion 3 (separate conditional modifying bluff thresholds) is borderline layering., PARAMETER_TUNING [EXHAUSTED] warning about hand-tuned constants — the 0.01–0.05 deltas are small hand-tuned values, but archetype-specific adjustments are explicitly called out as an open direction, distinct from the exhausted general constant tuning.; Diff refs: Insertion 1 (lines 912–921): Postflop threshold adjustments — modifies existing `strong` and `medium` variables that already incorporate value_profile, nutted_risk, etc. This integrates INTO the equity-based system as the experience pool recommends., Insertion 2 (line 1166): New OR-branch in flop_checkraise_exploit — adds `opp_archetype == 'lag' and made_strength >= 0.38 and draw_strength >= 0.08`. Expands check-raise range vs LAGs, bypassing the usual fold_to_raise > blocker_raise_threshold requirement. Note: 0.38 made_strength is quite weak (roughly middle pair territory)., Insertion 3 (lines 1402–1406, 1428–1429): Bluff threshold adjustments — `river_bluff_threshold = 1.0` vs CS (never bluff), `-0.05` vs NITs (bluff more). Also disables `river_blocker_bluff` vs CS.
-- **v39**: BB defense floor covers ~48% of hands structurally (642/1326 combos) — validate by checking v39's fold-to-steal rate vs v38 in next daemon cycle.
-- **v39**: The repeated-raise unconditional-call bug (v38 `return 0` on all non-nut non-weak hands) may have suppressed value raises with strong non-nut hands (sets/two-pair) — compare showdown raise frequencies in v39 vs v38 replays.
-- **v39**: Run 50+ mirror games vs v27 (v38 went 50/50 at 20 games) and vs v14/v25/v33/v34/v35 (all beat v38 at 60% WR) to determine whether the BB defense floor closes the leak or the real problem is postflop play.
-- **v38**: H2H weaknesses: v37/v38 lose to v27 (~30% WR), v34/v22/v26/v16/v2 (~40% WR). No match analysis links losses to specific decision points — investigation needed before structural changes.
-- **v38**: Critic explicitly requested investigating loss rates with 50 verbose mirror games before structural changes. Data-first approach over assumption-first.
-- **v37**: Light 4-bet bluff wiring used 8 EXHAUSTED constants — exactly the pattern PARAMETER_TUNING warns against. No H2H backing existed. Verify battle performance before extending.
-- **v37**: Top opponents should be identified from current ratings at generation time, not from stale snapshots.
+- **v41**: Critic evidence: H2H weaknesses: v40 loses to v27 (WR=0.40, 20 games), v25/v38/v39 (WR=0.40, 10 games each), v16/v17/v24/v28/v18/v15 (WR=0.45, 20 games) — pattern of losses across diverse opponents suggests exploitative fold adjustment is needed; Experience pool refs: 'Archetype adjustments must integrate INTO equity-based fold checks, not layer as a separate gate. (v34)' — this change follows this lesson exactly via eff_made = made_strength - archetype_delta, 'Fold gate sprawl is EXHAUSTED' — this change doesn't add new gates, it modifies the existing one, 'Archetype classification should be exploited in more decision points' — postflop fold was an open integration point; Diff refs: postflop.py:1048-1055 — archetype_delta computed from opp_archetype, integrated as eff_made = made_strength - archetype_delta replacing raw made_strength in all subsequent fold checks, strategy.py:1054 — calling site updated to pass opp_archetype=opp_archetype, strategy.py:28 — should_fold_postflop imported from postflop.py
+- **v40**: strategy.py at 1499/1500 lines — future evolution must refactor/consolidate or shift changes to helper files before adding new postflop logic.
+- **v40**: Archetype-aware bluff cutoff (never bluff CS, boost vs NIT) is highest-confidence change. LAG check-raise at made_strength ≥ 0.38 is risky — if 3-bet frequency is high vs LAGs, raise threshold to ≥ 0.45 or add draw_strength ≥ 0.15 guard.
+- **v40**: Bluff threshold adjustments integrated INTO equity variables (Insertion 1 is correct); separate conditional layering (Insertion 3) is borderline — prefer modifying existing variables over adding new conditional branches.
+- **v39**: BB defense floor covers ~48% of hands structurally — validate fold-to-steal rate vs v38 in next daemon cycle.
+- **v39**: The repeated-raise unconditional-call bug may have suppressed value raises with strong non-nut hands — compare showdown raise frequencies in v39 vs v38 replays.
+- **v38**: H2H weaknesses vs v27 (~30% WR), v34/v22/v26/v16/v2 (~40% WR) with no decision-point analysis — investigate with verbose mirror games before structural changes. Data-first over assumption-first.
 
