@@ -39,24 +39,29 @@ def _locked_file(path, mode="r", **kwargs):
 def _patch_evolution_infra(tmp_path):
     """Inject a fake evolution_infra module so eval_rounds can import it."""
     import types
+    # Save the REAL module so we can restore it
+    real_ei = sys.modules.get("evolution_infra")
+    real_eval = sys.modules.get("eval_rounds")
+
     fake = types.ModuleType("evolution_infra")
     fake.RESULTS_DIR = tmp_path / "results"
     fake.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     fake.pair_key = _pair_key
     fake.locked_file = _locked_file
 
-    # Remove any cached real import
-    sys.modules.pop("evolution_infra", None)
+    # Inject fake module
     sys.modules["evolution_infra"] = fake
-
-    # Make sure eval_rounds is freshly imported so it picks up the fake
     sys.modules.pop("eval_rounds", None)
 
     yield
 
-    # Cleanup
+    # Cleanup: restore the REAL modules
     sys.modules.pop("eval_rounds", None)
     sys.modules.pop("evolution_infra", None)
+    if real_ei is not None:
+        sys.modules["evolution_infra"] = real_ei
+    if real_eval is not None:
+        sys.modules["eval_rounds"] = real_eval
 
 
 @pytest.fixture

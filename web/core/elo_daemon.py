@@ -22,6 +22,10 @@ from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 
 # Battle Scheduler integration (optional)
+import logging
+
+log = logging.getLogger("pok.daemon")
+
 try:
     from battle_scheduler import (
         BattleResult,
@@ -46,9 +50,6 @@ from engine.battle import mirror_battle
 from evolution_infra import locked_file, pair_key
 from bot_action_stats import compute_bot_action_stats, compute_all_bot_stats
 from eval_rounds import EvalRoundManager
-import logging
-
-log = logging.getLogger("pok.daemon")
 
 BOTS_DIR = PROJECT_ROOT / "bots"
 RESULTS_DIR = CORE_DIR / "results"

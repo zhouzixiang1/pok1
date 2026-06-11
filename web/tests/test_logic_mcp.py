@@ -43,6 +43,7 @@ class TestComputeH2HLogic:
 # ── tool_helpers.py: load_h2h_avg_winrates() fallback logic ──
 
 class TestLoadH2HAvgWinratesFallback:
+    @pytest.mark.requires_active_bot
     def test_returns_dict_for_known_bots(self):
         from tool_helpers import load_h2h_avg_winrates
         result = load_h2h_avg_winrates()

@@ -1,7 +1,7 @@
 {
   "next_v": 49,
-  "source_v": 48,
-  "stage": "timed_out",
+  "source_v": 37,
+  "stage": "direction_audited",
   "master_plan": null,
   "reviewer_feedback": "",
   "generation_attempt": 0,
@@ -11,17 +11,18 @@
   "direction_audit": {
     "repetition_detected": true,
     "exhausted_directions": [
-      "postflop fold gate/threshold tuning in should_fold_postflop()",
-      "layering additional fold gates (parallel or sequential)",
-      "replacing equity estimation method inside fold logic",
-      "river-specific fold threshold adjustment"
+      "postflop fold threshold tuning",
+      "river fold gates (inline/layered)",
+      "equity estimation methods (simulation\u2192tier-based)",
+      "parallel fold path consolidation"
     ],
-    "mandatory_constraints": "DO NOT modify should_fold_postflop(), add new fold gates, adjust fold thresholds, or change equity estimation inside fold logic. The bot has had 0% postflop fold rate across 4 consecutive generations despite repeated fold-gate modifications \u2014 the problem is UPSTREAM. Instead, target one of: (1) Preflop range tightening \u2014 the bot defends too wide preflop, creating unplayable postflop hands that cannot fold; (2) Street-by-street pot-control \u2014 reduce calling frequency at flop/turn BEFORE the river decision; (3) Build a new opponent action-sequence classifier (e.g., passive-line vs aggression-line detector) that feeds INTO existing decision logic without touching fold gates. The constraint is: zero edits to should_fold_postflop() or any function whose name contains 'fold'.",
-    "suggested_direction": "Investigate WHY the bot reaches postflop with unplayable hands: audit preflop defense ranges and limp/call thresholds. If the bot defends 95%+ of hands preflop, fold logic is irrelevant \u2014 widen preflop fold ranges first. Alternatively, add a flop/turn street-level 'give-up' action (check-fold) in strategy.py's action selection, independent of should_fold_postflop().",
+    "mandatory_constraints": "DO NOT modify should_fold_postflop(), fold thresholds, fold gates, equity estimation methods, or any river fold decision logic. The postflop fold subsystem has been reworked 5 consecutive generations (v44-v48) with diminishing returns \u2014 v48 drew 5-5 against v47 and still loses to v30. The fold path is now consolidated into tier-based equity; further tuning is exhausted. Instead, evolve ONE of: (1) preflop 3-bet/4-bet bluff frequency and sizing against different opponent types, (2) flop c-bet and turn barrel sizing strategy (currently no opponent-adaptive sizing exists), or (3) river value-bet thin-value extraction for medium-strength hands that currently check behind.",
+    "suggested_direction": "Add opponent-adaptive flop/turn barrel sizing: track opponent fold-to-cbet and fold-to-turn-barrel tendencies, then size bets to exploit \u2014 small bets (25-33% pot) vs sticky callers, large bets (75-100% pot) vs folders. The bot currently uses fixed sizing ratios (RAISE_RATIO_FLOP/TURN) with no opponent awareness on offensive streets. This is the offensive complement to the defensive fold work done in v44-v48.",
     "confidence": "high",
     "resolved": false
   },
   "audit_context": {},
-  "timestamp": "2026-06-12T00:06:16",
-  "last_stage_change_ts": 1781193976.3850315
+  "timestamp": "2026-06-12T01:49:23",
+  "last_stage_change_ts": 1781200163.7587516,
+  "last_update_ts": 1781200163.7587516
 }

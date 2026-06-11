@@ -538,7 +538,6 @@ async def execute_workers(args):
     MAX_WORKER_FAILURES = 6
     if failure_count >= MAX_WORKER_FAILURES:
         try:
-            from system_log import log_system_event
             log_system_event('pipeline.circuit_breaker', 'error',
                 f'Circuit breaker: {failure_count} worker failures',
                 {'next_v': next_v, 'source_v': source_v, 'failure_count': failure_count})

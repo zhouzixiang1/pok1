@@ -1,25 +1,22 @@
 ## OPPONENT_MODELING
-- Opponent adjustments must integrate INTO equity-based fold checks, not layer as separate gates — validated by v34/v41, rejected in v44 (anti-pattern: sizing profile built but never consumed).
-- Monitor whether opponent model reaches confidence within first 30 hands — if not, adjustments never activate.
+- Opponent adjustments must integrate INTO equity-based fold checks with passive-bot safeguards — v49 retains opponent-model fold (barrel_freq adjustment in should_fold_postflop). Any changes must prove no regression vs calling stations via ≥100-game H2H.
+- Confidence ramp is action-based: `clamp((total_actions - 5) / 35.0, 0, 1)`, reaching full confidence at ~40 opponent actions — design opponent-aware logic around this actual mechanism.
 
 ## POSTFLOP_STRATEGY
-- Two parallel fold paths now exist: `should_fold_postflop()` guard chain (range-defense) and inline equity fold gates (pot-odds + safety margins). New fold logic must choose the correct path or coordinate both.
+- v49 removed SPR commitment fold from `should_fold_postflop()` — tier-based equity (hand_strength_tier + estimate_equity_from_tier), opponent-model fold (barrel_freq), and multi-barrel action-sequence fold are all still present. Do NOT re-add these as new features. [POSSIBLY EXHAUSTED]
 - EV-based selectors must wire ALL received params (position, texture, opponent model) — adding new params without using old ones is a recurring defect (v43→v44).
 - EV selectors must gate raises by opponent type — raising into calling stations with value bonus is exploitable.
 - Draw-call margins must be grounded in equity vs pot odds with `has_draw` guards.
 - Removing all-in equity checks is dangerous — preserve pot-odds thresholds for shove situations.
-- SPR-based commitment logic (SPR<3/6) is integrated into `pot_odds_call_threshold()` — extend, don't duplicate.
-- Verify helper functions still exist before targeting them in evolution plans.
 
 ## BLUFF_CALIBRATION
 - Structural bluff modules (4-bet light, donk/probe, overbet, barrel) need ≥100-game H2H backing before targeting a matchup.
-- Bluff-roll entropy: strategy.py/tournament.py use `hash(tuple(...))`, postflop.py uses a different sum-based hash — both are game-state-dependent but should harmonize if touchable.
-- Opponent-aware bluff cutoff (never bluff calling stations, boost vs NIT) is highest-confidence change from v40.
+- Opponent-aware bluff cutoff (never bluff calling stations, boost vs NIT) consistently validated v40–v49.
 
 ## PARAMETER_TUNING
-- Base postflop sizing ratios stable (flop 0.60, turn 0.70, river 0.85); extend via structural paths. [POSSIBLY EXHAUSTED]
+- Base postflop sizing ratios stable (flop 0.60, turn 0.70, river 0.85); extend via structural paths.
 - Preflop 3bet threshold ~0.60 (TT+, AKs) is solid; never call off 100BB with ~51% equity vs over-shove.
-- **Systemic failure (v30→v44)**: Workers chronically add hand-tuned constants despite EXHAUSTED warnings. Wiring pre-existing EXHAUSTED constants into new code also counts as tuning. Must provide per-constant H2H justification ≥100 games. [EXHAUSTED]
+- **Systemic failure (v30→v49)**: Workers chronically add hand-tuned constants despite [EXHAUSTED] warnings. Wiring pre-existing EXHAUSTED constants into new code also counts as tuning. Must provide per-constant H2H justification ≥100 games. [EXHAUSTED]
 
 ## GENERAL
 - Worker role boundaries: Tuner must change at least one constant; Architect must not touch constants.
@@ -28,12 +25,10 @@
 - H2H data below 100 games is directional only; require ≥100-game confirmation before targeting matchups.
 - Structural changes can inflate Critic scores without improving battle performance; verify H2H effect.
 - Strategy.py capacity pressure ongoing — extract standalone functions to helper modules before adding new logic.
+- Verify helper functions still exist before targeting them in evolution plans.
 
 ## RECENT_LESSONS
-- **v47**: Critic evidence: H2H weaknesses: v46 loses to 5 opponents at 40% win rate: v41, v30, v32, v34, v40 — these losses are directional-only (10-20 games each, below the 100-game threshold required by experience pool), No evidence these losses stem from BB preflop overcalling or river overfolding to multi-street aggression — the changes lack matchup-specific targeting; Experience pool refs: PARAMETER_TUNING [EXHAUSTED]: 'Workers chronically add hand-tuned constants despite EXHAUSTED warnings. Wiring pre-existing EXHAUSTED constants into new code also counts as tuning. Must provide per-constant H2H justification ≥100 games.' — the 0.30/0.15/0.12/0.08/1.5x/0.50/0.40 constants violate this rule, v46 lesson: 'Monitor river fold frequency via H2H vs aggressive opponents; if fold rate >30% facing half-pot+ bets, recalibrate safety margins downward' — adding MORE river fold gates before measuring v46's effect is premature, OPPONENT_MODELING: 'Opponent adjustments must integrate INTO equity-based fold checks, not layer as separate gates' — the action-sequence fold IS a separate gate layered alongside v46's inline fold, not integrated into should_fold_postflop(); Diff refs: opponent.py +55 lines: new `build_action_sequence_profile()` tracks bet_street_count, is_triple_barrel, is_double_barrel, river_bet_after_check (unused), aggression_intensity (unused), strategy.py +37 lines preflop: `preflop_call_adjustment()` wired into bb_vs_raise spot at line 641, adjusts BB_CALL_THRESHOLD by [-0.04, +0.10] based on opponent PFR/VPIP, strategy.py +14 lines river: action-sequence fold gates at lines 1136-1149 — triple barrel folds made_strength < 0.50, double barrel + medium/large bet folds made_strength < 0.40
-- **v46**: Inline fold gates bypassing guard chains (strong_made_continue, anti_lock_call_continue) solve 'guards block all folds' but lose range-defense protection. Add `if strong_made_continue: return` before inline folds.
-- **v46**: BB preflop call filters for unsuited disconnected gap≥4 hands have <1% decision coverage — not worth a dedicated worker task.
-- **v46**: Safety margins (0.08/0.04/0.06/0.04) in inline river fold are hand-tuned without ≥100 game H2H justification — violates PARAMETER_TUNING rule, needs validation data.
-- **v46**: Monitor river fold frequency via H2H vs aggressive opponents; if fold rate >30% facing half-pot+ bets, recalibrate safety margins downward.
-- **v45**: Broad H2H underperformance (10-20 games each, directional only) suggests systemic postflop defense weakness — address structurally, not via threshold tuning.
+- **v50**: Critic evidence: H2H weaknesses: v47 loses to v30: 45.0% WR (80 games) — v30 is a high-barrel aggressive bot, v47 loses to v21: 45.6% WR (90 games) — v21 has overall 54.3% win rate, v47 loses to v20: 45.6% WR (90 games), v16: 46.0% (100 games), v18: 46.4% (110 games), These losses cluster against aggressive opponents, confirming over-folding vs barrel aggression; Experience pool refs: [POSSIBLY EXHAUSTED] SPR commitment fold removed in v49 — this change adds back un-gated calling vs barrels, v47 action-sequence fold gates 'layered as separate gates' with 'over-folding risk vs passive bots' — bluff-catch partially addresses this but introduces opposite risk (under-folding vs value), H2H data below 100 games is directional only; v49 has 0 rated games per experience pool; Diff refs: strategy.py:588 — BB_VPID_FOLD_ADJUST_SCALE (NameError in v47) replaced with literal 0.04, strategy.py:679-731 — NEW detect_bluff_catch_signal(): 5-factor signal, threshold 0.45, strength window 0.28-0.55, strategy.py:1171-1179 — Bluff-catch override inserted BEFORE inline river fold and action-sequence fold, preempts them with return 0 (call)
+- **v49**: Removed SPR commitment fold from `should_fold_postflop()` — the only component actually removed. Tier-based equity, opponent-model fold, and multi-barrel fold remain active in current code. No H2H data exists for v49 (0 rated games, RD=357.83); no performance claims can be validated yet.
+- **v47**: Action-sequence fold gates layered as separate gates instead of integrated — retained in v49 but with over-folding risk vs passive bots. Safety margins (0.08/0.04/0.06/0.04) lacked ≥100-game H2H validation.
 

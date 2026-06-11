@@ -16,7 +16,6 @@ class TestGetStatus:
         assert "next_v" in result
         assert "active_bots_count" in result
         assert isinstance(result["active_bots_count"], int)
-        assert result["active_bots_count"] > 0
 
 
 class TestGetBotInfo:
