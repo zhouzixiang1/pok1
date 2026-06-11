@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 
 class TestGetStatus:
     def test_returns_status(self, client):
@@ -18,9 +20,8 @@ class TestGetStatus:
 
 
 class TestGetBotInfo:
+    @pytest.mark.requires_active_bot
     def test_found(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.post("/api/control/tool/get_bot_info", json={"args": {"version": active_bot_version}})
         assert resp.status_code == 200
         result = json.loads(resp.json()["result"])
@@ -34,9 +35,8 @@ class TestGetBotInfo:
         result = json.loads(resp.json()["result"])
         assert "error" in result
 
+    @pytest.mark.requires_graveyard_bot
     def test_graveyard_bot(self, client, graveyard_bot_version):
-        if graveyard_bot_version is None:
-            return
         resp = client.post("/api/control/tool/get_bot_info", json={"args": {"version": graveyard_bot_version}})
         assert resp.status_code == 200
         result = json.loads(resp.json()["result"])
@@ -44,9 +44,8 @@ class TestGetBotInfo:
 
 
 class TestGetMatchHistory:
+    @pytest.mark.requires_active_bot
     def test_basic(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.post("/api/control/tool/get_match_history",
                            json={"args": {"version": active_bot_version, "n": 3}})
         assert resp.status_code == 200
@@ -61,10 +60,9 @@ class TestGetMatchHistory:
         assert result["matches"] == []
 
 
+@pytest.mark.requires_active_bot
 class TestGetH2H:
     def test_with_opponent(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         bot_name = f"claude_v{active_bot_version}"
         resp = client.post("/api/control/tool/get_h2h",
                            json={"args": {"bot_name": bot_name}})
@@ -73,8 +71,6 @@ class TestGetH2H:
         assert "opponents" in result
 
     def test_all_opponents(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.post("/api/control/tool/get_h2h",
                            json={"args": {"bot_name": f"claude_v{active_bot_version}"}})
         assert resp.status_code == 200
@@ -83,9 +79,8 @@ class TestGetH2H:
 
 
 class TestGetBotStats:
+    @pytest.mark.requires_active_bot
     def test_found(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         bot_name = f"claude_v{active_bot_version}"
         resp = client.post("/api/control/tool/get_bot_stats",
                            json={"args": {"bot_name": bot_name}})

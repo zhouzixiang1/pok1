@@ -371,17 +371,15 @@ class TestComputeH2HAvgWinrateLogic:
 # ── tool_helpers.py: _bot_main() ──
 
 class TestBotMainLogic:
+    @pytest.mark.requires_graveyard_bot
     def test_graveyard_fallback(self, graveyard_bot_version):
-        if graveyard_bot_version is None:
-            return
         from tool_helpers import _bot_main
         path = _bot_main(f"claude_v{graveyard_bot_version}")
         assert path.exists()
         assert "graveyard" in str(path)
 
+    @pytest.mark.requires_active_bot
     def test_valid_version(self, active_bot_version):
-        if active_bot_version is None:
-            return
         from tool_helpers import _bot_main
         path = _bot_main(f"claude_v{active_bot_version}")
         assert path.name == "main.py"

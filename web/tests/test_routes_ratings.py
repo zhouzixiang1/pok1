@@ -1,5 +1,7 @@
 """Tests for /api/ratings, /api/history, /api/experience, /api/daemon/status, /api/h2h, /api/bot-stats."""
 
+import pytest
+
 
 class TestGetRatings:
     def test_returns_list(self, client):
@@ -15,9 +17,8 @@ class TestGetRatings:
             assert "rank" in row
             assert "h2h_avg_wr" in row
 
+    @pytest.mark.requires_active_bot
     def test_detail_found(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.get(f"/api/ratings/claude_v{active_bot_version}")
         assert resp.status_code == 200
         data = resp.json()
@@ -40,9 +41,8 @@ class TestHistory:
             assert "ratings" in data[0]
             assert "win_rates" in data[0]
 
+    @pytest.mark.requires_active_bot
     def test_filtered(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.get(f"/api/history?bots=claude_v{active_bot_version}")
         assert resp.status_code == 200
 
@@ -101,9 +101,8 @@ class TestH2H:
         assert resp.status_code == 200
         assert isinstance(resp.json(), dict)
 
+    @pytest.mark.requires_active_bot
     def test_filtered(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         bot_name = f"claude_v{active_bot_version}"
         resp = client.get(f"/api/h2h?bot_name={bot_name}")
         assert resp.status_code == 200

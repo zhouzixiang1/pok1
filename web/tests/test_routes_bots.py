@@ -26,9 +26,8 @@ class TestListBots:
 
 
 class TestBotDetail:
+    @pytest.mark.requires_active_bot
     def test_found(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.get(f"/api/bots/{active_bot_version}")
         assert resp.status_code == 200
         data = resp.json()
@@ -42,34 +41,25 @@ class TestBotDetail:
         assert resp.status_code == 404
 
 
+@pytest.mark.requires_active_bot
 class TestBotCode:
     def test_read_main(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.get(f"/api/bots/{active_bot_version}/code/main.py")
         assert resp.status_code == 200
         assert "def " in resp.text or "import " in resp.text
 
     def test_invalid_filename(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.get(f"/api/bots/{active_bot_version}/code/../etc/passwd")
         assert resp.status_code == 404
 
     def test_non_py_file(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.get(f"/api/bots/{active_bot_version}/code/main.txt")
         assert resp.status_code == 400
 
     def test_404(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.get(f"/api/bots/{active_bot_version}/code/nonexistent.py")
         assert resp.status_code == 404
 
     def test_backslash_blocked(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.get(f"/api/bots/{active_bot_version}/code/..\\etc")
         assert resp.status_code == 400

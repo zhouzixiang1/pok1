@@ -59,10 +59,9 @@ class TestLoadH2HAvgWinratesFallback:
 
 # ── tool_helpers.py: _select_precommit_opponents() ──
 
+@pytest.mark.requires_active_bot
 class TestSelectPrecommitOpponents:
     def test_returns_list_of_dicts(self, active_bot_version):
-        if active_bot_version is None:
-            return
         from tool_helpers import _select_precommit_opponents
         result = _select_precommit_opponents(active_bot_version + 1, active_bot_version)
         assert isinstance(result, list)
@@ -71,16 +70,12 @@ class TestSelectPrecommitOpponents:
             assert "reason" in opp
 
     def test_no_duplicates(self, active_bot_version):
-        if active_bot_version is None:
-            return
         from tool_helpers import _select_precommit_opponents
         result = _select_precommit_opponents(active_bot_version + 1, active_bot_version)
         names = [o["name"] for o in result]
         assert len(names) == len(set(names))
 
     def test_parent_included(self, active_bot_version):
-        if active_bot_version is None:
-            return
         from tool_helpers import _select_precommit_opponents
         result = _select_precommit_opponents(active_bot_version + 1, active_bot_version)
         names = [o["name"] for o in result]
@@ -138,10 +133,9 @@ class TestMCPGetStatusLogic:
 
 # ── MCP tool: get_bot_info via API ──
 
+@pytest.mark.requires_active_bot
 class TestMCPGetBotInfoLogic:
     def test_existing_bot_has_files(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.post("/api/control/tool/get_bot_info",
                            json={"args": {"version": active_bot_version}})
         assert resp.status_code == 200
@@ -151,8 +145,6 @@ class TestMCPGetBotInfoLogic:
         assert len(result["files"]) > 0
 
     def test_version_matches_request(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.post("/api/control/tool/get_bot_info",
                            json={"args": {"version": active_bot_version}})
         result = json.loads(resp.json()["result"])
@@ -161,10 +153,9 @@ class TestMCPGetBotInfoLogic:
 
 # ── MCP tool: get_match_history via API ──
 
+@pytest.mark.requires_active_bot
 class TestMCPGetMatchHistoryLogic:
     def test_respects_n_limit(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.post("/api/control/tool/get_match_history",
                            json={"args": {"version": active_bot_version, "n": 2}})
         assert resp.status_code == 200
@@ -173,8 +164,6 @@ class TestMCPGetMatchHistoryLogic:
             assert len(result["matches"]) <= 2
 
     def test_matches_are_dicts(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.post("/api/control/tool/get_match_history",
                            json={"args": {"version": active_bot_version, "n": 3}})
         result = json.loads(resp.json()["result"])
@@ -186,9 +175,8 @@ class TestMCPGetMatchHistoryLogic:
 # ── MCP tool: get_h2h via API ──
 
 class TestMCPGetH2HLogic:
+    @pytest.mark.requires_active_bot
     def test_opponents_have_win_rate(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.post("/api/control/tool/get_h2h",
                            json={"args": {"bot_name": f"claude_v{active_bot_version}"}})
         assert resp.status_code == 200
@@ -204,9 +192,8 @@ class TestMCPGetH2HLogic:
 # ── MCP tool: get_bot_stats via API ──
 
 class TestMCPGetBotStatsLogic:
+    @pytest.mark.requires_active_bot
     def test_has_games_and_win_rate(self, client, active_bot_version):
-        if active_bot_version is None:
-            return
         resp = client.post("/api/control/tool/get_bot_stats",
                            json={"args": {"bot_name": f"claude_v{active_bot_version}"}})
         assert resp.status_code == 200
