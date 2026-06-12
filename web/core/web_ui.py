@@ -11,7 +11,6 @@ import threading
 from collections import deque
 from typing import Any
 
-import sys
 from pathlib import Path
 
 from evolution_core import BaseUI, Glicko2Player

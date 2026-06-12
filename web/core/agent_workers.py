@@ -17,7 +17,7 @@ from evolution_infra import (
     run_claude_query, substitute_template, verify_code,
     locked_file, get_bot_dir, get_logs_dir,
     _target_rel, _get_worker_semaphore,
-    WORKER_FAILURES_FILE, MAX_WORKER_RETRIES, WORKER_TIMEOUT, _COPY_IGNORE,
+    WORKER_FAILURES_FILE, MAX_WORKER_RETRIES, WORKER_TIMEOUT,
     EXPERIENCE_FILE,
 )
 

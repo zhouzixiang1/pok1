@@ -33,6 +33,8 @@ from evolution_infra import (  # noqa: F401
     # Utility functions
     _get_worker_semaphore, _trim_to_budget, locked_file, substitute_template,
     count_lines, pair_key, _target_rel,
+    read_locked_json, write_locked_json, append_locked_jsonl,
+    update_h2h, update_bot_stats,
     # Pipeline checkpoints
     write_pipeline_checkpoint, read_pipeline_checkpoint, clear_pipeline_checkpoint,
     # UI

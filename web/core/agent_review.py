@@ -10,7 +10,7 @@ _log = get_logger("review")
 
 from evolution_infra import (
     run_claude_query, parse_json_output, substitute_template,
-    locked_file, get_bot_dir, get_logs_dir, load_ratings, get_active_bots,
+    locked_file, get_bot_dir, get_logs_dir, get_active_bots,
     verify_code, run_smoke_test,
     PROMPTS_DIR, RESULTS_DIR, MATCH_HISTORY_FILE, H2H_FILE, BOT_STATS_FILE,
     MAX_CROSSOVER_RETRIES,

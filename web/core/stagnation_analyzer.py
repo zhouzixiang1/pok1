@@ -8,7 +8,7 @@ import json
 
 from evolution_infra import (
     run_claude_query, parse_json_output, substitute_template,
-    locked_file, get_logs_dir, load_ratings,
+    locked_file, get_logs_dir,
     RESULTS_DIR, WORKER_FAILURES_FILE, PROMPTS_DIR,
     Glicko2Player,
 )

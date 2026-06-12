@@ -16,7 +16,7 @@ import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from system_log import log_system_event
+from system_log import log_system_event, SYSTEM_EVENTS_FILE
 
 log = logging.getLogger("pok.scheduler")
 
@@ -353,29 +353,39 @@ def _parse_branch_from(branch_str: str) -> int | None:
         return None
 
 
-def _detect_source_loop(n=3):
-    """Check if the last n generations all used the same source_v.
+def _read_source_v_history():
+    """Read source_v values from pipeline.prepare events in system_events.jsonl.
 
-    Reads system_events.jsonl for pipeline.prepare events to extract source_v history.
-    Returns the repeated source_v if a loop is detected, None otherwise.
+    Returns a list of source_v values in chronological order.
     """
     try:
-        import json as _json
-        from evolution_infra import RESULTS_DIR
-        events_file = RESULTS_DIR / "system_events.jsonl"
-        if not events_file.exists():
-            return None
+        if not SYSTEM_EVENTS_FILE.exists():
+            return []
         sources = []
-        with open(events_file, "r") as f:
+        with open(SYSTEM_EVENTS_FILE, "r") as f:
             for line in f:
                 try:
-                    evt = _json.loads(line)
+                    evt = json.loads(line)
                     if evt.get("type") == "pipeline.prepare":
                         sv = evt.get("data", {}).get("source_v")
                         if sv is not None:
                             sources.append(sv)
                 except (ValueError, KeyError):
                     continue
+        return sources
+    except Exception:
+        return []
+
+
+def _detect_source_loop(n=3):
+    """Check if the last n generations all used the same source_v.
+
+    Returns the repeated source_v if a loop is detected, None otherwise.
+    """
+    try:
+        sources = _read_source_v_history()
+        if not sources:
+            return None
         # Check last n entries
         recent = sources[-(n + 1):] if len(sources) >= n + 1 else sources[-n:] if len(sources) >= n else []
         if len(recent) >= n and len(set(recent)) == 1:
@@ -388,29 +398,16 @@ def _detect_source_loop(n=3):
 def _detect_source_oscillation(n=8, max_unique=3):
     """Check if recent generations oscillate among a small set of source_v values.
 
-    Reads the last n source_v values from system events. If the unique count is
-    max_unique or fewer, the system is oscillating — repeatedly switching between
-    the same small set of ancestors without convergence.
+    If the unique count among the last n source_v values is max_unique or fewer,
+    the system is oscillating — repeatedly switching between the same small set
+    of ancestors without convergence.
 
     Returns the set of oscillating source_v values if detected, None otherwise.
     """
     try:
-        import json as _json
-        from evolution_infra import RESULTS_DIR
-        events_file = RESULTS_DIR / "system_events.jsonl"
-        if not events_file.exists():
+        sources = _read_source_v_history()
+        if not sources:
             return None
-        sources = []
-        with open(events_file, "r") as f:
-            for line in f:
-                try:
-                    evt = _json.loads(line)
-                    if evt.get("type") == "pipeline.prepare":
-                        sv = evt.get("data", {}).get("source_v")
-                        if sv is not None:
-                            sources.append(sv)
-                except (ValueError, KeyError):
-                    continue
         recent = sources[-n:]
         if len(recent) < max_unique + 1:
             return None  # Not enough data to detect oscillation
@@ -489,7 +486,6 @@ def _pick_crossover_parents(ratings, current_v) -> tuple | None:
 def _cleanup_incomplete():
     """Remove incomplete bot directories that have no git tag and no active checkpoint."""
     import shutil
-    from pathlib import Path
     from evolution_infra import PROJECT_ROOT, git_has_tag, RESULTS_DIR
 
     bots_dir = PROJECT_ROOT / "bots"
@@ -507,8 +503,7 @@ def _cleanup_incomplete():
                     checkpoint_file = RESULTS_DIR / "pipeline_state.json"
                     if checkpoint_file.exists():
                         try:
-                            import json as _json
-                            ckpt = _json.loads(checkpoint_file.read_text())
+                            ckpt = json.loads(checkpoint_file.read_text())
                             if ckpt.get("next_v") == v and ckpt.get("stage") not in (None, "archived"):
                                 continue
                         except Exception:

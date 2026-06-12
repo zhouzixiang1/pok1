@@ -7,7 +7,6 @@ daemon_management.py, llm_query.py, and code_verification.py.
 """
 
 import os
-import sys
 import json
 import logging
 import shutil
@@ -16,13 +15,12 @@ import re
 import asyncio
 import fcntl
 import time
-import threading
 from contextlib import contextmanager
 from pathlib import Path
 
 log = logging.getLogger("pok.infra")
 
-# Add workspace to sys.path for glicko2 import
+# Local module imports (same directory)
 from glicko2 import Glicko2Player, update_rating_period
 from experience_pool import trim_experience_pool
 
@@ -190,6 +188,60 @@ def locked_file(path, mode='r', lock_type=None, encoding=None):
             yield f
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def read_locked_json(path, default=None):
+    """Read a JSON file with shared lock. Returns default on any error."""
+    try:
+        with locked_file(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return default
+
+
+def write_locked_json(path, data, indent=2):
+    """Write a JSON file atomically: write to tmp, fsync, replace under exclusive lock."""
+    path = Path(path)
+    os.makedirs(str(path.parent), exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with locked_file(path, "w", encoding="utf-8", lock_type=fcntl.LOCK_EX) as _lock_guard:
+        # Write to temp file, then atomically replace
+        with open(str(tmp), "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, indent=indent, ensure_ascii=False))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(str(tmp), str(path))
+
+
+def append_locked_jsonl(path, entry):
+    """Append a JSON entry as a single line to a JSONL file with exclusive lock."""
+    with locked_file(path, "a", encoding="utf-8", lock_type=fcntl.LOCK_EX) as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def update_h2h(h2h, bot_a, bot_b, wins_a, wins_b, draws=0):
+    """Update H2H dict for a pair of bots. Idempotent — can be called per-game."""
+    key = pair_key(bot_a, bot_b)
+    entry = h2h.setdefault(key, {"games": 0, "a_wins": 0, "b_wins": 0, "draws": 0})
+    entry["games"] += 1
+    if bot_a < bot_b:
+        entry["a_wins"] += wins_a
+        entry["b_wins"] += wins_b
+    else:
+        entry["a_wins"] += wins_b
+        entry["b_wins"] += wins_a
+    entry["draws"] += draws
+
+
+def update_bot_stats(bot_stats, name, wins, losses, draws=0):
+    """Update per-bot stats dict. Creates entry if not present."""
+    entry = bot_stats.setdefault(name, {"wins": 0, "losses": 0, "draws": 0, "games": 0, "win_rate": 0.0})
+    entry["wins"] += wins
+    entry["losses"] += losses
+    entry["draws"] += draws
+    entry["games"] += wins + losses + draws
+    if entry["games"] > 0:
+        entry["win_rate"] = round(entry["wins"] / entry["games"], 4)
 
 
 def substitute_template(template, replacements):
@@ -462,21 +514,18 @@ def find_latest_active_v():
 
 def load_ratings():
     """Load Glicko-2 ratings with shared lock."""
+    data = read_locked_json(RATINGS_FILE)
+    if not data:
+        return {}
     try:
-        with locked_file(RATINGS_FILE, "r") as f:
-            data = json.load(f)
         return {name: Glicko2Player.from_dict(d) for name, d in data.items()}
-    except (FileNotFoundError, json.JSONDecodeError):
+    except Exception:
         return {}
 
 
 def load_daemon_stats():
     """Load daemon stats."""
-    if STATS_FILE.exists():
-        with locked_file(STATS_FILE, "r") as f:
-            data = json.load(f)
-        return data
-    return {"pairs": {}, "total_games": 0}
+    return read_locked_json(STATS_FILE, default={"pairs": {}, "total_games": 0})
 
 
 def _is_shutdown(event) -> bool:
@@ -518,11 +567,7 @@ async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=
             mt = os.path.getmtime(BOT_STATS_FILE)
             if mt != bot_stats_mtime:
                 bot_stats_mtime = mt
-                try:
-                    with locked_file(BOT_STATS_FILE, "r") as f:
-                        cached_bot_stats = json.load(f)
-                except (json.JSONDecodeError, FileNotFoundError):
-                    cached_bot_stats = {}
+                cached_bot_stats = read_locked_json(BOT_STATS_FILE, default={})
         if cached_bot_stats is None:
             cached_bot_stats = {}
 

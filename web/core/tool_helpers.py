@@ -4,7 +4,6 @@ UI injection, logging adapters, checkpoint gates, and validation utilities.
 """
 
 import difflib
-import fcntl
 import json
 import logging
 import re
@@ -12,7 +11,6 @@ import time
 from pathlib import Path
 
 log = logging.getLogger("pok.tools")
-from typing import Annotated
 
 from evolution_core import (
     BaseUI,
@@ -22,8 +20,7 @@ from evolution_core import (
     write_pipeline_checkpoint,
     read_pipeline_checkpoint,
 )
-from evolution_infra import _target_rel
-from glicko2 import Glicko2Player
+from evolution_infra import _target_rel, read_locked_json
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -121,17 +118,10 @@ def _json_tool_result(data):
 
 
 def _read_json(path, default):
-    from evolution_infra import locked_file
-    try:
-        if not Path(path).exists():
-            return default
-        with locked_file(path, "r") as f:
-            return json.load(f)
-    except json.JSONDecodeError:
+    result = read_locked_json(path, default)
+    if result is default and Path(path).exists():
         log.warning("_read_json: corrupt JSON in %s, returning default", path)
-        return default
-    except Exception:
-        return default
+    return result
 
 
 def _resolve_version_args(args):
@@ -292,22 +282,6 @@ def compute_h2h_avg_winrate(bot_name, h2h_data):
     if not opponent_rates:
         return None
     return sum(opponent_rates) / len(opponent_rates)
-
-
-def compute_opponent_coverage(bot_name, h2h_data, active_bots):
-    """Fraction of active opponents with H2H data (games > 0)."""
-    opponents_with_data = 0
-    total = 0
-    for other in active_bots:
-        if other == bot_name:
-            continue
-        total += 1
-        for key, value in h2h_data.items():
-            parts = key.split(" vs ")
-            if len(parts) == 2 and bot_name in parts and other in parts and value.get("games", 0) > 0:
-                opponents_with_data += 1
-                break
-    return opponents_with_data / total if total > 0 else 1.0
 
 
 def _batch_compute_h2h_winrates(h2h_data, active_bots):

@@ -6,13 +6,10 @@ _make_precompact_hook preserves evolution state across LLM context compaction.
 
 import json
 import time
-from pathlib import Path
 
 from claude_agent_sdk.types import HookMatcher, SyncHookJSONOutput
 
-from evolution_infra import locked_file
-
-RESULTS_DIR = Path(__file__).resolve().parent / "results"
+from evolution_infra import locked_file, RESULTS_DIR
 
 # Module-level cycle start time — set by orchestrator._run_one_cycle at cycle start,
 # read by _build_context and PreCompact hook for time-budget awareness.
@@ -71,6 +68,59 @@ def _inject_master_plan_hint(checkpoint, lines):
             )
     else:
         lines.append("Master plan is saved — do NOT call run_master again.")
+
+
+# Unified stage hints — used by _build_context and _format_checkpoint_info.
+STAGE_HINTS = {
+    "prepared":          "Call run_direction_audit first",
+    "direction_audited": "Direction audited → call run_master",
+    "master_planned":    "Master done → call execute_workers",
+    "workers_done":      "Workers done → call run_quality_gates",
+    "quality_passed":    "Quality passed → call run_review",
+    "reviewed":          "Review passed → call run_critic",
+    "critic_checked":    "Critic done → call run_precommit_eval",
+    "verified":          "Precommit eval passed → call commit_bot",
+    "archived":          "Committed & archived — done",
+    "timed_out":         "Previous cycle timed out and was discarded. Call prepare_next_gen to start a fresh generation. Do NOT attempt to resume timed-out work.",
+}
+
+# Short-form hints for PreCompact hook (tool names only).
+STAGE_HINTS_COMPACT = {
+    "prepared":          "run_direction_audit",
+    "direction_audited": "run_master",
+    "master_planned":    "execute_workers",
+    "workers_done":      "run_quality_gates",
+    "quality_passed":    "run_review",
+    "reviewed":          "run_critic",
+    "critic_checked":    "run_precommit_eval",
+    "verified":          "commit_bot",
+    "archived":          "run_archivist",
+}
+
+
+def _format_checkpoint_info(checkpoint, lines):
+    """Append pipeline checkpoint details to *lines*.
+
+    Extracts the common formatting shared between the gen_ctx and
+    non-gen_ctx code paths in ``_build_context``.
+    """
+    stage = checkpoint.get("stage", "unknown")
+    hint = STAGE_HINTS.get(stage, "call get_status to assess")
+    lines.append(
+        f"\nPIPELINE CHECKPOINT: v{checkpoint['next_v']} (from v{checkpoint['source_v']}) "
+        f"reached stage='{stage}'. Next step: {hint}."
+    )
+    gen_attempt = checkpoint.get("generation_attempt", 0)
+    if gen_attempt > 0:
+        lines.append(
+            f"INTRA-GEN RETRIES: {gen_attempt} previous critic rejection(s). "
+            f"{'MAX RETRIES REACHED — do NOT retry workers again. Abandon this generation.' if gen_attempt >= 2 else 'You may retry workers at most 1 more time.'}"
+        )
+    _inject_master_plan_hint(checkpoint, lines)
+    last_update = checkpoint.get("last_update_ts")
+    if last_update:
+        age = int(time.time() - last_update)
+        lines.append(f"Last checkpoint activity: {age}s ago")
 
 
 def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
@@ -141,35 +191,7 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
             from evolution_core import read_pipeline_checkpoint
             checkpoint = read_pipeline_checkpoint()
             if checkpoint:
-                stage_hints = {
-                    "prepared":          "Call run_direction_audit first",
-                    "direction_audited": "Direction audited → call run_master",
-                    "master_planned":    "Master done → call execute_workers",
-                    "workers_done":      "Workers done → call run_quality_gates",
-                    "quality_passed":    "Quality passed → call run_review",
-                    "reviewed":          "Review passed → call run_critic",
-                    "critic_checked":    "Critic done → call run_precommit_eval",
-                    "verified":          "Precommit eval passed → call commit_bot",
-                    "archived":          "Committed & archived → done",
-                    "timed_out":         "Previous cycle timed out and was discarded. Call prepare_next_gen to start a fresh generation. Do NOT attempt to resume timed-out work.",
-                }
-                stage = checkpoint.get("stage", "unknown")
-                hint = stage_hints.get(stage, "call get_status to assess")
-                lines.append(
-                    f"\nPIPELINE CHECKPOINT: v{checkpoint['next_v']} (from v{checkpoint['source_v']}) "
-                    f"reached stage='{stage}'. Next step: {hint}."
-                )
-                gen_attempt = checkpoint.get("generation_attempt", 0)
-                if gen_attempt > 0:
-                    lines.append(
-                        f"INTRA-GEN RETRIES: {gen_attempt} previous critic rejection(s). "
-                        f"{'MAX RETRIES REACHED — do NOT retry workers again. Abandon this generation.' if gen_attempt >= 2 else 'You may retry workers at most 1 more time.'}"
-                    )
-                _inject_master_plan_hint(checkpoint, lines)
-                last_update = checkpoint.get("last_update_ts")
-                if last_update:
-                    age = int(time.time() - last_update)
-                    lines.append(f"Last checkpoint activity: {age}s ago")
+                _format_checkpoint_info(checkpoint, lines)
         except Exception:
             pass
         return "\n".join(lines)
@@ -188,6 +210,8 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
     # Tool reference — prevents ToolSearch in non-gen_ctx path
     lines.append("\nAVAILABLE TOOLS (call by exact name):")
     lines.append("  prepare_next_gen | run_direction_audit | run_master | execute_workers | run_quality_gates | run_review | run_critic | run_precommit_eval | commit_bot | run_archivist | run_crossover")
+
+    bot_name = f"claude_v{current_v}"
 
     # Current bot action stats (fold/call/raise frequencies by street)
     bot_action_stats_file = RESULTS_DIR / "bot_action_stats.json"
@@ -214,7 +238,6 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
 
     # Current bot rating reliability
     cur_p = ratings.get(f"claude_v{current_v}")
-    bot_name = f"claude_v{current_v}"
     if cur_p:
         # Load bot_stats for games-based reliability
         bot_stats_file = RESULTS_DIR / "bot_stats.json"
@@ -222,7 +245,6 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         wr = 0.0
         if bot_stats_file.exists():
             try:
-                from evolution_infra import locked_file
                 with locked_file(bot_stats_file, "r") as f:
                     bs = json.load(f)
                 games = bs.get(bot_name, {}).get("games", 0)
@@ -272,34 +294,7 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         from evolution_core import read_pipeline_checkpoint
         checkpoint = read_pipeline_checkpoint()
         if checkpoint:
-            stage_hints = {
-                "prepared":          "Call run_direction_audit first",
-                "direction_audited": "Direction audited → call run_master",
-                "master_planned":    "Master done → call execute_workers",
-                "workers_done":      "Workers done → call run_quality_gates",
-                "quality_passed":    "Quality passed → call run_review",
-                "reviewed":          "Review passed → call run_critic",
-                "critic_checked":    "Critic done → call run_precommit_eval",
-                "verified":          "Precommit eval passed → call commit_bot",
-                "archived":          "Committed & archived → start next generation",
-            }
-            stage = checkpoint.get("stage", "unknown")
-            hint = stage_hints.get(stage, "call get_status to assess")
-            lines.append(
-                f"PIPELINE CHECKPOINT: v{checkpoint['next_v']} (from v{checkpoint['source_v']}) "
-                f"reached stage='{stage}'. Next step: {hint}."
-            )
-            gen_attempt = checkpoint.get("generation_attempt", 0)
-            if gen_attempt > 0:
-                lines.append(
-                    f"INTRA-GEN RETRIES: {gen_attempt} previous critic rejection(s). "
-                    f"{'MAX RETRIES REACHED — do NOT retry workers again. Abandon this generation.' if gen_attempt >= 2 else 'You may retry workers at most 1 more time.'}"
-                )
-            _inject_master_plan_hint(checkpoint, lines)
-            last_update = checkpoint.get("last_update_ts")
-            if last_update:
-                age = int(time.time() - last_update)
-                lines.append(f"Last checkpoint activity: {age}s ago")
+            _format_checkpoint_info(checkpoint, lines)
     except Exception:
         pass
 
@@ -343,37 +338,14 @@ def _make_precompact_hook():
             lines.append(f"Current completed bot: claude_v{current_v}")
             checkpoint = read_pipeline_checkpoint()
             if checkpoint:
-                stage_hints = {
-                    "prepared":          "run_direction_audit",
-                    "direction_audited": "run_master",
-                    "master_planned":    "execute_workers",
-                    "workers_done":      "run_quality_gates",
-                    "quality_passed":    "run_review",
-                    "reviewed":          "run_critic",
-                    "critic_checked":    "run_precommit_eval",
-                    "verified":          "commit_bot",
-                    "archived":          "run_archivist",
-                }
                 stage = checkpoint.get("stage", "unknown")
-                next_step = stage_hints.get(stage, "check get_status")
+                next_step = STAGE_HINTS_COMPACT.get(stage, "check get_status")
                 lines.append(
                     f"ACTIVE GENERATION: v{checkpoint['next_v']} (from v{checkpoint['source_v']}), "
                     f"stage={stage}. Next tool: {next_step}. "
                     "DO NOT restart this generation — continue from this stage."
                 )
-                if checkpoint.get("master_plan"):
-                    tasks = checkpoint["master_plan"].get("tasks", [])
-                    if tasks:
-                        lines.append("Master plan tasks (pass these to execute_workers):")
-                        for t in tasks:
-                            wid = t.get("worker_id", "?")
-                            role = t.get("role", "?")
-                            targets = ", ".join(t.get("target_files", []))
-                            prompt_preview = t.get("worker_prompt", "")[:200]
-                            lines.append(
-                                f"  Worker {wid} ({role}): targets=[{targets}], "
-                                f"prompt=\"{prompt_preview}...\""
-                            )
+                _inject_master_plan_hint(checkpoint, lines)
         except Exception:
             pass
         # Cycle time budget for compaction survival

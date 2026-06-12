@@ -77,7 +77,7 @@ class TestP1TimeBasedRefresh:
     def test_get_active_bots_finds_completed(self, tmp_path):
         """get_active_bots returns directories with .completed sentinel."""
         from elo_daemon import get_active_bots
-        import elo_daemon
+        import evolution_infra
 
         # Create a fake bot dir with .completed
         bots_dir = tmp_path / "bots"
@@ -86,19 +86,19 @@ class TestP1TimeBasedRefresh:
         bot_dir.mkdir()
         (bot_dir / ".completed").touch()
 
-        # Patch BOTS_DIR
-        original = elo_daemon.BOTS_DIR
+        # Patch BOTS_DIR in evolution_infra (where get_active_bots now lives)
+        original = evolution_infra.BOTS_DIR
         try:
-            elo_daemon.BOTS_DIR = bots_dir
+            evolution_infra.BOTS_DIR = bots_dir
             result = get_active_bots()
             assert "claude_v99" in result
         finally:
-            elo_daemon.BOTS_DIR = original
+            evolution_infra.BOTS_DIR = original
 
     def test_get_active_bots_skips_incomplete(self, tmp_path):
         """get_active_bots does NOT return directories without .completed."""
         from elo_daemon import get_active_bots
-        import elo_daemon
+        import evolution_infra
 
         # Create a fake bot dir WITHOUT .completed
         bots_dir = tmp_path / "bots"
@@ -107,13 +107,13 @@ class TestP1TimeBasedRefresh:
         bot_dir.mkdir()
         # No .completed file
 
-        original = elo_daemon.BOTS_DIR
+        original = evolution_infra.BOTS_DIR
         try:
-            elo_daemon.BOTS_DIR = bots_dir
+            evolution_infra.BOTS_DIR = bots_dir
             result = get_active_bots()
             assert "claude_v99" not in result
         finally:
-            elo_daemon.BOTS_DIR = original
+            evolution_infra.BOTS_DIR = original
 
     def test_refresh_timer_variable_exists(self):
         """Daemon source contains the last_bot_refresh_time variable."""

@@ -2,7 +2,6 @@
 
 import json
 import time
-from pathlib import Path
 from typing import Annotated, TypedDict
 
 from logging_config import get_logger
@@ -20,12 +19,21 @@ from evolution_core import (
     RESULTS_DIR,
     MAX_ACTIVE_BOTS,
     _run_crossover,
+    locked_file,
+    EXPERIENCE_FILE,
+    ARCHIVE_DIR,
+    write_pipeline_checkpoint,
+    archive_generation,
+    archive_rotate_files,
+    archive_old_logs,
 )
 from tool_helpers import (
     _get_ui, _json_tool_result,
     _matching_checkpoint, _resolve_version_args,
     PROJECT_ROOT,
     _set_pipeline_status,
+    compute_h2h_avg_winrate, _load_h2h_data,
+    read_pipeline_checkpoint,
 )
 from system_log import log_system_event
 
@@ -106,7 +114,6 @@ async def commit_bot(args):
 
     if missing_gates or failed_gates:
         try:
-            from system_log import log_system_event
             log_system_event('pipeline.commit_blocked', 'error',
                 f'Commit blocked for v{v}: missing={missing_gates} failed={failed_gates}',
                 {'version': v, 'source_v': source_v, 'missing_gates': missing_gates,
@@ -123,15 +130,6 @@ async def commit_bot(args):
             "gate_results": gate_results,
         })
 
-    # Guard: quality gates already verified in checkpoint — no need to re-run
-    # (compile, smoke, decision, size all checked in run_quality_gates)
-    quality = gate_results.get("quality")
-    if not quality or not quality.get("all_passed"):
-        return _json_tool_result({
-            "error": "COMMIT BLOCKED: quality gates not passed in checkpoint.",
-            "gate_summary": {k: {"passed": v.get("passed")} for k, v in gate_results.items()},
-        })
-
     # Guard: reviewer approval required
     if not review_approved:
         return _json_tool_result({
@@ -142,7 +140,6 @@ async def commit_bot(args):
     p = ratings.get(f"claude_v{v}")
     h2h_wr = None
     try:
-        from tool_helpers import compute_h2h_avg_winrate, _load_h2h_data
         h2h_wr = compute_h2h_avg_winrate(f"claude_v{v}", _load_h2h_data())
     except Exception as e:
         _log.warning("H2H win rate computation failed for v%d: %s", v, e)
@@ -166,9 +163,8 @@ async def commit_bot(args):
     reap_signal.write_text(str(time.time()))
 
     # Write priority eval signal so daemon schedules this bot heavily
-    priority_file = Path(__file__).parent / "results" / "priority_eval.json"
+    priority_file = RESULTS_DIR / "priority_eval.json"
     try:
-        from evolution_infra import locked_file
         with locked_file(priority_file, "w") as f:
             json.dump({"bot": f"claude_v{v}", "min_games": 100, "since": time.time()}, f)
     except Exception as e:
@@ -181,7 +177,6 @@ async def commit_bot(args):
 
     # Archive this generation's state snapshot
     try:
-        from evolution_infra import archive_generation, archive_rotate_files, archive_old_logs
         archive_generation(v, source_v, ckpt)
         archive_rotate_files(v)
         archive_old_logs()
@@ -196,19 +191,20 @@ async def commit_bot(args):
             # Calculate rating delta
             rating_delta = 0
             ratings_cal = load_ratings()
-            v_rating = ratings_cal.get(f"claude_v{v}", {}).get("r", 0)
-            s_rating = ratings_cal.get(f"claude_v{source_v}", {}).get("r", 0)
+            vp = ratings_cal.get(f"claude_v{v}")
+            sp = ratings_cal.get(f"claude_v{source_v}")
+            v_rating = vp.r if vp else 0
+            s_rating = sp.r if sp else 0
             if v_rating and s_rating:
                 rating_delta = round(v_rating - s_rating, 1)
             cal_file = RESULTS_DIR / "critic_calibration.jsonl"
-            import time as _time
             cal_entry = json.dumps({
                 "version": v, "source_v": source_v,
                 "critic_score": critic_score,
                 "rating_delta": rating_delta,
-                "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
             })
-            with open(cal_file, "a") as _cf:
+            with open(cal_file, "a", encoding="utf-8") as _cf:
                 _cf.write(cal_entry + "\n")
     except Exception:
         pass  # Calibration recording is advisory
@@ -256,7 +252,6 @@ async def commit_bot(args):
 def _append_experience_updates(version: int, updates: list[str],
                                 strategic_advice: str = "", generation_assessment: str = ""):
     """Append archivist experience_updates, strategic_advice, and assessment to experience_pool.md."""
-    from evolution_infra import EXPERIENCE_FILE, locked_file
 
     # Build the lines to insert
     new_lines = [f"- **v{version}**: {u}" for u in updates if u.strip()]
@@ -330,7 +325,6 @@ async def run_archivist(args):
             reap_result = {"error": str(e)}
 
     # 3. Load archive snapshot for LLM context
-    from evolution_infra import ARCHIVE_DIR
     archive_path = ARCHIVE_DIR / f"v{v}.json"
     snapshot = {}
     if archive_path.exists():
@@ -348,7 +342,6 @@ async def run_archivist(args):
     else:
         # Fallback: try checkpoint (only works if run_archivist is called before commit clears it)
         try:
-            from tool_helpers import read_pipeline_checkpoint
             ckpt = read_pipeline_checkpoint()
             if ckpt:
                 review_gate = ckpt.get("gate_results", {}).get("review", {})
@@ -382,7 +375,6 @@ async def run_archivist(args):
         # Append LLM notes to archive snapshot
         if llm_result and archive_path.exists():
             snapshot["archivist_notes"] = llm_result
-            from evolution_infra import locked_file
             with locked_file(archive_path, "w") as f:
                 json.dump(snapshot, f, indent=2, ensure_ascii=False)
 
@@ -414,7 +406,6 @@ async def run_archivist(args):
     # Record archived stage in checkpoint (then clear)
     _ckpt = _matching_checkpoint(v, source_v)
     if _ckpt:
-        from evolution_infra import write_pipeline_checkpoint
         write_pipeline_checkpoint(v, source_v, "archived",
                                   master_plan=_ckpt.get("master_plan"),
                                   gate_results=_ckpt.get("gate_results"))
@@ -480,7 +471,6 @@ async def run_crossover(args):
         return _json_tool_result({"error": f"Parent B bot v{parent_b} is incomplete (no .completed sentinel)"})
 
     # Guard: both parents must have git tags (authoritative commit proof)
-    from evolution_infra import git_has_tag
     if not git_has_tag(parent_a):
         return _json_tool_result({"error": f"Parent A v{parent_a} has no git tag 'bot-v{parent_a}'. Cannot use uncommitted code."})
     if not git_has_tag(parent_b):
@@ -510,7 +500,6 @@ async def run_crossover(args):
 
     # Write checkpoint so quality gates → review → critic → commit can proceed
     if success:
-        from evolution_infra import write_pipeline_checkpoint
         write_pipeline_checkpoint(target_v, parent_a, "workers_done",
                                   parent2_v=parent_b)
         try:
@@ -528,4 +517,4 @@ async def run_crossover(args):
             pass
 
     result = {"success": success, "logs": ui.get_output()}
-    return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
+    return _json_tool_result(result)

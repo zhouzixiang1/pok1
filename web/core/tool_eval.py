@@ -7,8 +7,6 @@ import os
 import sys
 import time
 import uuid
-from pathlib import Path
-from typing import Annotated, TypedDict
 
 from claude_agent_sdk import tool
 
@@ -25,7 +23,6 @@ from tool_helpers import (
     _matching_checkpoint, _record_gate, _gate_payload, _state_blocked,
     _quality_gate_ok, _review_gate_ok, _critic_gate_ok,
     _select_precommit_opponents, _bot_main, _resolve_version_args,
-    PROJECT_ROOT,
     _set_pipeline_status,
 )
 from system_log import log_system_event
@@ -77,12 +74,6 @@ class BattleSchedulerClient:
 # ──────────────────────────────────────────────
 # Precommit Eval
 # ──────────────────────────────────────────────
-
-class RunPrecommitEvalInput(TypedDict):
-    version: Annotated[int, "Bot version being evaluated before commit"]
-    source_v: Annotated[int, "Parent bot version"]
-    n_games: Annotated[int, "Mirror pairs per opponent, default 1"]
-
 
 @tool("run_precommit_eval", "Run a minimal mirror-battle regression check before commit. Tests parent, current top opponents, and source H2H weaknesses; blocks obvious crashes or collapses.", {"version": int, "source_v": int, "n_games": int})
 async def run_precommit_eval(args):
@@ -164,9 +155,6 @@ async def run_precommit_eval(args):
     sys.path.insert(0, str(_core.resolve()))
     from engine.battle import mirror_battle
 
-    # Defensive: ensure asyncio is available even if MCP server cached a stale module
-    import asyncio as _asyncio
-
     # ── Dual-path: Battle Scheduler vs Serial fallback ──
     scheduler_client = BattleSchedulerClient()
     _use_scheduler = await scheduler_client.is_available()
@@ -223,7 +211,7 @@ async def run_precommit_eval(args):
                 collected_results.update(partial)
                 if len(collected_results) >= len(submitted_ids):
                     break
-                await _asyncio.sleep(poll_interval)
+                await asyncio.sleep(poll_interval)
 
             # Build matchups from scheduler results
             missing_opponents = []
@@ -289,10 +277,10 @@ async def run_precommit_eval(args):
         # Each mirror_battle spawns subprocesses, so they are truly parallel
         # (not GIL-bound), but too many concurrent battles saturate CPU.
         max_concurrent = min(len(opponents), os.cpu_count() or 8)
-        _battle_sem = _asyncio.Semaphore(max_concurrent)
+        _battle_sem = asyncio.Semaphore(max_concurrent)
 
         per_game_timeout = max(300, n_games * 120)
-        loop = _asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
 
         async def _run_single_mirror_battle(item):
             """Run one mirror battle in executor with per-opponent timeout.
@@ -314,7 +302,7 @@ async def run_precommit_eval(args):
             item_blockers = []
             try:
                 async with _battle_sem:
-                    match_wins, draws, n_played, _ = await _asyncio.wait_for(
+                    match_wins, draws, n_played, _ = await asyncio.wait_for(
                         loop.run_in_executor(
                             None,
                             lambda _cm=str(candidate_main), _om=str(opponent_main): mirror_battle(
@@ -351,7 +339,7 @@ async def run_precommit_eval(args):
                             f"but only {matchup['n_played']} games — not blocking (insufficient sample)",
                             "warn"
                         )
-            except _asyncio.TimeoutError:
+            except asyncio.TimeoutError:
                 matchup["error"] = f"Mirror battle timed out ({per_game_timeout}s limit)"
                 item_blockers.append({
                     "reason": "match_timeout",
@@ -369,7 +357,7 @@ async def run_precommit_eval(args):
             return matchup
 
         # Launch all opponents in parallel via gather
-        matchup_results = await _asyncio.gather(
+        matchup_results = await asyncio.gather(
             *[_run_single_mirror_battle(item) for item in opponents]
         )
 
@@ -456,11 +444,6 @@ async def run_precommit_eval(args):
 # Inline Eval
 # ──────────────────────────────────────────────
 
-class RunInlineEvalInput(TypedDict):
-    version: Annotated[int, "Bot version to evaluate"]
-    n_games: Annotated[int, "Number of games per opponent (default 5)"]
-
-
 @tool("run_inline_eval", "Run inline evaluation: battle the bot against all active opponents and update Glicko-2 ratings. Use when daemon is not running.", {"version": int, "n_games": int})
 async def run_inline_eval(args):
     _inline_eval_start = time.time()
@@ -500,21 +483,12 @@ async def run_inline_eval(args):
     results_summary = []
     all_results = []
 
-    from evolution_infra import RATINGS_FILE, H2H_FILE, BOT_STATS_FILE, MATCH_HISTORY_FILE, RESULTS_DIR, locked_file, pair_key
-    h2h = {}
-    if H2H_FILE.exists():
-        try:
-            with locked_file(H2H_FILE, "r") as f:
-                h2h = json.load(f)
-        except Exception as e:
-            log.debug("H2H data load failed: %s", e)
-    bot_stats_data = {}
-    if BOT_STATS_FILE.exists():
-        try:
-            with locked_file(BOT_STATS_FILE, "r") as f:
-                bot_stats_data = json.load(f)
-        except Exception as e:
-            log.debug("Bot stats load failed: %s", e)
+    from evolution_infra import (
+        RATINGS_FILE, H2H_FILE, BOT_STATS_FILE, MATCH_HISTORY_FILE, RESULTS_DIR,
+        locked_file, pair_key, read_locked_json, write_locked_json, update_h2h, update_bot_stats,
+    )
+    h2h = read_locked_json(H2H_FILE, default={})
+    bot_stats_data = read_locked_json(BOT_STATS_FILE, default={})
 
     for opp in opponents:
         if opp not in ratings:
@@ -531,27 +505,11 @@ async def run_inline_eval(args):
         results_summary.append({"opponent": opp, "wins": w_a, "losses": w_b, "draws": draws})
 
         # Update H2H
-        k = pair_key(bot_name, opp)
-        h2h.setdefault(k, {"games": 0, "a_wins": 0, "b_wins": 0, "draws": 0})
-        h2h[k]["games"] += total
-        if bot_name < opp:
-            h2h[k]["a_wins"] += w_a
-            h2h[k]["b_wins"] += w_b
-        else:
-            h2h[k]["a_wins"] += w_b
-            h2h[k]["b_wins"] += w_a
-        h2h[k]["draws"] += draws
+        update_h2h(h2h, bot_name, opp, w_a, w_b, draws=draws)
 
         # Update bot_stats
-        for name, w, l in [(bot_name, w_a, w_b), (opp, w_b, w_a)]:
-            if name not in bot_stats_data:
-                bot_stats_data[name] = {"wins": 0, "losses": 0, "draws": 0, "games": 0}
-            bot_stats_data[name]["wins"] += w
-            bot_stats_data[name]["losses"] += l
-            bot_stats_data[name]["draws"] += draws
-            bot_stats_data[name]["games"] += total
-            g = bot_stats_data[name]["games"]
-            bot_stats_data[name]["win_rate"] = round(bot_stats_data[name]["wins"] / g, 4) if g > 0 else 0.0
+        update_bot_stats(bot_stats_data, bot_name, w_a, w_b, draws=draws)
+        update_bot_stats(bot_stats_data, opp, w_b, w_a, draws=draws)
 
         # Append to match_history
         try:
@@ -587,12 +545,7 @@ async def run_inline_eval(args):
         d = p.to_dict()
         d["last_period"] = _dt.now().isoformat(timespec="seconds")
         data[name] = d
-    tmp = RATINGS_FILE.with_suffix(".tmp")
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(str(tmp), str(RATINGS_FILE))
+    write_locked_json(RATINGS_FILE, data)
 
     # Append rating history snapshot (consistent with daemon save_ratings)
     history_file = RESULTS_DIR / "rating_history.jsonl"
@@ -612,12 +565,10 @@ async def run_inline_eval(args):
         g = entry.get("games", 0)
         entry["win_rate"] = round(entry.get("a_wins", 0) / g, 4) if g > 0 else 0.5
         h2h_out[k] = entry
-    with locked_file(H2H_FILE, "w") as f:
-        json.dump(h2h_out, f, indent=2)
+    write_locked_json(H2H_FILE, h2h_out)
 
     # Save bot_stats
-    with locked_file(BOT_STATS_FILE, "w") as f:
-        json.dump(bot_stats_data, f, indent=2)
+    write_locked_json(BOT_STATS_FILE, bot_stats_data)
 
     try:
         from system_log import log_system_event

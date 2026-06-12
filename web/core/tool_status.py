@@ -7,8 +7,6 @@ The `diagnose_environment` tool is the exception — it calls LLM for one-shot a
 import json
 import logging
 import os
-import shutil
-import sys
 import time
 from pathlib import Path
 
@@ -29,25 +27,21 @@ from evolution_core import (
     start_daemon,
     stop_daemon,
     wait_for_daemon_eval,
-    seed_initial_bots,
-    trim_experience_pool,
     read_pipeline_checkpoint,
     find_current_v,
     _analyze_recent_matches,
     _analyze_stagnation,
-    RATINGS_FILE, BOT_STATS_FILE, H2H_FILE, MATCH_HISTORY_FILE, REPLAY_DIR,
+    BOT_STATS_FILE, H2H_FILE, MATCH_HISTORY_FILE,
     RESULTS_DIR,
     locked_file,
 )
-from glicko2 import Glicko2Player
 from tool_helpers import load_h2h_avg_winrates
 
 from tool_helpers import (
     _get_ui, _ratings_summary, _json_tool_result, _bot_main,
     PROJECT_ROOT,
 )
-from evolution_infra import count_lines
-from system_log import log_system_event
+from evolution_infra import count_lines, read_locked_json
 
 
 
@@ -75,13 +69,7 @@ async def get_status(args):
     current_bot_rd = round(cur_p.rd, 1) if cur_p else None
 
     # Load bot stats for current bot
-    bot_stats_data = {}
-    if BOT_STATS_FILE.exists():
-        try:
-            with locked_file(BOT_STATS_FILE, "r") as f:
-                bot_stats_data = json.load(f)
-        except Exception:
-            pass
+    bot_stats_data = read_locked_json(BOT_STATS_FILE, default={})
     cur_bs = bot_stats_data.get(f"claude_v{current_v}", {})
     games_played = cur_bs.get("games", 0)
     rating_reliable = games_played >= 100
@@ -104,7 +92,7 @@ async def get_status(args):
         "rating_reliable": rating_reliable,
         "recent_worker_failures": recent_failures,
     }
-    return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
+    return _json_tool_result(result)
 
 
 class GetBotInfoInput(TypedDict):
@@ -118,7 +106,7 @@ async def get_bot_info(args):
     bot_dir = get_bot_dir(v)
 
     if not bot_dir.exists():
-        return {"content": [{"type": "text", "text": json.dumps({"error": f"Bot v{v} not found"})}]}
+        return _json_tool_result({"error": f"Bot v{v} not found"})
 
     ratings = load_ratings()
     p = ratings.get(bot_name)
@@ -143,7 +131,7 @@ async def get_bot_info(args):
         if oversized:
             result["oversized_files"] = {name: lines for name, lines in oversized}
 
-    return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
+    return _json_tool_result(result)
 
 
 class GetMatchHistoryInput(TypedDict):
@@ -159,7 +147,7 @@ async def get_match_history(args):
 
     history_file = MATCH_HISTORY_FILE
     if not history_file.exists():
-        return {"content": [{"type": "text", "text": json.dumps({"matches": []})}]}
+        return _json_tool_result({"matches": []})
 
     entries = []
     with locked_file(history_file, "r") as f:
@@ -175,7 +163,7 @@ async def get_match_history(args):
                 entries.append(entry)
 
     entries = entries[-n:]
-    return {"content": [{"type": "text", "text": json.dumps({"matches": entries}, indent=2, ensure_ascii=False)}]}
+    return _json_tool_result({"matches": entries})
 
 
 class RunMatchAnalysisInput(TypedDict):
@@ -191,7 +179,7 @@ async def run_match_analysis(args):
         "analysis": output,
         "logs": ui.get_output(),
     }
-    return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
+    return _json_tool_result(result)
 
 
 class StartDaemonInput(TypedDict):
@@ -205,12 +193,12 @@ async def start_eval_daemon(args):
     pairs = args.get("pairs", 5)
     proc = start_daemon(workers=workers, pairs=pairs)
     running = proc.poll() is None
-    return {"content": [{"type": "text", "text": json.dumps({
+    return _json_tool_result({
         "daemon_started": running,
         "pid": proc.pid,
         "workers": workers,
         "pairs": pairs,
-    })}]}
+    })
 
 
 class StopDaemonInput(TypedDict):
@@ -220,7 +208,7 @@ class StopDaemonInput(TypedDict):
 @tool("stop_daemon", "Stop the background ELO daemon.", {})
 async def stop_eval_daemon(args):
     stop_daemon()
-    return {"content": [{"type": "text", "text": json.dumps({"daemon_stopped": True})}]}
+    return _json_tool_result({"daemon_stopped": True})
 
 
 class WaitForEvalInput(TypedDict):
@@ -241,13 +229,7 @@ async def wait_for_eval(args):
     p = ratings.get(bot_name)
 
     # Load bot stats
-    bot_stats_data = {}
-    if BOT_STATS_FILE.exists():
-        try:
-            with locked_file(BOT_STATS_FILE, "r") as f:
-                bot_stats_data = json.load(f)
-        except Exception:
-            pass
+    bot_stats_data = read_locked_json(BOT_STATS_FILE, default={})
     bs = bot_stats_data.get(bot_name, {})
 
     result = {
@@ -256,7 +238,7 @@ async def wait_for_eval(args):
         "current_rating": {"r": round(p.r, 1), "rd": round(p.rd, 1)} if p else None,
         "bot_stats": {"games": bs.get("games", 0), "win_rate": bs.get("win_rate", 0.0)} if bs else None,
     }
-    return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
+    return _json_tool_result(result)
 
 
 class AnalyzeStagnationInput(TypedDict):
@@ -273,10 +255,10 @@ async def analyze_stagnation(args):
     ui = _get_ui()
     result = await _analyze_stagnation(source_v, active_bots_names, ratings, ui)
 
-    return {"content": [{"type": "text", "text": json.dumps({
+    return _json_tool_result({
         "analysis": result,
         "logs": ui.get_output(),
-    }, indent=2, ensure_ascii=False)}]}
+    })
 
 
 class RunPerformanceVerificationInput(TypedDict):
@@ -297,7 +279,7 @@ async def run_performance_verification(args):
         data = {"raw": output}
 
     result = {**data, "logs": ui.get_output()}
-    return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
+    return _json_tool_result(result)
 
 
 class GetH2HInput(TypedDict):
@@ -312,13 +294,13 @@ async def get_h2h(args):
 
     h2h_file = H2H_FILE
     if not h2h_file.exists():
-        return {"content": [{"type": "text", "text": json.dumps({"error": "No H2H data yet", "bot_name": bot_name})}]}
+        return _json_tool_result({"error": "No H2H data yet", "bot_name": bot_name})
 
     try:
         with locked_file(h2h_file, "r") as f:
             h2h = json.load(f)
     except Exception:
-        return {"content": [{"type": "text", "text": json.dumps({"error": "Failed to read H2H data"})}]}
+        return _json_tool_result({"error": "Failed to read H2H data"})
 
     results = {}
     for k, v in h2h.items():
@@ -339,10 +321,10 @@ async def get_h2h(args):
         results[opp] = {"wins": bot_wins, "losses": opp_wins, "games": g, "win_rate": round(wr, 4), "tag": tag}
 
     if not results:
-        return {"content": [{"type": "text", "text": json.dumps({"bot_name": bot_name, "opponents": {}, "message": "No H2H data found"})}]}
+        return _json_tool_result({"bot_name": bot_name, "opponents": {}, "message": "No H2H data found"})
 
     sorted_results = dict(sorted(results.items(), key=lambda x: x[1]["win_rate"]))
-    return {"content": [{"type": "text", "text": json.dumps({"bot_name": bot_name, "opponents": sorted_results}, indent=2, ensure_ascii=False)}]}
+    return _json_tool_result({"bot_name": bot_name, "opponents": sorted_results})
 
 
 class GetBotStatsInput(TypedDict):
@@ -355,19 +337,19 @@ async def get_bot_stats(args):
 
     bot_stats_file = BOT_STATS_FILE
     if not bot_stats_file.exists():
-        return {"content": [{"type": "text", "text": json.dumps({"error": "No bot stats yet", "bot_name": bot_name})}]}
+        return _json_tool_result({"error": "No bot stats yet", "bot_name": bot_name})
 
     try:
         with locked_file(bot_stats_file, "r") as f:
             all_stats = json.load(f)
     except Exception:
-        return {"content": [{"type": "text", "text": json.dumps({"error": "Failed to read bot stats"})}]}
+        return _json_tool_result({"error": "Failed to read bot stats"})
 
     bs = all_stats.get(bot_name)
     if not bs:
-        return {"content": [{"type": "text", "text": json.dumps({"error": f"No stats for {bot_name}"})}]}
+        return _json_tool_result({"error": f"No stats for {bot_name}"})
 
-    return {"content": [{"type": "text", "text": json.dumps({"bot_name": bot_name, **bs}, indent=2)}]}
+    return _json_tool_result({"bot_name": bot_name, **bs})
 
 
 # ──────────────────────────────────────────────
@@ -495,11 +477,3 @@ async def diagnose_environment(args):
         ui.log_history(f"[diagnose_environment] Analysis complete (cost: ${cost:.3f})", "info")
 
     return {"content": [{"type": "text", "text": response_text.strip()}]}
-
-# ──────────────────────────────────────────────
-# Re-exports from extracted module
-# ──────────────────────────────────────────────
-from tool_bot_management import (  # noqa: F401
-    reap_weakest, cleanup_incomplete, abandon_generation,
-    trim_experience, seed_initial_bots_tool, consolidate_experience,
-)

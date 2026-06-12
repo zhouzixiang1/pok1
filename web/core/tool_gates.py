@@ -3,7 +3,7 @@
 import json
 import shutil
 import time
-from typing import Annotated, TypedDict
+from pathlib import Path
 
 from claude_agent_sdk import tool
 
@@ -35,7 +35,6 @@ import spot_analyzer
 
 def _record_quality_failure(gen, worker_id, role, error, **extra):
     """Record a quality gate rejection (reviewer/critic) to worker_failures.jsonl."""
-    import time
     from evolution_core import WORKER_FAILURES_FILE, locked_file
     entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error, "timestamp": time.time()}
     entry.update({k: v for k, v in extra.items() if v is not None and v is not False})
@@ -43,14 +42,37 @@ def _record_quality_failure(gen, worker_id, role, error, **extra):
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
+def _idempotency_check(v, source_v, stage_set, gate_name, approval_key="approved",
+                       extra_ok_keys=(), directive=""):
+    """Check if a pipeline stage has already been completed; return cached result or None.
+
+    Args:
+        v: Bot version.
+        source_v: Parent version.
+        stage_set: Tuple/list of stage strings that mean "this stage passed".
+        gate_name: Key inside gate_results (e.g. "quality", "review", "critic").
+        approval_key: The key to check for truthiness (default "approved").
+        extra_ok_keys: Additional keys that count as truthy (e.g. ("force_advanced",)).
+        directive: Message to include when returning cached result.
+
+    Returns:
+        An MCP-formatted result dict if the stage already passed, or None.
+    """
+    ckpt = _matching_checkpoint(v, source_v)
+    if not ckpt or ckpt.get("stage") not in stage_set:
+        return None
+    gate = ckpt.get("gate_results", {}).get(gate_name, {})
+    if gate.get(approval_key) is True or any(gate.get(k) is True for k in extra_ok_keys):
+        gate["idempotent_cache"] = True
+        gate["checkpoint_recorded"] = True
+        gate["directive"] = directive
+        return _json_tool_result(gate)
+    return None
+
+
 # ──────────────────────────────────────────────
 # Quality Gates
 # ──────────────────────────────────────────────
-
-class RunQualityGatesInput(TypedDict):
-    version: Annotated[int, "Bot version to test"]
-    source_v: Annotated[int, "Source version this bot was derived from"]
-
 
 @tool("run_quality_gates", "Run all quality gates on a bot: compile check, smoke test, decision tests, and file size check.", {"version": int, "source_v": int})
 async def run_quality_gates(args):
@@ -65,15 +87,15 @@ async def run_quality_gates(args):
     _set_pipeline_status(f"Running quality gates for v{v}")
 
     # Idempotency guard: skip if quality gates already passed for this version
-    _existing_ckpt = _matching_checkpoint(v, source_v)
-    if _existing_ckpt and _existing_ckpt.get("stage") in (
-        "quality_passed", "spot_verified", "reviewed", "critic_checked", "verified", "archived"
-    ):
-        quality_gate = _existing_ckpt.get("gate_results", {}).get("quality", {})
-        if quality_gate.get("all_passed") is True:
-            quality_gate["idempotent_cache"] = True
-            quality_gate["directive"] = "Quality gates ALREADY PASSED. Call run_review next."
-            return _json_tool_result(quality_gate)
+    _cached = _idempotency_check(
+        v, source_v,
+        stage_set=("quality_passed", "spot_verified", "reviewed", "critic_checked", "verified", "archived"),
+        gate_name="quality",
+        approval_key="all_passed",
+        directive="Quality gates ALREADY PASSED. Call run_review next.",
+    )
+    if _cached:
+        return _cached
 
     # CRITICAL: Check that code actually changed vs source.
     # Prevents zombie loop where workers reset code but quality gates pass on unchanged (parent) code.
@@ -266,11 +288,6 @@ async def run_quality_gates(args):
 # Prepare Next Gen
 # ──────────────────────────────────────────────
 
-class PrepareNextGenInput(TypedDict):
-    source_v: Annotated[int, "Source bot version to copy from"]
-    next_v: Annotated[int, "Target version"]
-
-
 @tool("prepare_next_gen", "Prepare the next generation directory by copying from source bot.", {"source_v": int, "next_v": int})
 async def prepare_next_gen(args):
     _t0 = time.time()
@@ -280,44 +297,44 @@ async def prepare_next_gen(args):
         _v, source_v = _resolve_version_args(args)
         next_v = next_v or _v
     if source_v is None or next_v is None:
-        return {"content": [{"type": "text", "text": json.dumps({"error": "Missing source_v/next_v and no active checkpoint"})}]}
+        return _json_tool_result({"error": "Missing source_v/next_v and no active checkpoint"})
 
     _set_pipeline_status(f"Preparing v{next_v}")
 
     if next_v <= source_v:
-        return {"content": [{"type": "text", "text": json.dumps({"error": f"next_v ({next_v}) must be greater than source_v ({source_v})"})}]}
+        return _json_tool_result({"error": f"next_v ({next_v}) must be greater than source_v ({source_v})"})
 
     # Guard against clearly invalid version numbers (test artifacts)
     if next_v >= 900:
-        return {"content": [{"type": "text", "text": json.dumps({"error": f"next_v ({next_v}) is invalid. Version numbers must be < 900."})}]}
+        return _json_tool_result({"error": f"next_v ({next_v}) is invalid. Version numbers must be < 900."})
 
     current_v = find_current_v()
     if next_v > current_v + 10:
-        return {"content": [{"type": "text", "text": json.dumps({"error": f"next_v ({next_v}) is too far ahead of current_v ({current_v}). Use next_v = {current_v + 1}."})}]}
+        return _json_tool_result({"error": f"next_v ({next_v}) is too far ahead of current_v ({current_v}). Use next_v = {current_v + 1}."})
 
     source_dir = get_bot_dir(source_v)
     next_dir = get_bot_dir(next_v)
 
     if not source_dir.exists():
-        return {"content": [{"type": "text", "text": json.dumps({"error": f"Source bot v{source_v} not found"})}]}
+        return _json_tool_result({"error": f"Source bot v{source_v} not found"})
 
     # Guard: warn if source bot is not completed (may be broken)
     if not (source_dir / ".completed").exists():
-        return {"content": [{"type": "text", "text": json.dumps({"error": f"Source bot v{source_v} is not marked completed. Cannot use incomplete code as source."})}]}
+        return _json_tool_result({"error": f"Source bot v{source_v} is not marked completed. Cannot use incomplete code as source."})
 
     # Guard: verify git tag exists for source bot (authoritative commit proof)
     from evolution_infra import git_has_tag
     if not git_has_tag(source_v):
-        return {"content": [{"type": "text", "text": json.dumps({"error": f"Source bot v{source_v} has .completed but no git tag 'bot-v{source_v}'. Cannot evolve from uncommitted code. Try a different source version."})}]}
+        return _json_tool_result({"error": f"Source bot v{source_v} has .completed but no git tag 'bot-v{source_v}'. Cannot evolve from uncommitted code. Try a different source version."})
 
     # Guard: refuse to overwrite a completed bot
     if next_dir.exists() and (next_dir / ".completed").exists():
-        return {"content": [{"type": "text", "text": json.dumps({"error": f"Target v{next_v} already exists and is completed. Refusing to overwrite."})}]}
+        return _json_tool_result({"error": f"Target v{next_v} already exists and is completed. Refusing to overwrite."})
 
     # Guard: refuse to re-prepare if pipeline has already progressed past "prepared"
     _ckpt = _matching_checkpoint(next_v, source_v)
     if _ckpt and _ckpt.get("stage") not in (None, "prepared", "timed_out"):
-        return {"content": [{"type": "text", "text": json.dumps({"error": f"Pipeline for v{next_v} already at stage '{_ckpt['stage']}'. Refusing to overwrite worker output. Call abandon_generation first if you want to restart."})}]}
+        return _json_tool_result({"error": f"Pipeline for v{next_v} already at stage '{_ckpt['stage']}'. Refusing to overwrite worker output. Call abandon_generation first if you want to restart."})
 
     if next_dir.exists():
         shutil.rmtree(next_dir)
@@ -340,18 +357,12 @@ async def prepare_next_gen(args):
     log_system_event("pipeline.prepare_done", "info", f"Prepared v{next_v} from v{source_v}",
                      {"next_v": next_v, "source_v": source_v, "elapsed_sec": round(time.time() - _t0, 2)})
 
-    return {"content": [{"type": "text", "text": json.dumps({"prepared": True, "next_v": next_v, "source_v": source_v})}]}
+    return _json_tool_result({"prepared": True, "next_v": next_v, "source_v": source_v})
 
 
 # ──────────────────────────────────────────────
 # Review Stage
 # ──────────────────────────────────────────────
-
-class RunReviewInput(TypedDict):
-    version: Annotated[int, "Bot version being reviewed"]
-    source_v: Annotated[int, "Parent bot version"]
-    plan: Annotated[list, "Master's task plan"]
-
 
 @tool("run_review", "Run Lead Code Reviewer on the bot changes. Returns approval decision with quality score.", {"version": int, "source_v": int, "plan": list})
 async def run_review(args):
@@ -366,20 +377,14 @@ async def run_review(args):
     _set_pipeline_status(f"Reviewing v{v}")
 
     # Idempotency guard: skip if review already approved
-    _review_ckpt = _matching_checkpoint(v, source_v)
-    if _review_ckpt and _review_ckpt.get("stage") in (
-        "reviewed", "critic_checked", "verified", "archived"
-    ):
-        review_gate = _review_ckpt.get("gate_results", {}).get("review", {})
-        if review_gate.get("approved") is True:
-            return _json_tool_result({
-                "approved": True,
-                "quality_score": review_gate.get("quality_score", 0),
-                "feedback": review_gate.get("feedback", ""),
-                "checkpoint_recorded": True,
-                "idempotent_cache": True,
-                "directive": "Review ALREADY PASSED. Call run_critic next.",
-            })
+    _cached = _idempotency_check(
+        v, source_v,
+        stage_set=("reviewed", "critic_checked", "verified", "archived"),
+        gate_name="review",
+        directive="Review ALREADY PASSED. Call run_critic next.",
+    )
+    if _cached:
+        return _cached
 
     ckpt = _matching_checkpoint(v, source_v)
     if not _quality_gate_ok(ckpt):
@@ -517,14 +522,6 @@ async def run_review(args):
 # Critic Stage
 # ──────────────────────────────────────────────
 
-class RunCriticInput(TypedDict):
-    version: Annotated[int, "Bot version being evaluated"]
-    source_v: Annotated[int, "Parent bot version"]
-    plan: Annotated[list, "Master's task plan (list of task dicts)"]
-    reviewer_feedback: Annotated[str, "Reviewer feedback if available (or '')"]
-    force_advance: Annotated[bool, "Set true when retries exhausted — advances checkpoint to critic_checked regardless of score so a kill+restart does not re-trigger the retry loop"]
-
-
 @tool("run_critic", "Run Poker Strategy Critic on bot changes. Returns score 1-10 and strategic feedback. score ≥ 6 = approved.", {"version": int, "source_v": int, "plan": list, "reviewer_feedback": str, "force_advance": bool})
 async def run_critic(args):
     _t0 = time.time()
@@ -540,18 +537,15 @@ async def run_critic(args):
     _set_pipeline_status(f"Critic evaluating v{v}")
 
     # Idempotency guard: skip if critic already approved
-    _critic_ckpt = _matching_checkpoint(v, source_v)
-    if _critic_ckpt and _critic_ckpt.get("stage") in (
-        "critic_checked", "verified", "archived"
-    ):
-        critic_gate = _critic_ckpt.get("gate_results", {}).get("critic", {})
-        if critic_gate.get("approved") is True or critic_gate.get("force_advanced") is True:
-            return _json_tool_result({
-                **critic_gate,
-                "idempotent_cache": True,
-                "checkpoint_recorded": True,
-                "directive": "Critic ALREADY PASSED. Call run_precommit_eval next.",
-            })
+    _cached = _idempotency_check(
+        v, source_v,
+        stage_set=("critic_checked", "verified", "archived"),
+        gate_name="critic",
+        extra_ok_keys=("force_advanced",),
+        directive="Critic ALREADY PASSED. Call run_precommit_eval next.",
+    )
+    if _cached:
+        return _cached
 
     ckpt = _matching_checkpoint(v, source_v)
     if not _quality_gate_ok(ckpt) or not _review_gate_ok(ckpt):
@@ -691,12 +685,6 @@ async def run_critic(args):
 # ──────────────────────────────────────────────
 # Spot Check Stage
 # ──────────────────────────────────────────────
-
-class RunSpotCheckInput(TypedDict):
-    parent_version: Annotated[int, "Parent bot version"]
-    current_version: Annotated[int, "Current bot version"]
-    master_plan: Annotated[dict, "Master plan dict with expected_behavior_change"]
-
 
 @tool("run_spot_check", "Run spot check on changed functions: parse diff, generate scenarios, run bot, verify behavior.", {"parent_version": int, "current_version": int, "master_plan": dict})
 async def run_spot_check(args):

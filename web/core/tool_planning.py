@@ -4,7 +4,6 @@ import json
 import shutil
 import time
 from pathlib import Path
-from typing import Annotated, TypedDict
 
 from claude_agent_sdk import tool
 
@@ -17,6 +16,7 @@ from evolution_core import (
     _run_direction_audit,
     _execute_workers,
     EXPERIENCE_FILE,
+    write_pipeline_checkpoint,
 )
 from tool_helpers import (
     _get_ui, _json_tool_result,
@@ -74,7 +74,6 @@ async def run_direction_audit(args):
     }
 
     # Persist to checkpoint
-    from evolution_infra import write_pipeline_checkpoint
     _ckpt = _matching_checkpoint(next_v, source_v)
     existing_plan = _ckpt.get("master_plan") if _ckpt else None
     write_pipeline_checkpoint(
@@ -113,7 +112,7 @@ _TUNER_STRUCTURAL_PATTERNS = [
 ]
 
 
-def _validate_master_plan(plan, next_v=None):
+def _validate_master_plan(plan, next_v=None, precomputed_exhausted_keywords=None):
     """Validate master plan constraints before dispatching workers.
 
     Returns (errors, warnings) — only errors block plan storage.
@@ -202,7 +201,7 @@ def _validate_master_plan(plan, next_v=None):
 
     # Check worker prompts against exhausted directions from experience pool.
     # This is a HARD constraint: plans matching exhausted directions are rejected.
-    exhausted_keywords = _extract_exhausted_keywords()
+    exhausted_keywords = precomputed_exhausted_keywords if precomputed_exhausted_keywords is not None else _extract_exhausted_keywords()
     if exhausted_keywords:
         for i, task in enumerate(tasks):
             prompt_text = (
@@ -219,13 +218,6 @@ def _validate_master_plan(plan, next_v=None):
                 break  # one match is enough to block the plan
 
     return errors, warnings
-
-class RunMasterInput(TypedDict):
-    source_v: Annotated[int, "Source bot version"]
-    next_v: Annotated[int, "Target next version"]
-    stagnation_info: Annotated[str, "Stagnation context (or 'No stagnation')"]
-    match_analysis: Annotated[str, "Match analysis context from run_match_analysis (or '')"]
-    performance_verification: Annotated[str, "Performance verification output from run_performance_verification (or '')"]
 
 
 @tool("run_master", "Run Master Architect analysis to plan the next generation. Returns a task plan with worker assignments.", {"source_v": int, "next_v": int, "stagnation_info": str, "match_analysis": str, "performance_verification": str, "direction_audit": str})
@@ -296,9 +288,8 @@ async def run_master(args):
         from evolution_infra import RESULTS_DIR
         _stats_file = RESULTS_DIR / "bot_action_stats.json"
         if _stats_file.exists():
-            import json as _json
             with open(_stats_file, "r") as _f:
-                _all_stats = _json.load(_f)
+                _all_stats = json.load(_f)
             _bot_stats = _all_stats.get(f"claude_v{source_v}")
             if _bot_stats:
                 # Format as compact text for prompt injection
@@ -373,7 +364,9 @@ async def run_master(args):
         except Exception:
             pass
 
-    plan_errors, plan_warnings = _validate_master_plan(data, next_v=next_v)
+    # Pre-compute exhausted keywords once (used by _validate_master_plan and potentially others)
+    _exhausted_kw = _extract_exhausted_keywords()
+    plan_errors, plan_warnings = _validate_master_plan(data, next_v=next_v, precomputed_exhausted_keywords=_exhausted_kw)
     if plan_warnings:
         try:
             log_system_event("pipeline.master_boundary", "warning",
@@ -385,7 +378,6 @@ async def run_master(args):
         return {"content": [{"type": "text", "text": json.dumps({"error": "Master plan validation failed", "validation_errors": plan_errors, "validation_warnings": plan_warnings, "plan": data, "logs": ui.get_output()})}]}
 
     # Persist master plan to checkpoint so it survives crashes between master and workers
-    from evolution_infra import write_pipeline_checkpoint
     _ckpt = _matching_checkpoint(next_v, source_v)
     existing_audit = _ckpt.get("direction_audit") if _ckpt else direction_audit
     # Mark direction_audit as resolved now that Master has produced a plan
@@ -483,12 +475,6 @@ def _fuzzy_match_exhausted(prompt_text: str, keywords: list) -> bool:
     return False
 
 
-class ExecuteWorkersInput(TypedDict):
-    tasks: Annotated[list, "List of worker task dicts from Master plan"]
-    next_v: Annotated[int, "Target bot version"]
-    source_v: Annotated[int, "Source bot version"]
-    reviewer_feedback: Annotated[str, "Previous reviewer feedback (or '')"]
-
 
 @tool("execute_workers", "Execute worker tasks to modify bot code. Each task has worker_id, role, target_files, worker_prompt.", {"tasks": list, "next_v": int, "source_v": int, "reviewer_feedback": str})
 async def execute_workers(args):
@@ -573,7 +559,6 @@ async def execute_workers(args):
     # When retrying after workers already ran, actually reset code from source first.
     # Previous claim that code was reset was FALSE — now we actually do it.
     if reviewer_feedback and ckpt.get("stage") in ("workers_done", "reviewed", "critic_checked"):
-        import shutil
         source_dir_r = get_bot_dir(source_v)
         if source_dir_r.exists() and next_dir.exists():
             _log.info(f"Resetting v{next_v} code from source v{source_v} before worker retry")
@@ -606,7 +591,6 @@ async def execute_workers(args):
         # Without this, a crash between code reset and worker execution would leave
         # the checkpoint at a stale stage (e.g. "reviewed" or "critic_checked")
         # while the actual code has been wiped back to source.
-        from evolution_infra import write_pipeline_checkpoint
         write_pipeline_checkpoint(next_v, source_v, "master_planned",
                                   master_plan=ckpt.get("master_plan"),
                                   reviewer_feedback=reviewer_feedback,
@@ -698,7 +682,6 @@ async def execute_workers(args):
                                      {"next_v": next_v, "source_v": source_v})
 
     if success:
-        from evolution_infra import write_pipeline_checkpoint
         # Preserve the master plan structure (with analysis) from checkpoint,
         # rather than replacing it with the raw tasks list
         plan = ckpt.get("master_plan", tasks) if ckpt else tasks
@@ -716,7 +699,6 @@ async def execute_workers(args):
         # Always set stage to 'master_planned' on failure — this clearly indicates
         # that workers need re-execution, rather than preserving a stale stage
         # from before the failure (e.g. "reviewed" or "critic_checked").
-        from evolution_infra import write_pipeline_checkpoint
         plan = ckpt.get("master_plan", tasks) if ckpt else tasks
         write_pipeline_checkpoint(next_v, source_v,
                                   "master_planned",

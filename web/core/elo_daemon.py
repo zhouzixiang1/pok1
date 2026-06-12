@@ -47,8 +47,13 @@ sys.path.insert(0, str(CORE_DIR))
 
 from glicko2 import Glicko2Player, update_single_game, decay_rd
 from engine.battle import mirror_battle
-from evolution_infra import locked_file, pair_key
-from bot_action_stats import compute_bot_action_stats, compute_all_bot_stats
+from evolution_infra import (
+    pair_key,
+    get_active_bots, load_ratings,
+    read_locked_json, write_locked_json, append_locked_jsonl,
+    update_h2h, update_bot_stats,
+)
+from bot_action_stats import compute_all_bot_stats
 from eval_rounds import EvalRoundManager
 
 BOTS_DIR = PROJECT_ROOT / "bots"
@@ -87,26 +92,8 @@ def handle_signal(signum, frame):
     running = False
 
 
-def get_active_bots():
-    bots = []
-    if BOTS_DIR.exists():
-        for d in sorted(os.listdir(BOTS_DIR)):
-            if d.startswith("claude_v") and os.path.isdir(BOTS_DIR / d):
-                if (BOTS_DIR / d / ".completed").exists():
-                    bots.append(d)
-    return bots
-
-
 def bot_path(bot_name):
     return str(BOTS_DIR / bot_name / "main.py")
-
-
-def load_ratings():
-    if not RATINGS_FILE.exists():
-        return {}
-    with locked_file(RATINGS_FILE, "r") as f:
-        data = json.load(f)
-    return {name: Glicko2Player.from_dict(d) for name, d in data.items()}
 
 
 def save_ratings(ratings, save_num=None):
@@ -116,13 +103,7 @@ def save_ratings(ratings, save_num=None):
         d = p.to_dict()
         d["last_period"] = datetime.now().isoformat(timespec="seconds")
         data[name] = d
-    # Atomic write: tmp + fsync + rename (crash-safe)
-    tmp = RATINGS_FILE.with_suffix(".tmp")
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(str(tmp), str(RATINGS_FILE))
+    write_locked_json(RATINGS_FILE, data)
 
     if save_num is not None:
         history_file = RESULTS_DIR / "rating_history.jsonl"
@@ -145,50 +126,36 @@ def save_ratings(ratings, save_num=None):
             "ratings": {name: {"r": p.r, "rd": p.rd, "sigma": p.sigma} for name, p in ratings.items()},
             "win_rates": win_rates,
         }
-        with locked_file(history_file, "a") as f:
-            f.write(json.dumps(snapshot) + "\n")
+        append_locked_jsonl(history_file, snapshot)
 
 
 def load_stats():
-    if not STATS_FILE.exists():
-        return {"pairs": {}, "total_games": 0}
-    with locked_file(STATS_FILE, "r") as f:
-        data = json.load(f)
-    return data
+    return read_locked_json(STATS_FILE, default={"pairs": {}, "total_games": 0})
 
 
 def save_stats(stats):
     os.makedirs(RESULTS_DIR, exist_ok=True)
-    with locked_file(STATS_FILE, "w") as f:
-        json.dump(stats, f, indent=2)
+    write_locked_json(STATS_FILE, stats)
 
 
 def load_h2h():
-    if not H2H_FILE.exists():
-        return {}
-    with locked_file(H2H_FILE, "r") as f:
-        return json.load(f)
+    return read_locked_json(H2H_FILE, default={})
 
 
 def save_h2h(h2h):
     os.makedirs(RESULTS_DIR, exist_ok=True)
     # Prune low-sample entries (games < 2 have no statistical value)
     h2h = {k: v for k, v in h2h.items() if v.get("games", 0) >= 2}
-    with locked_file(H2H_FILE, "w") as f:
-        json.dump(h2h, f, indent=2)
+    write_locked_json(H2H_FILE, h2h)
 
 
 def load_bot_stats():
-    if not BOT_STATS_FILE.exists():
-        return {}
-    with locked_file(BOT_STATS_FILE, "r") as f:
-        return json.load(f)
+    return read_locked_json(BOT_STATS_FILE, default={})
 
 
 def save_bot_stats(bot_stats):
     os.makedirs(RESULTS_DIR, exist_ok=True)
-    with locked_file(BOT_STATS_FILE, "w") as f:
-        json.dump(bot_stats, f, indent=2)
+    write_locked_json(BOT_STATS_FILE, bot_stats)
 
 
 def _opponent_coverage(bot, active_bots, h2h):
@@ -209,11 +176,10 @@ PRIORITY_EVAL_FILE = RESULTS_DIR / "priority_eval.json"
 
 def _load_priority_eval():
     """Load the priority eval bot name. Expires when bot reaches min_games."""
-    if not PRIORITY_EVAL_FILE.exists():
-        return None
     try:
-        with locked_file(PRIORITY_EVAL_FILE, "r") as f:
-            data = json.load(f)
+        data = read_locked_json(PRIORITY_EVAL_FILE)
+        if not data:
+            return None
         bot = data.get("bot")
         if not bot:
             return None
@@ -327,8 +293,7 @@ def save_match_replay(a, b, wins_a, wins_b, draws, replay_data):
             "bot1_wins": wins_b,
             "draws": draws,
         }
-        with locked_file(MATCH_HISTORY_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps(summary, ensure_ascii=False) + "\n")
+        append_locked_jsonl(MATCH_HISTORY_FILE, summary)
     except Exception as e:
         log.warning("Match history write failed: %s", e)
         try:
@@ -439,29 +404,24 @@ def process_result(result, ratings, h2h, bot_stats, verbose=False):
         ratings[a] = update_single_game(ratings[a], ratings.get(b, _default), 0.5)
         ratings[b] = update_single_game(ratings[b], ratings.get(a, _default), 0.5)
 
-    # Update H2H
-    k = pair_key(a, b)
-    h2h.setdefault(k, {"games": 0, "a_wins": 0, "b_wins": 0, "draws": 0})
-    h2h[k]["games"] += total
-    # a is bot0, b is bot1; key is lexical, so track by position
-    if a < b:
-        h2h[k]["a_wins"] += wins_a
-        h2h[k]["b_wins"] += wins_b
-    else:
-        h2h[k]["a_wins"] += wins_b
-        h2h[k]["b_wins"] += wins_a
-    h2h[k]["draws"] += draws
+    # Update H2H (one call per individual game)
+    for _ in range(wins_a):
+        update_h2h(h2h, a, b, wins_a=1, wins_b=0)
+    for _ in range(wins_b):
+        update_h2h(h2h, a, b, wins_a=0, wins_b=1)
+    for _ in range(draws):
+        update_h2h(h2h, a, b, wins_a=0, wins_b=0, draws=1)
 
-    # Update bot stats
-    for name, w, l in [(a, wins_a, wins_b), (b, wins_b, wins_a)]:
-        if name not in bot_stats:
-            bot_stats[name] = {"wins": 0, "losses": 0, "draws": 0, "games": 0}
-        bot_stats[name]["wins"] += w
-        bot_stats[name]["losses"] += l
-        bot_stats[name]["draws"] += draws
-        bot_stats[name]["games"] += w + l + draws
-        g = bot_stats[name]["games"]
-        bot_stats[name]["win_rate"] = round(bot_stats[name]["wins"] / g, 4) if g > 0 else 0.0
+    # Update bot stats (one call per individual game)
+    for _ in range(wins_a):
+        update_bot_stats(bot_stats, a, wins=1, losses=0)
+        update_bot_stats(bot_stats, b, wins=0, losses=1)
+    for _ in range(wins_b):
+        update_bot_stats(bot_stats, a, wins=0, losses=1)
+        update_bot_stats(bot_stats, b, wins=1, losses=0)
+    for _ in range(draws):
+        update_bot_stats(bot_stats, a, wins=0, losses=0, draws=1)
+        update_bot_stats(bot_stats, b, wins=0, losses=0, draws=1)
 
     return total
 
@@ -502,12 +462,7 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
     try:
         bot_action_stats = compute_all_bot_stats(active_bots, REPLAY_DIR)
         action_stats_file = RESULTS_DIR / "bot_action_stats.json"
-        tmp = action_stats_file.with_suffix(".tmp")
-        with open(tmp, "w") as f:
-            json.dump(bot_action_stats, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(str(tmp), str(action_stats_file))
+        write_locked_json(action_stats_file, bot_action_stats)
     except Exception as e:
         log.warning("Bot action stats computation failed (non-fatal): %s", e)
 
@@ -951,7 +906,6 @@ def main():
                 except Exception:
                     pass
                 try:
-                    import multiprocessing as _mp
                     mp_ctx = _mp.get_context("spawn")
                     executor = ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_ctx)
                     # Preserve external jobs from old queue before discarding

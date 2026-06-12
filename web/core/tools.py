@@ -47,16 +47,19 @@ from tool_status import (  # noqa: F401
     start_eval_daemon,
     stop_eval_daemon,
     wait_for_eval,
+    analyze_stagnation,
+    get_h2h,
+    get_bot_stats,
+    diagnose_environment,
+)
+
+from tool_bot_management import (  # noqa: F401
     reap_weakest,
     trim_experience,
     seed_initial_bots_tool,
     consolidate_experience,
-    analyze_stagnation,
-    get_h2h,
-    get_bot_stats,
     cleanup_incomplete,
     abandon_generation,
-    diagnose_environment,
 )
 
 # ── MCP tools — available to the LLM Orchestrator session (~15 tools) ──

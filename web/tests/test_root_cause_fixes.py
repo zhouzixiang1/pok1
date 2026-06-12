@@ -32,11 +32,17 @@ class TestP0IdempotencyGuards:
 
     def test_review_has_guard(self):
         source = self._read_tool_gates_source()
-        assert source.count("idempotent_cache") >= 3
+        # After refactoring, guards are consolidated in _idempotency_check helper;
+        # verify run_review calls the helper with gate_name="review"
+        assert '_idempotency_check(' in source
+        assert 'gate_name="review"' in source
 
     def test_critic_has_guard(self):
         source = self._read_tool_gates_source()
-        assert source.count("idempotent_cache") >= 3
+        # After refactoring, guards are consolidated in _idempotency_check helper;
+        # verify run_critic calls the helper with gate_name="critic"
+        assert '_idempotency_check(' in source
+        assert 'gate_name="critic"' in source
 
 
 # ── P1: SDK Exception Handling ───────────────────────────────────────

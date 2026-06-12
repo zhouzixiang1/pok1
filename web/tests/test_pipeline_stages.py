@@ -170,6 +170,7 @@ class TestCriticEvidenceToExperiencePool:
         pool_file = tmp_path / "experience_pool.md"
         pool_file.write_text("## RECENT_LESSONS\n- old lesson\n## POSTFLOP_STRATEGY\n")
         monkeypatch.setattr(evolution_infra, "EXPERIENCE_FILE", pool_file)
+        monkeypatch.setattr(tool_commit, "EXPERIENCE_FILE", pool_file)
 
         tool_commit._append_experience_updates(
             version=42,
