@@ -361,6 +361,12 @@ def isolate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(_pr, "PROJECT_ROOT", iso)
     monkeypatch.setattr(_pr, "PROMPTS_DIR", prompts_dst)
 
+    # battle_scheduler: module-level constants computed from RESULTS_DIR at import time
+    import battle_scheduler
+    monkeypatch.setattr(battle_scheduler, "BATTLE_JOBS_FILE", results_dir / "battle_jobs.jsonl")
+    monkeypatch.setattr(battle_scheduler, "BATTLE_CLAIMED_FILE", results_dir / "battle_jobs.claimed")
+    monkeypatch.setattr(battle_scheduler, "BATTLE_RESULTS_FILE", results_dir / "battle_results.jsonl")
+
     # --- 5. Clear server cache ---
     from server.cache import _CACHE
     _CACHE.clear()
