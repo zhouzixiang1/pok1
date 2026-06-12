@@ -69,9 +69,9 @@ def _extract_exhausted_block():
 
     exhausted_lines = []
     for line in text.splitlines():
-        if "[POSSIBLY EXHAUSTED]" in line:
+        if "[EXHAUSTED]" in line:
             # Strip the leading markdown header markers and the marker itself
-            cleaned = line.replace("[POSSIBLY EXHAUSTED]", "").strip(" -•")
+            cleaned = line.replace("[POSSIBLY EXHAUSTED]", "").replace("[EXHAUSTED]", "").strip(" -•")
             if cleaned:
                 exhausted_lines.append(cleaned)
 

@@ -183,7 +183,7 @@ def log_fix_application(
     """Log fix application results to system events."""
     from system_log import log_system_event
 
-    severity = "warn" if skipped and not applied else "info"
+    severity = "warn" if skipped and applied else "info"
     msg_parts = []
     if applied:
         msg_parts.append(f"Applied fixes: {', '.join(applied)}")

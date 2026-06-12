@@ -323,9 +323,9 @@ def clear_pipeline_checkpoint():
     if not PIPELINE_STATE_FILE.exists():
         return
     with locked_file(PIPELINE_STATE_FILE, "w", lock_type=fcntl.LOCK_EX) as f:
-        # Truncate under lock, then unlink
+        # Truncate under lock, then unlink — both inside the lock to prevent TOCTOU
         f.truncate(0)
-    PIPELINE_STATE_FILE.unlink(missing_ok=True)
+        PIPELINE_STATE_FILE.unlink(missing_ok=True)
 
 
 # ──────────────────────────────────────────────

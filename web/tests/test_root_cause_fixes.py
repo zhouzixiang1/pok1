@@ -190,8 +190,8 @@ class TestP6FixInjection:
     def test_severity_logic(self):
         from core.fix_injection import log_fix_application
         source = inspect.getsource(log_fix_application)
-        # Changed from "warn" if skipped to "warn" if skipped and not applied
-        assert "skipped and not applied" in source
+        # Changed from "warn" if skipped and not applied to "warn" if skipped and applied
+        assert "skipped and applied" in source
 
     def test_active_fixes_still_functional(self):
         from core.fix_injection import MANDATORY_FIXES

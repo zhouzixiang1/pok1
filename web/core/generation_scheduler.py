@@ -234,7 +234,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
             log.warning("H2H anomaly check error (skipping): %s", e)
 
     return GenerationContext(
-        current_v=active_v,
+        current_v=current_v,
         next_v=current_v + 1,
         strategy=strategy,
         source_v=source_v,
@@ -271,6 +271,30 @@ def _decide_strategy(combined, current_v, ratings):
                 _source_loop, leader_v,
             )
             return "master", leader_v, ()
+
+    # Source-v oscillation detection: if recent gens cycle among a small set
+    # of ancestors, force crossover between the highest and lowest rated bots
+    # from that oscillating set to break out of the cycle.
+    oscillating = _detect_source_oscillation(n=8, max_unique=3)
+    if oscillating:
+        # Find highest and lowest rated bots within the oscillating set
+        osc_ratings = {}
+        for sv in oscillating:
+            bot_key = f"claude_v{sv}"
+            if bot_key in ratings:
+                osc_ratings[sv] = ratings[bot_key].r
+        if len(osc_ratings) >= 2:
+            highest_v = max(osc_ratings, key=osc_ratings.get)
+            lowest_v = min(osc_ratings, key=osc_ratings.get)
+            if highest_v != lowest_v:
+                log.warning(
+                    "Source-v oscillation: forcing crossover between highest-rated v%d (%.0f) "
+                    "and lowest-rated v%d (%.0f) from oscillating set %s",
+                    highest_v, osc_ratings[highest_v],
+                    lowest_v, osc_ratings[lowest_v],
+                    sorted(oscillating),
+                )
+                return "crossover", highest_v, (highest_v, lowest_v)
 
     # Priority 1: Stagnation with high/medium confidence → crossover
     # This is the PRIMARY escape hatch from local optima — must fire before
@@ -356,6 +380,45 @@ def _detect_source_loop(n=3):
         recent = sources[-(n + 1):] if len(sources) >= n + 1 else sources[-n:] if len(sources) >= n else []
         if len(recent) >= n and len(set(recent)) == 1:
             return recent[0]
+    except Exception:
+        pass
+    return None
+
+
+def _detect_source_oscillation(n=8, max_unique=3):
+    """Check if recent generations oscillate among a small set of source_v values.
+
+    Reads the last n source_v values from system events. If the unique count is
+    max_unique or fewer, the system is oscillating — repeatedly switching between
+    the same small set of ancestors without convergence.
+
+    Returns the set of oscillating source_v values if detected, None otherwise.
+    """
+    try:
+        import json as _json
+        from evolution_infra import RESULTS_DIR
+        events_file = RESULTS_DIR / "system_events.jsonl"
+        if not events_file.exists():
+            return None
+        sources = []
+        with open(events_file, "r") as f:
+            for line in f:
+                try:
+                    evt = _json.loads(line)
+                    if evt.get("type") == "pipeline.prepare":
+                        sv = evt.get("data", {}).get("source_v")
+                        if sv is not None:
+                            sources.append(sv)
+                except (ValueError, KeyError):
+                    continue
+        recent = sources[-n:]
+        if len(recent) < max_unique + 1:
+            return None  # Not enough data to detect oscillation
+        unique_sources = set(recent)
+        if len(unique_sources) <= max_unique:
+            log.warning("Source-v oscillation detected: last %d gens used only %d unique sources: %s",
+                        len(recent), len(unique_sources), sorted(unique_sources))
+            return unique_sources
     except Exception:
         pass
     return None

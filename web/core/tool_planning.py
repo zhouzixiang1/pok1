@@ -702,9 +702,15 @@ async def execute_workers(args):
         # Preserve the master plan structure (with analysis) from checkpoint,
         # rather than replacing it with the raw tasks list
         plan = ckpt.get("master_plan", tasks) if ckpt else tasks
+        # Store audit_focus_areas in audit_context so reviewer can read them
+        _audit_ctx = None
+        if audit_focus_areas:
+            _existing_audit = ckpt.get("audit_context", {}) if ckpt else {}
+            _audit_ctx = {**_existing_audit, "worker_cot_focus_areas": audit_focus_areas}
         write_pipeline_checkpoint(next_v, source_v, "workers_done",
                                   master_plan=plan, reviewer_feedback=reviewer_feedback,
-                                  worker_failure_count=failure_count)
+                                  worker_failure_count=failure_count,
+                                  audit_context=_audit_ctx)
     else:
         # Increment failure count on worker failure; successful batches do not consume the budget.
         # Always set stage to 'master_planned' on failure — this clearly indicates
@@ -728,5 +734,6 @@ async def execute_workers(args):
         "boundary_errors": boundary_errors,
         "logs": ui.get_output(),
         "costs": ui.costs,
+        "audit_focus_areas": audit_focus_areas,
     }
     return _json_tool_result(result)
