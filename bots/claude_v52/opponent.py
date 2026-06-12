@@ -1,17 +1,51 @@
-from constants import (
-    BIG_BLIND, N_PLAYERS,
-    PRIOR_VPIP, PRIOR_PFR, PRIOR_ALLIN_RATE, PRIOR_POSTFLOP_AGGR,
-    PRIOR_POSTFLOP_CHECK, PRIOR_FOLD_TO_RAISE, PRIOR_AGGRESSION,
-    PRIOR_FLOP_AGGR, PRIOR_TURN_AGGR, PRIOR_RIVER_AGGR, PRIOR_BARREL_FREQ,
-    PRIOR_VPID_WEIGHT, PRIOR_PFR_WEIGHT, PRIOR_ALLIN_WEIGHT,
-    PRIOR_POSTFLOP_AGGR_WEIGHT, PRIOR_POSTFLOP_CHECK_WEIGHT, PRIOR_FTR_WEIGHT, PRIOR_AGGRESSION_WEIGHT,
-    PRIOR_FLOP_AGGR_WEIGHT, PRIOR_TURN_AGGR_WEIGHT, PRIOR_RIVER_AGGR_WEIGHT, PRIOR_BARREL_WEIGHT,
-    DEFAULT_AVG_RAISE_BB, DEFAULT_FLOP_RAISE_BB, DEFAULT_TURN_RAISE_BB, DEFAULT_RIVER_RAISE_BB,
-    CONFIDENCE_OFFSET, CONFIDENCE_SCALE,
-)
+from constants import BIG_BLIND, N_PLAYERS
 from card_utils import clamp, next_player
 from state import collect_latest_requests_by_hand
 from tournament import opponent_can_lock_win
+
+
+# Default priors (hardcoded for archetype classifier independence)
+_PRIOR_VPIP = 0.58
+_PRIOR_PFR = 0.28
+_PRIOR_POSTFLOP_AGGR = 0.36
+_PRIOR_FOLD_TO_RAISE = 0.44
+
+
+def classify_opponent_archetype(opponent_model):
+    """Classify opponent into behavioral archetype for structural adjustments.
+
+    Returns one of: 'calling_station', 'nit', 'lag', 'tag', 'unknown'.
+    Requires confidence >= 0.15 to avoid noisy misclassification.
+
+    Archetype definitions:
+    - calling_station: high VPIP, low fold-to-raise, passive postflop
+      → don't bluff barrels, don't bluff 3bet preflop
+    - nit: low VPIP, high fold-to-raise
+      → wider bluff range (they fold), smaller value sizing
+    - lag: high VPIP with high postflop aggression
+      → respect their raises, tighten call thresholds
+    - tag: balanced tight-aggressive
+      → play standard balanced strategy
+    """
+    confidence = opponent_model.get('confidence', 0.0)
+    if confidence < 0.15:
+        return 'unknown'
+
+    vpip = opponent_model.get('vpip', _PRIOR_VPIP)
+    pfr = opponent_model.get('pfr', _PRIOR_PFR)
+    postflop_aggr = opponent_model.get('postflop_aggr', _PRIOR_POSTFLOP_AGGR)
+    fold_to_raise = opponent_model.get('fold_to_raise', _PRIOR_FOLD_TO_RAISE)
+
+    if vpip > 0.65 and fold_to_raise < 0.35 and postflop_aggr < 0.28:
+        return 'calling_station'
+    if vpip < 0.40 and fold_to_raise > 0.55:
+        return 'nit'
+    if vpip > 0.60 and postflop_aggr > 0.45:
+        return 'lag'
+    if vpip > 0.45 and pfr > 0.25 and postflop_aggr > 0.30:
+        return 'tag'
+
+    return 'unknown'
 
 
 def smooth_rate(successes, total, prior_mean, prior_weight):
@@ -122,82 +156,27 @@ def build_opponent_model(requests, my_id):
             if opp_bet_turn:
                 barrel_continue += 1
 
-    confidence = clamp((total_actions - CONFIDENCE_OFFSET) / CONFIDENCE_SCALE, 0.0, 1.0)
-    avg_raise_bb = sum(raise_sizes) / len(raise_sizes) if raise_sizes else DEFAULT_AVG_RAISE_BB
+    confidence = clamp((total_actions - 5) / 35.0, 0.0, 1.0)
+    avg_raise_bb = sum(raise_sizes) / len(raise_sizes) if raise_sizes else 2.6
 
     return {
         "confidence": confidence,
-        "vpip": smooth_rate(voluntary_preflop, preflop_opportunities, PRIOR_VPIP, PRIOR_VPID_WEIGHT),
-        "pfr": smooth_rate(preflop_raise, preflop_opportunities, PRIOR_PFR, PRIOR_PFR_WEIGHT),
-        "allin_rate": smooth_rate(allin_actions, total_actions, PRIOR_ALLIN_RATE, PRIOR_ALLIN_WEIGHT),
-        "postflop_aggr": smooth_rate(postflop_aggressive, postflop_actions, PRIOR_POSTFLOP_AGGR, PRIOR_POSTFLOP_AGGR_WEIGHT),
-        "postflop_check_rate": smooth_rate(postflop_checks, postflop_actions, PRIOR_POSTFLOP_CHECK, PRIOR_POSTFLOP_CHECK_WEIGHT),
-        "fold_to_raise": smooth_rate(fold_to_raise, fold_to_raise_opportunities, PRIOR_FOLD_TO_RAISE, PRIOR_FTR_WEIGHT),
-        "aggression": smooth_rate(aggressive_actions, total_actions, PRIOR_AGGRESSION, PRIOR_AGGRESSION_WEIGHT),
+        "vpip": smooth_rate(voluntary_preflop, preflop_opportunities, 0.58, 4.0),
+        "pfr": smooth_rate(preflop_raise, preflop_opportunities, 0.28, 4.0),
+        "allin_rate": smooth_rate(allin_actions, total_actions, 0.05, 8.0),
+        "postflop_aggr": smooth_rate(postflop_aggressive, postflop_actions, 0.36, 5.0),
+        "postflop_check_rate": smooth_rate(postflop_checks, postflop_actions, 0.42, 5.0),
+        "fold_to_raise": smooth_rate(fold_to_raise, fold_to_raise_opportunities, 0.44, 4.0),
+        "aggression": smooth_rate(aggressive_actions, total_actions, 0.30, 6.0),
         "avg_raise_bb": avg_raise_bb,
-        "flop_aggr": smooth_rate(flop_bets, flop_acts, PRIOR_FLOP_AGGR, PRIOR_FLOP_AGGR_WEIGHT),
-        "turn_aggr": smooth_rate(turn_bets, turn_acts, PRIOR_TURN_AGGR, PRIOR_TURN_AGGR_WEIGHT),
-        "river_aggr": smooth_rate(river_bets, river_acts, PRIOR_RIVER_AGGR, PRIOR_RIVER_AGGR_WEIGHT),
-        "avg_flop_raise_bb": sum(flop_raise_bb)/len(flop_raise_bb) if flop_raise_bb else DEFAULT_FLOP_RAISE_BB,
-        "avg_turn_raise_bb": sum(turn_raise_bb)/len(turn_raise_bb) if turn_raise_bb else DEFAULT_TURN_RAISE_BB,
-        "avg_river_raise_bb": sum(river_raise_bb)/len(river_raise_bb) if river_raise_bb else DEFAULT_RIVER_RAISE_BB,
-        "barrel_freq": smooth_rate(barrel_continue, barrel_hands, PRIOR_BARREL_FREQ, PRIOR_BARREL_WEIGHT),
+        "flop_aggr": smooth_rate(flop_bets, flop_acts, 0.36, 5.0),
+        "turn_aggr": smooth_rate(turn_bets, turn_acts, 0.32, 5.0),
+        "river_aggr": smooth_rate(river_bets, river_acts, 0.28, 5.0),
+        "avg_flop_raise_bb": sum(flop_raise_bb)/len(flop_raise_bb) if flop_raise_bb else 3.0,
+        "avg_turn_raise_bb": sum(turn_raise_bb)/len(turn_raise_bb) if turn_raise_bb else 4.5,
+        "avg_river_raise_bb": sum(river_raise_bb)/len(river_raise_bb) if river_raise_bb else 5.5,
+        "barrel_freq": smooth_rate(barrel_continue, barrel_hands, 0.45, 4.0),
     }
-
-
-def build_action_sequence_profile(req, state, my_id):
-    """Analyze opponent's betting pattern across streets in the current hand."""
-    opponent_id = 1 - my_id
-    history = req.get('history', [])
-    round_idx = state['round']
-
-    profile = {
-        'bet_street_count': 0,      # How many streets opponent bet/raised
-        'total_street_count': 0,     # Total postflop streets seen
-        'is_triple_barrel': False,   # Bet all 3 postflop streets
-        'is_double_barrel': False,   # Bet 2+ consecutive streets
-        'river_bet_after_check': False,  # Checked earlier, bet river
-        'aggression_intensity': 0.0, # 0.0-1.0 score of aggression
-    }
-
-    if round_idx < 1:
-        return profile
-
-    # Track which streets opponent bet/raised
-    street_bet = {1: False, 2: False, 3: False}
-    street_had_action = {1: False, 2: False, 3: False}
-    last_opp_round = -1
-    consecutive_bets = 0
-
-    for record in history:
-        if record['player_id'] != opponent_id or record['round'] == 0:
-            continue
-        r = record['round']
-        if r > round_idx:
-            continue
-        street_had_action[r] = True
-        if record['action_type'] in ('raise', 'allin'):
-            street_bet[r] = True
-            if last_opp_round == r - 1 or (last_opp_round >= 1 and consecutive_bets > 0):
-                consecutive_bets += 1
-            else:
-                consecutive_bets = 1
-            last_opp_round = r
-        elif record['action_type'] == 'check':
-            consecutive_bets = 0
-            last_opp_round = r
-
-    postflop_streets_seen = sum(1 for r in range(1, round_idx + 1) if street_had_action.get(r, False))
-    postflop_bets = sum(1 for r in range(1, round_idx + 1) if street_bet.get(r, False))
-
-    profile['bet_street_count'] = postflop_bets
-    profile['total_street_count'] = postflop_streets_seen
-    profile['is_triple_barrel'] = postflop_bets >= 3
-    profile['is_double_barrel'] = postflop_bets >= 2
-    profile['river_bet_after_check'] = street_bet.get(3, False) and not street_bet.get(1, False) and not street_bet.get(2, False)
-    profile['aggression_intensity'] = postflop_bets / max(1, postflop_streets_seen)
-
-    return profile
 
 
 def analyze_current_spot(req, state):
