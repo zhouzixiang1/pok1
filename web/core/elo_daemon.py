@@ -350,21 +350,40 @@ def cleanup_old_replays():
 
 
 def _rotate_jsonl(filepath, max_lines):
-    """Trim a JSONL file to keep only the last `max_lines` lines."""
+    """Trim a JSONL file to keep only the last `max_lines` lines.
+
+    Uses fcntl LOCK_EX to serialize with concurrent writers (workers, web process)
+    who also use locked_file() with LOCK_EX for appends.
+    Only rotates files OWNED by the daemon (written in save_cycle).
+    """
     if not filepath.exists():
         return
     try:
         # Quick size check — skip if small
         if filepath.stat().st_size < 1_000_000:  # < 1MB
             return
-        lines = filepath.read_text(encoding="utf-8", errors="replace").splitlines()
-        if len(lines) <= max_lines:
-            return
-        trimmed = lines[-max_lines:]
-        tmp = filepath.with_suffix(".tmp")
-        tmp.write_text("\n".join(trimmed) + "\n", encoding="utf-8")
-        os.replace(str(tmp), str(filepath))
-        log.debug("Rotated %s: %d → %d lines", filepath.name, len(lines), max_lines)
+        # Acquire exclusive lock to prevent concurrent writers from losing data
+        fd = open(filepath, "r")
+        try:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            content = fd.read()
+            lines = content.splitlines() if content else []
+            if len(lines) <= max_lines:
+                return
+            trimmed = lines[-max_lines:]
+            tmp = filepath.with_suffix(".tmp")
+            tmp.write_text("\n".join(trimmed) + "\n", encoding="utf-8")
+            os.replace(str(tmp), str(filepath))
+            log.debug("Rotated %s: %d → %d lines", filepath.name, len(lines), max_lines)
+        finally:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            fd.close()
+        # Clean up stale .tmp if present from a previous crash
+        stale_tmp = filepath.with_suffix(".tmp")
+        if stale_tmp.exists():
+            stale_tmp.unlink(missing_ok=True)
     except Exception as e:
         log.debug("JSONL rotation failed for %s: %s", filepath.name, e)
 
@@ -477,7 +496,7 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
     # Rotate growing JSONL files to prevent unbounded growth
     _rotate_jsonl(RESULTS_DIR / "rating_history.jsonl", MAX_RATING_HISTORY_LINES)
     _rotate_jsonl(MATCH_HISTORY_FILE, MAX_MATCH_HISTORY_LINES)
-    _rotate_jsonl(RESULTS_DIR / "system_events.jsonl", MAX_SYSTEM_EVENTS_LINES)
+    # Note: system_events.jsonl is written by web process, rotated by system_log.py
 
     # Compute and write bot action stats from replay files (single-pass)
     try:

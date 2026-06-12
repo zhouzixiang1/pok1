@@ -74,11 +74,9 @@ def main():
     from server.state import app_state
     app_state.update_config(daemon_enabled=not args.no_daemon)
 
-    # Register atexit daemon cleanup as backup (lifespan handler is primary)
-    import atexit
-    sys.path.insert(0, str(WEB_DIR / "core"))
-    from daemon_management import stop_daemon
-    atexit.register(stop_daemon)
+    # Note: atexit.register(stop_daemon) is handled inside start_daemon() itself
+    # (daemon_management.py line ~90) — no need to register again here.
+    # Duplicate registration causes stop_daemon to run 2x on exit (1s wasted in orphan checks).
 
     uvicorn.run(
         "server.app:app",

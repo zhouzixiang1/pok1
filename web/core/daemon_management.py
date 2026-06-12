@@ -14,6 +14,9 @@ import sys
 import time
 import threading
 
+from evolution_infra import RESULTS_DIR
+from system_log import log_system_event
+
 log = logging.getLogger("pok.infra")
 
 # Global daemon process handle
@@ -49,7 +52,9 @@ def start_daemon(workers=None, pairs=5, scheduler_capable=True):
     from evolution_infra import CORE_DIR, RESULTS_DIR
 
     with _daemon_lock:
-        _daemon_shutting_down = False
+        # Only clear the shutdown flag if we're not actively shutting down
+        if not _daemon_shutting_down:
+            _daemon_shutting_down = False
         # Check in-memory handle first — if daemon is alive, no need to touch PID file.
         # This MUST happen before reading the PID file to avoid killing a running daemon
         # whose PID file still exists from a previous start_daemon() call.
@@ -132,16 +137,13 @@ def stop_daemon():
                     pass
         daemon_proc = None
         # Clean up PID file
-        from evolution_infra import RESULTS_DIR
         daemon_pid_file = RESULTS_DIR / ".daemon_pid"
         daemon_pid_file.unlink(missing_ok=True)
-    from system_log import log_system_event
     log_system_event("daemon.stopped", "info", "Daemon stopped")
 
 
 def _kill_orphan_from_pid_file():
     """Kill any orphan daemon process recorded in the PID file."""
-    from evolution_infra import RESULTS_DIR
     daemon_pid_file = RESULTS_DIR / ".daemon_pid"
     if not daemon_pid_file.exists():
         return

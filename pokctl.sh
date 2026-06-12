@@ -150,7 +150,8 @@ cmd_stop() {
     if [ -f "$daemon_pid_file" ]; then
         local daemon_pid
         daemon_pid=$(python3 -c "import json; print(json.load(open('$daemon_pid_file'))['pid'])" 2>/dev/null || echo "")
-        if [ -n "$daemon_pid" ] && is_alive "$daemon_pid"; then
+        # 验证 PID 是合法正整数 (>1)，防止 PID 0 或负数导致 kill 误杀
+        if [ -n "$daemon_pid" ] && [[ "$daemon_pid" =~ ^[0-9]+$ ]] && [ "$daemon_pid" -gt 1 ] && is_alive "$daemon_pid"; then
             echo "  停止 daemon (PID: $daemon_pid, 独立进程组)..."
             kill -9 -"$daemon_pid" 2>/dev/null || kill -9 "$daemon_pid" 2>/dev/null || true
         fi
@@ -170,9 +171,8 @@ cmd_stop() {
     if is_alive "$pid"; then
         echo "  超时（${waited}s），强制终止..."
         kill -9 -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
-        # 兜底：杀所有可能残留的子进程
+        # 兜底：只杀 elo_daemon 残留（daemon 进程组已在 Phase 1 被杀）
         pkill -9 -f "python.*elo_daemon" 2>/dev/null || true
-        pkill -9 -f "python.*bots/" 2>/dev/null || true
         sleep 1
     fi
 

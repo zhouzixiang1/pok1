@@ -135,6 +135,7 @@ def choose_anti_lock_pressure_action(
     draw_info=None,
     blocker_profile=None,
     board_texture=None,
+    made_strength=0.0,
 ):
     if state["opponent_allin"] or my_chips <= 1:
         return None
@@ -162,8 +163,20 @@ def choose_anti_lock_pressure_action(
     if tier in ("strong", "nut") or has_draw:
         emergency_jam = emergency_jam and hands_left <= 3
 
+    # River guard: prevent all-in with weak made hands
+    river_weak_made = (
+        round_idx == 3
+        and tier in ('none', 'thin')
+        and not has_draw
+        and not has_blocker
+        and made_strength < 0.40
+    )
+
     if emergency_jam:
-        return -2
+        if river_weak_made:
+            pass  # Don't jam with weak river hands — use calibrated sizing or check
+        else:
+            return -2
 
     min_raise_action = state.get("min_raise_action", state["round_raise"])
 
@@ -187,10 +200,13 @@ def choose_anti_lock_pressure_action(
         target = int(target * 1.12)
 
     amount = max(min_raise_action, target)
-    if amount >= my_chips * 0.72:
+    jam_threshold = 0.90 if river_weak_made else 0.72
+    if amount >= my_chips * jam_threshold:
         return -2
     amount = min(amount, my_chips - 1)
     if amount <= to_call or amount < min_raise_action:
+        if river_weak_made:
+            return None  # Check instead of jamming with weak river hand
         return -2 if hands_left <= 4 else None
     return amount
 
@@ -757,6 +773,7 @@ def get_action(req, requests):
                     opponent_model,
                     remaining_hands,
                     preflop_strength=preflop_strength,
+                    made_strength=0.0,
                 )
                 if anti_lock_attack is not None:
                     return anti_lock_attack
@@ -1048,6 +1065,7 @@ def get_action(req, requests):
                 draw_info=draw_info,
                 blocker_profile=blocker_profile,
                 board_texture=board_texture,
+                made_strength=made_strength,
             )
         fragile_river_raise_fold = (
             round_idx == 3
@@ -1274,6 +1292,7 @@ def get_action(req, requests):
             draw_info=draw_info,
             blocker_profile=blocker_profile,
             board_texture=board_texture,
+            made_strength=made_strength,
         )
         if anti_lock_attack is not None:
             return anti_lock_attack
