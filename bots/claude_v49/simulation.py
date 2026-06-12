@@ -43,6 +43,40 @@ def combo_range_weight(combo, public_cards, state, opponent_model, spot_info):
     return max(weight, 1e-6)
 
 
+def board_range_filter(combos, weights, public_cards, state, spot_info, opponent_model):
+    """Post-filter opponent combo weights based on action sequence consistency.
+
+    If opponent raised preflop, deprioritize trash hands (they wouldn't raise).
+    If facing postflop aggression, deprioritize pure air (they wouldn't bet).
+    Uses soft weighting (0.1-0.4 factors) rather than hard elimination to
+    preserve Monte Carlo variance reduction.
+    """
+    filtered_weights = list(weights)
+    pfr = opponent_model.get("pfr", 0.28)
+
+    # Preflop action consistency
+    if spot_info.get("opp_preflop_raises", 0) > 0:
+        for i, combo in enumerate(combos):
+            pf_str = estimate_preflop_strength(list(combo))
+            if pf_str < 0.35 and pfr < 0.30:
+                filtered_weights[i] *= 0.10
+            elif pf_str < 0.40:
+                filtered_weights[i] *= 0.40
+
+    # Postflop action consistency
+    if (
+        (spot_info.get("facing_postflop_aggression") or spot_info.get("facing_allin"))
+        and len(public_cards) >= 3
+    ):
+        for i, combo in enumerate(combos):
+            made = made_hand_metric(list(combo), public_cards)
+            draw = draw_potential(list(combo), public_cards)
+            if made < 0.15 and draw < 0.08:
+                filtered_weights[i] *= 0.30
+
+    return combos, filtered_weights
+
+
 def build_opponent_range(my_cards, public_cards, state, opponent_model, spot_info):
     used = set(my_cards + public_cards)
     deck = [card for card in range(52) if card not in used]
@@ -52,6 +86,7 @@ def build_opponent_range(my_cards, public_cards, state, opponent_model, spot_inf
         combo = (first, second)
         combos.append(combo)
         weights.append(combo_range_weight(combo, public_cards, state, opponent_model, spot_info))
+    combos, weights = board_range_filter(combos, weights, public_cards, state, spot_info, opponent_model)
     return combos, weights
 
 

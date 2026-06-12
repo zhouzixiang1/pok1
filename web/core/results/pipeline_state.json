@@ -1,8 +1,43 @@
 {
-  "next_v": 49,
-  "source_v": 37,
-  "stage": "direction_audited",
-  "master_plan": null,
+  "next_v": 52,
+  "source_v": 51,
+  "stage": "master_planned",
+  "master_plan": {
+    "analysis": "v51 ranks #10/30 (Glicko 816.5), h2h_avg_wr=0.5009 over 1380 games across 29 opponents. Stagnation confirmed (delta=1.8 over 6 periods). Key weakness pattern from replay data: the bot raises/all-ins with one_pair hands on the river (replay hands H4, H9, H2, H1 \u2014 all one_pair raises causing -15K to -18K losses per game). Flop/turn play is call-heavy (62-65%) building medium pots with marginal hands, which leads to expensive river confrontations. The direction audit blocks fold subsystem changes (exhausted v48-v52). Diversity injection: instead of tuning fold thresholds again, implement pot-control on early streets \u2014 check back thin/medium hands on flop/turn to keep pots small, and prevent betting one_pair on the river into medium/large pots. This attacks the upstream cause: oversized pots with marginal holdings make river decisions catastrophic regardless of fold calibration.",
+    "targeted_failure": "River one_pair raises into medium/large pots (replay evidence: 5 of 10 biggest-swing hands involve raising with one_pair on river, causing -15K to -18K per hand). Upstream cause: flop/turn betting builds pots with marginal hands that should be checked back.",
+    "expected_behavior_change": "(1) Flop/turn: check back thin/medium-strength hands when IP on non-dynamic boards instead of betting 50-60% pot. (2) River: stop betting (check back) one_pair hands when pot > 400 and hand tier is thin/none. This reduces average pot size on later streets and eliminates the biggest-loss pattern of raising one_pair into big pots.",
+    "do_not_touch": [
+      "should_fold_postflop() \u2014 fold subsystem exhausted",
+      "detect_bluff_catch_signal() \u2014 fold subsystem exhausted",
+      "hand_strength_tier() \u2014 fold subsystem exhausted",
+      "estimate_equity_from_tier() \u2014 fold subsystem exhausted",
+      "Any fold/call decision thresholds (RAISE_RATIO, fold equity constants, bluff-catch override logic)",
+      "constants.py \u2014 no constant changes this generation",
+      "should_lock_win(), fold_gives_opponent_lock() \u2014 tournament logic"
+    ],
+    "measurement_plan": "1. Decision test: verify bot still bets with strong/nut hands (no regression on AA/KK/QQ/AK value lines). 2. H2H vs v30 (current 44% WR \u2014 biggest weakness). 3. H2H vs v13 (45% WR \u2014 second weakness). 4. H2H vs v50 (56% WR \u2014 verify no regression on strength). 5. Mirror battle vs parent v51: expect reduced average pot size and fewer -10K+ single-hand losses.",
+    "branch_from": null,
+    "tasks": [
+      {
+        "worker_id": 1,
+        "role": "Algorithmic Logic Architect",
+        "target_files": [
+          "strategy.py"
+        ],
+        "difficulty": "medium",
+        "worker_prompt": "## Task: Add Flop/Turn Pot-Control Check-Back\n\n### Problem\nThe bot leaks chips by betting flop/turn with thin/medium hands (one_pair, weak pair) when IP, building pots that become expensive on the river. Replay data shows 62-65% flop call rate building medium pots, then river one_pair raises cause -15K losses.\n\n### Solution\nAdd a `should_checkback_pot_control()` function in strategy.py that identifies spots where checking back is better than betting. Wire it into `get_action()` BEFORE the main betting decision (before line ~1477 `thin_static_showdown_control`).\n\n### Code Skeleton \u2014 add near line 1330 (after `weak_pair_river` definition):\n\n```python\ndef should_checkback_pot_control(round_idx, to_call, value_profile, board_texture,\n                                   made_strength, draw_strength, spot_info,\n                                   opponent_model, pot, has_position):\n    \"\"\"Check back thin/medium hands on flop/turn to control pot size.\"\"\"\n    if to_call != 0:\n        return False\n    if round_idx not in (1, 2):  # Only flop and turn\n        return False\n    if not has_position:  # Only check back when IP\n        return False\n    tier = value_profile.get('tier', 'none') if value_profile else 'none'\n    if tier in ('strong', 'nut'):\n        return False\n    if draw_strength >= 0.14:  # Don't check back with draws\n        return False\n    if board_texture is not None and board_texture.get('dynamic', False):\n        return False  # Dynamic boards need more aggression\n    if made_strength >= 0.55:  # Only thin/medium hands\n        return False\n    if spot_info.get('facing_postflop_aggression', False):\n        return False  # Not applicable when facing aggression\n    # Against passive opponents, still value bet thin hands\n    confidence = opponent_model.get('confidence', 0.0)\n    if confidence >= 0.25:\n        aggr = opponent_model.get('postflop_aggr', 0.36)\n        if aggr < 0.28:  # Very passive \u2014 value bet instead\n            return False\n    return True\n```\n\n### Wiring \u2014 add in get_action() after line ~1476 (after `bad_stackoff_overpair` return) and before `thin_static_showdown_control`:\n\n```python\nif should_checkback_pot_control(round_idx, to_call, value_profile, board_texture,\n                                 made_strength, draw_strength, spot_info,\n                                 opponent_model, pot, spot_info['has_position']):\n    return 0  # Check back to control pot size with marginal hand\n```\n\n### CRITICAL\n- Do NOT modify any fold logic, fold thresholds, or call thresholds\n- Do NOT modify constants.py\n- Place the function BEFORE get_action() in the file\n- The function should go near the other helper functions (after `detect_bluff_catch_signal` around line 730)\n- Ensure the wiring is AFTER the overbet/donk/probe evaluation blocks (those are intentional aggression)\n- But BEFORE the main `thin_static_showdown_control` check at line ~1477\n- Verify no import changes needed (all required imports already exist)"
+      },
+      {
+        "worker_id": 2,
+        "role": "Algorithmic Logic Architect",
+        "target_files": [
+          "strategy.py"
+        ],
+        "difficulty": "medium",
+        "worker_prompt": "## Task: Add River Marginal Hand Bet Gate\n\n### Problem\nReplay analysis shows 5 of 10 biggest-loss hands involve the bot RAISING with one_pair on the river: raise_to 201-214 with one_pair causing -15K to -18K losses. The existing `bad_river_bluff_candidate` check (line 1342) only blocks bets when made_strength < 0.40. Many one_pair hands have made_strength 0.40-0.55, which bypass this gate.\n\n### Solution\nAdd a `should_checkback_river_marginal()` function that prevents betting weak/medium hands on the river when the pot is already medium-large. This is a CHECK-BACK gate (not a fold gate) \u2014 it prevents building bigger pots with marginal holdings.\n\n### Code Skeleton \u2014 add after the `should_checkback_pot_control` function (Worker 1's code):\n\n```python\ndef should_checkback_river_marginal(round_idx, to_call, value_profile, made_strength,\n                                     draw_strength, pair_profile, pot, board_texture,\n                                     spot_info, opponent_model, has_position):\n    \"\"\"Prevent betting marginal hands on the river into medium/large pots.\"\"\"\n    if round_idx != 3:\n        return False\n    if to_call != 0:  # Only for betting decisions (to_call == 0)\n        return False\n    tier = value_profile.get('tier', 'none') if value_profile else 'none'\n    if tier in ('strong', 'nut'):\n        return False\n    if draw_strength >= 0.14:\n        return False\n    # One pair or weaker: pair_profile made_class == 1 (one pair)\n    # or no pair at all\n    is_one_pair = pair_profile is not None and pair_profile.get('made_class') == 1\n    is_weak = made_strength < 0.50\n    if not (is_one_pair or is_weak):\n        return False\n    # Don't block thin value against very passive opponents\n    confidence = opponent_model.get('confidence', 0.0)\n    if confidence >= 0.25:\n        aggr = opponent_model.get('postflop_aggr', 0.36)\n        check_rate = opponent_model.get('postflop_check_rate', 0.42)\n        if aggr < 0.25 and check_rate >= 0.55 and made_strength >= 0.40:\n            return False  # Value bet vs calling stations\n    # Block bet if pot is medium-large\n    if pot >= 400:  # 4BB threshold \u2014 small pots are ok to bet\n        if made_strength < 0.45:\n            return True\n        if is_one_pair and pot >= 800:  # 8BB \u2014 only bet one_pair into small pots\n            return True\n    return False\n```\n\n### Wiring \u2014 add in get_action() AFTER `should_checkback_pot_control` and BEFORE `thin_static_showdown_control`:\n\n```python\nif should_checkback_river_marginal(round_idx, to_call, value_profile, made_strength,\n                                     draw_strength, pair_profile, pot, board_texture,\n                                     spot_info, opponent_model, spot_info['has_position']):\n    return 0  # Check back marginal hand on river\n```\n\n### CRITICAL\n- Do NOT modify fold logic, fold thresholds, call thresholds, or any constants\n- This is a CHECK-BACK gate for the BETTING path (to_call == 0), not a fold gate\n- The function should only prevent BETTING with weak hands, not calling or folding\n- Place function near `should_checkback_pot_control` (Worker 1's code, around line 730)\n- Wire the check AFTER overbet/donk/probe blocks (those have their own eligibility) but BEFORE the main `thin_static_showdown_control` and main betting path\n- Ensure we still value bet one_pair against confirmed passive opponents (calling stations)\n- The `pot >= 400` threshold targets the replay pattern where pots of 150-314 get raised with one_pair"
+      }
+    ]
+  },
   "reviewer_feedback": "",
   "generation_attempt": 0,
   "worker_failure_count": 0,
@@ -11,18 +46,27 @@
   "direction_audit": {
     "repetition_detected": true,
     "exhausted_directions": [
-      "postflop fold threshold tuning",
-      "river fold gates (inline/layered)",
-      "equity estimation methods (simulation\u2192tier-based)",
-      "parallel fold path consolidation"
+      "postflop fold mechanism redesign (tier equity, bluff-catch signal, fold-chain override)",
+      "postflop fold constant tuning (RAISE_RATIO, fold thresholds)"
     ],
-    "mandatory_constraints": "DO NOT modify should_fold_postflop(), fold thresholds, fold gates, equity estimation methods, or any river fold decision logic. The postflop fold subsystem has been reworked 5 consecutive generations (v44-v48) with diminishing returns \u2014 v48 drew 5-5 against v47 and still loses to v30. The fold path is now consolidated into tier-based equity; further tuning is exhausted. Instead, evolve ONE of: (1) preflop 3-bet/4-bet bluff frequency and sizing against different opponent types, (2) flop c-bet and turn barrel sizing strategy (currently no opponent-adaptive sizing exists), or (3) river value-bet thin-value extraction for medium-strength hands that currently check behind.",
-    "suggested_direction": "Add opponent-adaptive flop/turn barrel sizing: track opponent fold-to-cbet and fold-to-turn-barrel tendencies, then size bets to exploit \u2014 small bets (25-33% pot) vs sticky callers, large bets (75-100% pot) vs folders. The bot currently uses fixed sizing ratios (RAISE_RATIO_FLOP/TURN) with no opponent awareness on offensive streets. This is the offensive complement to the defensive fold work done in v44-v48.",
+    "mandatory_constraints": "DO NOT modify should_fold_postflop(), detect_bluff_catch_signal(), hand_strength_tier(), estimate_equity_from_tier(), or any fold/call decision thresholds. DO NOT adjust RAISE_RATIO, fold equity constants, or bluff-catch override logic. The postflop fold subsystem has been rewritten 4 times across v48-v52 without sustained rating improvement \u2014 this direction is exhausted.",
+    "suggested_direction": "Target a completely different subsystem: preflop range construction. Add a position-aware opening range system (SB open range vs BB open range) with opponent-tendency adjustments. Alternatively, implement pot-control sizing on early streets (flop/turn) \u2014 the bot likely leaks chips by betting too large with marginal hands before reaching the river, which is the upstream cause of the fold-rate problem.",
     "confidence": "high",
-    "resolved": false
+    "resolved": true
   },
-  "audit_context": {},
-  "timestamp": "2026-06-12T01:49:23",
-  "last_stage_change_ts": 1781200163.7587516,
-  "last_update_ts": 1781200163.7587516
+  "audit_context": {
+    "master_audit": {
+      "plan_coherent": true,
+      "contradiction_found": false,
+      "contradictions": [],
+      "experience_alignment": "aligned",
+      "direction_novelty": "novel",
+      "overall_pass": true,
+      "feedback": "Plan passes. Both tasks target the same root cause (marginal-hand pot-building) from complementary angles \u2014 flop/turn check-back (upstream) and river bet gate (downstream) \u2014 with no contradiction. The approach correctly pivots away from the exhausted fold subsystem toward pot-control, exactly matching the direction audit's suggestion. Opponent-model gating in both functions addresses the OPPOSTFLOP_STRATEGY and OPPONENT_MODELING lessons (passive-opponent bypass for value betting). do_not_touch list correctly excludes all exhausted subsystems and constants.py. Minor note for execution: Worker 2's prompt references Worker 1's output ('add after should_checkback_pot_control'), creating a soft dependency if workers run in parallel. The existing retry mechanism should handle any merge-ordering issues, but if both workers fail on first attempt due to placement conflicts, consider running them sequentially.",
+      "retry_recommended": false
+    }
+  },
+  "timestamp": "2026-06-12T12:56:10",
+  "last_stage_change_ts": 1781239894.4312947,
+  "last_update_ts": 1781240170.5435448
 }

@@ -161,6 +161,19 @@ async def commit_bot(args):
 
     (bot_dir / ".completed").touch()
 
+    # Write reap_signal early so daemon discovers new bot immediately, even if archive/timeout interrupts later
+    reap_signal = RESULTS_DIR / ".reap_signal"
+    reap_signal.write_text(str(time.time()))
+
+    # Write priority eval signal so daemon schedules this bot heavily
+    priority_file = Path(__file__).parent / "results" / "priority_eval.json"
+    try:
+        from evolution_infra import locked_file
+        with locked_file(priority_file, "w") as f:
+            json.dump({"bot": f"claude_v{v}", "min_games": 100, "since": time.time()}, f)
+    except Exception as e:
+        _log.warning("Priority eval signal write failed for v%d: %s", v, e)
+
     log_system_event("pipeline.committed", "success", f"Committed v{v} from v{source_v}: {strategy[:80]}",
                      {"version": v, "source_v": source_v, "strategy": strategy[:100]})
 
@@ -196,19 +209,6 @@ async def commit_bot(args):
         })
     except Exception:
         pass  # non-blocking enrichment
-
-    # Signal daemon to pick up the new bot
-    reap_signal = RESULTS_DIR / ".reap_signal"
-    reap_signal.write_text(str(time.time()))
-
-    # Write priority eval signal so daemon schedules this bot heavily
-    priority_file = Path(__file__).parent / "results" / "priority_eval.json"
-    try:
-        from evolution_infra import locked_file
-        with locked_file(priority_file, "w") as f:
-            json.dump({"bot": f"claude_v{v}", "min_games": 100, "since": time.time()}, f)
-    except Exception as e:
-        _log.warning("Priority eval signal write failed for v%d: %s", v, e)
 
     result = {"committed": True, "version": v, "source_v": source_v, "push_ok": push_ok}
     active_bots = get_active_bots()

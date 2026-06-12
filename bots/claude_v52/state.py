@@ -1,18 +1,25 @@
-from constants import N_PLAYERS, INITIAL_CHIPS, SMALL_BLIND, BIG_BLIND, TOTAL_HANDS
+from constants import (
+    N_PLAYERS, INITIAL_CHIPS, SMALL_BLIND, BIG_BLIND, TOTAL_HANDS,
+    TRASH_STRENGTH_THRESHOLD,
+)
 from card_utils import card_suit, card_number, next_player, clamp
 
 
 def estimate_preflop_strength(my_cards):
     r1 = card_number(my_cards[0])
     r2 = card_number(my_cards[1])
+    s1 = card_suit(my_cards[0])
+    s2 = card_suit(my_cards[1])
     high = max(r1, r2)
     low = min(r1, r2)
     gap = high - low
+    suited = s1 == s2
     pair = r1 == r2
-    suited = card_suit(my_cards[0]) == card_suit(my_cards[1])
+
     score = 0.0
     score += (high - 2) / 16.0
     score += (low - 2) / 28.0
+
     if pair:
         score += 0.25 + (high - 2) / 30.0
     else:
@@ -24,12 +31,13 @@ def estimate_preflop_strength(my_cards):
             score += 0.03
         elif gap >= 4:
             score -= 0.04
+
     if high == 14:
         score += 0.04
         if low >= 10:
             score += 0.04
-    cap = 0.80 if not pair else 1.0
-    return clamp(score, 0.0, cap)
+
+    return clamp(score, 0.0, 1.0)
 
 
 def preflop_hand_profile(my_cards):
@@ -69,7 +77,7 @@ def is_preflop_trash_hand(my_cards, preflop_strength=None):
     if high >= 11 and low >= 8 and gap <= 4:
         return False
 
-    if strength <= 0.30:
+    if strength <= TRASH_STRENGTH_THRESHOLD:
         return True
     if not suited and high <= 10 and low <= 5 and gap >= 3:
         return True
@@ -234,7 +242,7 @@ def reconstruct_state(req):
     opponent_allin = allin[opponent_id] and alive[opponent_id]
     my_round_bet = 0 if player_bets[my_id] < 0 else player_bets[my_id]
     to_call = max(0, round_bet - my_round_bet)
-    min_raise_action = max(0, 2 * last_raise_to - my_round_bet)
+    min_raise_action = max(0, 2 * last_raise_to + 1 - my_round_bet)
     allin_call_amount = max(
         0,
         min(committed[opponent_id], committed[my_id] + stacks[my_id]) - committed[my_id],

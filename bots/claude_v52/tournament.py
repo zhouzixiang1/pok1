@@ -233,7 +233,8 @@ def _should_4bet_light(my_cards, preflop_strength, opponent_model, state, my_chi
     if preflop_strength < LIGHT_4BET_STRENGTH_LOW or preflop_strength >= LIGHT_4BET_STRENGTH_HIGH:
         return 0
 
-    freq_roll = (hash(tuple(my_cards)) % 100) / 100.0
+    # [v44 mutation] Game-state entropy instead of deterministic hash
+    freq_roll = ((hash(tuple(my_cards)) * 31 + hash(my_chips)) % 100) / 100.0
     if freq_roll >= LIGHT_4BET_FREQ_ROLL_CAP:
         return 0
 

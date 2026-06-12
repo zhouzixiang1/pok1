@@ -7,7 +7,7 @@ Integration: called from strategy.py:get_action() before the standard value bet 
 Only fires on the river (round_idx == 3) with nut-tier hands on dry/static boards.
 """
 
-from card_utils import card_number, card_suit, clamp
+from card_utils import card_number, card_suit, clamp, evaluate_best
 
 
 # ── Overbet eligibility thresholds ─────────────────────────────────────────────
@@ -58,6 +58,15 @@ _OVERBET_DRY_ADJUST = 0.20
 
 # Minimum effective stack ratio (overbet must leave at least 15% of stack)
 _OVERBET_MIN_STACK_RATIO = 0.15
+
+# ── Strong-tier overbet parameters ────────────────────────────────────────────
+# Strong-tier overbet: full houses, top sets, strong flushes
+_OVERBET_STRONG_MAX_WETNESS = 0.35
+_OVERBET_STRONG_MAX_RISK = 0.04
+_OVERBET_STRONG_FREQ_CAP = 0.45
+_OVERBET_STRONG_BASE_RATIO = 1.25
+_OVERBET_STRONG_MAX_RATIO = 1.55
+_OVERBET_STRONG_MIN_POT = 1000
 
 
 def _board_dry_score(public_cards):
@@ -200,6 +209,45 @@ def should_overbet(
         value_profile, board_texture, nutted_risk,
         paired_board_profile, opponent_model, pot, my_chips,
     ):
+        # === Strong-tier overbet path ===
+        score = evaluate_best(my_cards + public_cards)
+        hand_class = score[0]
+        tier = value_profile.get("tier", "none") if value_profile else "none"
+
+        strong_eligible = (
+            tier == "strong"
+            and hand_class >= 3
+            and board_texture is not None
+            and board_texture["wetness"] <= _OVERBET_STRONG_MAX_WETNESS
+            and not board_texture["dynamic"]
+            and (nutted_risk is None or nutted_risk.get("risk", 1.0) <= _OVERBET_STRONG_MAX_RISK)
+            and pot >= _OVERBET_STRONG_MIN_POT
+            and my_chips > 0
+            and pot / my_chips <= 1.0 - _OVERBET_MIN_STACK_RATIO
+        )
+        # Trips on paired board are vulnerable — reject
+        if strong_eligible and hand_class == 3:
+            if paired_board_profile is not None and paired_board_profile.get("board_paired", False):
+                strong_eligible = False
+        # Very aggressive opponents may trap
+        if strong_eligible:
+            confidence = opponent_model.get("confidence", 0.0)
+            if confidence >= _OVERBET_MIN_CONFIDENCE:
+                if opponent_model.get("postflop_aggr", 0.36) > _OVERBET_MAX_POSTFLOP_AGGR:
+                    strong_eligible = False
+
+        if strong_eligible:
+            freq_roll = _overbet_frequency_roll(my_cards, public_cards, round_idx)
+            if freq_roll <= _OVERBET_STRONG_FREQ_CAP:
+                dry_score = _board_dry_score(public_cards)
+                ratio = _OVERBET_STRONG_BASE_RATIO + dry_score * 0.15
+                ratio = clamp(ratio, _OVERBET_STRONG_BASE_RATIO, _OVERBET_STRONG_MAX_RATIO)
+                result["eligible"] = True
+                result["ratio"] = ratio
+                result["frequency"] = _OVERBET_STRONG_FREQ_CAP
+                result["reason"] = "strong_tier_river_overbet"
+                return result
+
         return result
 
     # Frequency management: not every eligible spot gets overbet

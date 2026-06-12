@@ -14,52 +14,6 @@ from state import collect_latest_requests_by_hand
 from tournament import opponent_can_lock_win
 
 
-def classify_opponent_archetype(opponent_model):
-    """Classify opponent into behavioral archetype for structural adjustments.
-
-    Returns one of: 'calling_station', 'nit', 'lag', 'tag', 'unknown'.
-    Requires confidence >= 0.15 to avoid noisy misclassification.
-    When confidence is low or no archetype matches, returns 'unknown' —
-    all callers MUST fall through to original unadjusted logic for 'unknown'.
-
-    Archetype definitions:
-    - calling_station: high VPIP, low fold-to-raise, passive postflop
-      → don't bluff barrels, don't bluff 3bet preflop
-    - nit: low VPIP, high fold-to-raise
-      → wider bluff range (they fold), smaller value sizing
-    - lag: high VPIP with high postflop aggression
-      → respect their raises, tighten call thresholds
-    - tag: balanced tight-aggressive
-      → play standard balanced strategy
-    """
-    confidence = opponent_model.get('confidence', 0.0)
-    if confidence < 0.15:
-        return 'unknown'
-
-    vpip = opponent_model.get('vpip', PRIOR_VPIP)
-    pfr = opponent_model.get('pfr', PRIOR_PFR)
-    postflop_aggr = opponent_model.get('postflop_aggr', PRIOR_POSTFLOP_AGGR)
-    fold_to_raise = opponent_model.get('fold_to_raise', PRIOR_FOLD_TO_RAISE)
-
-    # Calling station: plays too many hands, doesn't fold to raises, passive postflop
-    if vpip > 0.65 and fold_to_raise < 0.35 and postflop_aggr < 0.28:
-        return 'calling_station'
-
-    # Nit: plays very few hands, folds too much to raises
-    if vpip < 0.40 and fold_to_raise > 0.55:
-        return 'nit'
-
-    # LAG: plays many hands with high postflop aggression
-    if vpip > 0.60 and postflop_aggr > 0.45:
-        return 'lag'
-
-    # TAG: balanced tight-aggressive
-    if vpip > 0.45 and pfr > 0.25 and postflop_aggr > 0.30:
-        return 'tag'
-
-    return 'unknown'
-
-
 def smooth_rate(successes, total, prior_mean, prior_weight):
     return (successes + prior_mean * prior_weight) / (total + prior_weight)
 
@@ -171,7 +125,7 @@ def build_opponent_model(requests, my_id):
     confidence = clamp((total_actions - CONFIDENCE_OFFSET) / CONFIDENCE_SCALE, 0.0, 1.0)
     avg_raise_bb = sum(raise_sizes) / len(raise_sizes) if raise_sizes else DEFAULT_AVG_RAISE_BB
 
-    model = {
+    return {
         "confidence": confidence,
         "vpip": smooth_rate(voluntary_preflop, preflop_opportunities, PRIOR_VPIP, PRIOR_VPID_WEIGHT),
         "pfr": smooth_rate(preflop_raise, preflop_opportunities, PRIOR_PFR, PRIOR_PFR_WEIGHT),
@@ -190,10 +144,60 @@ def build_opponent_model(requests, my_id):
         "barrel_freq": smooth_rate(barrel_continue, barrel_hands, PRIOR_BARREL_FREQ, PRIOR_BARREL_WEIGHT),
     }
 
-    # Classify archetype after building model so all stats are available
-    model["opp_archetype"] = classify_opponent_archetype(model)
 
-    return model
+def build_action_sequence_profile(req, state, my_id):
+    """Analyze opponent's betting pattern across streets in the current hand."""
+    opponent_id = 1 - my_id
+    history = req.get('history', [])
+    round_idx = state['round']
+
+    profile = {
+        'bet_street_count': 0,      # How many streets opponent bet/raised
+        'total_street_count': 0,     # Total postflop streets seen
+        'is_triple_barrel': False,   # Bet all 3 postflop streets
+        'is_double_barrel': False,   # Bet 2+ consecutive streets
+        'river_bet_after_check': False,  # Checked earlier, bet river
+        'aggression_intensity': 0.0, # 0.0-1.0 score of aggression
+    }
+
+    if round_idx < 1:
+        return profile
+
+    # Track which streets opponent bet/raised
+    street_bet = {1: False, 2: False, 3: False}
+    street_had_action = {1: False, 2: False, 3: False}
+    last_opp_round = -1
+    consecutive_bets = 0
+
+    for record in history:
+        if record['player_id'] != opponent_id or record['round'] == 0:
+            continue
+        r = record['round']
+        if r > round_idx:
+            continue
+        street_had_action[r] = True
+        if record['action_type'] in ('raise', 'allin'):
+            street_bet[r] = True
+            if last_opp_round == r - 1 or (last_opp_round >= 1 and consecutive_bets > 0):
+                consecutive_bets += 1
+            else:
+                consecutive_bets = 1
+            last_opp_round = r
+        elif record['action_type'] == 'check':
+            consecutive_bets = 0
+            last_opp_round = r
+
+    postflop_streets_seen = sum(1 for r in range(1, round_idx + 1) if street_had_action.get(r, False))
+    postflop_bets = sum(1 for r in range(1, round_idx + 1) if street_bet.get(r, False))
+
+    profile['bet_street_count'] = postflop_bets
+    profile['total_street_count'] = postflop_streets_seen
+    profile['is_triple_barrel'] = postflop_bets >= 3
+    profile['is_double_barrel'] = postflop_bets >= 2
+    profile['river_bet_after_check'] = street_bet.get(3, False) and not street_bet.get(1, False) and not street_bet.get(2, False)
+    profile['aggression_intensity'] = postflop_bets / max(1, postflop_streets_seen)
+
+    return profile
 
 
 def analyze_current_spot(req, state):
