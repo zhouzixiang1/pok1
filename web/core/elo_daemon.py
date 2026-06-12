@@ -583,6 +583,7 @@ def main():
     MAX_POOL_RECOVERIES = 3
     recovery_count = 0
     played_bots_this_cycle = set()
+    last_bot_refresh_time = time.time()
 
     try:
         while running and in_flight and recovery_count < MAX_POOL_RECOVERIES:
@@ -758,6 +759,7 @@ def main():
                                 reap_fresh = True  # No timestamp = legacy signal, process anyway
                             reap_signal.unlink(missing_ok=True)
                         if reap_fresh:
+                            last_bot_refresh_time = time.time()  # Reset timer since we just refreshed
                             new_bots = get_active_bots()
                             removed = set(active_bots) - set(new_bots)
                             for b in removed:
@@ -796,6 +798,40 @@ def main():
                                 log.info("Reap signal processed, active bots: %d", len(active_bots))
                     except Exception as e:
                         log.warning("Reap signal error (non-fatal): %s", e)
+
+                    # Time-based bot list refresh (every 30s safety net)
+                    now = time.time()
+                    if now - last_bot_refresh_time >= 30:
+                        last_bot_refresh_time = now
+                        new_bots = get_active_bots()
+                        added = set(new_bots) - set(active_bots)
+                        removed = set(active_bots) - set(new_bots)
+                        if added or removed:
+                            for b in removed:
+                                ratings.pop(b, None)
+                                bot_stats.pop(b, None)
+                                h2h = {k: v for k, v in h2h.items() if b not in k.split(" vs ")}
+                            for b in added:
+                                if b not in ratings:
+                                    ratings[b] = Glicko2Player()
+                            active_bots = new_bots
+                            if removed:
+                                match_queue = deque(
+                                    m for m in match_queue
+                                    if (len(m) == 7 and m[0] == "external")
+                                    or (m[0] not in removed and m[1] not in removed)
+                                )
+                                for fut in list(in_flight):
+                                    entry = in_flight[fut]
+                                    is_ext = len(entry) == 3
+                                    if is_ext:
+                                        fa, fb, _ = entry
+                                    else:
+                                        fa, fb = entry
+                                    if fa in removed or fb in removed:
+                                        fut.cancel()
+                                        del in_flight[fut]
+                            log.info("Time-based refresh: +%d -%d bots (total %d)", len(added), len(removed), len(active_bots))
 
                     # Refresh bot list periodically
                     if total_matches % 50 == 0:

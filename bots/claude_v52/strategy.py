@@ -552,6 +552,41 @@ def preflop_call_adjustment(opponent_model, preflop_strength, is_bb=True):
     return clamp(adjustment, -0.04, 0.10)
 
 
+def preflop_opening_adjustment(opponent_model, position="sb"):
+    """Adjust preflop opening threshold based on opponent tendencies.
+    Returns delta to ADD to the threshold (positive = tighter, negative = looser)."""
+    confidence = opponent_model.get("confidence", 0.0)
+    if confidence < 0.10:
+        return 0.0
+
+    fold_to_raise = opponent_model.get("fold_to_raise", 0.44)
+    vpip = opponent_model.get("vpip", 0.58)
+    pfr = opponent_model.get("pfr", 0.28)
+    postflop_aggr = opponent_model.get("postflop_aggr", 0.36)
+    adj = 0.0
+
+    # Opponent folds to raises a lot -> steal wider (lower threshold)
+    if fold_to_raise >= 0.52:
+        adj -= confidence * (fold_to_raise - 0.48) * 0.15
+    # Opponent rarely folds -> tighten opening range
+    elif fold_to_raise < 0.38:
+        adj += confidence * (0.42 - fold_to_raise) * 0.12
+
+    # Very sticky opponent (high VPIP, low fold) -> tighten more
+    if vpip > 0.65 and fold_to_raise < 0.40:
+        adj += confidence * 0.020
+
+    # Tight-aggressive opponent (low VPIP, high PFR) -> respect 3bets
+    if pfr > 0.35 and vpip < 0.50:
+        adj += confidence * 0.015
+
+    # Passive postflop opponent -> wider opens are more profitable
+    if postflop_aggr < 0.28 and vpip > 0.50:
+        adj -= confidence * 0.015
+
+    return max(-0.04, min(0.04, adj))
+
+
 def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_strength, win_rate, match_profile):
     my_chips = req["my_chips"]
     to_call = state["to_call"]
@@ -561,7 +596,7 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
     trash_hand = is_preflop_trash_hand(req["my_cards"], preflop_strength)
 
     if spot_info["preflop_spot"] == "sb_open":
-        open_threshold = SB_OPEN_THRESHOLD + match_adjust + SB_OPEN_MATCH_ADJ + match_profile["open_delta"]
+        open_threshold = SB_OPEN_THRESHOLD + match_adjust + SB_OPEN_MATCH_ADJ + match_profile["open_delta"] + preflop_opening_adjustment(opponent_model, "sb")
         limp_threshold = SB_LIMP_THRESHOLD + match_adjust
         raise_amount = choose_raise(
             state["min_raise_action"],
@@ -584,7 +619,7 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
         return 0
 
     if spot_info["preflop_spot"] == "bb_vs_limp":
-        iso_threshold = BB_ISO_THRESHOLD + match_adjust - loose_bonus + match_profile["open_delta"]
+        iso_threshold = BB_ISO_THRESHOLD + match_adjust - loose_bonus + match_profile["open_delta"] + preflop_opening_adjustment(opponent_model, "bb")
         iso_threshold -= confidence * max(0.0, opponent_model["vpip"] - 0.58) * BB_VPID_FOLD_ADJUST_SCALE
         iso_threshold -= confidence * max(0.0, opponent_model["fold_to_raise"] - 0.52) * BB_FTR_FOLD_ADJUST_SCALE
         raise_amount = choose_raise(

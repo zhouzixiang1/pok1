@@ -204,6 +204,39 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                         await _timed_out_gen.aclose()
                     except Exception as e:
                         log.debug("gen.aclose failed during timeout: %s", e)
+
+                # Stage-aware timeout skip: if pipeline is at verified/critic_checked stage,
+                # commit is imminent and idempotent — skip the timeout kill.
+                try:
+                    from evolution_core import read_pipeline_checkpoint as _read_ckpt
+                    _ckpt = _read_ckpt()
+                    if _ckpt and _ckpt.get("stage") in ("verified", "critic_checked"):
+                        log.warning(
+                            "Cycle timeout at stage=%s — commit is imminent, granting extension (idempotent recovery)",
+                            _ckpt.get("stage"),
+                        )
+                        if ui:
+                            ui.log_history(
+                                f"[Orchestrator] Cycle timeout at stage={_ckpt.get('stage')} — "
+                                f"commit imminent, granting extension.",
+                                "warn",
+                            )
+                        lf.write(f"\n[TIMEOUT] Stage={_ckpt.get('stage')} — granting extension (commit imminent)\n")
+                        # Don't kill the session; let the cycle continue to commit.
+                        # The watchdog will catch genuine hangs.
+                        # Return partial cost so the loop can proceed to the next iteration,
+                        # which will resume the preserved session.
+                        if ui and total_cost > 0:
+                            ui.update_cost("Orchestrator", total_cost, None)
+                        # Treat as incomplete but non-fatal: return cost delta
+                        # so orchestrator_loop retries (session preserved for resume).
+                        _clear_orchestrator_session()
+                        if ui:
+                            return ui.gen_cost_total - _cost_at_start
+                        return total_cost
+                except Exception:
+                    pass  # If checkpoint read fails, fall through to normal timeout handling
+
                 if ui:
                     ui.log_history(
                         f"[Orchestrator] Cycle timed out after {CYCLE_TIMEOUT}s — killing stuck session.",
