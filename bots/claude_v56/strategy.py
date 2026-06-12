@@ -26,7 +26,7 @@ from postflop import (
     draw_call_margin, made_flush_profile, blocker_bluff_profile,
     allow_low_frequency_blocker_bluff, nutted_risk_profile,
     check_probe_resistance_margin, must_continue_vs_raise,
-    should_fold_postflop,
+    should_fold_postflop, should_continue_barrel,
 )
 from simulation import (
     build_opponent_range, estimate_weighted_win_rate,
@@ -541,6 +541,14 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
     if spot_info["preflop_spot"] == "sb_open":
         open_threshold = 0.46 + match_adjust + 0.02 + match_profile["open_delta"]
         limp_threshold = 0.36 + match_adjust
+        # Tighten SB open vs high-PFR opponents (they 3-bet more, we need stronger to open)
+        if confidence >= 0.15:
+            opp_pfr = opponent_model.get('pfr', 0.28)
+            if opp_pfr >= 0.40:
+                open_threshold += confidence * (opp_pfr - 0.35) * 0.15
+            # Loosen vs very passive opponents (rare 3-bets, can open wider)
+            elif opp_pfr <= 0.18 and opponent_model.get('fold_to_raise', 0.44) >= 0.50:
+                open_threshold -= confidence * 0.02
         raise_amount = choose_raise(
             state["min_raise_action"],
             my_chips,
@@ -600,9 +608,16 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
         # Bluff 3bet: medium suited/connected hands, ~25% frequency
         # Mutation: skip bluff 3bet vs calling stations (they don't fold enough)
         can_bluff_3bet = opp_archetype != 'calling_station'
-        if can_bluff_3bet and 0.38 <= preflop_strength <= 0.54 and not trash_hand:
+        if can_bluff_3bet and 0.36 <= preflop_strength <= 0.56 and not trash_hand:
+            opp_pfr = opponent_model.get('pfr', 0.28)
+            bluff_freq = 0.25
+            if confidence >= 0.15:
+                if opp_pfr >= 0.40:
+                    bluff_freq = 0.35  # Wide opener → more fold equity
+                elif opp_pfr <= 0.22:
+                    bluff_freq = 0.15  # Tight opener → less fold equity
             bluff_roll = (hash(tuple(req['my_cards'])) % 100) / 100.0
-            if bluff_roll < 0.25:
+            if bluff_roll < bluff_freq:
                 raise_amount = choose_raise(
                     state['min_raise_action'], my_chips, state['my_round_bet'],
                     to_call, state['pot'], max(win_rate, preflop_strength),
@@ -613,7 +628,12 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
                 if raise_amount is not None:
                     return raise_amount
         # Call with playable hands
-        if preflop_strength >= 0.37 or win_rate >= pot_odds_pf - 0.02:
+        call_threshold = 0.37
+        if confidence >= 0.15:
+            opp_pfr = opponent_model.get('pfr', 0.28)
+            if opp_pfr >= 0.40:
+                call_threshold -= confidence * 0.04  # Wide opener has weaker range
+        if preflop_strength >= call_threshold or win_rate >= pot_odds_pf - 0.02:
             return 0
         # Structural defense floor — defend playable hands regardless of strength metric
         if _bb_defend_vs_raise(req['my_cards']):
@@ -1281,6 +1301,26 @@ def get_action(req, requests):
         )
         if anti_lock_attack is not None:
             return anti_lock_attack
+
+    # ── Turn barrel frequency control ────────────────────────────────────
+    was_flop_aggressor = False
+    if round_idx == 2 and to_call == 0:
+        for record in req.get('history', []):
+            if (record.get('player_id') == my_id
+                and record.get('round') == 1
+                and record.get('action_type') in ('raise', 'allin')):
+                was_flop_aggressor = True
+                break
+        if was_flop_aggressor:
+            barrel_decision = should_continue_barrel(
+                round_idx, to_call, made_strength, draw_strength,
+                value_profile, board_texture, opponent_model,
+                was_flop_aggressor,
+                texture_class=street_texture['class'],
+                opp_archetype=opp_archetype,
+            )
+            if barrel_decision == 'check':
+                return 0
 
     # ── Mutation: passive-exploit thin value bet bypass ────────────────────────
     # vs confirmed passive opponents, bypass thin_static_showdown_control and

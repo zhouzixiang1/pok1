@@ -1202,3 +1202,58 @@ def should_fold_postflop(round_idx, made_strength, draw_strength, value_profile,
         if round_idx == 3 and eff_made < 0.38 and size_bucket in ('medium', 'large'):
             return True
     return False
+
+
+def should_continue_barrel(round_idx, to_call, made_strength, draw_strength,
+                           value_profile, board_texture, opponent_model,
+                           was_flop_aggressor, texture_class='none', opp_archetype='unknown'):
+    """Turn barrel gate: decide whether to continue a flop c-bet on the turn.
+
+    Returns: 'barrel' (continue aggression), 'check' (give up barrel), 'pass' (no opinion).
+    Only active on round_idx==2 when we were the flop aggressor.
+    """
+    if round_idx != 2 or to_call != 0 or not was_flop_aggressor:
+        return 'pass'
+
+    tier = value_profile.get('tier', 'none') if value_profile else 'none'
+    confidence = opponent_model.get('confidence', 0.0)
+    fold_to_raise = opponent_model.get('fold_to_raise', 0.44)
+    has_draw = draw_strength >= 0.14
+
+    # Strong/nut hands always continue
+    if tier in ('strong', 'nut'):
+        return 'barrel'
+
+    # Semi-bluff barrel: draw + wet/dynamic board
+    if has_draw and board_texture is not None:
+        if board_texture.get('wetness', 0) >= 0.25 or board_texture.get('dynamic', False):
+            return 'barrel'
+
+    # Opponent model signals
+    opp_calls_often = confidence >= 0.20 and fold_to_raise <= 0.40
+    opp_folds_often = confidence >= 0.20 and fold_to_raise >= 0.52
+
+    # Dry board + weak hand: usually give up barrel
+    if texture_class == 'dry' and made_strength < 0.45:
+        if opp_calls_often or tier == 'none':
+            return 'check'
+        if made_strength >= 0.38 and opp_folds_often:
+            return 'barrel'  # bluff barrel vs folding opponent
+        return 'check'
+
+    # Wet board + no draw + weak hand: check unless opponent folds a lot
+    if texture_class in ('draw_heavy', 'monotone') and made_strength < 0.40:
+        if not has_draw and not opp_folds_often:
+            return 'check'
+
+    # Thin tier on unfavorable texture: check
+    if tier == 'thin' and texture_class in ('dry', 'paired') and made_strength < 0.45:
+        if not opp_folds_often:
+            return 'check'
+
+    # vs calling stations: never barrel without strong hand or draw
+    if opp_archetype == 'calling_station' and tier not in ('strong', 'nut') and not has_draw:
+        if made_strength < 0.50:
+            return 'check'
+
+    return 'pass'
