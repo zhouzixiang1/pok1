@@ -34,13 +34,16 @@ from server.routes.data_stream import router as data_stream_router
 from server.routes.scheduler import router as scheduler_router
 
 # --- Bot detection for conditional test skipping ---
+# NOTE: These must be set during pytest_configure (which runs BEFORE collection),
+# not in a session fixture, because pytest_collection_modifyitems runs at
+# collection time — before any fixtures execute.
 
-_has_active_bot = None
-_has_graveyard_bot = None
+_has_active_bot = False
+_has_graveyard_bot = False
 
 
 def pytest_configure(config):
-    """Register custom pytest markers."""
+    """Register custom pytest markers and detect bots for conditional skipping."""
     config.addinivalue_line(
         "markers", "requires_active_bot: skip if no active bots found"
     )
@@ -48,10 +51,8 @@ def pytest_configure(config):
         "markers", "requires_graveyard_bot: skip if no graveyard bots found"
     )
 
-
-@pytest.fixture(scope="session", autouse=True)
-def _detect_bots():
-    """Detect whether active and graveyard bots exist for conditional skipping."""
+    # Detect bots at configure time (before collection) so
+    # pytest_collection_modifyitems can use the results.
     global _has_active_bot, _has_graveyard_bot
     bots_dir = PROJECT_ROOT / "bots"
     if bots_dir.exists():
@@ -220,6 +221,33 @@ def isolate_state(tmp_path, monkeypatch):
     graveyard_dir = bots_dir / "graveyard"
     graveyard_dir.mkdir()
 
+    # Symlink real bot dirs into isolated bots_dir so requires_active_bot
+    # tests can read bot data. Uses symlinks to avoid copying large files;
+    # these tests are read-only (they query bot info, never modify it).
+    real_bots = PROJECT_ROOT / "bots"
+    if real_bots.exists():
+        for d in real_bots.iterdir():
+            if d.is_dir() and d.name.startswith("claude_v") and not d.name.endswith(".tmp"):
+                (bots_dir / d.name).symlink_to(d)
+        real_gy = real_bots / "graveyard"
+        if real_gy.exists():
+            for d in real_gy.iterdir():
+                if d.is_dir() and d.name.startswith("claude_v"):
+                    (graveyard_dir / d.name).symlink_to(d)
+
+    # Symlink real data files into isolated results_dir for tests that need
+    # read-only access to production data (ratings, H2H, stats, etc).
+    # Uses symlinks to avoid copying; these tests only read, never write.
+    real_results = PROJECT_ROOT / "web" / "core" / "results"
+    _SYMLINK_FILES = [
+        "glicko_ratings.json", "head_to_head.json", "bot_stats.json",
+        "elo_daemon_stats.json", "rating_history.jsonl",
+    ]
+    for fname in _SYMLINK_FILES:
+        src = real_results / fname
+        if src.exists():
+            (results_dir / fname).symlink_to(src)
+
     # --- Snapshot real state for restoration ---
     real_config = app_state._config_file
     real_events = system_log.SYSTEM_EVENTS_FILE
@@ -313,6 +341,25 @@ def isolate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(_lg, "PROJECT_ROOT", iso)
     monkeypatch.setattr(_lg, "RESULTS_DIR", results_dir)
     monkeypatch.setattr(_lg, "ORCHESTRATOR_LOGS_DIR", iso / "logs")
+
+    # control: PROJECT_ROOT, WEB_DIR, ORCHESTRATOR_SESSION_FILE
+    import server.routes.control as _ctrl
+    monkeypatch.setattr(_ctrl, "PROJECT_ROOT", iso)
+    monkeypatch.setattr(_ctrl, "WEB_DIR", iso / "web")
+    monkeypatch.setattr(_ctrl, "ORCHESTRATOR_SESSION_FILE", results_dir / "orchestrator_session.json")
+
+    # prompts: PROJECT_ROOT, PROMPTS_DIR
+    # Copy real prompts to isolation dir so read-only tests work without
+    # touching production files, and future write tests are safe.
+    import server.routes.prompts as _pr
+    prompts_dst = iso / "prompts"
+    prompts_dst.mkdir(exist_ok=True)
+    prompts_src = PROJECT_ROOT / "web" / "core" / "prompts"
+    if prompts_src.exists():
+        for f in prompts_src.glob("*.md"):
+            (prompts_dst / f.name).write_text(f.read_text())
+    monkeypatch.setattr(_pr, "PROJECT_ROOT", iso)
+    monkeypatch.setattr(_pr, "PROMPTS_DIR", prompts_dst)
 
     # --- 5. Clear server cache ---
     from server.cache import _CACHE
