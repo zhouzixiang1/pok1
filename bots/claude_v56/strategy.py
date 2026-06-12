@@ -135,7 +135,6 @@ def choose_anti_lock_pressure_action(
     draw_info=None,
     blocker_profile=None,
     board_texture=None,
-    made_strength=0.0,
 ):
     if state["opponent_allin"] or my_chips <= 1:
         return None
@@ -163,18 +162,10 @@ def choose_anti_lock_pressure_action(
     if tier in ("strong", "nut") or has_draw:
         emergency_jam = emergency_jam and hands_left <= 3
 
-    # River guard: prevent all-in with weak made hands
-    river_weak_made = (
-        round_idx == 3
-        and tier in ('none', 'thin')
-        and not has_draw
-        and not has_blocker
-        and made_strength < 0.40
-    )
-
+    river_weak_made = round_idx == 3 and tier in ("none", "thin") and not has_draw
     if emergency_jam:
-        if river_weak_made:
-            pass  # Don't jam with weak river hands — use calibrated sizing or check
+        if river_weak_made and hands_left > 3:
+            pass  # mid-game: skip jam for weak river hands, preserve stack
         else:
             return -2
 
@@ -200,13 +191,10 @@ def choose_anti_lock_pressure_action(
         target = int(target * 1.12)
 
     amount = max(min_raise_action, target)
-    jam_threshold = 0.90 if river_weak_made else 0.72
-    if amount >= my_chips * jam_threshold:
+    if amount >= my_chips * 0.72:
         return -2
     amount = min(amount, my_chips - 1)
     if amount <= to_call or amount < min_raise_action:
-        if river_weak_made:
-            return None  # Check instead of jamming with weak river hand
         return -2 if hands_left <= 4 else None
     return amount
 
@@ -773,7 +761,6 @@ def get_action(req, requests):
                     opponent_model,
                     remaining_hands,
                     preflop_strength=preflop_strength,
-                    made_strength=0.0,
                 )
                 if anti_lock_attack is not None:
                     return anti_lock_attack
@@ -1065,7 +1052,6 @@ def get_action(req, requests):
                 draw_info=draw_info,
                 blocker_profile=blocker_profile,
                 board_texture=board_texture,
-                made_strength=made_strength,
             )
         fragile_river_raise_fold = (
             round_idx == 3
@@ -1292,7 +1278,6 @@ def get_action(req, requests):
             draw_info=draw_info,
             blocker_profile=blocker_profile,
             board_texture=board_texture,
-            made_strength=made_strength,
         )
         if anti_lock_attack is not None:
             return anti_lock_attack
@@ -1368,32 +1353,22 @@ def get_action(req, requests):
             if extract_amount < my_chips and extract_amount > 0:
                 return extract_amount
 
-    # ── River medium-strength value bet (confidence-independent) ─────────
-    # Bet medium-strength hands for thin value on the river regardless
-    # of opponent model confidence (river_showdown_extraction requires
-    # confidence >= 0.20, blocking early-game value bets)
+    # ── River 'none'-tier marginal value bet ─────────────────────────────────
+    # Bet marginal made hands (mid-pair+, no ace-high/bottom-pair) as thin value
+    # when opponent range is weak. Only 'none' tier — 'thin' is handled by
+    # thin_static_showdown_control upstream and would be dead code here.
+    # Floor derived from median pair strength: bottom pair ~0.35, mid-pair ~0.42
     if (round_idx == 3 and to_call == 0
-        and 0.30 <= made_strength < 0.55
-        and value_profile is not None
-        and value_profile.get('tier') in ('thin', 'none')
-        and draw_strength < 0.12
-        and not anti_lock_pressure
-        and nutted_risk.get('risk', 0.0) <= 0.04
-        and board_texture is not None
-        and not board_texture.get('dynamic', False)):
-        # Sizing: weaker hand → smaller bet (more calls from worse)
-        if made_strength >= 0.45:
-            river_thin_ratio = 0.45
-        elif made_strength >= 0.38:
-            river_thin_ratio = 0.38
-        else:
-            river_thin_ratio = 0.30
-        river_thin_amount = max(
-            state['min_raise_action'],
-            int(pot * river_thin_ratio),
-        )
-        if river_thin_amount < my_chips and river_thin_amount > 0:
-            return river_thin_amount
+        and value_profile is not None and value_profile.get('tier') == 'none'
+        and made_strength >= 0.42 and made_strength < 0.55
+        and nutted_risk.get('risk', 0.0) <= 0.02):
+        # Sizing derived from hand strength: stronger hands bet more since
+        # fewer worse hands call, needing more from each caller
+        strength_progress = (made_strength - 0.42) / (0.55 - 0.42)
+        bet_ratio = 0.30 + strength_progress * 0.08
+        bet_amount = max(state['min_raise_action'], int(pot * bet_ratio))
+        if bet_amount < my_chips and bet_amount > 0:
+            return bet_amount
 
     # ── Overbet evaluation (from v33) ─────────────────────────────────────────
     # River overbet with nut hands on dry/static boards
