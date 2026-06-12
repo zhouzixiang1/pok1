@@ -72,6 +72,7 @@ async def run_quality_gates(args):
         quality_gate = _existing_ckpt.get("gate_results", {}).get("quality", {})
         if quality_gate.get("all_passed") is True:
             quality_gate["idempotent_cache"] = True
+            quality_gate["directive"] = "Quality gates ALREADY PASSED. Call run_review next."
             return _json_tool_result(quality_gate)
 
     # CRITICAL: Check that code actually changed vs source.
@@ -377,6 +378,7 @@ async def run_review(args):
                 "feedback": review_gate.get("feedback", ""),
                 "checkpoint_recorded": True,
                 "idempotent_cache": True,
+                "directive": "Review ALREADY PASSED. Call run_critic next.",
             })
 
     ckpt = _matching_checkpoint(v, source_v)
@@ -393,6 +395,26 @@ async def run_review(args):
     reviewer_prompt = reviewer_prompt.replace("{master_plan}", json.dumps(plan, indent=2))
     reviewer_prompt = reviewer_prompt.replace("{version}", str(v))
     reviewer_prompt = reviewer_prompt.replace("{parent_version}", str(source_v))
+
+    # Inject Worker CoT audit_focus_areas into reviewer prompt
+    _review_ckpt = _matching_checkpoint(v, source_v)
+    if _review_ckpt:
+        _audit_context = _review_ckpt.get("audit_context", {}) or {}
+        _focus_areas = _audit_context.get("worker_cot_focus_areas", [])
+        if not _focus_areas:
+            # Also check gate_results for audit_focus_areas stored by execute_workers
+            _worker_gate = _review_ckpt.get("gate_results", {}).get("workers", {})
+            _focus_areas = _worker_gate.get("audit_focus_areas", [])
+        if _focus_areas:
+            _focus_block = (
+                "\n\n# Worker CoT Audit Findings (from execute_workers)\n"
+                "The Worker Chain-of-Thought audit detected these concerns.\n"
+                "Pay EXTRA attention to these areas during your review:\n"
+            )
+            for _fa in _focus_areas:
+                _focus_block += f"- {_fa}\n"
+            _focus_block += "\n"
+            reviewer_prompt += _focus_block
 
     log_file = get_logs_dir(v) / "reviewer_io.txt"
 
@@ -528,6 +550,7 @@ async def run_critic(args):
                 **critic_gate,
                 "idempotent_cache": True,
                 "checkpoint_recorded": True,
+                "directive": "Critic ALREADY PASSED. Call run_precommit_eval next.",
             })
 
     ckpt = _matching_checkpoint(v, source_v)

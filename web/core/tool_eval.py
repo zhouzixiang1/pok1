@@ -99,6 +99,20 @@ async def run_precommit_eval(args):
     # crossover (~20min) + direction_audit (~2min) + quality (~2min) + review (~5min) + critic (~4min).
     n_games = min(max(1, int(args.get("n_games", 1) or 1)), 3)
 
+    # Idempotency guard: skip if precommit eval already passed
+    _precommit_ckpt = _matching_checkpoint(v, source_v)
+    if _precommit_ckpt and _precommit_ckpt.get("stage") in (
+        "verified", "archived"
+    ):
+        precommit_gate = _precommit_ckpt.get("gate_results", {}).get("precommit_eval", {})
+        if precommit_gate.get("passed") is True:
+            precommit_gate["idempotent_cache"] = True
+            precommit_gate["directive"] = (
+                "Precommit eval ALREADY PASSED. Do NOT re-run. "
+                "Call commit_bot(version, source_v, strategy, review_approved=true) next."
+            )
+            return _json_tool_result(precommit_gate)
+
     _set_pipeline_status(f"Pre-commit eval for v{v}")
 
     candidate_name = f"claude_v{v}"

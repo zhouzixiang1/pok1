@@ -244,7 +244,6 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                             ui.update_cost("Orchestrator", total_cost, None)
                         # Treat as incomplete but non-fatal: return cost delta
                         # so orchestrator_loop retries (session preserved for resume).
-                        _clear_orchestrator_session()
                         if ui:
                             return ui.gen_cost_total - _cost_at_start
                         return total_cost
