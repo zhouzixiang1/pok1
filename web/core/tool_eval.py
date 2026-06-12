@@ -31,7 +31,8 @@ from tool_helpers import (
 from system_log import log_system_event
 from daemon_management import is_daemon_scheduler_capable
 
-log = logging.getLogger("pok.tool_eval")
+from logging_config import get_logger
+log = get_logger("tool_eval")
 
 
 # ──────────────────────────────────────────────
@@ -395,7 +396,7 @@ async def run_precommit_eval(args):
     elif semantic_result and semantic_result.get("recommended_action") == "caution":
         log_system_event("pipeline.precommit_caution", "warn",
                          f"Semantic caution for v{v}: {semantic_result.get('win_pattern_analysis', '')[:200]}",
-                         {"next_v": v, "semantic": semantic_result})
+                         {"version": v, "semantic": semantic_result})
 
     passed = len(blockers) == 0
     try:

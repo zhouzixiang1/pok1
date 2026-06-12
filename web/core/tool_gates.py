@@ -409,12 +409,15 @@ async def run_review(args):
     if data and "approved" in data:
         approved = data["approved"] is True
         feedback = data.get("feedback", "")
-        log_system_event(
-            "pipeline.review_passed" if approved else "pipeline.review_rejected",
-            "success" if approved else "warn",
-            f"Review {'approved' if approved else 'rejected'} v{v} (score={data.get('quality_score', 0)})",
-            {"version": v, "score": data.get("quality_score", 0), "approved": approved},
-        )
+        try:
+            log_system_event(
+                "pipeline.review_passed" if approved else "pipeline.review_rejected",
+                "success" if approved else "warn",
+                f"Review {'approved' if approved else 'rejected'} v{v} (score={data.get('quality_score', 0)})",
+                {"version": v, "score": data.get("quality_score", 0), "approved": approved},
+            )
+        except Exception:
+            pass
         gate = _gate_payload(
             v,
             source_v,
@@ -606,12 +609,15 @@ async def run_critic(args):
             except Exception:
                 pass  # Guardian is advisory
 
-    log_system_event(
-        "pipeline.critic_passed" if approved else "pipeline.critic_rejected",
-        "success" if approved else "warn",
-        f"Critic {'approved' if approved else 'rejected'} v{v} (score={score_num})",
-        {"version": v, "score": score_num, "approved": approved},
-    )
+    try:
+        log_system_event(
+            "pipeline.critic_passed" if approved else "pipeline.critic_rejected",
+            "success" if approved else "warn",
+            f"Critic {'approved' if approved else 'rejected'} v{v} (score={score_num})",
+            {"version": v, "score": score_num, "approved": approved},
+        )
+    except Exception:
+        pass
 
     # Extract Critic evidence and append to experience pool
     evidence = data.get("evidence") if isinstance(data, dict) else None

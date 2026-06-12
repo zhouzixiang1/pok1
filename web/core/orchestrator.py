@@ -215,6 +215,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                 _clear_orchestrator_session()
                 # Mark pipeline checkpoint as timed_out so next cycle doesn't repeat
                 # the same stuck state (e.g., repeatedly failing run_precommit_eval)
+                ckpt = None
                 try:
                     from evolution_core import read_pipeline_checkpoint, write_pipeline_checkpoint
                     ckpt = read_pipeline_checkpoint()
@@ -231,7 +232,6 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                 except Exception as e:
                     log.warning("Failed to mark checkpoint timed_out: %s", e)
                 try:
-                    from system_log import log_system_event
                     log_system_event("pipeline.cycle_timeout", "error",
                         f"Orchestrator cycle timed out after {CYCLE_TIMEOUT}s",
                         {"timeout_sec": CYCLE_TIMEOUT,

@@ -375,9 +375,12 @@ async def run_master(args):
 
     plan_errors, plan_warnings = _validate_master_plan(data, next_v=next_v)
     if plan_warnings:
-        log_system_event("pipeline.master_boundary", "warning",
-                         f"Master plan boundary warnings for v{next_v}: {plan_warnings}",
-                         {"next_v": next_v, "warnings": plan_warnings})
+        try:
+            log_system_event("pipeline.master_boundary", "warning",
+                             f"Master plan boundary warnings for v{next_v}: {plan_warnings}",
+                             {"next_v": next_v, "warnings": plan_warnings})
+        except Exception:
+            pass
     if plan_errors:
         return {"content": [{"type": "text", "text": json.dumps({"error": "Master plan validation failed", "validation_errors": plan_errors, "validation_warnings": plan_warnings, "plan": data, "logs": ui.get_output()})}]}
 
@@ -394,9 +397,12 @@ async def run_master(args):
                               worker_failure_count=_ckpt.get("worker_failure_count", 0) if _ckpt else 0,
                               audit_context={"master_audit": master_audit_ctx} if master_audit_ctx else None)
 
-    log_system_event("pipeline.master_done", "info", f"Master planned v{next_v}: {len(data.get('tasks', []))} tasks",
-                     {"next_v": next_v, "source_v": source_v, "num_tasks": len(data.get("tasks", [])),
-                      "elapsed_sec": round(time.time() - _t0, 2)})
+    try:
+        log_system_event("pipeline.master_done", "info", f"Master planned v{next_v}: {len(data.get('tasks', []))} tasks",
+                         {"next_v": next_v, "source_v": source_v, "num_tasks": len(data.get("tasks", [])),
+                          "elapsed_sec": round(time.time() - _t0, 2)})
+    except Exception:
+        pass
 
     result = {"plan": data, "logs": ui.get_output()}
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
