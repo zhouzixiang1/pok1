@@ -126,7 +126,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
     if recent_failures:
         failure_lines = ["# Recent Worker Failures (avoid repeating these mistakes):"]
         for f in recent_failures:
-            failure_lines.append(f"- Gen {f['gen']} Worker {f['worker_id']} ({f['role']}): {f['error'][:300]}")
+            failure_lines.append(f"- Gen {f['gen']} Worker {f['worker_id']} ({f.get('role', 'unknown')}): {f['error'][:300]}")
         base_worker_prompt += "\n\n" + "\n".join(failure_lines)
 
     worker_log_file = get_logs_dir(next_v) / f"worker_{w_id}_io.txt"

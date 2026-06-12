@@ -25,6 +25,24 @@ from claude_agent_sdk import (
 log = logging.getLogger("pok.infra")
 
 
+def extract_result_error(message) -> str:
+    """Extract diagnostic error text from a ResultMessage.
+
+    Uses correct SDK attributes:
+    - message.errors: list[str]|None — error messages from the SDK
+    - message.api_error_status: int|None — HTTP status code (429, 500, etc.)
+
+    Falls back to 'Unknown SDK error' if no error info is available.
+    """
+    _err_list = getattr(message, 'errors', None) or []
+    _status = getattr(message, 'api_error_status', None)
+    if _err_list:
+        return '; '.join(str(e) for e in _err_list)
+    if _status:
+        return f'API error {_status}'
+    return 'Unknown SDK error'
+
+
 def _is_rate_limited(output: str) -> bool:
     # Long responses are never rate-limit errors — avoid false positives
     # when LLM discusses "rate limit" or "overloaded" in normal output.

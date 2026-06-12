@@ -57,6 +57,7 @@ from orchestrator_session import (  # noqa: E402
     _startup_recovery,
 )
 from evolution_infra import find_current_v  # noqa: E402
+from llm_query import extract_result_error  # noqa: E402
 async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=None, gen_ctx=None, shutdown_mgr=None):
     """Run one Orchestrator cycle (one LLM agent session). Returns total cost."""
     set_cycle_start_time(time.time())
@@ -117,6 +118,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             ok = False
             gen = None
             auth_err = False
+            _tool_call_counts = {}
             try:
                 gen = claude_query(prompt=prompt, options=opts)
                 _gen_ref[0] = gen  # Track for asyncio.wait_for timeout cleanup
@@ -130,6 +132,12 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 else:
                                     log.debug("%s", block.text.rstrip())
                                 lf.write(block.text)
+                                # Detect embedded API errors in text output (mid-stream visibility)
+                                _text_lower = block.text.lower()
+                                if 'internal server error' in _text_lower or 'api error' in _text_lower or 'internal network failure' in _text_lower:
+                                    log.warning("Embedded API error detected in LLM output: %s", block.text[:200])
+                                    if ui:
+                                        ui.log_history("[Orchestrator] Mid-stream API error detected", "warning")
                             elif isinstance(block, ToolUseBlock):
                                 if ui:
                                     ui.log_history(f"[Orchestrator] Calling tool: {block.name}", "info")
@@ -139,6 +147,10 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                     log.info("Calling tool: %s", block.name)
                                 args_str = json.dumps(block.input, ensure_ascii=False, indent=2)[:2000]
                                 lf.write(f"\n[tool: {block.name}]\n[args] {args_str}\n")
+                                tool_name = block.name.split('__')[-1] if '__' in block.name else block.name
+                                _tool_call_counts[tool_name] = _tool_call_counts.get(tool_name, 0) + 1
+                                if _tool_call_counts[tool_name] > 1:
+                                    log.warning("Tool '%s' called %d times (possible redundant call)", tool_name, _tool_call_counts[tool_name])
                             elif isinstance(block, ThinkingBlock):
                                 thinking = block.thinking or "[thinking...]"
                                 if ui:
@@ -162,7 +174,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                             if message.session_id:
                                 _save_orchestrator_session(message.session_id)
                         else:
-                            error_text = str(getattr(message, 'error', 'Unknown SDK error'))
+                            error_text = extract_result_error(message)
                             lf.write(f"\n[API ERROR] {error_text}\n")
                             if ui:
                                 ui.log_history(f"[Orchestrator] API error: {error_text[:200]}", "error")
@@ -182,6 +194,8 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     ui.log_io(f"[ERROR] {e}", "error", "Orchestrator")
                 else:
                     log.error("LLM error: %s", e)
+            if _tool_call_counts:
+                log.info("Tool call summary: %s", dict(sorted(_tool_call_counts.items())))
             return "".join(texts), cost, ok, gen, auth_err
 
         CYCLE_TIMEOUT = 3600  # 60 minutes max per cycle (was 1800s, increased for retry cycles)

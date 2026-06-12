@@ -263,7 +263,7 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         if recent_failures:
             lines.append("Recent worker failures (last 3):")
             for f in recent_failures:
-                lines.append(f"  - Gen {f['gen']} Worker {f['worker_id']} ({f['role']}): {f['error'][:120]}")
+                lines.append(f"  - Gen {f['gen']} Worker {f['worker_id']} ({f.get('role', 'unknown')}): {f['error'][:120]}")
     except Exception:
         pass
 
