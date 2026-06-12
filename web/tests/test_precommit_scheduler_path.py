@@ -299,7 +299,7 @@ class TestSchedulerPathUsedWhenCapable:
         class _FakeTime:
             def time(self):
                 _call_count[0] += 1
-                if _call_count[0] <= 4:
+                if _call_count[0] <= 5:
                     return 100.0
                 return 999999.0
         monkeypatch.setattr(tool_eval, "time", _FakeTime())
@@ -495,7 +495,7 @@ class TestSchedulerPathUsedWhenCapable:
         class _FakeTime:
             def time(self):
                 _call_count[0] += 1
-                if _call_count[0] <= 3:
+                if _call_count[0] <= 4:
                     return 100.0   # deadline = 100 + 600 = 700
                 return 999999.0    # way past deadline → loop exits
         monkeypatch.setattr(tool_eval, "time", _FakeTime())
