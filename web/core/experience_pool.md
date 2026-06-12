@@ -1,25 +1,28 @@
 ## OPPONENT_MODELING
-- All opponent-aware logic must prove no regression vs calling stations via ≥100-game H2H before merge.
+- Opponent-aware logic must prove no regression vs calling stations via ≥100-game H2H before merge.
 - Bluff/fold must be opponent-type gated; EQR barrel adjustment lives in `realized_postflop_equity()`, NOT `should_fold_postflop()`.
 - Archetype fold delta signs: positive → more folds (NIT/CS), negative → fewer folds (LAG). Verify on every change.
 - EV-based selectors must gate raises by opponent type — raising into calling stations with value bonus is exploitable.
+- opp_flop_action extraction reads only FIRST opponent flop action with 'break', misclassifying check-raise sequences — unfixed since v59.
 
 ## POSTFLOP_STRATEGY
 - Multi-street barrel fold (opp_postflop_bet_count ≥ 2, turn eff_made < 0.30, river < 0.38) is structurally distinct from EQR — keep separate.
 - Preserve pot-odds/equity checks for shove/all-in — removing them causes regression.
-- River sizing has 6+ distinct paths (standard 0.85x, showdown extraction, none-tier marginal, overbet, blocker bluff, probe). Each needs independent ≥100-game H2H + opponent-model gating.
-- All river value-bet blocks must include opponent-model gating — never bypass `river_showdown_extraction()` checks.
-- New structural additions (opp_flop_action barrel branching, turn_checkraise_strategy, river_commitment_protection rewrite) must be validated or reverted.
-- Delayed c-bet (check-flop-PFR → bet-turn) is a new strategic axis — track activation rate; if returns 'check' >90%, branch conditions may be too restrictive.
+- River sizing has 6+ distinct paths. v61 proved thin_cap and value_bet_sizing_floor can conflict (v_floor=0.55 overrides thin_cap≤0.38 on river) — any new sizing path must verify it doesn't negate existing mechanisms.
+- All river value-bet blocks must include opponent-model gating.
+- Delayed c-bet (check-flop-PFR → bet-turn) fills a structural gap; track activation rate and adjust thresholds if >80% default-check.
+- donk_probe.py and overbet.py validated by 32+ generation survival (v27→v59+).
+- River raise cap should CAP the raise size, not eliminate the bet entirely — v61 returned 0 (check) when raise >2x pot, missing thin/medium value.
 
 ## BLUFF_CALIBRATION
 - Structural bluff modules (4-bet light, donk/probe, overbet, barrel) need ≥100-game H2H backing before targeting a matchup.
-- Opponent-aware bluff cutoff validated (v50+): never bluff calling stations, boost vs NIT.
+- Opponent-aware bluff cutoff validated: never bluff calling stations, boost vs NIT.
 
 ## PARAMETER_TUNING
-- Working baselines (per-constant needs ≥100-game H2H to change): postflop sizing flop 0.60 / turn 0.70, preflop 3bet 0.60.
-- Workers repeatedly ignore "no constant-tuning without H2H" — enforcement must be structural (gate in code), not advisory. Reviewers must reject unsupported value changes.
-- Hand-tuned thresholds for new structural paths require H2H validation before merging.
+- Current RAISE_RATIO baselines: FLOP 0.70, TURN 0.80, RIVER 0.90 (v61 changed these +6-11% without H2H — track for regression). Each requires own ≥100-game H2H to change further.
+- Preflop 3bet sizing baseline: 0.60. Cumulative pool game count does NOT substitute for per-constant validation.
+- Workers have ignored "no constant-tuning without H2H" in 5+ consecutive generations — enforcement must be structural (code-level gate), not advisory. [POSSIBLY EXHAUSTED]
+- New structural path thresholds require H2H validation before merging.
 
 ## GENERAL
 - Universal rule: any new structural path, constant change, or matchup targeting requires ≥100-game H2H; <100g is directional only. Cited weak matchups at 10-20g samples are meaningless.
@@ -29,14 +32,12 @@
 - Structural changes can inflate Critic scores without improving battle performance; verify H2H effect.
 - Strategy.py capacity pressure — extract standalone functions to helper modules before adding new logic.
 - Isolate one preflop mechanism per generation; combining preflop changes creates compound effects.
-- Branch from current top-rated stable bots (verify ratings at generation time); exclude high-RD bots (rd>100).
-- tier=none river value-bet paths gated in `choose_allin()` — do not reopen without ≥100-game H2H.
+- Branch from current top-rated stable bots; exclude high-RD bots (rd>100).
+- should_fold_postflop now has 8 fold exits (v61 added 3) — additional fold paths risk compounding; justify each with H2H.
 
 ## RECENT_LESSONS
-- **v60**: Critic evidence: H2H weaknesses: v59 weakest matchups: v17/v22/v26/v27/v30 all beat v59 at 60% WR, but all are 10-20 game samples — experience pool rule: 'Cited weak matchups at 10-20g samples are meaningless.', v59 overall WR=49.78% over 460 games — essentially at baseline, no statistically significant weakness pattern identifiable.; Experience pool refs: POSTFLOP_STRATEGY: 'Delayed c-bet (check-flop-PFR → bet-turn) is a new strategic axis — track activation rate; if returns check >90%, branch conditions may be too restrictive.' — This change directly addresses this flagged gap., PARAMETER_TUNING: 'Working baselines (per-constant needs ≥100-game H2H to change): postflop sizing flop 0.60 / turn 0.70' — The constant tuning violates this rule with only 460 total games., PARAMETER_TUNING: 'Workers repeatedly ignore no constant-tuning without H2H — enforcement must be structural (gate in code), not advisory.'; Diff refs: postflop.py +45 lines: new `should_delayed_turn_cbet()` with 7 decision branches: delayed_value (strong/nut), delayed_semi_bluff (draw+wet), delayed_draw_fe (fold equity+position), delayed_thin_dry (thin+dry), delayed_bluff (weak+folding opp+not CS), delayed_thin_wet_check, delayed_vs_cs, delayed_default_check., strategy.py: wired at line 1356 with trigger `round_idx == 2 and to_call == 0 and was_pfr and not was_flop_aggressor` — correct delayed c-bet condition., strategy.py: hardcoded ratios (0.55/0.75/0.60/0.70/0.85) in `choose_raise()` replaced with named constants — good hygiene, neutral strategically.
-- **v59**: Crossover effectively breaks critic deadlocks from minor-variant stagnation — v58→v59 failed critic 6× before crossover v13×v57 succeeded.
-- **v59**: Isolate mutation-only changes from bug-fix backports in crossovers — bundling them is scope drift risk (reviewer flagged this).
-- **v59**: donk_probe.py and overbet.py have survived 32+ generations (v27→v59) — implicitly validated by pool survival; no longer "unvalidated structural additions."
-- **v59**: opp_flop_action extraction reads only FIRST opponent flop action with 'break', misclassifying check-raise sequences — still unfixed.
-- **v58**: Lineage WR trending down (v53→v58: 50.1%→49.1%). Require ≥100g before attributing matchup weaknesses.
+- **v61**: Critic evidence: H2H weaknesses: No v61 H2H data exists yet (fresh generation). Parent v53 has no available per-opponent H2H data. The barrel targets a structural gap (no turn continuation after flop c-bet) rather than a specific opponent matchup.; Experience pool refs: POSTFLOP_STRATEGY: 'v61 proved thin_cap and value_bet_sizing_floor can conflict (v-floor=0.55 overrides thin_cap≤0.38 on river)' — this exact bug is re-introduced in the new value sizing floor block (lines 474-486 override thin_cap from lines 450-453)., PARAMETER_TUNING: 'Workers have ignored no constant-tuning without H2H in 5+ consecutive generations — [POSSIBLY EXHAUSTED]' — this generation is structural (barrel), so it avoids this trap., BLUFF_CALIBRATION: 'Opponent-aware bluff cutoff validated: never bluff calling stations' — the bluff barrel branch does not check opp_archetype, relying solely on fold_to_raise > 0.52 threshold.; Diff refs: evaluate_turn_barrel (lines 521-562): New 3-branch barrel with texture-aware sizing. Gated by was_flop_aggressor, opponent model (confidence, fold_to_raise), hand strength, and board wetness. Sound poker theory., Turn barrel execution (lines 1437-1453): Placed before donk/probe evaluation. Only fires on turn (round_idx==2), to_call==0, was_flop_aggressor, opponent checked, no anti_lock_pressure. Proper gating., Value sizing floor (lines 474-486): Forces ratio >= 0.50-0.60 for strong/nut hands on turn/river. CONFLICTS with thin_cap=0.38 at line 452 — when thin_control=True and tier='strong' on river, thin_cap caps at 0.38 then floor raises to 0.55, completely negating thin value control.
+- **v61**: Constant-tuning violation continued — RAISE_RATIO increased +6-11% without per-constant H2H or opponent/board context. Thin value mechanism negated by v_floor overriding thin_cap on river. River raise cap incorrectly returns 0 instead of capping. All 4 changes lacked H2H; overall WR=48.1% (530g), lineage declining (v53→v61).
+- **v60**: Delayed turn c-bet 7-branch architecture is a useful template for future street-specific subsystems. Precommit eval ran empty — verify execution, not silent skip. Named constant extraction (replacing hardcoded ratios) is neutral hygiene, exempt from per-constant H2H rule.
+- **v59**: Crossover effectively breaks critic deadlocks from minor-variant stagnation — v58 failed critic 6× before crossover v13×v57 succeeded. Isolate mutation-only changes from bug-fix backports in crossovers — bundling is scope drift risk.
 
