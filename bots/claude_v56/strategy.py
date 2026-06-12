@@ -1368,6 +1368,33 @@ def get_action(req, requests):
             if extract_amount < my_chips and extract_amount > 0:
                 return extract_amount
 
+    # ── River medium-strength value bet (confidence-independent) ─────────
+    # Bet medium-strength hands for thin value on the river regardless
+    # of opponent model confidence (river_showdown_extraction requires
+    # confidence >= 0.20, blocking early-game value bets)
+    if (round_idx == 3 and to_call == 0
+        and 0.30 <= made_strength < 0.55
+        and value_profile is not None
+        and value_profile.get('tier') in ('thin', 'none')
+        and draw_strength < 0.12
+        and not anti_lock_pressure
+        and nutted_risk.get('risk', 0.0) <= 0.04
+        and board_texture is not None
+        and not board_texture.get('dynamic', False)):
+        # Sizing: weaker hand → smaller bet (more calls from worse)
+        if made_strength >= 0.45:
+            river_thin_ratio = 0.45
+        elif made_strength >= 0.38:
+            river_thin_ratio = 0.38
+        else:
+            river_thin_ratio = 0.30
+        river_thin_amount = max(
+            state['min_raise_action'],
+            int(pot * river_thin_ratio),
+        )
+        if river_thin_amount < my_chips and river_thin_amount > 0:
+            return river_thin_amount
+
     # ── Overbet evaluation (from v33) ─────────────────────────────────────────
     # River overbet with nut hands on dry/static boards
     overbet = should_overbet(
