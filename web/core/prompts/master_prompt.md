@@ -132,6 +132,23 @@ return None
 If `diversity_needed: true` in the performance verification, try a substantially different approach this generation. State in `analysis`: "Diversity injection: trying X instead of Y."
 </diversity_rule>
 
+<plateau_protocol>
+When ALL H2H matchups are within 45-55% win rate (no exploitable weakness visible in the data), the bot is at a PLATEAU. At plateaus:
+
+**ACCEPTABLE strategies** (require NO specific H2H evidence):
+1. Structural exploration: add a new decision system (e.g., donk-bet strategy, turn barrel expansion, check-raise traps)
+2. Crossover: merge with a structurally different bot
+3. Aggressive parameter exploration: test extreme values (2x or 0.5x of current) to find the true sensitivity curve
+4. Opponent-model-driven changes: add per-opponent-type exploitation logic
+
+**FORBIDDEN at plateaus** (will be rejected by Critic):
+- Small constant adjustments (plus or minus 5-15%) — this is the EXHAUSTED pattern
+- Tweaking fold/call margins without structural backing
+- Renaming or reorganizing existing code without behavioral change
+
+Read the experience pool for EXHAUSTED entries — these directions have been tried repeatedly with no improvement. Do NOT propose tasks in EXHAUSTED directions.
+</plateau_protocol>
+
 <branching>
 If stagnation is detected, you can set `"branch_from": "claude_v{N}"` to evolve from a different ancestor. Choose the highest-rated non-stagnant bot.
 </branching>

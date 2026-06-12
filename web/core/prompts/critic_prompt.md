@@ -78,6 +78,7 @@ Before scoring, verify the change against this checklist. Flag any item that fai
 - If any P1–P8 fails AND the change is in that dimension, cap score at 6 unless the failure is explicitly acknowledged as an intentional exploit with evidence.
 - If 2+ Common Weaknesses are introduced or worsened, cap score at 5.
 - If the change fixes 2+ Common Weaknesses with clear evidence, boost floor by +1 (e.g., floor 5→6).
+- **Plateau rule**: When all H2H matchups are 45-55%, structural exploration without specific H2H evidence may score 6-7 if genuinely novel (new decision system, opponent-type gating, range-based logic). Constant tuning at plateaus scores max 4 regardless of elegance — the direction is EXHAUSTED.
 </poker_quality_checklist>
 
 <how_to_evaluate>
