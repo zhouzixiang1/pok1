@@ -563,6 +563,14 @@ def main():
     _first_iteration = True
     _capacity = max(1, n_workers // 4)
 
+    # Start battle experience background thread (non-fatal if unavailable)
+    try:
+        from battle_experience import start_experience_thread
+        start_experience_thread()
+        log.info("Battle experience background thread started")
+    except Exception as e:
+        log.warning("Battle experience thread failed to start (non-fatal): %s", e)
+
     # Fill initial pool
     while len(in_flight) < n_workers and match_queue:
         m = match_queue.popleft()

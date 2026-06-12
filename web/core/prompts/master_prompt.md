@@ -126,6 +126,9 @@ return None
 
 ## Eval Round Summary
 {eval_round_summary}
+
+## Battle Experience (accumulated from match analysis)
+{battle_experience}
 </injected_context>
 
 <diversity_rule>

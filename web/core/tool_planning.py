@@ -312,12 +312,21 @@ async def run_master(args):
     except Exception:
         pass
 
+    # --- Read battle experience for Master prompt ---
+    battle_experience = ""
+    try:
+        from battle_experience import get_battle_experience
+        battle_experience = get_battle_experience()
+    except Exception:
+        pass
+
     data = await _run_master_analysis(
         source_v, next_v, stagnation_info, ui,
         match_analysis=match_analysis,
         performance_verification=performance_verification,
         replay_spotlight=replay_spotlight,
         bot_action_stats=bot_action_stats,
+        battle_experience=battle_experience,
     )
 
     if data is None:
@@ -349,6 +358,7 @@ async def run_master(args):
                     performance_verification=performance_verification,
                     replay_spotlight=replay_spotlight,
                     bot_action_stats=bot_action_stats,
+                    battle_experience=battle_experience,
                 )
                 if data is None:
                     return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed after audit retry", "logs": ui.get_output()})}]}

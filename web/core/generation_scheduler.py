@@ -34,6 +34,7 @@ class GenerationContext:
     performance_verification: str = ""
     replay_spotlight: str = ""
     gen_count: int = 0
+    battle_experience: str = ""
 
 
 async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> GenerationContext | None:
@@ -233,6 +234,13 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         except Exception as e:
             log.warning("H2H anomaly check error (skipping): %s", e)
 
+    battle_experience_text = ""
+    try:
+        from battle_experience import get_battle_experience
+        battle_experience_text = get_battle_experience()
+    except Exception as e:
+        log.warning("Battle experience read failed: %s", e)
+
     return GenerationContext(
         current_v=current_v,
         next_v=current_v + 1,
@@ -244,6 +252,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         performance_verification=perf_text,
         replay_spotlight=spotlight_text,
         gen_count=current_v,
+        battle_experience=battle_experience_text,
     )
 
 
