@@ -19,36 +19,24 @@
 
 ## PARAMETER_TUNING
 - Working baselines (require per-constant ≥100-game H2H to change): postflop sizing flop 0.60 / turn 0.70, preflop 3bet 0.60. River sizing is multi-path; each new path needs independent H2H validation.
-- Constant-tuning without H2H data is repeatedly violated by workers despite being marked [EXHAUSTED] — reviewers must reject unsupported value changes; refactoring magic numbers into named constants remains legitimate. [POSSIBLY EXHAUSTED]
+- Constant-tuning without H2H data is repeatedly violated by workers — reviewers must reject unsupported value changes; refactoring magic numbers into named constants remains legitimate.
 
 ## GENERAL
 - Worker role boundaries: Tuner must change ≥1 constant; Architect must not touch constants.
 - Crossover bots need the full pipeline: gates → review → critic → commit → archivist.
 - Trust early negative Critic signals; first-rejection scores are more reliable than retry approvals.
-- H2H data below 100 games is directional only; require ≥100-game confirmation before targeting matchups.
+- H2H data below 100 games is directional only; require ≥100-game confirmation before targeting matchups. Never conflate one bot's H2H data with another's.
 - Structural changes can inflate Critic scores without improving battle performance; verify H2H effect.
 - Strategy.py capacity pressure — extract standalone functions to helper modules before adding new logic; verify current line count before each generation.
+- Isolate one preflop mechanism per generation; combining multiple preflop changes creates compound effects.
 
 ## RECENT_LESSONS
-- **v57**: Critic evidence: H2H weaknesses: v56 loses to v48 (30% WR, 10 games) and 6 opponents at 40% WR (v27/v42/v29/v37/v24/v34, 10-20 games each). While game counts are low (<100), the pattern suggests the bot is too passive on the flop when checked to as PFR., v56 overall WR 49.2% across 370 games, rating 685 — below v55 (742) and roughly tied with the field median.; Experience pool refs: POSTFLOP_STRATEGY notes 'river sizing now has 6+ distinct paths' but flop c-bet had ZERO dedicated paths — this fills a genuine gap., BLUFF_CALIBRATION: 'Opponent-aware bluff cutoff validated through v50+: never bluff calling stations, boost vs NIT' — the new function correctly implements this (air_vs_cs returns check, dry_bluff requires fold_to_raise >= 0.42)., PARAMETER_TUNING: 'Constant-tuning without H2H data is repeatedly violated... marked [EXHAUSTED]' — this change is NOT constant tuning; it's a new decision system with texture-dependent logic.; Diff refs: postflop.py: New `flop_cbet_strategy()` (lines 1262-1310, 51 lines) — 5-tier texture classification (dry/paired/draw_heavy/monotone/semi_connected) × 4 hand tiers (nut-strong/thin/draw/air) × opponent archetype gating., strategy.py: New `_was_preflop_raiser()` helper (lines 724-731) — checks round-0 raise history to identify PFR., strategy.py: New c-bet dispatch block (lines 1315-1329) — fires ONLY when round_idx==1 AND to_call==0 AND was_pfr AND NOT facing aggression. Falls through to existing logic when c-bet returns check.
-- **v42**: Critic evidence: H2H weaknesses: weak vs 3bet
-- **v42**: Critic evidence: H2H weaknesses: weak vs 3bet
-- **v42**: Critic evidence: H2H weaknesses: weak vs 3bet
-- **v42**: Critic evidence: H2H weaknesses: weak vs 3bet
-- **v42**: Critic evidence: H2H weaknesses: weak vs 3bet
-- **v42**: Critic evidence: H2H weaknesses: weak vs 3bet
-- **v42**: Critic evidence: H2H weaknesses: weak vs 3bet
-- **v56**: Workers added tier='none' river value-bet paths for 3 consecutive gens (v54–v56) without opponent-model gating or H2H backing. Gate on river edits that don't match task keywords; require opponent-model checks in every new river block. [POSSIBLY EXHAUSTED]
-- **v56**: H2H data is for v52 (WR 0.499, ~2000 games), NOT v56 (0 rated games). Do not recommend targeting v56's opponents using v52 matchup data — wait for daemon evaluation.
+- **v58**: Critic evidence: H2H weaknesses: v57 has only 410 total games — too sparse for targeting (<100 per matchup). Weakest matchups at 10-game samples: v29/v34/v26/v48 at 40% WR. All below statistical significance threshold., v53 overall WR=50.13%, v55=49.91%, v57=50.71% — lineage is roughly break-even, not at plateau but not strongly improving either.; Experience pool refs: v57 note: 'verify it doesn't widen the OOP leak (BB vs SB postflop) where v56's call-call-call-allin pattern was most exploitable' — river commitment protection directly mitigates this stack-off pattern., v56 note: 'Workers added tier=none river value-bet paths for 3 consecutive gens without opponent-model gating or H2H backing. [POSSIBLY EXHAUSTED]' — the all-in protection in choose_allin() now gates tier=none river hands with made_strength<0.55, addressing this exhaustion., General: 'Structural bluff modules need ≥100-game H2H backing' — delayed c-bet semi-bluff/bluff branches lack this backing, but v57 is too new for any matchup to reach 100 games.; Diff refs: strategy.py: +28 lines river_commitment_protection() — gates river raises committing >50% stack for thin/none tier hands, strong/nut pass through uncapped., strategy.py lines 196-199: All-in skip added to choose_allin() — blocks river all-in when tier∉{strong,nut} AND made_strength<0.55. Prevents weak river shoves., strategy.py lines 1385-1398: Turn delayed c-bet wiring — fires when round_idx==2, to_call==0, was_pfr, not was_flop_aggressor (PFR who checked flop).
+- **v57**: Precommit eval 3W-2L-4D is a thin signal — flop c-bet changes need more than 9 games to validate; increase precommit sample size for multi-street barrel changes.
+- **v57**: v52→v56→v57 lineage has two consecutive reaped bots — consider branching from a stable high-rater (v22 at 708.6 or v51 at 699.8) rather than continuing this lineage.
+- **v57**: Flop c-bet (`flop_cbet_strategy()`) is gated to IP-as-PFR only — verify it doesn't widen the OOP leak (BB vs SB postflop) where v56's call-call-call-allin pattern was most exploitable.
+- **v57**: `flop_cbet_strategy()` fills a genuine gap (zero dedicated flop c-bet paths existed). 5-tier texture × 4 hand tier × archetype gating. Correctly implements opponent-aware bluff cutoffs (air_vs_cs → check, dry_bluff requires fold_to_raise ≥ 0.42).
+- **v56**: Workers added tier='none' river value-bet paths for 3 consecutive gens without opponent-model gating or H2H backing. Require opponent-model checks in every new river block. [POSSIBLY EXHAUSTED]
 - **v55**: River value floor at 0.50x pot is unreachable when cap is 0.75x — verify floor < cap before adding gate logic.
-- **v55**: Workers ignored "no constant-tuning without H2H" rule for 3 consecutive attempts. Review enforcement must be structural, not advisory. [POSSIBLY EXHAUSTED]
-- **v54**: Combining limp_threshold reduction with `_sb_mandatory_play` creates compound preflop change — isolate one preflop mechanism per generation.
-- **v54**: First archetype-aware river sizing (`_classify_opp_archetype` + `_apply_river_raise_cap`) — structural gating of river raises by opponent type.
-
-
-
-
-
-
-
+- **v55**: Workers ignored "no constant-tuning without H2H" rule for 3 consecutive attempts. Review enforcement must be structural, not advisory.
 
