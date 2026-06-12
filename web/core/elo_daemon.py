@@ -61,6 +61,11 @@ REPLAY_DIR = RESULTS_DIR / "match_replay"
 MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 MAX_REPLAY_FILES = 200
 
+# JSONL rotation limits (lines kept after rotation)
+MAX_RATING_HISTORY_LINES = 3000
+MAX_MATCH_HISTORY_LINES = 15000
+MAX_SYSTEM_EVENTS_LINES = 5000
+
 # Match selection priority weights
 UNDER_EVAL_WEIGHT = 0.6
 DIVERSITY_WEIGHT = 0.4
@@ -344,6 +349,26 @@ def cleanup_old_replays():
             old_file.unlink()
 
 
+def _rotate_jsonl(filepath, max_lines):
+    """Trim a JSONL file to keep only the last `max_lines` lines."""
+    if not filepath.exists():
+        return
+    try:
+        # Quick size check — skip if small
+        if filepath.stat().st_size < 1_000_000:  # < 1MB
+            return
+        lines = filepath.read_text(encoding="utf-8", errors="replace").splitlines()
+        if len(lines) <= max_lines:
+            return
+        trimmed = lines[-max_lines:]
+        tmp = filepath.with_suffix(".tmp")
+        tmp.write_text("\n".join(trimmed) + "\n", encoding="utf-8")
+        os.replace(str(tmp), str(filepath))
+        log.debug("Rotated %s: %d → %d lines", filepath.name, len(lines), max_lines)
+    except Exception as e:
+        log.debug("JSONL rotation failed for %s: %s", filepath.name, e)
+
+
 def run_single_match(args):
     """Run mirror_battle, save replay in-worker, return lightweight result."""
     bot_a_name, bot_b_name, bot_a_path, bot_b_path, n_pairs = args
@@ -448,6 +473,11 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
     save_stats(stats)
 
     cleanup_old_replays()
+
+    # Rotate growing JSONL files to prevent unbounded growth
+    _rotate_jsonl(RESULTS_DIR / "rating_history.jsonl", MAX_RATING_HISTORY_LINES)
+    _rotate_jsonl(MATCH_HISTORY_FILE, MAX_MATCH_HISTORY_LINES)
+    _rotate_jsonl(RESULTS_DIR / "system_events.jsonl", MAX_SYSTEM_EVENTS_LINES)
 
     # Compute and write bot action stats from replay files (single-pass)
     try:
