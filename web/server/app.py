@@ -60,21 +60,23 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # On shutdown: signal orchestrator to stop, wait briefly
-    try:
+    # On shutdown: stop orchestrator + daemon in parallel for fast exit
+    async def _stop_orchestrator():
+        """Cancel orchestrator task with reduced timeout."""
         task = app_state.stop_running()
         if task and not task.done():
             shutdown_mgr.request_shutdown()
             try:
-                await asyncio.wait_for(task, timeout=20)
+                await asyncio.wait_for(task, timeout=10)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 task.cancel()
                 try:
-                    await asyncio.wait_for(task, timeout=5)
+                    await asyncio.wait_for(task, timeout=3)
                 except (asyncio.CancelledError, asyncio.TimeoutError):
                     pass
-    finally:
-        # Set daemon shutting_down flag FIRST to prevent monitor restart race
+
+    async def _stop_daemon_async():
+        """Stop daemon subprocess."""
         try:
             from daemon_management import _daemon_shutting_down
             import daemon_management
@@ -86,6 +88,15 @@ async def lifespan(app: FastAPI):
             await asyncio.to_thread(stop_daemon)
         except Exception:
             pass
+
+    # Run both in parallel — total time = max(orchestrator, daemon), not sum
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(_stop_orchestrator(), _stop_daemon_async(), return_exceptions=True),
+            timeout=18  # 10+3 orchestrator + 5s margin, < pokctl.sh 30s budget
+        )
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        pass
     web_ui.log_history("Evolution stopped.", "info")
 
 

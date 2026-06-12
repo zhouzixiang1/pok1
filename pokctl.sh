@@ -144,20 +144,35 @@ cmd_stop() {
     fi
 
     echo "正在停止服务 (PID: $pid)..."
-    # 发送 SIGTERM 到进程组
+
+    # Phase 1: 读取 daemon PID 并先杀 daemon（daemon 在独立进程组，kill -- -$pid 打不到它）
+    local daemon_pid_file="$SCRIPT_DIR/web/core/results/.daemon_pid"
+    if [ -f "$daemon_pid_file" ]; then
+        local daemon_pid
+        daemon_pid=$(python3 -c "import json; print(json.load(open('$daemon_pid_file'))['pid'])" 2>/dev/null || echo "")
+        if [ -n "$daemon_pid" ] && is_alive "$daemon_pid"; then
+            echo "  停止 daemon (PID: $daemon_pid, 独立进程组)..."
+            kill -9 -"$daemon_pid" 2>/dev/null || kill -9 "$daemon_pid" 2>/dev/null || true
+        fi
+    fi
+
+    # Phase 2: SIGTERM 到主进程组
     kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
 
-    # 等待进程退出
+    # 等待进程退出（30s 预算：orchestrator 快速取消 + daemon 已被杀）
     local waited=0
-    while [ $waited -lt 10 ] && is_alive "$pid"; do
+    while [ $waited -lt 30 ] && is_alive "$pid"; do
         sleep 1
         waited=$((waited + 1))
     done
 
-    # 超时则 SIGKILL
+    # Phase 3: 超时则 SIGKILL
     if is_alive "$pid"; then
-        echo "超时，强制终止..."
+        echo "  超时（${waited}s），强制终止..."
         kill -9 -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
+        # 兜底：杀所有可能残留的子进程
+        pkill -9 -f "python.*elo_daemon" 2>/dev/null || true
+        pkill -9 -f "python.*bots/" 2>/dev/null || true
         sleep 1
     fi
 

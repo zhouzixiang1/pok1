@@ -117,7 +117,7 @@ def stop_daemon():
             except (ProcessLookupError, PermissionError):
                 daemon_proc.terminate()
             try:
-                daemon_proc.wait(timeout=5)
+                daemon_proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 try:
                     if pgid is not None:
@@ -127,7 +127,7 @@ def stop_daemon():
                 except (ProcessLookupError, PermissionError):
                     daemon_proc.kill()
                 try:
-                    daemon_proc.wait(timeout=3)
+                    daemon_proc.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     pass
         daemon_proc = None
