@@ -109,7 +109,8 @@ def _startup_recovery(ui=None) -> dict:
                               "watchdog_timeout": WATCHDOG_TIMEOUT})
             # Clear session to force new LLM conversation, but keep checkpoint for stage resume
             _clear_orchestrator_session()
-            # Fall through to recovery below — session_id will be None → Case B
+            session_id = None  # file is gone — force fresh LLM session (Case B below)
+            # Fall through to recovery below — session_id is None → Case B
 
     # archived, prepared with no master_plan, or timed_out = no real work to recover
     if stage == "timed_out":

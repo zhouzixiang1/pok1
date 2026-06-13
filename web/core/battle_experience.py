@@ -44,7 +44,8 @@ log = logging.getLogger("pok.battle_exp")
 
 BATTLE_EXPERIENCE_FILE = RESULTS_DIR / "battle_experience.md"
 ANALYSIS_MARKER_FILE = RESULTS_DIR / ".battle_analysis_progress.json"
-POLL_INTERVAL = 60  # seconds between background thread wake-ups
+POLL_INTERVAL = 300  # seconds between background thread wake-ups (cost control)
+LLM_TIMEOUT = 120  # seconds per LLM update call (was 30 — too short, caused thread leaks)
 
 # ──────────────────────────────────────────────
 # SilentUI
@@ -166,7 +167,7 @@ def _experience_loop():
     while True:
         try:
             time.sleep(POLL_INTERVAL)
-            unanalyzed = get_unanalyzed_matches(n=5)
+            unanalyzed = get_unanalyzed_matches(n=2)
             if not unanalyzed:
                 continue
             for entry in unanalyzed:
@@ -288,45 +289,38 @@ def _run_llm_update(current_experience: str, new_match_data: str) -> str | None:
 
 
 def _run_sync_llm_call(prompt: str) -> str | None:
-    """Run run_claude_query in a new thread with its own event loop.
+    """Run run_claude_query in this thread via a fresh event loop.
 
-    Returns the text output, or None on any failure.
-    30-second timeout on the synchronous wrapper.
+    Uses asyncio.wait_for for a cancellable timeout — when the timeout fires,
+    the underlying task is cancelled (no leaked thread continuing to burn LLM
+    quota, which the previous threading+join approach caused).
+
+    Returns the text output, or None on any failure (including timeout).
     """
-    result = [None]  # mutable container for thread communication
+    ui = SilentUI()
+    log_path = RESULTS_DIR / "battle_exp_llm.log"
 
-    def _worker():
-        try:
-            ui = SilentUI()
-            log_path = RESULTS_DIR / "battle_exp_llm.log"
+    async def _async_call():
+        from llm_query import run_claude_query
+        output, cost_usd, usage = await run_claude_query(
+            prompt=prompt,
+            context_files=[],
+            ui=ui,
+            role_name="battle_experience",
+            log_file_path=str(log_path),
+            model="sonnet",
+            tools=None,
+        )
+        return output
 
-            async def _async_call():
-                from llm_query import run_claude_query
-                output, cost_usd, usage = await run_claude_query(
-                    prompt=prompt,
-                    context_files=[],
-                    ui=ui,
-                    role_name="battle_experience",
-                    log_file_path=str(log_path),
-                    model="sonnet",
-                    tools=None,
-                )
-                return output
-
-            output = asyncio.run(_async_call())
-            result[0] = output
-        except Exception as e:
-            log.warning("Sync LLM call failed: %s", e)
-
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-    t.join(timeout=30)
-
-    if t.is_alive():
-        log.warning("LLM call timed out after 30s — skipping update")
+    try:
+        return asyncio.run(asyncio.wait_for(_async_call(), timeout=LLM_TIMEOUT))
+    except asyncio.TimeoutError:
+        log.warning("LLM call timed out after %ds — skipping update", LLM_TIMEOUT)
         return None
-
-    return result[0]
+    except Exception as e:
+        log.warning("Sync LLM call failed: %s", e)
+        return None
 
 
 # ──────────────────────────────────────────────

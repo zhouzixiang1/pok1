@@ -397,7 +397,8 @@ async def run_master(args):
                               master_plan=data,
                               direction_audit=existing_audit,
                               worker_failure_count=_ckpt.get("worker_failure_count", 0) if _ckpt else 0,
-                              audit_context={"master_audit": master_audit_ctx} if master_audit_ctx else None)
+                              audit_context={"master_audit": master_audit_ctx} if master_audit_ctx else None,
+                              reset_generation_attempt=True)
 
     try:
         log_system_event("pipeline.master_done", "info", f"Master planned v{next_v}: {len(data.get('tasks', []))} tasks",

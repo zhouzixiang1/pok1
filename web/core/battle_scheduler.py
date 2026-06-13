@@ -263,7 +263,8 @@ def drain_pending_jobs() -> list[dict]:
     if valid:
         _append_jsonl(BATTLE_CLAIMED_FILE, valid)
 
-    log.info("Drained %d pending jobs, claimed %d valid", len(raw_lines), len(valid))
+    if raw_lines or valid:
+        log.info("Drained %d pending jobs, claimed %d valid", len(raw_lines), len(valid))
     return valid
 
 
@@ -336,7 +337,8 @@ def collect_results(job_ids: list[str]) -> dict[str, dict]:
         f.flush()
         os.fsync(f.fileno())
 
-    log.info("Collected %d/%d requested results", len(collected), len(job_ids))
+    if collected or len(job_ids) != len(collected):
+        log.info("Collected %d/%d requested results", len(collected), len(job_ids))
     return collected
 
 
@@ -395,5 +397,6 @@ def requeue_unclaimed_on_startup() -> list[dict]:
     result_job_ids = {r.get("job_id", "") for r in results}
 
     orphaned = [c for c in claimed if c.get("job_id", "") not in result_job_ids]
-    log.info("Found %d orphaned claimed job(s)", len(orphaned))
+    if orphaned:
+        log.info("Found %d orphaned claimed job(s)", len(orphaned))
     return orphaned

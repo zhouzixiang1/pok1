@@ -1,5 +1,6 @@
 """Pipeline tools: quality gates, code preparation, review, and critic."""
 
+import asyncio
 import json
 import shutil
 import time
@@ -130,14 +131,13 @@ async def run_quality_gates(args):
             master_plan_dt = ckpt_dt.get("master_plan", {}) if ckpt_dt else {}
             ui = _get_ui()
             # Timeout: LLM call should complete in 60s; if not, skip dynamic tests
-            import asyncio as _asyncio
-            dynamic_scenarios = await _asyncio.wait_for(
+            dynamic_scenarios = await asyncio.wait_for(
                 _generate_dynamic_tests(
                     v, source_v, changed_files_list, master_plan_dt, existing_ids, ui
                 ),
                 timeout=60,
             )
-        except _asyncio.TimeoutError:
+        except asyncio.TimeoutError:
             pass  # LLM timed out — use only predefined scenarios
         except Exception as e:
             _log.warning("Dynamic test generation error: %s", e)

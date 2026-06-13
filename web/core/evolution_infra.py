@@ -264,7 +264,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                gate_results=None, worker_failure_count=None,
                                worker_invocation_count=None,
                                parent2_v=None, direction_audit=None,
-                               audit_context=None):
+                               audit_context=None, reset_generation_attempt=False):
     """Write pipeline stage checkpoint so a killed process can resume.
 
     Uses atomic tmp+rename under exclusive lock to prevent concurrent
@@ -304,6 +304,13 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 existing_parent2_v = existing.get("parent2_v")
             existing_direction_audit = existing.get("direction_audit")
             existing_audit_context = existing.get("audit_context", {}) or {}
+
+        # Explicit reset: run_master produced a fresh plan → clear critic-rejection counter.
+        # Without this, generation_attempt stays >=1 after a critic rejection and
+        # execute_workers' circuit breaker (tool_planning.py:558) loops forever demanding
+        # a new plan that run_master already produced.
+        if reset_generation_attempt:
+            existing_generation_attempt = 0
 
         if gate_results:
             existing_gate_results.update(gate_results)
