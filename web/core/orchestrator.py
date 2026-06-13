@@ -220,30 +220,45 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                         log.debug("gen.aclose failed during timeout: %s", e)
 
                 # Stage-aware timeout skip: if pipeline is at verified/critic_checked stage,
-                # commit is imminent and idempotent — skip the timeout kill.
+                # commit is imminent and idempotent — grant ONE extension.
                 try:
                     from evolution_core import read_pipeline_checkpoint as _read_ckpt
                     _ckpt = _read_ckpt()
                     if _ckpt and _ckpt.get("stage") in ("verified", "critic_checked"):
                         log.warning(
-                            "Cycle timeout at stage=%s — commit is imminent, granting extension (idempotent recovery)",
+                            "Cycle timeout at stage=%s — commit is imminent, granting ONE extension (idempotent recovery)",
                             _ckpt.get("stage"),
                         )
                         if ui:
                             ui.log_history(
                                 f"[Orchestrator] Cycle timeout at stage={_ckpt.get('stage')} — "
-                                f"commit imminent, granting extension.",
+                                f"commit imminent, granting ONE extension.",
                                 "warn",
                             )
-                        lf.write(f"\n[TIMEOUT] Stage={_ckpt.get('stage')} — granting extension (commit imminent)\n")
-                        # Don't kill the session; let the cycle continue to commit.
-                        # The watchdog will catch genuine hangs.
-                        # Return partial cost so the loop can proceed to the next iteration,
-                        # which will resume the preserved session.
+                        lf.write(f"\n[TIMEOUT] Stage={_ckpt.get('stage')} — granting ONE extension (commit imminent)\n")
+                        # The generator is dead (asyncio.wait_for killed it) — the session
+                        # cannot be resumed.  Clear it so the next _run_one_cycle starts fresh
+                        # but resumes from the preserved checkpoint stage.
+                        _clear_orchestrator_session()
+                        # Refresh checkpoint timestamp so the watchdog does not immediately
+                        # re-trigger on the next cycle (elapsed > WATCHDOG_TIMEOUT).
+                        try:
+                            import fcntl as _fcntl
+                            from evolution_core import PIPELINE_STATE_FILE, locked_file
+                            _ckpt_ext = _ckpt.copy()
+                            _ckpt_ext["last_stage_change_ts"] = time.time()
+                            _ckpt_ext["last_update_ts"] = time.time()
+                            _ckpt_ext["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                            with locked_file(PIPELINE_STATE_FILE, "a+", lock_type=_fcntl.LOCK_EX) as _f:
+                                _f.seek(0)
+                                _f.truncate()
+                                _f.write(json.dumps(_ckpt_ext, indent=2))
+                                _f.flush()
+                                os.fsync(_f.fileno())
+                        except Exception:
+                            pass  # Non-fatal: watchdog may trigger, but checkpoint is preserved
                         if ui and total_cost > 0:
                             ui.update_cost("Orchestrator", total_cost, None)
-                        # Treat as incomplete but non-fatal: return cost delta
-                        # so orchestrator_loop retries (session preserved for resume).
                         if ui:
                             return ui.gen_cost_total - _cost_at_start
                         return total_cost
@@ -293,7 +308,11 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
 
             # 529 rate-limit retry with exponential backoff
             if _is_rate_limited(full_output):
+                # Preserve the original session so retries can resume the same
+                # conversation instead of starting from scratch.
+                _saved_session_id = _load_orchestrator_session()
                 _clear_orchestrator_session()
+                _resume_kwargs = {"resume": _saved_session_id} if _saved_session_id else {}
                 retry_opts = ClaudeAgentOptions(
                     model="sonnet",
                     permission_mode="bypassPermissions",
@@ -304,6 +323,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     hooks=_make_precompact_hook(),
                     max_turns=max_turns,
                     thinking={"type": "adaptive", "display": "summarized"},
+                    **_resume_kwargs,
                 )
                 for backoff in [30, 60, 120]:
                     if ui:
@@ -337,6 +357,11 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     total_cost += retry_cost
                     if not _is_rate_limited(full_output):
                         break
+                else:
+                    # All retries exhausted — original session is gone.
+                    # Session was already cleared before retry loop.
+                    log.warning("529 retries exhausted — original session %s lost",
+                                _saved_session_id[:8] if _saved_session_id else "none")
 
             # 429 quota detected — exit cycle cleanly so orchestrator_loop can block
             from rate_limiter import rate_limiter
@@ -346,7 +371,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                         "[Orchestrator] 429 配额耗尽。Session 保留，等待恢复后继续。",
                         "warn",
                     )
-                if total_cost > 0:
+                if ui and total_cost > 0:
                     ui.update_cost("Orchestrator", total_cost, None)
                 return (ui.gen_cost_total - _cost_at_start) if ui else total_cost
 

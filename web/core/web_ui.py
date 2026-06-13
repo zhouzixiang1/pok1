@@ -208,6 +208,11 @@ class WebUI(BaseUI):
         for line in msg.split("\n"):
             if line.strip():
                 log.debug("%s%s", prefix, line)
+        # Truncate _output_since_clear in log_io too, since clear_io() is
+        # skipped in parallel mode and log_io() is called hundreds of times
+        # per worker. Without this, the list grows without bound.
+        if len(self._output_since_clear) > 500:
+            self._output_since_clear = self._output_since_clear[-400:]
         self._emit("io", {"msg": msg, "stream_type": stream_type, "role": role})
 
     def clear_io(self):

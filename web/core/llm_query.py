@@ -125,6 +125,7 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                 usage = message.usage
     except ClaudeSDKError as e:
         ui.log_io(f"[ERROR] {e}", "error", role_name)
+        raise   # propagate so callers distinguish a hard SDK error from an empty-but-valid reply
     except asyncio.CancelledError:
         ui.log_io(f"\n[{role_name} CANCELLED]", "error", role_name)
         raise
@@ -202,7 +203,16 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
 
     # Initial query
     query_gen = claude_query(prompt=full_prompt, options=options)
-    full_text, cost_usd, usage = await _process_stream(query_gen, log_file_path, ui, role_name)
+    try:
+        full_text, cost_usd, usage = await _process_stream(query_gen, log_file_path, ui, role_name)
+    finally:
+        # Defensive: ensure SDK generator is closed so subprocess is terminated.
+        # If CancelledError fires before or during _process_stream, the generator
+        # may not be cleaned up by the async-for loop (PEP 533 deferred).
+        try:
+            await query_gen.aclose()
+        except Exception:
+            pass  # suppress any aclose() errors
 
     output = "\n".join(full_text)
 
@@ -213,9 +223,15 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
             await asyncio.sleep(backoff)
             full_text.clear()
             retry_gen = claude_query(prompt=full_prompt, options=options)
-            retry_texts, retry_cost, retry_usage = await _process_stream(
-                retry_gen, log_file_path, ui, role_name,
-            )
+            try:
+                retry_texts, retry_cost, retry_usage = await _process_stream(
+                    retry_gen, log_file_path, ui, role_name,
+                )
+            finally:
+                try:
+                    await retry_gen.aclose()
+                except Exception:
+                    pass  # suppress any aclose() errors
             if retry_texts:
                 full_text.extend(retry_texts)
             if retry_cost:
@@ -245,9 +261,15 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
             # Retry after reset
             full_text.clear()
             retry_gen = claude_query(prompt=full_prompt, options=options)
-            retry_texts, retry_cost, retry_usage = await _process_stream(
-                retry_gen, log_file_path, ui, role_name,
-            )
+            try:
+                retry_texts, retry_cost, retry_usage = await _process_stream(
+                    retry_gen, log_file_path, ui, role_name,
+                )
+            finally:
+                try:
+                    await retry_gen.aclose()
+                except Exception:
+                    pass  # suppress any aclose() errors
             if retry_texts:
                 full_text.extend(retry_texts)
             if retry_cost:

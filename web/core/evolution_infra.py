@@ -72,18 +72,17 @@ MAX_PARALLEL_WORKERS = 3      # Hard cap on simultaneous LLM worker calls (Semap
 MAX_PROMPT_CHARS = 700_000
 
 # Pipeline stage constants
-STAGE_ORDER = ["prepared", "direction_audited", "master_planned", "workers_done", "quality_passed", "spot_verified", "reviewed", "critic_checked", "verified", "archived"]
+STAGE_ORDER = ["prepared", "direction_audited", "master_planned", "workers_done", "quality_passed", "reviewed", "critic_checked", "verified", "archived"]
 STAGE_GATE_ALLOWLIST = {
     "prepared": set(),
     "direction_audited": set(),
     "master_planned": set(),
     "workers_done": set(),
     "quality_passed": {"quality"},
-    "spot_verified": {"quality", "spot_verified"},
-    "reviewed": {"quality", "spot_verified", "review"},
-    "critic_checked": {"quality", "spot_verified", "review", "critic"},
-    "verified": {"quality", "spot_verified", "review", "critic", "precommit_eval"},
-    "archived": {"quality", "spot_verified", "review", "critic", "precommit_eval"},
+    "reviewed": {"quality", "review"},
+    "critic_checked": {"quality", "review", "critic"},
+    "verified": {"quality", "review", "critic", "precommit_eval"},
+    "archived": {"quality", "review", "critic", "precommit_eval"},
 }
 
 def validate_stage_transition(current_stage, proposed_stage):
@@ -111,7 +110,7 @@ def validate_stage_transition(current_stage, proposed_stage):
         return True, "fresh_restart"
 
     # Allow retry: from later stages back to master_planned (intra-gen retry)
-    retry_sources = {"workers_done", "quality_passed", "spot_verified", "reviewed", "critic_checked"}
+    retry_sources = {"workers_done", "quality_passed", "reviewed", "critic_checked"}
     if proposed_stage == "master_planned" and current_stage in retry_sources:
         return True, "retry_reset"
 
@@ -130,7 +129,9 @@ EVOLUTION_BRANCH = "main"
 
 # Watchdog: if no pipeline stage change occurs within this many seconds,
 # the orchestrator watchdog will clear the session and restart from checkpoint.
-WATCHDOG_TIMEOUT = 1200  # 20 minutes
+# Must exceed typical cycle time (up to 75 min) to avoid false positives.
+# Watchdog is secondary safety net; CYCLE_TIMEOUT (60 min) is primary.
+WATCHDOG_TIMEOUT = 4500  # 75 minutes
 
 # MCP servers to block for sub-agents (keep zai-mcp-server for vision, block the rest)
 _BLOCKED_MCP_TOOLS = [

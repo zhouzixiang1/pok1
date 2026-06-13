@@ -90,7 +90,7 @@ async def run_quality_gates(args):
     # Idempotency guard: skip if quality gates already passed for this version
     _cached = _idempotency_check(
         v, source_v,
-        stage_set=("quality_passed", "spot_verified", "reviewed", "critic_checked", "verified", "archived"),
+        stage_set=("quality_passed", "reviewed", "critic_checked", "verified", "archived"),
         gate_name="quality",
         approval_key="all_passed",
         directive="Quality gates ALREADY PASSED. Call run_review next.",

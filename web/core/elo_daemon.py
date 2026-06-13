@@ -45,7 +45,7 @@ PROJECT_ROOT = CORE_DIR.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(CORE_DIR))
 
-from glicko2 import Glicko2Player, update_single_game, decay_rd
+from glicko2 import Glicko2Player, update_rating_period, decay_rd
 from engine.battle import mirror_battle
 from evolution_infra import (
     pair_key,
@@ -392,17 +392,29 @@ def process_result(result, ratings, h2h, bot_stats, verbose=False):
 
     log.debug("%s vs %s: %d-%d-%d (%d games)", a, b, wins_a, wins_b, draws, total)
 
-    # Per-game Glicko-2 updates (use live opponent ratings each game)
+    # Batch Glicko-2 update: snapshot pre-match ratings to avoid live-rating contamination
     _default = Glicko2Player()
+    player_a = ratings.get(a, _default)
+    player_b = ratings.get(b, _default)
+    # Snapshot opponent ratings as they were before this match
+    opp_a_snapshot = Glicko2Player(player_a.r, player_a.rd, player_a.sigma)
+    opp_b_snapshot = Glicko2Player(player_b.r, player_b.rd, player_b.sigma)
+
+    # Build results lists for the rating period (all games in this match)
+    results_a = []
+    results_b = []
     for _ in range(wins_a):
-        ratings[a] = update_single_game(ratings[a], ratings.get(b, _default), 1.0)
-        ratings[b] = update_single_game(ratings[b], ratings.get(a, _default), 0.0)
+        results_a.append((opp_b_snapshot, 1.0))
+        results_b.append((opp_a_snapshot, 0.0))
     for _ in range(wins_b):
-        ratings[a] = update_single_game(ratings[a], ratings.get(b, _default), 0.0)
-        ratings[b] = update_single_game(ratings[b], ratings.get(a, _default), 1.0)
+        results_a.append((opp_b_snapshot, 0.0))
+        results_b.append((opp_a_snapshot, 1.0))
     for _ in range(draws):
-        ratings[a] = update_single_game(ratings[a], ratings.get(b, _default), 0.5)
-        ratings[b] = update_single_game(ratings[b], ratings.get(a, _default), 0.5)
+        results_a.append((opp_b_snapshot, 0.5))
+        results_b.append((opp_a_snapshot, 0.5))
+
+    ratings[a] = update_rating_period(player_a, results_a)
+    ratings[b] = update_rating_period(player_b, results_b)
 
     # Update H2H (one call per individual game)
     for _ in range(wins_a):

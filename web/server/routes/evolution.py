@@ -4,13 +4,13 @@ import asyncio
 import json
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 router = APIRouter(prefix="/api", tags=["evolution"])
 
 
 @router.get("/evolution/stream")
-async def evolution_stream():
+async def evolution_stream(request: Request):
     """SSE endpoint for real-time evolution events."""
     from sse_starlette.sse import EventSourceResponse
     from server.app import broadcaster
@@ -20,11 +20,19 @@ async def evolution_stream():
     async def generate():
         try:
             while True:
+                # Cooperative disconnect check: closes the half-open/proxy
+                # case that sse-starlette's internal _listen_for_disconnect
+                # cannot detect. Race with sse-starlette's own receive() is
+                # benign — both paths lead to cleanup.
+                if await request.is_disconnected():
+                    break
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=30)
+                    event = await asyncio.wait_for(queue.get(), timeout=5)
                     yield event
                 except asyncio.TimeoutError:
-                    yield {"event": "ping", "data": "{}"}
+                    # sse-starlette sends its own ping every 15s; no need
+                    # to duplicate keep-alive from the generator.
+                    continue
         except asyncio.CancelledError:
             pass
         finally:

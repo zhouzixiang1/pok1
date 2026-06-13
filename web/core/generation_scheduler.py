@@ -33,7 +33,7 @@ class GenerationContext:
     match_analysis: str = ""
     performance_verification: str = ""
     replay_spotlight: str = ""
-    gen_count: int = 0
+    gen_count: int = 0         # legacy alias for current_v; use next_v for post-generation triggers
     battle_experience: str = ""
 
 
@@ -547,7 +547,7 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
         return
 
     # Experience pool consolidation (every 3 generations, or when too many unconsolidated entries)
-    should_consolidate = ctx.gen_count > 0 and ctx.gen_count % 3 == 0
+    should_consolidate = ctx.next_v > 0 and ctx.next_v % 3 == 0
     if not should_consolidate:
         # Also trigger when RECENT_LESSONS has too many entries (prevents stale/contradictory data)
         from evolution_infra import EXPERIENCE_FILE

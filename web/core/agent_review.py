@@ -305,12 +305,18 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
 
         ui.clear_io()
         ui.set_status(f"Crossover v{parent_a_v}×v{parent_b_v}→v{target_v} (Try {attempt+1})", is_working=True)
-        await run_claude_query(
-            crossover_prompt, [], ui,
-            f"CROSSOVER v{parent_a_v}×v{parent_b_v}→v{target_v}",
-            log_file,
-            tools=["Bash", "Read", "Edit"],
-        )
+        try:
+            await run_claude_query(
+                crossover_prompt, [], ui,
+                f"CROSSOVER v{parent_a_v}×v{parent_b_v}→v{target_v}",
+                log_file,
+                tools=["Bash", "Read", "Edit"],
+            )
+        except Exception as e:
+            # SDK error (e.g. ClaudeSDKError now propagates from run_claude_query)
+            # — retry the crossover attempt instead of escaping the retry loop.
+            ui.log_history(f"Crossover LLM error: {e}", "warn")
+            continue
 
         compile_errors = verify_code(target_dir)
         if compile_errors:

@@ -135,6 +135,7 @@ def choose_anti_lock_pressure_action(
     draw_info=None,
     blocker_profile=None,
     board_texture=None,
+    made_strength=0.0,
 ):
     if state["opponent_allin"] or my_chips <= 1:
         return None
@@ -151,15 +152,23 @@ def choose_anti_lock_pressure_action(
     has_draw = draw_info.get("semi_bluff", False) if draw_info is not None else False
     has_blocker = blocker_profile is not None and blocker_profile.get("eligible", False)
 
-    weak_showdown = tier in ("none", "thin") and draw_quality < 0.14 and win_rate < 0.45
+    weak_showdown = tier in ('none', 'thin') and draw_quality < 0.14 and win_rate < 0.45
     high_fold_pressure = confidence < 0.20 or fold_to_raise >= 0.42
+    # Require at least bottom pair (made_strength >= 0.22) for weak_showdown jam
+    # to prevent catastrophic allins with ace-high or worse
+    weak_emergency = (
+        weak_showdown
+        and high_fold_pressure
+        and hands_left <= 6
+        and made_strength >= 0.22
+    )
     emergency_jam = (
         hands_left <= 3
         or (to_call > 0 and to_call / max(1, pot) >= 0.35)
-        or (weak_showdown and high_fold_pressure and hands_left <= 6)
+        or weak_emergency
         or (win_rate < 0.18 and hands_left <= 5)
     )
-    if tier in ("strong", "nut") or has_draw:
+    if tier in ('strong', 'nut') or has_draw:
         emergency_jam = emergency_jam and hands_left <= 3
 
     if emergency_jam:
@@ -733,6 +742,32 @@ def _bb_defend_vs_raise(my_cards):
     return False
 
 
+def _sb_open_defense_floor(my_cards):
+    """SB structural defense floor: complete with most hands at 3:1 odds.
+
+    In HU NLHE, the SB gets ~3:1 to complete. Only fold the worst
+    offsuit trash that lacks both equity and postflop playability.
+    Follows the same pattern as _bb_defend_vs_raise().
+    """
+    from state import preflop_hand_profile
+    profile = preflop_hand_profile(my_cards)
+    high, low = profile["high"], profile["low"]
+    gap = high - low
+    suited = profile["suited"]
+    pair = profile["pair"]
+
+    # Always complete: pairs, suited, or any ten+ card (T=10)
+    if pair or suited or high >= 10:
+        return True
+    # Connected hands (gap <= 3) with substance (low >= 5)
+    if gap <= 3 and low >= 5:
+        return True
+    # Both cards medium+ (8+): like 98o, 97o, 87o
+    if low >= 8:
+        return True
+    return False
+
+
 def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_strength, win_rate, match_profile, opp_archetype='unknown'):
     my_chips = req["my_chips"]
     to_call = state["to_call"]
@@ -761,7 +796,9 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
         if not trash_hand and preflop_strength >= open_threshold and raise_amount is not None:
             return raise_amount
         if preflop_strength <= limp_threshold - loose_bonus:
-            return -1
+            if _sb_open_defense_floor(req['my_cards']):
+                return 0  # structurally playable — complete instead of fold
+            return -1  # fold only absolute trash (72o, 82o, 93o, etc.)
         return 0
 
     if spot_info["preflop_spot"] == "bb_vs_limp":
@@ -909,9 +946,10 @@ def evaluate_river_jam(
 ):
     """Evaluate whether to jam all-in or make a sized bet on the river.
 
-    For strong/nut hands at high SPR, a full jam extracts more value than
-    a standard sized bet because opponents are forced to commit their stack.
-    At moderate SPR, a larger-than-pot sized bet is preferred.
+    Uses a 3-tier SPR system to avoid shoving entire stacks into tiny pots:
+      Tier 1 (SPR < 3): Pot-committed — jam all-in.
+      Tier 2 (3 <= SPR <= 6): Large sized bet (1.25-1.5x+ pot).
+      Tier 3 (SPR > 6): Standard value sizing (~0.75-1.0x pot), NO jam.
 
     Returns: -2 (jam all-in), int (sized raise-to-total), or None (no action).
     """
@@ -932,34 +970,32 @@ def evaluate_river_jam(
         return None
 
     spr = my_chips / max(1, pot)
-
-    # Compute effective jam threshold from SPR and opponent calling tendency
-    # Call-happy opponents: use larger sizing (they call wider anyway)
     opp_fold_to_raise = opponent_model.get("fold_to_raise", 0.50) if opponent_model.get("confidence", 0) >= 0.20 else 0.50
     call_happy = opp_fold_to_raise < 0.42
 
-    # SPR-based decision: at high SPR, jam liberally for value extraction
-    spr_jam_threshold = 8.0
-    if spr >= spr_jam_threshold:
-        return -2  # Jam all-in — strong hand at high SPR, maximize extraction
-
-    # Moderate SPR: compute a large sized bet
-    # Derive ratio from SPR and opponent tendencies
-    base_ratio = 1.25
-    if call_happy:
-        base_ratio = 1.40
-
-    # Scale ratio up slightly with SPR for deeper-stacked extraction
-    spr_bonus = max(0.0, (spr - 3.0) * 0.05)
-    ratio = base_ratio + spr_bonus
-
-    # Ensure the sized bet is at least half the pot for strong hands
-    sized = max(min_raise_action, int(pot * ratio), pot // 2)
-
-    # Cap at stack — if sized bet would be all-in, just jam
-    if sized >= my_chips:
+    # Tier 1: Pot-committed — jam
+    if spr < 3.0:
         return -2
 
+    # Tier 2: Moderate SPR — large sized bet
+    if spr <= 6.0:
+        base_ratio = 1.40 if call_happy else 1.25
+        spr_bonus = max(0.0, (spr - 3.0) * 0.05)
+        ratio = base_ratio + spr_bonus
+        if value_profile.get("tier") == "nut":
+            ratio += 0.10
+        sized = max(min_raise_action, int(pot * ratio), pot // 2)
+        if sized >= my_chips:
+            return -2
+        return sized
+
+    # Tier 3: High SPR — standard value sizing, NO jam
+    base_ratio = 0.90 if call_happy else 0.75
+    if value_profile.get("tier") == "nut":
+        base_ratio += 0.10
+    sized = max(min_raise_action, int(pot * base_ratio))
+    if sized >= my_chips:
+        return -2
     return sized
 
 
@@ -1026,6 +1062,7 @@ def get_action(req, requests):
                     opponent_model,
                     remaining_hands,
                     preflop_strength=preflop_strength,
+                    made_strength=0.0,  # preflop: no board cards yet
                 )
                 if anti_lock_attack is not None:
                     return anti_lock_attack
@@ -1317,6 +1354,7 @@ def get_action(req, requests):
                 draw_info=draw_info,
                 blocker_profile=blocker_profile,
                 board_texture=board_texture,
+                made_strength=made_strength,
             )
         fragile_river_raise_fold = (
             round_idx == 3
@@ -1543,6 +1581,7 @@ def get_action(req, requests):
             draw_info=draw_info,
             blocker_profile=blocker_profile,
             board_texture=board_texture,
+            made_strength=made_strength,
         )
         if anti_lock_attack is not None:
             return anti_lock_attack
@@ -1779,9 +1818,17 @@ def get_action(req, requests):
         if raise_amount is not None:
             return raise_amount
         # BUG-3 FIX: River strong/nut hands that couldn't compute a valid raise
-        # (typically because raise >= stack) should jam all-in instead of checking.
+        # should still bet — use SPR-aware sizing instead of auto-jam.
         if round_idx == 3 and value_profile and value_profile.get("tier") in ("strong", "nut"):
-            return -2
+            spr = my_chips / max(1, pot)
+            if spr < 3.0:
+                return -2  # Short-stacked: jam is correct
+            # Sized fallback: 60-80% pot depending on tier
+            fallback_ratio = 0.75 if value_profile.get("tier") == "nut" else 0.60
+            fallback_amount = max(state["min_raise_action"], int(pot * fallback_ratio))
+            if fallback_amount < my_chips and fallback_amount > to_call:
+                return fallback_amount
+            return -2  # Last resort: jam if sized bet infeasible
     return 0
 
 

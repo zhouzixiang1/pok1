@@ -52,9 +52,11 @@ def start_daemon(workers=None, pairs=5, scheduler_capable=True):
     from evolution_infra import CORE_DIR, RESULTS_DIR
 
     with _daemon_lock:
-        # Only clear the shutdown flag if we're not actively shutting down
-        if not _daemon_shutting_down:
-            _daemon_shutting_down = False
+        # Clear any stale shutdown flag from a previous stop_daemon() so the
+        # new daemon (and its monitor thread) can actually run. stop_daemon()
+        # sets the flag before acquiring the lock (line 106), so a narrow
+        # race window exists, but it is pre-existing and extremely unlikely.
+        _daemon_shutting_down = False
         # Check in-memory handle first — if daemon is alive, no need to touch PID file.
         # This MUST happen before reading the PID file to avoid killing a running daemon
         # whose PID file still exists from a previous start_daemon() call.
@@ -219,6 +221,11 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
                     restart_count = 0
                 else:
                     restart_count += 1
+                    # Clear stale handle immediately so other callers see the
+                    # daemon as dead during the backoff sleep window.
+                    with _daemon_lock:
+                        if daemon_proc is proc:
+                            daemon_proc = None
 
                 if restart_count > 5:
                     ui.log_history(f"Daemon failed 5x consecutively, stopping auto-restart (last rc={rc})", "error")
@@ -229,17 +236,9 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
                 if restart_count > 0:
                     backoff = min(3 * (2 ** (restart_count - 1)), 120)
                     ui.log_history(f"⚠️ Daemon exited (rc={rc}), restarting in {backoff}s (attempt {restart_count})", "warn")
-                    # Capture last output for diagnostics (stderr is merged into stdout)
-                    output_tail = ""
-                    try:
-                        if hasattr(proc, 'stdout') and proc.stdout:
-                            raw = proc.stdout.read()
-                            output_tail = raw[-500:] if raw else ""
-                    except (ValueError, OSError):
-                        pass
                     from system_log import log_system_event
                     log_system_event("daemon.crashed", "error", f"Daemon exited rc={rc}, restarting (attempt {restart_count})",
-                                     {"restart_count": restart_count, "returncode": rc, "output_tail": output_tail[:500] if output_tail else ""})
+                                     {"restart_count": restart_count, "returncode": rc})
                     if stop_event.wait(backoff):
                         break
                     if _daemon_shutting_down:

@@ -87,7 +87,7 @@ class TestP2StageTransition:
 
     def test_retry_to_master_planned_allowed(self):
         from core.evolution_infra import validate_stage_transition
-        for src in ["workers_done", "quality_passed", "spot_verified", "reviewed", "critic_checked"]:
+        for src in ["workers_done", "quality_passed", "reviewed", "critic_checked"]:
             ok, reason = validate_stage_transition(src, "master_planned")
             assert ok, f"{src} -> master_planned should be valid"
             assert "retry" in reason
