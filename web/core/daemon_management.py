@@ -196,6 +196,7 @@ def is_daemon_scheduler_capable():
 
 def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
     """Background thread: reads daemon stats, updates UI, auto-restarts dead daemon."""
+    global daemon_proc  # written below (daemon_proc = None); must be declared global
     if not ui:
         return
     if daemon_workers is None:
