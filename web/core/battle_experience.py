@@ -44,8 +44,11 @@ log = logging.getLogger("pok.battle_exp")
 
 BATTLE_EXPERIENCE_FILE = RESULTS_DIR / "battle_experience.md"
 ANALYSIS_MARKER_FILE = RESULTS_DIR / ".battle_analysis_progress.json"
-POLL_INTERVAL = 300  # seconds between background thread wake-ups (cost control)
-LLM_TIMEOUT = 120  # seconds per LLM update call (was 30 — too short, caused thread leaks)
+POLL_INTERVAL = 20  # seconds between background thread wake-ups
+TARGET_BATCH = 16  # matches per wake-up
+MAX_CONCURRENT_LLM = 6  # parallel LLM calls within one batch
+MAX_ANALYSES_PER_HOUR = 240  # rate-limit defense (non-zero budget ~$5/hr)
+LLM_TIMEOUT = 120  # seconds per LLM update call
 
 # ──────────────────────────────────────────────
 # SilentUI
@@ -83,35 +86,77 @@ class SilentUI(BaseUI):
 
 
 def is_analyzed(match_id: str) -> bool:
-    """Check whether a match ID has already been analyzed."""
-    markers = read_locked_json(ANALYSIS_MARKER_FILE, default=None)
-    if not markers:
+    """True if the match is DONE (success, fail_count==0) or force-skipped (>=3).
+
+    Transient failures (fail_count 1-2) return False so they get RETRIED.
+    """
+    markers = _read_markers()
+    entry = markers.get(match_id)
+    if entry is None:
         return False
-    return match_id in markers
+    if isinstance(entry, dict):
+        fc = entry.get("fail_count", 0)
+        return fc == 0 or fc >= 3
+    # legacy list form: plain string ID — treated as analyzed
+    return True
 
 
-def mark_analyzed(match_id: str):
-    """Record a match ID as analyzed.  Atomic read-merge-write under lock."""
-    markers = read_locked_json(ANALYSIS_MARKER_FILE, default=None)
-    if markers is None:
-        markers = set()
-    else:
-        markers = set(markers)
-    markers.add(match_id)
-    write_locked_json(ANALYSIS_MARKER_FILE, sorted(markers))
+def _read_markers() -> dict:
+    """Read marker file, normalizing legacy list format to dict."""
+    raw = read_locked_json(ANALYSIS_MARKER_FILE, default=None)
+    if raw is None:
+        return {}
+    if isinstance(raw, list):
+        # Legacy format: list of IDs (all done) — convert to dict.
+        return {mid: {} for mid in raw}
+    if isinstance(raw, dict):
+        return raw
+    return {}
 
 
-def get_unanalyzed_matches(n: int = 5) -> list[dict]:
-    """Return up to *n* unanalyzed match entries from match_history.jsonl.
+def _write_markers(markers: dict):
+    """Write marker dict atomically under lock."""
+    write_locked_json(ANALYSIS_MARKER_FILE, markers)
 
-    Reads the tail of the JSONL file, filters out already-analyzed IDs,
-    and returns the most recent unanalyzed entries (up to *n*).
+
+def mark_analyzed(match_id: str, *, fail_count: int = 0):
+    """Record a match ID as analyzed (done). Atomic read-merge-write under lock.
+
+    Args:
+        match_id: the match ID to mark.
+        fail_count: 0 = successfully analyzed (done); >=3 = force-skipped poison.
+    """
+    markers = _read_markers()
+    markers[match_id] = {"fail_count": fail_count}
+    _write_markers(markers)
+
+
+def increment_fail_count(match_id: str) -> int:
+    """Bump fail_count for a match ID, return new count. Stays retryable until 3."""
+    markers = _read_markers()
+    entry = markers.get(match_id, {})
+    if not isinstance(entry, dict):
+        entry = {}
+    new_count = entry.get("fail_count", 0) + 1
+    markers[match_id] = {"fail_count": new_count}
+    _write_markers(markers)
+    return new_count
+
+
+def get_unanalyzed_matches(n: int = TARGET_BATCH) -> list[dict]:
+    """Return up to *n* match entries to analyze from match_history.jsonl.
+
+    Includes: never-tried matches (no marker) AND transient failures (fail_count
+    1-2, retried). Excludes: successfully analyzed (fail_count==0), force-skipped
+    poison (fail_count>=3), legacy markers, and IDs whose replay file was evicted.
+
+    Random-samples from the candidate pool to avoid recency bias, returns the
+    selected entries in chronological order (oldest first).
     """
     if not MATCH_HISTORY_FILE.exists():
         return []
 
-    markers = read_locked_json(ANALYSIS_MARKER_FILE, default=None)
-    analyzed_ids = set(markers) if markers else set()
+    markers = _read_markers()
 
     try:
         with locked_file(MATCH_HISTORY_FILE, "r", encoding="utf-8") as f:
@@ -119,9 +164,8 @@ def get_unanalyzed_matches(n: int = 5) -> list[dict]:
     except (OSError, UnicodeDecodeError):
         return []
 
-    # Scan from the end for most-recent unanalyzed matches
-    unanalyzed = []
-    for line in reversed(lines):
+    candidates = []
+    for line in lines:
         line = line.strip()
         if not line:
             continue
@@ -129,14 +173,34 @@ def get_unanalyzed_matches(n: int = 5) -> list[dict]:
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if entry.get("id") not in analyzed_ids:
-            unanalyzed.append(entry)
-            if len(unanalyzed) >= n:
-                break
+        match_id = entry.get("id", "")
+        if not match_id:
+            continue
+        marker = markers.get(match_id)
+        if isinstance(marker, dict):
+            fc = marker.get("fail_count", 0)
+            if fc == 0 or fc >= 3:
+                continue  # done or force-skipped
+            # fc in 1-2: transient failure — retry (fall through)
+        elif marker is not None:
+            continue  # legacy string form — already analyzed
+        # Skip if replay file has been evicted
+        replay_path = REPLAY_DIR / match_id
+        if not replay_path.exists():
+            continue
+        candidates.append(entry)
 
-    # Return in chronological order (oldest first)
-    unanalyzed.reverse()
-    return unanalyzed
+    if not candidates:
+        return []
+
+    # Random sample to avoid recency bias, then sort chronologically
+    import random
+    if len(candidates) > n:
+        selected = random.sample(candidates, n)
+    else:
+        selected = candidates
+    selected.sort(key=lambda e: e.get("timestamp", e.get("id", "")))
+    return selected
 
 
 # ──────────────────────────────────────────────
@@ -147,40 +211,162 @@ _thread: threading.Thread | None = None
 
 
 def start_experience_thread():
-    """Start the serial background thread.  Called once at daemon startup."""
+    """Start the background experience thread.  Called once at daemon startup."""
     global _thread
     if _thread is not None and _thread.is_alive():
         log.info("Battle experience thread already running")
         return
     _thread = threading.Thread(target=_experience_loop, daemon=True, name="battle-experience")
     _thread.start()
-    log.info("Battle experience thread started (interval=%ds)", POLL_INTERVAL)
+    log.info(
+        "Battle experience thread started (interval=%ds, batch=%d, concurrent=%d)",
+        POLL_INTERVAL, TARGET_BATCH, MAX_CONCURRENT_LLM,
+    )
 
 
 def _experience_loop():
-    """Serial background loop.  Wakes every POLL_INTERVAL seconds.
+    """Background loop: wakes every POLL_INTERVAL, processes a batch.
 
-    Finds unanalyzed matches and processes them ONE AT A TIME serially.
-    On any processing error the loop breaks out of the current batch and
-    retries next cycle.
+    Uses a ThreadPoolExecutor for parallel LLM calls within the batch.
+    Per-match errors are isolated — one failure does not abort the batch.
+    Writes are serialized to avoid race conditions.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    _analyses_this_hour = 0
+    _hour_start = time.time()
+
     while True:
         try:
             time.sleep(POLL_INTERVAL)
-            unanalyzed = get_unanalyzed_matches(n=2)
+
+            # Budget window: reset hourly counter
+            now = time.time()
+            if now - _hour_start >= 3600:
+                _analyses_this_hour = 0
+                _hour_start = now
+
+            # Rate-limit defense
+            remaining_budget = MAX_ANALYSES_PER_HOUR - _analyses_this_hour
+            if remaining_budget <= 0:
+                log.debug("Hourly analysis budget exhausted (%d/%d) — skipping cycle",
+                          _analyses_this_hour, MAX_ANALYSES_PER_HOUR)
+                continue
+
+            batch_size = min(TARGET_BATCH, remaining_budget)
+            unanalyzed = get_unanalyzed_matches(n=batch_size)
             if not unanalyzed:
                 continue
-            for entry in unanalyzed:
-                try:
-                    _process_one_match(entry)
-                except Exception as e:
-                    log.warning(
-                        "Battle experience processing failed for %s: %s",
-                        entry.get("id", "?"), e,
-                    )
-                    break  # Stop processing on error, retry next cycle
+
+            # Extract per-match summaries in parallel (pure-data, parallel-safe).
+            # The LLM merge is done ONCE over the combined batch in
+            # _apply_batch_results (avoids the read-modify-write data-loss bug
+            # where each worker read the same stale baseline and sequential
+            # writes clobbered N-1 of the merges).
+            results = []  # list of (entry, success_bool, summary_or_None)
+            with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_LLM) as pool:
+                future_map = {
+                    pool.submit(_process_one_match_safe, entry): entry
+                    for entry in unanalyzed
+                }
+                for fut in as_completed(future_map):
+                    entry = future_map[fut]
+                    match_id = entry.get("id", "?")
+                    try:
+                        summary = fut.result(timeout=60)
+                        results.append((entry, True, summary))
+                    except Exception as e:
+                        log.warning("Battle experience summary failed for %s: %s", match_id, e)
+                        results.append((entry, False, None))
+
+            # Single cumulative LLM merge + write (serial, correct chaining).
+            _apply_batch_results(results)
+
+            # One LLM merge per cycle when any summaries were collected.
+            if any(r[2] for r in results):
+                _analyses_this_hour += 1
+
         except Exception as e:
             log.warning("Experience thread error: %s", e)
+
+
+def _process_one_match_safe(entry: dict) -> str | None:
+    """Extract the new-match summary for one match (pure-data, parallel-safe).
+
+    Returns the concatenated bot-perspective summary string, or None if the
+    replay is missing/corrupt/empty. Does NOT touch the experience file or run
+    the LLM — the LLM merge is done ONCE over the combined batch in
+    _apply_batch_results. This avoids the parallel read-modify-write data-loss
+    bug where each worker would read the same stale baseline and the sequential
+    writes would clobber N-1 of the merges.
+    """
+    match_id = entry.get("id", "")
+    bot0 = entry.get("bot0", "")
+    bot1 = entry.get("bot1", "")
+
+    replay_path = REPLAY_DIR / match_id
+    if not replay_path.exists():
+        log.debug("Replay file missing for %s — will skip", match_id)
+        return None
+
+    try:
+        with locked_file(replay_path, "r", encoding="utf-8") as f:
+            replay_data = json.load(f)
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+        log.warning("Failed to read replay %s: %s — skipping", match_id, e)
+        return None
+
+    summary_parts = []
+    for bot_name in (bot0, bot1):
+        if not bot_name:
+            continue
+        summary = replay_analysis.summarize_replay_for_analysis(replay_data, bot_name)
+        if summary:
+            summary_parts.append(summary)
+
+    if not summary_parts:
+        log.debug("Empty summaries for %s — will skip", match_id)
+        return None
+
+    return "\n\n".join(summary_parts)
+
+
+def _apply_batch_results(results: list):
+    """Apply a batch: ONE cumulative LLM merge over all successful summaries.
+
+    All summaries from the parallel batch are concatenated and merged into the
+    live experience file in a SINGLE _run_llm_update call. This is correct
+    (chaining semantics preserved — every summary folds into the latest file)
+    AND cheaper (~1 LLM call vs N). Successful matches are marked analyzed;
+    failures bump fail_count (force-skip after 3).
+    """
+    summaries = []
+    success_entries = []
+    for entry, success, summary in results:
+        match_id = entry.get("id", "")
+        if not success or summary is None:
+            fail_count = increment_fail_count(match_id)
+            if fail_count >= 3:
+                log.warning("Match %s force-skipped after %d failures", match_id, fail_count)
+            continue
+        summaries.append(summary)
+        success_entries.append(entry)
+
+    if not summaries:
+        return
+
+    combined = "\n\n---\n\n".join(summaries)
+    current = _read_experience_file()
+    updated = _run_llm_update(current, combined)
+    if updated is not None:
+        _write_experience_file(updated)
+        for entry in success_entries:
+            mark_analyzed(entry.get("id", ""), fail_count=0)
+    else:
+        # LLM merge failed: bump fail_count for every successful-summary match
+        # so they stay retryable (and force-skip after 3 LLM failures).
+        for entry in success_entries:
+            increment_fail_count(entry.get("id", ""))
 
 
 # ──────────────────────────────────────────────
@@ -188,17 +374,17 @@ def _experience_loop():
 # ──────────────────────────────────────────────
 
 
-def _process_one_match(entry: dict):
-    """Process a single match entry through the LLM update pipeline.
+# ──────────────────────────────────────────────
+# Per-match processing (legacy single-match path, kept for tests)
+# ──────────────────────────────────────────────
 
-    Steps:
-      1. Load the replay file from REPLAY_DIR using the entry ID.
-      2. If missing, mark as analyzed (skip) and return.
-      3. Summarize from BOTH bot perspectives.
-      4. Read current experience file.
-      5. Run LLM to produce updated experience.
-      6. Write updated content atomically.
-      7. Mark the match as analyzed.
+
+def _process_one_match(entry: dict):
+    """Process a single match entry through the LLM update pipeline (serial path).
+
+    Marks analyzed ONLY on success (fail_count=0). On LLM failure, bumps
+    fail_count and leaves the match retryable until 3 strikes force-skip it.
+    Missing/empty replays are marked done (skip) since they cannot be analyzed.
     """
     match_id = entry.get("id", "")
     bot0 = entry.get("bot0", "")
@@ -208,7 +394,7 @@ def _process_one_match(entry: dict):
     replay_path = REPLAY_DIR / match_id
     if not replay_path.exists():
         log.debug("Replay file missing for %s — marking as analyzed", match_id)
-        mark_analyzed(match_id)
+        mark_analyzed(match_id, fail_count=0)
         return
 
     try:
@@ -216,7 +402,7 @@ def _process_one_match(entry: dict):
             replay_data = json.load(f)
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
         log.warning("Failed to read replay %s: %s — skipping", match_id, e)
-        mark_analyzed(match_id)
+        mark_analyzed(match_id, fail_count=0)
         return
 
     # 3. Summarize from both perspectives
@@ -230,7 +416,7 @@ def _process_one_match(entry: dict):
 
     if not summary_parts:
         log.debug("Empty summaries for %s — marking as analyzed", match_id)
-        mark_analyzed(match_id)
+        mark_analyzed(match_id, fail_count=0)
         return
 
     new_match_summary = "\n\n".join(summary_parts)
@@ -242,9 +428,15 @@ def _process_one_match(entry: dict):
     updated = _run_llm_update(current_experience, new_match_summary)
     if updated is not None:
         _write_experience_file(updated)
-
-    # 7. Mark analyzed
-    mark_analyzed(match_id)
+        # 7. Mark analyzed ONLY on success
+        mark_analyzed(match_id, fail_count=0)
+    else:
+        # LLM failure: bump fail_count, do NOT permanently drop data.
+        # fail_count 1-2 stays retryable; 3 strikes force-skips the poison match.
+        fail_count = increment_fail_count(match_id)
+        if fail_count >= 3:
+            log.warning("Match %s force-skipped after %d LLM failures", match_id, fail_count)
+            mark_analyzed(match_id, fail_count=fail_count)
 
 
 # ──────────────────────────────────────────────

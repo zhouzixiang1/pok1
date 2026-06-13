@@ -1,6 +1,7 @@
 """Pipeline tools: direction audit, master planning, and worker execution."""
 
 import json
+import re
 import shutil
 import time
 from pathlib import Path
@@ -320,6 +321,39 @@ async def run_master(args):
     except Exception:
         pass
 
+    # --- Read exploitability probe results for Master prompt ---
+    # exploitability.json is written by exploitability_prober.run_exploitability_probes()
+    # (called from generation_scheduler.post_generation_cleanup against the
+    # PREVIOUS generation's bot). It is write-only until consumed here.
+    exploitability_weaknesses = ""
+    try:
+        from evolution_infra import RESULTS_DIR as _RES
+        _exploit_file = _RES / "exploitability.json"
+        if _exploit_file.exists():
+            with open(_exploit_file, "r") as _f:
+                _exploit = json.load(_f)
+            _overall = _exploit.get("overall_score")
+            _weak_list = _exploit.get("weaknesses", []) or []
+            _games = _exploit.get("num_hands")
+            _bot_path = _exploit.get("bot_path", "")
+            _parts = []
+            if _overall is not None:
+                _parts.append(f"overall_score={_overall:.2f}/1.0")
+            if _games is not None:
+                _parts.append(f"{int(_games)} games per probe")
+            if _bot_path:
+                _parts.append(f"vs {_bot_path}")
+            header = ("Exploitability probe results (4 probe bots: min_bettor, "
+                      "overbettor, check_raiser, always_caller): "
+                      + ", ".join(_parts)) if _parts else (
+                      "Exploitability probe results (4 probe bots):")
+            if _weak_list:
+                exploitability_weaknesses = header + "\nWEAKNESSES:\n- " + "\n- ".join(_weak_list)
+            else:
+                exploitability_weaknesses = header + "\nNo exploitable weaknesses detected."
+    except Exception:
+        pass
+
     data = await _run_master_analysis(
         source_v, next_v, stagnation_info, ui,
         match_analysis=match_analysis,
@@ -327,6 +361,7 @@ async def run_master(args):
         replay_spotlight=replay_spotlight,
         bot_action_stats=bot_action_stats,
         battle_experience=battle_experience,
+        exploitability_weaknesses=exploitability_weaknesses,
     )
 
     if data is None:
@@ -359,6 +394,7 @@ async def run_master(args):
                     replay_spotlight=replay_spotlight,
                     bot_action_stats=bot_action_stats,
                     battle_experience=battle_experience,
+                    exploitability_weaknesses=exploitability_weaknesses,
                 )
                 if data is None:
                     return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed after audit retry", "logs": ui.get_output()})}]}
@@ -433,14 +469,20 @@ def _extract_exhausted_keywords():
 
     keywords = []
     current_section = ""
+    # Tolerant marker: matches [POSSIBLY EXHAUSTED] AND [EXHAUSTED — hard gate]
+    # (any bracketed tag containing the word EXHAUSTED). Using a regex avoids the
+    # round-trip closure bug where an LLM-appended "— hard gate" suffix made the
+    # old literal "[POSSIBLY EXHAUSTED]" check silently miss every marker,
+    # disabling the exhausted-direction hard gate (returned []  -> gate no-op).
+    marker_re = re.compile(r"\[[A-Z ]*EXHAUSTED[^\]]*\]")
     for line in text.splitlines():
         if line.startswith("## "):
             current_section = line.replace("## ", "").strip()
             continue
-        if "[POSSIBLY EXHAUSTED]" not in line:
+        if not marker_re.search(line):
             continue
         # Extract the topic phrase: everything before the explanation
-        cleaned = line.replace("[POSSIBLY EXHAUSTED]", "").strip(" -•")
+        cleaned = marker_re.sub("", line).strip(" -•")
         if not cleaned:
             continue
         # Take the first clause (before common joiners) as the core topic

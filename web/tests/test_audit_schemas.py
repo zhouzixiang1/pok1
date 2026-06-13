@@ -214,3 +214,125 @@ class TestAuditAgentsSafeDefaults:
         assert callable(_run_crossover_compatibility_audit)
         assert callable(_run_experience_pool_audit)
         assert callable(_run_regression_guardian)
+
+
+class TestRunCriticRegressionGuardianInline:
+    """P2-7: run_critic awaits the Regression Guardian synchronously and merges
+    its diagnosis into the tool result (no longer fire-and-forget).
+    """
+
+    def _patch_critic_dependencies(self, monkeypatch, score, guardian_return,
+                                   guardian_side_effect=None):
+        import asyncio
+        import json
+        from unittest.mock import AsyncMock, MagicMock
+
+        # conftest imports server.app which loads the module as
+        # ``core.tool_gates``; this file's sys.path entry also exposes the bare
+        # ``tool_gates`` name. Patch the SAME module object that
+        # ``run_critic.handler`` resolves its globals from, so prefer the
+        # ``core.*`` form when present.
+        import importlib
+        tool_gates = sys.modules.get("core.tool_gates") or importlib.import_module("tool_gates")
+        audit_agents = sys.modules.get("core.audit_agents") or importlib.import_module("audit_agents")
+
+        fake_ui = MagicMock()
+        fake_ui.get_output.return_value = ""
+
+        monkeypatch.setattr(tool_gates, "_run_critic", AsyncMock(return_value={
+            "score": score,
+            "approved": score >= 6,
+            "feedback": "weak strategy" if score < 6 else "good",
+            "strategic_assessment": "poor" if score < 6 else "solid",
+            "evidence": None,
+        }))
+        monkeypatch.setattr(tool_gates, "_matching_checkpoint", MagicMock(return_value={
+            "master_plan": {"tasks": []}, "gate_results": {}, "generation_attempt": 0,
+        }))
+        monkeypatch.setattr(tool_gates, "_quality_gate_ok", MagicMock(return_value=True))
+        monkeypatch.setattr(tool_gates, "_review_gate_ok", MagicMock(return_value=True))
+        monkeypatch.setattr(tool_gates, "_idempotency_check", MagicMock(return_value=None))
+        monkeypatch.setattr(tool_gates, "_set_pipeline_status", MagicMock())
+        monkeypatch.setattr(tool_gates, "_record_gate", MagicMock(return_value=True))
+        monkeypatch.setattr(tool_gates, "_record_quality_failure", MagicMock())
+        monkeypatch.setattr(tool_gates, "_get_ui", MagicMock(return_value=fake_ui))
+
+        if guardian_side_effect is not None:
+            mock_guardian = AsyncMock(side_effect=guardian_side_effect)
+        else:
+            mock_guardian = AsyncMock(return_value=guardian_return)
+        monkeypatch.setattr(audit_agents, "_run_regression_guardian", mock_guardian)
+        return tool_gates, mock_guardian
+
+    def _call(self, tool_gates, args):
+        import asyncio
+        import json
+        raw = asyncio.run(tool_gates.run_critic.handler(args))
+        return json.loads(raw["content"][0]["text"])
+
+    def test_low_score_merges_guardian_diagnosis(self, monkeypatch):
+        guardian_fake = {
+            "diagnosis": "Preflop range too wide",
+            "failure_stage": "workers",
+            "root_cause": "over-aggression",
+            "severity": "major",
+            "recovery_recommendation": "tighten ranges",
+            "confidence": "medium",
+            "systematic_issue": "yes",
+        }
+        tool_gates, mock_guardian = self._patch_critic_dependencies(
+            monkeypatch, score=3, guardian_return=guardian_fake)
+
+        args = {"version": 99, "source_v": 98, "plan": [],
+                "reviewer_feedback": ""}
+        res = self._call(tool_gates, args)
+
+        # Guardian was awaited (synchronous, not fire-and-forget)
+        mock_guardian.assert_awaited_once()
+        # Critic still forces retry_workers — guardian is NOT a hard second gate
+        assert res["approved"] is False
+        assert res["score"] == 3.0
+        assert res["action"] == "retry_workers"
+        # Diagnosis is visible to the Orchestrator in the result
+        assert "regression_guardian" in res
+        rg = res["regression_guardian"]
+        assert rg["severity"] == "major"
+        assert rg["failure_stage"] == "workers"
+        assert rg["recovery_recommendation"] == "tighten ranges"
+        assert rg["diagnosis"] == "Preflop range too wide"
+        assert rg["root_cause"] == "over-aggression"
+        assert rg["confidence"] == "medium"
+
+    def test_guardian_exception_does_not_crash(self, monkeypatch):
+        tool_gates, mock_guardian = self._patch_critic_dependencies(
+            monkeypatch, score=2,
+            guardian_return=None,
+            guardian_side_effect=RuntimeError("guardian boom"))
+
+        args = {"version": 99, "source_v": 98, "plan": [],
+                "reviewer_feedback": ""}
+        # Must not raise
+        res = self._call(tool_gates, args)
+
+        assert res["approved"] is False
+        assert res["action"] == "retry_workers"
+        # No diagnosis merged when the guardian threw
+        assert "regression_guardian" not in res
+
+    def test_approved_score_skips_guardian(self, monkeypatch):
+        guardian_fake = {
+            "diagnosis": "should not run", "severity": "major",
+            "failure_stage": "workers", "recovery_recommendation": "x",
+        }
+        tool_gates, mock_guardian = self._patch_critic_dependencies(
+            monkeypatch, score=7, guardian_return=guardian_fake)
+
+        args = {"version": 99, "source_v": 98, "plan": [],
+                "reviewer_feedback": ""}
+        res = self._call(tool_gates, args)
+
+        assert res["approved"] is True
+        assert res["action"] == "approve"
+        mock_guardian.assert_not_awaited()
+        assert "regression_guardian" not in res
+

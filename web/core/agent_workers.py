@@ -7,6 +7,7 @@ there is only one worker task.
 """
 
 import json
+import re
 import shutil
 import asyncio
 import logging
@@ -68,10 +69,15 @@ def _extract_exhausted_block():
         return ""
 
     exhausted_lines = []
+    # Tolerant marker: matches [POSSIBLY EXHAUSTED] AND [EXHAUSTED — hard gate]
+    # (any bracketed tag containing EXHAUSTED). The old .replace() cleanup only
+    # stripped "[POSSIBLY EXHAUSTED]" / "[EXHAUSTED]", leaving the "— hard gate]"
+    # suffix from LLM-escalated markers as residue in the constraint block.
+    marker_re = re.compile(r"\[[A-Z ]*EXHAUSTED[^\]]*\]")
     for line in text.splitlines():
-        if "EXHAUSTED]" in line:
+        if marker_re.search(line):
             # Strip the leading markdown header markers and the marker itself
-            cleaned = line.replace("[POSSIBLY EXHAUSTED]", "").replace("[EXHAUSTED]", "").strip(" -•")
+            cleaned = marker_re.sub("", line).strip(" -•")
             if cleaned:
                 exhausted_lines.append(cleaned)
 

@@ -1,6 +1,42 @@
 """
 Bot action statistics extraction from replay files.
 
+Authoritative action source: RESPONSE log entries.
+
+A replay JSON (produced by elo_daemon.save_match_replay via engine/battle.mirror_battle)
+has the shape:
+
+    {
+      "bot0": <name>, "bot1": <name>,
+      "games": [ {"game": int, "mirror": bool, "winner": int,
+                   "bot0_chips": float, "bot1_chips": float,
+                   "logs": [ <log entries> ]}, ... ]
+    }
+
+Each `logs` list interleaves two entry kinds:
+  * REQUEST entries: {"output": {"command": "request", "content": {"<pid>": {...}},
+                                   "display": {"round": 0|1|2|3, "round_player_bet": [b0, b1],
+                                                "last_action": {...}, "matchdata": {"hand": int}, ...}}}
+  * RESPONSE entries: {"<pid>": {"response": "<int>", "verdict": "OK"}, "output": null}
+
+The RESPONSE entry carries the action the bot ACTUALLY took in reply to the immediately
+preceding REQUEST entry for that same player id. Decoding the response int follows the
+engine/judge action codes:
+    -1  -> fold
+    -2  -> allin
+     0  -> call-or-check (disambiguated via the preceding request's display.round_player_bet:
+           matched bets => check, unmatched bets => call)
+    >0  -> raise-to-total
+
+`display.last_action.action_type` (the request-side mirror) is NOT authoritative: it echoes
+the PREVIOUS player's action, so it misattributes hand-ending folds (those entries omit
+`round`, landing them in an unknown street) and cannot classify the opening action of any
+hand (no previous action exists). It is used here only as an auxiliary cross-check.
+
+Player id maps stably to bot names: replay["bot0"] -> player id 0, replay["bot1"] ->
+player id 1. mirror_battle swaps the CARDS/deck, never the bot paths, so this mapping
+holds for both the normal and mirror halves of every game.
+
 Pure Python, no external dependencies beyond json / os / pathlib.
 """
 
@@ -9,391 +45,220 @@ import os
 from pathlib import Path
 
 
-def extract_hands_from_replay(replay_json):
-    """
-    Extract all hands from a single replay JSON.
+# display.round integer -> street name
+_STREET_BY_ROUND = {0: "preflop", 1: "flop", 2: "turn", 3: "river"}
+_STREETS = ("preflop", "flop", "turn", "river")
 
-    Returns a list of hand dicts, each with:
-      - stages: list of stage names in order
-      - actions: list of dicts {player, action, amount, stage}
-      - hole_cards: dict mapping player name -> [card1, card2]
-      - community: dict mapping stage -> list of cards
-      - pot: final pot size (from last stage's pot or settlement)
-      - winner: player name who won, or None
-      - showdown: bool, whether hand went to showdown
-      - win_amount: amount won by winner (net, from settlement)
+
+def _empty_street_stats():
+    return {"total": 0, "fold": 0, "call": 0, "raise": 0, "check": 0, "allin": 0}
+
+
+def _classify_response(resp_int, round_player_bet, player_id):
+    """Classify a response int into one of fold/call/check/raise/allin.
+
+    `round_player_bet` is the [bet_player0, bet_player1] list from the request the bot is
+    answering; it disambiguates response=0 (call when bets differ, check when matched).
+    Returns None if the value cannot be parsed.
+    """
+    if resp_int is None:
+        return None
+    if resp_int == -1:
+        return "fold"
+    if resp_int == -2:
+        return "allin"
+    if resp_int > 0:
+        return "raise"
+    # resp_int == 0 -> call or check
+    if not isinstance(round_player_bet, (list, tuple)) or len(round_player_bet) < 2:
+        # No bet info available: cannot disambiguate; treat as call (the action committed
+        # chips to match / stay in). This branch is rarely hit in real replays.
+        return "call"
+    my_bet = round_player_bet[player_id]
+    opp_bet = round_player_bet[1 - player_id]
+    if my_bet == opp_bet:
+        return "check"
+    return "call"
+
+
+def _int_response(resp):
+    """Parse a response value (string or int) into an int, or None."""
+    try:
+        return int(resp)
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_actions_from_replay(replay_json):
+    """Extract every bot action from a single replay JSON.
+
+    Returns a list of dicts: {"bot": <name>, "street": <str|None>, "action": <class>, "hand": <int|None>}.
+    `street` is None only if the preceding request's display.round was missing/unrecognized.
+    `hand` is the 0-indexed hand number (from display.matchdata.hand), for total_hands counting.
+    `action` is one of fold/call/check/raise/allin (allin is also semantically a raise, but
+    here it is its own class; the aggregator double-counts it into the raise key as well).
     """
     if isinstance(replay_json, (str, bytes)):
         replay_json = json.loads(replay_json)
 
-    players = replay_json.get("players", [])
-    if not players:
+    bot0 = replay_json.get("bot0")
+    bot1 = replay_json.get("bot1")
+    if not bot0 or not bot1:
+        return []
+    pid_to_bot = {0: bot0, 1: bot1}
+
+    games = replay_json.get("games", [])
+    if not games:
         return []
 
-    raw_hands = replay_json.get("hands", [])
-    if not raw_hands:
-        return []
-
-    hands = []
-    for hand in raw_hands:
-        stages = []
-        actions = []
-        hole_cards = {}
-        community = {}
-        pot = 0
-        winner = None
-        win_amount = 0
-        showdown = False
-
-        # Hole cards
-        for p in players:
-            hc = hand.get("hole_cards", {}).get(p)
-            if hc:
-                hole_cards[p] = list(hc)
-
-        # Process each stage
-        for stage_name in ["preflop", "flop", "turn", "river", "showdown"]:
-            stage_data = hand.get(stage_name)
-            if not stage_data:
-                continue
-            stages.append(stage_name)
-
-            # Community cards
-            cards = stage_data.get("community")
-            if cards is not None:
-                community[stage_name] = list(cards)
-
-            # Actions
-            for act in stage_data.get("actions", []):
-                actions.append({
-                    "player": act.get("player"),
-                    "action": act.get("action"),
-                    "amount": act.get("amount", 0),
-                    "stage": stage_name,
-                })
-
-            # Pot from stage
-            stage_pot = stage_data.get("pot")
-            if stage_pot is not None:
-                pot = stage_pot
-
-            # Showdown / winner
-            if stage_name == "showdown":
-                showdown = True
-                win = stage_data.get("winner")
-                if win:
-                    winner = win
-                amt = stage_data.get("win_amount")
-                if amt is not None:
-                    win_amount = amt
-
-        # Fallback winner from settlement if not at showdown
-        if winner is None:
-            settlement = hand.get("settlement")
-            if settlement:
-                for p in players:
-                    amt = settlement.get(p)
-                    if amt is not None and amt > 0:
-                        winner = p
-                        win_amount = amt
-                        break
-
-        # Fallback pot from settlement total
-        if pot == 0:
-            settlement = hand.get("settlement")
-            if settlement:
-                pot = sum(v for v in settlement.values() if v and v > 0)
-
-        hands.append({
-            "stages": stages,
-            "actions": actions,
-            "hole_cards": hole_cards,
-            "community": community,
-            "pot": pot,
-            "winner": winner,
-            "showdown": showdown,
-            "win_amount": win_amount,
-        })
-
-    return hands
-
-
-def _classify_hand_strength(hand, bot_name):
-    """
-    Rough classification of whether the bot had a 'made hand' at showdown.
-    Uses showdown info if available; otherwise returns 'unknown'.
-    """
-    if not hand.get("showdown"):
-        return "unknown"
-    # If bot won at showdown, treat as made hand
-    if hand.get("winner") == bot_name:
-        return "made"
-    # If bot lost at showdown, treat as not-made (simplification)
-    return "air"
-
-
-def compute_bot_action_stats(bot_name, replays_dir):
-    """
-    Compute aggregate action statistics for a bot across all replays in a directory.
-
-    Returns a dict with:
-      - vpip, pfr, fold_to_3bet, flop_cbet, turn_barrel,
-        river_value_bet, river_bluff, fold_to_river_bet,
-        showdown_win, avg_won_pot, avg_lost_pot,
-        wtsd, aggression_freq
-    """
-    replays_dir = Path(replays_dir)
-    if not replays_dir.exists():
-        return {}
-
-    # Counters
-    total_hands = 0
-
-    # VPIP / PFR
-    vpip_opportunities = 0
-    vpip_count = 0
-    pfr_count = 0
-
-    # 3-bet fold
-    faced_3bet = 0
-    folded_to_3bet = 0
-
-    # C-bet
-    cbet_opportunities = 0
-    cbet_count = 0
-
-    # Turn barrel
-    barrel_opportunities = 0
-    barrel_count = 0
-
-    # River value bet / bluff
-    river_value_bet_opportunities = 0
-    river_value_bet_count = 0
-    river_bluff_opportunities = 0
-    river_bluff_count = 0
-
-    # Fold to river bet
-    faced_river_bet = 0
-    folded_to_river_bet = 0
-
-    # Showdown
-    showdowns = 0
-    showdown_wins = 0
-
-    # Pots
-    won_pots = []
-    lost_pots = []
-
-    # WTSD
-    wtsd_opportunities = 0
-    wtsd_count = 0
-
-    # Aggression frequency
-    aggressive_actions = 0
-    passive_actions = 0
-
-    for entry in os.listdir(replays_dir):
-        if not entry.endswith(".json"):
+    actions = []
+    for game in games:
+        logs = game.get("logs", [])
+        if not isinstance(logs, list):
             continue
-        filepath = replays_dir / entry
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                replay_json = json.load(f)
-        except Exception:
-            continue
-
-        hands = extract_hands_from_replay(replay_json)
-        for hand in hands:
-            total_hands += 1
-            actions = hand["actions"]
-            players_in_hand = set(a["player"] for a in actions)
-            if bot_name not in players_in_hand:
+        # Single forward pass: remember the most-recent request addressed to each
+        # player id, so each response finds its matching request in O(1). The old
+        # backward `while j >= 0` scan was O(R*L) per game (~50K comparisons per
+        # 70-hand half-game), which blocked the daemon save cycle at 2000 replays.
+        last_request = {}  # pid_str -> (street, round_player_bet, hand)
+        for entry in logs:
+            out = entry.get("output")
+            if isinstance(out, dict) and out.get("command") == "request":
+                content = out.get("content", {})
+                disp_raw = out.get("display")
+                disp = disp_raw if isinstance(disp_raw, dict) else {}
+                street = _STREET_BY_ROUND.get(disp.get("round"))
+                round_player_bet = disp.get("round_player_bet")
+                matchdata = disp.get("matchdata", {})
+                hand = matchdata.get("hand") if isinstance(matchdata, dict) else None
+                for pid_str in ("0", "1"):
+                    if pid_str in content:
+                        last_request[pid_str] = (street, round_player_bet, hand)
                 continue
-
-            # --- VPIP / PFR ---
-            preflop_actions = [a for a in actions if a["stage"] == "preflop"]
-            bot_preflop = [a for a in preflop_actions if a["player"] == bot_name]
-            if bot_preflop:
-                vpip_opportunities += 1
-                first_action = bot_preflop[0]["action"]
-                if first_action in ("raise", "allin"):
-                    vpip_count += 1
-                    pfr_count += 1
-                elif first_action == "call":
-                    vpip_count += 1
-
-            # --- Fold to 3bet ---
-            # Detect if bot faced a 3bet preflop and folded
-            # Simplification: if there are 2+ raises preflop and bot's last preflop action is fold
-            preflop_raises = [a for a in preflop_actions if a["action"] in ("raise", "allin")]
-            if len(preflop_raises) >= 2:
-                bot_last_preflop = None
-                for a in reversed(preflop_actions):
-                    if a["player"] == bot_name:
-                        bot_last_preflop = a["action"]
-                        break
-                if bot_last_preflop is not None:
-                    faced_3bet += 1
-                    if bot_last_preflop == "fold":
-                        folded_to_3bet += 1
-
-            # --- C-bet on flop ---
-            # Bot was PFR (made last preflop raise) and flop exists
-            if preflop_raises:
-                last_preflop_raiser = preflop_raises[-1]["player"]
-                if last_preflop_raiser == bot_name:
-                    flop_actions = [a for a in actions if a["stage"] == "flop"]
-                    if flop_actions:
-                        cbet_opportunities += 1
-                        first_flop = flop_actions[0]
-                        if first_flop["player"] == bot_name and first_flop["action"] in ("raise", "bet", "allin"):
-                            cbet_count += 1
-
-            # --- Turn barrel ---
-            # Bot c-bet flop (first flop action is bet/raise by bot) and turn exists
-            flop_actions = [a for a in actions if a["stage"] == "flop"]
-            if flop_actions and flop_actions[0]["player"] == bot_name and flop_actions[0]["action"] in ("raise", "bet", "allin"):
-                turn_actions = [a for a in actions if a["stage"] == "turn"]
-                if turn_actions:
-                    barrel_opportunities += 1
-                    first_turn = turn_actions[0]
-                    if first_turn["player"] == bot_name and first_turn["action"] in ("raise", "bet", "allin"):
-                        barrel_count += 1
-
-            # --- River value bet / bluff ---
-            river_actions = [a for a in actions if a["stage"] == "river"]
-            if river_actions:
-                # Find bot's first action on river
-                for a in river_actions:
-                    if a["player"] == bot_name:
-                        if a["action"] in ("raise", "bet", "allin"):
-                            strength = _classify_hand_strength(hand, bot_name)
-                            if strength == "made":
-                                river_value_bet_opportunities += 1
-                                river_value_bet_count += 1
-                            elif strength == "air":
-                                river_bluff_opportunities += 1
-                                river_bluff_count += 1
-                        break
-
-            # --- Fold to river bet ---
-            if river_actions:
-                # Did an opponent bet/raise on river and bot fold?
-                river_bet_made = any(
-                    a["player"] != bot_name and a["action"] in ("raise", "bet", "allin")
-                    for a in river_actions
-                )
-                if river_bet_made:
-                    bot_last_river = None
-                    for a in reversed(river_actions):
-                        if a["player"] == bot_name:
-                            bot_last_river = a["action"]
-                            break
-                    if bot_last_river is not None:
-                        faced_river_bet += 1
-                        if bot_last_river == "fold":
-                            folded_to_river_bet += 1
-
-            # --- Showdown win ---
-            if hand.get("showdown"):
-                showdowns += 1
-                if hand.get("winner") == bot_name:
-                    showdown_wins += 1
-
-            # --- Pots won / lost ---
-            if hand.get("winner") == bot_name:
-                won_pots.append(hand.get("pot", 0))
-            elif hand.get("winner") is not None:
-                lost_pots.append(hand.get("pot", 0))
-
-            # --- WTSD (went to showdown) ---
-            # Opportunity: bot saw flop (i.e., didn't fold preflop)
-            if bot_preflop and bot_preflop[-1]["action"] != "fold":
-                wtsd_opportunities += 1
-                if hand.get("showdown"):
-                    wtsd_count += 1
-
-            # --- Aggression frequency ---
-            for a in actions:
-                if a["player"] != bot_name:
+            if out is not None:
+                continue  # not a response entry
+            # RESPONSE entry: output is None, keyed by the acting player id.
+            for pid_str in ("0", "1"):
+                if pid_str not in entry:
                     continue
-                act = a["action"]
-                if act in ("raise", "bet", "allin"):
-                    aggressive_actions += 1
-                elif act in ("call", "check"):
-                    passive_actions += 1
+                resp = _int_response(entry[pid_str].get("response"))
+                req = last_request.get(pid_str)
+                if req is None:
+                    continue  # no preceding request for this pid
+                street, round_player_bet, hand = req
+                action_class = _classify_response(resp, round_player_bet, int(pid_str))
+                if action_class is None:
+                    continue
+                actions.append({
+                    "bot": pid_to_bot[int(pid_str)],
+                    "street": street,
+                    "action": action_class,
+                    "hand": hand,
+                })
+                break  # a response entry carries exactly one player id
+    return actions
 
-    def _pct(num, den):
-        return round(num / den, 4) if den > 0 else 0.0
 
-    def _avg(vals):
-        return round(sum(vals) / len(vals), 2) if vals else 0.0
+# Backward-compat alias for any older import name.
+def extract_hands_from_replay(replay_json):
+    """DEPRECATED alias. Returns the raw action list (kept for import compatibility)."""
+    return extract_actions_from_replay(replay_json)
 
-    stats = {
-        "total_hands": total_hands,
-        "vpip": _pct(vpip_count, vpip_opportunities),
-        "pfr": _pct(pfr_count, vpip_opportunities),
-        "fold_to_3bet": _pct(folded_to_3bet, faced_3bet),
-        "flop_cbet": _pct(cbet_count, cbet_opportunities),
-        "turn_barrel": _pct(barrel_count, barrel_opportunities),
-        "river_value_bet": _pct(river_value_bet_count, river_value_bet_opportunities),
-        "river_bluff": _pct(river_bluff_count, river_bluff_opportunities),
-        "fold_to_river_bet": _pct(folded_to_river_bet, faced_river_bet),
-        "showdown_win": _pct(showdown_wins, showdowns),
-        "avg_won_pot": _avg(won_pots),
-        "avg_lost_pot": _avg(lost_pots),
-        "wtsd": _pct(wtsd_count, wtsd_opportunities),
-        "aggression_freq": _pct(aggressive_actions, aggressive_actions + passive_actions),
+
+def _new_zero_totals():
+    """Per-bot nested counters: {street: {total,fold,call,raise,check,allin}, plus hands set."""
+    return {
+        "preflop": _empty_street_stats(),
+        "flop": _empty_street_stats(),
+        "turn": _empty_street_stats(),
+        "river": _empty_street_stats(),
+        "_hands": set(),  # distinct hand numbers this bot acted in
     }
 
-    return stats
+
+def _aggregate_action(totals, bot, action):
+    """Increment the per-bot per-street counters for one action.
+
+    `allin` is counted in BOTH the allin key AND the raise key: an all-in is semantically a
+    raise/bet, and the readers (tool_planning.py / orchestrator_context.py) report raise as a
+    fraction of total actions on a street. Double-counting allin into raise keeps that
+    fraction meaningful while still surfacing the dedicated allin frequency.
+    """
+    street = action["street"]
+    cls = action["action"]
+    bt = totals[bot]
+    # Actions on an unrecognized street are skipped (no bucket to put them in).
+    if street not in _STREETS:
+        return
+    st = bt[street]
+    st["total"] += 1
+    if cls == "fold":
+        st["fold"] += 1
+    elif cls == "call":
+        st["call"] += 1
+    elif cls == "check":
+        st["check"] += 1
+    elif cls == "raise":
+        st["raise"] += 1
+    elif cls == "allin":
+        # Counted in BOTH allin and raise (see docstring above).
+        st["allin"] += 1
+        st["raise"] += 1
+    if action.get("hand") is not None:
+        bt["_hands"].add(action["hand"])
+
+
+def _finalize_totals(totals, active_bots):
+    """Convert raw counters into the output shape, dropping bots with no actions."""
+    result = {}
+    for b in active_bots:
+        bt = totals.get(b)
+        if not bt:
+            result[b] = {}
+            continue
+        out = {}
+        any_total = 0
+        for street in _STREETS:
+            st = bt[street]
+            # Emit a fresh dict without internal keys; keep zero streets (readers guard on total>0).
+            out[street] = {
+                "total": st["total"],
+                "fold": st["fold"],
+                "call": st["call"],
+                "raise": st["raise"],
+                "check": st["check"],
+                "allin": st["allin"],
+            }
+            any_total += st["total"]
+        if any_total == 0:
+            result[b] = {}
+            continue
+        out["total_hands"] = len(bt["_hands"])
+        result[b] = out
+    return result
 
 
 def compute_all_bot_stats(active_bots, replays_dir):
-    """
-    Compute aggregate action statistics for ALL active bots in a single pass
-    over the replay directory. Reads each replay file once instead of once per bot.
+    """Compute aggregate per-street action statistics for ALL active bots in a single pass.
 
-    Returns a dict mapping bot_name -> stats dict (same shape as compute_bot_action_stats).
-    Bots not found in any replay get an empty dict.
+    Output shape (per bot with at least one action):
+        {
+          "preflop": {"total": N, "fold": n, "call": n, "raise": n, "check": n, "allin": n},
+          "flop":    {...},
+          "turn":    {...},
+          "river":   {...},
+          "total_hands": M,   # distinct hands this bot acted in
+        }
+    Bots with no recorded actions map to an empty dict {}.
+
+    `allin` actions increment BOTH the `allin` and `raise` counters on their street.
     """
     replays_dir = Path(replays_dir)
     if not replays_dir.exists():
         return {b: {} for b in active_bots}
 
     bot_set = set(active_bots)
-
-    # Per-bot counters (mirrors the counters in compute_bot_action_stats)
-    total_hands = {b: 0 for b in active_bots}
-    vpip_opportunities = {b: 0 for b in active_bots}
-    vpip_count = {b: 0 for b in active_bots}
-    pfr_count = {b: 0 for b in active_bots}
-    faced_3bet = {b: 0 for b in active_bots}
-    folded_to_3bet = {b: 0 for b in active_bots}
-    cbet_opportunities = {b: 0 for b in active_bots}
-    cbet_count = {b: 0 for b in active_bots}
-    barrel_opportunities = {b: 0 for b in active_bots}
-    barrel_count = {b: 0 for b in active_bots}
-    river_value_bet_opportunities = {b: 0 for b in active_bots}
-    river_value_bet_count = {b: 0 for b in active_bots}
-    river_bluff_opportunities = {b: 0 for b in active_bots}
-    river_bluff_count = {b: 0 for b in active_bots}
-    faced_river_bet = {b: 0 for b in active_bots}
-    folded_to_river_bet = {b: 0 for b in active_bots}
-    showdowns = {b: 0 for b in active_bots}
-    showdown_wins = {b: 0 for b in active_bots}
-    won_pots = {b: [] for b in active_bots}
-    lost_pots = {b: [] for b in active_bots}
-    wtsd_opportunities = {b: 0 for b in active_bots}
-    wtsd_count = {b: 0 for b in active_bots}
-    aggressive_actions = {b: 0 for b in active_bots}
-    passive_actions = {b: 0 for b in active_bots}
-
-    def _pct(num, den):
-        return round(num / den, 4) if den > 0 else 0.0
-
-    def _avg(vals):
-        return round(sum(vals) / len(vals), 2) if vals else 0.0
+    totals = {b: _new_zero_totals() for b in active_bots}
 
     for entry in os.listdir(replays_dir):
         if not entry.endswith(".json"):
@@ -405,144 +270,19 @@ def compute_all_bot_stats(active_bots, replays_dir):
         except Exception:
             continue
 
-        hands = extract_hands_from_replay(replay_json)
-        for hand in hands:
-            actions = hand["actions"]
-            players_in_hand = set(a["player"] for a in actions)
-            # Only process bots that are in active_bots
-            relevant_bots = players_in_hand & bot_set
-            if not relevant_bots:
+        actions = extract_actions_from_replay(replay_json)
+        for action in actions:
+            bot = action["bot"]
+            if bot not in bot_set:
                 continue
+            _aggregate_action(totals, bot, action)
 
-            for bot_name in relevant_bots:
-                total_hands[bot_name] += 1
+    return _finalize_totals(totals, active_bots)
 
-                # --- VPIP / PFR ---
-                preflop_actions = [a for a in actions if a["stage"] == "preflop"]
-                bot_preflop = [a for a in preflop_actions if a["player"] == bot_name]
-                if bot_preflop:
-                    vpip_opportunities[bot_name] += 1
-                    first_action = bot_preflop[0]["action"]
-                    if first_action in ("raise", "allin"):
-                        vpip_count[bot_name] += 1
-                        pfr_count[bot_name] += 1
-                    elif first_action == "call":
-                        vpip_count[bot_name] += 1
 
-                # --- Fold to 3bet ---
-                preflop_raises = [a for a in preflop_actions if a["action"] in ("raise", "allin")]
-                if len(preflop_raises) >= 2:
-                    bot_last_preflop = None
-                    for a in reversed(preflop_actions):
-                        if a["player"] == bot_name:
-                            bot_last_preflop = a["action"]
-                            break
-                    if bot_last_preflop is not None:
-                        faced_3bet[bot_name] += 1
-                        if bot_last_preflop == "fold":
-                            folded_to_3bet[bot_name] += 1
+def compute_bot_action_stats(bot_name, replays_dir):
+    """Compute aggregate action statistics for a single bot.
 
-                # --- C-bet on flop ---
-                if preflop_raises:
-                    last_preflop_raiser = preflop_raises[-1]["player"]
-                    if last_preflop_raiser == bot_name:
-                        flop_actions = [a for a in actions if a["stage"] == "flop"]
-                        if flop_actions:
-                            cbet_opportunities[bot_name] += 1
-                            first_flop = flop_actions[0]
-                            if first_flop["player"] == bot_name and first_flop["action"] in ("raise", "bet", "allin"):
-                                cbet_count[bot_name] += 1
-
-                # --- Turn barrel ---
-                flop_actions = [a for a in actions if a["stage"] == "flop"]
-                if flop_actions and flop_actions[0]["player"] == bot_name and flop_actions[0]["action"] in ("raise", "bet", "allin"):
-                    turn_actions = [a for a in actions if a["stage"] == "turn"]
-                    if turn_actions:
-                        barrel_opportunities[bot_name] += 1
-                        first_turn = turn_actions[0]
-                        if first_turn["player"] == bot_name and first_turn["action"] in ("raise", "bet", "allin"):
-                            barrel_count[bot_name] += 1
-
-                # --- River value bet / bluff ---
-                river_actions = [a for a in actions if a["stage"] == "river"]
-                if river_actions:
-                    for a in river_actions:
-                        if a["player"] == bot_name:
-                            if a["action"] in ("raise", "bet", "allin"):
-                                strength = _classify_hand_strength(hand, bot_name)
-                                if strength == "made":
-                                    river_value_bet_opportunities[bot_name] += 1
-                                    river_value_bet_count[bot_name] += 1
-                                elif strength == "air":
-                                    river_bluff_opportunities[bot_name] += 1
-                                    river_bluff_count[bot_name] += 1
-                            break
-
-                # --- Fold to river bet ---
-                if river_actions:
-                    river_bet_made = any(
-                        a["player"] != bot_name and a["action"] in ("raise", "bet", "allin")
-                        for a in river_actions
-                    )
-                    if river_bet_made:
-                        bot_last_river = None
-                        for a in reversed(river_actions):
-                            if a["player"] == bot_name:
-                                bot_last_river = a["action"]
-                                break
-                        if bot_last_river is not None:
-                            faced_river_bet[bot_name] += 1
-                            if bot_last_river == "fold":
-                                folded_to_river_bet[bot_name] += 1
-
-                # --- Showdown win ---
-                if hand.get("showdown"):
-                    showdowns[bot_name] += 1
-                    if hand.get("winner") == bot_name:
-                        showdown_wins[bot_name] += 1
-
-                # --- Pots won / lost ---
-                if hand.get("winner") == bot_name:
-                    won_pots[bot_name].append(hand.get("pot", 0))
-                elif hand.get("winner") is not None:
-                    lost_pots[bot_name].append(hand.get("pot", 0))
-
-                # --- WTSD (went to showdown) ---
-                if bot_preflop and bot_preflop[-1]["action"] != "fold":
-                    wtsd_opportunities[bot_name] += 1
-                    if hand.get("showdown"):
-                        wtsd_count[bot_name] += 1
-
-                # --- Aggression frequency ---
-                for a in actions:
-                    if a["player"] != bot_name:
-                        continue
-                    act = a["action"]
-                    if act in ("raise", "bet", "allin"):
-                        aggressive_actions[bot_name] += 1
-                    elif act in ("call", "check"):
-                        passive_actions[bot_name] += 1
-
-    # Build per-bot stats dicts
-    result = {}
-    for b in active_bots:
-        if total_hands[b] == 0:
-            result[b] = {}
-            continue
-        result[b] = {
-            "total_hands": total_hands[b],
-            "vpip": _pct(vpip_count[b], vpip_opportunities[b]),
-            "pfr": _pct(pfr_count[b], vpip_opportunities[b]),
-            "fold_to_3bet": _pct(folded_to_3bet[b], faced_3bet[b]),
-            "flop_cbet": _pct(cbet_count[b], cbet_opportunities[b]),
-            "turn_barrel": _pct(barrel_count[b], barrel_opportunities[b]),
-            "river_value_bet": _pct(river_value_bet_count[b], river_value_bet_opportunities[b]),
-            "river_bluff": _pct(river_bluff_count[b], river_bluff_opportunities[b]),
-            "fold_to_river_bet": _pct(folded_to_river_bet[b], faced_river_bet[b]),
-            "showdown_win": _pct(showdown_wins[b], showdowns[b]),
-            "avg_won_pot": _avg(won_pots[b]),
-            "avg_lost_pot": _avg(lost_pots[b]),
-            "wtsd": _pct(wtsd_count[b], wtsd_opportunities[b]),
-            "aggression_freq": _pct(aggressive_actions[b], aggressive_actions[b] + passive_actions[b]),
-        }
-    return result
+    Delegates to compute_all_bot_stats([bot_name], replays_dir)[bot_name] for API compat.
+    """
+    return compute_all_bot_stats([bot_name], replays_dir).get(bot_name, {})

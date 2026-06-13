@@ -553,15 +553,239 @@ class TestSchedulerPathUsedWhenCapable:
         text = result["content"][0]["text"]
         data = json.loads(text)
 
-        # Should have scheduler_error blockers + lost_to_parent blockers
+        # The scheduler path reports scheduler_error blockers for each errored job.
+        # (lost_to_parent is serial-path-only; the new ratio-based aggregate gate
+        # requires total_decided >= 8, which a 3-game/3-game scheduler result (6)
+        # does not meet, so aggregate_precommit_regression is NOT expected here.)
         blocker_reasons = {b["reason"] for b in data["blockers"]}
         assert "scheduler_error" in blocker_reasons
-        assert "lost_to_parent" in blocker_reasons or "aggregate_precommit_regression" in blocker_reasons
 
         # All blockers must have 'reason' and 'details' keys
         for b in data["blockers"]:
             assert "reason" in b
             assert "details" in b
+
+
+# ── Regression gate ratio logic (serial fallback path) ──
+
+class TestPrecommitRegressionGates:
+    """Tests for the n_games cap removal + ratio-based regression gates.
+
+    These run on the serial fallback path (scheduler NOT capable) so the
+    lost_to_parent and aggregate gates are exercised directly.
+    """
+
+    @pytest.mark.asyncio
+    async def test_n_games_cap_removed(
+        self, monkeypatch, fake_bots, fake_opponents, mock_checkpoint, mock_ui
+    ):
+        """n_games is no longer capped to 3; values up to PRECOMMIT_MAX_N_GAMES pass through."""
+        monkeypatch.setattr("tool_eval.is_daemon_scheduler_capable", lambda: False)
+        monkeypatch.setattr("tool_eval._matching_checkpoint", lambda _v, _sv: mock_checkpoint)
+        monkeypatch.setattr("tool_eval._get_ui", lambda: mock_ui)
+        monkeypatch.setattr("tool_eval._record_gate", lambda *a, **k: True)
+
+        captured = []
+
+        def fake_mirror(a, b, n_games=1, verbose=False, save_log=False):
+            captured.append(n_games)
+            return ([2, 2], 0, n_games, None)  # balanced → no block
+
+        _patch_mirror_battle(monkeypatch, fake_mirror)
+
+        result = await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 10})
+        data = json.loads(result["content"][0]["text"])
+
+        # 10 must NOT be clamped down to 3 anymore
+        assert data["n_games"] == 10
+        assert all(ng == 10 for ng in captured)
+        assert data["passed"] is True
+
+    @pytest.mark.asyncio
+    async def test_n_games_clamped_to_max(
+        self, monkeypatch, fake_bots, fake_opponents, mock_checkpoint, mock_ui
+    ):
+        """n_games above PRECOMMIT_MAX_N_GAMES is clamped to the max (12), not rejected."""
+        monkeypatch.setattr("tool_eval.is_daemon_scheduler_capable", lambda: False)
+        monkeypatch.setattr("tool_eval._matching_checkpoint", lambda _v, _sv: mock_checkpoint)
+        monkeypatch.setattr("tool_eval._get_ui", lambda: mock_ui)
+        monkeypatch.setattr("tool_eval._record_gate", lambda *a, **k: True)
+
+        captured = []
+
+        def fake_mirror(a, b, n_games=1, verbose=False, save_log=False):
+            captured.append(n_games)
+            return ([2, 2], 0, n_games, None)
+
+        _patch_mirror_battle(monkeypatch, fake_mirror)
+
+        result = await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 50})
+        data = json.loads(result["content"][0]["text"])
+
+        import tool_eval
+        assert data["n_games"] == tool_eval.PRECOMMIT_MAX_N_GAMES
+        assert all(ng == tool_eval.PRECOMMIT_MAX_N_GAMES for ng in captured)
+
+    @pytest.mark.asyncio
+    async def test_default_n_games_applied(
+        self, monkeypatch, fake_bots, fake_opponents, mock_checkpoint, mock_ui
+    ):
+        """When n_games is omitted entirely, PRECOMMIT_DEFAULT_N_GAMES is used (not 3)."""
+        monkeypatch.setattr("tool_eval.is_daemon_scheduler_capable", lambda: False)
+        monkeypatch.setattr("tool_eval._matching_checkpoint", lambda _v, _sv: mock_checkpoint)
+        monkeypatch.setattr("tool_eval._get_ui", lambda: mock_ui)
+        monkeypatch.setattr("tool_eval._record_gate", lambda *a, **k: True)
+
+        captured = []
+
+        def fake_mirror(a, b, n_games=1, verbose=False, save_log=False):
+            captured.append(n_games)
+            return ([2, 2], 0, n_games, None)
+
+        _patch_mirror_battle(monkeypatch, fake_mirror)
+
+        result = await run_precommit_eval({"version": 99, "source_v": 98})
+        data = json.loads(result["content"][0]["text"])
+
+        import tool_eval
+        assert data["n_games"] == tool_eval.PRECOMMIT_DEFAULT_N_GAMES
+        assert all(ng == tool_eval.PRECOMMIT_DEFAULT_N_GAMES for ng in captured)
+
+    @pytest.mark.asyncio
+    async def test_parent_ratio_blocks_on_clear_loss(
+        self, monkeypatch, fake_bots, fake_opponents, mock_checkpoint, mock_ui
+    ):
+        """lost_to_parent ratio gate: parent [2,6,0,8] blocks (decided=8, loss ratio 6/8=0.75).
+
+        This is the dead-code regression: under the old n_games=3 cap the unreachable
+        `n_played >= 4` check let this degraded bot pass. The ratio gate now blocks it.
+        """
+        monkeypatch.setattr("tool_eval.is_daemon_scheduler_capable", lambda: False)
+        monkeypatch.setattr("tool_eval._matching_checkpoint", lambda _v, _sv: mock_checkpoint)
+        monkeypatch.setattr("tool_eval._get_ui", lambda: mock_ui)
+        monkeypatch.setattr("tool_eval._record_gate", lambda *a, **k: True)
+
+        def fake_mirror(a, b, n_games=1, verbose=False, save_log=False):
+            # Parent (claude_v98) loses 2-6; top opponent (claude_v50) neutral so it
+            # does not independently trip the aggregate gate.
+            if "claude_v98" in b:
+                return ([2, 6], 0, n_games, None)
+            return ([3, 3], 0, n_games, None)
+
+        _patch_mirror_battle(monkeypatch, fake_mirror)
+
+        result = await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 8})
+        data = json.loads(result["content"][0]["text"])
+
+        blocker_reasons = {b["reason"] for b in data["blockers"]}
+        assert "lost_to_parent" in blocker_reasons
+        assert data["passed"] is False
+
+    @pytest.mark.asyncio
+    async def test_parent_ratio_no_block_on_small_sample(
+        self, monkeypatch, fake_bots, fake_opponents, mock_checkpoint, mock_ui
+    ):
+        """lost_to_parent ratio gate: parent [1,2,0,3] does NOT block (decided=3 < 4)."""
+        monkeypatch.setattr("tool_eval.is_daemon_scheduler_capable", lambda: False)
+        monkeypatch.setattr("tool_eval._matching_checkpoint", lambda _v, _sv: mock_checkpoint)
+        monkeypatch.setattr("tool_eval._get_ui", lambda: mock_ui)
+        monkeypatch.setattr("tool_eval._record_gate", lambda *a, **k: True)
+
+        def fake_mirror(a, b, n_games=1, verbose=False, save_log=False):
+            # Both opponents 1-2-0 → decided=3 each (<4 ratio gate), total decided=6 (<8 aggregate)
+            return ([1, 2], 0, n_games, None)
+
+        _patch_mirror_battle(monkeypatch, fake_mirror)
+
+        result = await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 3})
+        data = json.loads(result["content"][0]["text"])
+
+        blocker_reasons = {b["reason"] for b in data["blockers"]}
+        assert "lost_to_parent" not in blocker_reasons
+        assert "aggregate_precommit_regression" not in blocker_reasons
+        assert data["passed"] is True
+
+    @pytest.mark.asyncio
+    async def test_parent_ratio_no_block_on_coin_flip(
+        self, monkeypatch, fake_bots, fake_opponents, mock_checkpoint, mock_ui
+    ):
+        """lost_to_parent ratio gate: parent [4,3,0,7] does NOT block (loss ratio 3/7=0.43 < 0.60)."""
+        monkeypatch.setattr("tool_eval.is_daemon_scheduler_capable", lambda: False)
+        monkeypatch.setattr("tool_eval._matching_checkpoint", lambda _v, _sv: mock_checkpoint)
+        monkeypatch.setattr("tool_eval._get_ui", lambda: mock_ui)
+        monkeypatch.setattr("tool_eval._record_gate", lambda *a, **k: True)
+
+        def fake_mirror(a, b, n_games=1, verbose=False, save_log=False):
+            # Parent coin-flip 4-3; top opponent balanced so aggregate does not trip
+            if "claude_v98" in b:
+                return ([4, 3], 0, n_games, None)
+            return ([3, 3], 0, n_games, None)
+
+        _patch_mirror_battle(monkeypatch, fake_mirror)
+
+        result = await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 7})
+        data = json.loads(result["content"][0]["text"])
+
+        blocker_reasons = {b["reason"] for b in data["blockers"]}
+        assert "lost_to_parent" not in blocker_reasons
+        assert "aggregate_precommit_regression" not in blocker_reasons
+        assert data["passed"] is True
+
+    @pytest.mark.asyncio
+    async def test_aggregate_collapse_blocks_without_parent_loss(
+        self, monkeypatch, fake_bots, fake_opponents, mock_checkpoint, mock_ui
+    ):
+        """Aggregate gate blocks a field collapse even when the parent matchup is fine.
+
+        Parent wins 3-2 (no lost_to_parent), top opponent collapses 1-5.
+        total W=4 L=7 decided=11, losses >= wins+2 → aggregate block.
+        """
+        monkeypatch.setattr("tool_eval.is_daemon_scheduler_capable", lambda: False)
+        monkeypatch.setattr("tool_eval._matching_checkpoint", lambda _v, _sv: mock_checkpoint)
+        monkeypatch.setattr("tool_eval._get_ui", lambda: mock_ui)
+        monkeypatch.setattr("tool_eval._record_gate", lambda *a, **k: True)
+
+        def fake_mirror(a, b, n_games=1, verbose=False, save_log=False):
+            if "claude_v98" in b:
+                return ([3, 2], 0, n_games, None)  # parent fine
+            return ([1, 5], 0, n_games, None)  # top collapse
+
+        _patch_mirror_battle(monkeypatch, fake_mirror)
+
+        result = await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 6})
+        data = json.loads(result["content"][0]["text"])
+
+        blocker_reasons = {b["reason"] for b in data["blockers"]}
+        assert "aggregate_precommit_regression" in blocker_reasons
+        assert "lost_to_parent" not in blocker_reasons
+        assert data["passed"] is False
+
+    @pytest.mark.asyncio
+    async def test_no_false_positive_on_balanced_field(
+        self, monkeypatch, fake_bots, fake_opponents, mock_checkpoint, mock_ui
+    ):
+        """A balanced coin-flip field must NOT trip either gate.
+
+        Both opponents 3-3-0: parent ratio 0.5 (<0.60), total decided=12 but
+        losses == wins so the aggregate margin (>= wins+2) is not met.
+        """
+        monkeypatch.setattr("tool_eval.is_daemon_scheduler_capable", lambda: False)
+        monkeypatch.setattr("tool_eval._matching_checkpoint", lambda _v, _sv: mock_checkpoint)
+        monkeypatch.setattr("tool_eval._get_ui", lambda: mock_ui)
+        monkeypatch.setattr("tool_eval._record_gate", lambda *a, **k: True)
+
+        def fake_mirror(a, b, n_games=1, verbose=False, save_log=False):
+            return ([3, 3], 0, n_games, None)
+
+        _patch_mirror_battle(monkeypatch, fake_mirror)
+
+        result = await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 6})
+        data = json.loads(result["content"][0]["text"])
+
+        blocker_reasons = {b["reason"] for b in data["blockers"]}
+        assert "lost_to_parent" not in blocker_reasons
+        assert "aggregate_precommit_regression" not in blocker_reasons
+        assert data["passed"] is True
 
 
 # ── Helper ──

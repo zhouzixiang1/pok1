@@ -33,6 +33,18 @@ log = get_logger("tool_eval")
 
 
 # ──────────────────────────────────────────────
+# Precommit eval tuning constants
+# ──────────────────────────────────────────────
+# Default and max n_games per opponent for precommit eval. The old code hard-capped
+# n_games at 3 via min(..., 3) on BOTH paths, which starved the regression gate of
+# statistical power (the lost_to_parent blocker required n_played >= 4, unreachable
+# at n_games=3). 5 gives enough decided games for the ratio gates; 12 is the hard
+# ceiling so precommit eval still fits within the cycle budget.
+PRECOMMIT_DEFAULT_N_GAMES = 5
+PRECOMMIT_MAX_N_GAMES = 12
+
+
+# ──────────────────────────────────────────────
 # Battle Scheduler Client
 # ──────────────────────────────────────────────
 
@@ -84,11 +96,12 @@ async def run_precommit_eval(args):
     v = int(v)
     source_v = int(source_v)
     # Cap n_games: precommit eval is a quick regression check, NOT a full evaluation.
-    # With ~5 opponents and ~90s per mirror pair (70 hands), n_games directly controls
-    # wall-clock time: n=3 -> ~22min, n=5 -> ~37min, n=15 -> ~112min (exceeds CYCLE_TIMEOUT).
-    # Keep cap at 3 to ensure precommit eval fits within the 3600s cycle budget after
-    # crossover (~20min) + direction_audit (~2min) + quality (~2min) + review (~5min) + critic (~4min).
-    n_games = min(max(1, int(args.get("n_games", 1) or 1)), 3)
+    # The old min(..., 3) cap starved the regression gate of statistical power
+    # (the lost_to_parent ratio gate needs decided >= 4). Default is now
+    # PRECOMMIT_DEFAULT_N_GAMES (5), clamped to [1, PRECOMMIT_MAX_N_GAMES] (12) so
+    # precommit eval still fits within the cycle budget (each mirror pair ~90s/70 hands).
+    requested = int(args.get("n_games", PRECOMMIT_DEFAULT_N_GAMES) or PRECOMMIT_DEFAULT_N_GAMES)
+    n_games = min(max(1, requested), PRECOMMIT_MAX_N_GAMES)
 
     # Idempotency guard: skip if precommit eval already passed
     _precommit_ckpt = _matching_checkpoint(v, source_v)
@@ -237,6 +250,17 @@ async def run_precommit_eval(args):
                     total_wins += matchup["wins"]
                     total_losses += matchup["losses"]
                     total_draws += matchup["draws"]
+                    # P0-1 parent-loss ratio gate — applied on the SCHEDULER path
+                    # too (the production case), not just the serial fallback.
+                    # Mirrors the gate in _run_single_mirror_battle below.
+                    if opponent == parent_name and matchup["wins"] < matchup["losses"]:
+                        decided = matchup["wins"] + matchup["losses"]
+                        if decided >= 4 and (matchup["losses"] / decided) >= 0.60:
+                            blockers.append({
+                                "reason": "lost_to_parent",
+                                "opponent": opponent,
+                                "details": f"{matchup['wins']}-{matchup['losses']}-{matchup['draws']} in {matchup['n_played']} games",
+                            })
                     matchups.append(matchup)
                 else:
                     missing_opponents.append(item)
@@ -327,7 +351,13 @@ async def run_precommit_eval(args):
                         "details": f"Only {n_played}/{n_games} mirror pairs completed.",
                     })
                 if opponent == parent_name and matchup["wins"] < matchup["losses"]:
-                    if matchup["n_played"] >= 4:
+                    # Parent is the true regression baseline. Block on a LOSS RATIO gate
+                    # (not an absolute sample size): require at least 4 decided games and
+                    # losses/decided >= 0.60. So [2,6,0] and [1,5,0] block, but a coin-flip
+                    # like [4,3,0] does NOT. The old `n_played >= 4` check was dead code
+                    # when n_games was capped at 3 and let degraded bots pass.
+                    decided = matchup["wins"] + matchup["losses"]
+                    if decided >= 4 and (matchup["losses"] / decided) >= 0.60:
                         item_blockers.append({
                             "reason": "lost_to_parent",
                             "opponent": opponent,
@@ -336,7 +366,7 @@ async def run_precommit_eval(args):
                     else:
                         _get_ui().log_history(
                             f"⚠️ Lost to parent ({matchup['wins']}-{matchup['losses']}) "
-                            f"but only {matchup['n_played']} games — not blocking (insufficient sample)",
+                            f"but loss ratio below gate ({matchup['losses']}/{decided} decided) — not blocking",
                             "warn"
                         )
             except asyncio.TimeoutError:
@@ -383,7 +413,14 @@ async def run_precommit_eval(args):
         except Exception as e:
             log.warning("Precommit semantic analysis failed: %s", e)
 
-    if total_losses >= 3 and total_losses >= total_wins + 2:
+    # Aggregate regression gate. The opponent set is adversarially chosen
+    # (parent + top opponents + H2H weaknesses), so an absolute win/loss-rate
+    # threshold would false-positive against a legitimately strong field. Instead
+    # gate on a decided-game margin: require enough sample (total_decided >= 8)
+    # AND losses beating wins by at least 2 (total_losses >= total_wins + 2).
+    # The old `total_losses >= 3` hard floor was both noisy and too weak.
+    total_decided = total_wins + total_losses
+    if total_decided >= 8 and total_losses >= total_wins + 2:
         blockers.append({
             "reason": "aggregate_precommit_regression",
             "details": f"Aggregate mirror result {total_wins}-{total_losses}-{total_draws}.",

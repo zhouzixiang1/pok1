@@ -215,8 +215,14 @@ def decay_rd(player, elapsed_periods=1):
     """
     Increase RD for a player who hasn't played recently.
     Called when a player is inactive for one or more rating periods.
+
+    RD is clamped at DEFAULT_RD (350) so prolonged inactivity can never push a
+    bot past its initial uncertainty. Active bots (rd well below 350, e.g.
+    rd<100) are unaffected because their post-decay phi_star stays far under
+    DEFAULT_RD/SCALE.
     """
-    mu = (player.r - DEFAULT_R) / SCALE
     phi = player.rd / SCALE
     phi_star = math.sqrt(phi * phi + player.sigma * player.sigma * elapsed_periods)
+    # Clamp so rd never exceeds the default initial uncertainty.
+    phi_star = min(phi_star, DEFAULT_RD / SCALE)
     return Glicko2Player(player.r, phi_star * SCALE, player.sigma)

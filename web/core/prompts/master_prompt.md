@@ -129,6 +129,9 @@ return None
 
 ## Battle Experience (accumulated from match analysis)
 {battle_experience}
+
+## Exploitability Weaknesses (probe-bot results vs the current source bot)
+{exploitability_weaknesses}
 </injected_context>
 
 <diversity_rule>

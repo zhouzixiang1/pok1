@@ -64,7 +64,7 @@ H2H_FILE = RESULTS_DIR / "head_to_head.json"
 BOT_STATS_FILE = RESULTS_DIR / "bot_stats.json"
 REPLAY_DIR = RESULTS_DIR / "match_replay"
 MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
-MAX_REPLAY_FILES = 200
+MAX_REPLAY_FILES = 2000
 
 # JSONL rotation limits (lines kept after rotation)
 MAX_RATING_HISTORY_LINES = 3000

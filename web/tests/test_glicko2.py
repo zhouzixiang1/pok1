@@ -154,6 +154,33 @@ class TestDecayRd:
         p2 = decay_rd(p, 0)
         assert p2.rd == p.rd
 
+    def test_rd_clamped_at_default(self):
+        # Large multi-period decay must not push rd past DEFAULT_RD (350).
+        p = Glicko2Player(1500, 50, 0.06)
+        big = decay_rd(p, 10000)
+        assert big.rd <= DEFAULT_RD
+
+        # Repeated single-period decay must also stay bounded at DEFAULT_RD.
+        cur = Glicko2Player(1500, 50, 0.06)
+        for _ in range(100000):
+            cur = decay_rd(cur, 1)
+            assert cur.rd <= DEFAULT_RD
+        assert cur.rd <= DEFAULT_RD
+
+    def test_rd_clamp_does_not_affect_active_bots(self):
+        # An active bot (rd<100) decays by exactly the same amount whether or
+        # not the clamp is present, since its phi_star stays well under
+        # DEFAULT_RD/SCALE. Verify against the closed-form unclamped value.
+        from glicko2 import SCALE
+        p = Glicko2Player(1600, 80, 0.06)
+        p2 = decay_rd(p, 1)
+        expected_phi = math.sqrt((80 / SCALE) ** 2 + 0.06 ** 2)
+        expected_rd = expected_phi * SCALE
+        assert abs(p2.rd - expected_rd) < 1e-9
+        assert p2.rd < DEFAULT_RD
+        # Still grew (sanity: decay increased rd for the active bot)
+        assert p2.rd > p.rd
+
 
 class TestDegenerateCases:
     def test_single_game_extreme_rating_gap_grows_rd(self):

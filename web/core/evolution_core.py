@@ -61,6 +61,7 @@ from llm_query import (  # noqa: F401
 from code_verification import (  # noqa: F401
     verify_code, check_code_size, run_smoke_test, run_decision_test_details, seed_initial_bots,
 )
+from fix_verification import verify_fixes  # noqa: F401
 
 # ── Master Agent ──
 from agent_master import (  # noqa: F401

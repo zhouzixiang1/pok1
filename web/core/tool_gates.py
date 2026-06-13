@@ -30,6 +30,7 @@ from tool_helpers import (
     _py_files_changed_between, _resolve_version_args, PROJECT_ROOT,
     _set_pipeline_status,
 )
+from fix_verification import verify_fixes
 from system_log import log_system_event
 import spot_analyzer
 
@@ -199,12 +200,23 @@ async def run_quality_gates(args):
     total_lines, oversized = check_code_size(bot_dir, source_dir=source_dir)
     decision_ok = decision_rate >= 0.7 and critical_ok
 
+    # --- P1-3: Structural fix-verification gate (authoritative fix-present judgment) ---
+    # fix_injection.py uses substring matching which silently misses when a worker
+    # refactors the target function. verify_fixes() runs STRUCTURAL/RUNTIME checks in
+    # subprocess isolation so a confirmed invariant violation blocks the pipeline
+    # regardless of how the code was written. A verifier FAILURE (exception) is never
+    # blocking — only a CONFIRMED invariant violation is.
+    fix_results = verify_fixes(bot_dir)
+    fix_ok = all(r.get("ok", False) for r in fix_results.values())
+    fix_failed = {fid: r for fid, r in fix_results.items() if not r.get("ok", False)}
+
     all_passed = (
         len(compile_errors) == 0
         and len(smoke_errors) == 0
         and decision_ok
         and len(oversized) == 0
         and code_changed  # MUST have at least one changed .py file
+        and fix_ok  # P1-3: missing mandatory fix blocks the pipeline
     )
 
     result = {
@@ -226,6 +238,8 @@ async def run_quality_gates(args):
         "total_lines": total_lines,
         "oversized_files": {name: lines for name, lines, _ in oversized} if oversized else {},
         "size_ok": len(oversized) == 0,
+        "fix_verification": fix_results,
+        "fix_ok": fix_ok,
         "all_passed": all_passed,
     }
 
@@ -241,6 +255,17 @@ async def run_quality_gates(args):
         failed_gates_detail.append(f"no_code_changes(v{v} identical to v{source_v})")
     if oversized:
         failed_gates_detail.append(f"file_size({', '.join(f'{n}:{l}L/{lim}L' for n, l, lim in oversized)})")
+    if not fix_ok:
+        detail_parts = [f"{fid}: {r.get('reason', 'unknown')[:160]}" for fid, r in fix_failed.items()]
+        failed_gates_detail.append(f"missing_fix({'; '.join(detail_parts)})")
+        # Record to worker_failures.jsonl so future worker prompts see the missing fix
+        # (this is the primary feedback path into workers; reviewer_feedback injection
+        # is intentionally omitted to avoid an out-of-order _ckpt reference here).
+        for fid, r in fix_failed.items():
+            _record_quality_failure(
+                v, "fix_verifier", fid,
+                f"Mandatory fix {fid} NOT present: {r.get('reason', '')[:2000]}",
+            )
 
     log_system_event(
         "pipeline.quality_passed" if all_passed else "pipeline.quality_failed",
@@ -599,17 +624,21 @@ async def run_critic(args):
         reviewer_feedback=reviewer_feedback,
         generation_attempt=current_attempt,
     )
+    guardian_diagnosis = None
     if not approved:
         _record_quality_failure(v, "critic", "Strategy Critic",
                                 f"Rejected (score={score_num}): {data.get('feedback', '')[:2000]}",
                                 local_optima_warning=data.get("local_optima_warning", False),
                                 local_optima_reason=data.get("local_optima_reason"))
-        # Meta-2: Trigger Regression Guardian on very low critic score
+        # Meta-2: Trigger Regression Guardian on very low critic score.
+        # Run synchronously so the diagnosis is visible to the Orchestrator
+        # (merged into the tool result below). This is advisory only — it is
+        # NOT a hard second gate (Critic score<6 already forces retry_workers).
+        # _run_regression_guardian has a safe_default so it never throws.
         if score_num < 4:
             try:
                 from audit_agents import _run_regression_guardian
-                from tool_helpers import _matching_checkpoint as _mckpt
-                _c = _mckpt(v, source_v)
+                _c = _matching_checkpoint(v, source_v)
                 _history = {
                     "score": score_num,
                     "feedback": data.get("feedback", "")[:500],
@@ -617,14 +646,13 @@ async def run_critic(args):
                     "master_plan": _c.get("master_plan", {}) if _c else {},
                     "gate_results": _c.get("gate_results", {}) if _c else {},
                 }
-                import asyncio as _aio
-                _aio.create_task(_run_regression_guardian(
+                guardian_diagnosis = await _run_regression_guardian(
                     v, source_v, _history,
                     f"Critic score {score_num} < 4: {data.get('feedback', '')[:200]}",
-                    _get_ui(),
-                ))
-            except Exception:
-                pass  # Guardian is advisory
+                    ui,
+                )
+            except Exception as e:
+                _log.warning("Regression guardian dispatch failed for v%s: %s", v, e)
 
     try:
         log_system_event(
@@ -672,6 +700,15 @@ async def run_critic(args):
         "force_advanced": force_advanced,
         "checkpoint_recorded": checkpoint_recorded,
     }
+    if guardian_diagnosis:
+        result["regression_guardian"] = {
+            "severity": guardian_diagnosis.get("severity", "minor"),
+            "failure_stage": guardian_diagnosis.get("failure_stage", "unknown"),
+            "recovery_recommendation": guardian_diagnosis.get("recovery_recommendation", ""),
+            "diagnosis": guardian_diagnosis.get("diagnosis", ""),
+            "root_cause": guardian_diagnosis.get("root_cause", ""),
+            "confidence": guardian_diagnosis.get("confidence", "low"),
+        }
     try:
         log_system_event("pipeline.critic_done", "info",
                          f"Critic finished for v{v} in {time.time() - _t0:.1f}s",

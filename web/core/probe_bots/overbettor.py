@@ -32,6 +32,11 @@ def _compute_state(req):
     opponent_folded = False
     opponent_allin = False
 
+    # Reset round-scope trackers each hand. The round_bet/last_raise_to are
+    # re-zeroed at every round transition inside the replay loop below, but the
+    # pre-replay baseline must be set from the CURRENT round so that replay
+    # history drift (a previous hand's last_raise_to leaking in) cannot make the
+    # opening postflop min-raise / sizing math stale.
     if current_round == 0:
         sb = dealer_id
         bb = 1 - dealer_id
@@ -41,7 +46,11 @@ def _compute_state(req):
         round_bet = 100
         last_raise_to = 100
     else:
+        # Postflop: open the round with a clean baseline (round_bet=0,
+        # last_raise_to=50=BB//2). Do NOT inherit preflop's last_raise_to here.
+        round_bet = 0
         last_raise_to = 50
+        round_contrib = [0, 0]
 
     prev_round = -1
     for record in history:

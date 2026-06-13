@@ -64,7 +64,7 @@ class TestMarkAndCheckAnalyzed:
 
 class TestGetUnanalyzedFiltersAnalyzed:
 
-    def test_get_unanalyzed_filters_analyzed(self, history_file):
+    def test_get_unanalyzed_filters_analyzed(self, history_file, replay_dir):
         """Returns only entries whose IDs have not been marked as analyzed."""
         entries = [
             {"id": "m1", "bot0": "v1", "bot1": "v2"},
@@ -74,6 +74,9 @@ class TestGetUnanalyzedFiltersAnalyzed:
         with open(history_file, "w") as f:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
+        # replay files must exist — get_unanalyzed skips IDs whose replay was evicted
+        for e in entries:
+            (replay_dir / e["id"]).write_text(json.dumps({"games": []}))
 
         be.mark_analyzed("m2")
         result = be.get_unanalyzed_matches(n=10)
@@ -89,7 +92,7 @@ class TestGetUnanalyzedFiltersAnalyzed:
 
 class TestGetUnanalyzedEmpty:
 
-    def test_get_unanalyzed_returns_empty_when_all_analyzed(self, history_file):
+    def test_get_unanalyzed_returns_empty_when_all_analyzed(self, history_file, replay_dir):
         """Empty list when every match has been analyzed."""
         entries = [
             {"id": "m1", "bot0": "v1", "bot1": "v2"},
@@ -98,6 +101,10 @@ class TestGetUnanalyzedEmpty:
         with open(history_file, "w") as f:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
+        # replay files present so the empty result is attributable to the
+        # analyzed filter, not the absent-replay filter
+        for e in entries:
+            (replay_dir / e["id"]).write_text(json.dumps({"games": []}))
 
         be.mark_analyzed("m1")
         be.mark_analyzed("m2")
@@ -267,5 +274,212 @@ class TestLLMFailurePreservesExisting:
         assert "# Original Experience" in content
         assert "Lesson 1" in content
 
-        # Match is still marked as analyzed (don't retry failed LLM calls)
-        assert be.is_analyzed(match_id) is True
+        # Match is NOT marked done on LLM failure — stays retryable (fail_count=1)
+        assert be.is_analyzed(match_id) is False
+        # But fail_count is recorded
+        markers = be._read_markers()
+        assert markers.get(match_id, {}).get("fail_count", 0) == 1
+
+
+# ── 11. test_get_unanalyzed_skips_evicted_replays ──
+
+
+class TestGetUnanalyzedSkipsEvicted:
+
+    def test_get_unanalyzed_skips_evicted_replays(self, history_file, replay_dir):
+        """Entries whose replay files have been evicted are skipped."""
+        entries = [
+            {"id": "m1", "bot0": "v1", "bot1": "v2", "timestamp": "2024-01-01T00:00:00"},
+            {"id": "m2", "bot0": "v2", "bot1": "v3", "timestamp": "2024-01-01T00:01:00"},
+        ]
+        with open(history_file, "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+
+        # Only create replay for m2 (m1 evicted)
+        (replay_dir / "m2").write_text(json.dumps({"games": []}))
+
+        result = be.get_unanalyzed_matches(n=10)
+        ids = [e["id"] for e in result]
+        assert "m1" not in ids  # evicted, skipped
+        assert "m2" in ids
+
+
+# ── 12. test_get_unanalyzed_force_skips_poison ──
+
+
+class TestGetUnanalyzedForceSkipsPoison:
+
+    def test_get_unanalyzed_force_skips_poison(self, history_file, replay_dir):
+        """Matches with fail_count >= 3 are force-skipped."""
+        entries = [
+            {"id": "m1", "bot0": "v1", "bot1": "v2", "timestamp": "2024-01-01T00:00:00"},
+        ]
+        with open(history_file, "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+
+        (replay_dir / "m1").write_text(json.dumps({"games": []}))
+
+        # Mark with fail_count=3 (poison — force-skipped)
+        be.mark_analyzed("m1", fail_count=3)
+        assert be.is_analyzed("m1") is True
+
+        result = be.get_unanalyzed_matches(n=10)
+        ids = [e["id"] for e in result]
+        assert "m1" not in ids
+
+
+# ── 13. test_get_unanalyzed_random_sampling ──
+
+
+class TestGetUnanalyzedRandomSampling:
+
+    def test_get_unanalyzed_random_sampling(self, history_file, replay_dir):
+        """Random sampling returns a subset without recency bias."""
+        entries = []
+        for i in range(20):
+            e = {"id": f"m{i:02d}", "bot0": "v1", "bot1": "v2",
+                 "timestamp": f"2024-01-01T00:{i:02d}:00"}
+            entries.append(e)
+
+        with open(history_file, "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+
+        for e in entries:
+            (replay_dir / e["id"]).write_text(json.dumps({"games": []}))
+
+        result = be.get_unanalyzed_matches(n=5)
+        assert len(result) == 5
+        ids = [e["id"] for e in result]
+        assert len(set(ids)) == 5  # no duplicates
+
+
+# ── 14. test_increment_fail_count ──
+
+
+class TestIncrementFailCount:
+
+    def test_increment_fail_count(self):
+        """Fail count increments; force-skip kicks in at >= 3."""
+        assert be.is_analyzed("m_fail") is False
+        be.increment_fail_count("m_fail")
+        assert be.is_analyzed("m_fail") is False  # fc=1, transient
+        be.increment_fail_count("m_fail")
+        assert be.is_analyzed("m_fail") is False  # fc=2, transient
+        be.increment_fail_count("m_fail")
+        assert be.is_analyzed("m_fail") is True   # fc=3, force-skipped
+
+    def test_mark_analyzed_clears_fail_count(self):
+        """mark_analyzed(fail_count=0) marks the match DONE (overwrites prior failures)."""
+        be.increment_fail_count("m_clear")
+        be.increment_fail_count("m_clear")
+        be.mark_analyzed("m_clear", fail_count=0)
+        assert be.is_analyzed("m_clear") is True  # done
+        markers = be._read_markers()
+        assert markers["m_clear"]["fail_count"] == 0
+
+
+# ── 15. test_legacy_marker_format_migration ──
+
+
+class TestLegacyMarkerFormat:
+
+    def test_legacy_list_format(self, monkeypatch):
+        """Legacy list-of-strings marker file is treated as analyzed."""
+        marker_path = be.ANALYSIS_MARKER_FILE
+        marker_path.write_text(json.dumps(["legacy_1", "legacy_2"]))
+        assert be.is_analyzed("legacy_1") is True
+        assert be.is_analyzed("legacy_2") is True
+        assert be.is_analyzed("new_1") is False
+
+        # mark_analyzed writes new dict format
+        be.mark_analyzed("new_1", fail_count=0)
+        markers = be._read_markers()
+        assert "legacy_1" in markers
+        assert "new_1" in markers
+        assert markers["new_1"]["fail_count"] == 0
+
+
+# ── 16. test_apply_batch_results cumulative merge (parallel-path coverage) ──
+
+
+class TestApplyBatchResultsCumulative:
+    """The parallel batch path: _apply_batch_results must fold ALL summaries
+    into ONE LLM merge, not overwrite (the original parallel design lost N-1 of
+    N per batch because each worker read the same stale baseline)."""
+
+    def test_batch_merges_all_summaries_not_just_last(self, replay_dir, monkeypatch):
+        for mid in ("b1", "b2"):
+            (replay_dir / mid).write_text(json.dumps({"games": []}))
+        monkeypatch.setattr(be, "_run_llm_update", lambda current, new_data: f"# Merged\n{new_data}")
+
+        results = [
+            ({"id": "b1", "bot0": "v1", "bot1": "v2"}, True, "SUMMARY_B1"),
+            ({"id": "b2", "bot0": "v1", "bot1": "v2"}, True, "SUMMARY_B2"),
+        ]
+        be._apply_batch_results(results)
+
+        # BOTH summaries survive in the single merged output (not just the last).
+        content = be.BATTLE_EXPERIENCE_FILE.read_text()
+        assert "SUMMARY_B1" in content
+        assert "SUMMARY_B2" in content
+        assert be.is_analyzed("b1") is True
+        assert be.is_analyzed("b2") is True
+
+    def test_batch_failure_bumps_fail_count(self, replay_dir, monkeypatch):
+        """A failed summary extraction bumps fail_count, stays retryable."""
+        monkeypatch.setattr(be, "_run_llm_update", lambda c, n: "# x\n" + n)
+        results = [
+            ({"id": "ok1", "bot0": "v1", "bot1": "v2"}, True, "OK1"),
+            ({"id": "fail1", "bot0": "v1", "bot1": "v2"}, False, None),
+        ]
+        be._apply_batch_results(results)
+        assert be.is_analyzed("ok1") is True
+        assert be.is_analyzed("fail1") is False  # fail_count=1, retryable
+        markers = be._read_markers()
+        assert markers["fail1"]["fail_count"] == 1
+
+    def test_batch_llm_failure_bumps_all_fail_counts(self, replay_dir, monkeypatch):
+        """If the cumulative LLM merge returns None, no match is marked done;
+        all successful-summary matches get fail_count bumped (retryable)."""
+        monkeypatch.setattr(be, "_run_llm_update", lambda c, n: None)
+        results = [
+            ({"id": "x1", "bot0": "v1", "bot1": "v2"}, True, "X1"),
+            ({"id": "x2", "bot0": "v1", "bot1": "v2"}, True, "X2"),
+        ]
+        be._apply_batch_results(results)
+        assert be.is_analyzed("x1") is False
+        assert be.is_analyzed("x2") is False
+        markers = be._read_markers()
+        assert markers["x1"]["fail_count"] == 1
+        assert markers["x2"]["fail_count"] == 1
+
+
+# ── 17. test_get_unanalyzed retries transient failures (fc=1,2) ──
+
+
+class TestGetUnanalyzedRetriesTransient:
+
+    def test_fail_count_1_and_2_are_retried(self, history_file, replay_dir):
+        """fail_count 1-2 (transient) ARE returned for retry; 0 (done) and >=3
+        (poison) are excluded. This is the whole point of the fail_count schema."""
+        for mid in ("t1", "t2", "t3"):
+            (replay_dir / mid).write_text(json.dumps({"games": []}))
+        entries = [
+            {"id": "t1", "bot0": "v1", "bot1": "v2", "timestamp": "2024-01-01T00:00:00"},
+            {"id": "t2", "bot0": "v1", "bot1": "v2", "timestamp": "2024-01-01T00:01:00"},
+            {"id": "t3", "bot0": "v1", "bot1": "v2", "timestamp": "2024-01-01T00:02:00"},
+        ]
+        with open(history_file, "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+        be.increment_fail_count("t1")          # fc=1 transient -> retried
+        be.mark_analyzed("t2", fail_count=3)   # poison -> skipped
+        # t3 never tried -> included
+        result = be.get_unanalyzed_matches(n=10)
+        ids = {e["id"] for e in result}
+        assert "t1" in ids
+        assert "t3" in ids
+        assert "t2" not in ids

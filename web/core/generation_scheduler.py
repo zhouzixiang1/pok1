@@ -594,7 +594,7 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
         new_bot_main = new_bot_dir / "main.py"
         if new_bot_main.exists():
             probe_result = await run_exploitability_probes_async(
-                str(new_bot_main), num_hands=10, workers=2, ui=ui,
+                str(new_bot_main), num_hands=50, workers=2, ui=ui,
             )
             overall = probe_result.get("overall_score", 0.5)
             weaknesses = probe_result.get("weaknesses", [])

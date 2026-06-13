@@ -34,12 +34,16 @@ def _compute_state(req):
     opponent_allin = False
 
     if current_round == 0:
-        # Preflop: blinds already posted
+        # Preflop: blinds already posted. Initialize round_bet/last_raise_to to
+        # the big blind baseline; round_contrib carries the blind postings.
+        # NOTE: my_round_bet is intentionally NOT set here — it is recomputed
+        # from round_contrib[my_id] AFTER the history replay so it stays in sync
+        # with round_bet (a stale pre-assignment here diverged from the replayed
+        # value and mis-computed to_call in edge cases).
         sb = dealer_id  # heads-up: dealer is SB
         bb = 1 - dealer_id
         round_bet = 100
         last_raise_to = 100
-        my_round_bet = 100 if my_id == bb else 50
         round_contrib = [0, 0]
         round_contrib[sb] = 50
         round_contrib[bb] = 100
@@ -81,8 +85,9 @@ def _compute_state(req):
             round_bet = max(round_bet, round_contrib[pid])
             last_raise_to = max(last_raise_to, target)
 
-    # Recompute my_round_bet for current round
-    my_round_bet = round_contrib[my_id] if round_contrib[my_id] >= 0 else 0
+    # Recompute my_round_bet for current round from the synced round_contrib so
+    # to_call = round_bet - my_round_bet stays consistent with the replayed bets.
+    my_round_bet = max(0, round_contrib[my_id])
     to_call = max(0, round_bet - my_round_bet)
 
     return {

@@ -125,20 +125,31 @@ def get_action(req):
     else:
         min_raise_to = baseline * 2
 
-    # Preflop: just call (or check if BB)
+    # Preflop: play a normal raise/call strategy so the probe actually
+    # exercises the preflop aggression axis (the old code always called/checked
+    # and folded when to_call>=my_chips, so it never generated preflop raises
+    # to measure the target bot's defense against).
     if current_round == 0:
         if to_call == 0:
-            return 0  # check (BB)
+            # First in preflop (BB after SB limp, or SB) -> open-raise to 3x BB.
+            open_to = 300
+            if open_to >= my_chips:
+                return -2  # all-in
+            return open_to
         if to_call >= my_chips:
-            return -1  # fold
-        return 0  # call
+            # Facing a bet bigger than our stack -> call it off (no fold).
+            return -2
+        # Facing a normal raise -> call (keep the pot alive to reach postflop
+        # where the check-raise trap is exercised).
+        return 0
 
     # Postflop logic
     if to_call == 0:
-        # No bet to call: check (to set trap)
+        # No bet to call: check first (to set the trap), then raise if bet into
+        # on a later action this round.
         return 0
 
-    # Facing a bet: raise big (3x the bet amount)
+    # Facing a bet postflop: check-raise big (3x the bet amount on top of pot)
     raise_to = round_bet + to_call * 3
     raise_to = max(raise_to, min_raise_to, round_bet + 1)
 
@@ -148,7 +159,7 @@ def get_action(req):
         return -2  # all-in
 
     if to_call >= my_chips:
-        return -1  # fold if can't afford
+        return -2  # call off instead of folding
 
     return raise_to
 
