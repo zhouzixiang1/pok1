@@ -11,8 +11,8 @@
 - All river value-bet blocks must include opponent-model gating.
 - donk_probe.py and overbet.py validated by 41+ generation survival (v27→v67).
 - should_fold_postflop has ~11 fold exits — additional paths risk compounding; justify each with H2H.
-- Turn barrel activation gated on was_flop_aggressor + to_call==0 + opp check is a sound structural pattern — reuse for multi-street aggression.
-- Delayed c-bet (PFR checks flop, bets turn) is structurally valid but verify frequencies don't over-bluff on dry textures.
+- Turn barrel activation gated on was_flop_aggressor + to_call==0 + opp check is a sound structural pattern — reuse.
+- Delayed c-bet (PFR checks flop, bets turn) structurally valid; verify frequencies don't over-bluff on dry textures.
 
 ## BLUFF_CALIBRATION
 - Structural bluff modules (4-bet light, donk/probe, overbet, barrel) need ≥100-game H2H backing before targeting a matchup.
@@ -21,7 +21,7 @@
 ## PARAMETER_TUNING
 - RAISE_RATIO changes require per-constant H2H validation; batch changes obscure which value helped.
 - New structural path thresholds require H2H validation before merging.
-- Constant/margin tuning of fold gates, call thresholds, sizing ratios attempted across 5+ versions (v55–v63) with no sustained gain. Reject any task that only adjusts these without structural rationale or H2H backing. [EXHAUSTED — hard gate]
+- Constant/margin tuning of fold gates, call thresholds, sizing ratios attempted across 5+ versions (historical v55–v63) with no sustained gain. Reject tasks that only adjust these without structural rationale or H2H backing. [EXHAUSTED — hard gate]
 
 ## GENERAL
 - Universal rule: any new structural path, constant change, or matchup targeting requires ≥100-game H2H; <100g is directional only.
@@ -36,12 +36,11 @@
 - Dead parameters in hot paths signal incomplete wiring — fix or remove promptly.
 
 ## RECENT_LESSONS
-- **v68**: Critic evidence: H2H weaknesses: v62 overall WR 50.65% (1700 games) — essentially at plateau. Weakest matchups: v16 (43.3%, 60g), v49 (45.0%, 60g), v20 (45.7%, 70g), v47/v53/v31/v34 (46.0%, 50g each). No specific H2H evidence links these losses to the unconditional river jam — the change is theoretically motivated., 97% of v62 matchups within 45–55% WR — classic plateau where structural exploration is warranted.; Experience pool refs: EXHAUSTED tag: 'Constant/margin tuning of fold gates, call thresholds, sizing ratios across v55–v63.' This change is NOT re-tuning — it's a new decision function. Distinct from exhausted pattern., HARD GATE compliant: 'Isolate one mechanism per generation.' One mechanism (river jam gating)., v67 lesson: 'Dead code: sizing_hint in evaluate_turn_checkraise() ignored by choose_raise().' Same class of fix — wiring intelligence into a previously unconditional fallback.; Diff refs: New function `evaluate_river_jam()` (lines 906–963, 58 lines) — gates river jam with round_idx==3, to_call==0, strong/nut tier, nutted_risk ≤ 0.10, SPR-based jam at ≥8.0, sized bet 1.25–1.40x pot at moderate SPR., Called at line 1636–1643 AFTER overbet evaluation, BEFORE turn barrel/donk/probe/choose_raise — intercepts river strong/nut hands early., BUG-3 fix preserved at lines 1781–1784 as final fallback — unconditional jam still exists if evaluate_river_jam returns None AND choose_raise returns None.
-- **v68**: Critic evidence: H2H weaknesses: v62 loses to v48 (44%, 50g), v51 (46%, 50g), v29 (46.67%, 60g). No specific H2H evidence cited linking these losses to the unconditional river jam — the change is theoretically motivated rather than data-driven., v62 overall WR 50.79% (1640 games). The plateau is tight: 97% of matchups within 45-55%.; Experience pool refs: EXHAUSTED tag: 'Constant/margin tuning of fold gates, call thresholds, sizing ratios attempted across v55–v63.' This is NOT re-tuning — it's a new decision function replacing an unconditional action. Distinct from the exhausted pattern., HARD GATE compliant: 'Isolate one mechanism per generation.' One mechanism (river jam gating)., v67 lesson: 'Dead code: sizing_hint in evaluate_turn_checkraise() ignored by choose_raise().' This change addresses a different dead path (BUG-3 river jam) but is the same class of fix — wiring intelligence into a previously unconditional fallback.; Diff refs: New function `evaluate_river_jam()` (39 lines) replaces unconditional `return -2` at line 1715 of v62/strategy.py., Nut hands: always jam (preserved behavior). Strong hands: SPR ≤ 5 → jam; SPR > 5 → sized bet 1.0x/1.3x/1.5x pot based on opp_archetype and fold_to_raise confidence., Calling station with confidence ≥ 0.20: 1.5x pot (extract max value from callers). Confident low fold-to-raise opponent: 1.3x pot. Default: 1.0x pot.
-- **v67**: Dead code: `sizing_hint` in evaluate_turn_checkraise() ignored by choose_raise(). Wire turn_cr_info as sizing override so bluff CRs get intended 0.45-0.55x instead of generic ~0.75x pot, improving fold equity.
+- **v69**: Critic evidence: H2H weaknesses: v68 at 49.7% WR (320 games) — below the v62 plateau of ~50.7%. No specific matchup data showing SB fold leak, but the ~1% WR gap suggests room for improvement in preflop spots. No v69 H2H data yet.; Experience pool refs: EXHAUSTED tag on 'constant/margin tuning of fold gates' — but this is NOT constant tuning, it's a new structural mechanism. The pool also notes 'structural exploration warranted' at the plateau, which this satisfies., Pool notes `_bb_defend_vs_raise()` validated over 41+ generations — the new function follows the same pattern., HARD GATE confirmed: one mechanism per generation (v64/v65 violated this; v69 complies).; Diff refs: New function `_sb_open_defense_floor()` (lines 736-759) — 24-line structural hand classifier using preflop_hand_profile., Single call site change (lines 790-792): replaces unconditional `return -1` with conditional `if _sb_open_defense_floor(my_cards): return 0` before `return -1`., Mirrors existing `_bb_defend_vs_raise()` pattern at line 704 — same profile-based approach but slightly wider (3:1 odds justify wider range than BB's ~2:1 on a raise).
+- **v68**: River jam gating via `evaluate_river_jam()` — SPR-based (≥8.0 jam, moderate SPR sized bet 1.25–1.40× pot). Monitor vs calling stations (oversized bets extract max value) and passive opponents (may need tighter hand thresholds to avoid turning value into bluff).
+- **v68**: v62 plateau at ~50.7% WR (1700g), 97% matchups within 45–55%. Structural exploration warranted but changes must be data-driven, not only theoretically motivated.
+- **v67**: Dead code: `sizing_hint` in evaluate_turn_checkraise() ignored by choose_raise(). Wire turn_cr_info as sizing override so bluff CRs get intended 0.45–0.55× instead of generic ~0.75× pot.
 - **v67**: strategy.py at 1767 lines (~205 lines headroom). Consider splitting into turn_aggression.py within 2–3 generations.
-- **v66**: Delayed c-bet implemented (HARD GATE compliant). Wire `has_position` in evaluate_delayed_cbet() to differentiate OOP (smaller, merged) vs IP (larger, polarized). Verify not over-bluffing on dry textures.
+- **v66**: Delayed c-bet implemented (HARD GATE compliant). Wire `has_position` to differentiate OOP (smaller, merged) vs IP (larger, polarized). Verify not over-bluffing on dry textures.
 - **v66**: River value gate (made_strength ≥ 0.38) added but plateau persists at ~49% WR — no clear H2H gain from this mechanism alone.
-- **v65**: Multi-mechanism gen violated HARD GATE — dead code, unimplemented Master task, +95 lines. Near-plateau (97% matchups within 45–55%).
-
 
