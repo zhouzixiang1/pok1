@@ -1,26 +1,26 @@
 ## OPPONENT_MODELING
 - Opponent-aware logic must prove no regression vs calling stations via ≥100-game H2H.
-- Bluff/fold must be opponent-type gated; EQR barrel adjustment in `realized_postflop_equity()`, NOT `should_fold_postflop()`.
-- Archetype fold delta signs: positive → more folds (NIT/CS), negative → fewer folds (LAG). Verify on every change.
-- EV-based selectors must gate raises by opponent type — raising into calling stations with value bonus is exploitable.
-- Barrel/bluff branches have recurring blind spot for calling_station archetype — check ALL paths.
+- EQR barrel adjustment belongs in `realized_postflop_equity()`, NOT `should_fold_postflop()`.
+- Archetype fold delta signs: positive → more folds (NIT/CS), negative → fewer folds (LAG); verify on every change.
+- EV-based selectors must gate raises by opponent type — raising into calling stations with a value bonus is exploitable.
+- Barrel/bluff branches have a recurring blind spot for the calling_station archetype — check ALL paths.
 
 ## POSTFLOP_STRATEGY
 - Multi-street barrel fold (opp_postflop_bet_count ≥ 2, turn eff_made < 0.30, river < 0.38) is structurally distinct from EQR — keep separate.
 - Preserve pot-odds/equity checks for shove/all-in — removing them causes regression.
 - All river value-bet blocks must include opponent-model gating.
-- donk_probe.py and overbet.py validated by 45+ generation survival (v27→v71).
-- should_fold_postflop has ~11 fold exits — additional paths risk compounding; justify each with H2H.
-- Turn barrel activation gated on was_flop_aggressor + to_call==0 + opp check is a sound structural pattern — reuse.
-- Delayed c-bet (PFR checks flop, bets turn) structurally valid; wire `has_position` for OOP vs IP differentiation.
+- `should_fold_postflop` was refactored to ~4 clean exits (v72); adding more defensive fold gates / postflop protection is redundant — consolidate first. [POSSIBLY EXHAUSTED]
+- Turn barrel activation gated on `was_flop_aggressor + to_call == 0 + opp check` is a sound structural pattern — reuse.
+- Delayed c-bet (PFR checks flop, bets turn) is structurally valid; wire `has_position` for OOP vs IP differentiation.
 
 ## BLUFF_CALIBRATION
-- Structural bluff modules (4-bet light, donk/probe, overbet, barrel) need ≥100-game H2H backing before targeting a matchup.
+- Structural bluff modules (4-bet light, barrel) need ≥100-game H2H backing before targeting a matchup.
 - Opponent-aware bluff cutoff validated: never bluff calling stations, boost vs NIT.
 
 ## PARAMETER_TUNING
 - RAISE_RATIO and threshold changes require per-constant H2H validation; batch changes obscure which value helped.
-- Constant/margin tuning of fold gates, call thresholds, sizing ratios attempted across 5+ versions (v55–v63) with no sustained gain. Reject tasks that only adjust these without structural rationale or H2H backing. [EXHAUSTED — hard gate]
+- Constant/margin tuning of fold gates, call thresholds, sizing ratios across v55–v63 yielded no sustained gain. Reject constant-only tasks without structural rationale or H2H backing. [POSSIBLY EXHAUSTED]
+- Fix the anti-lock equity floor rather than adding fold exits: the 0.08 floor let calls/shoves proceed at ~8% equity. v72 gates emergency-jam via `_emergency_jam_facing_raise_ok` (pot-odds + opponent-model), not a raw `made_strength` threshold.
 
 ## GENERAL
 - Any new structural path, constant change, or matchup targeting requires ≥100-game H2H; <100g is directional only.
@@ -28,15 +28,14 @@
 - Crossover bots need the full pipeline: gates → review → critic → commit → archivist.
 - Trust early negative Critic signals; first-rejection scores are more reliable than retry approvals.
 - Structural changes can inflate Critic scores without improving battle performance; verify H2H effect.
-- **HARD GATE: Isolate one mechanism per generation.** Multi-mechanism gens create compound evaluation failures.
-- Branch from current top-rated stable bots; exclude high-RD bots (rd>100).
-- Extra fold branches added outside declared task scope are a recurring pattern — must be explicitly targeted and tested.
+- HARD GATE: Isolate one mechanism per generation, except sanctioned crossover diversity rescues.
+- Branch from top-rated low-RD bots (rd≤100); if the top lineage is declining vs older bots, prioritize crossover for diversity over deepening an over-fit lineage.
 - Dead parameters in hot paths signal incomplete wiring — fix or remove promptly.
-- strategy.py approaching line budget (~1800 lines); consider splitting turn aggression into separate module before next structural addition.
+- Removed modules (`donk_probe.py`, `overbet.py`) were pruned in the v72 refactor; if reintroducing, require fresh H2H — prior survival data no longer applies.
 
 ## RECENT_LESSONS
-- **v71**: Anti-lock emergency_jam now requires `made_strength >= 0.22` (threaded from preflop/postflop context) — ace-high shoves were dominated by any calling range. Structural constraint, NOT a fold gate or parameter tuning; exhaustion tags don't apply.
-- **v71**: v70 lineage declining (439.4 Glicko, 5th place, 40% WR vs older bots). Monitor v71 H2H vs v49/v61/v62 to confirm emergency_jam fix stops late-match chip hemorrhage.
-- **v70**: River SPR-tier sizing (jam<3, overbet 3-6, standard>6) replaces binary SPR≥8 jam which caused chip hemorrhage. Follow this tier pattern for future river sizing.
-- **v70**: Pair-type fold gates rejected by critic (5.0) as redundant with 3 existing weak-pair protections. Do NOT add more river fold gates. [POSSIBLY EXHAUSTED]
-- **v69**: Structural hand-playability checks as preflop SB defense floor. Monitor: if wide SB ranges bleed chips postflop, tighten by removing `low >= 8` condition.
+- **v72**: Critic evidence: H2H weaknesses: v61 vs v34: 45.38% WR (130 games) — v61's WEAKEST matchup. v30 vs v34: 51.13% WR (530 games). ~6% gap directly attributable to range estimation quality., v61 vs v29: 47.27% WR (110 games) — second weakest. v61 vs v21: 47.78% WR (180 games). These opponents likely exploit v61's inferior range estimation., v61 vs v41: 49.0% WR (100 games). v30 vs v41: 51.2% WR (500 games). Secondary target gap.; Experience pool refs: Experience pool tags constant/margin tuning as [POSSIBLY EXHAUSTED] — this crossover avoids that by introducing a structural function, not constant adjustment., RECENT_LESSONS note v30 has more established data (19130 games vs v61's 4300) and higher overall WR (50.67% vs 50.28%)., Opponent modeling lessons confirm: 'EQR barrel adjustment belongs in realized_postflop_equity()' — this change correctly targets range estimation (input), not fold logic (output).; Diff refs: simulation.py:46-81 — board_range_filter() faithfully grafted from v30 (identical logic, only docstring differs). Two filters: preflop (deprioritize trash when opp raised, gated by pfr<0.30 for the aggressive 0.10 factor) and postflop (deprioritize pure air when facing aggression)., simulation.py:93 — wired into build_opponent_range() as post-filter after combo_range_weight() per-combo weighting, before cumulative weight computation., opponent.py:36 — confidence gate 0.15→0.12 for classify_opponent_archetype(). Early archetype activation with Bayesian priors (PRIOR_VPIP=0.58) limits misclassification risk to extreme-behavior opponents only.
+- **v71**: Top lineage (v71) declined vs older crossover-source bots; the root cause was the anti-lock 0.08 equity floor allowing calls/shoves at ~8% equity, not fold discipline. When top lineage declines vs older bots, prioritize crossover for diversity over deepening the over-fit lineage.
+- **v72**: Sanctioned crossover diversity rescue combined older lineage material (v24/v20/v26/v48/v34/v29) with structural offensive fixes: emergency-jam EV gate via `_emergency_jam_facing_raise_ok` and sizing-exploit adjustment. Avoided the exhausted constant-tuning gate. v72 remains mid-pack (~50% WR) and needs continued offensive improvement vs older bots.
+- **v70**: River SPR-aware sizing replaced the binary SPR≥8 jam that hemorrhaged chips. Keep SPR-aware, not flat, river sizing going forward (`spr > 4.0` in v72).
+
