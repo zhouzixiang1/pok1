@@ -9,10 +9,11 @@
 - Multi-street barrel fold (opp_postflop_bet_count ≥ 2, turn eff_made < 0.30, river < 0.38) is structurally distinct from EQR — keep separate.
 - Preserve pot-odds/equity checks for shove/all-in — removing them causes regression.
 - All river value-bet blocks must include opponent-model gating.
-- donk_probe.py and overbet.py validated by 41+ generation survival (v27→v67).
+- donk_probe.py and overbet.py validated by 44+ generation survival (v27→v70).
 - should_fold_postflop has ~11 fold exits — additional paths risk compounding; justify each with H2H.
 - Turn barrel activation gated on was_flop_aggressor + to_call==0 + opp check is a sound structural pattern — reuse.
 - Delayed c-bet (PFR checks flop, bets turn) structurally valid; wire `has_position` for OOP vs IP differentiation.
+- Dead code: `sizing_hint` in evaluate_turn_checkraise() ignored by choose_raise() — wire turn_cr_info as sizing override for bluff CRs (0.45–0.55× pot).
 
 ## BLUFF_CALIBRATION
 - Structural bluff modules (4-bet light, donk/probe, overbet, barrel) need ≥100-game H2H backing before targeting a matchup.
@@ -32,14 +33,13 @@
 - Branch from current top-rated stable bots; exclude high-RD bots (rd>100).
 - Extra fold branches added outside declared task scope are a recurring pattern — must be explicitly targeted and tested.
 - Dead parameters in hot paths signal incomplete wiring — fix or remove promptly.
-- strategy.py at ~1767 lines (~205 lines headroom). Consider splitting into turn_aggression.py within 2–3 generations.
+- strategy.py approaching line budget (~1800 lines); consider splitting turn aggression into separate module before next structural addition.
 
 ## RECENT_LESSONS
-- **v70**: Critic evidence: H2H weaknesses: v69 at 49.25% WR (400 games), down from v62's 50.67% (1940 games). Losing to v26 (40%, 10g), v15 (40%, 20g), v24 (40%, 20g), v23/v53/v51 (40%, 10g each). While sample sizes are small, the WR trend is downward from v62 baseline.; Experience pool refs: POSTFLOP_STRATEGY: 'All river value-bet blocks must include opponent-model gating.' — new code uses call_happy flag for tier 2/3 sizing. POSTFLOP_STRATEGY: 'Preserve pot-odds/equity checks for shove/all-in — removing them causes regression.' — v69's SPR≥8 unconditional jam was the regression. PARAMETER_TUNING [EXHAUSTED] does NOT apply — this is structural SPR-tier logic, not constant tuning.; Diff refs: strategy.py evaluate_river_jam(): v69 L969-972 'if spr >= 8.0: return -2 (jam)' → v70 3-tier SPR (L967-990) with no-jam at SPR>6. BUG-3 fallback (L1810-1819): v69 auto-jam → v70 SPR-aware sized bet with jam as last resort only.
-- **v70**: Critic evidence: H2H weaknesses: No H2H data available for v69/v70 matchups. No confirmed weakness in thin value betting with weak pairs was cited.; Experience pool refs: PARAMETER_TUNING section: 'Constant/margin tuning of fold gates, call thresholds, sizing ratios attempted across 5+ versions (v55–v63) with no sustained gain. Reject tasks that only adjust these without structural rationale or H2H backing. [EXHAUSTED — hard gate]', POSTFLOP_STRATEGY section: 'should_fold_postflop has ~11 fold exits — additional paths risk compounding; justify each with H2H.', v67 TODO still unaddressed: 'Dead code: sizing_hint in evaluate_turn_checkraise() ignored by choose_raise(). Wire turn_cr_info as sizing override so bluff CRs get intended 0.45–0.55× instead of generic ~0.75× pot.'; Diff refs: postflop.py L1109-1115: pair-type quality gate blocks bottom_pair/underpair/board_pair from thin value, plus 0.42 thin tier floor, strategy.py L1784-1793: river_weak_pair_gate checks back unclassified weak hands (made_strength<0.42, draw<0.12, no value profile), strategy.py already has 3 weak-pair gates at L1606-1613 (weak_pair_river, weak_bottom_pair_barrel, weak_pair_after_raise_barrel) that fire BEFORE the new gates
-- **v69**: Structural hand-playability checks (pair/suited/high-card/connected) as preflop SB defense floor — sound pattern. Monitor first 100 daemon games: if wide SB ranges bleed chips postflop, tighten by removing `low >= 8` condition. Target was 25–30% preflop fold rate drop — verify actual.
-- **v69**: v62 plateau at ~50.7% WR (1700g); v68 at 49.7% WR (320g). HARD GATE compliant (one mechanism). Follows `_bb_defend_vs_raise()` validated pattern.
-- **v68**: River jam gating via `evaluate_river_jam()` — SPR-based (≥8.0 jam, moderate SPR sized 1.25–1.40× pot). Monitor vs calling stations (oversized bets) and passive opponents (may need tighter thresholds).
-- **v67**: Dead code: `sizing_hint` in evaluate_turn_checkraise() ignored by choose_raise(). Wire turn_cr_info as sizing override so bluff CRs get intended 0.45–0.55× instead of generic ~0.75× pot.
-
+- **v71**: Critic evidence: H2H weaknesses: v70 is at 40.0% WR vs claude_v17, v13, v16, v20, v49, v61, v62, v34 (10 games each) and 45.0% vs v15 (20 games), indicating a declining trend against older bots., v70 Glicko rating is 439.4 (5th place) with RD 85.6, down from the top cluster, consistent with the v69/v70 lineage leaking chips.; Experience pool refs: v70 lesson: 'River SPR-tier sizing (jam<3, overbet 3-6, standard>6) replaces binary SPR≥8 jam which caused chip hemorrhage (-15829 on missed-draw shove).' The current change tightens the same anti-lock/jam path., Pair-type fold gates are marked [POSSIBLY EXHAUSTED]; this change is not a fold gate—it constrains an aggressive jam—so the exhaustion tag does not apply., Parameter tuning of fold gates/sizing ratios across v55–v63 is [EXHAUSTED]; this is a structural constraint, not parameter tuning.; Diff refs: strategy.py `choose_anti_lock_pressure_action`: new `made_strength` parameter threaded through all call sites (preflop=0.0, postflop=made_hand_metric)., New `weak_emergency` condition requires `made_strength >= 0.22` in addition to `weak_showdown`, `high_fold_pressure`, and `hands_left <= 6`., Emergency jam now uses the narrower `weak_emergency` instead of the previous inline `(weak_showdown and high_fold_pressure and hands_left <= 6)`.
+- **v70**: River SPR-tier sizing (jam<3, overbet 3-6, standard>6) replaces binary SPR≥8 jam which caused chip hemorrhage (-15829 on missed-draw shove). Follow this tier pattern for future river sizing.
+- **v70**: Pair-type fold gates are exhausted — critic rejected (5.0) as redundant with 3 existing weak-pair protections. Do NOT add more river fold gates. [POSSIBLY EXHAUSTED]
+- **v70**: v69 H2H WR trending down (49.25% vs v62's 50.67%). Losing to older bots (v26/v15/v24 at 40% WR, small samples). Monitor if SPR-tier sizing stops the decline.
+- **v69**: Structural hand-playability checks as preflop SB defense floor. Monitor first 100 daemon games: if wide SB ranges bleed chips postflop, tighten by removing `low >= 8` condition.
+- **v68**: River jam gating via `evaluate_river_jam()` — SPR-based. Monitor vs calling stations (oversized bets) and passive opponents (may need tighter thresholds).
 
