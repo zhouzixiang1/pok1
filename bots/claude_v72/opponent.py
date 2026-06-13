@@ -15,7 +15,12 @@ def classify_opponent_archetype(opponent_model):
     """Classify opponent into behavioral archetype for structural adjustments.
 
     Returns one of: 'calling_station', 'nit', 'lag', 'tag', 'unknown'.
-    Requires confidence >= 0.15 to avoid noisy misclassification.
+    Requires confidence >= 0.12 to avoid noisy misclassification.
+
+    Mutation: confidence gate lowered from 0.15 to 0.12 (~20% reduction) so
+    archetype-aware adjustments activate earlier in matches. This synergizes
+    with the board_range_filter crossover — better opponent range estimation
+    + earlier archetype activation = faster exploitative adjustments.
 
     Archetype definitions:
     - calling_station: high VPIP, low fold-to-raise, passive postflop
@@ -28,7 +33,7 @@ def classify_opponent_archetype(opponent_model):
       → play standard balanced strategy
     """
     confidence = opponent_model.get('confidence', 0.0)
-    if confidence < 0.15:
+    if confidence < 0.12:
         return 'unknown'
 
     vpip = opponent_model.get('vpip', _PRIOR_VPIP)

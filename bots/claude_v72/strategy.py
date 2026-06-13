@@ -135,7 +135,6 @@ def choose_anti_lock_pressure_action(
     draw_info=None,
     blocker_profile=None,
     board_texture=None,
-    made_strength=0.0,
 ):
     if state["opponent_allin"] or my_chips <= 1:
         return None
@@ -152,23 +151,15 @@ def choose_anti_lock_pressure_action(
     has_draw = draw_info.get("semi_bluff", False) if draw_info is not None else False
     has_blocker = blocker_profile is not None and blocker_profile.get("eligible", False)
 
-    weak_showdown = tier in ('none', 'thin') and draw_quality < 0.14 and win_rate < 0.45
+    weak_showdown = tier in ("none", "thin") and draw_quality < 0.14 and win_rate < 0.45
     high_fold_pressure = confidence < 0.20 or fold_to_raise >= 0.42
-    # Require at least bottom pair (made_strength >= 0.22) for weak_showdown jam
-    # to prevent catastrophic allins with ace-high or worse
-    weak_emergency = (
-        weak_showdown
-        and high_fold_pressure
-        and hands_left <= 6
-        and made_strength >= 0.22
-    )
     emergency_jam = (
         hands_left <= 3
         or (to_call > 0 and to_call / max(1, pot) >= 0.35)
-        or weak_emergency
+        or (weak_showdown and high_fold_pressure and hands_left <= 6)
         or (win_rate < 0.18 and hands_left <= 5)
     )
-    if tier in ('strong', 'nut') or has_draw:
+    if tier in ("strong", "nut") or has_draw:
         emergency_jam = emergency_jam and hands_left <= 3
 
     if emergency_jam:
@@ -481,15 +472,12 @@ def choose_raise(
             ratio = p_floor
 
     # ── Value sizing floor: prevent underbetting strong/nut hands on turn/river ──
-    # BUG-1 FIX: Skip value floor when thin_control is active — thin_cap already
-    # set the correct ceiling for thin-value hands; value floor must not override it.
     if (round_idx >= 2
         and value_profile is not None
         and value_profile.get('tier') in ('strong', 'nut')
         and not semi_bluff
         and not blocker_bluff
-        and not probe_mode
-        and not value_plan.get("thin_control", False)):
+        and not probe_mode):
         if value_profile.get('tier') == 'nut':
             ratio = max(ratio, 0.60)
         elif round_idx == 2:
@@ -530,67 +518,9 @@ def _was_flop_aggressor(req, my_id, state):
     return False
 
 
-def _opponent_flop_action_sequence(req, my_id):
-    """Read opponent's round-1 (flop) actions from hand history.
-
-    Returns list of action_type strings in chronological order.
-    Used to detect floating patterns (check-call, check-raise, etc.)
-    for action-sequence-aware barrel decisions.
-    """
-    from card_utils import next_player
-    opponent_id = next_player(my_id, 1)
-    history = req.get("history", [])
-    flop_actions = []
-    for record in history:
-        if record["player_id"] == opponent_id and record["round"] == 1:
-            flop_actions.append(record["action_type"])
-    return flop_actions
-
-
-def _classify_opp_pattern(flop_actions):
-    """Classify opponent's flop action pattern for barrel strategy.
-
-    Analyses the sequence of actions the opponent took on the flop to
-    predict their likely turn behavior, enabling pattern-specific barrel
-    decisions.
-
-    Returns one of:
-    - 'passive_float': check+call on flop (tends to check-fold turn)
-    - 'sticky_float': call-heavy on flop (tends to call turn too)
-    - 'aggressive_float': check+raise on flop (tricky, don't bluff)
-    - 'fold_prone': folded on the flop (high fold equity on later streets)
-    - 'unknown': unclassifiable pattern
-    """
-    if not flop_actions:
-        return 'unknown'
-
-    # Fold at any point on the flop → fold-prone
-    if 'fold' in flop_actions:
-        return 'fold_prone'
-
-    # Check-raise or check-allin: aggressive float
-    saw_check = False
-    for action in flop_actions:
-        if action == 'check':
-            saw_check = True
-        elif action in ('raise', 'allin') and saw_check:
-            return 'aggressive_float'
-
-    # Check-call: passive float (called without showing aggression)
-    if 'check' in flop_actions and 'call' in flop_actions:
-        return 'passive_float'
-
-    # Call-heavy without checking: sticky float (calls down light)
-    call_count = flop_actions.count('call')
-    if call_count >= 1 and 'check' not in flop_actions:
-        return 'sticky_float'
-
-    return 'unknown'
-
-
 def evaluate_turn_barrel(spot_info, opponent_model, board_texture, made_strength,
                          draw_strength, draw_info, value_profile, was_flop_aggressor,
-                         has_position, opp_archetype='unknown'):
+                         has_position):
     """Evaluate whether to barrel the turn after flop c-bet.
 
     Returns: {'barrel': bool, 'barrel_type': str or None, 'sizing_hint': float}
@@ -621,89 +551,11 @@ def evaluate_turn_barrel(spot_info, opponent_model, board_texture, made_strength
         return {'barrel': True, 'barrel_type': 'semi_bluff', 'sizing_hint': sizing}
 
     # Bluff barrel: weak hands vs fold-happy opponents on scare cards
-    # BUG-2 FIX: Never bluff-barrel into calling stations — they never fold.
     if (confidence >= 0.20
             and fold_to_raise > 0.52
             and made_strength < 0.25
             and draw_strength < 0.10
-            and wetness >= 0.20
-            and opp_archetype != 'calling_station'):
-        sizing = 0.40 + 0.10 * wetness
-        return {'barrel': True, 'barrel_type': 'bluff', 'sizing_hint': sizing}
-
-    return {'barrel': False, 'barrel_type': None, 'sizing_hint': 0.0}
-
-
-def evaluate_action_sequence_barrel(spot_info, opponent_model, board_texture, made_strength,
-                                     draw_strength, draw_info, value_profile, has_position,
-                                     pot, opp_archetype, opp_sequence):
-    """Action-sequence-aware turn barrel evaluation.
-
-    Uses opponent's flop action pattern to make more nuanced barrel decisions
-    than the texture-only evaluate_turn_barrel.  The flop action sequence
-    reveals floating tendencies (passive, sticky, aggressive) that predict
-    turn fold/call/raise behavior.
-
-    Parameters
-    ----------
-    opp_sequence : list[str]
-        Chronological action_type list from _opponent_flop_action_sequence().
-
-    Returns
-    -------
-    {'barrel': bool, 'barrel_type': str|None, 'sizing_hint': float}
-    """
-    if board_texture is None:
-        return {'barrel': False, 'barrel_type': None, 'sizing_hint': 0.0}
-
-    confidence = opponent_model.get('confidence', 0.0)
-    fold_to_raise = opponent_model.get('fold_to_raise', 0.44)
-    tier = value_profile.get('tier', 'none') if value_profile else 'none'
-    wetness = board_texture.get('wetness', 0.0)
-    opp_pattern = _classify_opp_pattern(opp_sequence)
-
-    # ── Value branch: strong/nut always barrel ────────────────────────────
-    if tier in ('strong', 'nut'):
-        sizing = 0.55 + 0.20 * wetness
-        if tier == 'nut':
-            sizing = max(sizing, 0.65)
-        # Pattern-specific sizing adjustments
-        if opp_pattern == 'sticky_float':
-            sizing += 0.08   # They call down — extract more
-        elif opp_pattern == 'aggressive_float':
-            sizing += 0.05   # They may raise — get more value
-        elif opp_pattern == 'passive_float':
-            sizing -= 0.05   # Smaller to keep them calling
-        elif opp_pattern == 'fold_prone':
-            sizing -= 0.08   # They fold easily — keep sizing low to induce call
-        return {'barrel': True, 'barrel_type': 'value', 'sizing_hint': max(0.45, sizing)}
-
-    # ── Semi-bluff branch: draws with fold equity ─────────────────────────
-    # Skip vs calling stations — they never fold to semi-bluffs.
-    draw_quality = draw_info.get('quality', 0.0) if draw_info else 0.0
-    if draw_quality >= 0.16 and opp_archetype != 'calling_station':
-        if pot > 0:
-            # Estimate fold equity from opponent pattern + model
-            fold_equity = 0.0
-            if opp_pattern == 'fold_prone':
-                fold_equity = 0.45
-            elif opp_pattern == 'passive_float':
-                fold_equity = 0.35
-            elif opp_pattern == 'unknown':
-                fold_equity = confidence * fold_to_raise
-            # sticky/aggressive floats → very low fold equity
-            if fold_equity > 0.20 or draw_quality >= 0.25:
-                sizing = 0.45 + 0.15 * wetness
-                return {'barrel': True, 'barrel_type': 'semi_bluff', 'sizing_hint': sizing}
-
-    # ── Bluff branch: only vs fold-prone / passive patterns ───────────────
-    if (opp_archetype != 'calling_station'
-            and opp_pattern in ('fold_prone', 'passive_float')
-            and made_strength < 0.25
-            and draw_strength < 0.10
-            and wetness >= 0.20
-            and confidence >= 0.20
-            and fold_to_raise > 0.52):
+            and wetness >= 0.20):
         sizing = 0.40 + 0.10 * wetness
         return {'barrel': True, 'barrel_type': 'bluff', 'sizing_hint': sizing}
 
@@ -742,32 +594,6 @@ def _bb_defend_vs_raise(my_cards):
     return False
 
 
-def _sb_open_defense_floor(my_cards):
-    """SB structural defense floor: complete with most hands at 3:1 odds.
-
-    In HU NLHE, the SB gets ~3:1 to complete. Only fold the worst
-    offsuit trash that lacks both equity and postflop playability.
-    Follows the same pattern as _bb_defend_vs_raise().
-    """
-    from state import preflop_hand_profile
-    profile = preflop_hand_profile(my_cards)
-    high, low = profile["high"], profile["low"]
-    gap = high - low
-    suited = profile["suited"]
-    pair = profile["pair"]
-
-    # Always complete: pairs, suited, or any ten+ card (T=10)
-    if pair or suited or high >= 10:
-        return True
-    # Connected hands (gap <= 3) with substance (low >= 5)
-    if gap <= 3 and low >= 5:
-        return True
-    # Both cards medium+ (8+): like 98o, 97o, 87o
-    if low >= 8:
-        return True
-    return False
-
-
 def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_strength, win_rate, match_profile, opp_archetype='unknown'):
     my_chips = req["my_chips"]
     to_call = state["to_call"]
@@ -796,9 +622,7 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
         if not trash_hand and preflop_strength >= open_threshold and raise_amount is not None:
             return raise_amount
         if preflop_strength <= limp_threshold - loose_bonus:
-            if _sb_open_defense_floor(req['my_cards']):
-                return 0  # structurally playable — complete instead of fold
-            return -1  # fold only absolute trash (72o, 82o, 93o, etc.)
+            return -1
         return 0
 
     if spot_info["preflop_spot"] == "bb_vs_limp":
@@ -940,65 +764,6 @@ def _handle_repeated_raise(value_profile, made_strength, draw_strength, spot_inf
     return None
 
 
-def evaluate_river_jam(
-    round_idx, to_call, pot, my_chips, value_profile, made_strength,
-    opponent_model, board_texture, nutted_risk, min_raise_action,
-):
-    """Evaluate whether to jam all-in or make a sized bet on the river.
-
-    Uses a 3-tier SPR system to avoid shoving entire stacks into tiny pots:
-      Tier 1 (SPR < 3): Pot-committed — jam all-in.
-      Tier 2 (3 <= SPR <= 6): Large sized bet (1.25-1.5x+ pot).
-      Tier 3 (SPR > 6): Standard value sizing (~0.75-1.0x pot), NO jam.
-
-    Returns: -2 (jam all-in), int (sized raise-to-total), or None (no action).
-    """
-    # Only activate on river, when first to act or no call needed
-    if round_idx != 3 or to_call != 0:
-        return None
-
-    # Only for strong or nut hands
-    if value_profile is None or value_profile.get("tier") not in ("strong", "nut"):
-        return None
-
-    # Must have enough chips for a jam to matter
-    if my_chips <= min_raise_action:
-        return None
-
-    # High nutted risk on dynamic boards — prefer pot-control, don't jam
-    if nutted_risk is not None and nutted_risk.get("risk", 0.0) > 0.10:
-        return None
-
-    spr = my_chips / max(1, pot)
-    opp_fold_to_raise = opponent_model.get("fold_to_raise", 0.50) if opponent_model.get("confidence", 0) >= 0.20 else 0.50
-    call_happy = opp_fold_to_raise < 0.42
-
-    # Tier 1: Pot-committed — jam
-    if spr < 3.0:
-        return -2
-
-    # Tier 2: Moderate SPR — large sized bet
-    if spr <= 6.0:
-        base_ratio = 1.40 if call_happy else 1.25
-        spr_bonus = max(0.0, (spr - 3.0) * 0.05)
-        ratio = base_ratio + spr_bonus
-        if value_profile.get("tier") == "nut":
-            ratio += 0.10
-        sized = max(min_raise_action, int(pot * ratio), pot // 2)
-        if sized >= my_chips:
-            return -2
-        return sized
-
-    # Tier 3: High SPR — standard value sizing, NO jam
-    base_ratio = 0.90 if call_happy else 0.75
-    if value_profile.get("tier") == "nut":
-        base_ratio += 0.10
-    sized = max(min_raise_action, int(pot * base_ratio))
-    if sized >= my_chips:
-        return -2
-    return sized
-
-
 def get_action(req, requests):
     my_id = req["my_id"]
     my_chips = req["my_chips"]
@@ -1062,7 +827,6 @@ def get_action(req, requests):
                     opponent_model,
                     remaining_hands,
                     preflop_strength=preflop_strength,
-                    made_strength=0.0,  # preflop: no board cards yet
                 )
                 if anti_lock_attack is not None:
                     return anti_lock_attack
@@ -1354,7 +1118,6 @@ def get_action(req, requests):
                 draw_info=draw_info,
                 blocker_profile=blocker_profile,
                 board_texture=board_texture,
-                made_strength=made_strength,
             )
         fragile_river_raise_fold = (
             round_idx == 3
@@ -1581,7 +1344,6 @@ def get_action(req, requests):
             draw_info=draw_info,
             blocker_profile=blocker_profile,
             board_texture=board_texture,
-            made_strength=made_strength,
         )
         if anti_lock_attack is not None:
             return anti_lock_attack
@@ -1672,24 +1434,14 @@ def get_action(req, requests):
         if raise_amount is not None:
             return raise_amount
 
-    # ── River jam evaluation ────────────────────────────────────────────────
-    # Strong/nut hands at high SPR should jam for maximum value extraction
-    river_jam = evaluate_river_jam(
-        round_idx, to_call, pot, my_chips, value_profile, made_strength,
-        opponent_model, board_texture, nutted_risk, state["min_raise_action"],
-    )
-    if river_jam is not None:
-        return river_jam
-
-    # ── Turn barrel evaluation (action-sequence-aware) ────────────────────
+    # ── Turn barrel evaluation ───────────────────────────────────────────
     if (round_idx == 2 and to_call == 0 and was_flop_aggressor
             and not anti_lock_pressure
             and spot_info.get('last_opp_action_type') == 'check'):
-        opp_flop_seq = _opponent_flop_action_sequence(req, my_id)
-        barrel = evaluate_action_sequence_barrel(
+        barrel = evaluate_turn_barrel(
             spot_info, opponent_model, board_texture, made_strength,
-            draw_strength, draw_info, value_profile, spot_info['has_position'],
-            pot, opp_archetype, opp_flop_seq,
+            draw_strength, draw_info, value_profile, was_flop_aggressor,
+            spot_info['has_position'],
         )
         if barrel['barrel']:
             barrel_ratio = barrel['sizing_hint']
@@ -1817,18 +1569,6 @@ def get_action(req, requests):
         )
         if raise_amount is not None:
             return raise_amount
-        # BUG-3 FIX: River strong/nut hands that couldn't compute a valid raise
-        # should still bet — use SPR-aware sizing instead of auto-jam.
-        if round_idx == 3 and value_profile and value_profile.get("tier") in ("strong", "nut"):
-            spr = my_chips / max(1, pot)
-            if spr < 3.0:
-                return -2  # Short-stacked: jam is correct
-            # Sized fallback: 60-80% pot depending on tier
-            fallback_ratio = 0.75 if value_profile.get("tier") == "nut" else 0.60
-            fallback_amount = max(state["min_raise_action"], int(pot * fallback_ratio))
-            if fallback_amount < my_chips and fallback_amount > to_call:
-                return fallback_amount
-            return -2  # Last resort: jam if sized bet infeasible
     return 0
 
 
