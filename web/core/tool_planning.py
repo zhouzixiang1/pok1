@@ -336,21 +336,33 @@ async def run_master(args):
             _weak_list = _exploit.get("weaknesses", []) or []
             _games = _exploit.get("num_hands")
             _bot_path = _exploit.get("bot_path", "")
-            _parts = []
-            if _overall is not None:
-                _parts.append(f"overall_score={_overall:.2f}/1.0")
-            if _games is not None:
-                _parts.append(f"{int(_games)} games per probe")
-            if _bot_path:
-                _parts.append(f"vs {_bot_path}")
-            header = ("Exploitability probe results (4 probe bots: min_bettor, "
-                      "overbettor, check_raiser, always_caller): "
-                      + ", ".join(_parts)) if _parts else (
-                      "Exploitability probe results (4 probe bots):")
-            if _weak_list:
-                exploitability_weaknesses = header + "\nWEAKNESSES:\n- " + "\n- ".join(_weak_list)
+            _source_bot = f"claude_v{source_v}"
+            # Stale-safe: only inject the cached probe data if it was actually
+            # run for the CURRENT source bot. The post-gen probe refreshes this
+            # file per generation; if it hasn't run the file holds stale data for
+            # a DIFFERENT bot — injecting that would mislabel another bot's
+            # weaknesses as this bot's (active misinformation into Master).
+            if _bot_path and _source_bot not in _bot_path:
+                exploitability_weaknesses = (
+                    f"No fresh exploitability probe data for {_source_bot} "
+                    f"(cached result is for a different bot: {_bot_path})."
+                )
             else:
-                exploitability_weaknesses = header + "\nNo exploitable weaknesses detected."
+                _parts = []
+                if _overall is not None:
+                    _parts.append(f"overall_score={_overall:.2f}/1.0")
+                if _games is not None:
+                    _parts.append(f"{int(_games)} games per probe")
+                if _bot_path:
+                    _parts.append(f"vs {_bot_path}")
+                header = ("Exploitability probe results (4 probe bots: min_bettor, "
+                          "overbettor, check_raiser, always_caller): "
+                          + ", ".join(_parts)) if _parts else (
+                          "Exploitability probe results (4 probe bots):")
+                if _weak_list:
+                    exploitability_weaknesses = header + "\nWEAKNESSES:\n- " + "\n- ".join(_weak_list)
+                else:
+                    exploitability_weaknesses = header + "\nNo exploitable weaknesses detected."
     except Exception:
         pass
 
