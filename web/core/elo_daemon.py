@@ -785,6 +785,7 @@ def main():
                         if reap_fresh:
                             last_bot_refresh_time = time.time()  # Reset timer since we just refreshed
                             new_bots = get_active_bots()
+                            _added_bots = set(new_bots) - set(active_bots)  # reap-bug fix: track newly-added bots
                             removed = set(active_bots) - set(new_bots)
                             for b in removed:
                                 ratings.pop(b, None)
@@ -811,6 +812,22 @@ def main():
                                     if a in removed or b in removed:
                                         fut.cancel()
                                         del in_flight[fut]
+                            # Reap-bug fix: prepend pairs for newly-added bots so they're
+                            # scheduled immediately instead of waiting for queue to drain.
+                            # (was the v86/v87 eval deadlock — match_queue only re-picked when empty,
+                            # so a newly committed bot never entered the queue → 600s eval timeout loop.)
+                            if _added_bots:
+                                try:
+                                    _fresh = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
+                                    _prepended = 0
+                                    for _a, _b in _fresh:
+                                        if _a in _added_bots or _b in _added_bots:
+                                            match_queue.appendleft((_a, _b, bot_path(_a), bot_path(_b), n_pairs))
+                                            _prepended += 1
+                                    if _prepended:
+                                        log.info("Reap refresh: %d new-bot pairs prepended to queue (reap-bug fix)", _prepended)
+                                except Exception as _rp_err:
+                                    log.warning("Reap re-pick failed (non-fatal): %s", _rp_err)
                             if games_since_save > 0:
                                 save_num += 1
                                 save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
