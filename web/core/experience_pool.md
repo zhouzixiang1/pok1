@@ -31,6 +31,9 @@
 - Detection-without-handler is a recurring dead-code pattern; verify every classifier has a branch.
 
 ## RECENT_LESSONS
+- **v83**: DETECTION-WITHOUT-HANDLER pattern surfaced again: line_reading.py computes bluff_heavy polarization label but never consumes it — future Master should wire bluff_heavy into river bluff-catch/call-down decisions (mirror of the value_heavy fold gate) before adding new detection dimensions.
+- **v83**: Helper extraction is a safe high-value move when strategy.py approaches the 1500-line cap: v82's 1498-line crisis was resolved cleanly (1498→1302) with zero logic change — prefer extraction over compression when line headroom <50.
+- **v83 归档建议 (improvement)**: Validate the 3 value_heavy fold gates vs CS lineage v51/v62 at ≥100 games (reviewer flagged false-positive risk over-folding strong one-pair hands), and wire the dead bluff_heavy branch into river bluff-catch decisions vs aggressive bluffers to complete the symmetric range-aware loop.
 - **v83**: Critic evidence: H2H weaknesses: v82 vs v80: 45% (20g) — aggressive barrel-sequencing bot, v82 vs v13: 45% (20g) — early-lineage value bot, v82 vs v79/v50/v61: 40% (10g each, small-sample noise); Experience pool refs: RECENT_LESSONS: 'v82 real weaknesses vs aggressive/value-extraction bots (v80=45.0%)', POSTFLOP_STRATEGY: canonical fold mechanism marked [POSSIBLY EXHAUSTED] — but this change adds a NEW gating dimension (line classification) on top, not the same mechanism, GENERAL: 'Detection-without-handler is a recurring dead-code pattern; verify every classifier has a branch' — value_heavy IS wired (3 sites); bluff_heavy is NOT wired (minor dead branch); Diff refs: line_reading.py: line_polarization_profile() — 66-line novel classifier with value/bluff signal aggregation, strategy.py:772-774 — fold gate when facing all-in with value_heavy line + weak hand, strategy.py:801-803 — fold gate when facing shove with value_heavy line + weak hand
 - **v82**: v81's actual H2H are tightly clustered 45–55% with small samples; its real weaknesses are vs aggressive/value-extraction bots (v80=45.0%, v48=45.7%, v34=45.7%, v31=47.1%), while v30/v62/v78 are parity or winning. Target next-gen work at v80/v48/v34, not calling stations; verify matchup keys before acting.
 - **v82**: Added per-street fold_to_bet + call-down tracking + passivity_score in opponent.py and passive_exploit.py wired into strategy.py. Validate ≥100g H2H vs v80/v48/v34; ensure passivity gating does not blunder value vs aggressive opponents.
@@ -39,4 +42,5 @@
 - **v81**: Crossover dead-code trap: imported `classify_street_texture` but never wired it into a decision path. Always verify cross-imported functions are actually called.
 - **v81**: v79 had a passive-opponent deficit (v30 45.0%, v62 47.5%, v78 47.5%); v27's overbet+donk_probe beat v30 51.76% (680g), justifying the crossover. Validate ≥100g H2H vs v30/v62/v78 to confirm parity-plus.
 - **v80**: barrel_plan VALUE branch (~postflop.py:1050) lacks opponent-stat gating while BLUFF branch gates on fold_to_raise>0.52. Add `postflop_aggr<0.30` or tier≠nut exclusion if H2H vs high-aggr lineage regresses ≥100g.
+
 
