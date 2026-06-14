@@ -342,11 +342,32 @@ async def run_master(args):
             # file per generation; if it hasn't run the file holds stale data for
             # a DIFFERENT bot — injecting that would mislabel another bot's
             # weaknesses as this bot's (active misinformation into Master).
-            if _bot_path and _source_bot not in _bot_path:
+            # Stale-safe + reliability gate (defense in depth):
+            # (a) Inject cached data ONLY when the cached bot_path's parent dir
+            #     is EXACTLY the current source bot. A substring match
+            #     (_source_bot in _bot_path) would mis-fire on e.g. claude_v80
+            #     vs claude_v800, and a cached result for a DIFFERENT bot would
+            #     mislabel another bot's weaknesses as this bot's (active
+            #     misinformation into Master).
+            # (b) Require enough hands per probe to be statistically meaningful.
+            #     A tiny sample (e.g. a 2-hand diagnostic run) yields near-random
+            #     win_rates that would inject noise into the Master's direction.
+            _MIN_RELIABLE_PROBE_GAMES = 30
+            _cached_bot = Path(_bot_path).parent.name if _bot_path else ""
+            _reliable = _games is None or int(_games) >= _MIN_RELIABLE_PROBE_GAMES
+            if _bot_path and _cached_bot != _source_bot:
                 exploitability_weaknesses = (
                     f"No fresh exploitability probe data for {_source_bot} "
                     f"(cached result is for a different bot: {_bot_path})."
                 )
+            elif not _reliable:
+                exploitability_weaknesses = (
+                    f"Exploitability probe data for {_source_bot} is unreliable "
+                    f"(only {_games} games/probe, need >= {_MIN_RELIABLE_PROBE_GAMES}). "
+                    f"Treating as no data."
+                )
+                _log.warning("exploitability probe unreliable: %s hands for %s",
+                             _games, _source_bot)
             else:
                 _parts = []
                 if _overall is not None:
@@ -363,8 +384,10 @@ async def run_master(args):
                     exploitability_weaknesses = header + "\nWEAKNESSES:\n- " + "\n- ".join(_weak_list)
                 else:
                     exploitability_weaknesses = header + "\nNo exploitable weaknesses detected."
-    except Exception:
-        pass
+    except Exception as e:
+        # Never silent: a parse/read failure here used to swallow the whole
+        # block. Log it so a corrupt/missing exploitability.json stays observable.
+        _log.warning("Exploitability probe read failed for source_v=%s: %s", source_v, e)
 
     data = await _run_master_analysis(
         source_v, next_v, stagnation_info, ui,

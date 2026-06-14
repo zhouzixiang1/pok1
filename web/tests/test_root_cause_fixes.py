@@ -384,3 +384,87 @@ class TestP6FixInjection:
         assert "BOT-001a" in active_ids
         assert "BOT-002a" in active_ids
         assert "BOT-004" in active_ids
+
+
+# ── Exploitability probe: observability + reliability gate ──────────
+#
+# Historical bug: the probe block in generation_scheduler.post_generation_cleanup
+# silently never ran for 8 generations (zero pipeline.exploitability_probe
+# events). Root cause: (1) a bare `if is_shutting_down: return` swallowed the
+# block with no log; (2) the probe call had no timeout, so a nested
+# ProcessPoolExecutor hang froze the loop with no trace. The fix makes every
+# exit observable, bounds the call with asyncio.wait_for, and forces workers=1.
+# The consumer (tool_planning) gains a num_hands reliability gate + basename
+# identity match + logged read failures. These tests are mechanical canaries:
+# if any guard is removed, the 8-generation blackout can return silently.
+
+
+class TestExploitabilityProbeFix:
+    """Probe block: timeout guard, serial execution, fully-observable exits."""
+
+    def _read_scheduler_source(self):
+        p = Path(__file__).resolve().parent.parent / "core" / "generation_scheduler.py"
+        return p.read_text()
+
+    def _read_planning_source(self):
+        p = Path(__file__).resolve().parent.parent / "core" / "tool_planning.py"
+        return p.read_text()
+
+    def test_probe_call_has_timeout_guard(self):
+        src = self._read_scheduler_source()
+        assert "asyncio.wait_for(" in src
+        assert "timeout=180" in src
+
+    def test_probe_uses_workers_one(self):
+        # workers=1 forces the serial branch, avoiding a nested ProcessPoolExecutor
+        # forked inside the asyncio executor thread (the deadlock root cause).
+        src = self._read_scheduler_source()
+        assert "workers=1" in src
+
+    def test_probe_writes_starting_event(self):
+        # Entry nail: a 'probe starting' event every successful generation. Its
+        # absence proves the block was never reached.
+        src = self._read_scheduler_source()
+        assert "probe starting" in src
+
+    def test_probe_writes_failure_event(self):
+        src = self._read_scheduler_source()
+        assert "pipeline.exploitability_probe_failed" in src
+
+    def test_probe_writes_skip_event(self):
+        src = self._read_scheduler_source()
+        assert "pipeline.exploitability_probe_skipped" in src
+
+    def test_probe_catches_timeout_and_cancel(self):
+        src = self._read_scheduler_source()
+        assert "asyncio.TimeoutError" in src
+        assert "asyncio.CancelledError" in src
+
+    def test_probe_shutdown_is_observable(self):
+        # The old bug was a bare `if is_shutting_down: return`. The fix must log
+        # before returning. Locate the probe block and assert the shutdown branch
+        # emits a log_system_event (never silent).
+        src = self._read_scheduler_source()
+        idx = src.find("Exploitability probe scheduled for")
+        assert idx != -1, "probe entry nail missing"
+        block = src[idx:idx + 1400]
+        assert "is_shutting_down" in block
+        assert "log_system_event" in block  # observed, not silent
+
+    def test_consumer_has_reliability_gate(self):
+        # A 2-hand diagnostic run yields near-random win_rates and must NOT be
+        # injected as real weaknesses. The consumer gates on num_hands.
+        src = self._read_planning_source()
+        assert "_MIN_RELIABLE_PROBE_GAMES" in src
+        assert "unreliable" in src
+
+    def test_consumer_uses_basename_match(self):
+        # Substring match (claude_v80 in claude_v800) would mis-fire. The fix
+        # compares the cached bot_path's parent dir name exactly.
+        src = self._read_planning_source()
+        assert "parent.name" in src
+
+    def test_consumer_logs_read_failure(self):
+        # The old bare `except Exception: pass` swallowed parse/read failures.
+        src = self._read_planning_source()
+        assert "Exploitability probe read failed" in src
