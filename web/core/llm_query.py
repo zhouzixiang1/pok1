@@ -201,18 +201,44 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         thinking={"type": "disabled"},  # P0: adaptive triggers SDK signature-error; disabled is sound per audit
     )
 
-    # Initial query
-    query_gen = claude_query(prompt=full_prompt, options=options)
-    try:
-        full_text, cost_usd, usage = await _process_stream(query_gen, log_file_path, ui, role_name)
-    finally:
-        # Defensive: ensure SDK generator is closed so subprocess is terminated.
-        # If CancelledError fires before or during _process_stream, the generator
-        # may not be cleaned up by the async-for loop (PEP 533 deferred).
+    # Initial query — retry transient SDK stream errors (signature field missing).
+    # claude_agent_sdk 0.2.91 intermittently raises ClaudeSDKError "Missing required
+    # field in assistant message: 'signature'" even with thinking disabled; a fresh
+    # query usually succeeds (reviewer passes, critic/battle_exp occasionally hit it).
+    # Without this retry, the error propagates and the calling tool either rejects
+    # (critic) or skips (battle_exp), stalling the pipeline.
+    last_sdk_err = None
+    for sdk_attempt in range(3):
+        query_gen = claude_query(prompt=full_prompt, options=options)
         try:
-            await query_gen.aclose()
-        except Exception:
-            pass  # suppress any aclose() errors
+            full_text, cost_usd, usage = await _process_stream(query_gen, log_file_path, ui, role_name)
+            last_sdk_err = None
+            break  # success
+        except ClaudeSDKError as e:
+            last_sdk_err = e
+            err_str = str(e).lower()
+            if ('signature' in err_str or 'missing required field' in err_str) and sdk_attempt < 2:
+                _backoff = 5 * (sdk_attempt + 1)
+                ui.log_history(
+                    f"{role_name}: SDK stream error (attempt {sdk_attempt+1}/3), "
+                    f"retrying in {_backoff}s: {e}",
+                    "warn",
+                )
+                await asyncio.sleep(_backoff)
+                continue
+            raise  # non-signature SDK error, or signature retries exhausted — propagate
+        finally:
+            # Defensive: ensure SDK generator is closed so subprocess is terminated.
+            # If CancelledError fires before or during _process_stream, the generator
+            # may not be cleaned up by the async-for loop (PEP 533 deferred).
+            try:
+                await query_gen.aclose()
+            except Exception:
+                pass  # suppress any aclose() errors
+    else:
+        # Loop fell through without break — all 3 signature-retry attempts failed.
+        if last_sdk_err is not None:
+            raise last_sdk_err
 
     output = "\n".join(full_text)
 
