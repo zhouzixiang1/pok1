@@ -646,7 +646,7 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
     try:
         from exploitability_prober import run_exploitability_probes
         from evolution_infra import get_bot_dir
-        new_bot_dir = get_bot_dir(f"claude_v{ctx.next_v}")
+        new_bot_dir = get_bot_dir(ctx.next_v)  # P2: pass bare int — get_bot_dir already prefixes "claude_v"
         new_bot_main = new_bot_dir / "main.py"
         if not new_bot_main.exists():
             log.warning("Exploitability probe skipped: %s missing", new_bot_main)

@@ -198,7 +198,7 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         cwd=str(PROJECT_ROOT),  # pok/ — workers use relative paths like bots/claude_vN/
         tools=tools,
         disallowed_tools=_BLOCKED_MCP_TOOLS,
-        thinking={"type": "adaptive", "display": "summarized"},
+        thinking={"type": "disabled"},  # P0: adaptive triggers SDK signature-error; disabled is sound per audit
     )
 
     # Initial query

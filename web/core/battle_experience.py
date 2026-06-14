@@ -45,10 +45,10 @@ log = logging.getLogger("pok.battle_exp")
 BATTLE_EXPERIENCE_FILE = RESULTS_DIR / "battle_experience.md"
 ANALYSIS_MARKER_FILE = RESULTS_DIR / ".battle_analysis_progress.json"
 POLL_INTERVAL = 20  # seconds between background thread wake-ups
-TARGET_BATCH = 16  # matches per wake-up
+TARGET_BATCH = 6  # P2: was 16 — smaller batches cut per-call latency + SIGTERM data loss
 MAX_CONCURRENT_LLM = 6  # parallel LLM calls within one batch
 MAX_ANALYSES_PER_HOUR = 240  # rate-limit defense (non-zero budget ~$5/hr)
-LLM_TIMEOUT = 120  # seconds per LLM update call
+LLM_TIMEOUT = 300  # P2: was 120 — thinking-mode + batch calls steadily exceeded 120s
 
 # ──────────────────────────────────────────────
 # SilentUI

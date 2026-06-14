@@ -94,13 +94,14 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
         disallowed_tools=_BLOCKED_MCP_TOOLS,
         hooks=_make_precompact_hook(),
         max_turns=max_turns,
-        thinking={"type": "adaptive", "display": "summarized"},
+        thinking={"type": "disabled"},  # P0: adaptive triggers claude_agent_sdk 0.2.91 signature-error deadlock
         **resume_kwargs,
     )
 
     total_cost = 0.0
     cycle_completed = False
     auth_error = False
+    cycle_failed = False  # P1: generic-exception path must not return partial cost (fake success)
     # Snapshot sub-agent costs at start to compute delta on return.
     # ui.gen_cost_total tracks ALL sub-agent costs (Master, Workers, etc.)
     # via ui.update_cost() called from llm_query.py. The orchestrator's own
@@ -353,7 +354,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     disallowed_tools=_BLOCKED_MCP_TOOLS,
                     hooks=_make_precompact_hook(),
                     max_turns=max_turns,
-                    thinking={"type": "adaptive", "display": "summarized"},
+                    thinking={"type": "disabled"},  # P0: adaptive triggers claude_agent_sdk 0.2.91 signature-error deadlock
                     **_resume_kwargs,
                 )
                 for backoff in [30, 60, 120]:
@@ -443,11 +444,37 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     await query_gen.aclose()
                 except Exception as e:
                     log.debug("gen.aclose failed: %s", e)
-            # Session file PRESERVED — next startup can assess recovery
-            if ui:
-                ui.log_history(f"[Orchestrator] Error: {e}", "error")
+            cycle_failed = True
+            err_str = str(e).lower()
+            # SDK streaming errors (missing 'signature' field on thinking blocks,
+            # observed with claude_agent_sdk 0.2.91 + adaptive thinking) leave the
+            # session broken — resuming replays into the same crash (the v84
+            # quality_passed→run_review infinite-retry deadlock). P0 disabled
+            # thinking so this no longer fires, but the guard prevents silent
+            # recurrence if thinking is ever re-enabled or another SDK stream
+            # error appears.
+            if 'signature' in err_str or 'missing required field' in err_str:
+                _clear_orchestrator_session()
+                if ui:
+                    ui.log_history(
+                        "[Orchestrator] SDK stream error (corrupted session) — "
+                        "session cleared, next cycle starts fresh.", "warn",
+                    )
+                else:
+                    log.warning("SDK stream error, session cleared: %s", e)
+                try:
+                    from system_log import log_system_event
+                    log_system_event("pipeline.sdk_stream_error", "error",
+                        f"Orchestrator SDK stream error (session cleared): {e}",
+                        {"session_cleared": True})
+                except Exception:
+                    pass
             else:
-                log.error("Error: %s", e)
+                # Session file PRESERVED — next startup can assess recovery
+                if ui:
+                    ui.log_history(f"[Orchestrator] Error: {e}", "error")
+                else:
+                    log.error("Error: %s", e)
             lf.write(f"\n[ERROR] {e}\n")
 
     # Only clear session file on natural (non-error) cycle completion.
@@ -459,9 +486,22 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
     if auth_error:
         return -abs(total_cost) if total_cost > 0 else -1.0
 
-    # On non-happy paths (KeyboardInterrupt, CancelledError, generic Exception),
-    # total_cost may only be the Orchestrator's partial session cost.
-    # Return the full tracked cost delta when UI is available.
+    # P1: a crashed cycle must NOT return partial cost > 0. orchestrator_loop's
+    # `if cost >= 0` branch would treat it as success, run cleanup, and log
+    # "gen complete" — masking the failure. This was the v84 deadlock amplifier:
+    # each signature-error crash was recorded as a $4.13/$0.00 "complete" gen
+    # while pipeline_state never advanced past quality_passed. Return -1.0 so the
+    # loop retries instead of pretending success. (Session already cleared above
+    # for SDK stream errors; for other exceptions the loop's cost<0 branch clears
+    # it before retry.)
+    if cycle_failed:
+        if ui and total_cost > 0:
+            ui.update_cost("Orchestrator", total_cost, None)
+        return -1.0
+
+    # On non-happy paths (KeyboardInterrupt — explicit user interrupt), total_cost
+    # may only be the Orchestrator's partial session cost. Return the full tracked
+    # cost delta when UI is available.
     if ui and not cycle_completed:
         if total_cost > 0:
             ui.update_cost("Orchestrator", total_cost, None)
