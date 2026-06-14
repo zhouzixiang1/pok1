@@ -23,12 +23,30 @@ def build_opponent_model(requests, my_id):
     postflop_checks = 0
     fold_to_raise_opportunities = 0
     fold_to_raise = 0
+    ftr_flop_opp = 0
+    ftr_flop_fold = 0
+    ftr_turn_opp = 0
+    ftr_turn_fold = 0
+    ftr_river_opp = 0
+    ftr_river_fold = 0
+    call_down_flop_turn = 0
+    call_down_flop_turn_call = 0
+    call_down_turn_river = 0
+    call_down_turn_river_call = 0
     raise_sizes = []
-    flop_bets = 0; turn_bets = 0; river_bets = 0
-    flop_acts = 0; turn_acts = 0; river_acts = 0
-    flop_raise_bb = []; turn_raise_bb = []; river_raise_bb = []
-    barrel_hands = 0; barrel_continue = 0
-    opp_bet_flop = False; opp_bet_turn = False
+    flop_bets = 0
+    turn_bets = 0
+    river_bets = 0
+    flop_acts = 0
+    turn_acts = 0
+    river_acts = 0
+    flop_raise_bb = []
+    turn_raise_bb = []
+    river_raise_bb = []
+    barrel_hands = 0
+    barrel_continue = 0
+    opp_bet_flop = False
+    opp_bet_turn = False
     opp_small_bet_count = 0
     opp_large_bet_count = 0
 
@@ -45,6 +63,7 @@ def build_opponent_model(requests, my_id):
 
         saw_opponent_preflop_action = False
         pending_my_pressure = False
+        pending_round = None
 
         for record in history:
             pid = record["player_id"]
@@ -54,6 +73,7 @@ def build_opponent_model(requests, my_id):
 
             if pid == my_id and action_type in ("raise", "allin"):
                 pending_my_pressure = True
+                pending_round = round_idx
                 continue
 
             if pid != opponent_id:
@@ -114,15 +134,52 @@ def build_opponent_model(requests, my_id):
                 fold_to_raise_opportunities += 1
                 if action_type == "fold":
                     fold_to_raise += 1
+                if pending_round == 1:
+                    ftr_flop_opp += 1
+                    if action_type == "fold":
+                        ftr_flop_fold += 1
+                elif pending_round == 2:
+                    ftr_turn_opp += 1
+                    if action_type == "fold":
+                        ftr_turn_fold += 1
+                elif pending_round == 3:
+                    ftr_river_opp += 1
+                    if action_type == "fold":
+                        ftr_river_fold += 1
                 pending_my_pressure = False
+                pending_round = None
 
         if opp_bet_flop:
             barrel_hands += 1
             if opp_bet_turn:
                 barrel_continue += 1
 
+        we_bet_flop = any(r["player_id"] == my_id and r["round"] == 1 and r["action_type"] in ("raise", "allin") for r in history)
+        opp_called_flop = we_bet_flop and any(r["player_id"] == opponent_id and r["round"] == 1 and r["action_type"] == "call" for r in history)
+        we_bet_turn = opp_called_flop and any(r["player_id"] == my_id and r["round"] == 2 and r["action_type"] in ("raise", "allin") for r in history)
+        if we_bet_turn:
+            call_down_flop_turn += 1
+            if any(r["player_id"] == opponent_id and r["round"] == 2 and r["action_type"] == "call" for r in history):
+                call_down_flop_turn_call += 1
+        opp_called_turn = we_bet_turn and any(r["player_id"] == opponent_id and r["round"] == 2 and r["action_type"] == "call" for r in history)
+        we_bet_river = opp_called_turn and any(r["player_id"] == my_id and r["round"] == 3 and r["action_type"] in ("raise", "allin") for r in history)
+        if we_bet_river:
+            call_down_turn_river += 1
+            if any(r["player_id"] == opponent_id and r["round"] == 3 and r["action_type"] == "call" for r in history):
+                call_down_turn_river_call += 1
+
     confidence = clamp((total_actions - 5) / 35.0, 0.0, 1.0)
     avg_raise_bb = sum(raise_sizes) / len(raise_sizes) if raise_sizes else 2.6
+
+    ftr_flop = smooth_rate(ftr_flop_fold, ftr_flop_opp, 0.44, 4.0)
+    ftr_turn = smooth_rate(ftr_turn_fold, ftr_turn_opp, 0.44, 4.0)
+    ftr_river = smooth_rate(ftr_river_fold, ftr_river_opp, 0.44, 4.0)
+    call_down_flop_turn_rate = smooth_rate(call_down_flop_turn_call, call_down_flop_turn, 0.35, 4.0)
+    call_down_turn_river_rate = smooth_rate(call_down_turn_river_call, call_down_turn_river, 0.35, 4.0)
+    passivity_score = clamp(
+        ((1.0 - ftr_flop) + (1.0 - ftr_turn) + (1.0 - ftr_river) + call_down_flop_turn_rate + call_down_turn_river_rate) / 5.0,
+        0.0, 1.0,
+    )
 
     return {
         "confidence": confidence,
@@ -142,6 +199,12 @@ def build_opponent_model(requests, my_id):
         "avg_river_raise_bb": sum(river_raise_bb)/len(river_raise_bb) if river_raise_bb else 5.5,
         "barrel_freq": smooth_rate(barrel_continue, barrel_hands, 0.45, 4.0),
         "sizing_aggr": smooth_rate(opp_large_bet_count, opp_small_bet_count + opp_large_bet_count, 0.35, 4.0),
+        "fold_to_bet_flop": ftr_flop,
+        "fold_to_bet_turn": ftr_turn,
+        "fold_to_bet_river": ftr_river,
+        "call_down_flop_turn": call_down_flop_turn_rate,
+        "call_down_turn_river": call_down_turn_river_rate,
+        "passivity_score": passivity_score,
     }
 
 

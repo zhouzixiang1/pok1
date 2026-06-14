@@ -1,5 +1,5 @@
 from constants import N_PLAYERS, BIG_BLIND, TOTAL_HANDS, SIMULATIONS_BY_PUBLIC_COUNT, EXTRA_SIMULATIONS_BY_PUBLIC_COUNT
-from card_utils import clamp
+from card_utils import clamp, next_player
 from state import (
     reconstruct_state, get_remaining_hands, estimate_preflop_strength,
     is_preflop_3bet_candidate, is_preflop_trash_hand,
@@ -13,22 +13,17 @@ from opponent import build_opponent_model, analyze_current_spot
 from postflop import (
     made_hand_metric, pair_board_profile, pair_domination_margin,
     marginal_pair_under_pressure, board_texture_profile,
-    classify_street_texture,
     paired_board_outcome_profile, bet_size_bucket, value_hand_tier,
-    value_bet_plan, empty_draw_profile, draw_profile, draw_potential,
+    value_bet_plan, empty_draw_profile, draw_profile,
     draw_call_margin, made_flush_profile, blocker_bluff_profile,
     allow_low_frequency_blocker_bluff, nutted_risk_profile,
     check_probe_resistance_margin, must_continue_vs_raise,
 )
-from simulation import (
-    build_opponent_range, estimate_weighted_win_rate,
-)
-# Crossover from v27: overbet (river nut overbets on dry boards) + donk/probe
-# (BB donks into PFR, probe after PFR checked previous street). These modules
-# exploit passive opponents — the exact matchups v79 loses to (v62/v30/v78).
+from simulation import build_opponent_range, estimate_weighted_win_rate
+# v27 exploits: overbet/donk/probe target passive opponents (v62/v30/v78).
 from overbet import should_overbet, overbet_sizing
 from donk_probe import should_donk_bet, should_probe_bet, donk_probe_sizing
-
+from passive_exploit import passive_exploit_trigger, passive_exploit_sizing
 
 def _per_street_diverges(opponent_model, per_street_key, per_street_prior, aggregate_key, aggregate_prior):
     per_street_val = opponent_model.get(per_street_key, per_street_prior)
@@ -1350,11 +1345,7 @@ def get_action(req, requests):
     if thin_static_showdown_control:
         return 0
 
-    # ── Crossover from v27: Overbet / Donk / Probe evaluation ───────────────────
-    # These exploitative lines are ABSENT in v79 but present in v27, which beats
-    # the exact opponents v79 loses to (v62/v30/v78 passive lineage). Inserted
-    # before the standard value/bluff path so they take priority on eligible spots.
-    # Overbet: river nut hands on dry/static boards → 1.3x-1.8x pot sizing
+    # v27 exploits: overbet/donk/probe take priority before value/bluff path.
     overbet = should_overbet(
         round_idx, to_call, value_profile, board_texture,
         nutted_risk, paired_board_profile, opponent_model,
@@ -1395,6 +1386,21 @@ def get_action(req, requests):
         )
         if raise_amount is not None:
             return raise_amount
+
+    # Passive-station exploits: delayed c-bet, second barrel, river thin value.
+    opponent_id = next_player(my_id, 1)
+    passive_exploit = passive_exploit_trigger(
+        round_idx, to_call, my_id, opponent_id, spot_info,
+        opponent_model, value_profile, made_strength, draw_strength,
+        board_texture, req.get("history", []), state,
+    )
+    if passive_exploit["active"]:
+        amount = passive_exploit_sizing(
+            passive_exploit["ratio"], to_call, pot,
+            state["min_raise_action"], my_chips, state["my_round_bet"],
+        )
+        if amount is not None:
+            return amount
 
     river_bluff_threshold = 0.62 - 0.28 * match_profile["bluff_delta"]
     probe_fold_threshold = 0.56 - 0.32 * match_profile["bluff_delta"]
