@@ -145,9 +145,17 @@ async def _run_direction_audit(source_v, ui):
                     current_section = line.replace("## ", "").strip()
                     continue
                 if marker_re.search(line):
+                    # Mirror STEP2 guards (tool_planning._extract_exhausted_keywords):
+                    # RECENT_LESSONS is free-form critic commentary, not a direction;
+                    # overlong entries are review dumps, not directions.
+                    if current_section.upper() == "RECENT_LESSONS":
+                        continue
                     cleaned = marker_re.sub("", line).strip(" -•")
-                    if cleaned:
-                        exhausted_lines.append(f"  [{current_section}] {cleaned}")
+                    if not cleaned:
+                        continue
+                    if len(cleaned) > 500:
+                        continue
+                    exhausted_lines.append(f"  [{current_section}] {cleaned}")
     except Exception:
         pass
 

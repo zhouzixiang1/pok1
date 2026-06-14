@@ -609,7 +609,13 @@ _EXHAUSTED_BLOCKLIST = frozenset({
 # reframe v82's critic asked for).
 _EXHAUSTED_DIRECTION_TOKENS = frozenset({
     "parameter", "tuning", "mechanism", "canonical", "archetype",
-    "commitment", "refactor", "continuous",
+    "commitment", "refactor",
+    # NOTE: "continuous" is deliberately EXCLUDED — the POSTFLOP_STRATEGY
+    # exhausted phrase says "refactor old archetype guard to continuous-stat"
+    # where "continuous" is the refactor TARGET, not the exhausted pattern.
+    # Including it would reject legitimate continuous-stat opponent-modeling
+    # plans (the exact reframe v82's critic asked for). The fold-mechanism
+    # direction is still caught via mechanism/canonical/archetype/refactor.
 })
 
 
