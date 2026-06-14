@@ -380,39 +380,72 @@ async def run_master(args):
         return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed to produce a valid plan after 3 retries", "logs": ui.get_output()})}]}
 
     # --- P0-1: Post-Master Plan Verification Audit ---
+    # Capped retry loop: on audit rejection with retry_recommended, re-plan AND
+    # re-audit the new plan, up to MAX_MASTER_AUDIT_RETRIES. The audit_attempt
+    # counter is persisted in the checkpoint so a crash-resume does not re-burn
+    # the master LLM budget (bug #6b). Without this cap, a persistently-rejecting
+    # auditor + an orchestrator that re-calls run_master forms a token-burning
+    # loop that consumes the whole CYCLE_TIMEOUT (observed: v81 stuck 3x run_master).
     master_audit_ctx = None
+    MAX_MASTER_AUDIT_RETRIES = 2
     try:
         from audit_agents import _run_master_plan_audit
-        audit_result = await _run_master_plan_audit(data, source_v, ui)
-        master_audit_ctx = audit_result  # Save for audit_context chain
-        if not audit_result.get("overall_pass", True):
+        from evolution_infra import read_pipeline_checkpoint
+        _ckpt0 = read_pipeline_checkpoint() or {}
+        # `or 0` defends against a stored null: prepare_next_gen writes the
+        # checkpoint with audit_attempt=None (default), and across the next_v
+        # change the merge guard fails so it serializes as JSON null. A bare
+        # .get("audit_attempt", 0) returns the stored None (not the default),
+        # and int(None) raises TypeError that the surrounding try/except would
+        # swallow — silently disabling the audit on every normal generation.
+        _audit_attempt = int(_ckpt0.get("audit_attempt") or 0)
+
+        for _audit_iter in range(MAX_MASTER_AUDIT_RETRIES + 1):
+            audit_result = await _run_master_plan_audit(data, source_v, ui)
+            master_audit_ctx = audit_result  # Save for audit_context chain
+            if audit_result.get("overall_pass", True):
+                break  # plan passed audit
+            # Rejected
             log_system_event("pipeline.master_audit_rejected", "warn",
-                             f"Master plan audit rejected for v{next_v}: {audit_result.get('feedback', '')[:200]}",
-                             {"next_v": next_v, "audit": audit_result})
-            if audit_result.get("retry_recommended"):
-                # Inject contradictions and re-run Master once
-                performance_verification += (
-                    f"\n\n# PLAN AUDIT REJECTION\n"
-                    f"The previous plan was rejected by the Plan Verification Auditor.\n"
-                    f"Issues: {audit_result.get('feedback', '')}\n"
-                    f"Contradictions: {', '.join(audit_result.get('contradictions', []))}\n"
-                    f"Direction assessment: {audit_result.get('direction_novelty', 'unknown')}\n"
-                    f"You MUST address these issues in your new plan.\n"
-                )
-                data = await _run_master_analysis(
-                    source_v, next_v, stagnation_info, ui,
-                    match_analysis=match_analysis,
-                    performance_verification=performance_verification,
-                    replay_spotlight=replay_spotlight,
-                    bot_action_stats=bot_action_stats,
-                    battle_experience=battle_experience,
-                    exploitability_weaknesses=exploitability_weaknesses,
-                )
-                if data is None:
-                    return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed after audit retry", "logs": ui.get_output()})}]}
-                log_system_event("pipeline.master_audit_retry", "info",
-                                 f"Master re-planned after audit rejection for v{next_v}",
+                             f"Master plan audit rejected for v{next_v} (attempt {_audit_attempt + 1}): {audit_result.get('feedback', '')[:200]}",
+                             {"next_v": next_v, "audit": audit_result, "audit_attempt": _audit_attempt + 1})
+            if not audit_result.get("retry_recommended"):
+                break  # advisory-only rejection: accept the plan as-is
+            if _audit_attempt + 1 > MAX_MASTER_AUDIT_RETRIES:
+                log_system_event("pipeline.master_audit_exhausted", "warn",
+                                 f"Master audit exhausted {MAX_MASTER_AUDIT_RETRIES} retries for v{next_v} — accepting plan to avoid retry loop",
                                  {"next_v": next_v})
+                break
+            # Re-plan with rejection feedback, then re-audit the new plan
+            _audit_attempt += 1
+            performance_verification += (
+                f"\n\n# PLAN AUDIT REJECTION (attempt {_audit_attempt})\n"
+                f"The previous plan was rejected by the Plan Verification Auditor.\n"
+                f"Issues: {audit_result.get('feedback', '')}\n"
+                f"Contradictions: {', '.join(audit_result.get('contradictions', []))}\n"
+                f"Direction assessment: {audit_result.get('direction_novelty', 'unknown')}\n"
+                f"You MUST address these issues in your new plan.\n"
+            )
+            data = await _run_master_analysis(
+                source_v, next_v, stagnation_info, ui,
+                match_analysis=match_analysis,
+                performance_verification=performance_verification,
+                replay_spotlight=replay_spotlight,
+                bot_action_stats=bot_action_stats,
+                battle_experience=battle_experience,
+                exploitability_weaknesses=exploitability_weaknesses,
+            )
+            if data is None:
+                return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed after audit retry", "logs": ui.get_output()})}]}
+            # Persist audit_attempt so crash-resume resumes at this count (not 0)
+            try:
+                write_pipeline_checkpoint(next_v, source_v, "master_planned",
+                                          master_plan=data, audit_attempt=_audit_attempt)
+            except Exception:
+                pass
+            log_system_event("pipeline.master_audit_retry", "info",
+                             f"Master re-planned after audit rejection for v{next_v} (attempt {_audit_attempt})",
+                             {"next_v": next_v})
     except Exception as e:
         _log.warning("Master plan audit error (skipping): %s", e)
         try:
@@ -446,7 +479,8 @@ async def run_master(args):
                               direction_audit=existing_audit,
                               worker_failure_count=_ckpt.get("worker_failure_count", 0) if _ckpt else 0,
                               audit_context={"master_audit": master_audit_ctx} if master_audit_ctx else None,
-                              reset_generation_attempt=True)
+                              reset_generation_attempt=True,
+                              reset_audit_attempt=True)
 
     try:
         log_system_event("pipeline.master_done", "info", f"Master planned v{next_v}: {len(data.get('tasks', []))} tasks",
@@ -506,36 +540,52 @@ def _extract_exhausted_keywords():
     return keywords
 
 
+# Generic poker action/street vocabulary that appears in almost every plan.
+# Excluded from "distinctive" token matching so that a legitimate novel plan
+# mentioning fold/call/sizing isn't falsely flagged as repeating an EXHAUSTED
+# direction. Only direction-characteristic words (parameter/tuning/structural/
+# commitment/barrel/archetype/...) count as distinctive.
+_EXHAUSTED_BLOCKLIST = frozenset({
+    "fold", "call", "raise", "bet", "bets", "check", "allin", "pot",
+    "sizing", "threshold", "thresholds", "margin", "margins",
+    "equity", "hand", "hands", "street", "streets",
+    "flop", "turn", "river", "preflop", "postflop",
+})
+
+
 def _fuzzy_match_exhausted(prompt_text: str, keywords: list) -> bool:
     """Check if prompt_text matches an EXHAUSTED keyword using fuzzy token matching.
 
-    For each (section, phrase) pair:
-    1. Extract alphanumeric tokens (len > 3) from both the phrase and the section name
-    2. Check how many tokens appear in the prompt
-    3. Match if >=2 distinctive tokens from either the phrase OR section match
-
-    This catches prompts like "Adjust fold threshold" matching the PARAMETER_TUNING
-    EXHAUSTED entry about "fold margin, clamp, EQR, SPR-commitment guard, sizing_aggr".
+    Distinctive tokens EXCLUDE generic poker vocabulary (_EXHAUSTED_BLOCKLIST) so
+    that a legitimate novel plan isn't rejected just for mentioning fold/call/
+    sizing. A match requires >=2 distinctive tokens AND >=25% overlap — the same
+    threshold as before, but applied to meaningful direction words only,
+    eliminating the "any 2 generic poker words" false-positive class (bug #4)
+    without raising the false-negative risk of missing a real exhausted direction.
     """
     import re
     prompt_clean = re.sub(r'[^a-z0-9\s]', '', prompt_text.lower())
-    prompt_tokens = set(prompt_clean.split())
 
     for section, phrase in keywords:
-        # Extract tokens from both section name and topic phrase
-        phrase_tokens = set(re.sub(r'[^a-z0-9]', '', t) for t in phrase.split()
-                            if len(re.sub(r'[^a-z0-9]', '', t)) > 3)
-        section_tokens = set(re.sub(r'[^a-z0-9]', '', t) for t in section.split()
-                             if len(re.sub(r'[^a-z0-9]', '', t)) > 3)
-        all_tokens = phrase_tokens | section_tokens
-
-        if not all_tokens:
+        distinctive = set()
+        for src in (phrase, section):
+            # Split on any non-alphanumeric (spaces, underscores, slashes, dashes)
+            # so 'parameter_tuning' and 'constant/margin' tokenize the same way
+            # the prompt does ('parameter tuning', 'constant margin').
+            for t in re.split(r'[^a-z0-9]+', src):
+                if len(t) > 3 and t not in _EXHAUSTED_BLOCKLIST:
+                    distinctive.add(t)
+        if not distinctive:
             continue
-
-        # Count matching tokens
-        matches = sum(1 for t in all_tokens if t in prompt_clean)
-        # Match if >=2 distinctive tokens OR >=40% of tokens match
-        if matches >= min(2, len(all_tokens)) and matches >= len(all_tokens) * 0.25:
+        matches = sum(1 for t in distinctive if t in prompt_clean)
+        # Match on >=2 distinctive (non-generic) tokens; for very short keywords
+        # (<=2 distinctive, e.g. a bare section name) require all to match.
+        # The BLOCKLIST makes "2 tokens" meaningful: direction-characteristic
+        # words (parameter/tuning/structural/commitment/...), not fold/call/
+        # sizing which appear in every plan. This kills the "any 2 generic poker
+        # words" false-positive class (bug #4) while keeping true-positive
+        # coverage (a PARAMETER_TUNING plan mentioning parameter+tuning matches).
+        if matches >= min(2, len(distinctive)):
             return True
     return False
 

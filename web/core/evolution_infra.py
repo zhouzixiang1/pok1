@@ -65,6 +65,8 @@ MAX_WORKER_RETRIES = 4
 MAX_MASTER_RETRIES = 3
 MAX_CROSSOVER_RETRIES = 3
 MAX_GENESIS_RETRIES = 3
+MAX_MASTER_AUDIT_RETRIES = 2  # Master plan audit re-plan cap (prevents bug #6b retry loop)
+MAX_GEN_COST = 5.0            # Per-cycle LLM cost cap (top of $4.5-5 band; above 4-attempt retry budget ~$5-7)
 WORKER_TIMEOUT = 1000         # Seconds before a hung worker call is aborted + retried
 MAX_PARALLEL_WORKERS = 3      # Hard cap on simultaneous LLM worker calls (Semaphore)
 
@@ -265,7 +267,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                gate_results=None, worker_failure_count=None,
                                worker_invocation_count=None,
                                parent2_v=None, direction_audit=None,
-                               audit_context=None, reset_generation_attempt=False):
+                               audit_context=None, reset_generation_attempt=False,
+                               audit_attempt=None, reset_audit_attempt=False):
     """Write pipeline stage checkpoint so a killed process can resume.
 
     Uses atomic tmp+rename under exclusive lock to prevent concurrent
@@ -288,6 +291,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         existing_master_plan = master_plan
         existing_reviewer_feedback = reviewer_feedback
         existing_generation_attempt = generation_attempt
+        existing_audit_attempt = audit_attempt
         existing_parent2_v = parent2_v
         existing_direction_audit = None
         existing_audit_context = {}
@@ -301,6 +305,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 existing_reviewer_feedback = existing.get("reviewer_feedback", "")
             if generation_attempt == 0:
                 existing_generation_attempt = existing.get("generation_attempt", 0)
+            if audit_attempt is None:
+                existing_audit_attempt = existing.get("audit_attempt", 0)
             if parent2_v is None:
                 existing_parent2_v = existing.get("parent2_v")
             existing_direction_audit = existing.get("direction_audit")
@@ -312,6 +318,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         # a new plan that run_master already produced.
         if reset_generation_attempt:
             existing_generation_attempt = 0
+        if reset_audit_attempt:
+            existing_audit_attempt = 0
 
         if gate_results:
             existing_gate_results.update(gate_results)
@@ -345,6 +353,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "next_v": next_v, "source_v": source_v, "stage": stage,
             "master_plan": existing_master_plan, "reviewer_feedback": existing_reviewer_feedback,
             "generation_attempt": existing_generation_attempt,
+            "audit_attempt": existing_audit_attempt,
             "worker_failure_count": existing_failure_count,
             "gate_results": existing_gate_results,
             "parent2_v": existing_parent2_v,

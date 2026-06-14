@@ -119,6 +119,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             gen = None
             auth_err = False
             _tool_call_counts = {}
+            _cost_cap_logged = False
             try:
                 gen = claude_query(prompt=prompt, options=opts)
                 _gen_ref[0] = gen  # Track for asyncio.wait_for timeout cleanup
@@ -151,6 +152,13 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 _tool_call_counts[tool_name] = _tool_call_counts.get(tool_name, 0) + 1
                                 if _tool_call_counts[tool_name] > 1:
                                     log.warning("Tool '%s' called %d times (possible redundant call)", tool_name, _tool_call_counts[tool_name])
+                                    try:
+                                        from system_log import log_system_event
+                                        log_system_event("pipeline.redundant_tool_call", "warn",
+                                            f"Orchestrator called {tool_name} {_tool_call_counts[tool_name]}x in one cycle",
+                                            {"tool": tool_name, "count": _tool_call_counts[tool_name]})
+                                    except Exception:
+                                        pass
                             elif isinstance(block, ThinkingBlock):
                                 thinking = block.thinking or "[thinking...]"
                                 if ui:
@@ -166,6 +174,29 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                     lf.write(f"\n[tool_result] {content[:500]}\n")
                                     if ui:
                                         ui.log_io(content[:3000], "tool_result", "Orchestrator")
+                                # Cost-cap observability (bug #6/#7 cost runaway): if sub-agent
+                                # spend (Master/Workers/Critic via ui.update_cost) exceeds the
+                                # per-cycle budget, surface it loudly. CYCLE_TIMEOUT (60min) is
+                                # the hard backstop; this makes runaway visible + monitorable so
+                                # it can be caught before the timeout wastes a full hour.
+                                if not _cost_cap_logged and ui:
+                                    try:
+                                        from evolution_infra import MAX_GEN_COST
+                                        _spent = ui.gen_cost_total - _cost_at_start
+                                        if _spent > MAX_GEN_COST:
+                                            _cost_cap_logged = True
+                                            log.warning("Cycle cost cap tripped: $%.2f > $%.2f", _spent, MAX_GEN_COST)
+                                            ui.log_history(
+                                                f"[Orchestrator] Cost cap tripped (${_spent:.2f} > ${MAX_GEN_COST:.2f}) — "
+                                                f"runaway retry detected; CYCLE_TIMEOUT will bound this cycle.",
+                                                "error",
+                                            )
+                                            from system_log import log_system_event
+                                            log_system_event("pipeline.cost_cap_tripped", "error",
+                                                f"Cycle spend ${_spent:.2f} exceeded cap ${MAX_GEN_COST}",
+                                                {"spent": round(_spent, 2), "cap": MAX_GEN_COST})
+                                    except Exception:
+                                        pass
                     elif isinstance(message, ResultMessage):
                         if message.total_cost_usd:
                             cost += message.total_cost_usd

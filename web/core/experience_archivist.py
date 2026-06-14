@@ -5,6 +5,7 @@ Archivist analysis runs conditionally after commit to assess generation quality.
 """
 
 import json
+import re
 
 from evolution_infra import (
     run_claude_query, parse_json_output,
@@ -12,6 +13,30 @@ from evolution_infra import (
     PROMPTS_DIR, EXPERIENCE_FILE, ARCHIVE_DIR,
     substitute_template,
 )
+
+
+# Tag-identity round-trip contract for the exhausted-direction gate (bug #8
+# recurrence path). MUST match the marker regex in
+# tool_planning._extract_exhausted_keywords so the consolidator (emitter) and
+# the extractor (consumer) agree on what a tag is.
+_EXHAUSTED_TAG_RE = re.compile(r"\[[A-Z ]*EXHAUSTED[^\]]*\]")
+
+
+def _tag_identity(text):
+    """Return the set of EXHAUSTED tag CLASSES in text (canonicalized to one
+    sentinel per direction-gate marker).
+
+    All bracket variants — '[POSSIBLY EXHAUSTED]', '[EXHAUSTED]', and
+    '[EXHAUSTED — hard gate]' — mark the SAME exhausted-direction gate, so they
+    canonicalize to a single 'exhausted' class. This implements true tag-CLASS
+    semantics: consolidation may legitimately merge entries or reword a tag
+    prefix (count shrinks, suffix dropped) and the gate still passes; it only
+    fails when EVERY exhausted marker vanishes (the gate would go inert).
+    """
+    tags = set()
+    for m in _EXHAUSTED_TAG_RE.finditer(text or ""):
+        tags.add("exhausted")  # canonical class — all variants are one gate
+    return tags
 
 
 async def _consolidate_experience_pool(ui, exhausted_directions: str = ""):
@@ -91,10 +116,31 @@ async def _consolidate_experience_pool(ui, exhausted_directions: str = ""):
             if not has_headers:
                 ui.log_history("Experience pool consolidation lost section headers — skipping write.", "warn")
             else:
-                tmp = EXPERIENCE_FILE.with_suffix(".tmp")
-                tmp.write_text(consolidated + "\n", encoding="utf-8")
-                tmp.replace(EXPERIENCE_FILE)
-                ui.log_history("Experience pool consolidated and written back.", "success")
+                # Tag-identity round-trip gate: the consolidator must not silently
+                # drop an EXHAUSTED direction tag class. Count may shrink via
+                # legitimate merge, but a whole tag vanishing aborts the write so
+                # the exhausted-direction gate stays reliable.
+                pre_tags = _tag_identity(content)
+                post_tags = _tag_identity(consolidated)
+                lost = pre_tags - post_tags
+                if lost:
+                    ui.log_history(
+                        f"Experience consolidation dropped EXHAUSTED tag(s): {sorted(lost)} — "
+                        f"skipping write to preserve the exhausted-direction gate.",
+                        "error",
+                    )
+                    try:
+                        from system_log import log_system_event
+                        log_system_event("pipeline.experience_consolidation_tag_loss", "error",
+                            f"Consolidation dropped EXHAUSTED tags: {sorted(lost)}",
+                            {"lost_tags": sorted(lost)})
+                    except Exception:
+                        pass
+                else:
+                    tmp = EXPERIENCE_FILE.with_suffix(".tmp")
+                    tmp.write_text(consolidated + "\n", encoding="utf-8")
+                    tmp.replace(EXPERIENCE_FILE)
+                    ui.log_history("Experience pool consolidated and written back.", "success")
         else:
             ui.log_history("Experience pool consolidation produced no output — skipping write.", "warn")
     except Exception as e:

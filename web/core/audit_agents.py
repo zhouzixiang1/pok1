@@ -91,6 +91,17 @@ async def _run_master_plan_audit(master_plan, source_v, ui):
             "experience_pool": experience_text[:3000] or "No experience pool data",
             "recent_commits": recent_commits or "No recent commits",
             "direction_audit": direction_audit_text,
+            "source_v": str(source_v),
+            "next_v": str(master_plan.get("next_v", (source_v + 1) if isinstance(source_v, int) else "unknown")),
+            "branch_from_note": (
+                f"This generation evolves FROM v{source_v}. In the plan, 'branch_from' "
+                f"is OPTIONAL — when null/omitted the bot evolves from v{source_v} (the "
+                f"default source). ONLY flag a 'data staleness' problem if the plan's "
+                f"analysis references a version OTHER than v{source_v} or the stated "
+                f"branch_from. Do NOT reject a plan just because it fixes bugs in "
+                f"v{source_v} that happen to already be fixed in a later version — "
+                f"evolution starts from v{source_v}, not the latest version."
+            ),
         })
 
         log_file = get_logs_dir(source_v) / "master_plan_audit_io.txt"

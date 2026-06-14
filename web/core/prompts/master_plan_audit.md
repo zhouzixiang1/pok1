@@ -26,6 +26,15 @@ Analyze the Master plan systematically:
 {direction_audit}
 </data>
 
+<branch_from_semantics>
+## Branch-From Identity (read before flagging data staleness)
+- This generation's source (parent) version is **v{source_v}**, target is **v{next_v}**.
+- {branch_from_note}
+- The plan's tasks MUST target bots/claude_v{next_v}/, NOT bots/claude_v{source_v}/.
+- A plan that fixes correctness bugs present in v{source_v} is VALID even if a later lineage already fixed them — evolution branches from v{source_v}.
+- Only reject on grounds of data staleness if the analysis references a version OTHER than v{source_v} or the plan's stated branch_from.
+</branch_from_semantics>
+
 <output_format>
 Output exactly ONE JSON block:
 
