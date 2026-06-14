@@ -410,10 +410,22 @@ class TestExploitabilityProbeFix:
         p = Path(__file__).resolve().parent.parent / "core" / "tool_planning.py"
         return p.read_text()
 
-    def test_probe_call_has_timeout_guard(self):
+    def test_probe_uses_background_thread(self):
+        # Fire-and-forget: the probe runs on a background daemon thread so
+        # post_generation_cleanup returns immediately (never blocks the loop for
+        # ~15min). workers=1 still forces the serial branch (no nested fork).
         src = self._read_scheduler_source()
-        assert "asyncio.wait_for(" in src
-        assert "timeout=180" in src
+        assert "threading.Thread(" in src
+        assert "daemon=True" in src
+        assert "workers=1" in src
+
+    def test_probe_does_not_block_loop(self):
+        # The probe must NOT await run_exploitability_probes_async (which would
+        # block the orchestrator loop for ~920s under load). It calls the sync
+        # run_exploitability_probes on a background thread instead.
+        src = self._read_scheduler_source()
+        assert "run_exploitability_probes_async" not in src
+        assert "run_exploitability_probes(" in src
 
     def test_probe_uses_workers_one(self):
         # workers=1 forces the serial branch, avoiding a nested ProcessPoolExecutor
@@ -435,10 +447,21 @@ class TestExploitabilityProbeFix:
         src = self._read_scheduler_source()
         assert "pipeline.exploitability_probe_skipped" in src
 
-    def test_probe_catches_timeout_and_cancel(self):
+    def test_probe_has_single_flight_guard(self):
+        # Overlapping cleanups (fast crossover gens) must not pile up probe
+        # threads or race on exploitability.json. The _probe_running Event
+        # skips a new probe while the previous one is still running.
         src = self._read_scheduler_source()
-        assert "asyncio.TimeoutError" in src
-        assert "asyncio.CancelledError" in src
+        assert "_probe_running" in src
+        assert "_probe_running.is_set()" in src
+        assert "single_flight_skip" in src
+
+    def test_probe_clears_single_flight_on_exit(self):
+        # The _probe_running Event MUST be cleared in a finally block, so a
+        # failed/exception probe doesn't permanently block all future probes.
+        src = self._read_scheduler_source()
+        assert "_probe_running.clear()" in src
+        assert "finally:" in src
 
     def test_probe_shutdown_is_observable(self):
         # The old bug was a bare `if is_shutting_down: return`. The fix must log

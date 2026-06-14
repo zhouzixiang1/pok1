@@ -12,6 +12,7 @@ Phase 3 is idempotent (interrupt → re-run safely).
 import asyncio
 import json
 import logging
+import threading
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -19,6 +20,14 @@ from pathlib import Path
 from system_log import log_system_event, SYSTEM_EVENTS_FILE
 
 log = logging.getLogger("pok.scheduler")
+
+
+# Single-flight guard for the background exploitability probe thread (see the
+# fire-and-forget block in post_generation_cleanup). post_generation_cleanup is
+# async on a single event loop, so the is_set()/set() pair is atomic within a
+# generation — overlapping cleanups (fast crossover gens) cannot pile up probe
+# threads or race on exploitability.json.
+_probe_running = threading.Event()
 
 
 @dataclass
@@ -584,26 +593,44 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
             if ui:
                 ui.log_history(f"Experience consolidation failed: {e}", "warn")
 
-    # Exploitability probes against the new bot.
+    # Exploitability probes against the new bot (FIRE-AND-FORGET background).
     #
-    # This block is a post-commit side-effect (the bot is already committed/
-    # tagged). It is code-layer housekeeping driven by post_generation_cleanup
-    # — NOT an MCP tool and NOT a commit gate. The result feeds the NEXT
-    # generation's Master prompt via exploitability.json (consumed in
-    # tool_planning.run_master). It MUST stay a direct code-layer call: making it
-    # an MCP tool would hand the trigger to the Orchestrator LLM, which is not
-    # forced to call any tool (create_sdk_mcp_server only exposes the list) —
-    # exactly the structural cause of the original "probe never ran" bug.
+    # This block is a post-commit side-effect (bot already committed/tagged),
+    # code-layer housekeeping driven by post_generation_cleanup — NOT an MCP
+    # tool and NOT a commit gate. Result feeds the NEXT generation's Master
+    # prompt via exploitability.json (consumed in tool_planning.run_master).
+    # It MUST stay a direct code-layer call: making it an MCP tool would hand
+    # the trigger to the Orchestrator LLM, which is not forced to call any tool
+    # (create_sdk_mcp_server only exposes the list) — exactly the structural
+    # cause of the original "probe never ran" bug.
     #
-    # Historical bug (8 generations of zero pipeline.exploitability_probe
-    # events): (1) the shutdown early-return below returned silently with NO
-    # log/event, so a skip was indistinguishable from "never scheduled"; (2) the
-    # probe call had NO timeout, so a hang in the nested ProcessPoolExecutor
-    # (run_exploitability_probes with workers>1 forks a subprocess pool INSIDE
-    # this asyncio executor thread — a known deadlock mode) froze the whole
-    # orchestrator loop with no trace. Fix: every exit emits a log_system_event
-    # (never silent again); the probe call is wrapped in asyncio.wait_for with an
-    # explicit 180s timeout; workers=1 forces the serial path (no nested fork).
+    # HISTORY of this block:
+    #  (1) Original bug — 8 generations of ZERO pipeline.exploitability_probe
+    #      events. A bare `if is_shutting_down: return` swallowed the block with
+    #      no log/event, AND the probe call had no timeout, so a hang in the
+    #      nested ProcessPoolExecutor (run_exploitability_probes with workers>1
+    #      forks a subprocess pool INSIDE this asyncio executor thread — a known
+    #      deadlock mode) froze the orchestrator loop with no trace.
+    #  (2) First fix (ae6c17e) — made every exit observable + asyncio.wait_for
+    #      + workers=1 (serial, no nested fork). Smoke testing later revealed
+    #      the 180s budget was FAR below real wall-clock: num_hands=50 needs
+    #      ~920s under daemon load (even num_hands=5 took 247s). So the probe
+    #      ALWAYS hit the wait_for ceiling and was recorded as failed — never
+    #      producing usable data, just trading "silent useless" for "loud
+    #      useless". Blocking the orchestrator loop for ~15min to raise the
+    #      timeout was unacceptable (halves generation throughput).
+    #  (3) THIS fix — probe runs on a background DAEMON thread (fire-and-forget).
+    #      post_generation_cleanup returns immediately (does NOT block the loop),
+    #      the thread runs the serial probe (workers=1, no nested fork) to
+    #      completion and writes exploitability.json. Result is available to the
+    #      NEXT generation's Master (~1 generation latency — acceptable for a
+    #      lagging adversarial health signal). Every exit still emits a
+    #      log_system_event: the canary in the main thread before launch, and
+    #      complete/failed in the worker thread. The worker uses ONLY logging +
+    #      log_system_event (both thread-safe: fcntl-locked file write, and SSE
+    #      via EventBroadcaster.call_soon_threadsafe) — it deliberately does NOT
+    #      call ui.log_history, to avoid asyncio-Queue races from a non-loop
+    #      thread.
     log.info("Exploitability probe scheduled for v%s", ctx.next_v)
 
     # Respect an in-progress shutdown, but OBSERVE it (never silent).
@@ -616,16 +643,8 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
         )
         return
 
-    # Entry nail: a 'probe starting' event EVERY successful generation. If this
-    # is ever absent for a committed generation, the block was not reached — a
-    # mechanical canary that the 8-generation blackout can never repeat silently.
-    log_system_event(
-        "pipeline.exploitability_probe", "info",
-        f"probe starting v{ctx.next_v}",
-        {"version": ctx.next_v, "num_hands": 50, "workers": 1},
-    )
     try:
-        from exploitability_prober import run_exploitability_probes_async
+        from exploitability_prober import run_exploitability_probes
         from evolution_infra import get_bot_dir
         new_bot_dir = get_bot_dir(f"claude_v{ctx.next_v}")
         new_bot_main = new_bot_dir / "main.py"
@@ -638,52 +657,93 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
                  "path": str(new_bot_main)},
             )
         else:
-            # workers=1 forces the serial branch in run_exploitability_probes,
-            # avoiding a ProcessPoolExecutor forked INSIDE this asyncio executor
-            # thread (deadlock / silent hang under the default ThreadPoolExecutor).
-            # asyncio.wait_for caps wall-clock so a hung probe can never freeze
-            # the orchestrator loop.
-            probe_result = await asyncio.wait_for(
-                run_exploitability_probes_async(
-                    str(new_bot_main), num_hands=50, workers=1, ui=ui,
-                ),
-                timeout=180.0,
-            )
-            overall = probe_result.get("overall_score", 0.5)
-            weaknesses = probe_result.get("weaknesses", [])
+            # Entry nail (canary): emitted in the MAIN thread, synchronously,
+            # before launching the background worker. If this is ever absent for
+            # a committed generation, the block was not reached — a mechanical
+            # canary so the 8-generation blackout can never repeat silently.
             log_system_event(
                 "pipeline.exploitability_probe", "info",
-                f"v{ctx.next_v} exploitability: {overall:.2f}/1.0, {len(weaknesses)} weaknesses",
-                {"version": ctx.next_v, "overall_score": overall,
-                 "weaknesses": weaknesses, "num_hands": 50},
+                f"probe starting v{ctx.next_v}",
+                {"version": ctx.next_v, "num_hands": 50, "workers": 1,
+                 "mode": "background"},
             )
-    except asyncio.TimeoutError:
-        log.warning("Exploitability probe timed out for v%s after 180s", ctx.next_v)
-        log_system_event(
-            "pipeline.exploitability_probe_failed", "error",
-            f"v{ctx.next_v} probe timed out after 180s",
-            {"version": ctx.next_v, "timeout": 180},
-        )
-        if ui:
-            ui.log_history(f"Exploitability probe timed out for v{ctx.next_v}", "warn")
-    except asyncio.CancelledError:
-        # Shutdown/cancellation mid-probe: observe it (never silent), then
-        # re-raise so the orchestrator loop's CancelledError handler still sees
-        # the shutdown semantics.
-        log.warning("Exploitability probe cancelled for v%s (shutdown)", ctx.next_v)
-        log_system_event(
-            "pipeline.exploitability_probe_skipped", "warn",
-            f"v{ctx.next_v} probe cancelled (shutdown)",
-            {"version": ctx.next_v, "reason": "shutdown_cancelled"},
-        )
-        raise
+
+            # Single-flight: skip if a previous probe is still running, so
+            # overlapping cleanups (fast crossover gens) cannot pile up probe
+            # threads or race on exploitability.json. The check+set is atomic
+            # because post_generation_cleanup runs on one event loop (no await
+            # between is_set() and set()).
+            if _probe_running.is_set():
+                log.info(
+                    "Exploitability probe skipped for v%s (previous still running)",
+                    ctx.next_v,
+                )
+                log_system_event(
+                    "pipeline.exploitability_probe_skipped", "info",
+                    f"v{ctx.next_v} probe skipped: previous probe still running",
+                    {"version": ctx.next_v, "reason": "single_flight_skip"},
+                )
+            else:
+                _probe_running.set()
+                _bot_main = str(new_bot_main)
+                _next_v = ctx.next_v
+
+                def _probe_worker():
+                    """Run the serial probe off the event loop, then record result.
+
+                    Runs on a daemon thread. Uses run_exploitability_probes (sync,
+                    workers=1 -> serial branch -> no nested ProcessPoolExecutor
+                    fork). Logs ONLY via logging + log_system_event (thread-safe);
+                    deliberately does NOT touch ui (asyncio-Queue races from a
+                    non-loop thread).
+                    """
+                    try:
+                        result = run_exploitability_probes(
+                            _bot_main, num_hands=50, workers=1
+                        )
+                        overall = result.get("overall_score", 0.5)
+                        weaknesses = result.get("weaknesses", [])
+                        log_system_event(
+                            "pipeline.exploitability_probe", "info",
+                            f"v{_next_v} exploitability: {overall:.2f}/1.0, "
+                            f"{len(weaknesses)} weaknesses",
+                            {"version": _next_v, "overall_score": overall,
+                             "weaknesses": weaknesses, "num_hands": 50},
+                        )
+                    except Exception as e:
+                        log.warning(
+                            "Exploitability probe failed for v%s: %s\n%s",
+                            _next_v, e, traceback.format_exc(),
+                        )
+                        log_system_event(
+                            "pipeline.exploitability_probe_failed", "error",
+                            f"v{_next_v} probe failed: {e}",
+                            {"version": _next_v, "error": str(e)[:300],
+                             "traceback": traceback.format_exc()[:2000]},
+                        )
+                    finally:
+                        _probe_running.clear()
+
+                threading.Thread(
+                    target=_probe_worker, daemon=True,
+                    name=f"exploitability-probe-v{ctx.next_v}",
+                ).start()
+                log.info(
+                    "Exploitability probe launched in background for v%s "
+                    "(serial, num_hands=50, ~10-15min)", ctx.next_v,
+                )
+                if ui:
+                    ui.log_history(
+                        f"Exploitability probe launched for v{ctx.next_v} "
+                        f"(background, ~10-15min)", "info",
+                    )
     except Exception as e:
-        log.warning("Exploitability probe failed: %s\n%s", e, traceback.format_exc())
+        # Launch/import/get_bot_dir failure: observe it (never silent).
+        log.warning(
+            "Exploitability probe launch failed: %s\n%s", e, traceback.format_exc()
+        )
         log_system_event(
             "pipeline.exploitability_probe_failed", "error",
-            f"v{ctx.next_v} probe failed: {e}",
-            {"version": ctx.next_v, "error": str(e)[:300],
-             "traceback": traceback.format_exc()[:2000]},
+            f"v{ctx.next_v} probe launch failed: {e}",
+            {"version": ctx.next_v, "error": str(e)[:300]},
         )
-        if ui:
-            ui.log_history(f"Exploitability probe failed: {e}", "warn")
