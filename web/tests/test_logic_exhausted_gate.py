@@ -93,6 +93,85 @@ class TestExtractExhaustedKeywords:
         monkeypatch.setattr(tp, "EXPERIENCE_FILE", tmp_path / "nope.md")
         assert tp._extract_exhausted_keywords() == []
 
+    def test_recent_lessons_section_excluded(self, tmp_path, monkeypatch):
+        """A [POSSIBLY EXHAUSTED]-tagged line inside RECENT_LESSONS must NOT be
+        extracted — RECENT_LESSONS holds free-form critic commentary (e.g. a
+        1188-char v82 review dump), not a direction. Extracted verbatim it
+        becomes a parasitic keyword matching almost any plan."""
+        import core.tool_planning as tp
+        pool = tmp_path / "experience_pool.md"
+        pool.write_text(
+            "## PARAMETER_TUNING\n"
+            "- constant tuning is exhausted " + POSSIBLY_MARKER + "\n"
+            "## RECENT_LESSONS\n"
+            "- v82 critic dump: constant tuning, value sizing, strong tier, "
+            "structural refactor all noise at <100g, opponent stat targeting "
+            "needed " + POSSIBLY_MARKER + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(tp, "EXPERIENCE_FILE", pool)
+        kws = tp._extract_exhausted_keywords()
+        sections = [s for s, _ in kws]
+        assert "parameter_tuning" in sections
+        assert "recent_lessons" not in sections, \
+            f"RECENT_LESSONS parasitic entry leaked: {kws}"
+
+    def test_overlong_phrase_excluded(self, tmp_path, monkeypatch):
+        """An EXHAUSTED-tagged paragraph (>300 chars) is a critic-review dump,
+        not a direction — skip it (defense against future parasitic entries)."""
+        import core.tool_planning as tp
+        pool = tmp_path / "experience_pool.md"
+        long_phrase = " ".join(["word"] * 110)  # well over 500 chars
+        pool.write_text(
+            "## PARAMETER_TUNING\n"
+            f"- {long_phrase} " + POSSIBLY_MARKER + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(tp, "EXPERIENCE_FILE", pool)
+        assert tp._extract_exhausted_keywords() == []
+
+
+class TestHardGateDirectionToken:
+    """The HARD gate (_validate_master_plan, require_direction_token=True)
+    requires a direction-characteristic token so a legitimate novel plan sharing
+    generic words isn't falsely rejected."""
+
+    @pytest.fixture
+    def param_pool(self, tmp_path):
+        f = tmp_path / "experience_pool.md"
+        f.write_text(
+            "## PARAMETER_TUNING\n"
+            "- fold margin, call clamp, EQR and sizing_aggr tuning are exhausted "
+            "across v55-v63. " + HARD_GATE_MARKER + "\n",
+            encoding="utf-8",
+        )
+        return f
+
+    def test_true_positive_with_direction_token(self, param_pool, monkeypatch):
+        """A real constant-tuning plan mentions parameter/tuning -> HARD gate matches."""
+        import core.tool_planning as tp
+        monkeypatch.setattr(tp, "EXPERIENCE_FILE", param_pool)
+        kws = tp._extract_exhausted_keywords()
+        prompt = "Parameter tuning: adjust fold margin clamp and sizing_aggr constants."
+        assert tp._fuzzy_match_exhausted(prompt.lower(), kws, require_direction_token=True) is True
+
+    def test_false_positive_blocked_by_direction_token(self, param_pool, monkeypatch):
+        """A plan sharing >=2 distinctive generic tokens (clamp, aggr) but NO
+        direction token is blocked by the HARD gate. Without require_direction_token
+        it would falsely match — this is exactly the false-positive class STEP2
+        fixes (v82 Task0/Task1 legitimate opponent-stat sizing was flagged because
+        it shared generic words with the long PARAMETER_TUNING prose)."""
+        import core.tool_planning as tp
+        monkeypatch.setattr(tp, "EXPERIENCE_FILE", param_pool)
+        kws = tp._extract_exhausted_keywords()
+        # Shares clamp + aggr with the PARAMETER_TUNING phrase, but no
+        # parameter/tuning/mechanism/... direction token.
+        prompt = "Tighten the value clamp using sizing_aggr for strong hands."
+        # default path (execute_workers soft warning) DOES match — recall preserved
+        assert tp._fuzzy_match_exhausted(prompt.lower(), kws) is True
+        # HARD gate (_validate_master_plan) does NOT — direction token absent
+        assert tp._fuzzy_match_exhausted(prompt.lower(), kws, require_direction_token=True) is False
+
 
 class TestExtractExhaustedBlock:
     """agent_workers._extract_exhausted_block feeds the worker-prompt constraint."""

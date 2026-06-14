@@ -210,7 +210,7 @@ def _validate_master_plan(plan, next_v=None, precomputed_exhausted_keywords=None
                 + " " + task.get("instruction", "")
                 + " " + str(task.get("targeted_failure", ""))
             ).lower()
-            if _fuzzy_match_exhausted(prompt_text, exhausted_keywords):
+            if _fuzzy_match_exhausted(prompt_text, exhausted_keywords, require_direction_token=True):
                 errors.append(
                     f"Task {i}: worker prompt matches an EXHAUSTED direction from experience pool. "
                     f"This direction has been repeatedly tried with no measurable improvement. "
@@ -561,9 +561,22 @@ def _extract_exhausted_keywords():
             continue
         if not marker_re.search(line):
             continue
+        # Skip non-direction sections: RECENT_LESSONS holds free-form critic
+        # commentary (e.g. a 1188-char v82 review dump) that can contain an
+        # inline [POSSIBLY EXHAUSTED] reference but is NOT a direction — extracted
+        # verbatim it becomes a parasitic 84-token keyword that matches almost
+        # any plan. Only top-level strategy sections hold real directions.
+        if current_section.upper() == "RECENT_LESSONS":
+            continue
         # Extract the topic phrase: everything before the explanation
         cleaned = marker_re.sub("", line).strip(" -•")
         if not cleaned:
+            continue
+        # Length cap: a genuine direction phrase is a clause, not a paragraph.
+        # Real directions run ~300-400 chars; over-long entries (e.g. a 1188-char
+        # critic-review dump) are commentary, not directions. 500 keeps real
+        # directions while excluding dumps.
+        if len(cleaned) > 500:
             continue
         # Take the first clause (before common joiners) as the core topic
         for sep in [" are exhausted", " has not ", " have repeatedly ", " shows "]:
@@ -587,15 +600,35 @@ _EXHAUSTED_BLOCKLIST = frozenset({
 })
 
 
-def _fuzzy_match_exhausted(prompt_text: str, keywords: list) -> bool:
+# Direction-characteristic tokens that uniquely identify an EXHAUSTED direction
+# (as opposed to generic poker vocabulary). The HARD gate (_validate_master_plan)
+# additionally requires >=1 of these in the prompt so a legitimate novel plan
+# that merely shares generic strategy words (value/strategy/strong/tier/...) is
+# not falsely rejected. Excludes constant/margin/fold/grounded — too generic,
+# they appear in legitimate opponent-stat / continuous-stat reframes (the very
+# reframe v82's critic asked for).
+_EXHAUSTED_DIRECTION_TOKENS = frozenset({
+    "parameter", "tuning", "mechanism", "canonical", "archetype",
+    "commitment", "refactor", "continuous",
+})
+
+
+def _fuzzy_match_exhausted(prompt_text: str, keywords: list, require_direction_token: bool = False) -> bool:
     """Check if prompt_text matches an EXHAUSTED keyword using fuzzy token matching.
 
     Distinctive tokens EXCLUDE generic poker vocabulary (_EXHAUSTED_BLOCKLIST) so
     that a legitimate novel plan isn't rejected just for mentioning fold/call/
-    sizing. A match requires >=2 distinctive tokens AND >=25% overlap — the same
-    threshold as before, but applied to meaningful direction words only,
-    eliminating the "any 2 generic poker words" false-positive class (bug #4)
-    without raising the false-negative risk of missing a real exhausted direction.
+    sizing. A match requires >=2 distinctive tokens (the BLOCKLIST makes "2
+    tokens" meaningful — direction-characteristic words, not fold/call/sizing).
+
+    When require_direction_token=True (HARD gate in _validate_master_plan), also
+    requires >=1 _EXHAUSTED_DIRECTION_TOKEN in the prompt. This eliminates the
+    remaining false-positive class where a long EXHAUSTED prose entry shares
+    generic words (value/strategy/strong/tier) with a legitimate novel plan,
+    without losing true positives (a real fold-gate reintroduction mentions
+    mechanism/canonical/archetype; a real constant-tuning plan mentions
+    parameter/tuning). The soft warning path (execute_workers) keeps the default
+    False to preserve recall — warnings are cheap.
     """
     import re
     prompt_clean = re.sub(r'[^a-z0-9\s]', '', prompt_text.lower())
@@ -614,13 +647,16 @@ def _fuzzy_match_exhausted(prompt_text: str, keywords: list) -> bool:
         matches = sum(1 for t in distinctive if t in prompt_clean)
         # Match on >=2 distinctive (non-generic) tokens; for very short keywords
         # (<=2 distinctive, e.g. a bare section name) require all to match.
-        # The BLOCKLIST makes "2 tokens" meaningful: direction-characteristic
-        # words (parameter/tuning/structural/commitment/...), not fold/call/
-        # sizing which appear in every plan. This kills the "any 2 generic poker
-        # words" false-positive class (bug #4) while keeping true-positive
-        # coverage (a PARAMETER_TUNING plan mentioning parameter+tuning matches).
-        if matches >= min(2, len(distinctive)):
-            return True
+        if matches < min(2, len(distinctive)):
+            continue
+        # HARD gate: additionally require a direction-characteristic token, so a
+        # plan that merely shares generic words (value/strategy/strong/tier) is
+        # not rejected.
+        if require_direction_token:
+            direction_hits = sum(1 for t in _EXHAUSTED_DIRECTION_TOKENS if t in prompt_clean)
+            if direction_hits < 1:
+                continue
+        return True
     return False
 
 
