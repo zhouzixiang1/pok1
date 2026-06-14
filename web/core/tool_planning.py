@@ -262,6 +262,17 @@ async def run_master(args):
         constraint_block += "\nYou MUST comply with these constraints. A plan that repeats an exhausted direction will be rejected.\n"
         performance_verification = (performance_verification or "") + constraint_block
 
+    # Cross-gen mechanical backstop: inject prior critic local-optima rejections
+    # + experience-pool EXHAUSTED directions directly into performance_verification,
+    # independent of the direction_audit LLM gate (which historically under-detects
+    # — v82 repetition_detected=false despite the pool flagging constant-tuning
+    # EXHAUSTED). No-op when there is no prior critic local-optima rejection and
+    # no EXHAUSTED direction (first-ever gen / clean crossover unaffected).
+    # Idempotent: guarded by CROSS_GEN_MARKER so run_master retries don't stack it.
+    _cross_gen_block = _build_cross_gen_constraint_block(next_v)
+    if _cross_gen_block and CROSS_GEN_MARKER not in (performance_verification or ""):
+        performance_verification = (performance_verification or "") + _cross_gen_block
+
     ui = _get_ui()
 
     # --- Extract replay_spotlight for Master prompt ---
@@ -611,6 +622,112 @@ def _fuzzy_match_exhausted(prompt_text: str, keywords: list) -> bool:
         if matches >= min(2, len(distinctive)):
             return True
     return False
+
+
+# ──────────────────────────────────────────────
+# Cross-generation local-optima constraint (mechanical backstop)
+# ──────────────────────────────────────────────
+# When the previous generation was rejected by the Critic as a local optimum,
+# or the experience pool marks a direction EXHAUSTED, inject a hard constraint
+# into the Master so it stops re-proposing the same exhausted direction
+# (observed: v82 master re-proposed constant-tuning after critic rejected it
+# for exactly that). This is independent of the direction_audit LLM gate
+# (which historically under-detects — v82 repetition_detected=false despite
+# the pool flagging constant-tuning EXHAUSTED), so it works even when the
+# LLM auditor fails to flag repetition.
+
+CROSS_GEN_MARKER = "# CROSS-GEN LOCAL-OPTIMA CONSTRAINT"
+
+
+def _load_recent_critic_local_optima(next_v, max_entries=3):
+    """Load recent critic local-optima rejections from worker_failures.jsonl.
+
+    The file is append-only and accumulates across generations. Selects critic
+    entries with local_optima_warning=True and gen <= next_v (the just-rejected
+    version is included — that is the loop we want to break), dedups by gen
+    (latest timestamp wins; retry_workers can reject the same gen repeatedly).
+
+    Returns [(gen, reason, error_first_line), ...] most-recent-gen first.
+
+    _record_quality_failure (tool_gates.py) filters `v is not False`, so
+    local_optima_warning=False is never written — `is True` selection is exact,
+    and reviewer/worker records (which lack the field) are skipped.
+    """
+    try:
+        from evolution_infra import WORKER_FAILURES_FILE, locked_file
+    except Exception:
+        return []
+    if not WORKER_FAILURES_FILE.exists():
+        return []
+    by_gen = {}
+    try:
+        with locked_file(WORKER_FAILURES_FILE, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                if e.get("local_optima_warning") is not True:
+                    continue
+                if str(e.get("worker_id", "")) != "critic":
+                    continue
+                g = e.get("gen")
+                if g is None or g > next_v:
+                    continue
+                ts = e.get("timestamp", 0)
+                if g not in by_gen or ts > by_gen[g][3]:
+                    reason = (e.get("local_optima_reason") or "").strip()
+                    err_first = (e.get("error", "")).split("\n")[0][:150]
+                    by_gen[g] = (g, reason, err_first, ts)
+    except Exception:
+        return []
+    return [t[:3] for t in sorted(by_gen.values(), key=lambda x: -x[0])][:max_entries]
+
+
+def _build_cross_gen_constraint_block(next_v):
+    """Build a cross-generation mandatory constraint block from prior critic
+    local-optima rejections + experience-pool EXHAUSTED directions.
+
+    Returns "" (no injection) when there is neither a recent critic local-optima
+    rejection nor any EXHAUSTED direction — so first-ever generations and
+    crossovers with no prior rejection are unaffected.
+
+    Wording is deliberately NOT an unconditional FORBIDDEN: a Master that brings
+    a structural new method + H2H evidence may still proceed in the direction,
+    and legitimate opponent-stat-driven sizing (the very reframe v82's critic
+    asked for) is explicitly permitted — this prevents over-generalized refusal.
+    """
+    lo_entries = _load_recent_critic_local_optima(next_v)
+    exhausted = _extract_exhausted_keywords()
+    if not lo_entries and not exhausted:
+        return ""
+    parts = [f"\n\n{CROSS_GEN_MARKER} (MANDATORY)\n"]
+    if lo_entries:
+        parts.append(
+            "The PREVIOUS generation(s) were REJECTED by the Critic as a LOCAL OPTIMUM "
+            "(stuck repeating the same exhausted direction). To proceed in that same "
+            "direction you MUST provide a STRUCTURAL new method AND H2H evidence "
+            "(>=100g vs a confirmed weak matchup); pure constant/margin tuning will be "
+            "rejected again.\n"
+            "Recent critic local-optima rejections:\n"
+        )
+        for g, reason, err_short in lo_entries:
+            parts.append(f"- v{g}: {reason or err_short}\n")
+    if exhausted:
+        parts.append(
+            "\nDirections the experience pool marks EXHAUSTED (tried repeatedly, no gain):\n"
+        )
+        for sec, phrase in exhausted:
+            parts.append(f"- [{sec}] {phrase}\n")
+    parts.append(
+        "\nUnless you have a genuinely structural alternative + H2H evidence, AVOID these "
+        "exact patterns. Do NOT over-generalize: legitimate opponent-stat-driven sizing, "
+        "new decision systems, or structural refactors are still permitted and encouraged.\n"
+    )
+    return "".join(parts)
 
 
 

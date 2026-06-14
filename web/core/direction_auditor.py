@@ -5,11 +5,12 @@ if the evolution system is stuck repeating the same approach.
 """
 
 import json
+import re
 
 from evolution_infra import (
     run_claude_query, parse_json_output,
     locked_file, get_logs_dir,
-    PROMPTS_DIR, WORKER_FAILURES_FILE,
+    PROMPTS_DIR, WORKER_FAILURES_FILE, EXPERIENCE_FILE,
 )
 from output_schema import validate_agent_output
 
@@ -70,18 +71,36 @@ async def _run_direction_audit(source_v, ui):
     except Exception:
         pass
 
-    # ── Collect recent critic/quality rejections ──
+    # ── Collect recent critic local-optima rejections ──
+    # Prefer the structured local_optima_warning signal (only written when True,
+    # via _record_quality_failure's `v is not False` filter) over raw error text,
+    # so the auditor sees "this gen was rejected AS a local optimum" rather than
+    # an opaque rejection. This is what should drive repetition_detected for the
+    # exhausted-direction loop (observed: v82 was rejected as local-optima but
+    # the old code only surfaced error[:200], so the auditor missed the signal
+    # and returned repetition_detected=false).
     rejection_lines = []
     try:
         if WORKER_FAILURES_FILE.exists():
             with locked_file(WORKER_FAILURES_FILE, "r") as f:
                 entries = [json.loads(l.strip()) for l in f if l.strip()]
-            for e in entries[-10:]:
-                role = e.get("role", "?")
-                gen = e.get("gen", "?")
-                err = e.get("error", "")[:200]
-                if "critic" in role.lower() or "reject" in err.lower():
-                    rejection_lines.append(f"  v{gen} {role}: {err}")
+            lo_by_gen = {}
+            for e in entries:
+                if e.get("local_optima_warning") is not True:
+                    continue
+                if str(e.get("worker_id", "")) != "critic":
+                    continue
+                g = e.get("gen")
+                if g is None:
+                    continue
+                # Dedup by gen: keep the most recent (retry_workers can reject
+                # the same gen repeatedly).
+                if g not in lo_by_gen or e.get("timestamp", 0) > lo_by_gen[g][1]:
+                    reason = (e.get("local_optima_reason") or "").strip()
+                    err_first = (e.get("error", "")).split("\n")[0][:150]
+                    lo_by_gen[g] = (reason or err_first, e.get("timestamp", 0))
+            for g in sorted(lo_by_gen, reverse=True)[:10]:
+                rejection_lines.append(f"  v{g} CRITIC LOCAL-OPTIMA REJECT: {lo_by_gen[g][0]}")
     except Exception:
         pass
 
@@ -112,14 +131,36 @@ async def _run_direction_audit(source_v, ui):
             except Exception:
                 pass
 
+    # ── Collect EXHAUSTED directions from the experience pool ──
+    # The pool marks repeatedly-tried-no-gain directions; surfacing them here
+    # lets the auditor flag repetition even when git commit messages don't
+    # obviously repeat (e.g. "constant tuning" resurfaces under many guises).
+    exhausted_lines = []
+    try:
+        if EXPERIENCE_FILE.exists():
+            marker_re = re.compile(r"\[[A-Z ]*EXHAUSTED[^\]]*\]")
+            current_section = ""
+            for line in EXPERIENCE_FILE.read_text(encoding="utf-8").splitlines():
+                if line.startswith("## "):
+                    current_section = line.replace("## ", "").strip()
+                    continue
+                if marker_re.search(line):
+                    cleaned = marker_re.sub("", line).strip(" -•")
+                    if cleaned:
+                        exhausted_lines.append(f"  [{current_section}] {cleaned}")
+    except Exception:
+        pass
+
     # ── Build generation_history for prompt ──
     gen_history = f"## Source version: v{source_v}\n\n"
     if history_lines:
         gen_history += "## Recent generations (commit messages):\n" + "\n".join(history_lines) + "\n\n"
     if rejection_lines:
-        gen_history += "## Recent critic/quality rejections:\n" + "\n".join(rejection_lines) + "\n\n"
+        gen_history += "## Recent critic local-optima rejections:\n" + "\n".join(rejection_lines) + "\n\n"
     if master_log_lines:
         gen_history += "## Recent Master analysis summaries:\n" + "\n".join(master_log_lines[-5:]) + "\n\n"
+    if exhausted_lines:
+        gen_history += "## Experience-pool EXHAUSTED directions (do NOT repeat):\n" + "\n".join(exhausted_lines) + "\n\n"
     if not history_lines and not rejection_lines:
         gen_history += "No recent generation history available.\n"
 
