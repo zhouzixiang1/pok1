@@ -193,6 +193,17 @@ async def _run_direction_audit(source_v, ui):
             data.setdefault("last_directions", [])
             return data
     except Exception as e:
+        from llm_failure import is_llm_infra_error
+        if is_llm_infra_error(e):
+            ui.log_history(
+                f"Direction Auditor LLM infrastructure error (NOT a business judgement): {e}. "
+                "Returning no-repetition default with llm_failed marker.",
+                "warn",
+            )
+            return {"repetition_detected": False, "exhausted_directions": [],
+                    "mandatory_constraints": None, "suggested_direction": None,
+                    "confidence": "low", "last_directions": [],
+                    "llm_failed": True}
         ui.log_history(f"Direction Auditor error: {e}. Skipping.", "warn")
 
     return {"repetition_detected": False, "exhausted_directions": [],

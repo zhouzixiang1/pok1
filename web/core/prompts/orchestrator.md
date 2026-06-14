@@ -62,6 +62,7 @@ Do NOT call `commit_bot()` unless ALL of these are satisfied:
 - Precommit fails → inject exact blocker, retry workers or return to Master
 - Workers produce zero code changes → retry workers with explicit feedback. If still zero changes after 2 retries, abandon this generation.
 - Total intra_gen_attempts must not exceed 4. If exhausted, abandon and start fresh.
+- Critic/Reviewer returning `llm_failed: true` → this is an LLM infrastructure crash, NOT a strategy/code rejection. Strictly follow the returned `action` field (`retry_critic` / `retry_review` / `abandon_cycle`). NEVER call `retry_workers` or `run_master` in response to an infra failure.
 </retry_rules>
 
 <optimization_metric>

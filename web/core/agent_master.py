@@ -18,6 +18,35 @@ from evolution_infra import (
 from replay_analysis import summarize_replay_for_analysis  # noqa: F401 — re-exported via evolution_core
 
 
+# C-class sentinel: returned by _analyze_recent_matches /
+# _run_performance_verification when their LLM call hit an infrastructure
+# error (ClaudeSDKError / timeout / connection). Detected here so the Master
+# prompt surfaces "analysis unavailable due to LLM failure" rather than the
+# misleading "No data available" (which would imply the daemon hadn't run).
+LLM_INFRA_SENTINEL = "[LLM_INFRA_ERROR: analysis unavailable]"
+LLM_INFRA_SENTINEL_MSG = (
+    "⚠ Analysis unavailable: the LLM analyst crashed with an infrastructure "
+    "error (NOT a business judgement). Treat conclusions in this section as "
+    "missing rather than negative — the daemon data still exists, only the "
+    "LLM interpretation failed."
+)
+
+
+def _render_analysis_section(text: str, default_msg: str) -> str:
+    """Map an analyst's raw return into the text injected into the Master prompt.
+
+    - Empty/None -> default "no data" message (unchanged behaviour).
+    - LLM_INFRA_SENTINEL -> explicit "LLM crashed" warning (so the Master does
+      not misread a missing analysis as a negative business signal).
+    - Anything else -> the actual analysis text.
+    """
+    if not text or not text.strip():
+        return default_msg
+    if text.strip() == LLM_INFRA_SENTINEL:
+        return LLM_INFRA_SENTINEL_MSG
+    return text
+
+
 # ──────────────────────────────────────────────
 # Master Analysis
 # ──────────────────────────────────────────────
@@ -28,13 +57,19 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                                battle_experience="", exploitability_weaknesses=""):
     """Run Master analysis — can run concurrently with daemon evaluation."""
     master_prompt = (PROMPTS_DIR / "master_prompt.md").read_text()
-    # Apply section budgets to avoid experience_pool crowding out match_analysis
-    match_analysis_trimmed = _trim_to_budget(match_analysis, 10_000, tail=True)
-    perf_trimmed = _trim_to_budget(
-        performance_verification if performance_verification
-        else "No performance verification data available.",
-        4_000
+    # Apply section budgets to avoid experience_pool crowding out match_analysis.
+    # C-class: render the sentinel (returned when the analyst LLM crashed on an
+    # infrastructure error) into an explicit warning BEFORE trimming, so the
+    # Master sees "LLM crashed" rather than "no data" (which would be read as a
+    # negative business signal). Non-sentinel text passes through unchanged.
+    match_analysis_rendered = _render_analysis_section(
+        match_analysis, "",
     )
+    perf_rendered = _render_analysis_section(
+        performance_verification, "No performance verification data available.",
+    )
+    match_analysis_trimmed = _trim_to_budget(match_analysis_rendered, 10_000, tail=True)
+    perf_trimmed = _trim_to_budget(perf_rendered, 4_000)
 
     # Build eval round summary BEFORE substitute_template so it's included in one pass
     eval_round_summary = "No eval round data available yet."
@@ -188,5 +223,18 @@ async def _analyze_recent_matches(source_v, ui, max_matches=8):
                 "MATCH ANALYST (retry)", log_file,
             )
         return output or ""
-    except Exception:
+    except Exception as e:
+        # C-class: distinguish LLM infrastructure crash from "no data".
+        # Return a sentinel string so the Master prompt builder can surface
+        # "analysis unavailable due to LLM failure" instead of the misleading
+        # "No match analysis data available". Return type stays str for compat.
+        from llm_failure import is_llm_infra_error
+        if is_llm_infra_error(e):
+            ui.log_history(f"Match analysis LLM infrastructure error: {e}", "warn")
+            from system_log import log_system_event
+            log_system_event("pipeline.match_analyst_infra", "warn",
+                             f"Match analyst v{source_v} LLM crashed (infra): {e}",
+                             {"source_v": source_v, "error": str(e)})
+            return "[LLM_INFRA_ERROR: analysis unavailable]"
+        ui.log_history(f"Match analysis failed: {e}", "warn")
         return ""

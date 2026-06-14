@@ -64,6 +64,7 @@ async def run_direction_audit(args):
     constraints = result.get("mandatory_constraints")
     suggested = result.get("suggested_direction")
     confidence = result.get("confidence", "low")
+    llm_failed = result.get("llm_failed", False)
 
     direction_audit_payload = {
         "repetition_detected": repetition,
@@ -72,6 +73,9 @@ async def run_direction_audit(args):
         "suggested_direction": suggested,
         "confidence": confidence,
         "resolved": False,
+        # Propagate the infra marker so run_master can skip injecting the
+        # (untrustworthy, empty) audit mandatory_constraints block.
+        "llm_failed": llm_failed,
     }
 
     # Persist to checkpoint
@@ -84,14 +88,24 @@ async def run_direction_audit(args):
         worker_failure_count=_ckpt.get("worker_failure_count", 0) if _ckpt else 0,
     )
 
-    event_type = "pipeline.direction_audit_warning" if repetition else "pipeline.direction_audit_passed"
-    severity = "warn" if repetition else "success"
-    msg = (f"Direction audit: repetition detected ({', '.join(exhausted)})" if repetition
-           else "Direction audit: no repetition detected")
+    if llm_failed:
+        # Infra failure is neither "warning" (repetition) nor "passed" (clean).
+        # Log it as a distinct event so the orchestrator can see the audit was
+        # untrustworthy; run_master also emits its own pipeline.direction_audit_infra.
+        event_type = "pipeline.direction_audit_infra"
+        severity = "warn"
+        msg = (f"Direction audit: LLM infrastructure failure for v{next_v} — "
+               "verdict untrustworthy, proceeding with mechanical backstop only")
+    else:
+        event_type = "pipeline.direction_audit_warning" if repetition else "pipeline.direction_audit_passed"
+        severity = "warn" if repetition else "success"
+        msg = (f"Direction audit: repetition detected ({', '.join(exhausted)})" if repetition
+               else "Direction audit: no repetition detected")
     log_system_event(event_type, severity, msg, {
         "next_v": next_v, "source_v": source_v,
         "repetition_detected": repetition,
         "exhausted_directions": exhausted,
+        "llm_failed": llm_failed,
     })
 
     return _json_tool_result({
@@ -249,8 +263,30 @@ async def run_master(args):
         _ckpt = _matching_checkpoint(next_v, source_v)
         direction_audit = _ckpt.get("direction_audit") if _ckpt else None
 
-    # Inject mandatory constraints into performance_verification if audit found repetition
-    if direction_audit and direction_audit.get("repetition_detected") and direction_audit.get("mandatory_constraints"):
+    # Inject mandatory constraints into performance_verification if audit found repetition.
+    # B-class guard: if the Direction Auditor's LLM call crashed (infrastructure
+    # failure), its "no repetition" verdict is untrustworthy — do NOT inject its
+    # (empty) mandatory_constraints block as if the audit were authoritative.
+    # The mechanical cross-gen backstop (_build_cross_gen_constraint_block below)
+    # still runs and provides exhausted-direction protection independent of this
+    # LLM gate, so a crashed auditor does not leave the Master unconstrained.
+    if direction_audit and direction_audit.get("llm_failed"):
+        _log.warning(
+            "Direction audit for v%s reported LLM infrastructure failure — "
+            "skipping audit mandatory_constraints injection (untrustworthy). "
+            "Cross-gen mechanical backstop still applies.",
+            next_v,
+        )
+        try:
+            log_system_event(
+                "pipeline.direction_audit_infra", "warn",
+                f"Direction audit for v{next_v} unavailable (LLM infra error). "
+                "Skipping audit constraints; cross-gen mechanical backstop still applies.",
+                {"next_v": next_v, "source_v": source_v},
+            )
+        except Exception:
+            pass
+    elif direction_audit and direction_audit.get("repetition_detected") and direction_audit.get("mandatory_constraints"):
         constraint_block = (
             f"\n\n# Direction Audit Constraints (MANDATORY)\n"
             f"The Direction Auditor detected that recent generations are stuck repeating the same approach.\n"

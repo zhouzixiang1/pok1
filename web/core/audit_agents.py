@@ -24,6 +24,7 @@ from evolution_infra import (
 )
 from output_schema import validate_agent_output
 from system_log import log_system_event
+from llm_failure import is_llm_infra_error
 
 log = logging.getLogger("pok.audit")
 
@@ -122,6 +123,11 @@ async def _run_master_plan_audit(master_plan, source_v, ui):
 
     except Exception as e:
         log.warning("Master plan audit failed: %s. Skipping.", e)
+        if is_llm_infra_error(e):
+            log_system_event("pipeline.master_plan_audit_infra", "warn",
+                             f"Master plan audit LLM crashed (infra): {e}",
+                             {"source_v": source_v, "error": str(e)})
+            return {**safe_default, "llm_failed": True}
 
     return safe_default
 
@@ -214,6 +220,11 @@ async def _run_worker_cot_check(task, worker_idx, next_v, source_v, next_dir, wo
 
     except Exception as e:
         log.warning("Worker CoT check failed: %s. Skipping.", e)
+        if is_llm_infra_error(e):
+            log_system_event("pipeline.worker_cot_check_infra", "warn",
+                             f"Worker {w_id} CoT check LLM crashed (infra): {e}",
+                             {"worker_id": w_id, "next_v": next_v, "error": str(e)})
+            return {**safe_default, "llm_failed": True}
 
     return safe_default
 
@@ -290,6 +301,17 @@ async def _generate_dynamic_tests(next_v, source_v, changed_files, master_plan, 
 
     except Exception as e:
         log.warning("Dynamic test generation failed: %s. Skipping.", e)
+        # Advisory infra telemetry (8th advisory agent): safe_default=[] is non-blocking,
+        # but emit a distinct event so the infra crash is observable like its 7 siblings.
+        if is_llm_infra_error(e):
+            try:
+                log_system_event("pipeline.dynamic_test_gen_infra", "warn",
+                                 f"Dynamic test generation LLM crashed (infra): {e}",
+                                 {"next_v": next_v, "source_v": source_v, "error": str(e)})
+            except Exception:
+                pass
+            if ui:
+                ui.log_history(f"DYNAMIC_TEST_GEN: LLM infrastructure error (infra) — using predefined scenarios only: {e}", "warn")
 
     return safe_default
 
@@ -362,6 +384,11 @@ async def _run_precommit_semantic(v, source_v, matchups, master_plan, ui):
 
     except Exception as e:
         log.warning("Precommit semantic analysis failed: %s. Skipping.", e)
+        if is_llm_infra_error(e):
+            log_system_event("pipeline.precommit_semantic_infra", "warn",
+                             f"Precommit semantic v{v} LLM crashed (infra): {e}",
+                             {"version": v, "source_v": source_v, "error": str(e)})
+            return {**safe_default, "llm_failed": True}
 
     return safe_default
 
@@ -411,6 +438,11 @@ async def _run_degeneration_diagnosis(source_v, recent_commits, strategy_changes
 
     except Exception as e:
         log.warning("Degeneration diagnosis failed: %s. Skipping.", e)
+        if is_llm_infra_error(e):
+            log_system_event("pipeline.degeneration_diagnosis_infra", "warn",
+                             f"Degeneration diagnosis v{source_v} LLM crashed (infra): {e}",
+                             {"source_v": source_v, "error": str(e)})
+            return {**safe_default, "llm_failed": True}
 
     return safe_default
 
@@ -486,6 +518,11 @@ async def _run_crossover_compatibility_audit(parent_a_v, parent_b_v, ui):
 
     except Exception as e:
         log.warning("Crossover compatibility audit failed: %s. Skipping.", e)
+        if is_llm_infra_error(e):
+            log_system_event("pipeline.crossover_compat_infra", "warn",
+                             f"Crossover compat v{parent_a_v}xv{parent_b_v} LLM crashed (infra): {e}",
+                             {"parent_a_v": parent_a_v, "parent_b_v": parent_b_v, "error": str(e)})
+            return {**safe_default, "llm_failed": True}
 
     return safe_default
 
@@ -558,6 +595,11 @@ async def _run_experience_pool_audit(pool_content, current_ratings, ui):
 
     except Exception as e:
         log.warning("Experience pool audit failed: %s. Skipping.", e)
+        if is_llm_infra_error(e):
+            log_system_event("pipeline.experience_pool_audit_infra", "warn",
+                             f"Experience pool audit LLM crashed (infra): {e}",
+                             {"error": str(e)})
+            return {**safe_default, "llm_failed": True}
 
     return safe_default
 
@@ -610,5 +652,10 @@ async def _run_regression_guardian(v, source_v, pipeline_history, trigger_reason
 
     except Exception as e:
         log.warning("Regression guardian failed: %s. Skipping.", e)
+        if is_llm_infra_error(e):
+            log_system_event("pipeline.regression_guardian_infra", "warn",
+                             f"Regression guardian v{v} LLM crashed (infra): {e}",
+                             {"v": v, "source_v": source_v, "error": str(e)})
+            return {**safe_default, "llm_failed": True}
 
     return safe_default

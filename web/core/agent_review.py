@@ -8,6 +8,8 @@ import json
 from logging_config import get_logger
 _log = get_logger("review")
 
+from llm_failure import is_llm_infra_error, infra_payload
+
 from evolution_infra import (
     run_claude_query, parse_json_output, substitute_template,
     locked_file, get_bot_dir, get_logs_dir, get_active_bots,
@@ -102,6 +104,9 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
             data.setdefault("local_optima_warning", False)
             return data
     except Exception as e:
+        if is_llm_infra_error(e):
+            ui.log_history(f"Critic LLM infrastructure error (NOT a strategic rejection): {e}", "warn")
+            return infra_payload(e, approved=False)   # llm_failed=True, no score=0
         ui.log_history(f"Critic error: {e}. Defaulting to rejected.", "warn")
         return {"score": 0, "approved": False, "feedback": str(e), "local_optima_warning": False}
 
@@ -262,6 +267,17 @@ async def _run_performance_verification(source_v, ratings, ui):
         if data:
             return json.dumps(data, ensure_ascii=False)
     except Exception as e:
+        # C-class: distinguish LLM infrastructure crash from "no data".
+        # Return a sentinel string so the Master prompt builder can surface
+        # "analysis unavailable due to LLM failure" instead of the misleading
+        # "No performance verification data available". Return type stays str.
+        if is_llm_infra_error(e):
+            ui.log_history(f"Performance verification LLM infrastructure error: {e}", "warn")
+            from system_log import log_system_event
+            log_system_event("pipeline.performance_analyst_infra", "warn",
+                             f"Performance analyst v{source_v} LLM crashed (infra): {e}",
+                             {"source_v": source_v, "error": str(e)})
+            return "[LLM_INFRA_ERROR: analysis unavailable]"
         ui.log_history(f"Performance verification failed: {e}", "warn")
 
     return ""

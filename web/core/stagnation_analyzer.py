@@ -12,6 +12,8 @@ from evolution_infra import (
     RESULTS_DIR, WORKER_FAILURES_FILE, PROMPTS_DIR,
     Glicko2Player,
 )
+from llm_failure import is_llm_infra_error
+from system_log import log_system_event
 
 
 async def _analyze_stagnation(source_v, active_bots, ratings, ui, prev_critic_info: str = ""):
@@ -140,6 +142,11 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui, prev_critic_in
     })
 
     log_file = get_logs_dir(source_v) / "stagnation_analysis.txt"
+    # Track whether the LLM call crashed with an infrastructure error across
+    # retries. If it does, the final return carries llm_failed=True so callers
+    # (run_stagnation_analysis MCP tool / experience pool) know the "no
+    # stagnation" verdict is an infra guess, not a business judgement.
+    saw_infra_error = False
     for attempt in range(3):
         try:
             output, _, _ = await run_claude_query(
@@ -156,7 +163,24 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui, prev_critic_in
             ui.log_history(f"Stagnation analysis returned empty (attempt {attempt+1}/3), retrying...", "warn")
         except Exception as e:
             ui.log_history(f"Stagnation analysis failed: {e} (attempt {attempt+1}/3)", "warn")
+            if is_llm_infra_error(e):
+                saw_infra_error = True
         if attempt < 2:
             import asyncio
             await asyncio.sleep(30 * (attempt + 1))
+
+    if saw_infra_error:
+        # Infrastructure failure (NOT a business "no stagnation" judgement).
+        # Return a marked safe-default so callers can tell the two apart.
+        log_system_event("pipeline.stagnation_analyst_infra", "warn",
+                         f"Stagnation analyst v{source_v} LLM crashed (infra) after retries",
+                         {"source_v": source_v})
+        return {
+            "is_stagnant": False,
+            "confidence": "low",
+            "recommendation": "continue",
+            "branch_from": None,
+            "reason": "Stagnation analysis unavailable: LLM infrastructure error (not a business judgement).",
+            "llm_failed": True,
+        }
     return None

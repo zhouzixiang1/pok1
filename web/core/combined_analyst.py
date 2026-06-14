@@ -98,6 +98,11 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
         "suggestion": None,
         "recommended_source": "",
         "source_rationale": "",
+        # llm_failed defaults to False: the safe_default only becomes an infra
+        # signal when set by the LLM-crash except branch (below). The statistical
+        # pre-check / coverage-shortfall paths are real business judgements, not
+        # infra failures, so they correctly leave llm_failed=False.
+        "llm_failed": False,
     }
 
     h2h_winrates = load_h2h_avg_winrates()
@@ -319,9 +324,25 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
                 return result
             ui.log_history(f"Combined analyst returned empty (attempt {attempt+1}/3), retrying...", "warn")
         except Exception as e:
-            ui.log_history(f"Combined analyst failed: {e} (attempt {attempt+1}/3)", "warn")
+            from llm_failure import is_llm_infra_error
+            if is_llm_infra_error(e):
+                ui.log_history(
+                    f"Combined analyst LLM infrastructure error (NOT a business judgement): {e} "
+                    f"(attempt {attempt+1}/3)",
+                    "warn",
+                )
+                # Mark the safe default so _decide_strategy (generation_scheduler)
+                # treats stagnation as unknown and proceeds conservatively with
+                # master (never crossover) rather than misreading a crash as
+                # "improving / not stagnant".
+                safe_default["llm_failed"] = True
+            else:
+                ui.log_history(f"Combined analyst failed: {e} (attempt {attempt+1}/3)", "warn")
         if attempt < 2:
             import asyncio
             await asyncio.sleep(30 * (attempt + 1))
 
+    # If the last attempt crashed as an infra error, safe_default already carries
+    # llm_failed=True. Otherwise this is the no-valid-output-after-retries path,
+    # which is a real business failure (empty output), not infra — leave False.
     return safe_default

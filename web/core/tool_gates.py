@@ -32,6 +32,7 @@ from tool_helpers import (
 )
 from fix_verification import verify_fixes
 from system_log import log_system_event
+from llm_failure import is_llm_infra_error, infra_payload
 import spot_analyzer
 
 
@@ -454,6 +455,44 @@ async def run_review(args):
             reviewer_prompt, [], ui, "LEAD CODE REVIEWER", log_file, tools=["Bash", "Read"]
         )
     except Exception as e:
+        # ── LLM infrastructure error short-circuit ──
+        # If the Reviewer LLM call crashed (SDK error / timeout / connection), do NOT
+        # treat it as an approved:False rejection (which would block the pipeline).
+        # Retry the review gate (not the workers), and soft-abandon after 3 attempts
+        # while keeping stage=quality_passed so the orchestrator re-calls run_review.
+        # No generation_attempt increment, no quality-failure record, no rejection gate.
+        if is_llm_infra_error(e):
+            prev = ckpt.get("gate_results", {}).get("review", {}).get("review_infra_retry", 0) if ckpt else 0
+            infra_count = prev + 1
+            _record_gate(
+                v, source_v, "review",
+                {"llm_failed": True, "approved": False,
+                 "review_infra_retry": 0 if infra_count >= 3 else infra_count,  # reset on abandon
+                 "error": str(e)},
+                stage=None,                                    # keep current stage (quality_passed)
+                master_plan=ckpt.get("master_plan") if ckpt else plan,
+                reviewer_feedback=f"Reviewer LLM infra error: {e}",
+                generation_attempt=ckpt.get("generation_attempt", 0),  # do NOT increment
+            )
+            try:
+                log_system_event(
+                    "pipeline.review_infra_error", "warn",
+                    f"Reviewer v{v} LLM crashed (infra) attempt {infra_count}/3",
+                    {"version": v, "infra_retry": infra_count},
+                )
+            except Exception:
+                pass
+            ui.log_history(f"Reviewer LLM infrastructure error (NOT a rejection): {e}", "warn")
+            if infra_count >= 3:
+                return _json_tool_result({"action": "abandon_cycle",
+                    "directive": (f"Reviewer LLM crashed {infra_count}x (infrastructure, NOT a code rejection). "
+                                  f"Soft-abandon: stage stays 'quality_passed', next cycle resumes v{v} at run_review. "
+                                  f"Do NOT retry_workers or run_master. End this cycle."),
+                    "llm_failed": True})
+            return _json_tool_result({"action": "retry_review",
+                "directive": (f"Reviewer LLM crashed (infra, NOT a code rejection). Call run_review AGAIN "
+                              f"(attempt {infra_count}/3). Do NOT retry_workers or run_master."),
+                "llm_failed": True})
         ui.log_history(f"Reviewer error: {e}. Defaulting to rejected.", "warn")
         output = None
     data = parse_json_output(output)
@@ -585,6 +624,44 @@ async def run_critic(args):
     prev_critic = ckpt.get("gate_results", {}).get("critic", {}).get("prev_critic") if ckpt else None
     ui = _get_ui()
     data = await _run_critic(v, source_v, master_plan_str, ui, prev_critic_result=prev_critic)
+
+    # ── LLM infrastructure error short-circuit ──
+    # If the Critic LLM call crashed (NOT a strategic rejection), do NOT treat it
+    # as a score=0 rejection. Retry the critic gate (not the workers), and soft-
+    # abandon after 3 attempts while keeping stage=reviewed so the next cycle
+    # resumes here. No generation_attempt increment, no quality-failure record,
+    # no guardian trigger, no critic_rejected log.
+    if isinstance(data, dict) and data.get("llm_failed"):
+        prev = ckpt.get("gate_results", {}).get("critic", {}).get("critic_infra_retry", 0) if ckpt else 0
+        infra_count = prev + 1
+        _record_gate(
+            v, source_v, "critic",
+            {"llm_failed": True, "approved": False,
+             "critic_infra_retry": 0 if infra_count >= 3 else infra_count,  # reset on abandon
+             "error": data.get("error", "")},
+            stage=None,                                    # keep current stage (reviewed)
+            master_plan=ckpt.get("master_plan") if ckpt else plan,
+            reviewer_feedback=reviewer_feedback,
+            generation_attempt=ckpt.get("generation_attempt", 0),  # do NOT increment
+        )
+        try:
+            log_system_event(
+                "pipeline.critic_infra_error", "warn",
+                f"Critic v{v} LLM crashed (infra) attempt {infra_count}/3",
+                {"version": v, "infra_retry": infra_count},
+            )
+        except Exception:
+            pass
+        if infra_count >= 3:
+            return _json_tool_result({"action": "abandon_cycle",
+                "directive": (f"Critic LLM crashed {infra_count}x (infrastructure, NOT strategy). "
+                              f"Soft-abandon: stage stays 'reviewed', next cycle resumes v{v} at run_critic. "
+                              f"Do NOT retry_workers or run_master. End this cycle."),
+                "llm_failed": True})
+        return _json_tool_result({"action": "retry_critic",
+            "directive": (f"Critic LLM crashed (infra, NOT strategy). Call run_critic AGAIN "
+                          f"(attempt {infra_count}/3). Do NOT retry_workers or run_master."),
+            "llm_failed": True})
 
     if not isinstance(data, dict):
         data = {}

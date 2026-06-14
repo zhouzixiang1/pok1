@@ -276,6 +276,33 @@ def _decide_strategy(combined, current_v, ratings):
     if combined is None:
         return "master", current_v, ()
 
+    # B-class control-flow guard: if the Combined Analyst's LLM call crashed
+    # (infrastructure failure, NOT a business judgement), stagnation status is
+    # UNKNOWN. The combined result's safe default claims "improving / not
+    # stagnant", but that is a guess — we must NOT act on it. In particular we
+    # must avoid misfiring the crossover/stagnation branches (which assume a
+    # trustworthy stagnation signal) and also avoid misreading the optimistic
+    # default. Fall back to a conservative master evolution from current_v with
+    # no crossover parents. The cross-gen mechanical backstop
+    # (_build_cross_gen_constraint_block in run_master) still runs and provides
+    # diversity protection independent of this LLM gate.
+    if combined.get("llm_failed"):
+        log.warning(
+            "Combined analyst reported LLM infrastructure failure — stagnation "
+            "unknown. Proceeding conservatively with master from v%d (no crossover).",
+            current_v,
+        )
+        try:
+            log_system_event(
+                "pipeline.combined_analyst_infra", "warn",
+                f"Stagnation analysis unavailable for v{current_v} (LLM infra error). "
+                "Master proceeding, confidence=low — no crossover triggered.",
+                {"source_v": current_v},
+            )
+        except Exception:
+            pass
+        return "master", current_v, ()
+
     # Source-v loop detection: if recent generations all branched from the same
     # ancestor (typically because LLM analysis anchors on a "stable" intermediate),
     # force branching from the Glicko-rated leader instead.
