@@ -35,6 +35,9 @@
 - v91 is current. LIVE: per-street fold_to_bet/call-down, passivity_score, passive_exploit.py, `_aligned_signal_boost()`, EQR clamp, overbet.py, donk_probe.py, line_reading.py, bluff_heavy_call_widen(), exploit_dispatch, river_value_raise_tier(), classify_preflop_hand() (incl. broadway_suited), `_spr_commitment_gate()`, value-tier sizing floor. STILL ABSENT: board_range_filter, archetype classifier. "bluff_heavy_raise_to_extract" is a phantom module — do not assume it is live.
 
 ## RECENT_LESSONS
+- **v93**: Helper extraction to new modules near the 1500-line cap is a safe, high-value move that resolves OVER-limit crises without behavioral change — fold_gates.py pattern worked cleanly at v93 and should be the default template when strategy.py exceeds limits.
+- **v93**: Pot-odds grounding on all-in fold gates is necessary but insufficient — Critic flagged that opponent modeling (postflop_aggr/fold_to_bet/passivity_score) is still absent despite pool rule requiring it; next fold-gate iteration must add opp-stat conditions, not just equity-vs-price comparison.
+- **v93 归档建议**: Validate v93 ≥100 games vs CS lineage (v47/v48/v50) to confirm pot-odds grounding doesn't cause over-folding to all-ins from aggressive callers — the 0.20 early-exit threshold is hand-tuned and may leak value against players who cheap-bluff-shove the river with frequency.
 - **v93**: Critic evidence: H2H weaknesses: v92 vs v25: 20% (10g, noise), v92 vs v88: 20% (10g, noise), v92 vs v48/v49/v17/v89: 40% (10g, noise) — ALL matchups are 10g samples, insufficient for signal per pool rule '<100g is directional noise'; Experience pool refs: v92 RECENT_LESSON: 'All-in fold gates MUST compute pot odds (to_call/(pot+to_call) < made_strength*0.9) before folding — static made_strength thresholds on all-in paths violate the pool's pot-odds grounding rule' — DIRECTLY implemented, POSTFLOP_STRATEGY: 'Fold/commitment must be pot-odds + opponent-stat grounded, not raw made_strength threshold' — pot-odds DONE, opponent-stat STILL MISSING, GENERAL: 'Helper extraction is a safe high-value move near the 1500-line cap' — extraction is correct and necessary; Diff refs: fold_gates.py:148-157: pot_odds = to_call/(pot+to_call), pot_odds<0.20 early-exit — prevents over-folding to cheap shoves, fold_gates.py:161,164,167,171: each fold condition now requires pot_odds >= made_strength*0.9 — equity-vs-price gating, strategy.py:780,816: call sites updated to pass to_call,pot to _allin_board_texture_fold
 - **v92**: All-in fold gates MUST compute pot odds (to_call/(pot+to_call) < made_strength*0.9) before folding — static made_strength thresholds on all-in paths violate the pool's pot-odds grounding rule and risk over-folding vs aggressive bluffers.
 - **v92**: strategy.py at 1505/1500 lines is OVER the core limit — next generation MUST extract a helper module (e.g., fold_gates.py) before any further strategy.py additions.
@@ -46,6 +49,7 @@
 - **v90**: nutted_risk parameter IS consumed (tightens strength_cap when opponent likely holds monsters) — reviewers must trace derived locals before flagging unused.
 - **v90 (improvement)**: Validate `_spr_commitment_gate` at >=100g vs CS lineage (v47/v48/v50/v62); if H2H drops below 45% vs any CS opponent, loosen gate 2's strength_cap 0.50→0.55.
 - **v89**: Preflop hand-class saturation fix COMPLETE — all three preflop defense spots use `classify_preflop_hand()`. Future preflop work targets new axes (limp/call ranges, 4-bet sizing, blind defense width), not strength thresholds.
+
 
 
 
