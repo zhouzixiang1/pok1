@@ -26,7 +26,8 @@
       "Bash(curl -s http://localhost:8000/api/control/status)",
       "Bash(curl -s http://localhost:8000/api/evolution/state)",
       "Bash(sort -t'v' -k2 -n)",
-      "Bash(bash *)"
+      "Bash(bash *)",
+      "Bash(awk '{print $5, $9}')"
     ]
   }
 }
