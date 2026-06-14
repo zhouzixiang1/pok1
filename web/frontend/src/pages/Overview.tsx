@@ -1,6 +1,6 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { Link } from "react-router";
-import { useRatings, useMatchStats, useDaemonStatus, useRateLimit, useBots, useRecentMatches, useH2H, useGenerations, useSchedulerStatus } from "../context/DataProvider";
+import { useRatings, useMatchStats, useDaemonStatus, useRateLimit, useBots, useRecentMatches, useH2H, useGenerations } from "../context/DataProvider";
 import { api } from "../api/client";
 import { controlApi, type ControlStatus } from "../api/control";
 import type { PipelineCheckpoint } from "../api/types";
@@ -125,10 +125,11 @@ export default function Overview() {
   const stats = useMatchStats();
   const bots = useBots();
   const daemon = useDaemonStatus();
-  const scheduler = useSchedulerStatus();
   const [summary, setSummary] = useState<Record<string, { peak_rating: number; current_rating: number; trend: number; periods: number; peak_h2h_avg_wr?: number; current_h2h_avg_wr?: number; wr_trend?: number }>>({});
   const [controlStatus, setControlStatus] = useState<ControlStatus | null>(null);
   const [checkpoint, setCheckpoint] = useState<PipelineCheckpoint | null>(null);
+  const [localElapsed, setLocalElapsed] = useState(0);
+  const lastDaemonAgeRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     api.historySummary().then(setSummary).catch((e) => console.error("[Overview] API error:", e));
@@ -146,6 +147,20 @@ export default function Overview() {
     refresh();
     const id = setInterval(refresh, 5000);
     return () => clearInterval(id);
+  }, []);
+
+  // Reset local timer when SSE pushes a new daemon age value
+  useEffect(() => {
+    if (daemon?.last_update_age_seconds !== lastDaemonAgeRef.current) {
+      lastDaemonAgeRef.current = daemon?.last_update_age_seconds;
+      setLocalElapsed(0);
+    }
+  }, [daemon?.last_update_age_seconds]);
+
+  // Local 1s tick so "X秒前" increments between SSE pushes
+  useEffect(() => {
+    const timer = setInterval(() => setLocalElapsed((e) => e + 1), 1000);
+    return () => clearInterval(timer);
   }, []);
 
   if (ratings.length === 0) {
@@ -168,8 +183,9 @@ export default function Overview() {
   const top5 = ratings.slice(0, 5);
   const rest = ratings.slice(5);
   const daemonAge = daemon?.last_update_age_seconds;
-  const daemonAgeStr = daemonAge != null
-    ? daemonAge < 0 ? "从未" : daemonAge < 60 ? `${Math.round(daemonAge)}秒前` : `${Math.round(daemonAge / 60)}分钟前`
+  const effectiveAge = daemonAge != null ? daemonAge + localElapsed : null;
+  const daemonAgeStr = effectiveAge != null
+    ? effectiveAge < 0 ? "从未" : effectiveAge < 60 ? `${Math.round(effectiveAge)}秒前` : `${Math.round(effectiveAge / 60)}分钟前`
     : "—";
 
   const rateLimit = useRateLimit();
@@ -217,22 +233,6 @@ export default function Overview() {
           <DaemonToggle />
           <span className="text-[10px] text-gray-400">{daemonAgeStr}</span>
         </div>
-        {scheduler && (
-          <>
-            <div className="w-px h-5 bg-gray-200 dark:bg-gray-700" />
-            <div className="flex items-center gap-1.5">
-              <Badge variant={scheduler.pending_jobs > 0 ? "warning" : "neutral"} size="sm">
-                {scheduler.pending_jobs} 待处理
-              </Badge>
-              <Badge variant={scheduler.claimed_jobs > 0 ? "success" : "neutral"} size="sm">
-                {scheduler.claimed_jobs} 执行中
-              </Badge>
-              <Badge variant="neutral" size="sm">
-                {scheduler.recent_results} 已完成
-              </Badge>
-            </div>
-          </>
-        )}
       </div>
 
       {/* Top 5 featured + Activity + Pipeline */}
