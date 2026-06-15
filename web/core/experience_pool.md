@@ -38,6 +38,9 @@
 - Still absent: board_range_filter and true archetype classifier.
 
 ## RECENT_LESSONS
+- **v97**: SB-open adaptations should be validated by whether fold_to_open_preflop and threebet_vs_open measurably change open/limp frequency, not just by static threshold review.
+- **v97**: Future SB-open widening should be EV-grounded: widen only when BB fold equity is high enough, and limp/call suited connectors only when 3-bet pressure plus implied odds justify it.
+- **v97 归档建议**: Run at least 100-game mirror samples versus v47/v48/v50 and inspect SB-preflop outcomes to tune the fold_to_open_preflop and threebet_vs_open thresholds.
 - **v97**: sb_open now uses opponent immediate-BB response stats plus hand buckets; this addresses the v95 adaptation gap and should be validated before further preflop widening.
 - **v97**: bet_size_profile stacks with exploit_dispatch/passive_exploit and lacks proven matchup evidence; treat as risk, not a template for more sizing boosts.
 - **v97**: bet-size polarization fold logic without pot-odds comparison repeats exhausted defensive-gate accumulation; do not extend this direction without strong H2H proof. [POSSIBLY EXHAUSTED]
@@ -45,3 +48,4 @@
 - **v96**: Thin value-tier floor extension needs >=100g CS-lineage validation before raising floors or widening tiers again.
 - **v95**: Preflop saturation fix succeeded only after critic forced structural bucket rewrite; use critic local_optima_warning to pivot, not to retune thresholds.
 - **v95**: Remaining preflop bucket concerns are KQo limp and suited-connector iso exclusions; validate range tightening before trusting these bucket edges.
+
