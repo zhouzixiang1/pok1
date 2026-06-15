@@ -58,6 +58,13 @@ MAX_LINES_PER_FILE = 2000       # Core strategy files (strategy.py, postflop.py)
 MAX_LINES_HELPER = 1500         # All other .py files — base limit
 MAX_LINES_HARD_CAP = 2500       # Hard cap: no .py file may exceed this, even with adaptive budget
 LINE_GROWTH_BUDGET = 0.15       # Adaptive limit = max(base, source_lines * (1 + budget))
+
+# Strip a trailing status annotation the LLM may append to target_files entries,
+# e.g. "bet_size_profile.py (NEW)" or "strategy.py [CREATE]". Requires a BARE
+# keyword inside the brackets so legitimate names like "report(2).py" survive.
+_TARGET_ANNOTATION_RE = re.compile(
+    r"\s*[\(\[](?:NEW|CREATE|DELETE|MODIFIED)[\)\]]\s*$", re.IGNORECASE
+)
 CORE_STRATEGY_FILES = {"strategy.py", "postflop.py"}
 MIN_DECISION_PASS_RATE = 0.7
 MIN_CROSSOVER_DECISION_RATE = 0.6
@@ -451,6 +458,7 @@ def _target_rel(path, version):
     if not raw:
         return ""
     raw = raw.replace("\\", "/")
+    raw = _TARGET_ANNOTATION_RE.sub("", raw).strip()
     marker = f"bots/claude_v{version}/"
     if marker in raw:
         return raw.split(marker, 1)[1]

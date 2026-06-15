@@ -807,6 +807,53 @@ def _build_cross_gen_constraint_block(next_v):
     return "".join(parts)
 
 
+def _incremental_reset_next_dir(next_dir, source_dir):
+    """Incremental reset: overwrite files present in source (undo worker edits to
+    existing files), PRESERVE worker-created NEW files (absent from source). Returns
+    the list of preserved NEW filenames.
+
+    Invariants after this call:
+      - files in both source+next -> identical to source (authoritative overwrite)
+      - files only in next (worker-created NEW) -> untouched (survive the reset)
+      - files only in source -> created
+      - .completed is never touched
+    """
+    source_names = {item.name for item in source_dir.iterdir()}
+    preserved = []
+    # Walk next_dir entries: clean stale bytecode, preserve NEW files, remove files
+    # that exist in source so the source copy overwrites authoritatively.
+    for item in next_dir.iterdir():
+        if item.name == ".completed":
+            continue
+        if item.name == "__pycache__" or item.suffix == ".pyc":
+            # Clean stale bytecode
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+        elif item.name not in source_names:
+            # Worker-created NEW file absent from source: PRESERVE it.
+            preserved.append(item.name)
+        else:
+            # Exists in source: remove so source copy overwrites authoritatively.
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+    # Copy all source entries into next_dir (skip .completed, __pycache__, .pyc).
+    # Source files are recreated/overwritten; NEW files preserved above are untouched.
+    for item in source_dir.iterdir():
+        if item.name == ".completed" or item.name == "__pycache__":
+            continue
+        if item.suffix == ".pyc":
+            continue
+        if item.is_dir():
+            shutil.copytree(item, next_dir / item.name,
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        else:
+            shutil.copy2(item, next_dir / item.name)
+    return preserved
+
 
 @tool("execute_workers", "Execute worker tasks to modify bot code. Each task has worker_id, role, target_files, worker_prompt.", {"tasks": list, "next_v": int, "source_v": int, "reviewer_feedback": str})
 async def execute_workers(args):
@@ -893,25 +940,15 @@ async def execute_workers(args):
     if reviewer_feedback and ckpt.get("stage") in ("workers_done", "reviewed", "critic_checked"):
         source_dir_r = get_bot_dir(source_v)
         if source_dir_r.exists() and next_dir.exists():
-            _log.info(f"Resetting v{next_v} code from source v{source_v} before worker retry")
-            # Remove all files except .completed
-            for item in next_dir.iterdir():
-                if item.name != ".completed":
-                    if item.is_dir():
-                        shutil.rmtree(item)
-                    else:
-                        item.unlink()
-            # Copy fresh source code (skip .completed, __pycache__, .pyc)
-            for item in source_dir_r.iterdir():
-                if item.name in (".completed", "__pycache__"):
-                    continue
-                if item.suffix == ".pyc":
-                    continue
-                if item.is_dir():
-                    shutil.copytree(item, next_dir / item.name,
-                                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-                else:
-                    shutil.copy2(item, next_dir / item.name)
+            _log.info(f"Resetting v{next_v} code from source v{source_v} before worker retry (incremental, preserves NEW files)")
+            # Incremental reset: overwrite source files (undo worker edits) but
+            # PRESERVE worker-created NEW files absent from source. This avoids
+            # wiping NEW files on redundant orchestrator re-calls of execute_workers
+            # (which would otherwise cause zero-changes wasted retries).
+            preserved = _incremental_reset_next_dir(next_dir, source_dir_r)
+            if preserved:
+                _log.info("Preserved %d worker-created NEW file(s) across reset: %s",
+                          len(preserved), preserved)
 
         # Re-apply known fixes after resetting from source (source may be older/unfixed)
         from fix_injection import apply_known_fixes, log_fix_application

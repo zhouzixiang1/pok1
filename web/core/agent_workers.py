@@ -133,6 +133,27 @@ def _target_rel_set(task, next_v):
     return result
 
 
+def _classify_target_change(src_exists, dst_exists, src_text, dst_text):
+    """Classify how a target file changed. Returns one of:
+    new_file (worker created with real content, success) | invalid_target (path
+    resolves nowhere, or worker wrote an empty file, failure) | deleted (existed
+    now gone, failure) | unchanged (identical, failure) | modified (success).
+
+    Branch order matters: every not-src_exists case is resolved BEFORE the
+    src_text==dst_text comparison, so an empty new-file (False, True, "", "") is
+    classified invalid_target, not folded into unchanged via the ""=="" equality."""
+    if not src_exists:
+        # Source doesn't exist — worker output lands on a new path.
+        if dst_exists and dst_text:
+            return "new_file"        # worker wrote real content to a brand-new file
+        return "invalid_target"      # bogus path (neither side) OR empty file written
+    if not dst_exists:
+        return "deleted"
+    if src_text == dst_text:
+        return "unchanged"
+    return "modified"
+
+
 async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                               context_files, ui, reviewer_feedback,
                               source_v=None, parallel_mode=False):
@@ -223,19 +244,41 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             )
             continue
 
-        # Verify target files were actually modified (catch zero-change workers)
+        # Verify target files were actually modified (catch zero-change workers
+        # and bogus paths that resolve to nothing on disk).
         target_rels = [_target_rel(f, next_v) for f in task.get("target_files", [])]
         target_rels = [r for r in target_rels if r]
         if target_rels and source_v is not None:
             src_dir = get_bot_dir(source_v)
-            unchanged = []
+            invalid_targets = []  # paths that resolve nowhere (or were deleted)
+            unchanged = []        # genuinely identical
             for rel in target_rels:
                 src_file = src_dir / rel
                 dst_file = next_dir / rel
                 src_text = src_file.read_text() if src_file.exists() else ""
                 dst_text = dst_file.read_text() if dst_file.exists() else ""
-                if src_text == dst_text:
+                change = _classify_target_change(
+                    src_file.exists(), dst_file.exists(), src_text, dst_text
+                )
+                if change in ("invalid_target", "deleted"):
+                    invalid_targets.append(rel)
+                elif change == "unchanged":
                     unchanged.append(rel)
+                # new_file and modified are successes — skip.
+            if invalid_targets:
+                _last_reason = f"invalid/deleted target files: {', '.join(invalid_targets)}"
+                _last_failure_type = "invalid_target"
+                base_worker_prompt += (
+                    f"\n\nCRITICAL: These target paths do NOT exist on disk: {', '.join(invalid_targets)}. "
+                    f"You likely wrote to a bogus path (e.g. an unstripped \"(NEW)\" suffix). "
+                    f"Write each file to its PLAIN relative path, e.g. 'postflop.py' — no annotations. "
+                    f"Use the Edit tool to create/edit the file at the correct path."
+                )
+                ui.log_history(
+                    f"Worker {w_id} ({role}) invalid/deleted targets: {', '.join(invalid_targets)}",
+                    "warn",
+                )
+                continue
             if unchanged:
                 _last_reason = f"zero changes in target files: {', '.join(unchanged)}"
                 _last_failure_type = "zero_changes"
