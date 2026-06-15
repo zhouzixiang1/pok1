@@ -38,6 +38,8 @@
 - Crossover-preservation checklist: keep durable primitives (`classify_preflop_hand`, `river_value_raise_tier`, `fold_gates`, `exploit_dispatch`) from being silently rebased away.
 
 ## RECENT_LESSONS
+- **v99**: Do not treat v99's SB-open bucket split as validated until >=100-game H2H samples show whether marginal/implied-odds hands gain EV versus disciplined BB defenders.
+- **v99 归档建议**: Next validation should isolate SB open/limp/fold and fold-to-3bet outcomes versus v87, v29, and v88-style disciplined BB defenders.
 - **v99**: Critic evidence: H2H weaknesses: Parent claude_v98 has a weak low-sample matchup vs claude_v87: claude_v87 vs claude_v98 is 7-3, so v98 win rate is 30%., Master also targeted borderline weak 10-game matchups vs claude_v29 and claude_v88, each implying v98 at 40%., Overall parent claude_v98 stats are 95-75 over 170 games, win_rate 55.88%, so this is not a global collapse but a matchup-specific refinement.; Experience pool refs: OPPONENT_MODELING: SB-open adaptation has dedicated open-response confidence and should use confidence gates., RECENT_LESSONS v98: preserve premium/strong/mid-pair/big-card raises while experimenting with open-response confidence., RECENT_LESSONS v97: future SB-open widening must be EV-grounded — widen only with high BB fold equity; limp/call suited connectors only when 3-bet pressure plus implied odds justify it.; Diff refs: bots/claude_v99/strategy.py::_sb_open_bucket_action now separates implied hands ('small_pair', 'suited_ace', 'suited_connector') from generic 'playable' marginal hands., Premium, strong_pair, mid_pair, and big_cards still return 'raise', preserving strong preflop value range., Against high-fold BB, implied and marginal hands raise; against pressure/sticky BB, implied hands call while generic playable hands fold; trash raises only against high-fold BB and otherwise folds.
 - **v98**: SB-open opponent-response reads must be validated with open-response sample counts, firing-rate/open-frequency logs, and >=100g H2H before treating fold_to_open/threebet gates as proven.
 - **v98**: Dedicated `open_response_confidence` is better than generic total-action confidence for SB-open adaptation; preserve premium/strong/mid-pair/big-card raises while experimenting.
@@ -45,4 +47,5 @@
 - **v97**: `bet_size_profile` stacks with exploit_dispatch/passive_exploit without proven matchup evidence; treat as risk, not a template for more sizing boosts.
 - **v97**: Bet-size polarization fold logic without pot-odds comparison repeats exhausted defensive-gate accumulation; do not extend without strong H2H proof. [POSSIBLY EXHAUSTED]
 - **v96**: Relaxing contradictory AND gates to lower-magnitude OR gates can revive dead opponent-model logic, but requires bleed checks vs balanced opponents.
+
 
