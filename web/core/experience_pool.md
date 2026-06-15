@@ -1,53 +1,38 @@
 ## OPPONENT_MODELING
-- Continuous opponent stats are live (`postflop_aggr`, `fold_to_raise`, barrel frequency, per-street fold/call-down, passivity); use confidence gates before acting, but avoid contradictory multi-signal AND gates that make logic dead.
-- SB-open adaptation has dedicated open-response confidence (`open_response_samples`, `open_response_confidence`); validate with firing-rate/open-frequency shifts and >=100g H2H before treating it as proven or widening further.
-- `estimate_preflop_strength` saturates pocket pairs to 1.0; use `preflop_hand_profile()` / `classify_preflop_hand()` buckets for preflop range gates.
-- Five primary preflop spots use hand-class buckets; residual `_should_4bet_light()` still uses raw thresholds and should be migrated before more 4-bet work.
-- No live archetype classifier exists; do not confuse `value_profile['tier']` with opponent archetype.
-- Still absent: board_range_filter and true archetype classifier.
+- Use live continuous stats (`postflop_aggr`, `fold_to_raise`, barrel frequency, per-street fold/call-down, passivity) only behind confidence gates; avoid contradictory multi-signal AND gates that make logic dead.
+- SB-open/BB-defense adaptation must use open-response evidence (`open_response_samples`, `open_response_confidence`, pfr/vpip), not generic action confidence or unknown-profile assumptions; do NOT treat unknown opener as tight by default.
+- `estimate_preflop_strength` saturates pocket pairs to 1.0; use `preflop_hand_profile()` / `classify_preflop_hand()` buckets for preflop range gates. preflop hand-class threshold/range work is now mature; verify residual raw-threshold 4-bet logic before adding more. [POSSIBLY EXHAUSTED]
+- Do not confuse `value_profile['tier']` with a true opponent archetype; verify any claimed archetype/board-range primitive is live before planning around it.
+- SB-open opponent-response reads must use `open_response_confidence`; validate with sample counts, firing-rate/open-frequency logs, and >=100g H2H.
 
 ## POSTFLOP_STRATEGY
 - Defensive fold-gate accumulation is saturated; add no new SPR/all-in/texture/pot-odds/opponent-stat/polarization fold gate without >=100g validation and a distinct decision point. [POSSIBLY EXHAUSTED]
-- `_spr_commitment_gate()` before `must_continue_vs_raise` is the existing successful structural pattern, not a license to keep adding SPR-style fold gates; avoid `should_fold_postflop` threshold tuning. [POSSIBLY EXHAUSTED]
-- Pot-odds grounding is mandatory for large-fold decisions; folds based only on bet-size polarization or board fear risk over-folding.
-- Value paths should use selection/guard changes, not stacked sizing deltas: add high-aggression exclusions, nut/tier guards, and >=100g validation vs aggressive lineages.
-- New value tiers must avoid overlap with earlier return guards; exclude handled bands or move guards to prevent dead code.
+- SPR logic is inlined into `should_fold_postflop` (spr>4.0 gate); the old `_spr_commitment_gate()` module name is not a live primitive — avoid `should_fold_postflop` threshold tuning. [POSSIBLY EXHAUSTED]
+- Value paths should use selection/guard changes, not stacked sizing deltas: add high-aggression exclusions, nut/tier guards, and >=100g validation vs aggressive lineages. New value tiers must avoid overlap with earlier return guards.
 - Audit action-selection paths for raw-ratio bypasses skipping `choose_raise`; dispatch-bypass fixes have produced real gains.
 - Detection-without-handler is recurring dead code; every new detector must wire a consuming action site in the same generation.
 
 ## BLUFF_CALIBRATION
 - Bluff only with opponent evidence: prefer high-fold OR low-aggression profiles with confidence; suppress bluffs against high-aggression / low-fold opponents.
-- Structural bluff modules (`4-bet_light`, barrel, check-raise trap, overbet, donk_probe) need >=100g H2H validation before being treated as successful or expanded to more matchups.
+- Structural bluff modules (`4-bet_light`, barrel, check-raise trap, overbet, donk_probe) need >=100g H2H validation before being treated as successful or expanded.
 - Contradictory behavior-signal AND gates become dead code; combine alternative opponent tendencies with OR logic and smaller magnitudes.
-- Re-measure whether pot-odds grounding alone controls sticky-caller bleed before reintroducing `bluff_suppress`.
-- Relaxing contradictory AND gates to lower-magnitude OR gates can revive dead opponent-model logic, but requires bleed checks vs balanced opponents.
+- `bluff_suppress` is absent in current bots; re-measure whether pot-odds grounding alone suffices before reintroducing sticky-caller bleed control.
 
 ## PARAMETER_TUNING
-- Standalone constant/margin tuning of sizing ratios and call thresholds has no sustained gain; constants require structural rationale plus per-constant H2H backing. [POSSIBLY EXHAUSTED]
-- Opponent-stat-driven value sizing boosts at `choose_raise` have repeated without confirmed underbetting evidence; avoid stacking more sizing deltas. [POSSIBLY EXHAUSTED]
-- `bet_size_profile.py` overlaps exploit_dispatch/passive_exploit and contains a no-EV small-raise boost; treat stacked `value_sizing_delta` as risk until matchup evidence proves value.
-- Thin value-tier floors need >=100g calling-station-lineage validation before raising floors or widening tiers again.
+- Standalone constant/margin tuning of sizing ratios and call thresholds has no sustained gain; Tuner changes must attach constants to a structural hypothesis and per-constant H2H backing. [POSSIBLY EXHAUSTED]
+- Opponent-stat-driven value sizing boosts at `choose_raise` have repeated without confirmed underbetting evidence; stacked `value_sizing_delta` is risk until matchup evidence proves value. [POSSIBLY EXHAUSTED]
+- Thin value-tier floors need >=100g calling-station-lineage validation before raising floors or widening tiers.
 
 ## GENERAL
-- Any new structural path, constant change, or matchup target requires >=100g H2H validation before treating it as successful, repeating it, or expanding it further; smaller samples are directional noise only.
+- Any new structural path, constant change, or matchup target requires >=100g H2H validation before treating it as successful, repeating it, or expanding it; smaller samples (sub-15-game) are directional noise only.
 - Select crossover parents by H2H win-rate and diversity, not raw Glicko alone.
 - One mechanism per generation except sanctioned crossover diversity rescues.
-- Worker boundaries: Tuner must change constants; Architect must not tune constants.
-- Crossover skips direction_audit/master/workers but must run quality gates, review, critic, precommit eval, commit, and archivist.
-- Post-crossover correctness verification is mandatory: `TOTAL_HANDS=70`, wheel straight, strict re-raise compliance.
-- Helper extraction is safe near the line cap; `fold_gates.py` is the template for `strategy.py` reduction.
-- Crossover-preservation checklist: keep currently wired durable primitives (`classify_preflop_hand`, `river_value_raise_tier`, `fold_gates`, `exploit_dispatch`) from being silently rebased away; periodically re-check they remain live.
+- Worker boundaries: Tuner changes constants only when tied to structural rationale; Architect must not tune constants.
+- Crossover skips direction_audit/master/workers but must run quality gates, review, critic, precommit eval, commit, and archivist; post-crossover correctness verification (`TOTAL_HANDS=70`, wheel straight, strict re-raise) is mandatory.
+- Helper extraction is safe near the line cap; verify wired durable primitives (`classify_preflop_hand`, `river_value_raise_tier`, `exploit_dispatch`, `_sb_open_bucket_action`, `_bb_vs_raise_bucket_action`, `postflop_line_plan`, `postflop_line_sizing`) remain live before and after rebases/crossovers.
 
 ## RECENT_LESSONS
-- **v100**: When refactoring BB defense versus SB opens, avoid treating unknown opener profiles as tight by default; require pfr/vpip evidence before folding generic playable hands.
-- **v100 归档建议**: Track BB-vs-SB-open outcomes specifically against loose/aggressive SB lineages, focusing on the unknown-profile branch and suited-ace/suited-connector bluff 3-bet success.
-- **v100**: Critic evidence: H2H weaknesses: v99 nearest weak matchups are claude_v13, claude_v85, claude_v88, claude_v92, claude_v96, and claude_v97 at 40.0% over only 10 games each; no current matchup is confirmed below 40%, so H2H evidence is low-confidence., v99 overall bot_stats: 170 wins / 120 losses / 290 games, 58.62% win rate; good aggregate performance but still low coverage for isolating this BB-defense change.; Experience pool refs: experience_pool line 4: estimate_preflop_strength saturates pocket pairs; use preflop_hand_profile/classify_preflop_hand buckets for preflop range gates. This change follows that lesson by using hand_cat buckets., experience_pool line 26 warns standalone constant/margin tuning is exhausted; this change is structural bucket logic rather than isolated constant tuning., experience_pool lines 42-43 note v99 SB-open bucket split is not yet validated and separates implied hands from generic playable marginals; v100 mirrors that concept on the BB defense side, so it is adjacent but a distinct decision point.; Diff refs: bots/claude_v100/strategy.py adds _bb_vs_raise_bucket_action(), using confidence/vpip/pfr/fold_to_raise, pot_odds, preflop_strength, win_rate, trash_hand, and hand_cat to choose value_raise/bluff_raise/call/fold., choose_preflop_spot_action() bb_vs_raise block now calls _bb_vs_raise_bucket_action() and only calls when defend_action == 'call'., The old unconditional broad defense was removed: strong_pair/mid_pair/playable no longer always call, and the raw fallback preflop_strength >= 0.37 or win_rate >= pot_odds_pf - 0.02 no longer keeps marginal hands in by default.
-- **v99**: SB-open bucket split is not validated until >=100-game H2H shows marginal/implied-odds EV versus disciplined BB defenders; next validation should isolate SB open/limp/fold and fold-to-3bet outcomes vs v87, v29, and v88-style lineages.
-- **v99**: `_sb_open_bucket_action` now separates implied hands (`small_pair`, `suited_ace`, `suited_connector`) from generic playable marginals while preserving premium/strong/mid-pair/big-card raises; high-fold BB raises wider, pressure/sticky BB calls implied hands and folds generic playable hands.
-- **v98**: SB-open opponent-response reads must use `open_response_confidence` rather than generic total-action confidence; validate with open-response sample counts, firing-rate/open-frequency logs, and >=100g H2H.
-- **v98**: Preserve premium/strong/mid-pair/big-card raises while experimenting with SB-open response adaptation.
-- **v97**: Future SB-open widening must be EV-grounded: widen only with high BB fold equity; limp/call suited connectors only when 3-bet pressure plus implied odds justify it.
-- **v97**: `bet_size_profile` stacks with exploit_dispatch/passive_exploit without proven matchup evidence; treat it as risk, not a template for more sizing boosts.
-- **v97**: Bet-size polarization fold logic without pot-odds comparison repeats exhausted defensive-gate accumulation; do not extend without strong H2H proof. [POSSIBLY EXHAUSTED]
-
-
+- **v101**: New `facing_barrel_continuation()` barrel fold signal (opp_prior_postflop_raise_count detection, opponent_model barrel_freq≥0.55 *1.15 / postflop_aggr≥0.50 *0.7), wired into call_margin stack. Based on 20g H2H weakness evidence (40% vs v79/v89/v93/v98); crosses sub-15g noise floor but requires >=100g validation before expansion. Addresses prior critic feedback on barrel over-calling.
+- **v101**: New `postflop_lines.py` — `postflop_line_plan()` (delayed_cbet, second_barrel, river_give_up, planned_river_value) and `postflop_line_sizing()` (fixed ratios per line). Line-selection hypothesis is directionally defensible, but fixed-ratio sizing IS the exhausted standalone sizing-tuning direction — must earn >=100g H2H proof before assuming success. [POSSIBLY EXHAUSTED]
+- **v100**: `_bb_vs_raise_bucket_action()` BB-vs-SB-open bucket split. Present in v101 working tree (strategy.py:391-417). Uses `tight_opener = (not has_read) or (...)` — **active risk**: violates "do NOT treat unknown opener as tight by default" pool lesson. If evolving, must switch to pfr/vpip/open-response evidence and validate suited-ace/suited-connector bluff 3-bets over >=100g H2H. [POSSIBLY EXHAUSTED]
+- **v99**: `_sb_open_bucket_action()` separates implied hands from playable marginals. Present in v101 working tree (strategy.py:356-388). Unvalidated; isolate open/limp/fold + fold-to-3bet outcomes vs disciplined BB defenders over >=100g H2H before expanding. [POSSIBLY EXHAUSTED]
