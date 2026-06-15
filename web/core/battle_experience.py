@@ -35,8 +35,15 @@ from evolution_infra import (
     substitute_template,
 )
 import replay_analysis
+from llm_failure import is_llm_infra_error
 
 log = logging.getLogger("pok.battle_exp")
+
+
+def _classify_llm_error(e) -> str:
+    """Return "infra" for LLM infrastructure errors (SDK/timeout/connection),
+    "business" otherwise. Used for typed battle_exp telemetry."""
+    return "infra" if is_llm_infra_error(e) else "business"
 
 # ──────────────────────────────────────────────
 # Constants
@@ -276,7 +283,18 @@ def _experience_loop():
                         summary = fut.result(timeout=60)
                         results.append((entry, True, summary))
                     except Exception as e:
-                        log.warning("Battle experience summary failed for %s: %s", match_id, e)
+                        _kind = _classify_llm_error(e)
+                        log.warning("Battle experience summary failed for %s (%s): %s", match_id, _kind, e)
+                        try:
+                            from system_log import log_system_event
+                            log_system_event(
+                                f"battle_exp.{_kind}_error",
+                                "warn" if _kind == "infra" else "info",
+                                f"Match {match_id} summary failed ({_kind}): {e}",
+                                {"match_id": str(match_id), "kind": _kind, "error": str(e)[:200]},
+                            )
+                        except Exception:
+                            pass
                         results.append((entry, False, None))
 
             # Single cumulative LLM merge + write (serial, correct chaining).
@@ -511,7 +529,18 @@ def _run_sync_llm_call(prompt: str) -> str | None:
         log.warning("LLM call timed out after %ds — skipping update", LLM_TIMEOUT)
         return None
     except Exception as e:
-        log.warning("Sync LLM call failed: %s", e)
+        _kind = _classify_llm_error(e)
+        log.warning("Sync LLM call failed (%s): %s", _kind, e)
+        try:
+            from system_log import log_system_event
+            log_system_event(
+                f"battle_exp.{_kind}_error",
+                "warn" if _kind == "infra" else "info",
+                f"Sync LLM call failed ({_kind}): {e}",
+                {"kind": _kind, "error": str(e)[:200]},
+            )
+        except Exception:
+            pass
         return None
 
 
