@@ -34,8 +34,10 @@ from claude_agent_sdk import (
     ThinkingBlock,
     CLINotFoundError,
     ProcessError,
+    ClaudeSDKError,
 )
 from tools import evolution_server, inject_ui
+from llm_failure import is_llm_infra_error
 from shutdown_manager import ShutdownManager
 from system_log import log_system_event, set_ui as set_system_log_ui
 import logging
@@ -102,6 +104,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
     cycle_completed = False
     auth_error = False
     cycle_failed = False  # P1: generic-exception path must not return partial cost (fake success)
+    infra_error = False  # P2: SDK signature/timeout/connection — distinct from real auth (-0.5 vs -1.0)
     # Snapshot sub-agent costs at start to compute delta on return.
     # ui.gen_cost_total tracks ALL sub-agent costs (Master, Workers, etc.)
     # via ui.update_cost() called from llm_query.py. The orchestrator's own
@@ -446,6 +449,12 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     log.debug("gen.aclose failed: %s", e)
             cycle_failed = True
             err_str = str(e).lower()
+            # P2: classify infra (SDK signature/timeout/connection) vs real business failure.
+            # is_llm_infra_error is type-based (ClaudeSDKError, asyncio.TimeoutError,
+            # ConnectionError, OSError) — same classifier used by tool_gates/agent_review
+            # for critic/reviewer infra short-circuit (commit 5c14d01). Keyword fallback
+            # remains for defense-in-depth (older SDK error formats).
+            is_infra = is_llm_infra_error(e) or 'signature' in err_str or 'missing required field' in err_str
             # SDK streaming errors (missing 'signature' field on thinking blocks,
             # observed with claude_agent_sdk 0.2.91 + adaptive thinking) leave the
             # session broken — resuming replays into the same crash (the v84
@@ -453,20 +462,21 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             # thinking so this no longer fires, but the guard prevents silent
             # recurrence if thinking is ever re-enabled or another SDK stream
             # error appears.
-            if 'signature' in err_str or 'missing required field' in err_str:
+            if is_infra:
+                infra_error = True  # ALSO set here — signature path must trigger -0.5 sentinel, not -1.0
                 _clear_orchestrator_session()
                 if ui:
                     ui.log_history(
-                        "[Orchestrator] SDK stream error (corrupted session) — "
+                        f"[Orchestrator] LLM infrastructure error ({type(e).__name__}, NOT auth) — "
                         "session cleared, next cycle starts fresh.", "warn",
                     )
                 else:
-                    log.warning("SDK stream error, session cleared: %s", e)
+                    log.warning("LLM infra error (%s), session cleared: %s", type(e).__name__, e)
                 try:
                     from system_log import log_system_event
-                    log_system_event("pipeline.sdk_stream_error", "error",
-                        f"Orchestrator SDK stream error (session cleared): {e}",
-                        {"session_cleared": True})
+                    log_system_event("pipeline.sdk_stream_error", "warn",
+                        f"Orchestrator LLM infra error ({type(e).__name__}): {e}",
+                        {"session_cleared": True, "exception_type": type(e).__name__})
                 except Exception:
                     pass
             else:
@@ -482,22 +492,30 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
     if cycle_completed:
         _clear_orchestrator_session()
 
-    # Return negative cost to signal auth error for fast backoff
+    # Return negative cost to signal auth error for fast backoff.
+    # P2: auth_error returns must be ≤ -1.0 to never collide with the infra -0.5 sentinel
+    # used by cycle_failed below. Real cycle costs that round to <1.0 (e.g. quick auth-fail
+    # before any sub-agent ran) are clamped up to -1.0.
     if auth_error:
-        return -abs(total_cost) if total_cost > 0 else -1.0
+        if total_cost > 0:
+            return -max(abs(total_cost), 1.0)
+        return -1.0
 
     # P1: a crashed cycle must NOT return partial cost > 0. orchestrator_loop's
     # `if cost >= 0` branch would treat it as success, run cleanup, and log
     # "gen complete" — masking the failure. This was the v84 deadlock amplifier:
     # each signature-error crash was recorded as a $4.13/$0.00 "complete" gen
-    # while pipeline_state never advanced past quality_passed. Return -1.0 so the
-    # loop retries instead of pretending success. (Session already cleared above
-    # for SDK stream errors; for other exceptions the loop's cost<0 branch clears
-    # it before retry.)
+    # while pipeline_state never advanced past quality_passed. Return -1.0 (or
+    # -0.5 for infra errors) so the loop retries instead of pretending success.
+    # P2: -0.5 for infra (SDK signature/timeout/connection) — orchestrator_loop's
+    # cost<0 branch routes -0.5 to short backoff (15s) instead of misclassifying
+    # as auth error (300s). -0.5 is mathematically distinct from -1.0 and
+    # -max(abs(cost), 1.0) (auth clamp ≥1.0). Session already cleared above for
+    # infra errors; for other exceptions the loop's cost==-1.0 branch clears it.
     if cycle_failed:
         if ui and total_cost > 0:
             ui.update_cost("Orchestrator", total_cost, None)
-        return -1.0
+        return -0.5 if infra_error else -1.0
 
     # On non-happy paths (KeyboardInterrupt — explicit user interrupt), total_cost
     # may only be the Orchestrator's partial session cost. Return the full tracked
@@ -766,6 +784,38 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                 from rate_limiter import rate_limiter
                 if rate_limiter.is_blocked():
                     continue
+
+                # P2: LLM infra error (SDK signature/timeout/connection) — short backoff.
+                # cost == -0.5 sentinel from cycle_failed+infra_error path. Session already
+                # cleared inside _run_one_cycle's except handler, so no redundant clear here.
+                # Was previously misclassified as "API auth error (401/403)" with 300s backoff
+                # (the v97 1.5h stuck loop: signature storm → -1.0 → 300s → restart → repeat).
+                if cost == -0.5:
+                    _infra_backoff = 15
+                    if ui:
+                        ui.log_history(
+                            f"Orchestrator: LLM infrastructure error (SDK signature/timeout/connection). "
+                            f"Backing off {_infra_backoff}s (short, NOT auth).", "warn")
+                    try:
+                        log_system_event("pipeline.infra_error_short_backoff", "warn",
+                            f"Infra error short backoff {_infra_backoff}s",
+                            {"cost_signal": cost})
+                    except Exception:
+                        pass
+                    if shutdown_mgr:
+                        try:
+                            await asyncio.wait_for(shutdown_mgr.wait_for_shutdown(), timeout=_infra_backoff)
+                            break
+                        except asyncio.TimeoutError:
+                            pass
+                    else:
+                        await asyncio.sleep(_infra_backoff)
+                    # Session already cleared in _run_one_cycle except handler (infra path)
+                    continue
+
+                # True auth error (401/403) or generic cycle failure: cost == -1.0 or
+                # cost <= -1.0 (auth clamp). Full 300s backoff is appropriate — credentials
+                # or service-side auth issue won't resolve quickly.
                 if ui:
                     ui.log_history("Orchestrator: API auth error (401/403). Backing off 300s.", "error")
                 if shutdown_mgr:
