@@ -1,10 +1,12 @@
 """Bot management endpoints — list bots, detail, source code."""
 
+import io
 import re
+import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 
 from server.cache import cached_read
 from server.routes._helpers import build_bot_summary, _bot_sort_key
@@ -56,24 +58,31 @@ async def list_bots(include_graveyard: bool = Query(False)):
     return {"active": active, "graveyard": graveyard}
 
 
+def _resolve_bot_dir(version: int) -> Path:
+    """Resolve the bot source directory for a version.
+
+    Prefers a ``.completed`` copy (the committed truth) and prefers the active
+    pool over the graveyard when both exist. Raises 404 if unknown.
+    """
+    bot_name = f"claude_v{version}"
+    active_dir = BOTS_DIR / bot_name
+    graveyard_dir = BOTS_DIR / "graveyard" / bot_name
+    if active_dir.exists() and (active_dir / ".completed").exists():
+        return active_dir
+    if graveyard_dir.exists() and (graveyard_dir / ".completed").exists():
+        return graveyard_dir
+    if active_dir.exists():
+        return active_dir
+    if graveyard_dir.exists():
+        return graveyard_dir
+    raise HTTPException(status_code=404, detail=f"Bot v{version} not found")
+
+
 @router.get("/{version}")
 async def bot_detail(version: int):
     """Get detailed info about a specific bot version."""
     bot_name = f"claude_v{version}"
-    active_dir = BOTS_DIR / bot_name
-    graveyard_dir = BOTS_DIR / "graveyard" / bot_name
-
-    # Prefer completed version (graveyard) over incomplete active version
-    if active_dir.exists() and (active_dir / ".completed").exists():
-        bot_dir = active_dir
-    elif graveyard_dir.exists() and (graveyard_dir / ".completed").exists():
-        bot_dir = graveyard_dir
-    elif active_dir.exists():
-        bot_dir = active_dir
-    elif graveyard_dir.exists():
-        bot_dir = graveyard_dir
-    else:
-        raise HTTPException(status_code=404, detail=f"Bot v{version} not found")
+    bot_dir = _resolve_bot_dir(version)
 
     ratings = _load_ratings()
     bot_stats_data = cached_read("bot_stats_detail", BOT_STATS_FILE) or {}
@@ -96,6 +105,48 @@ async def bot_detail(version: int):
         pass
 
     return summary
+
+
+@router.get("/{version}/download")
+async def bot_download(version: int):
+    """Download the complete bot source directory as a zip archive.
+
+    Packs the whole bot directory into an in-memory zip (bots are small, at
+    most a few hundred KB). Bytecode caches (``__pycache__`` / ``.pyc``) and
+    symlinks are excluded — the former are compile artifacts, the latter could
+    resolve outside the bot dir and leak unrelated files. Works for both active
+    and graveyard bots.
+    """
+    bot_dir = _resolve_bot_dir(version)
+    bot_name = bot_dir.name
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in sorted(bot_dir.rglob("*")):
+            # Skip symlinks first: is_file() follows them, and a symlink may
+            # point outside the bot dir (information leak). Real source only.
+            if path.is_symlink():
+                continue
+            if not path.is_file():
+                continue
+            rel = path.relative_to(bot_dir)
+            # Defense-in-depth: never emit arcnames that escape the archive root.
+            if rel.is_absolute() or ".." in rel.parts:
+                continue
+            if "__pycache__" in rel.parts or rel.suffix == ".pyc":
+                continue
+            try:
+                zf.write(path, arcname=str(rel))
+            except (FileNotFoundError, PermissionError):
+                # Vanished/locked mid-zip (e.g. __pycache__ rotation under the
+                # daemon) — skip silently rather than 500.
+                continue
+
+    return Response(
+        buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{bot_name}.zip"'},
+    )
 
 
 @router.get("/{version}/code/{filename}", response_class=PlainTextResponse)

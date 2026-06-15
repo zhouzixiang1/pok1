@@ -139,6 +139,25 @@ export const api = {
   botDetail: (version: number) => fetchJSON<BotDetail>(`${BASE}/bots/${version}`),
   botCode: (version: number, filename: string) =>
     fetchText(`${BASE}/bots/${version}/code/${encodeURIComponent(filename)}`),
+  downloadBot: async (version: number) => {
+    // 120s timeout: a zip can be a few MB and downloads may be slow — the
+    // global 30s timeout (FETCH_TIMEOUT) is tuned for JSON endpoints, not blobs.
+    const res = await fetch(`${BASE}/bots/${version}/download`, { signal: AbortSignal.timeout(120_000) });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try { const b = await res.json(); if (b.detail) msg += `: ${b.detail}`; } catch {}
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `claude_v${version}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  },
 
   // Pipeline
   pipelineCheckpoint: () => fetchJSON<PipelineCheckpoint | null>(`${BASE}/pipeline/checkpoint`),

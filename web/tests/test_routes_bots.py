@@ -42,6 +42,68 @@ class TestBotDetail:
 
 
 @pytest.mark.requires_active_bot
+class TestBotDownload:
+    def test_zip_archive(self, client, active_bot_version):
+        import io
+        import zipfile
+
+        resp = client.get(f"/api/bots/{active_bot_version}/download")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/zip"
+        cd = resp.headers["content-disposition"]
+        assert "attachment" in cd
+        assert f"claude_v{active_bot_version}.zip" in cd
+
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            names = zf.namelist()
+            # Bot entry point must be present
+            assert "main.py" in names
+            # No bytecode caches leaked into the archive
+            assert not any("__pycache__" in n for n in names)
+            assert not any(n.endswith(".pyc") for n in names)
+            # Content is readable
+            assert "def " in zf.read("main.py").decode("utf-8", "replace") or \
+                   "import " in zf.read("main.py").decode("utf-8", "replace")
+
+    def test_404(self, client):
+        resp = client.get("/api/bots/9999/download")
+        assert resp.status_code == 404
+
+
+class TestBotDownloadSymlinkDefense:
+    def test_symlink_excluded_from_zip(self, client, monkeypatch, tmp_path):
+        """Symlinks inside a bot dir must not leak external files into the zip."""
+        import io
+        import zipfile
+        from server.routes import bots as bots_mod
+
+        bot_dir = tmp_path / "claude_v9999"
+        bot_dir.mkdir()
+        (bot_dir / "main.py").write_text("def main():\n    pass\n")
+        (bot_dir / ".completed").touch()
+        # An external file that must NEVER appear in the archive
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP_SECRET_LEAK")
+        # A symlink inside the bot dir pointing at the external secret
+        (bot_dir / "link_to_secret.py").symlink_to(secret)
+
+        monkeypatch.setattr(bots_mod, "BOTS_DIR", tmp_path)
+        resp = client.get("/api/bots/9999/download")
+        assert resp.status_code == 200
+
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            names = zf.namelist()
+            assert "main.py" in names
+            # Symlink itself and its target both absent
+            assert "link_to_secret.py" not in names
+            assert "secret.txt" not in names
+            # No archive entry carries the secret content
+            for n in names:
+                assert b"TOP_SECRET_LEAK" not in zf.read(n)
+
+
+
+@pytest.mark.requires_active_bot
 class TestBotCode:
     def test_read_main(self, client, active_bot_version):
         resp = client.get(f"/api/bots/{active_bot_version}/code/main.py")

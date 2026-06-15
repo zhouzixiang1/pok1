@@ -16,6 +16,9 @@ const DocIcon = ({ className }: { className?: string }) => (
 const CheckIcon = ({ className }: { className?: string }) => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="20 6 9 17 4 12"/></svg>
 );
+const DownloadIcon = ({ className }: { className?: string }) => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+);
 
 function RatingBadge({ r, rd, h2hWr, games }: { r: number; rd: number; h2hWr?: number; games?: number }) {
   const conf = rd < 50 ? "text-green-600" : rd < 100 ? "text-yellow-600" : "text-orange-500";
@@ -99,6 +102,18 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
     }
   };
 
+  const handleDownload = async () => {
+    setToolLoading("download");
+    try {
+      await api.downloadBot(bot.version);
+      onAction(`已下载 ${bot.name}.zip`);
+    } catch (e) {
+      onAction(`下载失败: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setToolLoading(null);
+    }
+  };
+
   const displayName = bot.name.replace("claude_", "");
   const conserv = bot.rating ? bot.rating.conservative.toFixed(0) : "—";
 
@@ -136,16 +151,26 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
 
               {/* File picker + code viewer */}
               <div>
-                <div className="flex gap-1 mb-2 flex-wrap">
-                  {detail.files.map((f) => (
-                    <button
-                      key={f}
-                      onClick={() => setSelectedFile(f)}
-                      className={`px-2 py-1 text-xs rounded ${selectedFile === f ? "bg-blue-600 text-white" : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"}`}
-                    >
-                      {f}
-                    </button>
-                  ))}
+                <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+                  <div className="flex gap-1 flex-wrap">
+                    {detail.files.map((f) => (
+                      <button
+                        key={f}
+                        onClick={() => setSelectedFile(f)}
+                        className={`px-2 py-1 text-xs rounded ${selectedFile === f ? "bg-blue-600 text-white" : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"}`}
+                      >
+                        {f}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    onClick={handleDownload}
+                    disabled={toolLoading === "download"}
+                    className="px-3 py-1.5 text-xs rounded bg-gray-700 text-white hover:bg-gray-800 dark:bg-gray-600 dark:hover:bg-gray-500 disabled:opacity-50 flex items-center gap-1 shrink-0"
+                    title="下载完整源码压缩包"
+                  >
+                    <DownloadIcon /> {toolLoading === "download" ? "打包中..." : "下载 zip"}
+                  </button>
                 </div>
                 {loading
                   ? <div className="p-3 space-y-2"><Skeleton.Line /><Skeleton.Line className="w-1/2" /></div>
