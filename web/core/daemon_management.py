@@ -124,8 +124,16 @@ def stop_daemon():
             except (ProcessLookupError, PermissionError):
                 daemon_proc.terminate()
             try:
-                daemon_proc.wait(timeout=3)
+                # RC3: graceful shutdown (cancel in-flight mirror battles + fcntl
+                # save_cycle of ratings/h2h/stats) takes ~2-3s under load; the old
+                # 3s was right at the edge, so daemon frequently hit SIGKILL (rc=-9)
+                # on stop/restart — monitor then logged it as "daemon.crashed" and
+                # auto-restarted (benign but noisy + wastes in-flight battles).
+                # 8s gives comfortable headroom; SIGKILL below is the backstop for a
+                # truly wedged daemon.
+                daemon_proc.wait(timeout=8)
             except subprocess.TimeoutExpired:
+                log.warning("Daemon did not exit gracefully in 8s — force killing (SIGKILL)")
                 try:
                     if pgid is not None:
                         os.killpg(pgid, signal.SIGKILL)
