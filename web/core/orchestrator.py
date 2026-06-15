@@ -44,6 +44,20 @@ import logging
 
 log = logging.getLogger("pok.orchestrator")
 
+
+def _is_cycle_infra_error(e) -> bool:
+    """Classify an orchestrator exception as LLM-infra (short -0.5 backoff) vs real
+    business/auth failure. Type-based via is_llm_infra_error + keyword fallback for
+    SDK ProcessError/exit-143 wrapping and signature field errors."""
+    err_str = str(e).lower()
+    return (is_llm_infra_error(e)
+            or "signature" in err_str
+            or "missing required field" in err_str
+            or "exit code 143" in err_str
+            or "command failed with exit code" in err_str
+            or "processerror" in err_str)
+
+
 # Module-level flag set by the watchdog coroutine when it detects a stuck pipeline.
 # The main orchestrator_loop checks this flag at the top of each iteration and forces
 # a fresh _run_one_cycle (discarding the stale session) when set.
@@ -229,6 +243,12 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     ui.log_io(f"[ERROR] {e}", "error", "Orchestrator")
                 else:
                     log.error("LLM error: %s", e)
+                # Propagate to the outer `except Exception` so is_llm_infra_error
+                # classification -> -0.5 infra sentinel applies, instead of falling
+                # through and returning cost=0/ok=False (fake $0 success that masks
+                # exit-143 / ProcessError crashes). The OUTER except (commit 0295d2b)
+                # was fixed but this INNER one was missed (same shape as v84 deadlock).
+                raise
             if _tool_call_counts:
                 log.info("Tool call summary: %s", dict(sorted(_tool_call_counts.items())))
             return "".join(texts), cost, ok, gen, auth_err
@@ -448,13 +468,12 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                 except Exception as e:
                     log.debug("gen.aclose failed: %s", e)
             cycle_failed = True
-            err_str = str(e).lower()
             # P2: classify infra (SDK signature/timeout/connection) vs real business failure.
             # is_llm_infra_error is type-based (ClaudeSDKError, asyncio.TimeoutError,
             # ConnectionError, OSError) — same classifier used by tool_gates/agent_review
             # for critic/reviewer infra short-circuit (commit 5c14d01). Keyword fallback
             # remains for defense-in-depth (older SDK error formats).
-            is_infra = is_llm_infra_error(e) or 'signature' in err_str or 'missing required field' in err_str
+            is_infra = _is_cycle_infra_error(e)
             # SDK streaming errors (missing 'signature' field on thinking blocks,
             # observed with claude_agent_sdk 0.2.91 + adaptive thinking) leave the
             # session broken — resuming replays into the same crash (the v84

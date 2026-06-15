@@ -132,6 +132,42 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
     return texts, cost_usd, usage
 
 
+async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, ui, role_name):
+    """Run one streaming query with up to 3 retries on transient SDK signature errors.
+
+    Extracted so the 529/429 retry paths reuse the same handling as the initial query.
+    Returns (texts_list, cost_usd, usage).
+    """
+    last_sdk_err = None
+    for sdk_attempt in range(3):
+        query_gen = claude_query(prompt=full_prompt, options=options)
+        try:
+            texts, cost_usd, usage = await _process_stream(query_gen, log_file_path, ui, role_name)
+            return texts, cost_usd, usage
+        except ClaudeSDKError as e:
+            last_sdk_err = e
+            err_str = str(e).lower()
+            if ("signature" in err_str or "missing required field" in err_str) and sdk_attempt < 2:
+                _backoff = 5 * (sdk_attempt + 1)
+                if ui:
+                    ui.log_history(
+                        f"{role_name}: SDK stream error (attempt {sdk_attempt+1}/3), "
+                        f"retrying in {_backoff}s: {e}",
+                        "warn",
+                    )
+                await asyncio.sleep(_backoff)
+                continue
+            raise  # non-signature SDK error, or signature retries exhausted
+        finally:
+            # Defensive: ensure SDK generator is closed so subprocess is terminated.
+            try:
+                await query_gen.aclose()
+            except Exception:
+                pass  # suppress any aclose() errors
+    if last_sdk_err is not None:
+        raise last_sdk_err
+
+
 async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, model="sonnet", tools=None):
     """Run a Claude query via the Agent SDK with cost tracking and typed streaming.
 
@@ -207,38 +243,8 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
     # query usually succeeds (reviewer passes, critic/battle_exp occasionally hit it).
     # Without this retry, the error propagates and the calling tool either rejects
     # (critic) or skips (battle_exp), stalling the pipeline.
-    last_sdk_err = None
-    for sdk_attempt in range(3):
-        query_gen = claude_query(prompt=full_prompt, options=options)
-        try:
-            full_text, cost_usd, usage = await _process_stream(query_gen, log_file_path, ui, role_name)
-            last_sdk_err = None
-            break  # success
-        except ClaudeSDKError as e:
-            last_sdk_err = e
-            err_str = str(e).lower()
-            if ('signature' in err_str or 'missing required field' in err_str) and sdk_attempt < 2:
-                _backoff = 5 * (sdk_attempt + 1)
-                ui.log_history(
-                    f"{role_name}: SDK stream error (attempt {sdk_attempt+1}/3), "
-                    f"retrying in {_backoff}s: {e}",
-                    "warn",
-                )
-                await asyncio.sleep(_backoff)
-                continue
-            raise  # non-signature SDK error, or signature retries exhausted — propagate
-        finally:
-            # Defensive: ensure SDK generator is closed so subprocess is terminated.
-            # If CancelledError fires before or during _process_stream, the generator
-            # may not be cleaned up by the async-for loop (PEP 533 deferred).
-            try:
-                await query_gen.aclose()
-            except Exception:
-                pass  # suppress any aclose() errors
-    else:
-        # Loop fell through without break — all 3 signature-retry attempts failed.
-        if last_sdk_err is not None:
-            raise last_sdk_err
+    full_text, cost_usd, usage = await _run_stream_with_signature_retry(
+        full_prompt, options, log_file_path, ui, role_name)
 
     output = "\n".join(full_text)
 
@@ -248,16 +254,8 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
             ui.log_history(f"API rate limited (529). Retrying in {backoff}s...", "warn")
             await asyncio.sleep(backoff)
             full_text.clear()
-            retry_gen = claude_query(prompt=full_prompt, options=options)
-            try:
-                retry_texts, retry_cost, retry_usage = await _process_stream(
-                    retry_gen, log_file_path, ui, role_name,
-                )
-            finally:
-                try:
-                    await retry_gen.aclose()
-                except Exception:
-                    pass  # suppress any aclose() errors
+            retry_texts, retry_cost, retry_usage = await _run_stream_with_signature_retry(
+                full_prompt, options, log_file_path, ui, role_name)
             if retry_texts:
                 full_text.extend(retry_texts)
             if retry_cost:
@@ -286,16 +284,8 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
             await rate_limiter.wait_until_reset()
             # Retry after reset
             full_text.clear()
-            retry_gen = claude_query(prompt=full_prompt, options=options)
-            try:
-                retry_texts, retry_cost, retry_usage = await _process_stream(
-                    retry_gen, log_file_path, ui, role_name,
-                )
-            finally:
-                try:
-                    await retry_gen.aclose()
-                except Exception:
-                    pass  # suppress any aclose() errors
+            retry_texts, retry_cost, retry_usage = await _run_stream_with_signature_retry(
+                full_prompt, options, log_file_path, ui, role_name)
             if retry_texts:
                 full_text.extend(retry_texts)
             if retry_cost:
