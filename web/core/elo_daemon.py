@@ -357,7 +357,7 @@ def run_single_match(args):
     """Run mirror_battle, save replay in-worker, return lightweight result."""
     bot_a_name, bot_b_name, bot_a_path, bot_b_path, n_pairs = args
     try:
-        match_wins, draws, n_played, all_logs = mirror_battle(
+        match_wins, draws, n_played, all_logs, _net_chips_list = mirror_battle(
             bot_a_path, bot_b_path, n_games=n_pairs, verbose=False, save_log=True
         )
         # Count each game (normal + mirror) independently by winner

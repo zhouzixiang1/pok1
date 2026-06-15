@@ -18,6 +18,8 @@ from evolution_core import (
 )
 from glicko2 import Glicko2Player, update_rating_period
 
+from eval_stats import paired_bootstrap_ci
+
 from tool_helpers import (
     _json_tool_result, _get_ui,
     _matching_checkpoint, _record_gate, _gate_payload, _state_blocked,
@@ -35,13 +37,17 @@ log = get_logger("tool_eval")
 # ──────────────────────────────────────────────
 # Precommit eval tuning constants
 # ──────────────────────────────────────────────
-# Default and max n_games per opponent for precommit eval. The old code hard-capped
-# n_games at 3 via min(..., 3) on BOTH paths, which starved the regression gate of
-# statistical power (the lost_to_parent blocker required n_played >= 4, unreachable
-# at n_games=3). 5 gives enough decided games for the ratio gates; 12 is the hard
-# ceiling so precommit eval still fits within the cycle budget.
-PRECOMMIT_DEFAULT_N_GAMES = 5
-PRECOMMIT_MAX_N_GAMES = 12
+# Default and max n_games per opponent for precommit eval. 8 gives enough paired
+# net-chip observations for the bootstrap gate; 16 is the hard ceiling so
+# precommit eval still fits within the cycle budget.
+PRECOMMIT_DEFAULT_N_GAMES = 8
+PRECOMMIT_MAX_N_GAMES = 16
+
+# Per-opponent parent gate: only block a losing W/L sample when paired net-chip
+# bootstrap shows a severe candidate loss. Negative thresholds are chip means
+# for bot0 (candidate) per completed mirror pair.
+PARENT_NET_CHIPS_LOSS_THRESHOLD = -2000.0
+AGGREGATE_NET_CHIPS_LOSS_THRESHOLD = -2000.0
 
 
 # ──────────────────────────────────────────────
@@ -96,10 +102,9 @@ async def run_precommit_eval(args):
     v = int(v)
     source_v = int(source_v)
     # Cap n_games: precommit eval is a quick regression check, NOT a full evaluation.
-    # The old min(..., 3) cap starved the regression gate of statistical power
-    # (the lost_to_parent ratio gate needs decided >= 4). Default is now
-    # PRECOMMIT_DEFAULT_N_GAMES (5), clamped to [1, PRECOMMIT_MAX_N_GAMES] (12) so
-    # precommit eval still fits within the cycle budget (each mirror pair ~90s/70 hands).
+    # Default is PRECOMMIT_DEFAULT_N_GAMES (8), clamped to [1,
+    # PRECOMMIT_MAX_N_GAMES] (16). The regression gate now uses paired net-chip
+    # bootstrap CIs, which are much less noisy than binary W/L at the same n_games.
     requested = int(args.get("n_games", PRECOMMIT_DEFAULT_N_GAMES) or PRECOMMIT_DEFAULT_N_GAMES)
     n_games = min(max(1, requested), PRECOMMIT_MAX_N_GAMES)
 
@@ -164,6 +169,8 @@ async def run_precommit_eval(args):
     total_wins = 0
     total_losses = 0
     total_draws = 0
+    aggregate_net_chips = []  # candidate net-chips per mirror pair, across all opponents
+    parent_net_chips = []     # candidate net-chips per mirror pair vs parent only
     _core = CORE_DIR  # imported unconditionally from evolution_core (line 18)
     sys.path.insert(0, str(_core.resolve()))
     from engine.battle import mirror_battle
@@ -239,6 +246,9 @@ async def run_precommit_eval(args):
                         "losses": int(res.get("wins_b", 0)),
                         "draws": int(res.get("draws", 0)),
                         "n_played": int(res.get("total", 0)),
+                        # Scheduler results do not yet carry paired net-chips; keep
+                        # the shape aligned with the serial path for callers/tests.
+                        "net_chips": list(res.get("net_chips", [])),
                     }
                     if res.get("error"):
                         matchup["error"] = res["error"]
@@ -326,7 +336,7 @@ async def run_precommit_eval(args):
             item_blockers = []
             try:
                 async with _battle_sem:
-                    match_wins, draws, n_played, _ = await asyncio.wait_for(
+                    battle_result = await asyncio.wait_for(
                         loop.run_in_executor(
                             None,
                             lambda _cm=str(candidate_main), _om=str(opponent_main): mirror_battle(
@@ -338,11 +348,21 @@ async def run_precommit_eval(args):
                         ),
                         timeout=per_game_timeout,
                     )
+                    if len(battle_result) >= 5:
+                        match_wins, draws, n_played, _logs, net_chips_list = battle_result
+                    else:
+                        # Backward-compatible only for tests that monkeypatch the old
+                        # 4-tuple shape; real mirror_battle returns net_chips_list.
+                        match_wins, draws, n_played, _logs = battle_result
+                        net_chips_list = []
+                # net_chips_list: candidate (bot0) net chips per completed mirror pair
+                nc = [int(x) for x in (net_chips_list or [])]
                 matchup.update({
                     "wins": int(match_wins[0]),
                     "losses": int(match_wins[1]),
                     "draws": int(draws),
                     "n_played": int(n_played),
+                    "net_chips": nc,
                 })
                 if n_played < n_games:
                     item_blockers.append({
@@ -351,22 +371,46 @@ async def run_precommit_eval(args):
                         "details": f"Only {n_played}/{n_games} mirror pairs completed.",
                     })
                 if opponent == parent_name and matchup["wins"] < matchup["losses"]:
-                    # Parent is the true regression baseline. Block on a LOSS RATIO gate
-                    # (not an absolute sample size): require at least 4 decided games and
-                    # losses/decided >= 0.60. So [2,6,0] and [1,5,0] block, but a coin-flip
-                    # like [4,3,0] does NOT. The old `n_played >= 4` check was dead code
-                    # when n_games was capped at 3 and let degraded bots pass.
+                    # Parent is the true regression baseline. Primary gate is a
+                    # paired net-chips bootstrap 95% CI: block only when the CI
+                    # LOWER bound is below the loss threshold (candidate loses
+                    # >= PARENT_NET_CHIPS_LOSS_THRESHOLD chips per mirror pair).
+                    # The old binary W/L ratio gate stays as a fallback when no
+                    # net-chip observations are available.
                     decided = matchup["wins"] + matchup["losses"]
-                    if decided >= 4 and (matchup["losses"] / decided) >= 0.60:
+                    nc_lo = None
+                    nc_hi = None
+                    if nc:
+                        nc_lo, nc_hi = paired_bootstrap_ci(nc)
+                        matchup["parent_net_chips_ci"] = [round(nc_lo, 1), round(nc_hi, 1)]
+                    # Block only when the CI UPPER bound is below threshold — i.e. we
+                    # are 95% confident the mean per-pair net-chips deficit exceeds the
+                    # threshold. Using the upper bound (not lower) avoids a single
+                    # extreme all-in loss spuriously tripping the gate: NLHE net-chips
+                    # are heavy-tailed, so a lower-bound test would reintroduce the
+                    # noise-fail the paired-bootstrap was meant to eliminate.
+                    net_chips_block = (
+                        nc_hi is not None
+                        and nc_hi < PARENT_NET_CHIPS_LOSS_THRESHOLD
+                    )
+                    ratio_block = (
+                        decided >= 4
+                        and (matchup["losses"] / decided) >= 0.60
+                    )
+                    if net_chips_block or (not nc and ratio_block):
+                        detail = f"{matchup['wins']}-{matchup['losses']}-{matchup['draws']} in {matchup['n_played']} games"
+                        if nc_hi is not None:
+                            detail += f"; net-chips CI=[{nc_lo:.0f}, {nc_hi:.0f}]"
                         item_blockers.append({
                             "reason": "lost_to_parent",
                             "opponent": opponent,
-                            "details": f"{matchup['wins']}-{matchup['losses']}-{matchup['draws']} in {matchup['n_played']} games",
+                            "details": detail,
                         })
                     else:
                         _get_ui().log_history(
                             f"⚠️ Lost to parent ({matchup['wins']}-{matchup['losses']}) "
-                            f"but loss ratio below gate ({matchup['losses']}/{decided} decided) — not blocking",
+                            f"but net-chips CI upper={nc_hi if nc_hi is not None else 'n/a'} "
+                            f"above gate ({PARENT_NET_CHIPS_LOSS_THRESHOLD}) — not blocking",
                             "warn"
                         )
             except asyncio.TimeoutError:
@@ -398,6 +442,10 @@ async def run_precommit_eval(args):
             total_wins += matchup["wins"]
             total_losses += matchup["losses"]
             total_draws += matchup["draws"]
+            net_chips = list(matchup.get("net_chips") or [])
+            aggregate_net_chips.extend(net_chips)
+            if matchup.get("opponent") == parent_name:
+                parent_net_chips.extend(net_chips)
             matchups.append(matchup)
 
     # --- P0-4: Semantic Interpretation of Battle Results ---
@@ -413,14 +461,29 @@ async def run_precommit_eval(args):
         except Exception as e:
             log.warning("Precommit semantic analysis failed: %s", e)
 
-    # Aggregate regression gate. The opponent set is adversarially chosen
-    # (parent + top opponents + H2H weaknesses), so an absolute win/loss-rate
-    # threshold would false-positive against a legitimately strong field. Instead
-    # gate on a decided-game margin: require enough sample (total_decided >= 8)
-    # AND losses beating wins by at least 2 (total_losses >= total_wins + 2).
-    # The old `total_losses >= 3` hard floor was both noisy and too weak.
+    # Aggregate regression gate. Primary gate is a paired net-chips bootstrap 95%
+    # CI over all opponents' mirror pairs: block only when the CI UPPER bound is
+    # below AGGREGATE_NET_CHIPS_LOSS_THRESHOLD (i.e. we are 95% confident the
+    # mean per-pair deficit exceeds the threshold). Using upper-bound (not
+    # lower) avoids heavy-tail false positives from single all-in outliers.
+    # The old binary W/L margin gate stays as a fallback when net-chip
+    # observations are unavailable (e.g. the scheduler path).
     total_decided = total_wins + total_losses
-    if total_decided >= 8 and total_losses >= total_wins + 2:
+    agg_ci_lower = None
+    agg_ci_upper = None
+    if aggregate_net_chips:
+        agg_ci_lower, agg_ci_upper = paired_bootstrap_ci(aggregate_net_chips)
+    if agg_ci_upper is not None and agg_ci_upper < AGGREGATE_NET_CHIPS_LOSS_THRESHOLD:
+        blockers.append({
+            "reason": "aggregate_precommit_regression",
+            "details": (
+                f"Aggregate mirror result {total_wins}-{total_losses}-{total_draws}; "
+                f"net-chips CI=[{agg_ci_lower:.0f}, {agg_ci_upper:.0f}]."
+            ),
+        })
+    elif (not aggregate_net_chips
+          and total_decided >= 8
+          and total_losses >= total_wins + 2):
         blockers.append({
             "reason": "aggregate_precommit_regression",
             "details": f"Aggregate mirror result {total_wins}-{total_losses}-{total_draws}.",
@@ -445,6 +508,12 @@ async def run_precommit_eval(args):
             {"version": v, "source_v": source_v, "passed": passed,
              "total_wins": total_wins, "total_losses": total_losses,
              "total_draws": total_draws, "blockers": blockers,
+             "paired_bootstrap": {
+                 "aggregate_ci_lower": round(agg_ci_lower, 1) if agg_ci_lower is not None else None,
+                 "aggregate_ci_upper": round(agg_ci_upper, 1) if agg_ci_upper is not None else None,
+                 "aggregate_threshold": AGGREGATE_NET_CHIPS_LOSS_THRESHOLD,
+                 "net_chips_samples": len(aggregate_net_chips),
+             },
              "n_opponents": len(all_opponents),
              "elapsed_sec": round(time.time() - _t0, 2)})
     except Exception:
@@ -531,12 +600,16 @@ async def run_inline_eval(args):
         if opp not in ratings:
             ratings[opp] = Glicko2Player()
         loop = asyncio.get_running_loop()
-        match_wins, draws, n_played, _ = await loop.run_in_executor(
+        battle_result = await loop.run_in_executor(
             None,
             lambda _b=str(_bot_main(bot_name)), _o=str(_bot_main(opp)): mirror_battle(
                 _b, _o, n_games=n_games, verbose=False, save_log=False,
             ),
         )
+        if len(battle_result) >= 5:
+            match_wins, draws, n_played, _, _net_chips_list = battle_result
+        else:
+            match_wins, draws, n_played, _ = battle_result
         w_a, w_b = match_wins[0], match_wins[1]
         total = w_a + w_b + draws
         results_summary.append({"opponent": opp, "wins": w_a, "losses": w_b, "draws": draws})

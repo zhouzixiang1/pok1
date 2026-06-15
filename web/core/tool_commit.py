@@ -91,20 +91,18 @@ async def commit_bot(args):
         critic = gate_results.get("critic")
         if not critic:
             missing_gates.append("critic")
-        else:
-            try:
-                critic_score = float(critic.get("score", 0))
-            except (TypeError, ValueError):
-                critic_score = 0.0
-            if critic.get("approved") is not True or critic_score < 6:
-                if critic.get("force_advanced") is True:
-                    pass  # Force-advanced: allow despite low score
-                else:
-                    failed_gates.append({
-                        "gate": "critic",
-                        "reason": "critic score must be >= 6 and approved must be true",
-                        "value": critic,
-                    })
+        elif critic.get("approved") is not True:
+            # Critic is ADVISORY (Step 5): score no longer blocks (precommit is
+            # the final judge). We still require the critic gate to have run and
+            # returned approved=True (run_critic always sets approved=True now).
+            if critic.get("force_advanced") is True:
+                pass  # Force-advanced: allow despite advisory rejection
+            else:
+                failed_gates.append({
+                    "gate": "critic",
+                    "reason": "critic did not approve (critic is advisory; precommit is final judge)",
+                    "value": critic,
+                })
 
         precommit = gate_results.get("precommit_eval")
         if not precommit:

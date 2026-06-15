@@ -53,10 +53,26 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
     if not candidates:
         return {"reaped": False, "reason": "All remaining bots are current or untested"}
 
-    candidates.sort(key=lambda x: (
-        h2h_winrates.get(x[0], 0.0),
-        x[1].r - 2 * x[1].rd,  # conservative rating tiebreaker
-    ))
+    # Protect bots with insufficient evaluation: rd > 120 OR total games < 600.
+    # These are sample-starved variance victims — reap should not cull them unless the
+    # pool is overflowing past the hard cap (MAX_ACTIVE_BOTS + 3).
+    protected = set()
+    for name, rating in candidates:
+        n_total = bot_stats.get(name, {}).get("games", 0)
+        if rating.rd > 120 or n_total < 600:
+            protected.add(name)
+    # Apply protection EXCEPT when pool overflow forces reap (avoid unbounded growth)
+    if len(active_bots) <= MAX_ACTIVE_BOTS + 3:  # soft cap, allow protection
+        filtered = [c for c in candidates if c[0] not in protected]
+        if not filtered:
+            return {"reaped": False, "reason": "all_protected",
+                    "remaining": len(active_bots), "protected_count": len(protected)}
+        candidates = filtered
+
+    # Sort by conservative rating (r - 2*rd) as PRIMARY key. Glicko conservative
+    # rating is implicitly weighted by opponent strength, far less noisy than
+    # per-opponent h2h_avg_wr at low game counts.
+    candidates.sort(key=lambda x: (x[1].r - 2 * x[1].rd,))
     weakest = candidates[0]
     culled_name = weakest[0]
 

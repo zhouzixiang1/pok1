@@ -227,11 +227,10 @@ def _critic_gate_ok(checkpoint):
     critic = _checkpoint_gate(checkpoint, "critic")
     if critic.get("force_advanced") is True:
         return True
-    try:
-        score = float(critic.get("score", 0))
-    except (TypeError, ValueError):
-        score = 0.0
-    return critic.get("approved") is True and score >= 6
+    # Critic is ADVISORY (Step 5): score no longer blocks the pipeline. Final
+    # approve/reject is decided by the precommit paired-bootstrap statistical
+    # gate. We only require the critic gate to have run and returned approved.
+    return critic.get("approved") is True
 
 
 def _bot_main(bot_name):

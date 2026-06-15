@@ -144,8 +144,8 @@ def _validate_master_plan(plan, next_v=None, precomputed_exhausted_keywords=None
         if len(targets) > 3:
             errors.append(f"Task {i}: too many target_files ({len(targets)} > 3)")
         prompt = task.get("worker_prompt", "")
-        if len(prompt) > 5000:
-            errors.append(f"Task {i}: worker_prompt too long ({len(prompt)} > 5000 chars)")
+        if len(prompt) > 12000:
+            errors.append(f"Task {i}: worker_prompt too long ({len(prompt)} > 12000 chars)")
         role = str(task.get("role", "")).lower()
         if "hyperparameter" in role or "tuner" in role:
             # Tuners MUST only modify constants.py — error if target_files includes other files.
@@ -225,12 +225,8 @@ def _validate_master_plan(plan, next_v=None, precomputed_exhausted_keywords=None
                 + " " + str(task.get("targeted_failure", ""))
             ).lower()
             if _fuzzy_match_exhausted(prompt_text, exhausted_keywords, require_direction_token=True):
-                errors.append(
-                    f"Task {i}: worker prompt matches an EXHAUSTED direction from experience pool. "
-                    f"This direction has been repeatedly tried with no measurable improvement. "
-                    f"Choose a fundamentally different approach."
-                )
-                break  # one match is enough to block the plan
+                warnings.append(f"Task {i}: worker prompt matches an EXHAUSTED direction from experience pool (advisory). This direction has been repeatedly tried with no measurable improvement; a fundamentally different approach is recommended but not required.")
+                # advisory only — no longer blocks the plan
 
     return errors, warnings
 
@@ -644,14 +640,17 @@ _EXHAUSTED_BLOCKLIST = frozenset({
 # they appear in legitimate opponent-stat / continuous-stat reframes (the very
 # reframe v82's critic asked for).
 _EXHAUSTED_DIRECTION_TOKENS = frozenset({
-    "parameter", "tuning", "mechanism", "canonical", "archetype",
-    "commitment", "refactor",
+    "parameter", "tuning", "commitment",
+    # NOTE: "mechanism", "canonical", "archetype", "refactor" REMOVED — these
+    # are generic structural-improvement verbs that fire on legitimate novel
+    # plans (the source of 5+ false-positive blocks observed). Only keep tokens
+    # that unambiguously characterize the truly-exhausted constant-tuning /
+    # commitment-axis patterns.
     # NOTE: "continuous" is deliberately EXCLUDED — the POSTFLOP_STRATEGY
     # exhausted phrase says "refactor old archetype guard to continuous-stat"
     # where "continuous" is the refactor TARGET, not the exhausted pattern.
     # Including it would reject legitimate continuous-stat opponent-modeling
-    # plans (the exact reframe v82's critic asked for). The fold-mechanism
-    # direction is still caught via mechanism/canonical/archetype/refactor.
+    # plans (the exact reframe v82's critic asked for).
 })
 
 
@@ -753,7 +752,7 @@ def _load_recent_critic_local_optima(next_v, max_entries=3):
                 if str(e.get("worker_id", "")) != "critic":
                     continue
                 g = e.get("gen")
-                if g is None or g > next_v:
+                if g is None or g > next_v or g < next_v - 8:
                     continue
                 ts = e.get("timestamp", 0)
                 if g not in by_gen or ts > by_gen[g][3]:

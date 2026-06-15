@@ -112,6 +112,13 @@ class TestUpdateRatingPeriod:
         update_rating_period(p, [(opp, 1.0)])
         assert p.r == orig_r and p.rd == orig_rd
 
+    def test_pathological_update_clamped(self):
+        p = Glicko2Player(1500, 50, 0.06)
+        opponents = [(Glicko2Player(3000, 30, 0.06), 1.0) for _ in range(20)]
+        p2 = update_rating_period(p, opponents)
+        assert abs(p2.r - p.r) <= 200
+        assert -1000 <= p2.r <= 3000
+
 
 class TestUpdateSingleGame:
     def test_win_increases_rating(self):
@@ -144,7 +151,8 @@ class TestDecayRd:
         assert p2.rd > p.rd
 
     def test_multiple_periods(self):
-        p = Glicko2Player(1500, 50, 0.06)
+        # Start above the 150 recovery floor so decay still rises with more idle time.
+        p = Glicko2Player(1500, 200, 0.06)
         p1 = decay_rd(p, 1)
         p2 = decay_rd(p, 2)
         assert p2.rd > p1.rd
@@ -153,6 +161,22 @@ class TestDecayRd:
         p = Glicko2Player(1500, 50, 0.06)
         p2 = decay_rd(p, 0)
         assert p2.rd == p.rd
+
+    def test_low_rd_recovers_to_floor(self):
+        # Long-idle bots with low RD recover to the ~150 floor (Step 1 P0-A).
+        p = Glicko2Player(1500, 50, 0.06)
+        recovered = decay_rd(p, 5)
+        assert recovered.rd >= 150.0
+        assert recovered.rd <= DEFAULT_RD
+
+    def test_rd_monotonic_non_decreasing(self):
+        # decay_rd must never decrease rd (floor enforces this).
+        cur = Glicko2Player(1500, 80, 0.06)
+        for _ in range(10):
+            nxt = decay_rd(cur, 1)
+            assert nxt.rd >= cur.rd
+            cur = nxt
+        assert 50 <= cur.rd <= DEFAULT_RD
 
     def test_rd_clamped_at_default(self):
         # Large multi-period decay must not push rd past DEFAULT_RD (350).
@@ -167,18 +191,13 @@ class TestDecayRd:
             assert cur.rd <= DEFAULT_RD
         assert cur.rd <= DEFAULT_RD
 
-    def test_rd_clamp_does_not_affect_active_bots(self):
-        # An active bot (rd<100) decays by exactly the same amount whether or
-        # not the clamp is present, since its phi_star stays well under
-        # DEFAULT_RD/SCALE. Verify against the closed-form unclamped value.
-        from glicko2 import SCALE
+    def test_rd_recovery_floor_applies_to_low_rd_bots(self):
+        # Step 1 intentionally restores low-RD idle bots to at least ~150 so
+        # conservative_rating reflects uncertainty for long-idle bots.
         p = Glicko2Player(1600, 80, 0.06)
         p2 = decay_rd(p, 1)
-        expected_phi = math.sqrt((80 / SCALE) ** 2 + 0.06 ** 2)
-        expected_rd = expected_phi * SCALE
-        assert abs(p2.rd - expected_rd) < 1e-9
+        assert p2.rd == 150.0
         assert p2.rd < DEFAULT_RD
-        # Still grew (sanity: decay increased rd for the active bot)
         assert p2.rd > p.rd
 
 

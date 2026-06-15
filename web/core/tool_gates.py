@@ -671,14 +671,22 @@ async def run_critic(args):
     except (TypeError, ValueError):
         score_num = 0.0
     raw_approved = data.get("approved", score_num >= 6)
-    approved = bool(raw_approved) and score_num >= 6
-    force_advanced = force_advance and not approved
+    # Critic is now ADVISORY — final approve/reject is decided by precommit
+    # (Step 2's paired-bootstrap statistical gate). score and feedback still
+    # surface to workers as improvement hints, but do NOT block the pipeline.
+    advisory_approved = bool(raw_approved) and score_num >= 6  # for telemetry/logging
+    approved = True  # advisory: precommit statistical gate (Step 2) is the final judge
+    # In advisory mode approved is always True, so force_advanced follows
+    # force_advance directly (kept for backward-compat with downstream gates).
+    force_advanced = bool(force_advance)
     gate = _gate_payload(
         v,
         source_v,
         approved,
         approved=approved,
         raw_approved=raw_approved,
+        advisory_approved=advisory_approved,
+        advisory_score=score_num,
         score=score_num,
         feedback=data.get("feedback", ""),
         strategic_assessment=data.get("strategic_assessment", ""),
@@ -686,23 +694,25 @@ async def run_critic(args):
         force_advanced=force_advanced,
     )
 
-    # Track intra-gen retry count: increment when critic rejects (retry_workers)
+    # Track intra-gen retry count: increment when critic rejects (retry_workers).
+    # ADVISORY-ONLY: critic no longer blocks, so we never bump current_attempt or
+    # emit retry_workers here. Keep the read for downstream telemetry only.
     current_attempt = (ckpt.get("generation_attempt", 0) or 0) if ckpt else 0
-    if not approved and not force_advanced:
-        current_attempt += 1
 
     checkpoint_recorded = _record_gate(
         v,
         source_v,
         "critic",
         gate,
-        stage="critic_checked" if approved or force_advanced else None,
+        stage="critic_checked",  # always advance: critic is advisory, precommit is final judge
         master_plan=ckpt.get("master_plan") if ckpt else plan,
         reviewer_feedback=reviewer_feedback,
         generation_attempt=current_attempt,
     )
     guardian_diagnosis = None
-    if not approved:
+    if not advisory_approved:
+        # Telemetry only: record critic rejection diagnostics so they surface to
+        # the next worker prompt as improvement hints. Does NOT block the pipeline.
         _record_quality_failure(v, "critic", "Strategy Critic",
                                 f"Rejected (score={score_num}): {data.get('feedback', '')[:2000]}",
                                 local_optima_warning=data.get("local_optima_warning", False),
@@ -710,7 +720,7 @@ async def run_critic(args):
         # Meta-2: Trigger Regression Guardian on very low critic score.
         # Run synchronously so the diagnosis is visible to the Orchestrator
         # (merged into the tool result below). This is advisory only — it is
-        # NOT a hard second gate (Critic score<6 already forces retry_workers).
+        # NOT a hard second gate; precommit remains the final judge.
         # _run_regression_guardian has a safe_default so it never throws.
         if score_num < 4:
             try:
@@ -733,10 +743,11 @@ async def run_critic(args):
 
     try:
         log_system_event(
-            "pipeline.critic_passed" if approved else "pipeline.critic_rejected",
-            "success" if approved else "warn",
-            f"Critic {'approved' if approved else 'rejected'} v{v} (score={score_num})",
-            {"version": v, "score": score_num, "approved": approved},
+            "pipeline.critic_passed" if advisory_approved else "pipeline.critic_rejected",
+            "success" if advisory_approved else "warn",
+            f"Critic {'approved' if advisory_approved else 'rejected (advisory)'} v{v} (score={score_num})",
+            {"version": v, "score": score_num, "approved": approved,
+             "advisory_approved": advisory_approved},
         )
     except Exception:
         pass
@@ -772,8 +783,10 @@ async def run_critic(args):
         "approved": approved,
         "raw_approved": raw_approved,
         "score": score_num,
+        "advisory_score": score_num,
+        "advisory_approved": advisory_approved,
         "logs": ui.get_output(),
-        "action": "approve" if approved else ("force_commit" if force_advanced else "retry_workers"),
+        "action": "approve",  # advisory: orchestrator proceeds to run_precommit_eval (final judge)
         "force_advanced": force_advanced,
         "checkpoint_recorded": checkpoint_recorded,
     }

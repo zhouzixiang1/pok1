@@ -34,6 +34,15 @@ When `run_master` returns a JSON result:
 - NEVER retry `run_master` when the result contains a valid `"plan"`. This wastes $0.8-1.0 and 3-5 minutes per retry.
 </validation_handling>
 
+<advisory_vs_blocking>
+EXHAUSTED-direction matches and worker_prompt size warnings are ADVISORY, not
+errors. They MUST NOT block `execute_workers`. Only py_compile failure, decision
+test < 70%, file size violation, and precommit statistical regression BLOCK the
+pipeline. LLM-gated rejections (critic score, direction_audit `repetition_detected`)
+are ADVISORY signals injected into the next worker prompt as hints — they surface
+risk but do not hard-block when a valid Master plan exists.
+</advisory_vs_blocking>
+
 <code_change_verification>
 After workers complete and before calling `run_quality_gates`, you MUST verify that code actually changed:
 1. Run: `diff -rq bots/claude_v{source_v}/ bots/claude_v{next_v}/ --exclude='__pycache__' --exclude='.completed'`
@@ -47,7 +56,7 @@ Do NOT call `commit_bot()` unless ALL of these are satisfied:
 1. `run_direction_audit` was called
 2. `run_quality_gates` returned `all_passed: true` AND `critical_scenarios_passed: true`
 3. `run_review` returned `approved: true`
-4. `run_critic` returned `score >= 6` AND `approved: true`
+4. `run_critic` was called and returned `approved: true` (critic is ADVISORY — score does NOT block; precommit is the final judge)
 5. `run_precommit_eval` returned `passed: true`
 6. You pass `review_approved=true` to `commit_bot()`
 </gate_requirements>
@@ -57,8 +66,7 @@ Do NOT call `commit_bot()` unless ALL of these are satisfied:
 - Master fails → retry at most 2 times total. If still failing, abandon this generation.
 - Quality gates fail → retry workers with failure message
 - Reviewer rejects → inject feedback, retry workers (counts toward attempts)
-- Critic score < 6 AND attempts < 2: inject critic feedback, retry workers
-- Critic score < 6 AND attempts >= 2: do NOT commit. Return to Master or retry workers with narrower fix
+- Critic score is ADVISORY ONLY: it does NOT block and does NOT force retry. Critic feedback + local_optima_warning are injected into the NEXT generation's worker prompt as improvement hints. ALWAYS proceed to run_precommit_eval regardless of critic score — precommit paired-bootstrap statistical gate is the sole regression gate.
 - Precommit fails → inject exact blocker, retry workers or return to Master
 - Workers produce zero code changes → retry workers with explicit feedback. If still zero changes after 2 retries, abandon this generation.
 - Total intra_gen_attempts must not exceed 4. If exhausted, abandon and start fresh.

@@ -31,7 +31,7 @@ def run_matchup(args):
     ref_path, evo_path, evo_name, n_games = args
     try:
         t0 = time.time()
-        wins, draws, played, _ = mirror_battle(ref_path, evo_path, n_games=n_games)
+        wins, draws, played, _, _net_chips_list = mirror_battle(ref_path, evo_path, n_games=n_games)
         elapsed = time.time() - t0
         ref_wins = wins[0]  # bot0 = reference
         evo_wins = wins[1]  # bot1 = evolved

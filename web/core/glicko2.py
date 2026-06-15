@@ -14,7 +14,7 @@ Each player maintains three values:
 import math
 
 SCALE = 173.7
-TAU = 0.5
+TAU = 0.3
 EPSILON = 0.000001
 
 DEFAULT_R = 1500.0
@@ -150,6 +150,7 @@ def update_rating_period(player, results):
         fB = fC
 
     sigma_star = math.exp(A / 2.0)
+    sigma_star = min(sigma_star, 0.10)
 
     # Step 6: Update phi to new pre-rating period value
     phi_star = math.sqrt(phi_sq + sigma_star * sigma_star)
@@ -161,6 +162,11 @@ def update_rating_period(player, results):
     # Step 8: Convert back to original scale
     r_new = mu_new * SCALE + DEFAULT_R
     rd_new = phi_new * SCALE
+
+    # Reject pathological updates (numerical blow-ups: |delta|>200 or out-of-range)
+    if abs(r_new - player.r) > 200 or not (-1000 <= r_new <= 3000):
+        phi_star = math.sqrt(phi * phi + player.sigma * player.sigma)
+        return Glicko2Player(player.r, phi_star * SCALE, player.sigma)
 
     return Glicko2Player(r_new, rd_new, sigma_star)
 
@@ -221,8 +227,12 @@ def decay_rd(player, elapsed_periods=1):
     rd<100) are unaffected because their post-decay phi_star stays far under
     DEFAULT_RD/SCALE.
     """
+    if elapsed_periods <= 0:
+        return Glicko2Player(player.r, player.rd, player.sigma)
+
     phi = player.rd / SCALE
-    phi_star = math.sqrt(phi * phi + player.sigma * player.sigma * elapsed_periods)
-    # Clamp so rd never exceeds the default initial uncertainty.
-    phi_star = min(phi_star, DEFAULT_RD / SCALE)
+    # Allow gradual RD recovery for long-idle bots (current clamp pins rd at ~50)
+    floor_phi = max(phi, 150.0 / SCALE)  # never decrease rd
+    phi_star = math.sqrt(phi * phi + player.sigma * player.sigma * elapsed_periods * 4)
+    phi_star = max(floor_phi, min(phi_star, DEFAULT_RD / SCALE))
     return Glicko2Player(player.r, phi_star * SCALE, player.sigma)

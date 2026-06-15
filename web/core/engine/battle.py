@@ -276,9 +276,9 @@ def battle(bot0_path, bot1_path, n_games=50, verbose=False, debug_bots=None, sav
 
 def mirror_battle(bot0_path, bot1_path, n_games=50, verbose=False, save_log=False):
     """镜像对战：每局先正常打一次，再用交换手牌后的牌堆打一次。
-    返回 (bot0_wins, bot1_wins, draws, n_games_actual, all_logs)。
+    返回 (bot0_wins, bot1_wins, draws, n_games_actual, all_logs, net_chips_list)。
     胜负按镜像对（两局）的筹码差判定：若正局 bot0 赢 3000、镜像局 bot0 输 1000，
-    则 bot0 净赢 2000，记为 bot0 胜。
+    则 bot0 净赢 2000，记为 bot0 胜，并把 2000 记录到 net_chips_list。
     使用持久化 bot 进程加速（每局游戏一个进程，多决策复用）。"""
     if ENGINE_DIR not in sys.path:
         sys.path.insert(0, ENGINE_DIR)
@@ -289,6 +289,7 @@ def mirror_battle(bot0_path, bot1_path, n_games=50, verbose=False, save_log=Fals
     draws = 0
     n_played = 0
     all_logs = []
+    net_chips_list = []  # net chips for bot0 per completed mirror pair (normal+mirror)
 
     for game in range(n_games):
         # Create persistent bots for this game (reused across normal + mirror)
@@ -385,6 +386,7 @@ def mirror_battle(bot0_path, bot1_path, n_games=50, verbose=False, save_log=Fals
             # ── 镜像对合计 ──
             n_played += 1
             net_chips_0 = chips_normal[0] + chips_mirror[0]
+            net_chips_list.append(net_chips_0)
             if net_chips_0 > 0:
                 match_wins[0] += 1
             elif net_chips_0 < 0:
@@ -398,7 +400,7 @@ def mirror_battle(bot0_path, bot1_path, n_games=50, verbose=False, save_log=Fals
             for p in persistent:
                 p.close()
 
-    return match_wins, draws, n_played, all_logs
+    return match_wins, draws, n_played, all_logs, net_chips_list
 
 
 def battle_generator(bot0_path, bot1_path, n_games=1, save_log=True):

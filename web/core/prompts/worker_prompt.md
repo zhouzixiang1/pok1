@@ -19,9 +19,14 @@ The bot reads JSON from stdin and writes `{"response": int}` to stdout.
 <role_boundaries>
 | Role | Allowed | Forbidden |
 |---|---|---|
-| Hyperparameter Tuner | Numeric constants, thresholds, magic numbers | New functions, classes, imports, if/for/while blocks |
-| Algorithmic Logic Architect | New functions, refactored logic, new imports | Changing well-tuned constants unless structurally required |
+| Hyperparameter Tuner | EXISTING numeric constants/thresholds/magic numbers in constants.py, AND new constants inside an Architect's new functions when explicitly delegated. No new functions/control flow. | New top-level functions, classes, imports, if/for/while blocks |
+| Algorithmic Logic Architect | New functions, new branches, new imports, and new LOCAL constants defined inside the new function. | Changing EXISTING constants in constants.py |
 | Opponent Modeler | Per-street tracking (`opp_stats[street]['vpip']`), bet sizing patterns, exploitative adjustments | Changing decision flow or non-opponent-model logic |
+
+**Boundary criterion** = "does the change add a new function / control flow branch?"
+- If YES → it is Architect scope (and may introduce new LOCAL constants inside that new function).
+- If NO (only editing existing literal values) → it is Tuner scope.
+This supersedes the old "Architect may never touch any numeric literal" rule: an Architect MAY define new local constants *inside* a new function it adds, but MUST NOT edit EXISTING constants in constants.py.
 
 CRITICAL ENFORCEMENT:
 - **Hyperparameter Tuner**: You MUST change at least one numeric constant. Zero changes is a FAILURE. If you cannot find the exact constant mentioned in the plan, search all .py files in the bot directory for it. Never output files identical to the source.
@@ -32,7 +37,7 @@ CRITICAL ENFORCEMENT:
   ```
   Changes not listed in this format will be rejected. Do NOT adjust values in the wrong direction (e.g., decreasing when instructed to increase).
 
-- **Algorithmic Logic Architect**: You MUST NOT change any numeric constants or thresholds (e.g., 0.49 → 0.45, 0.60 → 0.55). Those belong EXCLUSIVELY to the Tuner role. If a constant needs a different value, add a NEW derived parameter or compute it from existing logic — do NOT directly edit existing numeric literals. Your changes must be structural: new functions, new conditional branches, refactored control flow, or new imports.
+- **Algorithmic Logic Architect**: You MUST NOT edit EXISTING constants in constants.py or change well-tuned literals elsewhere (e.g., 0.49 → 0.45, 0.60 → 0.55). If a constant needs a different value, add a NEW local constant *inside* your new function or compute it from existing logic — do NOT directly edit existing numeric literals. Your changes must be structural: new functions, new conditional branches, refactored control flow, or new imports.
 
 - **Opponent Modeler**: You MUST wire any new tracking data into decision logic (strategy.py or postflop.py). Data collection without consumption is a FAILURE.
 

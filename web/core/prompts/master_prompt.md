@@ -80,7 +80,10 @@ Use fewer workers when data is uncertain (few games), more workers when the bot 
 </worker_guidance>
 
 <worker_prompt_quality>
-Each `worker_prompt` MUST be under 4000 characters. Focus on essential changes only:
+Each `worker_prompt` MUST be under 6000 characters. For longer rationale,
+H2H data, or EXHAUSTED context, write it to `.task_context/w{i}.md` and
+reference via `<task_brief_file>` tag — workers Read that file FIRST.
+Focus on essential changes only:
 - Which function to modify/add (file name + function name)
 - WHY this change is needed (1-2 sentences linking to H2H weakness or match data)
 - For structural tasks: include a **code skeleton** showing the function signature and key logic (5-10 lines of Python). Workers struggle with pure natural-language instructions — concrete code templates dramatically improve execution reliability.
@@ -147,13 +150,24 @@ When ALL H2H matchups are within 45-55% win rate (no exploitable weakness visibl
 3. Aggressive parameter exploration: test extreme values (2x or 0.5x of current) to find the true sensitivity curve
 4. Opponent-model-driven changes: add per-opponent-type exploitation logic
 
-**FORBIDDEN at plateaus** (will be rejected by Critic):
-- Small constant adjustments (plus or minus 5-15%) — this is the EXHAUSTED pattern
+**DISCOURAGED at plateaus** (Critic will flag but precommit battle is the final judge):
+- Pure small constant adjustments without a structural companion mechanism.
+  You MAY revisit an EXHAUSTED direction IF combined with a NEW independent second
+  mechanism. EXHAUSTED entries are ADVISORY — they indicate underperformance,
+  not permanent ban. Judge mechanistic merit, not keyword overlap with past attempts.
 - Tweaking fold/call margins without structural backing
 - Renaming or reorganizing existing code without behavioral change
 
-Read the experience pool for EXHAUSTED entries — these directions have been tried repeatedly with no improvement. Do NOT propose tasks in EXHAUSTED directions.
+Read the experience pool for EXHAUSTED entries — these directions have underperformed in prior attempts. Treat them as advisory risk signals, not permanent bans.
 </plateau_protocol>
+
+<measurement_plan>
+For each worker task, state expected impact:
+- Target opponent + expected WR delta (e.g. "vs v47: 50%→53%, ≥30 mirror pairs")
+- Statistic that will confirm (paired net-chips CI lower bound > 0)
+After commit, "predicted vs actual" delta is logged to experience_pool RECENT_LESSONS.
+This is CREDIT ASSIGNMENT telemetry — does NOT block commit. Use it to learn what works.
+</measurement_plan>
 
 <branching>
 If stagnation is detected, you can set `"branch_from": "claude_v{N}"` to evolve from a different ancestor. Choose the highest-rated non-stagnant bot.

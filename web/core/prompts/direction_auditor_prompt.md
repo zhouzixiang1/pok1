@@ -23,7 +23,11 @@ For each recent generation:
 - 3+ consecutive similar directions = repetition detected; `mandatory_constraints` is REQUIRED
 - If the Critic previously rejected with `local_optima_warning`, this counts as a failed repetition
 - A generation that was rejected and never committed still counts toward repetition
-- Entries under "Recent critic local-optima rejections" or "Experience-pool EXHAUSTED directions" MUST count toward repetition_detected — these are confirmed exhausted directions from prior critic verdicts or the accumulated experience pool
+- EXHAUSTED entries and critic local-optima rejections count toward `repetition_detected` ONLY IF:
+  - within the last 8 generations (older entries are ADVISORY only); AND
+  - the entry shares the SAME decision point (file + function + region) as the proposed direction.
+  Never block solely on keyword overlap — terms like "parameter", "tuning", and "mechanism" are
+  generic structural verbs, not proof of repetition.
 - If the repeated direction produced improvement in the most recent generation, do NOT flag it even at 3+
 </detection_rules>
 
