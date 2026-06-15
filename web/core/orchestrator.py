@@ -254,6 +254,13 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             return "".join(texts), cost, ok, gen, auth_err
 
         CYCLE_TIMEOUT = 3600  # 60 minutes max per cycle (was 1800s, increased for retry cycles)
+        # Sentinel returned by the timeout-extension path (stage=verified, first extension).
+        # Must be DISTINCT from every other cost signal: -0.5 (infra), -1.0 (generic crash),
+        # and the auth clamp -max(abs(total_cost), 1.0) which can reach any negative value
+        # ≥1.0 in magnitude. -99999.0 is unreachable in practice (a single cycle cannot
+        # spend $99999) so it cannot collide with the auth clamp even if a future cycle's
+        # total_cost grew large. This fixes the v101 death-loop's latent collision risk.
+        _TIMEOUT_EXTENSION_SENTINEL = -99999.0
         query_gen = None
         # Mutable container to track the async generator across scope boundaries.
         # asyncio.wait_for raises TimeoutError BEFORE tuple unpacking completes,
@@ -274,49 +281,80 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     except Exception as e:
                         log.debug("gen.aclose failed during timeout: %s", e)
 
-                # Stage-aware timeout skip: if pipeline is at verified/critic_checked stage,
-                # commit is imminent and idempotent — grant ONE extension.
+                # Stage-aware timeout skip: if pipeline is at the "verified" stage,
+                # commit is the next gate (idempotent) — grant ONE extension.
+                # Only "verified" (precommit passed) qualifies — "critic_checked" still
+                # has verified + archived before commit, so granting there produced the
+                # v101 false-complete death loop.
                 try:
                     from evolution_core import read_pipeline_checkpoint as _read_ckpt
                     _ckpt = _read_ckpt()
-                    if _ckpt and _ckpt.get("stage") in ("verified", "critic_checked"):
-                        log.warning(
-                            "Cycle timeout at stage=%s — commit is imminent, granting ONE extension (idempotent recovery)",
-                            _ckpt.get("stage"),
-                        )
-                        if ui:
-                            ui.log_history(
-                                f"[Orchestrator] Cycle timeout at stage={_ckpt.get('stage')} — "
-                                f"commit imminent, granting ONE extension.",
-                                "warn",
+                    if _ckpt and _ckpt.get("stage") == "verified":
+                        # ONE extension only: a per-version counter persisted in the
+                        # checkpoint prevents every timeout at this stage re-granting.
+                        _ext_count = _ckpt.get("timeout_extensions", 0)
+                        if _ext_count >= 1:
+                            # Already used the single extension — fall through to normal
+                            # timeout handling below (marks timed_out, restarts cycle).
+                            log.warning(
+                                "Cycle timeout at stage=verified but timeout_extensions=%d already used — NOT granting (one extension limit).",
+                                _ext_count,
                             )
-                        lf.write(f"\n[TIMEOUT] Stage={_ckpt.get('stage')} — granting ONE extension (commit imminent)\n")
-                        # The generator is dead (asyncio.wait_for killed it) — the session
-                        # cannot be resumed.  Clear it so the next _run_one_cycle starts fresh
-                        # but resumes from the preserved checkpoint stage.
-                        _clear_orchestrator_session()
-                        # Refresh checkpoint timestamp so the watchdog does not immediately
-                        # re-trigger on the next cycle (elapsed > WATCHDOG_TIMEOUT).
-                        try:
-                            import fcntl as _fcntl
-                            from evolution_core import PIPELINE_STATE_FILE, locked_file
-                            _ckpt_ext = _ckpt.copy()
-                            _ckpt_ext["last_stage_change_ts"] = time.time()
-                            _ckpt_ext["last_update_ts"] = time.time()
-                            _ckpt_ext["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                            with locked_file(PIPELINE_STATE_FILE, "a+", lock_type=_fcntl.LOCK_EX) as _f:
-                                _f.seek(0)
-                                _f.truncate()
-                                _f.write(json.dumps(_ckpt_ext, indent=2))
-                                _f.flush()
-                                os.fsync(_f.fileno())
-                        except Exception:
-                            pass  # Non-fatal: watchdog may trigger, but checkpoint is preserved
-                        if ui and total_cost > 0:
-                            ui.update_cost("Orchestrator", total_cost, None)
-                        if ui:
-                            return ui.gen_cost_total - _cost_at_start
-                        return total_cost
+                            if ui:
+                                ui.log_history(
+                                    f"[Orchestrator] Cycle timeout at stage=verified but the single "
+                                    f"timeout extension was already granted (count={_ext_count}). "
+                                    f"Not granting again.",
+                                    "warn",
+                                )
+                            lf.write(f"\n[TIMEOUT] Stage=verified, extension already used ({_ext_count}) — not granting.\n")
+                        else:
+                            log.warning(
+                                "Cycle timeout at stage=%s — commit is imminent, granting ONE extension (idempotent recovery)",
+                                _ckpt.get("stage"),
+                            )
+                            if ui:
+                                ui.log_history(
+                                    f"[Orchestrator] Cycle timeout at stage={_ckpt.get('stage')} — "
+                                    f"commit imminent, granting ONE extension.",
+                                    "warn",
+                                )
+                            lf.write(f"\n[TIMEOUT] Stage={_ckpt.get('stage')} — granting ONE extension (commit imminent)\n")
+                            # The generator is dead (asyncio.wait_for killed it) — the session
+                            # cannot be resumed.  Clear it so the next _run_one_cycle starts fresh
+                            # but resumes from the preserved checkpoint stage.
+                            _clear_orchestrator_session()
+                            # Refresh checkpoint timestamp so the watchdog does not immediately
+                            # re-trigger on the next cycle (elapsed > WATCHDOG_TIMEOUT), AND
+                            # record the single granted extension (timeout_extensions=1).
+                            try:
+                                from evolution_core import write_pipeline_checkpoint
+                                write_pipeline_checkpoint(
+                                    _ckpt.get("next_v"),
+                                    _ckpt.get("source_v"),
+                                    _ckpt.get("stage"),
+                                    master_plan=_ckpt.get("master_plan"),
+                                    reviewer_feedback=_ckpt.get("reviewer_feedback", ""),
+                                    generation_attempt=_ckpt.get("generation_attempt", 0),
+                                    gate_results=_ckpt.get("gate_results", {}) or {},
+                                    parent2_v=_ckpt.get("parent2_v"),
+                                    direction_audit=_ckpt.get("direction_audit"),
+                                    audit_context=_ckpt.get("audit_context", {}) or {},
+                                    audit_attempt=_ckpt.get("audit_attempt", 0),
+                                    precommit_attempt=_ckpt.get("precommit_attempt", 0),
+                                    timeout_extensions=1,
+                                    touch_stage_timestamp=True,
+                                )
+                            except Exception:
+                                pass  # Non-fatal: watchdog may trigger, but checkpoint is preserved
+                            if ui and total_cost > 0:
+                                ui.update_cost("Orchestrator", total_cost, None)
+                            # Sentinel _TIMEOUT_EXTENSION_SENTINEL = "timeout extension granted,
+                            # cycle NOT complete". The main loop treats it distinctly: NO
+                            # post_generation_cleanup, NO 'gen complete' log, NO backoff — just
+                            # resume from the checkpoint. Value -99999.0 is mathematically
+                            # distinct from -0.5 infra / -1.0 generic / auth clamp (≥1.0 magnitude).
+                            return _TIMEOUT_EXTENSION_SENTINEL
                 except Exception:
                     pass  # If checkpoint read fails, fall through to normal timeout handling
 
@@ -784,6 +822,24 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                 gen_ctx=gen_ctx,
                 shutdown_mgr=shutdown_mgr,
             )
+
+            # Timeout-extension sentinel: a cycle timed out but commit was imminent
+            # (stage=verified) so ONE extension was granted mid-cycle. The cycle is NOT
+            # complete — the bot has not committed yet. Do NOT run post_generation_cleanup,
+            # do NOT log 'gen complete', do NOT back off. Just resume from the checkpoint
+            # next iteration. Must come BEFORE the cost >= 0 success block so the sentinel
+            # is never treated as success. Value -99999.0 (distinct from auth clamp).
+            if cost == -99999.0:
+                if ui:
+                    ui.log_history(
+                        "Orchestrator: cycle timed out but commit was imminent — granted extension, "
+                        "resuming from checkpoint next cycle (no commit yet).",
+                        "warn",
+                    )
+                # Reset per-generation cost tracker for the continued cycle
+                if ui:
+                    ui.reset_gen_cost()
+                continue
 
             # Phase 3: Cleanup (idempotent) — after any successful generation
             if cost >= 0:

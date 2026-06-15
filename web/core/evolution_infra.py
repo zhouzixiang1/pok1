@@ -72,6 +72,7 @@ MAX_WORKER_RETRIES = 4
 MAX_MASTER_RETRIES = 3
 MAX_CROSSOVER_RETRIES = 3
 MAX_GENESIS_RETRIES = 3
+MAX_PRECOMMIT_RETRIES = 3   # Max run_precommit_eval attempts against the SAME bot code (resets on worker rework)
 MAX_MASTER_AUDIT_RETRIES = 2  # Master plan audit re-plan cap (prevents bug #6b retry loop)
 MAX_GEN_COST = 5.0            # Per-cycle LLM cost cap (top of $4.5-5 band; above 4-attempt retry budget ~$5-7)
 WORKER_TIMEOUT = 1000         # Seconds before a hung worker call is aborted + retried
@@ -275,7 +276,9 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                worker_invocation_count=None,
                                parent2_v=None, direction_audit=None,
                                audit_context=None, reset_generation_attempt=False,
-                               audit_attempt=None, reset_audit_attempt=False):
+                               audit_attempt=None, reset_audit_attempt=False,
+                               precommit_attempt=None, reset_precommit_attempt=False,
+                               timeout_extensions=None, touch_stage_timestamp=False):
     """Write pipeline stage checkpoint so a killed process can resume.
 
     Uses atomic tmp+rename under exclusive lock to prevent concurrent
@@ -302,10 +305,13 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         existing_parent2_v = parent2_v
         existing_direction_audit = None
         existing_audit_context = {}
+        existing_precommit_attempt = precommit_attempt
+        existing_timeout_extensions = 0
 
         if existing and existing.get("next_v") == next_v and existing.get("source_v") == source_v:
             existing_gate_results = existing.get("gate_results", {}) or {}
             existing_failure_count = existing.get("worker_failure_count", 0)
+            existing_timeout_extensions = existing.get("timeout_extensions", 0)
             if master_plan is None:
                 existing_master_plan = existing.get("master_plan")
             if not reviewer_feedback:
@@ -314,6 +320,10 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 existing_generation_attempt = existing.get("generation_attempt", 0)
             if audit_attempt is None:
                 existing_audit_attempt = existing.get("audit_attempt", 0)
+            if precommit_attempt is None:
+                existing_precommit_attempt = existing.get("precommit_attempt", 0)
+            if timeout_extensions is not None:
+                existing_timeout_extensions = int(timeout_extensions)
             if parent2_v is None:
                 existing_parent2_v = existing.get("parent2_v")
             existing_direction_audit = existing.get("direction_audit")
@@ -327,6 +337,10 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             existing_generation_attempt = 0
         if reset_audit_attempt:
             existing_audit_attempt = 0
+        if reset_precommit_attempt:
+            existing_precommit_attempt = 0
+        if timeout_extensions is not None:
+            existing_timeout_extensions = int(timeout_extensions)
 
         if gate_results:
             existing_gate_results.update(gate_results)
@@ -354,13 +368,52 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 "Illegal stage transition: %s -> %s (%s). Allowing but logging.",
                 old_stage, stage, reason,
             )
-        new_stage_ts = now_ts if (old_stage != stage) else existing_stage_ts
+        # touch_stage_timestamp forces last_stage_change_ts to now even when the
+        # stage did not change, e.g. the orchestrator's timeout-extension refresh
+        # so the watchdog does not immediately re-fire after a cycle resume.
+        if touch_stage_timestamp:
+            new_stage_ts = now_ts
+        else:
+            new_stage_ts = now_ts if (old_stage != stage) else existing_stage_ts
+
+        # AUTO-RESET precommit_attempt and timeout_extensions on true rework.
+        # Precommit failures leave the stage at critic_checked; when the bot is
+        # regenerated, the actual transition is usually critic_checked ->
+        # master_planned/workers_done (not verified -> early). Any regression to
+        # a code-regeneration stage means this is new bot code, so both counters
+        # must restart. Later regressions such as critic_checked -> reviewed are
+        # still the same code being re-evaluated, so they do not reset.
+        _STAGE_RANK = {
+            "prepared": 0,
+            "direction_audited": 1,
+            "master_planned": 2,
+            "workers_done": 3,
+            "quality_passed": 4,
+            "reviewed": 5,
+            "critic_checked": 6,
+            "verified": 7,
+            "archived": 8,
+        }
+        if old_stage and stage in _STAGE_RANK and old_stage in _STAGE_RANK:
+            old_rank = _STAGE_RANK[old_stage]
+            new_rank = _STAGE_RANK[stage]
+            if new_rank < old_rank and new_rank <= _STAGE_RANK["workers_done"]:
+                existing_precommit_attempt = 0
+                existing_timeout_extensions = 0
+
+        # Ensure int type invariant: precommit_attempt must be an int >= 0 in the
+        # persisted state. None arises only on a fresh checkpoint (no existing
+        # value, caller didn't pass one) — default to 0 per the contract.
+        if existing_precommit_attempt is None:
+            existing_precommit_attempt = 0
 
         state = {
             "next_v": next_v, "source_v": source_v, "stage": stage,
             "master_plan": existing_master_plan, "reviewer_feedback": existing_reviewer_feedback,
             "generation_attempt": existing_generation_attempt,
             "audit_attempt": existing_audit_attempt,
+            "precommit_attempt": existing_precommit_attempt,
+            "timeout_extensions": existing_timeout_extensions,
             "worker_failure_count": existing_failure_count,
             "gate_results": existing_gate_results,
             "parent2_v": existing_parent2_v,

@@ -206,6 +206,16 @@ def isolate_state(tmp_path, monkeypatch):
     from server.state import app_state
     import system_log
 
+    # Reset module-global injected UI: tests that call the real orchestrator_loop
+    # invoke inject_ui(stub), which mutates tool_helpers._injected_ui DIRECTLY
+    # (bypassing monkeypatch, so it is NOT auto-reverted at fixture teardown).
+    # Without this reset the stub leaks into later tests and breaks any code path
+    # that calls _get_ui() — e.g. tool_planning.py execute_workers ui.get_output()
+    # → AttributeError '_UI' has no attribute 'get_output' (4 TestWorkerFailureCircuitBreaker
+    # failures under the full suite). Reset at fixture entry so every test starts clean.
+    import tool_helpers
+    tool_helpers.inject_ui(None)
+
     # --- Create temp directory structure under a private subdirectory ---
     # Use _pok_isolated to avoid colliding with tests that create their own
     # tmp_path/bots or tmp_path/results directories.

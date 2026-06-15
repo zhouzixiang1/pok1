@@ -9,7 +9,7 @@ import time
 
 from claude_agent_sdk.types import HookMatcher, SyncHookJSONOutput
 
-from evolution_infra import locked_file, RESULTS_DIR
+from evolution_infra import locked_file, RESULTS_DIR, MAX_PRECOMMIT_RETRIES
 
 # Module-level cycle start time — set by orchestrator._run_one_cycle at cycle start,
 # read by _build_context and PreCompact hook for time-budget awareness.
@@ -117,6 +117,29 @@ def _format_checkpoint_info(checkpoint, lines):
             f"{'MAX RETRIES REACHED — do NOT retry workers again. Abandon this generation.' if gen_attempt >= 2 else 'You may retry workers at most 1 more time.'}"
         )
     _inject_master_plan_hint(checkpoint, lines)
+    # Precommit retry status — bot code is unchanged across precommit attempts, so
+    # retrying run_precommit_eval gives the SAME result. Surface this so the LLM
+    # does not loop on precommit; it must rework the bot or abandon instead.
+    precommit_attempt = checkpoint.get("precommit_attempt", 0)
+    if precommit_attempt > 0:
+        precommit_gate = checkpoint.get("gate_results", {}).get("precommit_eval")
+        last_result = ""
+        if precommit_gate is not None:
+            _pw = precommit_gate.get("total_wins", 0)
+            _pl = precommit_gate.get("total_losses", 0)
+            _pd = precommit_gate.get("total_draws", 0)
+            _nopp = precommit_gate.get("n_opponents")
+            if _nopp is None:
+                _nopp = len(precommit_gate.get("opponents", []) or [])
+            last_result = f"last: {_pw}W-{_pl}L-{_pd}D vs {_nopp} opps"
+        lines.append(
+            f"PRECOMMIT STATUS: {precommit_attempt}/{MAX_PRECOMMIT_RETRIES} attempts. "
+            f"{last_result}. Bot code is unchanged across attempts — retrying run_precommit_eval "
+            f"gives the SAME result. If failed, rework the bot (execute_workers) or abandon — "
+            f"do NOT loop on precommit."
+        )
+        if precommit_attempt >= MAX_PRECOMMIT_RETRIES:
+            lines.append("PRECOMMIT HARD LIMIT reached — abandon this generation.")
     last_update = checkpoint.get("last_update_ts")
     if last_update:
         age = int(time.time() - last_update)

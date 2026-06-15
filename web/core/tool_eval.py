@@ -28,6 +28,7 @@ from tool_helpers import (
     _select_precommit_opponents, _bot_main, _resolve_version_args,
     _set_pipeline_status,
 )
+from evolution_infra import write_pipeline_checkpoint, MAX_PRECOMMIT_RETRIES
 from system_log import log_system_event
 from daemon_management import is_daemon_scheduler_capable
 
@@ -93,6 +94,49 @@ class BattleSchedulerClient:
 # ──────────────────────────────────────────────
 # Precommit Eval
 # ──────────────────────────────────────────────
+
+
+def _worst_precommit_opponent(matchups, blockers):
+    """Return the opponent name most responsible for a precommit failure.
+
+    Priority: the first blocker that names a regression opponent
+    (lost_to_parent / lost_to_opponent), else the matchup with the most losses,
+    else the matchup with the worst W-L margin. Returns "unknown" if there are
+    no matchups and no named blockers.
+    """
+    if blockers:
+        for b in blockers:
+            reason = b.get("reason") if isinstance(b, dict) else None
+            if reason in ("lost_to_parent", "lost_to_opponent"):
+                opp = b.get("opponent")
+                if opp:
+                    return opp
+    if matchups:
+        best = None
+        best_key = None
+        for m in matchups:
+            opp = m.get("opponent")
+            losses = int(m.get("losses", 0) or 0)
+            wins = int(m.get("wins", 0) or 0)
+            # Sort by (most losses, then worst margin) so the heaviest defeat wins.
+            key = (losses, losses - wins)
+            if best_key is None or key > best_key:
+                best_key = key
+                best = opp
+        if best is not None:
+            return best
+    return "unknown"
+
+
+def _worst_wins_losses(matchups, opponent):
+    """Return (wins, losses) for the given opponent across matchups, else (0, 0)."""
+    if not opponent or opponent == "unknown" or not matchups:
+        return 0, 0
+    for m in matchups:
+        if m.get("opponent") == opponent:
+            return int(m.get("wins", 0) or 0), int(m.get("losses", 0) or 0)
+    return 0, 0
+
 
 @tool("run_precommit_eval", "Run a minimal mirror-battle regression check before commit. Tests parent, current top opponents, and source H2H weaknesses; blocks obvious crashes or collapses.", {"version": int, "source_v": int, "n_games": int})
 async def run_precommit_eval(args):
@@ -166,6 +210,21 @@ async def run_precommit_eval(args):
     if not opponents:
         blockers.append({"reason": "no_opponents", "details": "No parent/top/H2H opponents with main.py found."})
     all_opponents = list(opponents)  # preserve full list for result reporting
+
+    # Increment precommit_attempt only when a real precommit battle round is
+    # about to start. Idempotent already-verified calls, missing prerequisite
+    # gates, missing candidates, and no-opponent preflight exits must not spend
+    # an attempt because they do not evaluate the current bot code.
+    precommit_attempt = int(ckpt.get("precommit_attempt", 0) or 0) if ckpt else 0
+    if opponents:
+        current_stage = ckpt.get("stage", "critic_checked") if ckpt else "critic_checked"
+        precommit_attempt += 1
+        write_pipeline_checkpoint(
+            v,
+            source_v,
+            current_stage,
+            precommit_attempt=precommit_attempt,
+        )
 
     total_wins = 0
     total_losses = 0
@@ -532,6 +591,49 @@ async def run_precommit_eval(args):
         "passed": passed,
         "blockers": blockers,
     }
+
+    # ── Task B: FAILED directive ──
+    # When precommit fails, tell the Orchestrator exactly what to do next:
+    #   - below the retry limit → rework the bot (call execute_workers) OR
+    #     abandon the generation. Retrying precommit alone is pointless because
+    #     the bot code is unchanged.
+    #   - at/above the retry limit → hard-stop: abandon the generation.
+    # We surface the worst matchup (most losses) so the worker feedback can
+    # target the specific losing line.
+    if not passed:
+        worst_opponent = _worst_precommit_opponent(matchups, blockers)
+        worst_wins, worst_losses = _worst_wins_losses(matchups, worst_opponent)
+        if precommit_attempt >= MAX_PRECOMMIT_RETRIES:
+            result["directive"] = (
+                f"PRECOMMIT HARD LIMIT REACHED ({MAX_PRECOMMIT_RETRIES}/{MAX_PRECOMMIT_RETRIES} attempts). "
+                f"The current bot cannot pass precommit. Do NOT retry precommit or workers. "
+                f"Abandon this generation (the pipeline will reset on the next cycle with a new master plan)."
+            )
+            log_system_event(
+                "pipeline.precommit_hard_limit",
+                "warn",
+                f"v{v}: precommit hard limit reached ({MAX_PRECOMMIT_RETRIES}/{MAX_PRECOMMIT_RETRIES}); "
+                f"abandoning generation vs worst opponent {worst_opponent}",
+                {
+                    "version": v,
+                    "source_v": source_v,
+                    "precommit_attempt": precommit_attempt,
+                    "max_retries": MAX_PRECOMMIT_RETRIES,
+                    "worst_opponent": worst_opponent,
+                    "total_wins": total_wins,
+                    "total_losses": total_losses,
+                    "blockers": blockers,
+                },
+            )
+        else:
+            result["directive"] = (
+                f"Precommit FAILED (attempt {precommit_attempt}/{MAX_PRECOMMIT_RETRIES}) — "
+                f"bot code is UNCHANGED since the last attempt, so retrying precommit will give the SAME result. "
+                f"Do NOT call run_precommit_eval again. You MUST either (a) rework the bot: call execute_workers "
+                f"with reviewer_feedback explaining the loss vs {worst_opponent} "
+                f"({worst_wins}W-{worst_losses}L), targeting that matchup; or (b) abandon this generation "
+                f"and start fresh from a different direction."
+            )
     checkpoint_recorded = _record_gate(
         v,
         source_v,
