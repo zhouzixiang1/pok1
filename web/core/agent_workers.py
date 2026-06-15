@@ -54,11 +54,18 @@ def _load_recent_failures(n=5):
 
 
 def _extract_exhausted_block():
-    """Read experience_pool.md and extract [POSSIBLY EXHAUSTED] entries as a constraint block.
+    """Read experience_pool.md and extract [POSSIBLY EXHAUSTED] entries as constraint blocks.
 
-    Returns a formatted forbidden_directions XML block string, or empty string
-    if no EXHAUSTED entries are found. This block is prepended to worker prompts
-    so workers cannot claim they never saw the constraints.
+    Returns tiered constraint blocks:
+    - <forbidden_directions>: RECENT (## RECENT_LESSONS section, last ~3 generations)
+      EXHAUSTED entries, hard "Do NOT implement" ban.
+    - <advisory_directions>: EXHAUSTED entries migrated out of RECENT_LESSONS (older
+      than ~3 generations). Surfaced as historical cautions, NOT hard bans — they
+      expire naturally instead of permanently blacklisting directions.
+
+    The two blocks (when present) are joined with "\n\n"; returns "" if neither.
+    Tiering uses a per-section state machine (consolidator guarantees RECENT_LESSONS
+    only contains the last ~3 generations), so no @vN version parser is needed.
     """
     if not EXPERIENCE_FILE.exists():
         return ""
@@ -68,30 +75,47 @@ def _extract_exhausted_block():
     except Exception:
         return ""
 
-    exhausted_lines = []
     # Tolerant marker: matches [POSSIBLY EXHAUSTED] AND [EXHAUSTED — hard gate]
     # (any bracketed tag containing EXHAUSTED). The old .replace() cleanup only
     # stripped "[POSSIBLY EXHAUSTED]" / "[EXHAUSTED]", leaving the "— hard gate]"
     # suffix from LLM-escalated markers as residue in the constraint block.
     marker_re = re.compile(r"\[[A-Z ]*EXHAUSTED[^\]]*\]")
+    hard_lines = []        # RECENT_LESSONS section (hard ban)
+    advisory_lines = []    # other sections (advisory caution)
+    in_recent = False
     for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## RECENT_LESSONS"):
+            in_recent = True
+        elif stripped.startswith("## "):
+            in_recent = False
         if marker_re.search(line):
             # Strip the leading markdown header markers and the marker itself
             cleaned = marker_re.sub("", line).strip(" -•")
             if cleaned:
-                exhausted_lines.append(cleaned)
+                (hard_lines if in_recent else advisory_lines).append(cleaned)
 
-    if not exhausted_lines:
-        return ""
-
-    items = "\n".join(f"  - {entry}" for entry in exhausted_lines)
-    return (
-        "<forbidden_directions>\n"
-        "These evolution directions are EXHAUSTED. Do NOT implement changes in these areas:\n"
-        f"{items}\n"
-        "Violating these constraints will result in automatic rejection.\n"
-        "</forbidden_directions>\n\n"
-    )
+    blocks = []
+    if hard_lines:
+        hard_items = "\n".join(f"  - {entry}" for entry in hard_lines)
+        blocks.append(
+            "<forbidden_directions>\n"
+            "These RECENT (last ~3 generations) directions are EXHAUSTED. Do NOT implement:\n"
+            f"{hard_items}\n"
+            "Violating these constraints will result in automatic rejection.\n"
+            "</forbidden_directions>"
+        )
+    if advisory_lines:
+        advisory_items = "\n".join(f"  - {entry}" for entry in advisory_lines)
+        blocks.append(
+            "<advisory_directions>\n"
+            "These directions HISTORICALLY underperformed (older than ~3 generations). "
+            "Revisit ONLY if combined with a NEW independent mechanism AND "
+            ">=30g paired net-chips H2H evidence:\n"
+            f"{advisory_items}\n"
+            "</advisory_directions>"
+        )
+    return "\n\n".join(blocks) + "\n\n" if blocks else ""
 
 
 def _target_rel_set(task, next_v):

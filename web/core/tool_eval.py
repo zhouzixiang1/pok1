@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import statistics
 import sys
 import time
 import uuid
@@ -170,7 +171,6 @@ async def run_precommit_eval(args):
     total_losses = 0
     total_draws = 0
     aggregate_net_chips = []  # candidate net-chips per mirror pair, across all opponents
-    parent_net_chips = []     # candidate net-chips per mirror pair vs parent only
     _core = CORE_DIR  # imported unconditionally from evolution_core (line 18)
     sys.path.insert(0, str(_core.resolve()))
     from engine.battle import mirror_battle
@@ -382,7 +382,7 @@ async def run_precommit_eval(args):
                     nc_hi = None
                     if nc:
                         nc_lo, nc_hi = paired_bootstrap_ci(nc)
-                        matchup["parent_net_chips_ci"] = [round(nc_lo, 1), round(nc_hi, 1)]
+                        matchup["parent_net_chip_ci"] = [round(nc_lo, 1), round(nc_hi, 1)]
                     # Block only when the CI UPPER bound is below threshold — i.e. we
                     # are 95% confident the mean per-pair net-chips deficit exceeds the
                     # threshold. Using the upper bound (not lower) avoids a single
@@ -444,8 +444,6 @@ async def run_precommit_eval(args):
             total_draws += matchup["draws"]
             net_chips = list(matchup.get("net_chips") or [])
             aggregate_net_chips.extend(net_chips)
-            if matchup.get("opponent") == parent_name:
-                parent_net_chips.extend(net_chips)
             matchups.append(matchup)
 
     # --- P0-4: Semantic Interpretation of Battle Results ---
@@ -513,6 +511,10 @@ async def run_precommit_eval(args):
                  "aggregate_ci_upper": round(agg_ci_upper, 1) if agg_ci_upper is not None else None,
                  "aggregate_threshold": AGGREGATE_NET_CHIPS_LOSS_THRESHOLD,
                  "net_chips_samples": len(aggregate_net_chips),
+                 "net_chips_mean": round(sum(aggregate_net_chips)/len(aggregate_net_chips), 1) if aggregate_net_chips else None,
+                 "net_chips_std": round(statistics.pstdev(aggregate_net_chips), 1) if len(aggregate_net_chips) > 1 else None,
+                 "net_chips_min": round(min(aggregate_net_chips), 1) if aggregate_net_chips else None,
+                 "net_chips_max": round(max(aggregate_net_chips), 1) if aggregate_net_chips else None,
              },
              "n_opponents": len(all_opponents),
              "elapsed_sec": round(time.time() - _t0, 2)})

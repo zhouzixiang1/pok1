@@ -53,13 +53,18 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
     if not candidates:
         return {"reaped": False, "reason": "All remaining bots are current or untested"}
 
-    # Protect bots with insufficient evaluation: rd > 120 OR total games < 600.
+    # Protect bots with insufficient evaluation: rd > 100 OR total games < 600.
     # These are sample-starved variance victims — reap should not cull them unless the
     # pool is overflowing past the hard cap (MAX_ACTIVE_BOTS + 3).
+    # NOTE: rd threshold lowered 120→100 to account for decay_rd (elo_daemon) which
+    # inflates rd over time for idle bots. An idle veteran at rd 100-120 already sees
+    # its conservative_rating (r-2*rd) collapse from rd regrowth alone; reaping it on
+    # that basis would batch-misclassify old bots that serve as implicit frozen
+    # comparison anchors. The 100 threshold protects more of these rd-recovered vets.
     protected = set()
     for name, rating in candidates:
         n_total = bot_stats.get(name, {}).get("games", 0)
-        if rating.rd > 120 or n_total < 600:
+        if rating.rd > 100 or n_total < 600:
             protected.add(name)
     # Apply protection EXCEPT when pool overflow forces reap (avoid unbounded growth)
     if len(active_bots) <= MAX_ACTIVE_BOTS + 3:  # soft cap, allow protection

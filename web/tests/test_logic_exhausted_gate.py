@@ -174,17 +174,47 @@ class TestHardGateDirectionToken:
 
 
 class TestExtractExhaustedBlock:
-    """agent_workers._extract_exhausted_block feeds the worker-prompt constraint."""
+    """agent_workers._extract_exhausted_block feeds the worker-prompt constraint.
+
+    Tiering (per-section state machine): EXHAUSTED entries inside ## RECENT_LESSONS
+    become hard <forbidden_directions>; entries in any other section become advisory
+    <advisory_directions> so old exhaustion expires naturally instead of permanently
+    blacklisting directions.
+    """
 
     def test_block_includes_both_variants(self, exhausted_pool, monkeypatch):
         import core.agent_workers as aw
         monkeypatch.setattr(aw, "EXPERIENCE_FILE", exhausted_pool)
         block = aw._extract_exhausted_block()
-        assert block, "expected a non-empty forbidden_directions block"
-        assert "<forbidden_directions>" in block
-        # Both real lessons must appear, with the marker fully stripped.
+        assert block, "expected a non-empty constraint block"
+        # Both EXHAUSTED markers in this fixture live in PARAMETER_TUNING and
+        # POSTFLOP_STRATEGY sections (NOT RECENT_LESSONS), so they are tiered as
+        # ADVISORY (historical caution), not a hard forbidden_directions ban.
+        assert "<advisory_directions>" in block
+        # Both real lessons must still appear, with the marker fully stripped.
         assert "fold margin" in block
         assert "should_fold_postflop" in block
+
+    def test_recent_section_emits_hard_block(self, tmp_path, monkeypatch):
+        """EXHAUSTED entries inside ## RECENT_LESSONS produce a hard forbidden block."""
+        import core.agent_workers as aw
+        f = tmp_path / "experience_pool.md"
+        f.write_text(
+            "## PARAMETER_TUNING\n"
+            "- old constant tuning " + HARD_GATE_MARKER + "\n"
+            "## RECENT_LESSONS\n"
+            "- new fold logic is exhausted " + POSSIBLY_MARKER + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(aw, "EXPERIENCE_FILE", f)
+        block = aw._extract_exhausted_block()
+        assert "<forbidden_directions>" in block
+        assert "<advisory_directions>" in block
+        # RECENT line in forbidden block, old line in advisory block
+        assert "new fold logic" in block
+        assert "old constant tuning" in block
+        # forbidden must come before advisory
+        assert block.index("<forbidden_directions>") < block.index("<advisory_directions>")
 
     def test_block_no_marker_residue(self, exhausted_pool, monkeypatch):
         """No '— hard gate]' residue should leak into the constraint block."""
@@ -199,7 +229,7 @@ class TestExtractExhaustedBlock:
         monkeypatch.setattr(aw, "EXPERIENCE_FILE", exhausted_pool)
         block = aw._extract_exhausted_block()
         # The RECENT_LESSONS line has bare 'EXHAUSTED' (no bracket) — must not be
-        # swept into the forbidden-directions block.
+        # swept into any constraint block.
         assert "Avoided the EXHAUSTED" not in block
 
     def test_empty_when_no_markers(self, tmp_path, monkeypatch):

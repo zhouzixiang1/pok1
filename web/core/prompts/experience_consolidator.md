@@ -26,6 +26,13 @@ Output MUST use exactly these category headers (in this order):
 <local_optima>
 If the same type of lesson appears for 3+ consecutive generations (e.g. 3 gens of constant-tuning in the same direction with no gain), append " [POSSIBLY EXHAUSTED]" to that bullet so Master avoids repeating it. Use this EXACT marker verbatim — do not add suffixes such as "— hard gate", do not change the wording, and do not remove existing markers when re-consolidating. The pipeline matches the literal string "[POSSIBLY EXHAUSTED]" (with a regex tolerant of suffixes), so a consistent marker keeps the exhausted-direction gate reliable.
 
+EXHAUSTED markers are tiered by section:
+- In ## RECENT_LESSONS: treated as RECENT hard constraints (worker injection forbids them).
+- Migrated out of RECENT_LESSONS during consolidation: automatically downgraded to
+  ADVISORY — worker injection surfaces them as historical cautions, not hard bans.
+  This lets old exhaustion expire naturally instead of permanently blacklisting directions.
+Keep the literal "[POSSIBLY EXHAUSTED]" marker verbatim when present.
+
 {exhausted_directions}
 </local_optima>
 
