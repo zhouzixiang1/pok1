@@ -32,6 +32,7 @@ from bot_action_stats import (
     extract_hands_from_replay,  # deprecated alias
     compute_bot_action_stats,
     compute_all_bot_stats,
+    get_global_stats,
 )
 
 
@@ -143,7 +144,12 @@ class TestExtractActionsFromReplay:
             _response(0, -2),  # allin
         ]
         actions = extract_actions_from_replay(_make_replay("A", "B", logs))
-        assert actions == [{"bot": "A", "street": "preflop", "action": "allin", "hand": 0}]
+        # Phase 0: action dicts now carry opponent + conditional-feature flags.
+        assert len(actions) == 1
+        a = actions[0]
+        assert (a["bot"], a["street"], a["action"], a["hand"]) == ("A", "preflop", "allin", 0)
+        assert a["opponent"] == "B"
+        assert a["fold_to_bet"] is False  # allin is not a fold
 
     def test_player_id_stably_maps_bots(self):
         """bot0 -> player 0, bot1 -> player 1 (mirror half included)."""
@@ -193,10 +199,10 @@ class TestComputeBotActionStats:
         replay = _make_replay("Alice", "Bob", _hand0_fold_to_3bet())
         (tmp_path / "r1.json").write_text(json.dumps(replay))
         stats = compute_bot_action_stats("Alice", str(tmp_path))
-        # Required top-level keys
-        assert set(stats.keys()) == {"preflop", "flop", "turn", "river", "total_hands"}
-        # Per-street shape
-        assert set(stats["preflop"].keys()) == {"total", "fold", "call", "raise", "check", "allin"}
+        # Required top-level keys (Phase 0 adds aggression_factor)
+        assert set(stats.keys()) == {"preflop", "flop", "turn", "river", "total_hands", "aggression_factor"}
+        # Per-street shape (Phase 0 adds fold_to_bet/cbet/barrel)
+        assert set(stats["preflop"].keys()) == {"total", "fold", "call", "raise", "check", "allin", "fold_to_bet", "cbet", "barrel"}
         # bot0 acted: raise200 then fold -> preflop total=2, raise=1, fold=1
         assert stats["preflop"]["total"] == 2
         assert stats["preflop"]["raise"] == 1
@@ -288,16 +294,19 @@ class TestComputeBotActionStats:
         (tmp_path / "r1.json").write_text(json.dumps(replay))
         all_stats = compute_all_bot_stats(["Alice", "Bob", "Carol"], str(tmp_path))
         assert set(all_stats.keys()) == {"Alice", "Bob", "Carol"}
-        assert all_stats["Alice"]["preflop"]["raise"] == 1
-        assert all_stats["Bob"]["preflop"]["raise"] == 1  # the 3bet
+        # Phase 0: compute_all_bot_stats now returns per-opponent buckets.
+        assert all_stats["Alice"]["Bob"]["preflop"]["raise"] == 1
+        assert all_stats["Bob"]["Alice"]["preflop"]["raise"] == 1  # the 3bet
         assert all_stats["Carol"] == {}  # not in any replay
 
     def test_compute_bot_action_stats_delegates_to_all(self, tmp_path):
         replay = _make_replay("Alice", "Bob", _hand0_fold_to_3bet())
         (tmp_path / "r1.json").write_text(json.dumps(replay))
         single = compute_bot_action_stats("Alice", str(tmp_path))
-        allv = compute_all_bot_stats(["Alice"], str(tmp_path))["Alice"]
-        assert single == allv
+        all_stats = compute_all_bot_stats(["Alice"], str(tmp_path))
+        # Phase 0: compute_bot_action_stats flattens via get_global_stats; the
+        # per-opponent breakdown is intentionally a different shape than the flat view.
+        assert single == get_global_stats(all_stats, "Alice")
 
     def test_mirror_half_player_mapping_stable(self, tmp_path):
         """A mirror-half game still maps bot0->player0, bot1->player1."""

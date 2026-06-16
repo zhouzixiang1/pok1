@@ -53,7 +53,7 @@ from evolution_infra import (
     read_locked_json, write_locked_json, append_locked_jsonl,
     update_h2h, update_bot_stats,
 )
-from bot_action_stats import compute_all_bot_stats
+from bot_action_stats import compute_all_bot_stats, get_global_stats
 from eval_rounds import EvalRoundManager
 
 BOTS_DIR = PROJECT_ROOT / "bots"
@@ -470,11 +470,33 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
     _rotate_jsonl(MATCH_HISTORY_FILE, MAX_MATCH_HISTORY_LINES)
     # Note: system_events.jsonl is written by web process, rotated by system_log.py
 
-    # Compute and write bot action stats from replay files (single-pass)
+    # Compute and write bot action stats from replay files.
+    # Phase 0 (D): incremental mode via etag cache — replays are write-once, so
+    # mtime+size fingerprints let us detect which files changed. compute_all_bot_stats
+    # now returns a per-opponent breakdown; downstream readers expect the legacy flat
+    # shape, so we collapse each bot via get_global_stats before writing to disk.
     try:
-        bot_action_stats = compute_all_bot_stats(active_bots, REPLAY_DIR)
+        import time as _time_mod
+        _scan_t0 = _time_mod.perf_counter()
         action_stats_file = RESULTS_DIR / "bot_action_stats.json"
-        write_locked_json(action_stats_file, bot_action_stats)
+        etag_path = REPLAY_DIR / ".stats_etag.json"
+        # Incremental scan (force_full=False). The on-disk flat file is the
+        # authoritative consumer-facing artifact; the per-opponent shape stays in-memory.
+        per_opp_stats = compute_all_bot_stats(
+            active_bots, REPLAY_DIR, force_full=False, etag_path=etag_path
+        )
+        # Flatten to legacy shape: {bot: {street: {total,fold,...}, total_hands, aggression_factor}}
+        flat_stats = {
+            bot: get_global_stats(per_opp_stats, bot)
+            for bot in active_bots
+            if bot in per_opp_stats
+        }
+        write_locked_json(action_stats_file, flat_stats)
+        _scan_dt = _time_mod.perf_counter() - _scan_t0
+        log.info(
+            "bot_action_stats scan: %.2fs, %d bots (incremental etag @ %s)",
+            _scan_dt, len(flat_stats), etag_path.name,
+        )
     except Exception as e:
         log.warning("Bot action stats computation failed (non-fatal): %s", e)
 
@@ -492,6 +514,64 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
             hwr = bot_wr_map.get(b, 0.0)
             log.info("  %d. %s: h2h_avg_wr=%.2f%% r=%.1f rd=%.1f wr=%.2f%% (%d games)",
                      i + 1, b, hwr * 100, p.r, p.rd, wr * 100, g)
+
+
+def _is_external(m):
+    """A queued job is an external (precommit/eval) job iff it's the external tuple form.
+
+    External job tuple shape: ("external", job_id, a, b, path_a, path_b, n_pairs[, priority]).
+    The trailing `priority` element (Phase 0 F) is optional for back-compat.
+    """
+    return (isinstance(m, tuple) and len(m) in (7, 8) and m[0] == "external")
+
+
+def _external_priority(m):
+    """Effective priority for an external job tuple.
+
+    External job tuple shape: ("external", job_id, a, b, path_a, path_b, n_pairs[, priority])
+    New submissions carry an 8th element = BattleJob.priority (higher = more urgent).
+    Legacy/unknown external jobs default to priority 0. precommit_eval jobs always rank
+    strictly above any daemon full-pool (internal) match.
+    """
+    if len(m) >= 8:
+        try:
+            return int(m[7])
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _pop_next_job(match_queue):
+    """Pop the highest-priority queued job, external-jobs-first.
+
+    Scheduler priority (Phase 0 F): precommit external jobs preempt daemon full-pool
+    matches. Among external jobs, higher `priority` (BattleJob.priority) wins. Internal
+    matches are only popped when no external job remains. This keeps the daemon's full
+    pool evaluation healthy while guaranteeing precommit jobs never starve behind a
+    wall of daemon-generated matches.
+
+    Returns the job tuple, or None if the queue is empty.
+    """
+    if not match_queue:
+        return None
+    # Fast path: most iterations have at most one external job (the one just drained).
+    # Find the best external job if any exist; else pop the first internal match.
+    best_ext_idx = None
+    best_ext_pri = None
+    for idx, m in enumerate(match_queue):
+        if not _is_external(m):
+            continue
+        pri = _external_priority(m)
+        if best_ext_idx is None or pri > best_ext_pri:
+            best_ext_idx = idx
+            best_ext_pri = pri
+    if best_ext_idx is not None:
+        # deque has no O(1) index-delete; rotate to pop. The queue is short (≤ a few
+        # hundred entries in pathological cases, usually <20), so this is fine.
+        m = match_queue[best_ext_idx]
+        del match_queue[best_ext_idx]
+        return m
+    return match_queue.popleft()
 
 
 def main():
@@ -573,7 +653,12 @@ def main():
     in_flight = {}  # future -> (bot_a, bot_b) or (bot_a, bot_b, ext_job_id)
 
     _first_iteration = True
-    _capacity = max(1, n_workers // 4)
+    # External (precommit) job drain capacity: how many external jobs we keep staged in
+    # the match_queue per poll cycle. With priority-aware dispatch (_pop_next_job),
+    # queued external jobs always grab the next freed worker slot before any daemon
+    # full-pool match, so a higher buffer lowers precommit queueing latency without
+    # starving the full pool (internal matches still fill all remaining slots).
+    _capacity = max(2, n_workers // 2)
 
     # Start battle experience background thread (non-fatal if unavailable)
     try:
@@ -583,11 +668,13 @@ def main():
     except Exception as e:
         log.warning("Battle experience thread failed to start (non-fatal): %s", e)
 
-    # Fill initial pool
+    # Fill initial pool (priority-aware: external jobs first)
     while len(in_flight) < n_workers and match_queue:
-        m = match_queue.popleft()
-        # Detect external jobs: ("external", job_id, a, b, path_a, path_b, n_pairs)
-        is_external = len(m) == 7 and m[0] == "external"
+        m = _pop_next_job(match_queue)
+        if m is None:
+            break
+        # Detect external jobs: ("external", job_id, a, b, path_a, path_b, n_pairs[, priority])
+        is_external = _is_external(m)
         if is_external:
             exec_args = m[2:7]
             ext_job_id = m[1]
@@ -615,26 +702,24 @@ def main():
                 while running and in_flight:
                     # Poll external job queue
                     if _SCHEDULER_AVAILABLE:
-                        ext_in_queue = sum(
-                            1 for m in match_queue if len(m) == 7 and m[0] == "external"
-                        )
+                        ext_in_queue = sum(1 for m in match_queue if _is_external(m))
                         if ext_in_queue < _capacity:
                             if _first_iteration:
                                 recovered = requeue_unclaimed_on_startup()
                                 for job in recovered:
-                                    match_queue.appendleft((
+                                    match_queue.append((
                                         "external", job["job_id"],
                                         job["bot_a_name"], job["bot_b_name"],
                                         job["bot_a_path"], job["bot_b_path"],
-                                        job["n_pairs"],
+                                        job["n_pairs"], job.get("priority", 0),
                                     ))
                             pending = drain_pending_jobs()
                             for job in pending:
-                                match_queue.appendleft((
+                                match_queue.append((
                                     "external", job["job_id"],
                                     job["bot_a_name"], job["bot_b_name"],
                                     job["bot_a_path"], job["bot_b_path"],
-                                    job["n_pairs"],
+                                    job["n_pairs"], job.get("priority", 0),
                                 ))
                             _first_iteration = False
 
@@ -708,28 +793,11 @@ def main():
                         except Exception as er_err:
                             log.warning("Eval round tracking error (non-fatal): %s", er_err)
 
-                        # Replenish: submit next match
+                        # Replenish: submit next match (priority-aware: external jobs first)
                         if match_queue and executor is not None:
-                            m = match_queue.popleft()
-                            is_ext = len(m) == 7 and m[0] == "external"
-                            if is_ext:
-                                exec_args = m[2:7]
-                                ext_job_id = m[1]
-                                new_fut = executor.submit(run_single_match, exec_args)
-                                in_flight[new_fut] = (exec_args[0], exec_args[1], ext_job_id)
-                            else:
-                                if m[0] not in active_bots or m[1] not in active_bots:
-                                    continue
-                                new_fut = executor.submit(run_single_match, m)
-                                in_flight[new_fut] = (m[0], m[1])
-                        elif executor is not None:
-                            # Refill queue when empty
-                            matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
-                            for ma, mb in matches:
-                                match_queue.append((ma, mb, bot_path(ma), bot_path(mb), n_pairs))
-                            if match_queue:
-                                m = match_queue.popleft()
-                                is_ext = len(m) == 7 and m[0] == "external"
+                            m = _pop_next_job(match_queue)
+                            if m is not None:
+                                is_ext = _is_external(m)
                                 if is_ext:
                                     exec_args = m[2:7]
                                     ext_job_id = m[1]
@@ -740,6 +808,25 @@ def main():
                                         continue
                                     new_fut = executor.submit(run_single_match, m)
                                     in_flight[new_fut] = (m[0], m[1])
+                        elif executor is not None:
+                            # Refill queue when empty
+                            matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
+                            for ma, mb in matches:
+                                match_queue.append((ma, mb, bot_path(ma), bot_path(mb), n_pairs))
+                            if match_queue:
+                                m = _pop_next_job(match_queue)
+                                if m is not None:
+                                    is_ext = _is_external(m)
+                                    if is_ext:
+                                        exec_args = m[2:7]
+                                        ext_job_id = m[1]
+                                        new_fut = executor.submit(run_single_match, exec_args)
+                                        in_flight[new_fut] = (exec_args[0], exec_args[1], ext_job_id)
+                                    else:
+                                        if m[0] not in active_bots or m[1] not in active_bots:
+                                            continue
+                                        new_fut = executor.submit(run_single_match, m)
+                                        in_flight[new_fut] = (m[0], m[1])
 
                     # Periodic save
                     try:
@@ -797,11 +884,11 @@ def main():
                                 if b not in ratings:
                                     ratings[b] = Glicko2Player()
                             active_bots = new_bots
-                            # Filter match_queue: preserve external jobs (len==7, m[0]=="external")
+                            # Filter match_queue: preserve external jobs (priority-aware form)
                             if removed:
                                 match_queue = deque(
                                     m for m in match_queue
-                                    if (len(m) == 7 and m[0] == "external")
+                                    if _is_external(m)
                                     or (m[0] not in removed and m[1] not in removed)
                                 )
                                 for fut in list(in_flight):
@@ -861,7 +948,7 @@ def main():
                             if removed:
                                 match_queue = deque(
                                     m for m in match_queue
-                                    if (len(m) == 7 and m[0] == "external")
+                                    if _is_external(m)
                                     or (m[0] not in removed and m[1] not in removed)
                                 )
                                 for fut in list(in_flight):
@@ -897,7 +984,7 @@ def main():
                             if removed:
                                 match_queue = deque(
                                     m for m in match_queue
-                                    if (len(m) == 7 and m[0] == "external")
+                                    if _is_external(m)
                                     or (m[0] not in removed and m[1] not in removed)
                                 )
                                 for fut in list(in_flight):
@@ -949,15 +1036,17 @@ def main():
                     mp_ctx = _mp.get_context("spawn")
                     executor = ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_ctx)
                     # Preserve external jobs from old queue before discarding
-                    old_external = [m for m in match_queue if isinstance(m, tuple) and len(m) == 7 and m[0] == "external"]
+                    old_external = [m for m in match_queue if _is_external(m)]
                     match_queue = deque(old_external)
                     # Rebuild internal matches on top of preserved externals
                     matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
                     for a, b in matches:
                         match_queue.append((a, b, bot_path(a), bot_path(b), n_pairs))
                     while len(in_flight) < n_workers and match_queue:
-                        m = match_queue.popleft()
-                        is_ext = len(m) == 7 and m[0] == "external"
+                        m = _pop_next_job(match_queue)
+                        if m is None:
+                            break
+                        is_ext = _is_external(m)
                         if is_ext:
                             exec_args = m[2:7]
                             ext_job_id = m[1]

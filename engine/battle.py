@@ -274,12 +274,155 @@ def battle(bot0_path, bot1_path, n_games=50, verbose=False, debug_bots=None, sav
     return match_wins, draws, n_played, all_logs
 
 
+def _run_one_mirror_game(judge_func, bot_paths, game, n_games, verbose):
+    """执行单个镜像对（normal+mirror 两局），返回
+    (net_chips_0, chips_normal, chips_mirror, normal_log, mirror_log)。
+
+    chips_normal / chips_mirror 是 [bot0_win_chips, bot1_win_chips] 列表；normal_log /
+    mirror_log 是该局完整 judge log（list）。纯流式消费者可忽略这些返回值，只用 net_chips_0。
+
+    返回 None 表示该 game 被跳过（正局或镜像局未 finish / 筹码缺失），不产出镜像对。
+
+    进程生命周期：persistent bots 在本函数内创建并在 finally 中显式 close，确保无论
+    正常返回、异常还是跳过，_PersistentBot popen 都被回收（不依赖外部 generator 的
+    finally），从而消费者提前 break（GeneratorExit）也不会泄漏。
+    """
+    persistent = [_PersistentBot(bot_paths[0]), _PersistentBot(bot_paths[1])]
+    try:
+        # ── 正局：正常发牌 ──
+        result_str = judge_func(json.dumps({"log": []}))
+        result = json.loads(result_str)
+        log = [{"output": result}]
+        initdata = result.get("initdata")
+        bot_requests = [[], []]
+        bot_responses = [[], []]
+        bot_data = [None, None]
+
+        while result.get("command") == "request":
+            content = result.get("content", {})
+            if not content:
+                break
+            player_id = int(next(iter(content.keys())))
+            request_data = content[str(player_id)]
+            response, _, _ = _call_bot(bot_paths, player_id, request_data, bot_requests, bot_responses,
+                                       bot_data=bot_data, persistent_procs=persistent)
+            log.append({str(player_id): {"response": str(response), "verdict": "OK"}, "output": None})
+            result_str = judge_func(json.dumps({"log": log, "initdata": initdata}))
+            result = json.loads(result_str)
+            log.append({"output": result})
+            if result.get("command") == "finish":
+                break
+
+        if result.get("command") != "finish":
+            return None
+
+        chips_normal = [r["win_chips"] for r in result.get("display", {}).get("final_result", [])]
+        if len(chips_normal) < 2:
+            return None
+
+        # ── 镜像局：交换手牌的牌堆 ──
+        mirror_initdata = {
+            "max_hand": initdata["max_hand"],
+            "dealer": (initdata["dealer"] + 1) % 2,
+            "decks": [],
+        }
+        for deck in initdata["decks"]:
+            # deck[-1],deck[-2] 是 player0 的牌，deck[-3],deck[-4] 是 player1 的牌
+            # 交换两组，使 player0 拿到原 player1 的牌，反之亦然
+            mirror_deck = deck[:-4] + deck[-2:] + deck[-4:-2]
+            mirror_initdata["decks"].append(mirror_deck)
+
+        result_str = judge_func(json.dumps({"log": [], "initdata": mirror_initdata}))
+        result = json.loads(result_str)
+        log_m = [{"output": result}]
+        bot_requests_m = [[], []]
+        bot_responses_m = [[], []]
+        bot_data_m = [None, None]
+
+        while result.get("command") == "request":
+            content = result.get("content", {})
+            if not content:
+                break
+            player_id = int(next(iter(content.keys())))
+            request_data = content[str(player_id)]
+            response, _, _ = _call_bot(bot_paths, player_id, request_data, bot_requests_m, bot_responses_m,
+                                       bot_data=bot_data_m, persistent_procs=persistent)
+            log_m.append({str(player_id): {"response": str(response), "verdict": "OK"}, "output": None})
+            result_str = judge_func(json.dumps({"log": log_m, "initdata": mirror_initdata}))
+            result = json.loads(result_str)
+            log_m.append({"output": result})
+            if result.get("command") == "finish":
+                break
+
+        if result.get("command") != "finish":
+            return None
+
+        chips_mirror = [r["win_chips"] for r in result.get("display", {}).get("final_result", [])]
+        if len(chips_mirror) < 2:
+            return None
+
+        # ── 镜像对合计 ──
+        net_chips_0 = chips_normal[0] + chips_mirror[0]
+
+        if verbose and (game + 1) % 10 == 0:
+            print("  已完成 {}/{} 局(含镜像)".format(game + 1, n_games), file=sys.stderr)
+
+        return net_chips_0, chips_normal, chips_mirror, log, log_m
+    finally:
+        # 每个 game 的进程在 finally 中显式 close：
+        # - 正常完成返回后由调用方（generator 在 yield 之后 / wrapper）继续；
+        # - bot crash / judge 错误等异常也会进入此 finally；
+        # _PersistentBot 的 popen 生命周期完全限定在本 game 内，绝不跨 game 泄漏。
+        for p in persistent:
+            p.close()
+
+
+def mirror_battle_generator(bot0_path, bot1_path, n_games=50, verbose=False, save_log=False):
+    """流式镜像对战生成器：每完成一对镜像局（normal+mirror）就 yield 一次。
+
+    每次 yield 的值是这一镜像对里 bot0 的净筹码 (int)：
+        net_chips_0 = chips_normal[0] + chips_mirror[0]
+
+    每个 game（一对镜像局）= 一个 _PersistentBot 进程生命周期 = 至多一对 yield（仅正局
+    +镜像局均正常 finish 时才 yield；任一局未 finish 或筹码缺失则跳过该 game，不 yield）。
+
+    用途：为 Confidence Sequences 序贯门提供逐对 net_chips 流；消费者可随时 break
+    提前停，每个 game 的 _PersistentBot 进程在 _run_one_mirror_game 的 finally 块中显式
+    close（yield 发生在该函数返回之后），不会泄漏——即使 GeneratorExit 在 yield 处触发，
+    也只是结束本 generator，此时本 game 的进程早已 close。
+
+    返回值与 mirror_battle 中的 net_chips_list 逐值一致（同 seed 同 bot 对确定性对拍）。
+
+    verbose 进度会打到 stderr。save_log 参数仅为兼容调用签名而保留（generator 不收集
+    all_logs）；需要完整 replay all_logs 请用 mirror_battle wrapper。
+    """
+    if ENGINE_DIR not in sys.path:
+        sys.path.insert(0, ENGINE_DIR)
+    from judge import judge as judge_func
+
+    bot_paths = [os.path.abspath(bot0_path), os.path.abspath(bot1_path)]
+
+    for game in range(n_games):
+        result = _run_one_mirror_game(judge_func, bot_paths, game, n_games, verbose)
+        if result is None:
+            continue
+        net_chips_0 = result[0]
+        yield net_chips_0
+
+
 def mirror_battle(bot0_path, bot1_path, n_games=50, verbose=False, save_log=False):
-    """镜像对战：每局先正常打一次，再用交换手牌后的牌堆打一次。
-    返回 (bot0_wins, bot1_wins, draws, n_games_actual, all_logs, net_chips_list)。
+    """镜像对战 wrapper：消费 _run_one_mirror_game 收集成 list，返回原 5-tuple。
+
+    返回 (match_wins, draws, n_played, all_logs, net_chips_list)。
     胜负按镜像对（两局）的筹码差判定：若正局 bot0 赢 3000、镜像局 bot0 输 1000，
     则 bot0 净赢 2000，记为 bot0 胜，并把 2000 记录到 net_chips_list。
-    使用持久化 bot 进程加速（每局游戏一个进程，多决策复用）。"""
+    使用持久化 bot 进程加速（每局游戏一个进程，多决策复用）。
+
+    本 wrapper 与 mirror_battle_generator 共享 _run_one_mirror_game，因此 net_chips_list
+    与 list(mirror_battle_generator(...)) 逐值一致（确定性对拍）。
+    当 save_log=True 时收集 all_logs（含每局 winner/chips/logs），保持 elo_daemon 的
+    run_single_match（按 all_logs 统计 per-game 胜负 + save_match_replay）零改动。
+    """
     if ENGINE_DIR not in sys.path:
         sys.path.insert(0, ENGINE_DIR)
     from judge import judge as judge_func
@@ -292,113 +435,35 @@ def mirror_battle(bot0_path, bot1_path, n_games=50, verbose=False, save_log=Fals
     net_chips_list = []  # net chips for bot0 per completed mirror pair (normal+mirror)
 
     for game in range(n_games):
-        # Create persistent bots for this game (reused across normal + mirror)
-        persistent = [_PersistentBot(bot_paths[0]), _PersistentBot(bot_paths[1])]
-        try:
-            # ── 正局：正常发牌 ──
-            result_str = judge_func(json.dumps({"log": []}))
-            result = json.loads(result_str)
-            log = [{"output": result}]
-            initdata = result.get("initdata")
-            bot_requests = [[], []]
-            bot_responses = [[], []]
-            bot_data = [None, None]
+        result = _run_one_mirror_game(judge_func, bot_paths, game, n_games, verbose)
+        if result is None:
+            continue
+        net_chips_0, chips_normal, chips_mirror, normal_log, mirror_log = result
 
-            while result.get("command") == "request":
-                content = result.get("content", {})
-                if not content:
-                    break
-                player_id = int(next(iter(content.keys())))
-                request_data = content[str(player_id)]
-                response, _, _ = _call_bot(bot_paths, player_id, request_data, bot_requests, bot_responses,
-                                           bot_data=bot_data, persistent_procs=persistent)
-                log.append({str(player_id): {"response": str(response), "verdict": "OK"}, "output": None})
-                result_str = judge_func(json.dumps({"log": log, "initdata": initdata}))
-                result = json.loads(result_str)
-                log.append({"output": result})
-                if result.get("command") == "finish":
-                    break
+        if save_log:
+            all_logs.append({
+                "game": game * 2, "mirror": False,
+                "winner": 0 if chips_normal[0] > chips_normal[1] else (1 if chips_normal[1] > chips_normal[0] else -1),
+                "bot0_chips": chips_normal[0],
+                "bot1_chips": chips_normal[1],
+                "logs": normal_log,
+            })
+            all_logs.append({
+                "game": game * 2 + 1, "mirror": True,
+                "winner": 0 if chips_mirror[0] > chips_mirror[1] else (1 if chips_mirror[1] > chips_mirror[0] else -1),
+                "bot0_chips": chips_mirror[0],
+                "bot1_chips": chips_mirror[1],
+                "logs": mirror_log,
+            })
 
-            if result.get("command") != "finish":
-                continue
-
-            chips_normal = [r["win_chips"] for r in result.get("display", {}).get("final_result", [])]
-            if len(chips_normal) < 2:
-                continue
-
-            if save_log:
-                all_logs.append({
-                    "game": game * 2, "mirror": False,
-                    "winner": 0 if chips_normal[0] > chips_normal[1] else (1 if chips_normal[1] > chips_normal[0] else -1),
-                    "bot0_chips": chips_normal[0], "bot1_chips": chips_normal[1],
-                    "logs": log,
-                })
-
-            # ── 镜像局：交换手牌的牌堆 ──
-            mirror_initdata = {
-                "max_hand": initdata["max_hand"],
-                "dealer": (initdata["dealer"] + 1) % 2,
-                "decks": [],
-            }
-            for deck in initdata["decks"]:
-                # deck[-1],deck[-2] 是 player0 的牌，deck[-3],deck[-4] 是 player1 的牌
-                # 交换两组，使 player0 拿到原 player1 的牌，反之亦然
-                mirror_deck = deck[:-4] + deck[-2:] + deck[-4:-2]
-                mirror_initdata["decks"].append(mirror_deck)
-
-            result_str = judge_func(json.dumps({"log": [], "initdata": mirror_initdata}))
-            result = json.loads(result_str)
-            log_m = [{"output": result}]
-            bot_requests_m = [[], []]
-            bot_responses_m = [[], []]
-            bot_data_m = [None, None]
-
-            while result.get("command") == "request":
-                content = result.get("content", {})
-                if not content:
-                    break
-                player_id = int(next(iter(content.keys())))
-                request_data = content[str(player_id)]
-                response, _, _ = _call_bot(bot_paths, player_id, request_data, bot_requests_m, bot_responses_m,
-                                           bot_data=bot_data_m, persistent_procs=persistent)
-                log_m.append({str(player_id): {"response": str(response), "verdict": "OK"}, "output": None})
-                result_str = judge_func(json.dumps({"log": log_m, "initdata": mirror_initdata}))
-                result = json.loads(result_str)
-                log_m.append({"output": result})
-                if result.get("command") == "finish":
-                    break
-
-            if result.get("command") != "finish":
-                continue
-
-            chips_mirror = [r["win_chips"] for r in result.get("display", {}).get("final_result", [])]
-            if len(chips_mirror) < 2:
-                continue
-
-            if save_log:
-                all_logs.append({
-                    "game": game * 2 + 1, "mirror": True,
-                    "winner": 0 if chips_mirror[0] > chips_mirror[1] else (1 if chips_mirror[1] > chips_mirror[0] else -1),
-                    "bot0_chips": chips_mirror[0], "bot1_chips": chips_mirror[1],
-                    "logs": log_m,
-                })
-
-            # ── 镜像对合计 ──
-            n_played += 1
-            net_chips_0 = chips_normal[0] + chips_mirror[0]
-            net_chips_list.append(net_chips_0)
-            if net_chips_0 > 0:
-                match_wins[0] += 1
-            elif net_chips_0 < 0:
-                match_wins[1] += 1
-            else:
-                draws += 1
-
-            if verbose and (game + 1) % 10 == 0:
-                print("  已完成 {}/{} 局(含镜像)".format(game + 1, n_games), file=sys.stderr)
-        finally:
-            for p in persistent:
-                p.close()
+        n_played += 1
+        net_chips_list.append(net_chips_0)
+        if net_chips_0 > 0:
+            match_wins[0] += 1
+        elif net_chips_0 < 0:
+            match_wins[1] += 1
+        else:
+            draws += 1
 
     return match_wins, draws, n_played, all_logs, net_chips_list
 
