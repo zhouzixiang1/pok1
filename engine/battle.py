@@ -274,12 +274,16 @@ def battle(bot0_path, bot1_path, n_games=50, verbose=False, debug_bots=None, sav
     return match_wins, draws, n_played, all_logs
 
 
-def _run_one_mirror_game(judge_func, bot_paths, game, n_games, verbose):
+def _run_one_mirror_game(judge_func, bot_paths, game, n_games, verbose, aivat_enabled=False, aivat_n_sims=2000):
     """执行单个镜像对（normal+mirror 两局），返回
-    (net_chips_0, chips_normal, chips_mirror, normal_log, mirror_log)。
+    (net_chips_0, chips_normal, chips_mirror, normal_log, mirror_log, net_chips_0_aivat)。
 
     chips_normal / chips_mirror 是 [bot0_win_chips, bot1_win_chips] 列表；normal_log /
     mirror_log 是该局完整 judge log（list）。纯流式消费者可忽略这些返回值，只用 net_chips_0。
+
+    net_chips_0_aivat: 仅当 aivat_enabled=True 时为 float（AIVAT 标准化的 bot0 净筹码）；
+    aivat_enabled=False 时为 None。net_chips_0 在两种模式下均为原始净筹码（OFF 时确定性
+    零回归）。
 
     返回 None 表示该 game 被跳过（正局或镜像局未 finish / 筹码缺失），不产出镜像对。
 
@@ -364,10 +368,22 @@ def _run_one_mirror_game(judge_func, bot_paths, game, n_games, verbose):
         # ── 镜像对合计 ──
         net_chips_0 = chips_normal[0] + chips_mirror[0]
 
+        # ── AIVAT 标准化（可选）──
+        net_chips_0_aivat = None
+        if aivat_enabled:
+            try:
+                from aivat import aivat_net_chips_pair
+                net_chips_0_aivat = aivat_net_chips_pair(
+                    log, log_m, n_sims=aivat_n_sims, seed=game
+                )
+            except Exception:
+                # AIVAT 失败不应影响原始对局结果；回退为 None 由调用方决定。
+                net_chips_0_aivat = None
+
         if verbose and (game + 1) % 10 == 0:
             print("  已完成 {}/{} 局(含镜像)".format(game + 1, n_games), file=sys.stderr)
 
-        return net_chips_0, chips_normal, chips_mirror, log, log_m
+        return net_chips_0, chips_normal, chips_mirror, log, log_m, net_chips_0_aivat
     finally:
         # 每个 game 的进程在 finally 中显式 close：
         # - 正常完成返回后由调用方（generator 在 yield 之后 / wrapper）继续；
@@ -377,11 +393,16 @@ def _run_one_mirror_game(judge_func, bot_paths, game, n_games, verbose):
             p.close()
 
 
-def mirror_battle_generator(bot0_path, bot1_path, n_games=50, verbose=False, save_log=False):
+def mirror_battle_generator(bot0_path, bot1_path, n_games=50, verbose=False, save_log=False,
+                            aivat_enabled=False, aivat_n_sims=2000):
     """流式镜像对战生成器：每完成一对镜像局（normal+mirror）就 yield 一次。
 
-    每次 yield 的值是这一镜像对里 bot0 的净筹码 (int)：
-        net_chips_0 = chips_normal[0] + chips_mirror[0]
+    每次 yield 的值：
+        - aivat_enabled=False（默认）: 这一镜像对里 bot0 的原始净筹码 (int)
+              net_chips_0 = chips_normal[0] + chips_mirror[0]
+        - aivat_enabled=True: 元组 (raw_net_chips_0, aivat_net_chips_0)
+          其中 raw 为原始净筹码，aivat 为 AIVAT 标准化后的 bot0 净筹码（float）。
+          消费 AIVAT 流用于 CI 时取 tuple[1]；需要原始值时取 tuple[0]。
 
     每个 game（一对镜像局）= 一个 _PersistentBot 进程生命周期 = 至多一对 yield（仅正局
     +镜像局均正常 finish 时才 yield；任一局未 finish 或筹码缺失则跳过该 game，不 yield）。
@@ -395,6 +416,8 @@ def mirror_battle_generator(bot0_path, bot1_path, n_games=50, verbose=False, sav
 
     verbose 进度会打到 stderr。save_log 参数仅为兼容调用签名而保留（generator 不收集
     all_logs）；需要完整 replay all_logs 请用 mirror_battle wrapper。
+
+    aivat_enabled=False（默认）时行为与 Phase 0 完全一致（零回归）。
     """
     if ENGINE_DIR not in sys.path:
         sys.path.insert(0, ENGINE_DIR)
@@ -403,20 +426,31 @@ def mirror_battle_generator(bot0_path, bot1_path, n_games=50, verbose=False, sav
     bot_paths = [os.path.abspath(bot0_path), os.path.abspath(bot1_path)]
 
     for game in range(n_games):
-        result = _run_one_mirror_game(judge_func, bot_paths, game, n_games, verbose)
+        result = _run_one_mirror_game(judge_func, bot_paths, game, n_games, verbose,
+                                      aivat_enabled=aivat_enabled, aivat_n_sims=aivat_n_sims)
         if result is None:
             continue
         net_chips_0 = result[0]
-        yield net_chips_0
+        net_chips_0_aivat = result[5]
+        if aivat_enabled:
+            yield (net_chips_0, net_chips_0_aivat)
+        else:
+            yield net_chips_0
 
 
-def mirror_battle(bot0_path, bot1_path, n_games=50, verbose=False, save_log=False):
+def mirror_battle(bot0_path, bot1_path, n_games=50, verbose=False, save_log=False,
+                  aivat_enabled=False, aivat_n_sims=2000):
     """镜像对战 wrapper：消费 _run_one_mirror_game 收集成 list，返回原 5-tuple。
 
     返回 (match_wins, draws, n_played, all_logs, net_chips_list)。
     胜负按镜像对（两局）的筹码差判定：若正局 bot0 赢 3000、镜像局 bot0 输 1000，
     则 bot0 净赢 2000，记为 bot0 胜，并把 2000 记录到 net_chips_list。
     使用持久化 bot 进程加速（每局游戏一个进程，多决策复用）。
+
+    net_chips_list 语义（由 aivat_enabled 决定）：
+        - aivat_enabled=False（默认）: 原始 net_chips_0 流（int），与 Phase 0 完全一致。
+        - aivat_enabled=True: AIVAT 标准化后的 net_chips_0 流（float），用于方差缩减后的
+          CI 评估。胜负判定（match_wins/draws）始终基于原始净筹码符号，不受 AIVAT 影响。
 
     本 wrapper 与 mirror_battle_generator 共享 _run_one_mirror_game，因此 net_chips_list
     与 list(mirror_battle_generator(...)) 逐值一致（确定性对拍）。
@@ -435,10 +469,11 @@ def mirror_battle(bot0_path, bot1_path, n_games=50, verbose=False, save_log=Fals
     net_chips_list = []  # net chips for bot0 per completed mirror pair (normal+mirror)
 
     for game in range(n_games):
-        result = _run_one_mirror_game(judge_func, bot_paths, game, n_games, verbose)
+        result = _run_one_mirror_game(judge_func, bot_paths, game, n_games, verbose,
+                                      aivat_enabled=aivat_enabled, aivat_n_sims=aivat_n_sims)
         if result is None:
             continue
-        net_chips_0, chips_normal, chips_mirror, normal_log, mirror_log = result
+        net_chips_0, chips_normal, chips_mirror, normal_log, mirror_log, net_chips_0_aivat = result
 
         if save_log:
             all_logs.append({
@@ -457,7 +492,11 @@ def mirror_battle(bot0_path, bot1_path, n_games=50, verbose=False, save_log=Fals
             })
 
         n_played += 1
-        net_chips_list.append(net_chips_0)
+        # 流语义：OFF → 原始；ON → AIVAT 标准化。胜负判定始终基于原始符号。
+        if aivat_enabled and net_chips_0_aivat is not None:
+            net_chips_list.append(net_chips_0_aivat)
+        else:
+            net_chips_list.append(net_chips_0)
         if net_chips_0 > 0:
             match_wins[0] += 1
         elif net_chips_0 < 0:
