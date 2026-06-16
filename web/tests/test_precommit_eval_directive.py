@@ -125,7 +125,13 @@ def _patch_losing_mirror(monkeypatch):
 
 
 def _patch_mirror_battle(monkeypatch, fn):
-    """Patch mirror_battle on the engine.battle module (see test_precommit_scheduler_path)."""
+    """Patch mirror_battle on the engine.battle module (see test_precommit_scheduler_path).
+
+    Phase 2: these legacy tests assert against the fixed-collect mirror_battle
+    path. Disable the CS generator early-stop so they keep exercising exactly
+    that path (the generator path is covered by test_phase2_cs_sprt.py).
+    """
+    monkeypatch.setattr(tool_eval, "PRECOMMIT_SEQUENTIAL_EARLY_STOP", False)
     import engine.battle as _mod  # noqa: F811
     _battle_module = sys.modules["engine.battle"]
     monkeypatch.setattr(_battle_module, "mirror_battle", fn)

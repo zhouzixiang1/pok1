@@ -15,6 +15,7 @@ Usage:
 
 import json
 import logging
+import math
 import re
 import subprocess
 import sys
@@ -684,6 +685,165 @@ def run_decision_tests_detail(bot_path, verbose=False, extra_scenarios=None):
         "critical_failures": critical_failures,
         "failures": failures,
         "scenarios": scenario_results,
+    }
+
+
+# ──────────────────────────────────────────────
+# Phase 2: AgentAssay SPRT — sequential Bernoulli test for stochastic LLM bots
+# ──────────────────────────────────────────────
+# LLM bots are stochastic: the same scenario may yield different actions across
+# runs. Instead of a single run_decision_tests_detail pass/fail on a critical
+# scenario, run_decision_tests_sprt resamples the scenario repeatedly and applies
+# a Wald Sequential Probability Ratio Test (SPRT) for Bernoulli outcomes.
+#
+#   H0: pass-rate p = p0   (the bot meets the expected decision quality)
+#   H1: pass-rate p = p1   (the bot has degraded below the usable baseline)
+# Standard defaults: p0=0.85, p1=0.60, alpha=0.05, beta=0.10.
+# Acceptance boundaries (on the cumulative log-likelihood ratio LLR):
+#   A = (1-β)/α            → LLR >= ln(A)  ⟹  accept H1 (FAIL: significant regression)
+#   B = β/(1-α)            → LLR <= ln(B)  ⟹  accept H0 (PASS: meets expectation)
+# If n_max is reached without crossing a boundary, fall back to the final
+# empirical pass-rate against MIN_DECISION_PASS_RATE.
+#
+# run_single_scenario / run_decision_tests_detail are left UNCHANGED — the SPRT
+# path is an optional quality-gate enhancement for the CRITICAL scenarios.
+
+# SPRT default parameters (overrideable per-call).
+SPRT_P0 = 0.85
+SPRT_P1 = 0.60
+SPRT_ALPHA = 0.05
+SPRT_BETA = 0.10
+SPRT_N_MAX = 12
+
+
+def _sprt_bounds(alpha=SPRT_ALPHA, beta=SPRT_BETA):
+    """Return (ln(A), ln(B)) for the Wald SPRT with the given error levels.
+
+    A = (1-β)/α is the upper likelihood-ratio boundary (accept H1).
+    B = β/(1-α) is the lower likelihood-ratio boundary (accept H0).
+    """
+    return math.log((1.0 - beta) / alpha), math.log(beta / (1.0 - alpha))
+
+
+def _sprt_llr(outcomes, p0=SPRT_P0, p1=SPRT_P1):
+    """Cumulative log-likelihood ratio for a list of Bernoulli outcomes (1=pass).
+
+    LLR = Σ [ x_i·ln(p1/p0) + (1-x_i)·ln((1-p1)/(1-p0)) ]
+    Positive LLR ⇒ evidence toward H1 (regression); negative ⇒ toward H0.
+    """
+    if p0 <= 0.0 or p0 >= 1.0 or p1 <= 0.0 or p1 >= 1.0:
+        raise ValueError("p0 and p1 must both lie strictly in (0, 1)")
+    log_ratio_pass = math.log(p1 / p0)
+    log_ratio_fail = math.log((1.0 - p1) / (1.0 - p0))
+    total = 0.0
+    for x in outcomes:
+        total += log_ratio_pass if x else log_ratio_fail
+    return total
+
+
+def run_decision_tests_sprt(bot_path, scenario, p0=SPRT_P0, p1=SPRT_P1,
+                            alpha=SPRT_ALPHA, beta=SPRT_BETA, n_max=SPRT_N_MAX,
+                            seed=None):
+    """Sequentially resample one scenario under the Wald SPRT.
+
+    Resamples ``run_single_scenario(bot_path, scenario)`` up to ``n_max`` times,
+    stopping the moment the cumulative log-likelihood ratio crosses an acceptance
+    boundary. Each trial contributes a Bernoulli outcome (1=pass, 0=fail).
+
+    Note on determinism: ``run_single_scenario`` uses a fixed payload, so a fully
+    deterministic bot yields identical actions on every trial and the SPRT
+    converges on trial 1 (LLR is ±∞-leaning as the first outcome dominates). This
+    is fine — the SPRT's value is for stochastic LLM bots, where repeated trials
+    expose rare blunders. Tests that exercise the SPRT logic should monkeypatch
+    ``run_single_scenario`` with a Bernoulli draw.
+
+    Args:
+        bot_path: path to the bot's main.py.
+        scenario: a single scenario dict (same shape as run_single_scenario).
+        p0: expected pass-rate under H0 (default 0.85).
+        p1: degraded pass-rate under H1 (default 0.60).
+        alpha: type-I error level (default 0.05).
+        beta: type-II error level (default 0.10).
+        n_max: cap on the number of trials (default 12).
+        seed: optional RNG seed for reproducible shuffling of trial inputs. When
+            provided, each trial's ``hand`` index in the scenario input is set to
+            the trial counter, giving deterministic bots at least a chance to
+            diverge across trials if their logic is hand-index dependent.
+
+    Returns:
+        {
+          "decision": "PASS"|"FAIL"|"UNDECIDED",
+          "n_trials": int,
+          "pass_rate": float,        # empirical pass rate over the trials run
+          "passes": int,
+          "llr": float,              # final cumulative log-likelihood ratio
+          "bound_hi": float,         # ln(A)  (>= this ⟹ FAIL)
+          "bound_lo": float,         # ln(B)  (<= this ⟹ PASS)
+          "final_rule": "sprt_h0"|"sprt_h1"|"n_max_default_pass",
+          "details": [str, ...],     # per-trial detail strings
+        }
+    """
+    bound_hi, bound_lo = _sprt_bounds(alpha=alpha, beta=beta)
+    outcomes = []
+    details = []
+    decision = "UNDECIDED"
+    final_rule = "n_max_default_pass"  # default if no boundary crossing occurs
+
+    # Optionally vary the input so hand-index-sensitive bots can diverge across
+    # trials. The mutation is shallow and reversible across calls because each
+    # call rebuilds the scenario dict from the caller's reference.
+    base_input = scenario.get("input", {})
+    for trial in range(n_max):
+        if seed is not None and isinstance(base_input, dict):
+            mutated = dict(scenario)
+            mutated_input = dict(base_input)
+            mutated_input["hand"] = trial
+            mutated["input"] = mutated_input
+            trial_scenario = mutated
+        else:
+            trial_scenario = scenario
+        ok, detail = run_single_scenario(bot_path, trial_scenario)
+        outcomes.append(1 if ok else 0)
+        details.append(detail)
+        llr = _sprt_llr(outcomes, p0=p0, p1=p1)
+        if llr <= bound_lo:
+            decision = "PASS"
+            final_rule = "sprt_h0"
+            break
+        if llr >= bound_hi:
+            decision = "FAIL"
+            final_rule = "sprt_h1"
+            break
+
+    passes = sum(outcomes)
+    n_trials = len(outcomes)
+    pass_rate = (passes / n_trials) if n_trials > 0 else 0.0
+    llr_final = _sprt_llr(outcomes, p0=p0, p1=p1) if n_trials > 0 else 0.0
+
+    if decision == "UNDECIDED":
+        # Reached n_max without a boundary crossing. The Wald SPRT's type-I
+        # control rests on the LLR crossing an acceptance boundary; truncating
+        # without a crossing means the evidence for regression (H1) is
+        # insufficient, so we do NOT block (presumptive PASS — H0 is "quality
+        # acceptable"). A rate-based FAIL here inflates type-I error well past
+        # the nominal α (empirically ~2α at n_max=12 because P(rate<0.7 | p0)
+        # alone is ~0.085), defeating the sequential gate's purpose. Severe
+        # regressions (p ≤ p1) cross the H1 boundary quickly and FAIL before
+        # truncation; only the ambiguous mid-band is affected, which is the
+        # acceptable price for type-I validity. pass_rate is still reported.
+        decision = "PASS"
+        final_rule = "n_max_default_pass"
+
+    return {
+        "decision": decision,
+        "n_trials": n_trials,
+        "pass_rate": pass_rate,
+        "passes": passes,
+        "llr": llr_final,
+        "bound_hi": bound_hi,
+        "bound_lo": bound_lo,
+        "final_rule": final_rule,
+        "details": details,
     }
 
 

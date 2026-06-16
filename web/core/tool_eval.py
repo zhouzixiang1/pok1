@@ -19,7 +19,12 @@ from evolution_core import (
 )
 from glicko2 import Glicko2Player, update_rating_period
 
-from eval_stats import paired_bootstrap_ci
+from eval_stats import (
+    paired_bootstrap_ci,
+    confidence_sequence_ci,
+    sequential_decision,
+    NET_CHIPS_RANGE,
+)
 
 from tool_helpers import (
     _json_tool_result, _get_ui,
@@ -50,6 +55,17 @@ PRECOMMIT_MAX_N_GAMES = 16
 # for bot0 (candidate) per completed mirror pair.
 PARENT_NET_CHIPS_LOSS_THRESHOLD = -2000.0
 AGGREGATE_NET_CHIPS_LOSS_THRESHOLD = -2000.0
+
+# ── Phase 2: Confidence Sequence sequential early-stop ──
+# When True, the serial/gather fallback path consumes mirror_battle_generator
+# incrementally and applies an anytime-valid Confidence Sequence to stop as soon
+# as the parent-gate verdict (reject/continue) is confident — saving battle time
+# on obvious regressions. When False, the path is byte-for-byte equivalent to the
+# previous fixed-collect + mirror_battle implementation (zero-regression fallback).
+PRECOMMIT_SEQUENTIAL_EARLY_STOP = True
+CS_ALPHA = 0.05
+# CS value range is imported from eval_stats (mirror net-chips ∈ [-40000, +40000]).
+_CS_R = NET_CHIPS_RANGE
 
 
 # ──────────────────────────────────────────────
@@ -232,7 +248,7 @@ async def run_precommit_eval(args):
     aggregate_net_chips = []  # candidate net-chips per mirror pair, across all opponents
     _core = CORE_DIR  # imported unconditionally from evolution_core (line 18)
     sys.path.insert(0, str(_core.resolve()))
-    from engine.battle import mirror_battle
+    from engine.battle import mirror_battle, mirror_battle_generator
 
     # ── Dual-path: Battle Scheduler vs Serial fallback ──
     scheduler_client = BattleSchedulerClient()
@@ -400,6 +416,15 @@ async def run_precommit_eval(args):
             Returns a matchup dict with wins/losses/draws populated on success,
             or with 'error' key set on timeout/exception. Also returns any
             blockers as a list in the 'blockers' key.
+
+            Phase 2: when PRECOMMIT_SEQUENTIAL_EARLY_STOP is True, the parent
+            matchup is run via mirror_battle_generator and an anytime-valid
+            Confidence Sequence gates the loop — DECIDE_REJECT (candidate
+            significantly losing to the parent) breaks out early. Non-parent
+            matchups use the generator too for uniform W/L reconstruction but
+            do not early-stop (there is no accept-side business value and
+            rejecting non-parents is not a gate). When the flag is False the
+            original fixed-collect mirror_battle path runs unchanged.
             """
             opponent = item["name"]
             opponent_main = _bot_main(opponent)
@@ -414,27 +439,104 @@ async def run_precommit_eval(args):
             item_blockers = []
             try:
                 async with _battle_sem:
-                    battle_result = await asyncio.wait_for(
-                        loop.run_in_executor(
-                            None,
-                            lambda _cm=str(candidate_main), _om=str(opponent_main): mirror_battle(
+                    nc = []
+                    cs_meta = None
+                    early_stopped = False
+                    if PRECOMMIT_SEQUENTIAL_EARLY_STOP and opponent == parent_name:
+                        # Incremental generator + CS early-stop for the parent gate.
+                        def _drain_parent(_cm=str(candidate_main), _om=str(opponent_main)):
+                            local = []
+                            last = None
+                            for net in mirror_battle_generator(
                                 _cm, _om,
                                 n_games=n_games,
                                 verbose=False,
                                 save_log=False,
-                            ),
-                        ),
-                        timeout=per_game_timeout,
-                    )
-                    if len(battle_result) >= 5:
-                        match_wins, draws, n_played, _logs, net_chips_list = battle_result
+                            ):
+                                # Generator yields a bare net_chips_0 int when
+                                # aivat_enabled=False (the production default);
+                                # a (raw, aivat) tuple when True. Unpack defensively
+                                # so enabling the AIVAT stream later won't crash here.
+                                local.append(int(net[0] if isinstance(net, tuple) else net))
+                                last = sequential_decision(
+                                    local,
+                                    reject_threshold=PARENT_NET_CHIPS_LOSS_THRESHOLD,
+                                    accept_threshold=None,
+                                    alpha=CS_ALPHA,
+                                    R=_CS_R,
+                                )
+                                if last["decision"] == "DECIDE_REJECT":
+                                    return local, last, True
+                            return local, last, False
+
+                        battle_result = await asyncio.wait_for(
+                            loop.run_in_executor(None, _drain_parent),
+                            timeout=per_game_timeout,
+                        )
+                        nc, cs_meta, early_stopped = battle_result
+                    elif PRECOMMIT_SEQUENTIAL_EARLY_STOP:
+                        # Non-parent: still use the generator for W/L parity with
+                        # the parent path, but run to completion (no early-stop).
+                        def _drain_full(_cm=str(candidate_main), _om=str(opponent_main)):
+                            local = [int(net[0] if isinstance(net, tuple) else net) for net in mirror_battle_generator(
+                                _cm, _om,
+                                n_games=n_games,
+                                verbose=False,
+                                save_log=False,
+                            )]
+                            return local, None, False
+
+                        battle_result = await asyncio.wait_for(
+                            loop.run_in_executor(None, _drain_full),
+                            timeout=per_game_timeout,
+                        )
+                        nc, cs_meta, early_stopped = battle_result
                     else:
-                        # Backward-compatible only for tests that monkeypatch the old
-                        # 4-tuple shape; real mirror_battle returns net_chips_list.
-                        match_wins, draws, n_played, _logs = battle_result
-                        net_chips_list = []
-                # net_chips_list: candidate (bot0) net chips per completed mirror pair
-                nc = [int(x) for x in (net_chips_list or [])]
+                        # Zero-regression fallback: identical to the original
+                        # fixed-collect mirror_battle implementation.
+                        battle_result = await asyncio.wait_for(
+                            loop.run_in_executor(
+                                None,
+                                lambda _cm=str(candidate_main), _om=str(opponent_main): mirror_battle(
+                                    _cm, _om,
+                                    n_games=n_games,
+                                    verbose=False,
+                                    save_log=False,
+                                ),
+                            ),
+                            timeout=per_game_timeout,
+                        )
+                        if len(battle_result) >= 5:
+                            match_wins, draws, n_played, _logs, net_chips_list = battle_result
+                        else:
+                            # Backward-compatible only for tests that monkeypatch the old
+                            # 4-tuple shape; real mirror_battle returns net_chips_list.
+                            match_wins, draws, n_played, _logs = battle_result
+                            net_chips_list = []
+                        nc = [int(x) for x in (net_chips_list or [])]
+
+                if PRECOMMIT_SEQUENTIAL_EARLY_STOP:
+                    # Reconstruct W/L/D from the net-chips stream (generator does
+                    # not return match_wins). Per mirror_battle: bot0 wins the
+                    # pair iff net_chips_0 > 0, loses iff < 0, draw iff == 0.
+                    wins = sum(1 for x in nc if x > 0)
+                    losses = sum(1 for x in nc if x < 0)
+                    draws = sum(1 for x in nc if x == 0)
+                    match_wins = (wins, losses)
+                    n_played = len(nc)
+                    if cs_meta is not None:
+                        matchup["cs_meta"] = {
+                            "decision": cs_meta["decision"],
+                            "ci_lo": cs_meta["ci_lo"],
+                            "ci_hi": cs_meta["ci_hi"],
+                            "half_width": cs_meta["half_width"],
+                            "mean": cs_meta["mean"],
+                            "n": cs_meta["n"],
+                            "rule": cs_meta["rule"],
+                            "early_stopped": early_stopped,
+                        }
+                    else:
+                        matchup["cs_meta"] = None
                 matchup.update({
                     "wins": int(match_wins[0]),
                     "losses": int(match_wins[1]),
@@ -442,7 +544,10 @@ async def run_precommit_eval(args):
                     "n_played": int(n_played),
                     "net_chips": nc,
                 })
-                if n_played < n_games:
+                # Early-stop on the parent does NOT count as incomplete: we chose
+                # to stop because the verdict was already confident. Only a real
+                # shortfall below n_games (timeout/crash) is incomplete.
+                if (not early_stopped) and n_played < n_games:
                     item_blockers.append({
                         "reason": "incomplete_or_timeout",
                         "opponent": opponent,
@@ -467,10 +572,15 @@ async def run_precommit_eval(args):
                     # extreme all-in loss spuriously tripping the gate: NLHE net-chips
                     # are heavy-tailed, so a lower-bound test would reintroduce the
                     # noise-fail the paired-bootstrap was meant to eliminate.
-                    net_chips_block = (
-                        nc_hi is not None
-                        and nc_hi < PARENT_NET_CHIPS_LOSS_THRESHOLD
-                    )
+                    if early_stopped and cs_meta is not None:
+                        # CS already decided REJECT (ci_hi < threshold) with an
+                        # anytime-valid guarantee — treat it as a confirmed regression.
+                        net_chips_block = cs_meta["decision"] == "DECIDE_REJECT"
+                    else:
+                        net_chips_block = (
+                            nc_hi is not None
+                            and nc_hi < PARENT_NET_CHIPS_LOSS_THRESHOLD
+                        )
                     ratio_block = (
                         decided >= 4
                         and (matchup["losses"] / decided) >= 0.60
@@ -479,6 +589,8 @@ async def run_precommit_eval(args):
                         detail = f"{matchup['wins']}-{matchup['losses']}-{matchup['draws']} in {matchup['n_played']} games"
                         if nc_hi is not None:
                             detail += f"; net-chips CI=[{nc_lo:.0f}, {nc_hi:.0f}]"
+                        if early_stopped:
+                            detail += f"; CS early-stop @ n={cs_meta['n']} ({cs_meta['rule']})"
                         item_blockers.append({
                             "reason": "lost_to_parent",
                             "opponent": opponent,

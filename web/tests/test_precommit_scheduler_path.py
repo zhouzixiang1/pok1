@@ -800,7 +800,13 @@ def _patch_mirror_battle(monkeypatch, fn):
     String-based monkeypatch like "engine.battle.mirror_battle" fails because
     engine.__init__ re-exports the 'battle' function, so engine.battle resolves
     to the function, not the module.  We must patch via sys.modules instead.
+
+    Phase 2: these legacy serial-path tests were written against the fixed-collect
+    mirror_battle path. Disable the CS generator early-stop so they keep exercising
+    exactly that path (the generator path is covered by test_phase2_cs_sprt.py).
     """
+    import tool_eval as _te
+    monkeypatch.setattr(_te, "PRECOMMIT_SEQUENTIAL_EARLY_STOP", False)
     import engine.battle as _mod  # noqa: F811 – forces module into sys.modules
     _battle_module = sys.modules["engine.battle"]
     monkeypatch.setattr(_battle_module, "mirror_battle", fn)
