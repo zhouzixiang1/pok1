@@ -55,6 +55,7 @@ class BattleResult:
     wins_b: int
     draws: int
     total: int
+    net_chips: list[int] = field(default_factory=list)
     error: str | None = None
     completed_at: float = field(default_factory=time.time)
     source: str = "scheduler"

@@ -103,7 +103,7 @@ Before scoring, verify the change against this checklist. Flag any item that fai
 | **3–4** | Likely regression. Wrong strategic direction. |
 | **1–2** | Catastrophic strategic errors or complete misfire. |
 
-Score >= 6 → `approved: true`. Score < 6 → `approved: false`.
+Critic is advisory — the score does NOT block the pipeline directly. Final approve/reject is decided by the precommit paired-bootstrap statistical gate. The score and feedback are used for logging, telemetry, and as direction hints for the next generation of workers.
 </scoring>
 
 <good_feedback_examples>

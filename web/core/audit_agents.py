@@ -95,13 +95,14 @@ async def _run_master_plan_audit(master_plan, source_v, ui):
             "source_v": str(source_v),
             "next_v": str(master_plan.get("next_v", (source_v + 1) if isinstance(source_v, int) else "unknown")),
             "branch_from_note": (
-                f"This generation evolves FROM v{source_v}. In the plan, 'branch_from' "
-                f"is OPTIONAL — when null/omitted the bot evolves from v{source_v} (the "
-                f"default source). ONLY flag a 'data staleness' problem if the plan's "
-                f"analysis references a version OTHER than v{source_v} or the stated "
-                f"branch_from. Do NOT reject a plan just because it fixes bugs in "
-                f"v{source_v} that happen to already be fixed in a later version — "
-                f"evolution starts from v{source_v}, not the latest version."
+                f"This generation evolves FROM v{source_v}. The source ancestor is "
+                f"decided automatically by the system in prepare_generation; the Master "
+                f"plan MUST NOT set 'branch_from' (it is a dead, rejected field). Only "
+                f"flag a 'data staleness' problem if the plan's analysis references a "
+                f"version OTHER than v{source_v} as if it were the evolution base. Do NOT "
+                f"reject a plan just because it fixes bugs in v{source_v} that happen to "
+                f"already be fixed in a later version — evolution starts from v{source_v}, "
+                f"not the latest version."
             ),
         })
 

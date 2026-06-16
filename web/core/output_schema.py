@@ -1,7 +1,7 @@
 """Pydantic models for validating structured LLM output from each pipeline agent."""
 
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class WorkerTask(BaseModel):
@@ -18,8 +18,23 @@ class MasterPlan(BaseModel):
     expected_behavior_change: str = ""
     do_not_touch: list[str] = []
     measurement_plan: str = ""
-    branch_from: Optional[str] = None
     tasks: list[WorkerTask] = Field(min_length=1, max_length=3)
+
+    @model_validator(mode="after")
+    def _unique_worker_ids(self):
+        """Enforce each worker task targets a distinct worker_id.
+
+        Without this, the Master can emit two tasks for the same worker_id,
+        collapsing parallelism and producing ambiguous worker dispatch. role is
+        intentionally left as a free-form str (architect/tuner/other substrings
+        all permitted) to stay compatible with existing plan history.
+        """
+        seen = set()
+        for t in self.tasks:
+            if t.worker_id in seen:
+                raise ValueError(f"Duplicate worker_id {t.worker_id} in tasks; each worker must have a unique id")
+            seen.add(t.worker_id)
+        return self
 
 
 class ReviewResult(BaseModel):

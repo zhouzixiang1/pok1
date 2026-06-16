@@ -26,6 +26,7 @@ from tool_helpers import (
     _target_rel, _py_files_changed_between, _resolve_version_args,
     PROJECT_ROOT,
     _set_pipeline_status,
+    normalize_worker_role,
 )
 from system_log import log_system_event
 
@@ -146,8 +147,8 @@ def _validate_master_plan(plan, next_v=None, precomputed_exhausted_keywords=None
         prompt = task.get("worker_prompt", "")
         if len(prompt) > 12000:
             errors.append(f"Task {i}: worker_prompt too long ({len(prompt)} > 12000 chars)")
-        role = str(task.get("role", "")).lower()
-        if "hyperparameter" in role or "tuner" in role:
+        role = str(task.get("role", ""))
+        if normalize_worker_role(role) == "tuner":
             # Tuners MUST only modify constants.py — error if target_files includes other files.
             # This prevents the shared-file boundary validation false positive (Bug 1)
             # where two workers target the same file, causing all changes to be incorrectly
@@ -181,6 +182,23 @@ def _validate_master_plan(plan, next_v=None, precomputed_exhausted_keywords=None
                     )
                     break
 
+    # tasks 校验之后：禁止 Master 自行指定 source override 字段。
+    # Source ancestor 由系统在 prepare_generation (generation_scheduler._decide_strategy)
+    # 决定，Master 不得设置；否则为永不生效的死字段（写 checkpoint 后从不读取）。
+    # 注意：本检查必须在 Pydantic (MasterPlan.model_validate, extra='ignore')
+    # 剥离 branch_from 之前对原始 dict 调用，否则该键已被丢弃、检查永不命中。
+    # 见 _run_master_analysis (agent_master.py) 中 validate_agent_output 之前的
+    # 原始 dict 预检。
+    source_override_fields = ("branch_from", "source_override", "source_v_override")
+    offending = [f for f in source_override_fields if plan.get(f)]
+    if offending:
+        errors.append(
+            f"Master plan must not set source-override field(s) {offending}. "
+            f"Source ancestor selection is decided automatically in "
+            f"prepare_generation (generation_scheduler._decide_strategy); "
+            f"Master must not set branch_from."
+        )
+
     # Check target_files overlap between workers.
     # Architect-Tuner overlap on any file is a hard error (causes boundary false positives).
     # Other overlaps are informational — workers execute sequentially so overlap is safe,
@@ -189,12 +207,13 @@ def _validate_master_plan(plan, next_v=None, precomputed_exhausted_keywords=None
     tuner_targets = {}
     all_targets = {}
     for i, task in enumerate(tasks):
-        role = str(task.get("role", "")).lower()
+        role = str(task.get("role", ""))
+        _role_kind = normalize_worker_role(role)
         for target in task.get("target_files", []):
             rel = _target_rel(target, next_v) if next_v else target.strip()
-            if "architect" in role:
+            if _role_kind == "architect":
                 architect_targets.setdefault(rel, []).append(i)
-            elif "tuner" in role or "hyperparameter" in role:
+            elif _role_kind == "tuner":
                 tuner_targets.setdefault(rel, []).append(i)
             if rel in all_targets:
                 warnings.append(

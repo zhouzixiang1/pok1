@@ -305,8 +305,8 @@ async def run_precommit_eval(args):
                         "losses": int(res.get("wins_b", 0)),
                         "draws": int(res.get("draws", 0)),
                         "n_played": int(res.get("total", 0)),
-                        # Scheduler results do not yet carry paired net-chips; keep
-                        # the shape aligned with the serial path for callers/tests.
+                        # Scheduler results carry paired net-chips when produced by
+                        # the updated daemon; default [] keeps old result records safe.
                         "net_chips": list(res.get("net_chips", [])),
                     }
                     if res.get("error"):
@@ -319,16 +319,35 @@ async def run_precommit_eval(args):
                     total_wins += matchup["wins"]
                     total_losses += matchup["losses"]
                     total_draws += matchup["draws"]
-                    # P0-1 parent-loss ratio gate — applied on the SCHEDULER path
-                    # too (the production case), not just the serial fallback.
-                    # Mirrors the gate in _run_single_mirror_battle below.
+                    net_chips = list(matchup.get("net_chips") or [])
+                    aggregate_net_chips.extend(net_chips)
+                    # P0-1 parent regression gate — keep scheduler semantics aligned
+                    # with the serial path: use paired net-chips CI when available,
+                    # and fall back to the older binary W/L ratio only when no
+                    # net-chip observations exist.
                     if opponent == parent_name and matchup["wins"] < matchup["losses"]:
                         decided = matchup["wins"] + matchup["losses"]
-                        if decided >= 4 and (matchup["losses"] / decided) >= 0.60:
+                        nc_lo = None
+                        nc_hi = None
+                        if net_chips:
+                            nc_lo, nc_hi = paired_bootstrap_ci(net_chips)
+                            matchup["parent_net_chip_ci"] = [round(nc_lo, 1), round(nc_hi, 1)]
+                        net_chips_block = (
+                            nc_hi is not None
+                            and nc_hi < PARENT_NET_CHIPS_LOSS_THRESHOLD
+                        )
+                        ratio_block = (
+                            decided >= 4
+                            and (matchup["losses"] / decided) >= 0.60
+                        )
+                        if net_chips_block or (not net_chips and ratio_block):
+                            detail = f"{matchup['wins']}-{matchup['losses']}-{matchup['draws']} in {matchup['n_played']} games"
+                            if nc_hi is not None:
+                                detail += f"; net-chips CI=[{nc_lo:.0f}, {nc_hi:.0f}]"
                             blockers.append({
                                 "reason": "lost_to_parent",
                                 "opponent": opponent,
-                                "details": f"{matchup['wins']}-{matchup['losses']}-{matchup['draws']} in {matchup['n_played']} games",
+                                "details": detail,
                             })
                     matchups.append(matchup)
                 else:
@@ -524,7 +543,7 @@ async def run_precommit_eval(args):
     # mean per-pair deficit exceeds the threshold). Using upper-bound (not
     # lower) avoids heavy-tail false positives from single all-in outliers.
     # The old binary W/L margin gate stays as a fallback when net-chip
-    # observations are unavailable (e.g. the scheduler path).
+    # observations are unavailable (e.g. older daemon/scheduler results).
     total_decided = total_wins + total_losses
     agg_ci_lower = None
     agg_ci_upper = None
@@ -570,6 +589,7 @@ async def run_precommit_eval(args):
                  "aggregate_ci_upper": round(agg_ci_upper, 1) if agg_ci_upper is not None else None,
                  "aggregate_threshold": AGGREGATE_NET_CHIPS_LOSS_THRESHOLD,
                  "net_chips_samples": len(aggregate_net_chips),
+                 "gate_degraded": len(aggregate_net_chips) == 0,
                  "net_chips_mean": round(sum(aggregate_net_chips)/len(aggregate_net_chips), 1) if aggregate_net_chips else None,
                  "net_chips_std": round(statistics.pstdev(aggregate_net_chips), 1) if len(aggregate_net_chips) > 1 else None,
                  "net_chips_min": round(min(aggregate_net_chips), 1) if aggregate_net_chips else None,

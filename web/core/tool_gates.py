@@ -196,10 +196,11 @@ async def run_quality_gates(args):
 
     decision_detail = run_decision_test_details(bot_dir, extra_scenarios=_all_dynamic or None)
     decision_rate = decision_detail.get("pass_rate", 0.0)
+    decision_total = decision_detail.get("total", 0)
     critical_failures = decision_detail.get("critical_failures", [])
     critical_ok = len(critical_failures) == 0
     total_lines, oversized = check_code_size(bot_dir, source_dir=source_dir)
-    decision_ok = decision_rate >= 0.7 and critical_ok
+    decision_ok = decision_rate >= 0.7 and critical_ok and decision_total > 0
 
     # --- P1-3: Structural fix-verification gate (authoritative fix-present judgment) ---
     # fix_injection.py uses substring matching which silently misses when a worker

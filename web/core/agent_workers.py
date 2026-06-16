@@ -19,7 +19,7 @@ from evolution_infra import (
     locked_file, get_bot_dir, get_logs_dir,
     _target_rel, _get_worker_semaphore,
     WORKER_FAILURES_FILE, MAX_WORKER_RETRIES, WORKER_TIMEOUT,
-    EXPERIENCE_FILE,
+    EXPERIENCE_FILE, find_current_v,
 )
 
 
@@ -53,19 +53,42 @@ def _load_recent_failures(n=5):
     return entries[-n:]
 
 
+def _infer_current_generation():
+    """Best-effort current generation lookup for EXHAUSTED tiering."""
+    try:
+        current = find_current_v()
+        return current if isinstance(current, int) and current > 0 else None
+    except Exception as e:
+        log.debug("Could not infer current generation for EXHAUSTED tiering: %s", e)
+        return None
+
+
+def _version_refs(entry):
+    """Return unique generation numbers referenced by vN/claude_vN/bot-vN tokens."""
+    versions = set()
+    for match in re.finditer(r"\b(?:v|claude_v|bot-v)(\d+)\b", entry, re.IGNORECASE):
+        try:
+            versions.add(int(match.group(1)))
+        except ValueError:
+            pass
+    return versions
+
+
 def _extract_exhausted_block():
     """Read experience_pool.md and extract [POSSIBLY EXHAUSTED] entries as constraint blocks.
 
     Returns tiered constraint blocks:
-    - <forbidden_directions>: RECENT (## RECENT_LESSONS section, last ~3 generations)
-      EXHAUSTED entries, hard "Do NOT implement" ban.
-    - <advisory_directions>: EXHAUSTED entries migrated out of RECENT_LESSONS (older
-      than ~3 generations). Surfaced as historical cautions, NOT hard bans — they
-      expire naturally instead of permanently blacklisting directions.
+    - <forbidden_directions>: RECENT (## RECENT_LESSONS section) EXHAUSTED entries
+      that are safe to treat as hard "Do NOT implement" bans.
+    - <advisory_directions>: older EXHAUSTED entries, plus single-generation RECENT
+      entries from the current/previous generation. These are surfaced as historical
+      cautions, NOT hard bans — they expire naturally instead of permanently
+      blacklisting directions.
 
     The two blocks (when present) are joined with "\n\n"; returns "" if neither.
-    Tiering uses a per-section state machine (consolidator guarantees RECENT_LESSONS
-    only contains the last ~3 generations), so no @vN version parser is needed.
+    RECENT_LESSONS can contain a just-created single-generation mechanism marked
+    [POSSIBLY EXHAUSTED] before the consolidator has 3+ consecutive-generation
+    evidence. Such single-generation recent entries are advisory only.
     """
     if not EXPERIENCE_FILE.exists():
         return ""
@@ -75,13 +98,15 @@ def _extract_exhausted_block():
     except Exception:
         return ""
 
+    current_gen = _infer_current_generation()
+
     # Tolerant marker: matches [POSSIBLY EXHAUSTED] AND [EXHAUSTED — hard gate]
     # (any bracketed tag containing EXHAUSTED). The old .replace() cleanup only
     # stripped "[POSSIBLY EXHAUSTED]" / "[EXHAUSTED]", leaving the "— hard gate]"
     # suffix from LLM-escalated markers as residue in the constraint block.
     marker_re = re.compile(r"\[[A-Z ]*EXHAUSTED[^\]]*\]")
     hard_lines = []        # RECENT_LESSONS section (hard ban)
-    advisory_lines = []    # other sections (advisory caution)
+    advisory_lines = []    # other sections and uncertain recent entries
     in_recent = False
     for line in text.splitlines():
         stripped = line.strip()
@@ -93,14 +118,23 @@ def _extract_exhausted_block():
             # Strip the leading markdown header markers and the marker itself
             cleaned = marker_re.sub("", line).strip(" -•")
             if cleaned:
-                (hard_lines if in_recent else advisory_lines).append(cleaned)
+                version_refs = _version_refs(cleaned)
+                downgrade_recent = False
+                if in_recent:
+                    if current_gen is None:
+                        # If recency cannot be judged reliably, do not create a hard ban.
+                        downgrade_recent = True
+                    elif len(version_refs) == 1:
+                        only_gen = next(iter(version_refs))
+                        downgrade_recent = only_gen >= current_gen - 1
+                (advisory_lines if downgrade_recent or not in_recent else hard_lines).append(cleaned)
 
     blocks = []
     if hard_lines:
         hard_items = "\n".join(f"  - {entry}" for entry in hard_lines)
         blocks.append(
             "<forbidden_directions>\n"
-            "These RECENT (last ~3 generations) directions are EXHAUSTED. Do NOT implement:\n"
+            "These RECENT directions have enough evidence to be treated as EXHAUSTED. Do NOT implement:\n"
             f"{hard_items}\n"
             "Violating these constraints will result in automatic rejection.\n"
             "</forbidden_directions>"
@@ -109,8 +143,8 @@ def _extract_exhausted_block():
         advisory_items = "\n".join(f"  - {entry}" for entry in advisory_lines)
         blocks.append(
             "<advisory_directions>\n"
-            "These directions HISTORICALLY underperformed (older than ~3 generations). "
-            "Revisit ONLY if combined with a NEW independent mechanism AND "
+            "These directions are historical cautions or single-generation recent warnings, "
+            "NOT hard bans. Revisit ONLY if combined with a NEW independent mechanism AND "
             ">=30g paired net-chips H2H evidence:\n"
             f"{advisory_items}\n"
             "</advisory_directions>"
@@ -131,6 +165,57 @@ def _target_rel_set(task, next_v):
         if rel:
             result.add(rel)
     return result
+
+
+def _reset_target_files_to_source(task, source_v, next_dir, next_v,
+                                   baseline_snapshots=None, task_idx=None):
+    """Reset only this task's target files back to a clean baseline state.
+
+    Resolution order per target file:
+    1. If `baseline_snapshots` (a {(task_idx, rel) -> str} dict) and `task_idx`
+       are provided AND a snapshot exists for that key, write the snapshot
+       (empty string means the file did not exist pre-worker → unlink).
+       This is REQUIRED in sequential overlap mode where multiple workers may
+       share a target file: rolling back to the worker's own pre-run snapshot
+       preserves earlier siblings' edits, whereas rolling back to source would
+       silently delete them.
+    2. Otherwise fall back to source: src exists → write src; src missing &
+       dst exists → unlink. If source_v / source dir is unavailable, skip
+       deletion to avoid removing legitimate cross-ancestor NEW files.
+
+    Only this task's `target_files` are touched, so disjoint parallel workers
+    are unaffected even when this is called concurrently from gather().
+    """
+    if source_v is not None:
+        src_dir = get_bot_dir(source_v)
+        src_dir_exists = src_dir.exists()
+    else:
+        src_dir = None
+        src_dir_exists = False
+
+    have_baseline = baseline_snapshots is not None and task_idx is not None
+
+    for target in task.get("target_files", []):
+        rel = _target_rel(target, next_v)
+        if not rel:
+            continue
+        dst_file = next_dir / rel
+
+        if have_baseline and (task_idx, rel) in baseline_snapshots:
+            snap = baseline_snapshots[(task_idx, rel)]
+            if snap:
+                dst_file.write_text(snap)
+            elif dst_file.exists():
+                dst_file.unlink(missing_ok=True)
+            continue
+
+        if not src_dir_exists:
+            continue
+        src_file = src_dir / rel
+        if src_file.exists():
+            dst_file.write_text(src_file.read_text())
+        elif dst_file.exists():
+            dst_file.unlink(missing_ok=True)
 
 
 def _classify_target_change(src_exists, dst_exists, src_text, dst_text):
@@ -156,7 +241,7 @@ def _classify_target_change(src_exists, dst_exists, src_text, dst_text):
 
 async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                               context_files, ui, reviewer_feedback,
-                              source_v=None, parallel_mode=False):
+                              source_v=None, parallel_mode=False, worker_snapshots=None):
     """Run a single worker task with retries. Returns True on success."""
     w_id = task.get("worker_id", idx + 1)
     role = task.get("role", f"Expert Coder {w_id}")
@@ -186,12 +271,35 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
     _last_reason = "unknown"
     _last_failure_type = "unknown"
     ui.log_history(f"Worker {w_id} ({role}) started", "info")
+    # Capture this worker's own pre-run baseline if caller did not supply
+    # snapshots. Retries roll back to this baseline (NOT source) so that, in
+    # sequential-overlap mode where several workers share a target file, a
+    # failed retry does not silently delete earlier siblings' edits.
+    _local_snapshots = None
+    if worker_snapshots is None:
+        _local_snapshots = {}
+        for target in task.get("target_files", []):
+            rel = _target_rel(target, next_v)
+            if rel:
+                fpath = next_dir / rel
+                _local_snapshots[(idx, rel)] = (
+                    fpath.read_text() if fpath.exists() else ""
+                )
     for attempt in range(MAX_WORKER_RETRIES):
         if not parallel_mode:
             ui.clear_io()
             ui.set_status(f"[{role}] coding for v{next_v}...", is_working=True)
         else:
             ui.log_history(f"[{role}] coding for v{next_v}...", "info")
+
+        # On retry, reset to the worker's own pre-run baseline. Attempt 0 runs
+        # against the live (possibly sibling-modified) state; only retries need
+        # a clean slate, and baseline-based reset preserves siblings' edits.
+        if attempt > 0:
+            _reset_target_files_to_source(
+                task, source_v, next_dir, next_v,
+                baseline_snapshots=worker_snapshots or _local_snapshots, task_idx=idx,
+            )
 
         attempt_note = ""
         if attempt > 0:
@@ -227,17 +335,13 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             else:
                 _last_reason = f"unexpected error: {type(exc).__name__}: {str(exc)[:200]}"
                 ui.log_history(f"Worker {w_id} ({role}) error: {exc}", "error")
-            # Roll back target files from source to avoid partial-edit contamination.
-            # Workers run sequentially, so this is safe.
-            if source_v is not None:
-                src_dir = get_bot_dir(source_v)
-                for target in task.get("target_files", []):
-                    rel = _target_rel(target, next_v)
-                    if rel:
-                        src_file = src_dir / rel
-                        dst_file = next_dir / rel
-                        if src_file.exists():
-                            dst_file.write_text(src_file.read_text())
+            # Roll back target files to the worker's pre-run baseline to avoid
+            # partial-edit contamination. Baseline (not source) is used so
+            # sequential-overlap siblings' edits are preserved.
+            _reset_target_files_to_source(
+                task, source_v, next_dir, next_v,
+                baseline_snapshots=worker_snapshots or _local_snapshots, task_idx=idx,
+            )
             base_worker_prompt += (
                 "\n\nPREVIOUS ATTEMPT TIMED OUT. Start fresh with a minimal, focused implementation. "
                 "Implement only the single most impactful change — do NOT try to do everything at once."
@@ -341,7 +445,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
         ok = await _run_single_worker(
             tasks[0], 0, worker_template, next_dir, next_v,
             context_files, ui, reviewer_feedback,
-            source_v=source_v,
+            source_v=source_v, worker_snapshots=worker_snapshots,
         )
         # P0-2: Worker CoT consistency check
         if ok:
@@ -396,6 +500,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                     task, i, worker_template, next_dir, next_v,
                     context_files, ui, reviewer_feedback,
                     source_v=source_v, parallel_mode=True,
+                    worker_snapshots=worker_snapshots,
                 )
 
         results = await asyncio.gather(
@@ -413,28 +518,17 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                     f"Worker {tasks[i].get('worker_id', i+1)} raised exception: {result}",
                     "error",
                 )
-                # Roll back this worker's target files from source
-                if source_v is not None:
-                    src_dir = get_bot_dir(source_v)
-                    for target in tasks[i].get("target_files", []):
-                        rel = _target_rel(target, next_v)
-                        if rel:
-                            src_file = src_dir / rel
-                            dst_file = next_dir / rel
-                            if src_file.exists():
-                                dst_file.write_text(src_file.read_text())
+                _reset_target_files_to_source(
+                    tasks[i], source_v, next_dir, next_v,
+                    baseline_snapshots=worker_snapshots, task_idx=i,
+                )
             elif not result:
                 any_failed = True
-                # _run_single_worker exhausted retries without rolling back
-                if source_v is not None:
-                    src_dir = get_bot_dir(source_v)
-                    for target in tasks[i].get("target_files", []):
-                        rel = _target_rel(target, next_v)
-                        if rel:
-                            src_file = src_dir / rel
-                            dst_file = next_dir / rel
-                            if src_file.exists():
-                                dst_file.write_text(src_file.read_text())
+                # _run_single_worker exhausted retries; reset only this worker's targets.
+                _reset_target_files_to_source(
+                    tasks[i], source_v, next_dir, next_v,
+                    baseline_snapshots=worker_snapshots, task_idx=i,
+                )
 
         if any_failed:
             return False, worker_snapshots, audit_focus_areas
@@ -468,7 +562,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
         ok = await _run_single_worker(
             task, i, worker_template, next_dir, next_v,
             context_files, ui, reviewer_feedback,
-            source_v=source_v,
+            source_v=source_v, worker_snapshots=worker_snapshots,
         )
         if not ok:
             return False, worker_snapshots, audit_focus_areas

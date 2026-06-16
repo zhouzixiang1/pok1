@@ -169,9 +169,9 @@ After commit, "predicted vs actual" delta is logged to experience_pool RECENT_LE
 This is CREDIT ASSIGNMENT telemetry — does NOT block commit. Use it to learn what works.
 </measurement_plan>
 
-<branching>
-If stagnation is detected, you can set `"branch_from": "claude_v{N}"` to evolve from a different ancestor. Choose the highest-rated non-stagnant bot.
-</branching>
+<source_selection>
+The source ancestor to evolve from is decided automatically by the system in prepare_generation (based on stagnation analysis and combined-analyst recommendation). You MUST NOT set `branch_from` or any source-override field in your plan — the system ignores it and will reject the plan. Focus only on the task plan and analysis.
+</source_selection>
 
 <output_format>
 Output exactly ONE JSON block:
@@ -183,7 +183,6 @@ Output exactly ONE JSON block:
   "expected_behavior_change": "Specific table behavior that should change.",
   "do_not_touch": ["List files/functions/subsystems that must remain unchanged."],
   "measurement_plan": "How to verify: critical scenarios, H2H weak opponent, parent comparison.",
-  "branch_from": "claude_v{N}",
   "tasks": [
     {
       "worker_id": 1,
@@ -196,7 +195,7 @@ Output exactly ONE JSON block:
 }
 ```
 
-- `branch_from` is OPTIONAL. Only include to override the default evolution source.
+- Do NOT include `branch_from` or any source-override field — the evolution source is chosen automatically by the system.
 - Each task should involve modifying 1-3 specific functions. Split tasks smaller if previous generations had worker failures.
 - Do not mix unrelated preflop/postflop/sizing rewrites in one generation — the next evaluation must attribute win/loss movement to this plan.
 </output_format>

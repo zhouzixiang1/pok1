@@ -357,7 +357,7 @@ def run_single_match(args):
     """Run mirror_battle, save replay in-worker, return lightweight result."""
     bot_a_name, bot_b_name, bot_a_path, bot_b_path, n_pairs = args
     try:
-        match_wins, draws, n_played, all_logs, _net_chips_list = mirror_battle(
+        match_wins, draws, n_played, all_logs, net_chips_list = mirror_battle(
             bot_a_path, bot_b_path, n_games=n_pairs, verbose=False, save_log=True
         )
         # Count each game (normal + mirror) independently by winner
@@ -378,14 +378,14 @@ def run_single_match(args):
         except Exception as e:
             log.debug("Replay save failed: %s", e)
 
-        return (bot_a_name, bot_b_name, games_a, games_b, games_draw, total, None)
+        return (bot_a_name, bot_b_name, games_a, games_b, games_draw, total, None, list(net_chips_list or []))
     except Exception as e:
-        return (bot_a_name, bot_b_name, 0, 0, 0, 0, str(e))
+        return (bot_a_name, bot_b_name, 0, 0, 0, 0, str(e), [])
 
 
 def process_result(result, ratings, h2h, bot_stats, verbose=False):
     """Process one completed match: update Elo, H2H, bot_stats."""
-    a, b, wins_a, wins_b, draws, total, err = result
+    a, b, wins_a, wins_b, draws, total, err, *_extra = result
     if err is not None:
         log.error("Error in %s vs %s: %s", a, b, err)
         return 0
@@ -653,6 +653,7 @@ def main():
                                             job_id=ext_job_id,
                                             wins_a=result[2], wins_b=result[3],
                                             draws=result[4], total=result[5],
+                                            net_chips=list(result[7]) if len(result) > 7 and result[7] else [],
                                             error=result[6] if len(result) > 6 and result[6] else None,
                                             completed_at=time.time(),
                                             source="scheduler",
@@ -665,6 +666,7 @@ def main():
                                         write_result(BattleResult(
                                             job_id=ext_job_id,
                                             wins_a=0, wins_b=0, draws=0, total=0,
+                                            net_chips=[],
                                             error=str(e),
                                             completed_at=time.time(),
                                             source="scheduler",
@@ -927,6 +929,7 @@ def main():
                                 write_result(BattleResult(
                                     job_id=ext_job_id,
                                     wins_a=0, wins_b=0, draws=0, total=0,
+                                    net_chips=[],
                                     error="daemon_pool_broken",
                                     completed_at=time.time(),
                                     source="scheduler",

@@ -88,7 +88,7 @@ MANDATORY_FIXES: list[Fix] = [
                 guard="2 * judge_round_raise + 1 - my_round_bet",
             ),
         ],
-        active=False,  # Dead template: no evolved bot uses judge_round_raise
+        active=False,  # DEPRECATED dead template: no evolved bot uses judge_round_raise (all claude_v* use last_raise_to variant). Kept inactive in registry for historical reference; do not re-enable. Tests assert its presence+inactive status, so do NOT delete without updating tests.
     ),
     Fix(
         fix_id="BOT-004",

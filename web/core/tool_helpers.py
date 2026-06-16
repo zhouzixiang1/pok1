@@ -450,6 +450,26 @@ def _numbers_only_changed(before, after):
     return _NUMERIC_LITERAL_RE.sub("<NUM>", before) == _NUMERIC_LITERAL_RE.sub("<NUM>", after)
 
 
+def normalize_worker_role(role):
+    """Normalize a worker role string into a canonical category.
+
+    Returns one of 'architect', 'tuner', 'other'. Case-insensitive substring
+    matching so that all Tuner variants ('Tuner', 'HP Tuner', 'Hyperparameter
+    Tuner', etc.) collapse to 'tuner', matching the planning-layer logic in
+    tool_planning._validate_master_plan. Tuner is checked before Architect so
+    that a mixed role string (e.g. 'Hyperparameter Tuner (Architect-assisted)')
+    resolves to the stricter 'tuner' boundary rather than escaping it. Unknown/
+    empty roles resolve to 'other' without raising, so callers can treat any
+    LLM-emitted role safely.
+    """
+    role = str(role or "").lower()
+    if "tuner" in role or "hyperparameter" in role or role == "hp tuner":
+        return "tuner"
+    if "architect" in role:
+        return "architect"
+    return "other"
+
+
 def _validate_worker_boundaries(tasks, source_v, next_v, worker_snapshots=None):
     """Validate that workers respected their role boundaries.
 
@@ -496,7 +516,7 @@ def _validate_worker_boundaries(tasks, source_v, next_v, worker_snapshots=None):
 
     for task_idx, task in enumerate(tasks):
         role = str(task.get("role", ""))
-        if "Hyperparameter Tuner" not in role:
+        if normalize_worker_role(role) != "tuner":
             continue
         for target in task.get("target_files", []):
             rel = _target_rel(target, next_v)

@@ -113,12 +113,61 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         )
         data = parse_json_output(output)
         if data and "tasks" in data:
+            # P0 修复：在 Pydantic 剥离 branch_from (extra='ignore') 之前，对原始 dict
+            # 跑 Master 的 source-override 硬校验。MasterPlan 删除 branch_from 字段后，
+            # model_validate 会静默丢弃该键，必须在丢弃前拦截。
+            from tool_planning import _validate_master_plan
+            _errs, _ = _validate_master_plan(data)
+            _src_override = any(data.get(f) for f in ("branch_from", "source_override", "source_v_override"))
+            if _src_override:
+                ui.log_history(
+                    f"Master plan rejected: must not set branch_from. "
+                    f"({_errs})",
+                    "warn",
+                )
+                import asyncio as _asyncio
+                await _asyncio.sleep(2)
+                continue
             from output_schema import validate_agent_output
             data, errors = validate_agent_output("master", data)
             if errors:
                 ui.log_history(f"Master plan validation issues: {'; '.join(errors[:3])}", "warn")
-            ui.log_history("Master analysis complete.", "success")
-            return data
+                # Hard gate: inject schema errors into the next retry's prompt so
+                # the Master re-emits strictly schema-conformant JSON rather than
+                # silently returning the malformed plan. errors text is truncated
+                # to avoid unbounded prompt growth across retries.
+                if attempt + 1 < MAX_MASTER_RETRIES:
+                    err_block = "\n".join(f"- {e}" for e in errors)[:1500]
+                    master_prompt = (
+                        master_prompt
+                        + "\n\n# 上一轮计划校验失败，必须修正：\n"
+                        + err_block
+                        + "\n请重新输出严格符合 schema 的 JSON。"
+                    )
+                    ui.log_history("Master plan rejected by schema. Retrying with errors...", "warn")
+                    import asyncio
+                    await asyncio.sleep(2)
+                    continue
+                # Retries exhausted: graceful-degradation — keep the last plan
+                # but record a hard error so the gate is visible downstream.
+                ui.log_history(
+                    f"Master plan still violates schema after {MAX_MASTER_RETRIES} retries; "
+                    "accepting degraded plan.",
+                    "error"
+                )
+                try:
+                    from system_log import log_system_event
+                    log_system_event(
+                        "pipeline.master_schema_gate_exhausted", "error",
+                        f"Master plan schema validation failed after {MAX_MASTER_RETRIES} retries: "
+                        + "; ".join(errors[:5]),
+                    )
+                except Exception:
+                    pass
+                # Graceful degradation: return the last plan (downstream gates
+                # re-validate independently). Do NOT log "complete" success —
+                # the authoritative signal is the error-level system_event above.
+                return data
         ui.log_history("Master output malformed JSON. Retrying...", "warn")
         import asyncio
         await asyncio.sleep(2)

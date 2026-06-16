@@ -36,7 +36,7 @@ You check ONLY these four areas:
    - Opponent Modeler: per-street tracking, bet sizing patterns, exploitative adjustments wired into decision logic.
    - A change that only edits existing literal values (no new function/branch) is Tuner scope. A change that adds a new function/branch (even with new local constants inside it) is Architect scope.
 
-2. **File size limits** — Core strategy files (strategy.py, postflop.py) must not exceed 1500 lines. Helper .py files must not exceed 1200 lines.
+2. **File size limits** — Core strategy files (strategy.py, postflop.py) must not exceed 2000 lines (MAX_LINES_PER_FILE). Helper .py files must not exceed 1500 lines (MAX_LINES_HELPER). No .py file may exceed the hard cap of 2500 lines (MAX_LINES_HARD_CAP). These values are authoritative in web/core/evolution_infra.py (MAX_LINES_PER_FILE/MAX_LINES_HELPER/MAX_LINES_HARD_CAP); keep this prompt in sync with those constants.
 
 3. **Code correctness** — The bot must compile and output valid `{"response": <int>}` JSON. No `input()`/`print()` for game communication. No unavailable imports (stdlib only). No infinite loops.
 
