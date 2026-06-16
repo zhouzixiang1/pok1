@@ -375,6 +375,93 @@ async def run_master(args):
     except Exception:
         pass
 
+    # --- Phase 3: per-opponent behavior profiles for Master prompt ---
+    # Reads the nested per-opponent breakdown (bot_action_stats_per_opp.json,
+    # written by elo_daemon alongside the flat file). For the source bot we
+    # surface its most lopsided matchups (by h2h win_rate) with a compact
+    # aggression / fold-to-bet / cbet / barrel line each, so the Master can
+    # plan opponent-specific adaptations. Advisory: read failure -> "".
+    opponent_profiles = ""
+    try:
+        from evolution_infra import RESULTS_DIR
+        _per_opp_file = RESULTS_DIR / "bot_action_stats_per_opp.json"
+        if _per_opp_file.exists():
+            with open(_per_opp_file, "r") as _f:
+                _per_opp_all = json.load(_f)
+            _source_bot = f"claude_v{source_v}"
+            _opp_map = _per_opp_all.get(_source_bot, {}) or {}
+            # Rank opponents by h2h win_rate (most-beaten and most-beating) to
+            # avoid prompt bloat: keep the K most extreme matchups.
+            _h2h_for_rank = {}
+            try:
+                from tool_helpers import _load_h2h_data, _h2h_stats
+                _h2h = _load_h2h_data()
+                for _opp in _opp_map:
+                    _st = _h2h_stats(_source_bot, _opp, _h2h)
+                    if _st:
+                        _h2h_for_rank[_opp] = _st["win_rate"]
+            except Exception:
+                pass
+            _PROFILES_K = 6
+            if _h2h_for_rank:
+                _ranked = sorted(_h2h_for_rank.items(), key=lambda kv: kv[1])
+                _selected = [o for o, _ in _ranked[:_PROFILES_K // 2]]
+                _selected += [o for o, _ in _ranked[-(_PROFILES_K // 2):]]
+                # Dedup while preserving order.
+                _seen = set()
+                _selected = [o for o in _selected if not (o in _seen or _seen.add(o))]
+            else:
+                # No h2h signal: fall back to top-K by total actions observed.
+                _selected = sorted(
+                    _opp_map,
+                    key=lambda o: sum(
+                        _opp_map[o].get(s, {}).get("total", 0)
+                        for s in ("preflop", "flop", "turn", "river")
+                    ),
+                    reverse=True,
+                )[:_PROFILES_K]
+            _lines = []
+            for _opp in _selected:
+                _ostats = _opp_map.get(_opp, {})
+                _wr = _h2h_for_rank.get(_opp)
+                _wr_str = f" h2h_wr={_wr:.2f}" if _wr is not None else ""
+                _n = (
+                    sum(_ostats.get(s, {}).get("total", 0)
+                        for s in ("preflop", "flop", "turn", "river"))
+                )
+                if _n == 0:
+                    continue
+                _street_bits = []
+                for _street in ("preflop", "flop", "turn", "river"):
+                    _st = _ostats.get(_street, {})
+                    _tot = _st.get("total", 0)
+                    if _tot <= 0:
+                        continue
+                    _calls = _st.get("call", 0)
+                    _raises = _st.get("raise", 0)
+                    _folds = _st.get("fold", 0)
+                    _ftb = _st.get("fold_to_bet", 0)
+                    _cbet = _st.get("cbet", 0)
+                    _barrel = _st.get("barrel", 0)
+                    _af = (_raises / _calls) if _calls > 0 else None
+                    _af_str = f"{_af:.1f}" if _af is not None else "n/a"
+                    _street_bits.append(
+                        f"{_street}: AF={_af_str} "
+                        f"ftb={_ftb}/{_folds}f cbet={_cbet} barrel={_barrel} (n={_tot})"
+                    )
+                if _street_bits:
+                    _lines.append(
+                        f"vs {_opp}{_wr_str} (n={_n}): " + "; ".join(_street_bits)
+                    )
+            if _lines:
+                opponent_profiles = (
+                    f"Per-opponent behavior profiles for claude_v{source_v} "
+                    f"(top extreme matchups by h2h win_rate):\n"
+                    + "\n".join(_lines)
+                )
+    except Exception:
+        pass
+
     # --- Read battle experience for Master prompt ---
     battle_experience = ""
     try:
@@ -459,6 +546,7 @@ async def run_master(args):
         bot_action_stats=bot_action_stats,
         battle_experience=battle_experience,
         exploitability_weaknesses=exploitability_weaknesses,
+        opponent_profiles=opponent_profiles,
     )
 
     if data is None:
@@ -519,6 +607,7 @@ async def run_master(args):
                 bot_action_stats=bot_action_stats,
                 battle_experience=battle_experience,
                 exploitability_weaknesses=exploitability_weaknesses,
+                opponent_profiles=opponent_profiles,
             )
             if data is None:
                 return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed after audit retry", "logs": ui.get_output()})}]}

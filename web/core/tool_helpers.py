@@ -26,6 +26,58 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 # ──────────────────────────────────────────────
+# Phase 3: FAMOU nemesis slot (advisory probe opponent)
+# ──────────────────────────────────────────────
+# When True, _select_precommit_opponents appends a single "nemesis_probe"
+# opponent (the parent's worst H2H matchup among active bots, win_rate < 0.40
+# with games >= PRECOMMIT_NEMESIS_MIN_GAMES) to the parent/top/weak list. The
+# nemesis matchup is run for TELEMETRY ONLY: run_precommit_eval excludes it
+# from both the blockers list and the aggregate-net-chips regression gate
+# (tool_eval.py checks reason == "nemesis_probe" at both accumulate points).
+# So flipping this flag ON cannot change the commit verdict — it only adds an
+# observation about a probable inherited weakness. Default ON because it is
+# non-blocking.
+PRECOMMIT_NEMESIS_SLOT = True
+PRECOMMIT_NEMESIS_MIN_GAMES = 4          # filter low-sample h2h noise
+PRECOMMIT_NEMESIS_WINRATE_THRESHOLD = 0.40  # only probe a real weakness
+
+
+def _find_nemesis_opponent(subject_name, active_list, h2h, min_games=PRECOMMIT_NEMESIS_MIN_GAMES,
+                           exclude=None):
+    """Return (opponent_name, win_rate) of subject_name's toughest active opponent.
+
+    Scans the on-disk head_to_head for the subject's lowest win-rate opponent
+    among `active_list` with at least `min_games` played. Used by the nemesis
+    probe to surface an inherited weakness: the candidate (just committed) has
+    no h2h yet, so we probe the PARENT's nemesis instead (weakness inheritance
+    is the FAMOU co-evolution pressure we want to measure).
+
+    `exclude` (optional set) skips opponents already chosen for other slots
+    (parent/top/weak). This keeps the nemesis a DISTINCT opponent from the
+    blocking weak-slot pick — the weak slot already covers the single worst
+    matchup as a regression gate, so the nemesis probe adds value by surfacing
+    the NEXT-worst opponent as telemetry.
+
+    Returns None when no qualifying opponent exists (all remaining opponents
+    above the noise floor, insufficient games, or every candidate excluded).
+    """
+    excluded = exclude or set()
+    best = None  # (win_rate, opp)
+    for opp in active_list:
+        if opp == subject_name or opp in excluded:
+            continue
+        stats = _h2h_stats(subject_name, opp, h2h)
+        if not stats or stats["games"] < min_games:
+            continue
+        wr = stats["win_rate"]
+        if best is None or wr < best[0]:
+            best = (wr, opp)
+    if best is None:
+        return None
+    return (best[1], best[0])
+
+
+# ──────────────────────────────────────────────
 # UI Injection — Dashboard Integration
 # ──────────────────────────────────────────────
 
@@ -414,6 +466,42 @@ def _select_precommit_opponents(version, source_v, max_top=2, max_weak=1):
             weak.append((stats["win_rate"], opp))
     for _, name in sorted(weak)[:max_weak]:
         add(name, "source_h2h_weakness")
+
+    # ── Phase 3: FAMOU nemesis probe (advisory, non-blocking) ──
+    # Append ONE opponent that most reliably beats the parent (the candidate's
+    # likely inherited weakness). The matchup is tagged reason="nemesis_probe"
+    # and run_precommit_eval treats that reason as telemetry-only: it is
+    # excluded from the blockers list and from aggregate_net_chips, so a nemesis
+    # loss cannot trip the commit gate (see tool_eval.py). Subject = parent
+    # (not the candidate) because the candidate has no h2h history yet.
+    # Fallback signal: if the live h2h scan finds no qualifying nemesis, consult
+    # the nemesis_archive.json snapshot (written on commit_bot) for the parent's
+    # recorded nemesis. Live h2h wins on freshness.
+    if PRECOMMIT_NEMESIS_SLOT and len(selected) >= 2:
+        # Exclude already-selected opponents (parent/top/weak) so the nemesis is
+        # a DISTINCT matchup — the weak slot already gates the single worst one;
+        # the nemesis adds the NEXT-worst opponent as non-blocking telemetry.
+        nemesis = _find_nemesis_opponent(parent, active, h2h, exclude=set(selected))
+        if nemesis is None:
+            # Archive fallback.
+            try:
+                archive = _read_json(
+                    PROJECT_ROOT / "web" / "core" / "results" / "nemesis_archive.json",
+                    {},
+                )
+                rec = (archive.get("nemesis_of") or {}).get(parent)
+                if rec and rec.get("nemesis") and rec["nemesis"] not in selected:
+                    nemesis = (rec["nemesis"], float(rec.get("win_rate", 1.0)))
+            except Exception:
+                nemesis = None
+        if nemesis is not None:
+            nemesis_opp, nemesis_wr = nemesis
+            # Only probe when the signal is a genuine weakness (below the same
+            # threshold the weak-slot uses) and the opponent is not already
+            # selected (add() dedups, but we check wr so a wr>=0.40 archive
+            # entry from a stale snapshot does not inject a non-weakness probe).
+            if nemesis_wr < PRECOMMIT_NEMESIS_WINRATE_THRESHOLD:
+                add(nemesis_opp, "nemesis_probe")
 
     return [{"name": name, "reason": reasons[name]} for name in selected]
 

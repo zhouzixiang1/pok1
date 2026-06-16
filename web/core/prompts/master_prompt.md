@@ -127,6 +127,9 @@ return None
 ## Bot Action Statistics
 {bot_action_stats}
 
+## Per-Opponent Behavior Profiles (extreme h2h matchups; use for opponent-specific adaptation)
+{opponent_profiles}
+
 ## Eval Round Summary
 {eval_round_summary}
 

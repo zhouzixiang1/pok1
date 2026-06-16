@@ -269,13 +269,21 @@ def test_active_bots_filter_ignores_external():
 # ---------------------------------------------------------------------------
 
 
-def test_is_daemon_scheduler_capable_true(daemon_pid_file):
-    """PID file with scheduler_capable=True returns True."""
+def test_is_daemon_scheduler_capable_true(daemon_pid_file, monkeypatch):
+    """Live daemon + PID file with scheduler_capable=True returns True."""
     import daemon_management as dm
 
     daemon_pid_file.write_text(
         json.dumps({"pid": 12345, "ppid": 1000, "scheduler_capable": True})
     )
+
+    # Liveness gate (commit 1566729, v107 OOM-kill stale-flag fix):
+    # is_daemon_scheduler_capable() first calls is_daemon_alive(), which requires
+    # daemon_proc to be a running process. The .daemon_pid file alone is
+    # insufficient — it outlives an OOM-killed daemon. Patch a live proc.
+    live_proc = MagicMock()
+    live_proc.poll.return_value = None  # None ⇒ process still running
+    monkeypatch.setattr(dm, "daemon_proc", live_proc)
 
     # Patch RESULTS_DIR to our tmp_path
     import evolution_infra

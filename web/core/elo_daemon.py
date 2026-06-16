@@ -474,10 +474,42 @@ def _refresh_action_stats_async(active_bots):
                 if bot in per_opp
             }
             write_locked_json(RESULTS_DIR / "bot_action_stats.json", flat)
+            # Phase 3: also persist the per-opponent breakdown (nested shape).
+            # The flat file above is unchanged to keep every legacy reader
+            # working; this new file is consumed ONLY by the Master
+            # opponent-profile injection (tool_planning.run_master). Advisory:
+            # a write failure here is caught by the surrounding try/except and
+            # only degrades the Master prompt (no gate depends on it).
+            write_locked_json(RESULTS_DIR / "bot_action_stats_per_opp.json", per_opp)
             log.info(
                 "bot_action_stats scan: %.2fs, %d bots (async incremental etag @ %s)",
                 time.perf_counter() - t0, len(flat), etag_path.name,
             )
+
+            # Phase 3: MAP-Elites behavior archive (advisory diversity signal).
+            # Re-scans replays for per-bot behavior fingerprints, discretizes
+            # into a 5x5 aggression x looseness grid, keeps the max-fitness bot
+            # per niche (fitness = h2h avg win_rate). No gate/reap reads this
+            # yet; it is a write-only MVP for population-diversity telemetry.
+            # Wrapped in its own try/except so a failure here does not abort
+            # the stats refresh mid-loop.
+            try:
+                from map_elites import write_behavior_archive
+                # h2h win rates are needed for fitness; compute once from the
+                # in-memory h2h if available, else let the helper fall back.
+                _wr_map = None
+                try:
+                    from tool_helpers import compute_h2h_avg_winrate, _load_h2h_data
+                    _h2h_snap = _load_h2h_data()
+                    _wr_map = {
+                        b: (compute_h2h_avg_winrate(b, _h2h_snap) or 0.5)
+                        for b in bots_snapshot
+                    }
+                except Exception:
+                    pass
+                write_behavior_archive(REPLAY_DIR, bots_snapshot, h2h_winrates=_wr_map)
+            except Exception as _me:
+                log.warning("Behavior archive write failed (non-fatal): %s", _me)
         except Exception as e:
             log.warning("Bot action stats computation failed (non-fatal): %s", e)
 
@@ -602,7 +634,7 @@ def _pop_next_job(match_queue):
 def main():
     parser = argparse.ArgumentParser(description="Background Rating Daemon")
     parser.add_argument("--pairs", type=int, default=5, help="Mirror pairs per match")
-    parser.add_argument("--workers", type=int, default=max(1, int(multiprocessing.cpu_count() * 28 / 32)), help="Parallel workers")
+    parser.add_argument("--workers", type=int, default=max(1, min(12, int(multiprocessing.cpu_count() * 28 / 32))), help="Parallel workers (capped at 12 to avoid OOM; see MAX_SAFE_DAEMON_WORKERS)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Print match results")
     parser.add_argument("--once", action="store_true", help="Run ~14 matches then exit")
     args = parser.parse_args()

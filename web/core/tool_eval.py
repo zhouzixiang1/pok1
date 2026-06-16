@@ -131,6 +131,11 @@ def _worst_precommit_opponent(matchups, blockers):
         best = None
         best_key = None
         for m in matchups:
+            # Phase 3: skip nemesis_probe matchups when attributing a failure —
+            # their losses are telemetry-only and must not be surfaced as the
+            # "worst opponent" the worker should target.
+            if m.get("reason") == "nemesis_probe":
+                continue
             opp = m.get("opponent")
             losses = int(m.get("losses", 0) or 0)
             wins = int(m.get("wins", 0) or 0)
@@ -301,10 +306,37 @@ async def run_precommit_eval(args):
             poll_interval = 2.0
             collected_results = {}
 
+            # Circuit breaker: when the daemon/scheduler is unhealthy (e.g. the
+            # 2026-06-16 OOM rc=-9 storm), results never arrive and this loop
+            # would otherwise block for the full deadline (~15 min for 3
+            # opponents). That long wait is exactly when an SDK signature error
+            # kills the orchestrator cycle mid-poll - precommit never returns,
+            # the cycle restarts, and v107 got stuck replaying this forever.
+            # Break out fast once the scheduler has produced nothing for a
+            # sustained stretch, so we fall back to the parallel path.
+            SCHEDULER_STALL_ROUNDS = 15  # 15 polls x 2s = ~30s of zero progress
+            consecutive_stall = 0
+
             while time.time() < deadline:
                 partial = await scheduler_client.collect(submitted_ids)
-                collected_results.update(partial)
+                if partial:
+                    collected_results.update(partial)
+                    consecutive_stall = 0
+                else:
+                    consecutive_stall += 1
                 if len(collected_results) >= len(submitted_ids):
+                    break
+                if consecutive_stall >= SCHEDULER_STALL_ROUNDS:
+                    scheduler_healthy = await scheduler_client.is_available()
+                    log_system_event(
+                        "pipeline.precommit_eval.scheduler_stall", "warn",
+                        f"v{v}: scheduler stalled {consecutive_stall} rounds "
+                        f"(0 new results in ~{consecutive_stall * poll_interval:.0f}s, "
+                        f"daemon_capable={scheduler_healthy}). Breaking to fallback.",
+                        {"version": v, "source_v": source_v,
+                         "collected": len(collected_results),
+                         "submitted": len(submitted_ids)},
+                    )
                     break
                 await asyncio.sleep(poll_interval)
 
@@ -312,6 +344,7 @@ async def run_precommit_eval(args):
             missing_opponents = []
             for job_id, item in job_id_to_opponent.items():
                 opponent = item["name"]
+                _is_nemesis = item.get("reason") == "nemesis_probe"
                 if job_id in collected_results:
                     res = collected_results[job_id]
                     matchup = {
@@ -327,16 +360,25 @@ async def run_precommit_eval(args):
                     }
                     if res.get("error"):
                         matchup["error"] = res["error"]
-                        blockers.append({
-                            "reason": "scheduler_error",
-                            "opponent": opponent,
-                            "details": res["error"],
-                        })
-                    total_wins += matchup["wins"]
-                    total_losses += matchup["losses"]
-                    total_draws += matchup["draws"]
+                        # Phase 3: nemesis probe is telemetry-only — never block.
+                        if not _is_nemesis:
+                            blockers.append({
+                                "reason": "scheduler_error",
+                                "opponent": opponent,
+                                "details": res["error"],
+                            })
+                        else:
+                            matchup["nemesis_note"] = "scheduler_error (non-blocking)"
+                    # Phase 3: nemesis probe is excluded from aggregate_net_chips
+                    # so a nemesis collapse cannot trip the aggregate regression
+                    # gate. Its W/L still counts toward totals for telemetry.
+                    if not _is_nemesis:
+                        total_wins += matchup["wins"]
+                        total_losses += matchup["losses"]
+                        total_draws += matchup["draws"]
                     net_chips = list(matchup.get("net_chips") or [])
-                    aggregate_net_chips.extend(net_chips)
+                    if not _is_nemesis:
+                        aggregate_net_chips.extend(net_chips)
                     # P0-1 parent regression gate — keep scheduler semantics aligned
                     # with the serial path: use paired net-chips CI when available,
                     # and fall back to the older binary W/L ratio only when no
@@ -425,8 +467,16 @@ async def run_precommit_eval(args):
             do not early-stop (there is no accept-side business value and
             rejecting non-parents is not a gate). When the flag is False the
             original fixed-collect mirror_battle path runs unchanged.
+
+            Phase 3: when item["reason"] == "nemesis_probe" the matchup is
+            TELEMETRY-ONLY. Any blockers it would produce (timeout / exception /
+            incomplete) are downgraded to a non-blocking 'nemesis_note' field on
+            the matchup, so a nemesis collapse or scheduler hiccup cannot change
+            the commit verdict. The aggregate-net-chips exclusion is applied in
+            the outer aggregation loop below (which checks reason too).
             """
             opponent = item["name"]
+            _is_nemesis = item.get("reason") == "nemesis_probe"
             opponent_main = _bot_main(opponent)
             matchup = {
                 "opponent": opponent,
@@ -617,6 +667,15 @@ async def run_precommit_eval(args):
                     "opponent": opponent,
                     "details": str(exc)[:500],
                 })
+            # Phase 3: nemesis_probe is telemetry-only — downgrade any blockers
+            # it produced into a non-blocking note so they cannot flip the commit
+            # verdict. The aggregate-net-chips exclusion happens in the loop below
+            # (it also keys off reason == "nemesis_probe").
+            if _is_nemesis and item_blockers:
+                matchup["nemesis_note"] = "; ".join(
+                    f"{b.get('reason')}" for b in item_blockers
+                )[:300]
+                item_blockers = []
             matchup["blockers"] = item_blockers
             return matchup
 
@@ -629,11 +688,17 @@ async def run_precommit_eval(args):
         for matchup in matchup_results:
             item_blockers = matchup.pop("blockers", [])
             blockers.extend(item_blockers)
-            total_wins += matchup["wins"]
-            total_losses += matchup["losses"]
-            total_draws += matchup["draws"]
-            net_chips = list(matchup.get("net_chips") or [])
-            aggregate_net_chips.extend(net_chips)
+            _is_nemesis = matchup.get("reason") == "nemesis_probe"
+            # Phase 3: nemesis W/L/net-chips stay on the matchup dict for
+            # telemetry but are NOT pooled into the gate totals or the
+            # aggregate regression bootstrap (a nemesis collapse must not be
+            # able to trip the commit gate).
+            if not _is_nemesis:
+                total_wins += matchup["wins"]
+                total_losses += matchup["losses"]
+                total_draws += matchup["draws"]
+                net_chips = list(matchup.get("net_chips") or [])
+                aggregate_net_chips.extend(net_chips)
             matchups.append(matchup)
 
     # --- P0-4: Semantic Interpretation of Battle Results ---

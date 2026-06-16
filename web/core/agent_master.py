@@ -54,7 +54,8 @@ def _render_analysis_section(text: str, default_msg: str) -> str:
 async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                                match_analysis="", performance_verification="",
                                replay_spotlight="", bot_action_stats="",
-                               battle_experience="", exploitability_weaknesses=""):
+                               battle_experience="", exploitability_weaknesses="",
+                               opponent_profiles=""):
     """Run Master analysis — can run concurrently with daemon evaluation."""
     master_prompt = (PROMPTS_DIR / "master_prompt.md").read_text()
     # Apply section budgets to avoid experience_pool crowding out match_analysis.
@@ -89,6 +90,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         "source_v": str(source_v),
         "replay_spotlight": replay_spotlight or "No replay spotlight data available.",
         "bot_action_stats": bot_action_stats or "No bot action statistics available.",
+        "opponent_profiles": opponent_profiles or "No per-opponent behavior profiles available.",
         "eval_round_summary": eval_round_summary,
         "battle_experience": battle_experience or "No battle experience data available yet.",
         "exploitability_weaknesses": exploitability_weaknesses or "No exploitability probe data available yet.",

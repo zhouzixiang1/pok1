@@ -207,6 +207,18 @@ async def commit_bot(args):
     except Exception:
         pass  # Calibration recording is advisory
 
+    # --- Phase 3: FAMOU nemesis archive (advisory) ---
+    # Recompute the nemesis/champion relationships from the on-disk h2h so the
+    # next generation's precommit nemesis probe has a fallback snapshot when
+    # the live h2h scan finds no qualifying nemesis. The new bot itself has no
+    # h2h yet (it just got tagged), but committing it refreshes every other
+    # bot's nemesis mapping. Best-effort: never blocks the commit path.
+    try:
+        from nemesis_archive import write_nemesis_archive
+        write_nemesis_archive(get_active_bots())
+    except Exception as e:
+        _log.warning("Nemesis archive write failed for v%d: %s", v, e)
+
     clear_pipeline_checkpoint()
 
     try:
