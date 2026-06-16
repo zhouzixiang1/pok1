@@ -17,6 +17,7 @@ import signal
 import argparse
 import time
 import multiprocessing
+import threading
 from collections import Counter, deque
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
@@ -438,6 +439,54 @@ def process_result(result, ratings, h2h, bot_stats, verbose=False):
     return total
 
 
+# Phase 0 follow-up: bot_action_stats scan runs ~260s for 2000 replays and would
+# block the daemon main scheduling loop if called synchronously in save_cycle (observed
+# stalling match cadence from ~10s to ~15min). Stats feed only the Master-prompt
+# injection — no commit gate depends on them — so an async background refresh with a
+# one-cycle-stale read is acceptable.
+_action_stats_thread = None
+
+
+def _refresh_action_stats_async(active_bots):
+    """Kick off a background bot_action_stats refresh; non-blocking.
+
+    Skips if a previous scan is still running (avoids thread pile-up when
+    save_cycle fires faster than the scan completes). The on-disk
+    bot_action_stats.json is updated in the worker via write_locked_json
+    (fcntl-protected), so concurrent readers stay safe.
+    """
+    global _action_stats_thread
+    if _action_stats_thread is not None and _action_stats_thread.is_alive():
+        return
+
+    bots_snapshot = list(active_bots)
+
+    def _worker():
+        try:
+            t0 = time.perf_counter()
+            etag_path = REPLAY_DIR / ".stats_etag.json"
+            per_opp = compute_all_bot_stats(
+                bots_snapshot, REPLAY_DIR, force_full=False, etag_path=etag_path
+            )
+            flat = {
+                bot: get_global_stats(per_opp, bot)
+                for bot in bots_snapshot
+                if bot in per_opp
+            }
+            write_locked_json(RESULTS_DIR / "bot_action_stats.json", flat)
+            log.info(
+                "bot_action_stats scan: %.2fs, %d bots (async incremental etag @ %s)",
+                time.perf_counter() - t0, len(flat), etag_path.name,
+            )
+        except Exception as e:
+            log.warning("Bot action stats computation failed (non-fatal): %s", e)
+
+    _action_stats_thread = threading.Thread(
+        target=_worker, daemon=True, name="action-stats-refresh"
+    )
+    _action_stats_thread.start()
+
+
 def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
                played_bots=None, verbose=False):
     """Write all data files to disk. Apply RD decay to bots that didn't play."""
@@ -470,35 +519,11 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
     _rotate_jsonl(MATCH_HISTORY_FILE, MAX_MATCH_HISTORY_LINES)
     # Note: system_events.jsonl is written by web process, rotated by system_log.py
 
-    # Compute and write bot action stats from replay files.
-    # Phase 0 (D): incremental mode via etag cache — replays are write-once, so
-    # mtime+size fingerprints let us detect which files changed. compute_all_bot_stats
-    # now returns a per-opponent breakdown; downstream readers expect the legacy flat
-    # shape, so we collapse each bot via get_global_stats before writing to disk.
-    try:
-        import time as _time_mod
-        _scan_t0 = _time_mod.perf_counter()
-        action_stats_file = RESULTS_DIR / "bot_action_stats.json"
-        etag_path = REPLAY_DIR / ".stats_etag.json"
-        # Incremental scan (force_full=False). The on-disk flat file is the
-        # authoritative consumer-facing artifact; the per-opponent shape stays in-memory.
-        per_opp_stats = compute_all_bot_stats(
-            active_bots, REPLAY_DIR, force_full=False, etag_path=etag_path
-        )
-        # Flatten to legacy shape: {bot: {street: {total,fold,...}, total_hands, aggression_factor}}
-        flat_stats = {
-            bot: get_global_stats(per_opp_stats, bot)
-            for bot in active_bots
-            if bot in per_opp_stats
-        }
-        write_locked_json(action_stats_file, flat_stats)
-        _scan_dt = _time_mod.perf_counter() - _scan_t0
-        log.info(
-            "bot_action_stats scan: %.2fs, %d bots (incremental etag @ %s)",
-            _scan_dt, len(flat_stats), etag_path.name,
-        )
-    except Exception as e:
-        log.warning("Bot action stats computation failed (non-fatal): %s", e)
+    # Compute bot_action_stats ASYNCHRONOUSLY (Phase 0 follow-up): the full replay
+    # scan is expensive (~260s for 2000 replays) and blocks the main scheduling loop
+    # when run synchronously. Stats feed only the Master-prompt injection (no commit
+    # gate depends on them), so a one-cycle-stale read is acceptable. Non-blocking.
+    _refresh_action_stats_async(active_bots)
 
     if verbose:
         # Compute H2H avg win rates for leaderboard
