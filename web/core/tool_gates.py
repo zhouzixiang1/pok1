@@ -28,7 +28,7 @@ from tool_helpers import (
     _matching_checkpoint, _record_gate, _gate_payload, _state_blocked,
     _quality_gate_ok, _review_gate_ok, _critic_gate_ok,
     _py_files_changed_between, _resolve_version_args, PROJECT_ROOT,
-    _set_pipeline_status,
+    _set_pipeline_status, read_pipeline_checkpoint,
 )
 from fix_verification import verify_fixes
 from system_log import log_system_event
@@ -364,6 +364,24 @@ async def prepare_next_gen(args):
         return _json_tool_result({"error": f"Pipeline for v{next_v} already at stage '{_ckpt['stage']}'. Refusing to overwrite worker output. Call abandon_generation first if you want to restart."})
 
     if next_dir.exists():
+        # Guard against silent cross-source overwrite. v107 (2026-06-16) was
+        # repeatedly re-prepared from DIFFERENT ancestors (106/105/102) because
+        # each crashed cycle reset the checkpoint, _matching_checkpoint(next_v,
+        # source_v) returned None for the new source, the stage guard was
+        # bypassed, and this rmtree silently destroyed the previous attempt's
+        # worker output. Refuse unless the existing dir was prepared from the
+        # SAME source (a legitimate same-generation retry) or explicitly cleared.
+        prior_ckpt = read_pipeline_checkpoint() or {}
+        prior_source = prior_ckpt.get("source_v")
+        if prior_source is not None and prior_source != source_v:
+            log_system_event(
+                "pipeline.prepare_cross_source_refused", "error",
+                f"Refusing to overwrite v{next_v}: dir was prepared from "
+                f"v{prior_source} but request is from v{source_v}. "
+                f"Call abandon_generation first to clear it.",
+                {"version": next_v, "source_v": source_v, "prior_source_v": prior_source},
+            )
+            return _json_tool_result({"error": f"Target v{next_v} already exists, prepared from v{prior_source} (not v{source_v}). Refusing silent cross-source overwrite. Call abandon_generation first."})
         shutil.rmtree(next_dir)
     shutil.copytree(source_dir, next_dir, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
 

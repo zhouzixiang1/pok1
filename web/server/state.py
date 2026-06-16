@@ -11,9 +11,16 @@ if TYPE_CHECKING:
     from shutdown_manager import ShutdownManager
 
 
+# Mirrors daemon_management.MAX_SAFE_DAEMON_WORKERS. Kept here (not imported)
+# to avoid a web/server -> web/core import cycle at module load. The cap
+# prevents OOM-kills: each mirror battle forks two bot subprocesses, so peak
+# memory scales ~3x per worker (2026-06-16 rc=-9 storm at 28 workers).
+_MAX_SAFE_DAEMON_WORKERS = 12
+
+
 def _default_daemon_workers() -> int:
-    """Default daemon workers = CPU cores * 7/8, clamped to [1, 128]."""
-    return max(1, int(os.cpu_count() * 28 / 32))
+    """Default daemon workers = CPU cores * 7/8, clamped to [1, _MAX_SAFE_DAEMON_WORKERS]."""
+    return max(1, min(_MAX_SAFE_DAEMON_WORKERS, int(os.cpu_count() * 28 / 32)))
 
 
 class AppState:
@@ -61,7 +68,7 @@ class AppState:
             if "daemon_enabled" in kwargs and isinstance(kwargs["daemon_enabled"], bool):
                 self.daemon_enabled = kwargs["daemon_enabled"]
             if "daemon_workers" in kwargs and isinstance(kwargs["daemon_workers"], int) and not isinstance(kwargs["daemon_workers"], bool):
-                self.daemon_workers = max(1, min(128, kwargs["daemon_workers"]))
+                self.daemon_workers = max(1, min(_MAX_SAFE_DAEMON_WORKERS, kwargs["daemon_workers"]))
             if "daemon_pairs" in kwargs and isinstance(kwargs["daemon_pairs"], int) and not isinstance(kwargs["daemon_pairs"], bool):
                 self.daemon_pairs = max(1, min(20, kwargs["daemon_pairs"]))
             self._save_config()
@@ -95,7 +102,7 @@ class AppState:
                 if "daemon_enabled" in data and isinstance(data["daemon_enabled"], bool):
                     self.daemon_enabled = data["daemon_enabled"]
                 if "daemon_workers" in data and isinstance(data["daemon_workers"], int):
-                    self.daemon_workers = max(1, min(128, data["daemon_workers"]))
+                    self.daemon_workers = max(1, min(_MAX_SAFE_DAEMON_WORKERS, data["daemon_workers"]))
                 if "daemon_pairs" in data and isinstance(data["daemon_pairs"], int):
                     self.daemon_pairs = max(1, min(20, data["daemon_pairs"]))
         except (json.JSONDecodeError, OSError):

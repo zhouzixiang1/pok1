@@ -522,12 +522,35 @@ def _target_rel(path, version):
 
 
 def get_active_bots():
+    """Active bots = those with BOTH a .completed sentinel AND a git tag.
+
+    Trust model mirrors find_current_v(): the git tag 'bot-v{N}' is the single
+    authoritative completion proof. A bare .completed file (written by prepare
+    or left behind by a crashed/never-committed generation) is NOT trusted —
+    it is exactly how a "ghost bot" like v107 (completed-but-untagged) leaked
+    into find_latest_active_v() and was used as an evolution source.
+
+    Collecting all tags once here (instead of calling git_has_tag per bot)
+    keeps this O(1 git call) regardless of bot count.
+    """
+    tag_versions = set()
+    for tag in _git("tag", "-l", "bot-v*", check=False).strip().splitlines():
+        try:
+            tag_versions.add(int(tag.replace("bot-v", "")))
+        except ValueError:
+            pass
+
     bots = []
     if BOTS_DIR.exists():
         for d in os.listdir(BOTS_DIR):
             if d.startswith("claude_v") and os.path.isdir(BOTS_DIR / d):
                 if (BOTS_DIR / d / ".completed").exists():
-                    bots.append(d)
+                    try:
+                        v = int(d.split("_v")[1])
+                    except (ValueError, IndexError):
+                        continue
+                    if v in tag_versions:  # git tag backs the .completed sentinel
+                        bots.append(d)
     return sorted(bots, key=lambda x: int(x.split("_v")[1]))
 
 

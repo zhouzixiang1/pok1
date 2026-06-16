@@ -38,9 +38,21 @@ def _drain_stdout(proc):
         pass  # Pipe closed
 
 
+# Upper bound on daemon workers. Each worker runs mirror battles, which each
+# spawn two bot subprocesses, so peak RSS scales ~3x per worker. On a 32-core
+# box the old default (28 workers) was repeatedly OOM-killed (rc=-9 storm,
+# 2026-06-16), which took down the Battle Scheduler and stranded precommit_eval.
+# 12 workers still saturates a big machine for this I/O-bound bot workload but
+# keeps peak memory well under the OOM threshold.
+MAX_SAFE_DAEMON_WORKERS = 12
+
+
 def _default_daemon_workers() -> int:
-    """Default daemon workers = CPU cores * 7/8, clamped to [1, 128]."""
-    return max(1, int(os.cpu_count() * 28 / 32))
+    """Default daemon workers = CPU cores * 7/8, clamped to [1, MAX_SAFE_DAEMON_WORKERS].
+
+    The hard cap prevents OOM-kills on high-core machines (each mirror battle
+    forks two bot subprocesses, so memory scales 3x per worker)."""
+    return max(1, min(MAX_SAFE_DAEMON_WORKERS, int(os.cpu_count() * 28 / 32)))
 
 
 def start_daemon(workers=None, pairs=5, scheduler_capable=True):
@@ -187,7 +199,17 @@ def is_daemon_alive():
 
 
 def is_daemon_scheduler_capable():
-    """Check if the running daemon was started with scheduler capability."""
+    """Check if the running daemon is alive AND was started with scheduler capability.
+
+    The liveness check (is_daemon_alive) is essential: the .daemon_pid file
+    outlives an OOM-killed daemon (rc=-9 storm, 2026-06-16), and without it the
+    stale scheduler_capable=true flag convinced precommit_eval the scheduler
+    was usable — jobs were submitted to a dead daemon and never completed,
+    stranding v107's precommit forever. A capability flag on a dead process
+    is meaningless.
+    """
+    if not is_daemon_alive():
+        return False
     from evolution_infra import RESULTS_DIR
     daemon_pid_file = RESULTS_DIR / ".daemon_pid"
     if not daemon_pid_file.exists():
