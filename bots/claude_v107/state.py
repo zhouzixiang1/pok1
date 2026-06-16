@@ -63,8 +63,8 @@ def classify_preflop_hand(my_cards):
       'small_pair'       - 22-66
       'big_cards'        - AK, AQ (and AJo)
       'suited_connector' - suited connectors/gappers 56s+
-      'suited_ace'       - A2s-Ats (non-broadway suited aces)
       'broadway_suited'  - KQs, KJs, QJs, QTs, JTs (suited both >=10)
+      'suited_ace'       - A2s-ATs (non-broadway suited aces)
       'playable'         - offsuit broadways (KQ/KJ/QJ), misc suited
       'trash'            - fold
     """
@@ -84,10 +84,10 @@ def classify_preflop_hand(my_cards):
     # Non-pair hands
     if high == 14 and low >= 12:        # AK, AQ
         return "big_cards"
-    if suited and high >= 11 and low >= 10:  # KQs, KJs, QJs, QTs, JTs
-        return "broadway_suited"
     if suited and high == 14:           # A2s-AJs (AK caught above)
         return "suited_ace"
+    if suited and high >= 11 and low >= 10:  # KQs, KJs, QJs, QTs, JTs
+        return "broadway_suited"
     if suited and gap <= 2 and low >= 5 and high <= 13:  # suited connectors/gappers
         return "suited_connector"
     if high == 14 and low >= 11:        # AJo (offsuit big ace)

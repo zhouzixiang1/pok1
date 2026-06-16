@@ -1,44 +1,41 @@
 ## OPPONENT_MODELING
-- Use live continuous stats (`postflop_aggr`, `fold_to_raise`, barrel frequency, per-street fold/call-down, passivity) only behind confidence/sample gates; avoid contradictory multi-signal AND gates that make logic dead.
-- SB-open/BB-defense adaptation must use open-response evidence (`open_response_samples`, `open_response_confidence`, pfr/vpip), not generic action confidence; do NOT treat unknown opener as tight by default.
-- `estimate_preflop_strength` saturates pocket pairs to 1.0; use `preflop_hand_profile()` / `classify_preflop_hand()` buckets for preflop range gates, and audit any residual raw-threshold 4-bet logic before more hand-class work. [POSSIBLY EXHAUSTED]
-- Do not confuse `value_profile['tier']` with a true opponent archetype; verify any claimed archetype/board-range primitive is live before planning around it.
-- Validate opponent reads with sample counts, firing-rate/open-frequency logs, and >=100g H2H; sub-30g samples are directional noise only.
+- Use live opponent stats (`postflop_aggr`, `fold_to_raise`, barrel frequency, per-street fold/call-down, passivity) only behind confidence/sample gates; OR-combine tendencies with modest magnitudes.
+- Opponent modeling must target a distinct live decision point with firing-rate logs and >=100g H2H; sub-30g matchup samples are directional noise only.
+- SB-open/BB-defense adaptation must use open-response evidence (`open_response_samples`, `open_response_confidence`, pfr/vpip), not generic action confidence; never classify unknown openers as tight by default.
+- `estimate_preflop_strength` saturates pocket pairs to 1.0; use `preflop_hand_profile()` / `classify_preflop_hand()` buckets for preflop range gates.
+- Do not confuse `value_profile['tier']` with opponent archetype; verify claimed archetype/board-range primitives exist and are live before planning around them.
 
 ## POSTFLOP_STRATEGY
-- Defensive fold/all-in guard accumulation is saturated; add no new SPR/all-in/texture/pot-odds/opponent-stat/polarization/barrel fold gate without >=100g validation and a distinct decision point. [POSSIBLY EXHAUSTED]
-- Confirm any named primitive exists in current source before referencing it; docstrings, memories, stale planning notes, and previously live helper names are not definitions.
+- Defensive late-street fold/all-in/texture/pot-odds/polarization/barrel guard accumulation is saturated; add no new guard unless it targets a distinct decision point and has >=100g validation. [POSSIBLY EXHAUSTED]
+- Dry-board value-barrel work is permitted only as dispatch-order repair (e.g. moving a value handler ahead of an intercepting passive-exploit), not as new guard accumulation; treat such reorder as infrastructure-only until fire-rate/avg_raise/>=100g H2H confirm.
 - Detection-without-handler is recurring dead code; every new detector must wire a consuming action site in the same generation and verify reachability/fire-rate.
-- Audit action-selection paths for raw-ratio bypasses, skipped `choose_raise`, and dispatch-order shadowing; dispatch-bypass/order fixes have produced real gains.
-- Sizing changes need a structural hypothesis: verify current live formulas and downstream caps/branches before adding board-texture or value-extraction logic, then validate with H2H.
+- Confirm named primitives exist in current source before referencing them; docstrings, memories, stale planning notes, and previously live helper names are not definitions.
+- Audit action-selection paths for raw-ratio bypasses, skipped `choose_raise`, downstream caps, dispatch-order shadowing, and overlapping handler order before modifying behavior.
+- Near line cap, prioritize infrastructure-only dispatch/raise-decision table refactors over bundled behavior changes.
+- Verify trap-guard exclusion lists after any `_should_checkraise_trap` refactor; dropping value/bluff exclusions can suppress intended value sizing on overlapping tiers.
 
 ## BLUFF_CALIBRATION
-- Bluff only with opponent evidence: prefer high-fold OR low-aggression profiles with confidence; suppress bluffs against high-aggression / low-fold opponents.
-- Structural bluff modules (`4-bet_light`, barrel, check-raise trap, overbet, donk_probe) need >=100g H2H validation before being treated as successful or expanded.
-- Contradictory behavior-signal AND gates become dead code; combine alternative opponent tendencies with OR logic and smaller magnitudes.
+- Bluff only with explicit fold-equity evidence and confidence; low aggression/passivity alone may indicate calling-station behavior.
+- Suppress bluffs against high-aggression or low-fold opponents unless a distinct live exploit path has firing-rate and >=100g H2H proof.
+- Structural bluff modules require current-source live-path verification before being treated as successful or expanded.
 
 ## PARAMETER_TUNING
-- Standalone constant/margin tuning of sizing ratios and call thresholds has no sustained gain; Tuner changes must adjust constants inside an Architect-defined structural hypothesis with per-constant H2H backing. [POSSIBLY EXHAUSTED]
-- Do not reintroduce stacked value-sizing boosts (`value_sizing_delta`) at `choose_raise` — absent from current source and counterproductive without matchup evidence of underbetting.
-- Thin value-tier floors need >=100g calling-station-lineage validation before raising floors or widening tiers.
-- Before adding or citing texture-conditional sizing constants, verify the live formula and downstream caps in current source; stale v104 wetness-scaling rationale is only a negative caution.
+- Standalone constant/margin tuning of sizing ratios, caps, floors, and call thresholds has no sustained gain; Tuner changes must be constants-only inside an Architect-defined structural hypothesis with per-constant H2H backing. [POSSIBLY EXHAUSTED]
+- Exclude new sizing-tier/floor/cap increases from Tuner work unless current source proves dispatch order, downstream caps, and target live path are not the blocker.
+- Do not reintroduce stacked value-sizing boosts such as `value_sizing_delta` at `choose_raise` unless current source and matchup evidence prove underbetting.
+- Thin value-tier floors or texture-conditional sizing constants need >=100g calling-station/archetype validation and current-source formula/cap verification before tuning.
 
 ## GENERAL
-- Any new structural path, constant change, or matchup target requires >=100g H2H validation before treating as successful, repeating it, or expanding it; sub-30g mirror samples and critic claims are directional only.
-- Select crossover parents by H2H win-rate and diversity, not raw Glicko alone.
-- Use one mechanism per generation except sanctioned crossover diversity rescues; line-cap/dispatch refactors should be infrastructure-only or their own generation.
-- Worker boundaries: Architect defines structural logic; Tuner may only adjust constants within that structure, not create new logic.
-- Crossover skips direction_audit/master/workers but must still run quality gates, review, critic, precommit eval, commit, and archivist; verify `TOTAL_HANDS=70`, wheel straight, and strict re-raise semantics afterward.
-- Helper extraction is safe near the line cap; verify live primitives remain wired before/after rebases and confirm against current source, not stale lists.
-- `strategy.py` near the 1500-line cap needs prioritized dispatch/raise-decision table refactor before more sizing work, to expose shadowing and prevent inert additions.
+- Any new structural path, constant change, or matchup target requires >=100g H2H validation before treating it as successful, repeating it, or expanding it.
+- v102 was later confirmed as a rating regression (1235→1155) and its offspring v105/v106 trended negative; do not anchor "offensive value-sizing success" on the v102 probe_mode fix — re-derive the success benchmark from current validated bots.
+- Select crossover parents by H2H win-rate and diversity, not raw Glicko alone; verify the crossover tool actually executed rather than falling back to master+worker copy.
+- Use one mechanism per generation except sanctioned crossover diversity rescues; helper extraction, line-cap relief, and dispatch refactors should be infrastructure-only generations.
+- Worker boundaries are mandatory: Architect defines structural logic; Tuner may only adjust constants within that structure, not create new logic.
+- Helper extraction is safe near the line cap only when it preserves behavior and verifies live primitives remain wired before/after rebases against current source.
 
 ## RECENT_LESSONS
-- **v106**: Critic evidence: H2H weaknesses: claude_v105 overall bot_stats: 223 wins / 147 losses / 370 games, win_rate 0.6027., Only current weak H2H below 40% is claude_v105 vs claude_v94 at 30.0%, but this is just 10 games and experience_pool warns v104-v106 current-bot H2H is sub-30g directional noise, not validated., claude_v102 vs claude_v105 is 20 games with v105_wr 50.0%, so the v105 dry-barrel change has not yet shown a validated parent improvement.; Experience pool refs: POSTFLOP_STRATEGY: 'Audit action-selection paths for raw-ratio bypasses, skipped choose_raise, and dispatch-order shadowing; dispatch-bypass/order fixes have produced real gains.', RECENT_LESSONS v105: '_dry_board_value_barrel() targeted dry-board strong/nut sizing but was shadowed by earlier passive_exploit, making the turn path likely inert vs passive opponents; do not expand dry-barrel work until dispatch order and H2H movement are proven.', RECENT_LESSONS v106 pending/unvalidated: 'Claimed fix moves dry-board value barrel before passive_exploit; diff suggests ordering improved and overbet/donk/probe priority preserved, but verify actual commit/tag, source order, fire-rate, and >=100g H2H before treating it as completed.'; Diff refs: bots/claude_v106/strategy.py lines 1329-1369 preserve overbet, donk, and probe priority before the dry-barrel path., bots/claude_v106/strategy.py lines 1371-1381 now compute sizing_delta/exploit_dispatch and call _dry_board_value_barrel before passive_exploit_trigger at lines 1383-1396., The diff removes the old _dry_board_value_barrel call from inside the later generic choose_raise branch after passive_exploit, eliminating the shadowing order that made dry-barrel inert in passive-station spots.
-- **v106 pending/unvalidated**: Claimed fix moves dry-board value barrel before `passive_exploit`; diff suggests ordering improved and overbet/donk/probe priority preserved, but verify actual commit/tag, source order, fire-rate, and >=100g H2H before treating it as completed.
-- **v105**: `_dry_board_value_barrel()` targeted dry-board strong/nut sizing but was shadowed by earlier `passive_exploit`, making the turn path likely inert vs passive opponents; do not expand dry-barrel work until dispatch order and H2H movement are proven.
-- **v105**: `_river_subpremium_commitment_penalty()` and the 0.14→0.30 all-tier buffer-cap raise are verified gone from v105 source; ignore planning premised on that fold-buffer regression unless reintroduced with >=100g evidence.
-- **v105**: Archivist showed v105 trending negative vs v102 parent; v102 `probe_mode` fix remains the only confirmed offensive value-sizing success, while v105 dry-barrel remains unvalidated.
-- **v104**: Wetness-scaled `induce_cap`/`thin_cap`/`low_ratio` rationale is stale vs current source; re-verify live formulas before any texture-sizing plan.
-- **v104-v106**: No current-bot H2H is validated and all cited weak matchups are sub-30g directional noise; do not infer matchup-specific river/all-in/calling weakness without larger samples.
-- **v104-v106 pattern**: Incremental sizing cap/constant tuning and late-street sub-premium all-in/raise defensive guards have repeated without confirmed H2H gain; avoid repeating them unless tied to a distinct live path and >=100g validation. [POSSIBLY EXHAUSTED]
+- **v107**: Critic evidence: H2H weaknesses: v102 (win_rate 0.589, 1497W/1042L over 2540g) — strong overall but per memory v102 struggles vs v93/v95/v106 where v89 wins. No v107 H2H games yet (bot just created).; Experience pool refs: 'Standalone constant/margin tuning of sizing ratios, caps, floors, and call thresholds has no sustained gain' [POSSIBLY EXHAUSTED] — v107's barrel fold-gate changes (cap 0.06→0.07, deficit threshold 0.05→0.04) directly repeat this pattern., 'v104-v106 exhausted pattern: Incremental sizing cap/constant tuning ... repeated without confirmed H2H gain' — same violation here on the barrel fold cap.; Diff refs: strategy_helpers.py:87-90 — NEW broadway_suited bucket in classify_preflop_hand (structural, from v89)., strategy.py:369,403 — broadway_suited added to implied-odds list (sound wiring)., strategy_helpers.py:302-324 — barrel-continuation constants tuned with no H2H basis (exhausted pattern).
+- **v106 dispatch-order repair**: Moving `_dry_board_value_barrel` ahead of `passive_exploit_trigger` is a valid infrastructure-only reorder (not guard accumulation); do not expand sizing until fire-rate, avg_raise, and >=100g H2H prove improvement.
+- **v105/v106 unvalidated**: v105 trended negative vs v102, and v102 itself is a confirmed regression; both v105/v106 H2H remain sub-30g noise — do not treat them as a live strategic target or matchup-specific basis.
+- **v104-v106 exhausted pattern**: Incremental sizing cap/constant tuning, value-underbet fixes without validated dispatch reachability, and late-street defensive all-in/fold guard accumulation repeated without confirmed H2H gain; avoid repeating unless tied to a distinct live path and >=100g validation. [POSSIBLY EXHAUSTED]
 

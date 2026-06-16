@@ -366,7 +366,7 @@ def _sb_open_bucket_action(hand_cat, opponent_model, trash_hand):
     if hand_cat in ('premium', 'strong_pair', 'mid_pair', 'big_cards'):
         return 'raise'
 
-    implied = hand_cat in ('small_pair', 'suited_ace', 'suited_connector')
+    implied = hand_cat in ('small_pair', 'suited_ace', 'suited_connector', 'broadway_suited')
     marginal = hand_cat == 'playable'
 
     if implied:
@@ -517,10 +517,7 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
             )
             if raise_amount is not None:
                 return raise_amount
-        # Call with strong/mid pairs, broadway suited, and playable hands
-        if hand_cat_iso in ('strong_pair', 'mid_pair', 'broadway_suited', 'playable'):
-            return 0
-        # Call if pot odds / equity justify
+        # Call with most limp-range hands
         if preflop_strength >= 0.34 or win_rate >= pot_odds_iso - 0.03:
             return 0
         return -1
@@ -1392,7 +1389,7 @@ def get_action(req, requests):
             board_texture=board_texture,
             draw_info=draw_info,
             blocker_bluff=blocker_bluff and win_rate < medium and not semi_bluff,
-            probe_mode=check_probe or small_probe or (value_profile is not None and value_profile.get("tier") == "thin" and board_texture is not None and not board_texture["dynamic"]),
+            probe_mode=check_probe or small_probe,
             induce_mode=induce_nut_value or value_plan.get("induce", False),
             nutted_risk_score=nutted_risk["risk"],
             match_sizing_delta=match_profile["sizing_delta"],

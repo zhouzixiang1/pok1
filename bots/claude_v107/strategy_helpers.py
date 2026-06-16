@@ -275,7 +275,7 @@ def facing_barrel_continuation(spot_info, round_idx, made_strength, draw_strengt
     Grounded in pot-odds: only folds when made_strength is meaningfully below
     the call price. Returns 0.0 (no fold pressure) otherwise. Caller subtracts
     this from call_margin to tighten the calling range against multi-street
-    value lines. Capped at 0.08 so it never forces a fold — only nudges.
+    value lines. Capped at 0.06 so it never forces a fold — only nudges.
     """
     if round_idx < 2:
         return 0.0
@@ -299,10 +299,10 @@ def facing_barrel_continuation(spot_info, round_idx, made_strength, draw_strengt
     if made_strength >= call_pot_odds:
         return 0.0
     equity_deficit = call_pot_odds - made_strength
-    if equity_deficit < 0.05:
+    if equity_deficit < 0.04:
         return 0.0
 
-    # Base signal scaled by equity deficit and street.
+    # Base signal scaled by equity deficit and street. REDUCED magnitude.
     if round_idx == 2:  # turn barrel
         signal = 0.03 + 0.07 * min(equity_deficit, 0.20)
     else:               # round_idx == 3 river barrel
@@ -321,7 +321,7 @@ def facing_barrel_continuation(spot_info, round_idx, made_strength, draw_strengt
         elif barrel_freq <= 0.35:  # passive/trappy — fold less
             signal *= 0.5
 
-    return min(signal, 0.08)
+    return min(signal, 0.07)
 
 
 def river_value_raise_tier(round_idx, to_call, made_strength, value_profile, board_texture, opponent_model, pot, my_chips, min_raise, my_round_bet):
