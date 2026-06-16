@@ -15,15 +15,15 @@ Detection model (heads-up, single effective all-in per hand):
     and are left at their realized value.
 
 AIVAT adjustment per all-in-showdown hand (perspective = player p):
-    pot       = pot at the all-in display snapshot (both players' contributions)
-    equity_p  = aivat_equity(hole_p, hole_opp, public, round)   # tie = 0.5
-    contrib_p = 20000 - player_chips_p_at_snapshot              # chips p put in
-    expected_p_delta = equity_p * pot - contrib_p                # skill EV delta
+    matched_contrib = min(contrib_0, contrib_1)
+    main_pot        = 2 * matched_contrib                       # side pot excluded
+    equity_p        = aivat_equity(hole_p, hole_opp, public, round)  # tie = 0.5
+    expected_p_delta = equity_p * main_pot - matched_contrib     # skill EV delta
 
-    The hand's realized net-chips delta for player p is replaced wholesale by
-    `expected_p_delta` (in heads-up single-allin the entire hand settlement IS
-    the all-in-runout settlement). Non-allin / fold-settled hands keep their
-    realized delta.
+    Stack-mismatch all-ins can leave an unmatched side pot that judge.py returns
+    to the covering player at settlement; that side pot has no runout chance
+    component and must not enter the equity adjustment. Nonallin/fold-settled
+    hands keep their realized delta.
 
 Symmetry with hole-swap mirroring:
     adjusted_net_chips_p = sum over all hands (normal + mirror) of adjusted delta.
@@ -143,16 +143,29 @@ def _extract_allin_snapshot(judge_log, consumed_history_len_ref=None):
     """Scan a single hand's judge log (list of {"output":...}) for the all-in
     showdown moment, and return the equity-relevant snapshot.
 
-    Detection (robust for this engine where every hand resets both players to
-    INITIAL_CHIPS=20000, so a heads-up all-in-showdown ALWAYS commits both
-    stacks to 0):
+    Detection (real-log grounded — see 200-game replay scan):
 
-      A hand is an AIVAT-eligible all-in-showdown iff BOTH players reach 0 chips
-      by the hand's final request display (mutual all-in → runout to showdown).
-      - allin-vs-call   → final chips [0,0], pot=40000   → ELIGIBLE (adjust).
-      - allin-vs-fold   → final chips [0, >0]            → NOT eligible (no
-                           chance event; folder forfeits, keep realized).
-      - fold-settled    → no player at 0 chips           → NOT eligible.
+      A hand is an AIVAT-eligible all-in-showdown iff:
+        1. At least one player hit 0 chips during the hand (an all-in was
+           committed). This covers BOTH mutual all-in (final chips [0,0]) and
+           the far more common stack-mismatch all-in (final chips [0, X>0] or
+           [X>0, 0], where one player covered the other's shove). The old code
+           required BOTH at 0, which real logs show matches only ~5% of all-in
+           showdowns (stack-mismatch preflop shoves dominate).
+        2. The hand reached showdown with NO fold: the FINAL request display has
+           no -1 in `round_player_bet` (a -1 means someone folded → no chance
+           event → keep realized). All-in-then-fold hands are excluded here.
+        3. The board was run out to the river (5 public cards in the final
+           display). This is the real "reached showdown via all-in" criterion
+           (postflop round==3 == river with 5 cards; round==4 is the game-finish
+           terminal frame only). Preflop all-ins whose board never completed
+           (shouldn't happen for legal mirror games, which always run out) are
+           excluded defensively.
+
+      - allin-vs-call (mutual)    → final chips [0,0], pot=2*min_contrib → ELIGIBLE
+      - allin-vs-call (covered)   → final chips [0, X>0] or [X>0, 0]    → ELIGIBLE
+      - allin-vs-fold             → only P0 at 0, P1 folded → no chance event → SKIP
+      - fold-settled              → no player at 0 chips                 → SKIP
 
     We capture the all-in decision point as the FIRST display where any player
     hits 0 chips (that's where the all-in was committed and the equity question
@@ -160,10 +173,16 @@ def _extract_allin_snapshot(judge_log, consumed_history_len_ref=None):
     betting). The hole cards / public / round at that snapshot are the AIVAT
     equity inputs.
 
-    Returns dict {round, public, hole_me, hole_opp, pot, contrib_me, contrib_opp}
-    or None if the hand is not an all-in-showdown.
+    Returns dict {round, public, hole_me, hole_opp, pot, main_pot,
+    matched_contrib, contrib_me, contrib_opp} or None if the hand is not an
+    all-in-showdown.
     """
     # Walk request-displays. Track first allin-touch and the final display.
+    # Skip settlement frames: a display carrying `temp_result` (or a finish
+    # frame) is the NEXT hand's first display rendering THIS hand's settlement
+    # (judge.py:577-578 increments `hand` before make_request_json attaches the
+    # result). Its player_chips/public/pot describe the next hand's reset state,
+    # NOT this hand's runout — including it would corrupt eligibility & snapshot.
     allin_snapshot = None
     last_display = None
     for entry in judge_log:
@@ -173,6 +192,8 @@ def _extract_allin_snapshot(judge_log, consumed_history_len_ref=None):
         display = out.get("display")
         if not isinstance(display, dict):
             continue
+        if isinstance(display.get("temp_result"), list) or out.get("command") == "finish":
+            continue  # settlement/terminal frame — not a betting display of this hand
         last_display = display
         chips = display.get("player_chips")
         if (allin_snapshot is None and isinstance(chips, list) and len(chips) == 2
@@ -182,17 +203,29 @@ def _extract_allin_snapshot(judge_log, consumed_history_len_ref=None):
     if allin_snapshot is None or last_display is None:
         return None
 
-    # Eligibility: BOTH players must be at 0 chips in the final display (mutual
-    # all-in → showdown). If only one is at 0, the hand settled by fold (the
-    # non-allin player folded rather than calling), so no chance event → skip.
+    # Eligibility #1: an all-in was committed (≥1 player reached 0 chips). The
+    # walk above guarantees allin_snapshot is set iff this holds; re-check
+    # defensively against the final display too.
     final_chips = last_display.get("player_chips")
     if not (isinstance(final_chips, list) and len(final_chips) == 2
-            and final_chips[0] == 0 and final_chips[1] == 0):
+            and (final_chips[0] == 0 or final_chips[1] == 0)):
+        # The all-in snapshot may have been at 0 but chips changed afterwards
+        # (shouldn't happen post-allin). Require ≥1 player at 0 in the FINAL
+        # display for a genuine all-in-runout-to-showdown.
         return None
 
-    # Also exclude hands that ended by explicit fold in round_player_bet (defensive).
+    # Eligibility #2: no fold in the final display's round_player_bet
+    # (-1 == folded). A fold means the hand settled without a runout → no
+    # chance event to AIVAT-remove.
     rpb = last_display.get("round_player_bet")
     if isinstance(rpb, list) and any(b == -1 for b in rpb):
+        return None
+
+    # Eligibility #3: board run out to the river (5 public cards) → genuine
+    # showdown with a chance event on the runout. round==4 is the game-finish
+    # terminal frame only, not a playable river.
+    pub = last_display.get("public_cards") or []
+    if len(pub) != 5:
         return None
 
     hole = last_display.get("player_cards")
@@ -212,6 +245,8 @@ def _extract_allin_snapshot(judge_log, consumed_history_len_ref=None):
 
     contrib_me = INITIAL_CHIPS - int(chips[0])
     contrib_opp = INITIAL_CHIPS - int(chips[1])
+    matched_contrib = min(contrib_me, contrib_opp)
+    main_pot = 2 * matched_contrib
 
     return {
         "round": snap_round,
@@ -219,55 +254,98 @@ def _extract_allin_snapshot(judge_log, consumed_history_len_ref=None):
         "hole_me": list(snap_hole[0]),
         "hole_opp": list(snap_hole[1]),
         "pot": pot,
+        "main_pot": main_pot,
+        "matched_contrib": matched_contrib,
         "contrib_me": contrib_me,
         "contrib_opp": contrib_opp,
     }
 
 
-def aivat_adjust_hand(judge_log_hand, perspective=0, n_sims=2000, seed=None):
+def aivat_adjust_hand(judge_log_hand, perspective=0, n_sims=2000, seed=None,
+                      realized_delta=None):
     """AIVAT-adjusted net-chips delta for ONE hand, for `perspective` player.
 
     Args:
         judge_log_hand: list of judge log entries for a single hand (the segment
             of the full game log belonging to one hand; see split_log_into_hands).
         perspective: 0 or 1 — which player's delta to return.
+        realized_delta: optional caller-supplied per-hand realized delta. Used by
+            aivat_adjust_game to repair the terminal hand, whose final_result is
+            cumulative rather than per-hand.
 
     Returns:
         float: the adjusted net-chips delta for `perspective` on this hand.
-        - All-in-showdown hand: equity_p * pot - contrib_p  (skill EV).
+        - All-in-showdown hand: equity_p * main_pot - matched_contrib.
+          Only the matched main pot is adjusted; unmatched side-pot chips are
+          returned deterministically and have no runout chance component.
         - Fold/non-allin hand: the realized net-chips delta for `perspective`
-          (taken from the hand's finish display final_result if present, else 0).
+          from per-hand temp_result. Full-game callers repair the terminal
+          cumulative final_result in aivat_adjust_game.
     """
     snap = _extract_allin_snapshot(judge_log_hand, None)
 
     # Find the hand's realized result (from the finish/last display final_result)
-    realized = _hand_realized_delta(judge_log_hand, perspective)
+    realized = _hand_realized_delta(judge_log_hand, perspective) if realized_delta is None else float(realized_delta)
 
     if snap is None:
         return realized
 
-    # All-in-showdown: replace realized with skill EV.
+    # All-in-showdown: replace realized with skill EV for the matched main pot.
+    # In stack-mismatch all-ins, the unmatched side pot is returned to the
+    # covering player by judge.py settlement and has no runout chance component.
     if perspective == 0:
         hole_me, hole_opp = snap["hole_me"], snap["hole_opp"]
-        contrib_p = snap["contrib_me"]
     else:
         hole_me, hole_opp = snap["hole_opp"], snap["hole_me"]
-        contrib_p = snap["contrib_opp"]
 
     equity = aivat_equity(hole_me, hole_opp, snap["public"], snap["round"],
                           n_sims=n_sims, seed=seed)
-    expected_delta = equity * snap["pot"] - contrib_p
+    expected_delta = equity * snap["main_pot"] - snap["matched_contrib"]
     return expected_delta
 
 
 def _hand_realized_delta(judge_log_hand, perspective):
     """Extract the realized net-chips delta for `perspective` from a hand's log.
 
-    The finish display's final_result[i].win_chips is already mean-centered
-    (judge.py:570: win_chips = chips - mean_chips). For a hand, that is exactly
-    the per-hand delta. Falls back to 0 if no final_result found (e.g. the log
-    segment is incomplete — shouldn't happen for finished games).
+    Real-log grounded: the per-hand mean-centered delta lives in the
+    `temp_result[i].win_chips` field that judge.py attaches to the FIRST display
+    of the NEXT hand (judge.py:559-575): at hand settlement it computes
+        player_final_chips = game.get_player_final_chips(result)   # side-pot adjusted
+        mean_chips = sum(player_final_chips) / N
+        temp_result[i].win_chips = player_final_chips[i] - mean_chips
+    and stores that on matchdata, which the next make_request_json renders as
+    `display.temp_result`. So THIS hand's realized delta is found by scanning
+    the segment for a display carrying `temp_result`.
+
+    IMPORTANT: do NOT use `player_chips[i] - INITIAL_CHIPS`. `player_chips` is
+    the STAGE-END chips (pre-settlement, e.g. [0, 1] at the allin-runout's last
+    betting display), NOT the side-pot-adjusted settlement chips. Using it gives
+    the wrong delta for every stack-mismatch all-in (e.g. real [0,1]/pot=39999
+    hand → player_chips[0]-20000 = -20000, but the true delta is -19999).
+
+    `final_result[i].win_chips` (judge.py:484-491) is the GAME's cumulative
+    running total (total_win_chips), available only on the game's final
+    finish frame — it is NOT per-hand. Kept only as a last-resort fallback for
+    the terminal hand where temp_result may be absent.
+
+    Falls back to 0 if neither is found (incomplete segment — shouldn't happen
+    for finished games).
     """
+    for entry in judge_log_hand:
+        out = entry.get("output") if isinstance(entry, dict) else None
+        if out is None or not isinstance(out, dict):
+            continue
+        display = out.get("display")
+        if not isinstance(display, dict):
+            continue
+        tr = display.get("temp_result")
+        if isinstance(tr, list) and len(tr) > perspective:
+            wc = tr[perspective].get("win_chips", 0) if isinstance(tr[perspective], dict) else 0
+            try:
+                return float(wc)
+            except (TypeError, ValueError):
+                return 0.0
+    # Fallback: game-terminal frame's final_result (cumulative running total).
     for entry in reversed(judge_log_hand):
         out = entry.get("output") if isinstance(entry, dict) else None
         if out is None or not isinstance(out, dict):
@@ -276,7 +354,7 @@ def _hand_realized_delta(judge_log_hand, perspective):
         if isinstance(display, dict) and "final_result" in display:
             fr = display["final_result"]
             if isinstance(fr, list) and len(fr) > perspective:
-                wc = fr[perspective].get("win_chips", 0)
+                wc = fr[perspective].get("win_chips", 0) if isinstance(fr[perspective], dict) else 0
                 try:
                     return float(wc)
                 except (TypeError, ValueError):
@@ -302,29 +380,52 @@ def split_log_into_hands(full_log):
     finished = False
 
     for entry in full_log:
-        current.append(entry)
         out = entry.get("output") if isinstance(entry, dict) else None
-        if out is None or not isinstance(out, dict):
-            continue
-        display = out.get("display")
-        if not isinstance(display, dict):
-            continue
-        md = display.get("matchdata")
-        hand_idx = md.get("hand") if isinstance(md, dict) else None
-        if hand_idx is None:
-            continue
+        is_settlement_frame = (
+            isinstance(out, dict)
+            and isinstance(out.get("display"), dict)
+            and (isinstance(out["display"].get("temp_result"), list)
+                 or out.get("command") == "finish")
+        )
+
+        # If we haven't started any segment yet, this entry opens hand 0.
         if current_hand_idx is None:
-            current_hand_idx = hand_idx
-        if hand_idx != current_hand_idx:
-            # Hand advanced: the current segment (up to but not including the
-            # first entry of the new hand) is one hand. Re-attach this entry to
-            # the next segment.
-            new_current = [current.pop()]
+            current.append(entry)
+            if isinstance(out, dict) and isinstance(out.get("display"), dict):
+                md = out["display"].get("matchdata")
+                current_hand_idx = md.get("hand") if isinstance(md, dict) else None
+            continue
+
+        # Determine this entry's hand index, if it carries one.
+        hand_idx = None
+        if isinstance(out, dict) and isinstance(out.get("display"), dict):
+            md = out["display"].get("matchdata")
+            hand_idx = md.get("hand") if isinstance(md, dict) else None
+
+        if hand_idx is not None and hand_idx != current_hand_idx and not is_settlement_frame:
+            # Genuine first action frame of a new hand. Flush the current
+            # segment as a complete hand, then start the new segment here.
             hands.append(current)
-            current = new_current
+            current = []
             current_hand_idx = hand_idx
+
+        if is_settlement_frame and hand_idx is not None and hand_idx != current_hand_idx:
+            # Settlement frame for the CURRENT hand, but judge.py already
+            # incremented `hand` to the next number before rendering it
+            # (judge.py:577-578 → make_request_json attaches temp_result to the
+            # next hand's first display). Attach it to the current segment
+            # WITHOUT advancing current_hand_idx, so the real next-hand action
+            # frame still triggers the boundary above.
+            current.append(entry)
+            continue
+
+        current.append(entry)
+        if out is not None and isinstance(out, dict) and isinstance(out.get("display"), dict):
+            md = out["display"].get("matchdata")
+            if isinstance(md, dict) and md.get("hand") is not None and not is_settlement_frame:
+                current_hand_idx = md["hand"]
         # Detect finish (last hand)
-        if out.get("command") == "finish":
+        if out is not None and isinstance(out, dict) and out.get("command") == "finish":
             finished = True
 
     if current:
@@ -335,10 +436,37 @@ def split_log_into_hands(full_log):
 def aivat_adjust_game(full_log, perspective=0, n_sims=2000, seed=None):
     """Sum of AIVAT-adjusted per-hand deltas for one full game log, for
     `perspective` player. This replaces summing raw win_chips across hands."""
+    hands = split_log_into_hands(full_log)
+    if not hands:
+        return 0.0
+
+    # temp_result gives per-hand deltas for all settled nonterminal hands. The
+    # game-finish final_result is cumulative total_win_chips, so derive the
+    # terminal hand's realized delta by subtracting prior per-hand deltas before
+    # handing it to aivat_adjust_hand. This prevents double-counting the whole
+    # game's running total on the last nonallin hand.
+    realized = [_hand_realized_delta(hand_seg, perspective) for hand_seg in hands]
+    final_total = None
+    for entry in reversed(hands[-1]):
+        out = entry.get("output") if isinstance(entry, dict) else None
+        display = out.get("display") if isinstance(out, dict) else None
+        if isinstance(display, dict):
+            fr = display.get("final_result")
+            if isinstance(fr, list) and len(fr) > perspective:
+                wc = fr[perspective].get("win_chips", 0) if isinstance(fr[perspective], dict) else 0
+                try:
+                    final_total = float(wc)
+                    break
+                except (TypeError, ValueError):
+                    pass
+    if final_total is not None:
+        realized[-1] = final_total - sum(realized[:-1])
+
     total = 0.0
-    for hand_seg in split_log_into_hands(full_log):
+    for hand_seg, realized_delta in zip(hands, realized):
         total += aivat_adjust_hand(hand_seg, perspective=perspective,
-                                   n_sims=n_sims, seed=seed)
+                                   n_sims=n_sims, seed=seed,
+                                   realized_delta=realized_delta)
     return total
 
 
