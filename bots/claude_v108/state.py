@@ -62,7 +62,7 @@ def classify_preflop_hand(my_cards):
       'mid_pair'         - 77, 88, 99
       'small_pair'       - 22-66
       'big_cards'        - AK, AQ (and AJo)
-      'broadway_suited'  - KQs, KJs, QJs, QTs, JTs (suited both >=10; donor: v89)
+      'broadway_suited'  - KQs, KJs, QJs, QTs, JTs (suited both >=10)
       'suited_connector' - suited connectors/gappers 56s+
       'suited_ace'       - A2s-ATs (non-broadway suited aces)
       'playable'         - offsuit broadways (KQ/KJ/QJ), misc suited
@@ -84,13 +84,12 @@ def classify_preflop_hand(my_cards):
     # Non-pair hands
     if high == 14 and low >= 12:        # AK, AQ
         return "big_cards"
+    # Broadway suited (KQs/KJs/QJs/QTs/JTs): suited both cards in T-K range.
+    # Exclude A-high suited (caught by suited_ace below) so AJs/ATs stay suited_ace.
+    if suited and 11 <= high <= 13 and low >= 10:
+        return "broadway_suited"
     if suited and high == 14:           # A2s-AJs (AK caught above)
         return "suited_ace"
-    # broadway_suited (crossover from v89): KQs, KJs, QJs, QTs, JTs — strong
-    # implied-odds hands that play well multi-street. Distinct from generic
-    # 'playable' because suited broadways have nut-making potential.
-    if suited and high >= 11 and low >= 10:
-        return "broadway_suited"
     if suited and gap <= 2 and low >= 5 and high <= 13:  # suited connectors/gappers
         return "suited_connector"
     if high == 14 and low >= 11:        # AJo (offsuit big ace)

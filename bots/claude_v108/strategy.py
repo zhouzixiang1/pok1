@@ -31,9 +31,6 @@ from strategy_helpers import (
     postflop_call_margin, realized_postflop_equity,
     sizing_exploit_adjustment, bluff_heavy_call_widen,
     exploit_dispatch, river_value_raise_tier,
-    # v108 mutation: facing_barrel_continuation removed (POSSIBLY EXHAUSTED, 0.06-capped
-    # unvalidated defensive nudge; downstream line/paired/bluff-catch primitives absorb
-    # multi-street barrel detection).
 )
 
 
@@ -368,9 +365,6 @@ def _sb_open_bucket_action(hand_cat, opponent_model, trash_hand):
     if hand_cat in ('premium', 'strong_pair', 'mid_pair', 'big_cards'):
         return 'raise'
 
-    # broadway_suited (KQs/KJs/QJs/QTs/JTs — crossover from v89) plays as an
-    # implied-odds hand: nut straight/flush potential justifies open-raising
-    # or calling vs pressure. Grouped with suited connectors/aaces.
     implied = hand_cat in ('small_pair', 'suited_ace', 'suited_connector', 'broadway_suited')
     marginal = hand_cat == 'playable'
 
@@ -405,9 +399,13 @@ def _bb_vs_raise_bucket_action(hand_cat, opponent_model, pot_odds, preflop_stren
 
     if hand_cat in ('premium', 'big_cards') and not trash_hand:
         return 'value_raise'
-    # broadway_suited joins the implied-odds call/bluff-3bet pool — it flops
-    # top-pair-good-kicker and nut draws often enough to defend vs opens.
-    if hand_cat in ('suited_connector', 'suited_ace', 'small_pair', 'broadway_suited') and not trash_hand:
+    # Broadway suited (KQs/KJs/QJs/QTs/JTs) — implied-odds hands that play well
+    # in position vs a single raise; call with adequate pot odds.
+    if hand_cat == 'broadway_suited' and not trash_hand:
+        if pot_odds <= 0.36 or win_rate >= pot_odds - 0.02:
+            return 'call'
+        return 'fold'
+    if hand_cat in ('suited_connector', 'suited_ace', 'small_pair') and not trash_hand:
         if loose_opener and high_fold:
             return 'bluff_raise'
         if pot_odds <= 0.34 or win_rate >= pot_odds - 0.01:
@@ -524,7 +522,10 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
             )
             if raise_amount is not None:
                 return raise_amount
-        # Call with most limp-range hands
+        # Call with most limp-range hands, including broadway suited (KQs/JTs etc.)
+        hand_cat_iso = classify_preflop_hand(req['my_cards'])
+        if hand_cat_iso == 'broadway_suited' and not trash_hand:
+            return 0
         if preflop_strength >= 0.34 or win_rate >= pot_odds_iso - 0.03:
             return 0
         return -1
@@ -929,11 +930,11 @@ def get_action(req, requests):
                 line_profile, value_profile, made_strength, draw_strength,
                 round_idx, opponent_model,
             )
-            # NOTE: facing_barrel_continuation (0.06-capped fold signal) removed in v108.
-            # Per experience pool it was POSSIBLY EXHAUSTED: cap of 0.06 never forced a
-            # fold and downstream line_reading/paired-board/bluff-catch primitives
-            # already absorb multi-street barrel detection. Cutting it simplifies the
-            # call-margin stack and removes an unvalidated defensive nudge.
+            # NOTE: facing_barrel_continuation removed — the 0.06-capped fold
+            # signal was absorbed by downstream line_reading/paired/bluff-catch
+            # modules (defensive-guard accumulation is exhausted per experience
+            # pool). Rely on line_strength, check_resistance, paired_board, and
+            # bluff_heavy_call_widen instead.
             if round_idx == 3 and made_strength < 0.40 and not (blocker_profile and blocker_profile["eligible"]):
                 call_margin += 0.04
             if round_idx == 3 and paired_board_profile is not None and paired_board_profile["fold_to_raise"]:
