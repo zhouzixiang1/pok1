@@ -250,6 +250,31 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     except Exception as e:
         log.warning("Battle experience read failed: %s", e)
 
+    # Phase 4: 10%-elite periodic re-evaluation (QD diversity housekeeping).
+    # Every QD_REEVAL_EVERY generations, mark the top-fitness niche occupants for
+    # daemon single-eval re-evaluation by writing them into the priority eval
+    # queue. This prevents stale-elite lock-in (a niche occupied by a bot whose
+    # fitness was measured long ago). NO fire-and-forget here — the daemon is
+    # already asynchronous and consumes priority_eval.json on its own loop.
+    # Best-effort: any failure is observed and swallowed (idempotent phase).
+    try:
+        from qd_fitness import QD_REEVAL_EVERY, reevaluate_top_elites
+        next_v_planned = current_v + 1
+        if next_v_planned > 0 and next_v_planned % QD_REEVAL_EVERY == 0:
+            from map_elites import read_behavior_archive
+            archive = read_behavior_archive()
+            elites = reevaluate_top_elites(archive)
+            if elites:
+                log.info("QD elite re-eval: %d elites queued (%s)",
+                         len(elites), elites[:3])
+                log_system_event(
+                    "pipeline.qd_elite_reeval", "info",
+                    f"v{next_v_planned}: {len(elites)} elites queued for re-eval",
+                    {"version": next_v_planned, "elites": elites},
+                )
+    except Exception as e:
+        log.warning("QD elite re-eval trigger failed (non-fatal): %s", e)
+
     return GenerationContext(
         current_v=current_v,
         next_v=current_v + 1,
@@ -772,5 +797,28 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
         log_system_event(
             "pipeline.exploitability_probe_failed", "error",
             f"v{ctx.next_v} probe launch failed: {e}",
+            {"version": ctx.next_v, "error": str(e)[:300]},
+        )
+
+    # Phase 4: Async QD k=3 fitness evaluation (FIRE-AND-FORGET background).
+    #
+    # Re-evaluates the just-committed candidate v{k} against a few opponents k=3
+    # times and merges the median fitness into behavior_archive.json. Same
+    # fire-and-forget discipline as the exploitability probe above: direct
+    # code-layer call (NOT an MCP tool), single-flight guard, daemon thread,
+    # thread-safe logging only. Result feeds the NEXT generation's Master via
+    # the archive (~1 generation latency, acceptable for a lagging diversity
+    # signal). Failure here MUST NOT abort post_generation_cleanup — every exit
+    # in launch_qd_eval is observed via a system_event.
+    try:
+        if ctx.next_v > 0:
+            from qd_async_eval import launch_qd_eval
+            launch_qd_eval(ctx.next_v, ctx.source_v, k=3, n_games=8,
+                           ui=ui, shutdown_mgr=shutdown_mgr)
+    except Exception as e:
+        log.warning("QD async eval launch failed: %s\n%s", e, traceback.format_exc())
+        log_system_event(
+            "pipeline.qd_eval_failed", "error",
+            f"v{ctx.next_v} QD eval launch failed: {e}",
             {"version": ctx.next_v, "error": str(e)[:300]},
         )

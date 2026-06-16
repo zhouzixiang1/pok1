@@ -41,6 +41,18 @@ from logging_config import get_logger
 log = get_logger("tool_eval")
 
 
+# Phase 4: opponent reasons whose matchups are TELEMETRY-ONLY (never block a
+# commit, never contribute to the aggregate net-chips regression gate). The
+# nemesis probe (Phase 3) and the PSRO MixtureBot meta-opponent (Phase 4) both
+# degrade non-blocking so an early MixtureBot collapse cannot strand a commit.
+_NONBLOCKING_REASONS = {"nemesis_probe", "psro_meta_opponent"}
+
+
+def _is_nonblocking_reason(reason):
+    """True if a matchup with this reason is telemetry-only (never blocks)."""
+    return reason in _NONBLOCKING_REASONS
+
+
 # ──────────────────────────────────────────────
 # Precommit eval tuning constants
 # ──────────────────────────────────────────────
@@ -66,6 +78,82 @@ PRECOMMIT_SEQUENTIAL_EARLY_STOP = True
 CS_ALPHA = 0.05
 # CS value range is imported from eval_stats (mirror net-chips ∈ [-40000, +40000]).
 _CS_R = NET_CHIPS_RANGE
+
+
+# ──────────────────────────────────────────────
+# Phase 4: PSRO MixtureBot opponent (feature-flagged)
+# ──────────────────────────────────────────────
+MIXTURE_BOT_NAME = "mixture_main"
+MIXTURE_MAX_POPULATION = 5  # max sub-bots in the mixture meta-distribution
+
+
+def _maybe_add_mixture_opponent(v: int, source_v: int):
+    """Build + persist a PSRO mixture_config.json and return the opponent entry,
+    or None if anything is unavailable (PSRO MVP degrades silently to no-op).
+
+    Returns a dict {"name": "mixture_main", "reason": "psro_meta_opponent"} so
+    _bot_main("mixture_main") resolves the engine subprocess path. The
+    matchup is telemetry-only (reason handled by _is_nonblocking_reason).
+    """
+    try:
+        from pathlib import Path
+        from evolution_infra import BOTS_DIR
+        import psro_meta_solver as psro
+        mixture_main = BOTS_DIR / MIXTURE_BOT_NAME / "main.py"
+        if not mixture_main.exists():
+            log.info("PSRO: mixture_main/main.py missing, skipping meta-opponent")
+            return None
+        # Load H2H + pick a small top population (excluding the candidate v).
+        from tool_helpers import _load_h2h_data
+        h2h = _load_h2h_data() or {}
+        try:
+            active = get_active_bots() or []
+        except Exception:
+            active = []
+        candidate = f"claude_v{v}"
+        population = [b for b in active if b != candidate][:MIXTURE_MAX_POPULATION]
+        if len(population) < 2:
+            log.info("PSRO: population < 2, skipping meta-opponent")
+            return None
+        # Resolve absolute main.py paths.
+        bot_paths = {}
+        for b in population:
+            try:
+                bv = int(str(b).replace("claude_v", ""))
+            except (ValueError, TypeError):
+                continue
+            d = get_bot_dir(bv)
+            m = d / "main.py"
+            if m.exists():
+                bot_paths[b] = str(m)
+        if len(bot_paths) < 2:
+            log.info("PSRO: <2 resolvable sub-bots, skipping meta-opponent")
+            return None
+        cfg = psro.build_mixture_config(
+            h2h, list(bot_paths.keys()), bot_paths, method="fp", iterations=2000
+        )
+        if not cfg.get("strategy_weights"):
+            log.info("PSRO: empty meta weights, skipping meta-opponent")
+            return None
+        # Persist config beside mixture_main/main.py (best-effort; failure -> skip).
+        cfg_path = BOTS_DIR / MIXTURE_BOT_NAME / "mixture_config.json"
+        try:
+            from evolution_infra import write_locked_json
+            write_locked_json(cfg_path, cfg)
+        except Exception as e:
+            log.warning("PSRO: mixture_config.json write failed: %s", e)
+            return None
+        log_system_event(
+            "pipeline.psro_mixture_opponent_added", "info",
+            f"v{v}: PSRO MixtureBot meta-opponent injected "
+            f"({len(cfg['strategy_weights'])} sub-bots, weights={cfg['strategy_weights']})",
+            {"version": v, "source_v": source_v,
+             "weights": cfg["strategy_weights"]},
+        )
+        return {"name": MIXTURE_BOT_NAME, "reason": "psro_meta_opponent"}
+    except Exception as e:
+        log.warning("PSRO: mixture opponent setup failed: %s", e)
+        return None
 
 
 # ──────────────────────────────────────────────
@@ -131,10 +219,11 @@ def _worst_precommit_opponent(matchups, blockers):
         best = None
         best_key = None
         for m in matchups:
-            # Phase 3: skip nemesis_probe matchups when attributing a failure —
-            # their losses are telemetry-only and must not be surfaced as the
-            # "worst opponent" the worker should target.
-            if m.get("reason") == "nemesis_probe":
+            # Phase 3/4: skip telemetry-only matchups (nemesis_probe,
+            # psro_meta_opponent) when attributing a failure — their losses are
+            # telemetry-only and must not be surfaced as the "worst opponent" the
+            # worker should target.
+            if _is_nonblocking_reason(m.get("reason")):
                 continue
             opp = m.get("opponent")
             losses = int(m.get("losses", 0) or 0)
@@ -228,6 +317,24 @@ async def run_precommit_eval(args):
         parent2_main = _bot_main(parent2_name)
         if parent2_main.exists() and not any(o["name"] == parent2_name for o in opponents):
             opponents.append({"name": parent2_name, "reason": "crossover_parent_b"})
+
+    # Phase 4: PSRO MixtureBot meta-opponent (FEATURE FLAG, default OFF).
+    # When PSRO_ENABLED, inject bots/mixture_main as a TELEMETRY-ONLY opponent
+    # (reason="psro_meta_opponent", handled by _is_nonblocking_reason above so a
+    # MixtureBot collapse can never block the commit). The engine sees
+    # mixture_main as a standard subprocess bot on the bot1 side — ZERO change to
+    # the 2-player Popen contract of engine/battle.py. OFF = this block is a
+    # no-op, byte-identical precommit path. The mixture_config.json is written
+    # here from a PSRO meta-solver over the top population + H2H payoff.
+    try:
+        from evolution_infra import PSRO_ENABLED
+    except Exception:
+        PSRO_ENABLED = False
+    if PSRO_ENABLED:
+        _mixture_opp = _maybe_add_mixture_opponent(v, source_v)
+        if _mixture_opp is not None:
+            opponents.append(_mixture_opp)
+
     if not opponents:
         blockers.append({"reason": "no_opponents", "details": "No parent/top/H2H opponents with main.py found."})
     all_opponents = list(opponents)  # preserve full list for result reporting
@@ -344,7 +451,7 @@ async def run_precommit_eval(args):
             missing_opponents = []
             for job_id, item in job_id_to_opponent.items():
                 opponent = item["name"]
-                _is_nemesis = item.get("reason") == "nemesis_probe"
+                _is_nemesis = _is_nonblocking_reason(item.get("reason"))
                 if job_id in collected_results:
                     res = collected_results[job_id]
                     matchup = {
@@ -476,7 +583,7 @@ async def run_precommit_eval(args):
             the outer aggregation loop below (which checks reason too).
             """
             opponent = item["name"]
-            _is_nemesis = item.get("reason") == "nemesis_probe"
+            _is_nemesis = _is_nonblocking_reason(item.get("reason"))
             opponent_main = _bot_main(opponent)
             matchup = {
                 "opponent": opponent,
@@ -688,7 +795,7 @@ async def run_precommit_eval(args):
         for matchup in matchup_results:
             item_blockers = matchup.pop("blockers", [])
             blockers.extend(item_blockers)
-            _is_nemesis = matchup.get("reason") == "nemesis_probe"
+            _is_nemesis = _is_nonblocking_reason(matchup.get("reason"))
             # Phase 3: nemesis W/L/net-chips stay on the matchup dict for
             # telemetry but are NOT pooled into the gate totals or the
             # aggregate regression bootstrap (a nemesis collapse must not be

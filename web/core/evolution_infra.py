@@ -13,6 +13,14 @@ import shutil
 import subprocess
 import re
 import asyncio
+
+
+# Phase 4 feature flag (default OFF). PSRO = Pipeline Policy Response Operator
+# MVP: when enabled, a MixtureBot (bots/mixture_main/) meta-opponent is injected
+# as a telemetry-only opponent in run_precommit_eval. OFF = byte-identical
+# precommit path (no mixture_main opponent), guaranteeing zero regression for
+# the engine/2-player contract. Toggle via env var POK_PSRO_ENABLED=1.
+PSRO_ENABLED = os.environ.get("POK_PSRO_ENABLED", "0") == "1"
 import fcntl
 import time
 from contextlib import contextmanager

@@ -194,16 +194,29 @@ def build_behavior_archive(replays_dir, active_bots, h2h_winrates=None):
             fitness = float(fitness)
         except (TypeError, ValueError):
             fitness = 0.5
+        # Phase 4: single-eval entry. eval_mode="single" marks this as the
+        # daemon-background-battle fitness (one sample). A k=3 re-evaluated
+        # candidate (written by qd_async_eval's worker) carries fitness_median
+        # + fitness_samples + eval_mode="k3"; the merge comparison below prefers
+        # fitness_median when BOTH entries have it (like-for-like), otherwise
+        # falls back to the scalar fitness (backward compatible with v1 archives).
+        new_entry = {
+            "bot": bot,
+            "version": _bot_version(bot),
+            "fitness": round(fitness, 4),
+            "bc": bc,
+            "last_eval": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "eval_mode": "single",
+            "fitness_median": None,
+            "fitness_samples": None,
+        }
         existing = niches.get(key)
-        # MAP-Elites: keep the max-fitness bot per niche.
-        if existing is None or fitness > existing.get("fitness", 0.5):
-            niches[key] = {
-                "bot": bot,
-                "version": _bot_version(bot),
-                "fitness": round(fitness, 4),
-                "bc": bc,
-                "last_eval": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            }
+        if existing is None or _better_niche_occupant(new_entry, existing):
+            # Preserve a prior k=3 entry's richer fields if this single-eval entry
+            # is NOT better — but when the new entry wins, a single-eval rebuild
+            # legitimately overwrites with the fresh fingerprint/fitness. The k=3
+            # median survives only if it is still the better occupant.
+            niches[key] = new_entry
     return {
         "version": 1,
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -215,10 +228,61 @@ def build_behavior_archive(replays_dir, active_bots, h2h_winrates=None):
     }
 
 
-def write_behavior_archive(replays_dir, active_bots, h2h_winrates=None):
-    """Recompute and persist the behavior archive. Best-effort, never raises."""
+def _niche_fitness_value(entry):
+    """Comparable fitness for a niche entry.
+
+    Prefers fitness_median (k=3 median, lower-variance) when present; else the
+    scalar fitness. Returns a float (0.5 fallback for malformed entries)."""
     try:
+        med = entry.get("fitness_median")
+        if med is not None:
+            return float(med)
+        return float(entry.get("fitness", 0.5))
+    except (TypeError, ValueError):
+        return 0.5
+
+
+def _better_niche_occupant(candidate, incumbent):
+    """True if `candidate` should replace `incumbent` as a niche's occupant.
+
+    Phase 4 fairness rule: compare LIKE-FOR-LIKE.
+      - both k3 (fitness_median present on both): compare medians.
+      - both single: compare scalar fitness.
+      - mixed (one k3, one single): compare the median (k3) against the single
+        scalar. This is advisory-only cross-tier comparison — k3 median has
+        lower variance, so a k3 entry that beats a single entry on the scalar
+        comparison is a defensible occupant. The comparison value is taken from
+        _niche_fitness_value (median when present, else scalar), so a k3 entry's
+        median competes directly against a single entry's scalar.
+    Strictly-greater keeps the incumbent on ties (stable, no flapping).
+    """
+    return _niche_fitness_value(candidate) > _niche_fitness_value(incumbent)
+
+
+def write_behavior_archive(replays_dir, active_bots, h2h_winrates=None):
+    """Recompute and persist the behavior archive. Best-effort, never raises.
+
+    Phase 4: preserves any k=3 median fields written by the qd_async_eval worker
+    for bots whose niche occupant is unchanged by this rebuild. A full rebuild
+    re-derives every bot's fitness as single-eval (one sample from h2h), which
+    would otherwise clobber the lower-variance k=3 median a candidate earned on
+    commit. We re-attach the prior k=3 fields when the occupant bot matches.
+    """
+    try:
+        prior = read_behavior_archive()
+        prior_niches = (prior or {}).get("niches", {}) if isinstance(prior, dict) else {}
         archive = build_behavior_archive(replays_dir, active_bots, h2h_winrates)
+        niches = archive.get("niches", {})
+        for key, entry in niches.items():
+            prior_entry = prior_niches.get(key)
+            if (isinstance(prior_entry, dict)
+                    and prior_entry.get("bot") == entry.get("bot")
+                    and prior_entry.get("eval_mode") == "k3"
+                    and prior_entry.get("fitness_median") is not None):
+                # Re-attach k=3 fields so the median survives a daemon rebuild.
+                entry["fitness_median"] = prior_entry["fitness_median"]
+                entry["fitness_samples"] = prior_entry.get("fitness_samples")
+                entry["eval_mode"] = "k3"
         write_locked_json(BEHAVIOR_ARCHIVE_FILE, archive)
         return archive
     except Exception:
