@@ -315,6 +315,100 @@ class TestSPRT:
 
 
 # ──────────────────────────────────────────────
+# B2. AgentAssay SPRT aggregate (run_decision_tests_sprt_aggregate)
+#     — the gate-ready wrapper that the quality gate consumes when
+#     DECISION_TEST_SPRT_ENABLED is True.
+# ──────────────────────────────────────────────
+
+def _write_scenarios_file(monkeypatch, tmp_path, scenarios):
+    """Point decision_tester at a tmp scenarios file with the given list."""
+    f = tmp_path / "test_scenarios.json"
+    f.write_text(json.dumps(scenarios), encoding="utf-8")
+    # Also neutralize the dynamic-scenarios merge so it does not pull in real data.
+    monkeypatch.setattr(dt, "SCENARIOS_FILE", f)
+    monkeypatch.setattr(dt, "load_dynamic_scenarios", lambda: [])
+    return f
+
+
+class TestSPRTAggregate:
+    def test_all_pass_aggregates_to_pass(self, monkeypatch, tmp_path):
+        """Every scenario's SPRT accepts H0 → aggregate pass_rate 1.0, no
+        critical_failures, sprt_decisions populated per scenario."""
+        _write_scenarios_file(monkeypatch, tmp_path, [
+            {"id": "s1", "input": {}, "severity": "critical"},
+            {"id": "s2", "input": {}, "severity": "advisory"},
+        ])
+        rng = random.Random(7)
+        monkeypatch.setattr(dt, "run_single_scenario",
+                            lambda _b, _s: (rng.random() < 0.95, "ok"))
+
+        r = dt.run_decision_tests_sprt_aggregate("fake")
+
+        # Same dict shape as run_decision_tests_detail.
+        for k in ("pass_rate", "passed", "total", "critical_passed",
+                  "critical_total", "critical_failures", "failures", "scenarios"):
+            assert k in r, f"missing key {k}"
+        assert r["total"] == 2
+        assert r["passed"] == 2
+        assert r["pass_rate"] == 1.0
+        assert r["critical_passed"] == 1 and r["critical_total"] == 1
+        assert r["critical_failures"] == []
+        # Plus the SPRT-specific telemetry list.
+        assert len(r["sprt_decisions"]) == 2
+        assert all(d["decision"] == "PASS" for d in r["sprt_decisions"])
+
+    def test_critical_fail_blocks_aggregate(self, monkeypatch, tmp_path):
+        """A critical scenario whose SPRT accepts H1 → critical_failures non-empty,
+        aggregate pass_rate < 1.0, recorded in failures."""
+        _write_scenarios_file(monkeypatch, tmp_path, [
+            {"id": "preflop_aa_first_act", "input": {}, "severity": "critical"},
+            {"id": "s2", "input": {}, "severity": "advisory"},
+        ])
+        # Critical always fails (p=0.10 < p1=0.60 → sprt_h1 FAIL fast);
+        # advisory always passes.
+        calls = {"n": 0}
+
+        def fake(_b, _s):
+            calls["n"] += 1
+            # First scenario (critical) fails, rest pass.
+            ok = calls["n"] > 3
+            return (ok, "ok" if ok else "fail")
+
+        monkeypatch.setattr(dt, "run_single_scenario", fake)
+
+        r = dt.run_decision_tests_sprt_aggregate("fake")
+
+        crit = [c for c in r["critical_failures"] if c["id"] == "preflop_aa_first_act"]
+        assert crit, "critical failure must be recorded"
+        assert any(f["id"] == "preflop_aa_first_act" for f in r["failures"])
+        assert r["passed"] < r["total"]
+
+    def test_empty_scenarios_returns_safe_defaults(self, monkeypatch, tmp_path):
+        """No scenarios → safe-default dict (pass_rate 1.0, zero counts), matching
+        run_decision_tests_detail's empty-path contract so the gate never blocks
+        on a missing scenarios file."""
+        _write_scenarios_file(monkeypatch, tmp_path, [])
+        r = dt.run_decision_tests_sprt_aggregate("fake")
+        assert r["total"] == 0
+        assert r["pass_rate"] == 1.0
+        assert r["critical_failures"] == []
+        assert r["sprt_decisions"] == []
+
+
+# ──────────────────────────────────────────────
+# B3. tool_gates flag default + OFF-path parity
+#     — DECISION_TEST_SPRT_ENABLED defaults False so the gate uses the classic
+#       run_decision_test_details path (zero-regression). This pins the default.
+# ──────────────────────────────────────────────
+
+def test_decision_test_sprt_flag_defaults_off():
+    """The SPRT gate is opt-in and defaults OFF (zero-regression). Flipping it
+    is a deliberate gray-run decision, not the default."""
+    import tool_gates
+    assert tool_gates.DECISION_TEST_SPRT_ENABLED is False
+
+
+# ──────────────────────────────────────────────
 # C. Behavior fingerprints
 # ──────────────────────────────────────────────
 

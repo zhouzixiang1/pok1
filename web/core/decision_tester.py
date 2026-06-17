@@ -772,7 +772,7 @@ def run_decision_tests_sprt(bot_path, scenario, p0=SPRT_P0, p1=SPRT_P1,
 
     Returns:
         {
-          "decision": "PASS"|"FAIL"|"UNDECIDED",
+          "decision": "PASS"|"FAIL",   # never UNDECIDED — truncation defaults to PASS
           "n_trials": int,
           "pass_rate": float,        # empirical pass rate over the trials run
           "passes": int,
@@ -786,7 +786,7 @@ def run_decision_tests_sprt(bot_path, scenario, p0=SPRT_P0, p1=SPRT_P1,
     bound_hi, bound_lo = _sprt_bounds(alpha=alpha, beta=beta)
     outcomes = []
     details = []
-    decision = "UNDECIDED"
+    decision = "UNDECIDED"  # pre-loop sentinel; always overwritten (PASS or FAIL) before return
     final_rule = "n_max_default_pass"  # default if no boundary crossing occurs
 
     # Optionally vary the input so hand-index-sensitive bots can diverge across
@@ -844,6 +844,130 @@ def run_decision_tests_sprt(bot_path, scenario, p0=SPRT_P0, p1=SPRT_P1,
         "bound_lo": bound_lo,
         "final_rule": final_rule,
         "details": details,
+    }
+
+
+def run_decision_tests_sprt_aggregate(bot_path, extra_scenarios=None,
+                                      p0=SPRT_P0, p1=SPRT_P1,
+                                      alpha=SPRT_ALPHA, beta=SPRT_BETA,
+                                      n_max=SPRT_N_MAX, seed=None):
+    """Aggregate Wald SPRT across ALL scenarios — the gate-ready wrapper.
+
+    run_decision_tests_sprt tests a SINGLE scenario under sequential resampling.
+    The quality gate (tool_gates.run_quality_gates) needs a verdict across the
+    full scenario suite. This function mirrors run_decision_tests_detail's
+    scenario loading/merging + per-scenario loop, but replaces the single-shot
+    run_single_scenario with run_decision_tests_sprt and rolls the per-scenario
+    PASS/FAIL decisions up into the SAME return dict shape that the gate
+    consumes (pass_rate / total / critical_passed / critical_total /
+    critical_failures / failures / scenarios), plus an `sprt_decisions` list for
+    telemetry.
+
+    A scenario "passes" iff its SPRT decision is PASS. The truncation default
+    (n_max reached without a boundary crossing) is presumptive PASS, preserving
+    the SPRT's type-I control — see run_decision_tests_sprt for rationale.
+
+    Args mirror run_decision_tests_detail(bot_path, extra_scenarios=...) plus
+    the SPRT knobs (p0/p1/alpha/beta/n_max/seed) which forward to each
+    per-scenario SPRT call.
+
+    Returns:
+        dict with the same keys as run_decision_tests_detail, plus:
+          "sprt_decisions": [ {id, decision, n_trials, pass_rate, final_rule}, ... ]
+    """
+    if not SCENARIOS_FILE.exists():
+        return {
+            "pass_rate": 1.0,
+            "passed": 0,
+            "total": 0,
+            "critical_passed": 0,
+            "critical_total": 0,
+            "critical_failures": [],
+            "failures": [],
+            "scenarios": [],
+            "sprt_decisions": [],
+        }
+
+    with open(SCENARIOS_FILE) as f:
+        scenarios = json.load(f)
+
+    # Same merge path as run_decision_tests_detail (persisted + runtime dynamic).
+    dynamic_from_file = load_dynamic_scenarios()
+    if dynamic_from_file:
+        scenarios = merge_dynamic_scenarios(scenarios, dynamic_from_file)
+    if extra_scenarios:
+        scenarios = merge_dynamic_scenarios(scenarios, extra_scenarios)
+
+    if not scenarios:
+        return {
+            "pass_rate": 1.0,
+            "passed": 0,
+            "total": 0,
+            "critical_passed": 0,
+            "critical_total": 0,
+            "critical_failures": [],
+            "failures": [],
+            "scenarios": [],
+            "sprt_decisions": [],
+        }
+
+    passed = 0
+    total = len(scenarios)
+    critical_passed = 0
+    critical_total = 0
+    scenario_results = []
+    failures = []
+    critical_failures = []
+    sprt_decisions = []
+
+    for scenario in scenarios:
+        sprt = run_decision_tests_sprt(
+            bot_path, scenario, p0=p0, p1=p1, alpha=alpha, beta=beta,
+            n_max=n_max, seed=seed,
+        )
+        ok = sprt.get("decision") == "PASS"
+        severity = scenario.get(
+            "severity",
+            "critical" if scenario.get("id") in CRITICAL_SCENARIO_IDS else "advisory",
+        )
+        details = (
+            f"SPRT {sprt.get('decision')} (n={sprt.get('n_trials')}, "
+            f"rate={sprt.get('pass_rate'):.2f}, rule={sprt.get('final_rule')})"
+        )
+        if ok:
+            passed += 1
+            if severity == "critical":
+                critical_passed += 1
+        elif severity == "critical":
+            critical_failures.append({"id": scenario["id"], "details": details})
+        if severity == "critical":
+            critical_total += 1
+        if not ok:
+            failures.append({"id": scenario["id"], "severity": severity, "details": details})
+        scenario_results.append({
+            "id": scenario["id"],
+            "severity": severity,
+            "passed": ok,
+            "details": details,
+        })
+        sprt_decisions.append({
+            "id": scenario["id"],
+            "decision": sprt.get("decision"),
+            "n_trials": sprt.get("n_trials"),
+            "pass_rate": sprt.get("pass_rate"),
+            "final_rule": sprt.get("final_rule"),
+        })
+
+    return {
+        "pass_rate": passed / total if total > 0 else 1.0,
+        "passed": passed,
+        "total": total,
+        "critical_passed": critical_passed,
+        "critical_total": critical_total,
+        "critical_failures": critical_failures,
+        "failures": failures,
+        "scenarios": scenario_results,
+        "sprt_decisions": sprt_decisions,
     }
 
 

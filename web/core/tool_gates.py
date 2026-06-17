@@ -36,6 +36,18 @@ from llm_failure import is_llm_infra_error, infra_payload
 import spot_analyzer
 
 
+# ── Phase 2: AgentAssay SPRT decision-test gate (feature-flagged) ──
+# When True, the decision-test quality gate uses run_decision_tests_sprt_aggregate
+# (per-scenario Wald SPRT with sequential early-stop) instead of the classic
+# single-shot run_decision_test_details. SPRT gives tighter type-I control for
+# stochastic LLM bots but has only been validated on synthetic unit tests, so the
+# default is OFF (zero-regression: byte-for-byte the classic path). Flip to True
+# only after a gray-run confirms the type-I rate on real generation traffic.
+# Mirrors the PRECOMMIT_SEQUENTIAL_EARLY_STOP flag convention (module constant,
+# not an env var).
+DECISION_TEST_SPRT_ENABLED = False
+
+
 def _record_quality_failure(gen, worker_id, role, error, **extra):
     """Record a quality gate rejection (reviewer/critic) to worker_failures.jsonl."""
     from evolution_core import WORKER_FAILURES_FILE, locked_file
@@ -194,7 +206,18 @@ async def run_quality_gates(args):
     # Combine both dynamic sources
     _all_dynamic = (dynamic_scenarios or []) + heuristic_scenarios
 
-    decision_detail = run_decision_test_details(bot_dir, extra_scenarios=_all_dynamic or None)
+    # Decision-test gate: classic single-shot path by default; optional Phase-2
+    # per-scenario SPRT aggregation when DECISION_TEST_SPRT_ENABLED. The SPRT
+    # path returns the SAME dict shape (pass_rate/total/critical_*/failures), so
+    # the downstream gate logic below is unchanged — only the per-scenario
+    # verdict source differs.
+    if DECISION_TEST_SPRT_ENABLED:
+        from decision_tester import run_decision_tests_sprt_aggregate
+        decision_detail = run_decision_tests_sprt_aggregate(
+            bot_dir, extra_scenarios=_all_dynamic or None
+        )
+    else:
+        decision_detail = run_decision_test_details(bot_dir, extra_scenarios=_all_dynamic or None)
     decision_rate = decision_detail.get("pass_rate", 0.0)
     decision_total = decision_detail.get("total", 0)
     critical_failures = decision_detail.get("critical_failures", [])
