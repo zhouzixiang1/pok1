@@ -36,6 +36,14 @@ from pathlib import Path
 from evolution_infra import RESULTS_DIR, read_locked_json, write_locked_json, REPLAY_DIR
 
 BEHAVIOR_ARCHIVE_FILE = RESULTS_DIR / "behavior_archive.json"
+# Incremental accumulator cache: {bot: {"pid0": <acc>, "pid1": <acc>}}. Stores
+# additive raw counters (NOT normalized ratios) so new replay files can be folded
+# in without re-reading the 4.2GB full history (fixes the daemon OOM leak where
+# _scan_behavior_fingerprints json.load'd ~1889 files every refresh).
+BEHAVIOR_ACC_FILE = RESULTS_DIR / ".behavior_acc.json"
+# Separate etag from bot_action_stats' .stats_etag.json to avoid cross-module
+# overwrite races (both modules would otherwise claim the same cache file).
+BEHAVIOR_ETAG_FILE = REPLAY_DIR / ".behavior_etag.json"
 
 # Discretization bin edges. A value exactly on an edge falls into the higher
 # bucket via bisect-style left semantics (bucket = #edges strictly <= value).
@@ -103,76 +111,120 @@ def _bot_version(name):
         return None
 
 
+def _load_acc_cache():
+    """Load the per-bot raw-counter accumulator cache. {} if missing/corrupt."""
+    try:
+        data = read_locked_json(BEHAVIOR_ACC_FILE)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+def _save_acc_cache(cache):
+    """Persist the accumulator cache (additive raw counters) atomically."""
+    try:
+        write_locked_json(BEHAVIOR_ACC_FILE, cache)
+    except Exception:
+        pass
+
+
 def _scan_behavior_fingerprints(replays_dir, active_bots):
     """Scan replay files and return {bot_name: fingerprint} for active bots.
 
-    Accumulates each bot's game logs across every replay it appeared in, then
-    builds ONE fingerprint per bot. Returns {} if the replay dir is missing or
-    empty. Active-set filter keeps the scan bounded and avoids archiving
-    graveyarded bots.
+    INCREMENTAL (fixes the daemon OOM leak): instead of json.load'ing the full
+    ~4.2GB replay history into memory every call, this keeps a persistent
+    per-bot accumulator (additive raw counters, NOT normalized ratios) in
+    .behavior_acc.json and an etag map of seen files in .behavior_etag.json.
 
-    NOTE on the known last_action misattribution (see module docstring): we use
-    extract_behavior_fingerprint as-is; the BCs are advisory only.
+    Each call:
+      1. diffs current replay etags vs cached -> changed + removed sets.
+      2. if files were REMOVED (reap happened) -> full recompute from scratch
+         (streaming, peak ~one file in memory). Rare (only on reap).
+      3. else fold only CHANGED/NEW files into accumulators (peak = one file's
+         games, then discarded). Steady-state: 0-few new replays.
+      4. derive finalized fingerprints from accumulators (normalize ratios).
+
+    Per bot we keep TWO accumulators (pid0 and pid1) since a bot may be bot0 in
+    some replays and bot1 in others; we pick the pid with larger total_actions
+    (matches the prior merged-games heuristic).
+
+    NOTE on the known last_action misattribution (see module docstring): BCs are
+    advisory only.
     """
-    from replay_analysis import extract_behavior_fingerprint
+    from replay_analysis import (
+        _accumulate_fingerprint_counts, _fingerprint_from_accumulator,
+        _new_fingerprint_accumulator,
+    )
+    from bot_action_stats import _replay_etag, _load_etag_cache, _save_etag_cache
 
     replays_dir = Path(replays_dir)
     if not replays_dir.exists():
         return {}
     active_set = set(active_bots)
-    # games_by_bot[name] = list of game dicts (each game's logs are scanned by
-    # extract_behavior_fingerprint which filters on player_id internally).
-    games_by_bot = {}
-    try:
-        entries = [e for e in replays_dir.iterdir()
-                   if e.suffix == ".json" and not e.name.startswith(".")]
-    except OSError:
-        return {}
-    for fp_path in entries:
-        try:
-            with open(fp_path, "r", encoding="utf-8") as f:
-                replay = json.load(f)
-        except Exception:
-            continue
-        bot0 = replay.get("bot0")
-        bot1 = replay.get("bot1")
-        games = replay.get("games", [])
-        if not games:
-            continue
-        if bot0 in active_set:
-            games_by_bot.setdefault(bot0, []).extend(games)
-        if bot1 in active_set:
-            games_by_bot.setdefault(bot1, []).extend(games)
 
+    cur_etag = _replay_etag(replays_dir)
+    prev_etag = _load_etag_cache(BEHAVIOR_ETAG_FILE)
+    cur_files = set(cur_etag)
+    prev_files = set(prev_etag)
+    changed = [f for f in cur_files if cur_etag[f] != prev_etag.get(f)]
+    removed = [f for f in prev_files if f not in cur_files]
+
+    acc_cache = _load_acc_cache()
+
+    if removed:
+        # A replay was deleted (reap). We can't tell which bot's data to subtract,
+        # so recompute accumulators from scratch. Still STREAMING (one file at a
+        # time, discard after), so peak memory = one file, not the full history.
+        acc_cache = {}
+        changed = list(cur_files)  # re-read everything once
+
+    # Fold changed/new files into accumulators (streaming: read one, fold, drop).
+    if changed:
+        for fname in changed:
+            fp_path = replays_dir / fname
+            try:
+                with open(fp_path, "r", encoding="utf-8") as f:
+                    replay = json.load(f)
+            except Exception:
+                continue
+            bot0 = replay.get("bot0")
+            bot1 = replay.get("bot1")
+            games = replay.get("games", [])
+            if not games:
+                continue
+            # bot0 -> pid0 accumulator, bot1 -> pid1 accumulator.
+            for bot, pid, pidx in ((bot0, "pid0", 0), (bot1, "pid1", 1)):
+                if bot not in active_set:
+                    continue
+                entry = acc_cache.setdefault(bot, {})
+                acc = entry.get(pid)
+                if acc is None:
+                    acc = _new_fingerprint_accumulator()
+                    entry[pid] = acc
+                _accumulate_fingerprint_counts(games, pidx, acc)
+            # games reference dropped here -> memory reclaimed (vs old .extend)
+
+        # Persist updated accumulators + etag so the next call is cheap.
+        _save_acc_cache(acc_cache)
+        _save_etag_cache(BEHAVIOR_ETAG_FILE, cur_etag)
+
+    # Derive finalized fingerprints from accumulators (normalize ratios).
     out = {}
-    for bot, games in games_by_bot.items():
+    for bot, entry in acc_cache.items():
+        if bot not in active_set:
+            continue
         try:
-            # The fingerprint needs to know which player_id this bot was. Since
-            # we merged games from multiple replays where the bot may have been
-            # pid 0 OR pid 1, run the fingerprint for BOTH ids and merge the raw
-            # action streams by concatenating. Simplest correct approach: run
-            # fingerprint once treating the bot as pid 0 across its own pooled
-            # games is WRONG when it was pid 1. Instead, accumulate per-replay
-            # per-pid then pass a combined games list — but fingerprint keys on
-            # player_id. So we compute per-pid fingerprints from the SAME pooled
-            # games (a given log entry only matches one pid) and sum the
-            # resulting frequency vectors via a re-extract.
-            # To keep this bounded, we just call fingerprint twice (pid 0 and
-            # pid 1) on the pooled games and take the union of action counts by
-            # re-deriving aggression/vpip from the richer one. We pick the pid
-            # whose total_actions is larger (the bot's actual seat in most
-            # replays). This is an approximation acceptable for advisory BC.
-            fp0 = extract_behavior_fingerprint(games, 0)
-            fp1 = extract_behavior_fingerprint(games, 1)
-            # Heuristic: the bot's real actions are whichever pid has more
-            # actions in the pooled set (it was that seat in most of its
-            # replays). For a single replay both pids have ~equal actions, so
-            # this merges sensibly.
-            out[bot] = fp0 if fp0["total_actions"] >= fp1["total_actions"] else fp1
+            acc0 = entry.get("pid0") or _new_fingerprint_accumulator()
+            acc1 = entry.get("pid1") or _new_fingerprint_accumulator()
+            # Pick the pid whose total_actions is larger (bot's actual seat in
+            # most of its replays) -- same heuristic as the old merged-games code.
+            chosen = acc0 if acc0["total_actions"] >= acc1["total_actions"] else acc1
+            out[bot] = _fingerprint_from_accumulator(chosen)
         except Exception:
             continue
     return out
-
 
 def build_behavior_archive(replays_dir, active_bots, h2h_winrates=None):
     """Build the full MAP-Elites archive from replays + fitness.

@@ -113,6 +113,125 @@ def _empty_fingerprint():
     }
 
 
+def _new_fingerprint_accumulator():
+    """A fresh, JSON-serializable raw-counter accumulator for behavior stats.
+
+    All fields are additive int/float so accumulators from different replay
+    files can be summed to reproduce a single-pass total. The finalized
+    fingerprint (normalized ratios) is derived from these raw counters by
+    _fingerprint_from_accumulator() — do NOT persist the normalized ratios,
+    they are non-additive.
+    """
+    return {
+        "counts": {s: {a: 0.0 for a in _FP_ACTIONS} for s in STREETS},
+        "raise_size_sum": {s: 0.0 for s in STREETS},
+        "raise_size_pot_sum": {s: 0.0 for s in STREETS},
+        "raise_size_count": {s: 0 for s in STREETS},
+        "global_raise": 0, "global_allin": 0, "global_call": 0,
+        "preflop_raise": 0, "preflop_call": 0, "preflop_total": 0,
+        "river_call": 0, "river_allin": 0, "river_total": 0,
+        "total_actions": 0,
+    }
+
+
+def _accumulate_fingerprint_counts(games, bot_idx, acc):
+    """Fold the action counts for ``bot_idx`` from ``games`` into ``acc`` in place.
+
+    This is the streaming core: it walks the replay log structure once and adds
+    to the mutable accumulator ``acc`` (a _new_fingerprint_accumulator() dict),
+    WITHOUT retaining the games. Memory peak = size of one game set, not the
+    full replay history. Counts are additive so calling this across multiple
+    files then normalizing yields the same fingerprint as a single big pass.
+    """
+    counts = acc["counts"]
+    raise_size_sum = acc["raise_size_sum"]
+    raise_size_pot_sum = acc["raise_size_pot_sum"]
+    raise_size_count = acc["raise_size_count"]
+    for g in games:
+        for log in g.get("logs", []):
+            out = log.get("output")
+            if not out or not isinstance(out, dict):
+                continue
+            display = out.get("display")
+            if not display or not isinstance(display, dict):
+                continue
+            action_info = display.get("last_action")
+            if not action_info or not isinstance(action_info, dict):
+                continue
+            if action_info.get("player_id") != bot_idx:
+                continue
+
+            n_community = len(display.get("public_cards", []))
+            street = _num_public_cards_to_street(n_community)
+            if street not in counts:
+                continue
+
+            act_val = action_info.get("action", 0)
+            acc["total_actions"] += 1
+            if act_val == -1:
+                counts[street]["fold"] += 1.0
+            elif act_val == -2:
+                counts[street]["allin"] += 1.0
+                acc["global_allin"] += 1
+                if street == "preflop":
+                    acc["preflop_raise"] += 1  # all-in is a voluntary preflop investment
+                elif street == "river":
+                    acc["river_allin"] += 1
+            elif act_val > 0:
+                counts[street]["raise"] += 1.0
+                acc["global_raise"] += 1
+                pot = display.get("pot", 0)
+                if pot and pot > 0:
+                    raise_size_sum[street] += float(act_val)
+                    raise_size_pot_sum[street] += float(act_val) / float(pot)
+                    raise_size_count[street] += 1
+                if street == "preflop":
+                    acc["preflop_raise"] += 1
+            elif act_val == 0:
+                counts[street]["call"] += 1.0
+                acc["global_call"] += 1
+                if street == "preflop":
+                    acc["preflop_call"] += 1
+                elif street == "river":
+                    acc["river_call"] += 1
+            # Tally per-street denominator for VPIP/call-down.
+            if street == "preflop":
+                acc["preflop_total"] += 1
+            elif street == "river":
+                acc["river_total"] += 1
+
+
+def _fingerprint_from_accumulator(acc):
+    """Derive the finalized (normalized) behavior fingerprint from a raw accumulator.
+
+    This is the non-additive normalization step: per-street freqs sum to 1,
+    aggression_factor / vpip / call_down_rate are ratios. Must be called AFTER
+    all files have been accumulated. acc is consumed read-only.
+    """
+    fp = _empty_fingerprint()
+    counts = acc["counts"]
+    raise_size_pot_sum = acc["raise_size_pot_sum"]
+    raise_size_count = acc["raise_size_count"]
+    fp["total_actions"] = acc["total_actions"]
+
+    for s in STREETS:
+        c = counts[s]
+        total = sum(c[a] for a in _FP_ACTIONS)
+        if total > 0:
+            fp["per_street_freq"][s] = {a: c[a] / total for a in _FP_ACTIONS}
+        if raise_size_count[s] > 0:
+            fp["per_street_avg_raise_x_pot"][s] = (
+                raise_size_pot_sum[s] / raise_size_count[s]
+            )
+    if fp["total_actions"] > 0:
+        fp["aggression_factor"] = (acc["global_raise"] + acc["global_allin"]) / (acc["global_call"] + 1)
+    if acc["preflop_total"] > 0:
+        fp["vpip"] = (acc["preflop_raise"] + acc["preflop_call"]) / acc["preflop_total"]
+    if acc["river_total"] > 0:
+        fp["call_down_rate"] = (acc["river_call"] + acc["river_allin"]) / acc["river_total"]
+    return fp
+
+
 def extract_behavior_fingerprint(games, bot_idx):
     """Build a structured behavior fingerprint for ``bot_idx`` from game logs.
 
@@ -134,95 +253,9 @@ def extract_behavior_fingerprint(games, bot_idx):
     per-street frequency map. fingerprint_distance treats None scalars as
     "ignore this feature" rather than as zero distance.
     """
-    fp = _empty_fingerprint()
-    # Raw per-street action counters.
-    counts = {s: defaultdict(float) for s in STREETS}
-    raise_size_sum = {s: 0.0 for s in STREETS}
-    raise_size_pot_sum = {s: 0.0 for s in STREETS}
-    raise_size_count = {s: 0 for s in STREETS}
-
-    global_raise = 0
-    global_allin = 0
-    global_call = 0
-    preflop_raise = 0
-    preflop_call = 0
-    preflop_total = 0
-    river_call = 0
-    river_allin = 0
-    river_total = 0
-
-    for g in games:
-        for log in g.get("logs", []):
-            out = log.get("output")
-            if not out or not isinstance(out, dict):
-                continue
-            display = out.get("display")
-            if not display or not isinstance(display, dict):
-                continue
-            action_info = display.get("last_action")
-            if not action_info or not isinstance(action_info, dict):
-                continue
-            if action_info.get("player_id") != bot_idx:
-                continue
-
-            n_community = len(display.get("public_cards", []))
-            street = _num_public_cards_to_street(n_community)
-            if street not in counts:
-                continue
-
-            act_val = action_info.get("action", 0)
-            fp["total_actions"] += 1
-            if act_val == -1:
-                counts[street]["fold"] += 1.0
-            elif act_val == -2:
-                counts[street]["allin"] += 1.0
-                global_allin += 1
-                if street == "preflop":
-                    preflop_raise += 1  # all-in is a voluntary preflop investment
-                elif street == "river":
-                    river_allin += 1
-            elif act_val > 0:
-                counts[street]["raise"] += 1.0
-                global_raise += 1
-                pot = display.get("pot", 0)
-                if pot and pot > 0:
-                    raise_size_sum[street] += float(act_val)
-                    raise_size_pot_sum[street] += float(act_val) / float(pot)
-                    raise_size_count[street] += 1
-                if street == "preflop":
-                    preflop_raise += 1
-            elif act_val == 0:
-                counts[street]["call"] += 1.0
-                global_call += 1
-                if street == "preflop":
-                    preflop_call += 1
-                elif street == "river":
-                    river_call += 1
-            # Tally per-street denominator for VPIP/call-down.
-            if street == "preflop":
-                preflop_total += 1
-            elif street == "river":
-                river_total += 1
-
-    # Normalize per-street frequencies to sum 1.
-    for s in STREETS:
-        c = counts[s]
-        total = sum(c[a] for a in _FP_ACTIONS)
-        if total > 0:
-            fp["per_street_freq"][s] = {a: c[a] / total for a in _FP_ACTIONS}
-        if raise_size_count[s] > 0:
-            fp["per_street_avg_raise_x_pot"][s] = (
-                raise_size_pot_sum[s] / raise_size_count[s]
-            )
-
-    if fp["total_actions"] > 0:
-        fp["aggression_factor"] = (global_raise + global_allin) / (global_call + 1)
-    if preflop_total > 0:
-        fp["vpip"] = (preflop_raise + preflop_call) / preflop_total
-    if river_total > 0:
-        fp["call_down_rate"] = (river_call + river_allin) / river_total
-
-    return fp
+    acc = _new_fingerprint_accumulator()
+    _accumulate_fingerprint_counts(games, bot_idx, acc)
+    return _fingerprint_from_accumulator(acc)
 
 
 def _fp_freq_vector(fp):

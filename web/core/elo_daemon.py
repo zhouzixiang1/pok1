@@ -493,10 +493,15 @@ def _refresh_action_stats_async(active_bots):
             # yet; it is a write-only MVP for population-diversity telemetry.
             # Wrapped in its own try/except so a failure here does not abort
             # the stats refresh mid-loop.
+            # Behavior archive (MAP-Elites, advisory diversity telemetry).
+            # RE-ENABLED 2026-06-17: _scan_behavior_fingerprints is now
+            # streaming+incremental (etag-tracked accumulator in
+            # .behavior_acc.json), so peak memory = one replay file (~2-8MB)
+            # instead of the full 4.2GB history. The old full-read version OOM-
+            # killed the daemon (rc=-9 every 2-3 min); the incremental fix
+            # resolves it. Still advisory-only (no reap/gate reads the archive).
             try:
                 from map_elites import write_behavior_archive
-                # h2h win rates are needed for fitness; compute once from the
-                # in-memory h2h if available, else let the helper fall back.
                 _wr_map = None
                 try:
                     from tool_helpers import compute_h2h_avg_winrate, _load_h2h_data
