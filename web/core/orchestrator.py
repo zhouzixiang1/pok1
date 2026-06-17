@@ -110,7 +110,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
         disallowed_tools=_BLOCKED_MCP_TOOLS,
         hooks=_make_precompact_hook(),
         max_turns=max_turns,
-        thinking={"type": "disabled"},  # P0: adaptive triggers claude_agent_sdk 0.2.91 signature-error deadlock
+        thinking={"type": "adaptive"},  # let Claude decide thinking depth (was disabled to dodge an old SDK signature bug; adaptive is now the documented default)
         **resume_kwargs,
     )
 
@@ -236,7 +236,14 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 # Do NOT clear session — preserve for resume after reset
                             else:
                                 _clear_orchestrator_session()
-                            if any(code in error_text for code in ["401", "403"]):
+                            # Detect real auth failures. Match status tokens, NOT bare substrings —
+                            # otherwise cost strings like "$0.4017"/"$0.4031" and token counts falsely
+                            # trip auth_err, misrouting signature/infra failures into the 300s auth
+                            # backoff path (which itself never fires on a real 401/403 in practice).
+                            import re as _re
+                            if _re.search(r"\b40[13]\b", error_text) or \
+                                    "invalid x-api-key" in error_text.lower() or \
+                                    "authentication" in error_text.lower():
                                 auth_err = True
             except (CLINotFoundError, ProcessError) as e:
                 if ui:
@@ -415,7 +422,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     disallowed_tools=_BLOCKED_MCP_TOOLS,
                     hooks=_make_precompact_hook(),
                     max_turns=max_turns,
-                    thinking={"type": "disabled"},  # P0: adaptive triggers claude_agent_sdk 0.2.91 signature-error deadlock
+                    thinking={"type": "adaptive"},  # let Claude decide thinking depth
                     **_resume_kwargs,
                 )
                 for backoff in [30, 60, 120]:
@@ -843,6 +850,9 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
 
             # Phase 3: Cleanup (idempotent) — after any successful generation
             if cost >= 0:
+                # Reset the generic-failure backoff counter — the cycle succeeded.
+                if getattr(orchestrator_loop, "_gen_fail_count", 0):
+                    orchestrator_loop._gen_fail_count = 0
                 from generation_scheduler import post_generation_cleanup
                 await post_generation_cleanup(shutdown_mgr, ui, gen_ctx)
                 if ui:
@@ -888,19 +898,35 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                     # Session already cleared in _run_one_cycle except handler (infra path)
                     continue
 
-                # True auth error (401/403) or generic cycle failure: cost == -1.0 or
-                # cost <= -1.0 (auth clamp). Full 300s backoff is appropriate — credentials
-                # or service-side auth issue won't resolve quickly.
-                if ui:
-                    ui.log_history("Orchestrator: API auth error (401/403). Backing off 300s.", "error")
+                # cost <= -1.0 lands here. Two distinct causes share this signal:
+                #   (a) a genuine auth failure (401/403, set auth_error=True above) —
+                #       credentials won't self-heal, so a long backoff is correct.
+                #   (b) a generic cycle failure (crash/ProcessError/exit-143) with NO
+                #       auth_error flag — usually another face of the transient SDK
+                #       signature storm. Treating these as auth and waiting 300s each
+                #       time turned a brief SDK hiccup into a multi-hour stuck loop.
+                # Split them: real auth keeps 300s; generic failures get a short,
+                # escalating backoff (30s -> 60s -> 120s -> cap 300s).
+                if auth_error:
+                    if ui:
+                        ui.log_history("Orchestrator: API auth error (401/403). Backing off 300s.", "error")
+                    _wait = 300
+                else:
+                    _gen_fail_count = getattr(orchestrator_loop, "_gen_fail_count", 0) + 1
+                    orchestrator_loop._gen_fail_count = _gen_fail_count
+                    _wait = min(30 * (2 ** min(_gen_fail_count - 1, 3)), 300)
+                    if ui:
+                        ui.log_history(
+                            f"Orchestrator: cycle failed (generic, not auth). "
+                            f"Backing off {_wait}s (consecutive #{_gen_fail_count}).", "warn")
                 if shutdown_mgr:
                     try:
-                        await asyncio.wait_for(shutdown_mgr.wait_for_shutdown(), timeout=300)
+                        await asyncio.wait_for(shutdown_mgr.wait_for_shutdown(), timeout=_wait)
                         break
                     except asyncio.TimeoutError:
                         pass
                 else:
-                    await asyncio.sleep(300)
+                    await asyncio.sleep(_wait)
                 _clear_orchestrator_session()
                 continue
 

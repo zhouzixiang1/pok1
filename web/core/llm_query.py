@@ -132,26 +132,42 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
     return texts, cost_usd, usage
 
 
+# claude_agent_sdk 0.2.91 intermittently raises ClaudeSDKError "Missing required
+# field in assistant message: 'signature'" mid-stream. It is transient (a fresh
+# query usually succeeds) but frequent enough that 3 retries occasionally exhaust,
+# stalling Master/analyst. Bumped to 5 with slightly longer backoff so a brief
+# SDK-side storm still resolves without surfacing a failure to the caller.
+_SIGNATURE_MAX_ATTEMPTS = 5
+
+
 async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, ui, role_name):
-    """Run one streaming query with up to 3 retries on transient SDK signature errors.
+    """Run one streaming query with retries on transient SDK signature errors.
 
     Extracted so the 529/429 retry paths reuse the same handling as the initial query.
     Returns (texts_list, cost_usd, usage).
     """
     last_sdk_err = None
-    for sdk_attempt in range(3):
+    for sdk_attempt in range(_SIGNATURE_MAX_ATTEMPTS):
         query_gen = claude_query(prompt=full_prompt, options=options)
         try:
             texts, cost_usd, usage = await _process_stream(query_gen, log_file_path, ui, role_name)
+            if sdk_attempt > 0 and ui:
+                ui.log_history(
+                    f"{role_name}: SDK stream recovered after {sdk_attempt} signature retry/retries",
+                    "info",
+                )
             return texts, cost_usd, usage
         except ClaudeSDKError as e:
             last_sdk_err = e
             err_str = str(e).lower()
-            if ("signature" in err_str or "missing required field" in err_str) and sdk_attempt < 2:
-                _backoff = 5 * (sdk_attempt + 1)
+            if ("signature" in err_str or "missing required field" in err_str) and \
+                    sdk_attempt < _SIGNATURE_MAX_ATTEMPTS - 1:
+                # Exponential-ish backoff: 5, 10, 20, 30s — short enough to not stall
+                # the pipeline, long enough for a transient SDK state to clear.
+                _backoff = min(5 * (2 ** sdk_attempt), 30)
                 if ui:
                     ui.log_history(
-                        f"{role_name}: SDK stream error (attempt {sdk_attempt+1}/3), "
+                        f"{role_name}: SDK stream error (attempt {sdk_attempt+1}/{_SIGNATURE_MAX_ATTEMPTS}), "
                         f"retrying in {_backoff}s: {e}",
                         "warn",
                     )
@@ -234,13 +250,18 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         cwd=str(PROJECT_ROOT),  # pok/ — workers use relative paths like bots/claude_vN/
         tools=tools,
         disallowed_tools=_BLOCKED_MCP_TOOLS,
-        thinking={"type": "disabled"},  # P0: adaptive triggers SDK signature-error; disabled is sound per audit
+        # Adaptive thinking: let Claude decide when/how much to think (Opus 4.6+).
+        # Previously disabled because adaptive was combined with `display:summarized`
+        # (an Opus-4.7-only flag) which interacted badly with older models. Plain
+        # `{"type":"adaptive"}` is the documented default and no longer co-triggers
+        # the SDK signature-field bug. See llm_query._run_stream_with_signature_retry
+        # for the remaining transient-signature safety net.
+        thinking={"type": "adaptive"},
     )
 
     # Initial query — retry transient SDK stream errors (signature field missing).
     # claude_agent_sdk 0.2.91 intermittently raises ClaudeSDKError "Missing required
-    # field in assistant message: 'signature'" even with thinking disabled; a fresh
-    # query usually succeeds (reviewer passes, critic/battle_exp occasionally hit it).
+    # field in assistant message: 'signature'"; a fresh query usually succeeds.
     # Without this retry, the error propagates and the calling tool either rejects
     # (critic) or skips (battle_exp), stalling the pipeline.
     full_text, cost_usd, usage = await _run_stream_with_signature_retry(
