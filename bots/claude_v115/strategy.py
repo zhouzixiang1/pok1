@@ -236,7 +236,7 @@ def choose_raise(
         ratio += confidence * max(0.0, fold_to_raise - 0.58) * 0.22
     inducing_value = (induce_mode or value_plan.get("induce", False)) and to_call == 0 and value_profile.get("tier") == "nut"
     if inducing_value:
-        induce_cap = 0.29 + 0.05 * round_idx + 0.05 * wetness
+        induce_cap = 0.35 + 0.05 * round_idx + 0.10 * wetness
         ratio = min(ratio, induce_cap)
     if probe_mode:
         probe_ratio = 0.25 + 0.08 * wetness
@@ -249,16 +249,8 @@ def choose_raise(
         ratio = min(ratio, probe_ratio)
     thin_cap = None
     if value_plan.get("thin_control", False) and value_profile.get("tier") != "nut":
-        # CROSSOVER (imported from v104): wetness-scaled thin-value cap instead of
-        # v109's flat 0.30/0.38. v104 beats tight/value opponents (v93/v94/v95/v97)
-        # where v109 is weaker — the wetness gradient lets thin-value bets grow on
-        # dynamic boards (where made hands are stronger and opponents call wider),
-        # while keeping tighter caps on dry textures. v109's flat cap starves value
-        # extraction on wet boards; v104's data shows this matters vs value bots.
-        # MUTATION: wetness coefficient 0.15 -> 0.18 (+20%) to steepen the gradient
-        # and extract slightly more value on highly dynamic textures.
         base_thin = 0.35 if round_idx <= 2 else 0.42
-        thin_cap = base_thin + 0.18 * wetness
+        thin_cap = base_thin + 0.15 * wetness
         ratio = min(ratio, thin_cap)
     low_ratio = 0.28 if inducing_value else 0.22 if probe_mode or (blocker_bluff and to_call == 0) else 0.40
     if thin_cap is not None:
@@ -375,7 +367,7 @@ def _sb_open_bucket_action(hand_cat, opponent_model, trash_hand):
     if hand_cat in ('premium', 'strong_pair', 'mid_pair', 'big_cards'):
         return 'raise'
 
-    implied = hand_cat in ('small_pair', 'suited_ace', 'suited_connector', 'broadway_suited')
+    implied = hand_cat in ('small_pair', 'suited_ace', 'suited_connector')
     marginal = hand_cat == 'playable'
 
     if implied:
@@ -409,13 +401,17 @@ def _bb_vs_raise_bucket_action(hand_cat, opponent_model, pot_odds, preflop_stren
 
     if hand_cat in ('premium', 'big_cards') and not trash_hand:
         return 'value_raise'
-    # CROSSOVER (from v108/v89): broadway_suited (KQs/KJs/QJs/QTs/JTs) get a
-    # dedicated call/fold decision. MUTATION: pot-odds gate tightened from
-    # v108's 0.36 to 0.32 — these are implied-odds hands that underperform vs
-    # tight/3bet-heavy openers, so we demand a slightly better price to continue.
-    # The 0.02 win-rate cushion matches the suited_connector branch below.
+    # CROSSOVER (imported from v111): broadway_suited (KQs/KJs/QJs/QTs/JTs)
+    # gets a dedicated call/fold decision with implied-odds reasoning.
+    # MUTATION (offensive nudge on v104 base): widen pot-odds gate from
+    # v111's 0.36 -> 0.40 (~11% relaxation). v104's defensive framework
+    # (barrel fold signal, single-reraise guard, wetness caps) already
+    # protects against over-calling postflop, so we can defend slightly
+    # wider preflop with implied-odds suited broadways. Memory says
+    # v107-110 exhausted the defensive-guard chain; this is a calibrated
+    # offensive lever that v104 lacks entirely.
     if hand_cat == 'broadway_suited' and not trash_hand:
-        if pot_odds <= 0.32 or win_rate >= pot_odds - 0.02:
+        if pot_odds <= 0.40 or win_rate >= pot_odds - 0.02:
             return 'call'
         return 'fold'
     if hand_cat in ('suited_connector', 'suited_ace', 'small_pair') and not trash_hand:
@@ -535,11 +531,14 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
             )
             if raise_amount is not None:
                 return raise_amount
-        # Call with most limp-range hands, including broadway suited
-        # (KQs/JTs/etc.) which flop playable draws / two-pair+ often enough.
+        # CROSSOVER (imported from v111): call with broadway suited
+        # (KQs/KJs/QJs/QTs/JTs) which flop playable draws / two-pair+ often
+        # enough to justify the call vs iso-raise, before the generic
+        # preflop_strength/win_rate gate below (which tends to fold them).
         _hand_cat_iso = classify_preflop_hand(req['my_cards'])
         if _hand_cat_iso == 'broadway_suited' and not trash_hand:
             return 0
+        # Call with most limp-range hands
         if preflop_strength >= 0.34 or win_rate >= pot_odds_iso - 0.03:
             return 0
         return -1
