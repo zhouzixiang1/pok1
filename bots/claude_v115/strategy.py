@@ -526,11 +526,17 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
             )
             if raise_amount is not None:
                 return raise_amount
-        # Call with most limp-range hands, including broadway suited
-        # (KQs/JTs/etc.) which flop playable draws / two-pair+ often enough.
-        _hand_cat_iso = classify_preflop_hand(req['my_cards'])
-        if _hand_cat_iso == 'broadway_suited' and not trash_hand:
-            return 0
+        # Call with most limp-range hands. Broadway suited (KQs/JTs/etc.) now
+        # flows through the standard pot-odds/win-rate gate below.
+        # MUTATION (v109 × v102 crossover): the previous unconditional CALL for
+        # broadway_suited hands (imported from v89 in v108) was REMOVED because
+        # H2H data shows v109 (with this auto-call) LOSES to defensive opponents
+        # where v102 (without it) WINS:
+        #   v97  0.460 vs 0.536,  v101 0.467 vs 0.512,
+        #   v93  0.480 vs 0.540,  v104 0.480 vs 0.536.
+        # Always calling KQs/KJs/QJs vs tight iso-raisers leaks chips; falling
+        # through to the pot-odds gate restores v102's tighter defense while
+        # preserving v109's value in bb_vs_raise (which already gates on 0.32).
         if preflop_strength >= 0.34 or win_rate >= pot_odds_iso - 0.03:
             return 0
         return -1
@@ -674,15 +680,8 @@ def _single_reraise_stackoff_guard(round_idx, value_profile, made_strength, spot
     effective stack-off territory), return 0 (call) to avoid bot-initiated
     all-in shoves that lose 20K with one-pair / weak-two-pair hands.
 
-    MUTATION (v115 crossover from v109+v102): made_strength ceiling tightened
-    from 0.70 -> 0.60 (-14%). Memory note: v107-v110 exhausted the defensive-
-    guard chain and the next generation must pivot OFFENSE. Hands in the
-    0.60-0.70 made_strength band (strong two-pair / sets / strong overpairs)
-    are profitable stack-off candidates vs a single re-raise on low-SPR
-    turn/river — folding/calling them away surrenders EV. The guard remains
-    active for genuinely sub-nut weak holdings (< 0.60), which is where the
-    expensive 20K shoves originated.
-    Nut hands and high-SPR spots remain untouched.
+    Only fires for made_strength < 0.70 (not a premium two-pair+ / set).
+    Nut hands and high-SPR spots are left untouched.
     """
     if round_idx < 2:
         return None
@@ -696,7 +695,7 @@ def _single_reraise_stackoff_guard(round_idx, value_profile, made_strength, spot
         return None
     if spr >= 3.0:
         return None
-    if made_strength >= 0.60:
+    if made_strength >= 0.70:
         return None
     return 0
 
