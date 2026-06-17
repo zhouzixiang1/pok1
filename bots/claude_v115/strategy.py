@@ -249,7 +249,16 @@ def choose_raise(
         ratio = min(ratio, probe_ratio)
     thin_cap = None
     if value_plan.get("thin_control", False) and value_profile.get("tier") != "nut":
-        thin_cap = 0.30 if round_idx <= 2 else 0.38
+        # CROSSOVER (imported from v104): wetness-scaled thin-value cap instead of
+        # v109's flat 0.30/0.38. v104 beats tight/value opponents (v93/v94/v95/v97)
+        # where v109 is weaker — the wetness gradient lets thin-value bets grow on
+        # dynamic boards (where made hands are stronger and opponents call wider),
+        # while keeping tighter caps on dry textures. v109's flat cap starves value
+        # extraction on wet boards; v104's data shows this matters vs value bots.
+        # MUTATION: wetness coefficient 0.15 -> 0.18 (+20%) to steepen the gradient
+        # and extract slightly more value on highly dynamic textures.
+        base_thin = 0.35 if round_idx <= 2 else 0.42
+        thin_cap = base_thin + 0.18 * wetness
         ratio = min(ratio, thin_cap)
     low_ratio = 0.28 if inducing_value else 0.22 if probe_mode or (blocker_bluff and to_call == 0) else 0.40
     if thin_cap is not None:
@@ -526,17 +535,11 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
             )
             if raise_amount is not None:
                 return raise_amount
-        # Call with most limp-range hands. Broadway suited (KQs/JTs/etc.) now
-        # flows through the standard pot-odds/win-rate gate below.
-        # MUTATION (v109 × v102 crossover): the previous unconditional CALL for
-        # broadway_suited hands (imported from v89 in v108) was REMOVED because
-        # H2H data shows v109 (with this auto-call) LOSES to defensive opponents
-        # where v102 (without it) WINS:
-        #   v97  0.460 vs 0.536,  v101 0.467 vs 0.512,
-        #   v93  0.480 vs 0.540,  v104 0.480 vs 0.536.
-        # Always calling KQs/KJs/QJs vs tight iso-raisers leaks chips; falling
-        # through to the pot-odds gate restores v102's tighter defense while
-        # preserving v109's value in bb_vs_raise (which already gates on 0.32).
+        # Call with most limp-range hands, including broadway suited
+        # (KQs/JTs/etc.) which flop playable draws / two-pair+ often enough.
+        _hand_cat_iso = classify_preflop_hand(req['my_cards'])
+        if _hand_cat_iso == 'broadway_suited' and not trash_hand:
+            return 0
         if preflop_strength >= 0.34 or win_rate >= pot_odds_iso - 0.03:
             return 0
         return -1
