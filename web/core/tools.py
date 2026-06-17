@@ -62,7 +62,7 @@ from tool_bot_management import (  # noqa: F401
     abandon_generation,
 )
 
-# ── MCP tools — available to the LLM Orchestrator session (~15 tools) ──
+# ── MCP tools — available to the LLM Orchestrator session (16 tools) ──
 
 mcp_tools = [
     # Pipeline tools
@@ -77,6 +77,14 @@ mcp_tools = [
     run_direction_audit,
     commit_bot,
     run_archivist,
+    # Stuck-loop self-heal (root-cause-audit 2026-06-17): the prepare_next_gen
+    # cross-source guard (tool_gates.py:401) instructs the LLM "Call
+    # abandon_generation first" when v{N} was prepared from a different ancestor.
+    # Previously abandon_generation existed only in all_tools (HTTP endpoints),
+    # NOT in mcp_tools — so the recovery instruction was UNREACHABLE from the
+    # Orchestrator session, causing stuck-loops that burned tokens until the
+    # 3600s cycle timeout. Exposing it here lets the LLM self-resolve.
+    abandon_generation,
     # Query tools
     get_bot_info,
     get_match_history,
@@ -105,6 +113,5 @@ all_tools = mcp_tools + [
     consolidate_experience,
     analyze_stagnation,
     cleanup_incomplete,
-    abandon_generation,
     diagnose_environment,
 ]

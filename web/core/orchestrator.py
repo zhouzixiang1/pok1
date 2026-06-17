@@ -58,6 +58,21 @@ def _is_cycle_infra_error(e) -> bool:
             or "processerror" in err_str)
 
 
+class _OrchSignatureRetryable(Exception):
+    """Internal signal: the orchestrator's own SDK stream hit a transient
+    signature-field deserialization error (claude_agent_sdk 0.2.91) AND no MCP
+    tool had executed yet, so a fresh stream is safe (no side-effects to
+    duplicate). Caught by the retry loop in _run_one_cycle.
+
+    root-cause-audit 2026-06-17: sub-agents already retry signature errors via
+    _run_stream_with_signature_retry (llm_query.py), but the orchestrator's own
+    claude_query stream had no retry — every signature error failed the whole
+    cycle (-0.5 backoff + session clear). Confirmed NOT caused by adaptive
+    thinking (disabled mode had 427 errors vs adaptive 70); this is an SDK
+    stream bug, so a bounded retry is the correct mitigation until an SDK fix.
+    """
+
+
 # Module-level flag set by the watchdog coroutine when it detects a stuck pipeline.
 # The main orchestrator_loop checks this flag at the top of each iteration and forces
 # a fresh _run_one_cycle (discarding the stale session) when set.
@@ -138,6 +153,40 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             auth_err = False
             _tool_call_counts = {}
             _cost_cap_logged = False
+
+            def _check_cost_cap():
+                """Surface runaway sub-agent spend.
+
+                Checked after every AssistantMessage turn and at ResultMessage — NOT
+                only in ToolResultBlock (which the claude_agent_sdk never surfaces in
+                the orchestrator's message stream: tool_result logs appear 0×, making
+                the old single check-point dead code). root-cause-audit 2026-06-17
+                found cost_cap_tripped fired 0× despite cycles hitting $6.09 against a
+                $5.0 cap. Sub-agent (Master/Workers/Critic) costs settle into
+                ui.gen_cost_total via ui.update_cost before the next AssistantMessage,
+                so checking on each turn catches runaway retries as they happen.
+                """
+                nonlocal _cost_cap_logged
+                if _cost_cap_logged or not ui:
+                    return
+                try:
+                    from evolution_infra import MAX_GEN_COST
+                    _spent = ui.gen_cost_total - _cost_at_start
+                    if _spent > MAX_GEN_COST:
+                        _cost_cap_logged = True
+                        log.warning("Cycle cost cap tripped: $%.2f > $%.2f", _spent, MAX_GEN_COST)
+                        ui.log_history(
+                            f"[Orchestrator] Cost cap tripped (${_spent:.2f} > ${MAX_GEN_COST:.2f}) — "
+                            f"runaway retry detected; CYCLE_TIMEOUT will bound this cycle.",
+                            "error",
+                        )
+                        from system_log import log_system_event
+                        log_system_event("pipeline.cost_cap_tripped", "error",
+                            f"Cycle spend ${_spent:.2f} exceeded cap ${MAX_GEN_COST}",
+                            {"spent": round(_spent, 2), "cap": MAX_GEN_COST})
+                except Exception as _e:
+                    log.debug("cost-cap check error: %s", _e)
+
             try:
                 gen = claude_query(prompt=prompt, options=opts)
                 _gen_ref[0] = gen  # Track for asyncio.wait_for timeout cleanup
@@ -192,32 +241,14 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                     lf.write(f"\n[tool_result] {content[:500]}\n")
                                     if ui:
                                         ui.log_io(content[:3000], "tool_result", "Orchestrator")
-                                # Cost-cap observability (bug #6/#7 cost runaway): if sub-agent
-                                # spend (Master/Workers/Critic via ui.update_cost) exceeds the
-                                # per-cycle budget, surface it loudly. CYCLE_TIMEOUT (60min) is
-                                # the hard backstop; this makes runaway visible + monitorable so
-                                # it can be caught before the timeout wastes a full hour.
-                                if not _cost_cap_logged and ui:
-                                    try:
-                                        from evolution_infra import MAX_GEN_COST
-                                        _spent = ui.gen_cost_total - _cost_at_start
-                                        if _spent > MAX_GEN_COST:
-                                            _cost_cap_logged = True
-                                            log.warning("Cycle cost cap tripped: $%.2f > $%.2f", _spent, MAX_GEN_COST)
-                                            ui.log_history(
-                                                f"[Orchestrator] Cost cap tripped (${_spent:.2f} > ${MAX_GEN_COST:.2f}) — "
-                                                f"runaway retry detected; CYCLE_TIMEOUT will bound this cycle.",
-                                                "error",
-                                            )
-                                            from system_log import log_system_event
-                                            log_system_event("pipeline.cost_cap_tripped", "error",
-                                                f"Cycle spend ${_spent:.2f} exceeded cap ${MAX_GEN_COST}",
-                                                {"spent": round(_spent, 2), "cap": MAX_GEN_COST})
-                                    except Exception:
-                                        pass
+                        # Check cost cap after each orchestrator turn. By now every
+                        # sub-agent (Master/Workers/Critic) cost from tools executed
+                        # during this turn has settled in ui.gen_cost_total.
+                        _check_cost_cap()
                     elif isinstance(message, ResultMessage):
                         if message.total_cost_usd:
                             cost += message.total_cost_usd
+                        _check_cost_cap()
                         if not message.is_error:
                             ok = True
                             if message.session_id:
@@ -256,6 +287,21 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                 # exit-143 / ProcessError crashes). The OUTER except (commit 0295d2b)
                 # was fixed but this INNER one was missed (same shape as v84 deadlock).
                 raise
+            except ClaudeSDKError as _sig_err:
+                # Signature-field stream errors: transient SDK deserialization bug
+                # (ThinkingBlock.signature missing). Retryable ONLY when no MCP tool
+                # has executed yet — otherwise tool side-effects would be duplicated.
+                # When retryable, convert to _OrchSignatureRetryable for the retry
+                # loop in _run_one_cycle; otherwise propagate (-> infra -0.5 backoff).
+                _sig_s = str(_sig_err).lower()
+                if ("signature" in _sig_s or "missing required field" in _sig_s) and not _tool_call_counts:
+                    try:
+                        if gen is not None:
+                            await gen.aclose()
+                    except Exception:
+                        pass
+                    raise _OrchSignatureRetryable(str(_sig_err)) from _sig_err
+                raise
             if _tool_call_counts:
                 log.info("Tool call summary: %s", dict(sorted(_tool_call_counts.items())))
             return "".join(texts), cost, ok, gen, auth_err
@@ -275,9 +321,59 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
         _gen_ref = [None]
         try:
             try:
+                # Signature-retry loop for the orchestrator's own SDK stream.
+                # _stream_response raises _OrchSignatureRetryable when a transient
+                # signature-field error occurs AND no MCP tool has executed yet
+                # (no side-effects to duplicate). Bounded to _ORCH_SIG_MAX_ATTEMPTS.
+                _ORCH_SIG_MAX_ATTEMPTS = 2
                 full_output, total_cost, cycle_completed, query_gen, auth_error = (
-                    await asyncio.wait_for(_stream_response(options), timeout=CYCLE_TIMEOUT)
+                    None, 0.0, False, None, False
                 )
+                # NOTE: each retry attempt is individually wrapped by CYCLE_TIMEOUT
+                # below, so worst-case wall-clock is (N+1)*CYCLE_TIMEOUT. This is
+                # acceptable because (a) signature errors fire early in the stream
+                # (ThinkingBlock deserialization), so each attempt burns little of
+                # the 3600s budget, and (b) the watchdog/stuck-pipeline detector
+                # remains the hard backstop. Signature retries only happen when no
+                # MCP tool has executed yet (no side-effects to duplicate).
+                for _sig_attempt in range(_ORCH_SIG_MAX_ATTEMPTS + 1):
+                    try:
+                        full_output, total_cost, cycle_completed, query_gen, auth_error = (
+                            await asyncio.wait_for(_stream_response(options), timeout=CYCLE_TIMEOUT)
+                        )
+                        break
+                    except _OrchSignatureRetryable as _sr:
+                        if _sig_attempt < _ORCH_SIG_MAX_ATTEMPTS:
+                            _backoff = min(5 * (2 ** _sig_attempt), 20)
+                            log.warning(
+                                "Orchestrator SDK signature stream error (attempt %d/%d), "
+                                "retrying in %ds (no tool side-effects yet): %s",
+                                _sig_attempt + 1, _ORCH_SIG_MAX_ATTEMPTS + 1, _backoff, _sr,
+                            )
+                            if ui:
+                                ui.log_history(
+                                    f"[Orchestrator] SDK signature stream error — retrying "
+                                    f"(attempt {_sig_attempt + 1}/{_ORCH_SIG_MAX_ATTEMPTS + 1})...",
+                                    "warn",
+                                )
+                            try:
+                                log_system_event("pipeline.orch_signature_retry", "warn",
+                                    f"Orchestrator signature stream retry (attempt {_sig_attempt + 1})",
+                                    {"attempt": _sig_attempt + 1, "error": str(_sr)[:200]})
+                            except Exception:
+                                pass
+                            await asyncio.sleep(_backoff)
+                            continue
+                        # Exhausted — re-raise the ORIGINAL ClaudeSDKError (stored
+                        # as __cause__ when _OrchSignatureRetryable was raised) so
+                        # the outer except classifies it as infra (-0.5 backoff)
+                        # via type-based is_llm_infra_error, not only the keyword
+                        # fallback (which would silently break if the keyword
+                        # guard were ever tightened).
+                        raise (_sr.__cause__ or _sr) from None
+                if full_output is None:
+                    # All signature retries exhausted and re-raised above; defensive.
+                    raise RuntimeError("orchestrator signature retry loop exited without result")
             except asyncio.TimeoutError:
                 # query_gen is always None here (tuple unpacking never completed).
                 # Use _gen_ref which was set at the start of _stream_response.

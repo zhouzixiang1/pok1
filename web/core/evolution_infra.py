@@ -372,10 +372,27 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         old_stage = existing.get("stage") if existing else None
         is_valid, reason = validate_stage_transition(old_stage, stage)
         if not is_valid:
+            # Backward transition. Some are legitimate rework (e.g.
+            # critic_checked->reviewed re-evaluation; workers_done->master_planned
+            # retry is allowlisted as valid by validate_stage_transition), and the
+            # _STAGE_RANK auto-reset block below depends on these regressions being
+            # allowed to recompute precommit_attempt/timeout_extensions. So we still
+            # ALLOW them — but record a system_event so regressions are observable
+            # in system_events.jsonl, not buried in the log stream.
+            # (root-cause-audit 2026-06-17: the specific workers_done->
+            # direction_audited regression that lost crossover output is now
+            # prevented at the caller by the backward-guard in run_direction_audit.)
             log.warning(
                 "Illegal stage transition: %s -> %s (%s). Allowing but logging.",
                 old_stage, stage, reason,
             )
+            try:
+                from system_log import log_system_event
+                log_system_event("pipeline.stage_backward_allowed", "warn",
+                    f"Backward stage transition allowed: {old_stage} -> {stage} ({reason})",
+                    {"old_stage": old_stage, "new_stage": stage, "reason": reason})
+            except Exception:
+                pass
         # touch_stage_timestamp forces last_stage_change_ts to now even when the
         # stage did not change, e.g. the orchestrator's timeout-extension refresh
         # so the watchdog does not immediately re-fire after a cycle resume.

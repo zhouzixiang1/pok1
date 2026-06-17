@@ -30,6 +30,24 @@ log = logging.getLogger("pok.scheduler")
 _probe_running = threading.Event()
 
 
+def _wilson_lower_bound(wins, games, z=1.96):
+    """95% lower confidence bound on the true win rate (Wilson score interval).
+
+    Used by the H2H anomaly detector (prepare_generation) so small-sample
+    matchups (e.g. n=20 games) do not manufacture fake regressions from pure
+    binomial noise. Under the null (true wr=0.5), n=20 has ~12% chance of a
+    point estimate |wr-0.5|>0.15; the Wilson lower bound raises the bar to
+    "statistically confident below even".
+    """
+    if games <= 0:
+        return 0.0
+    p = wins / games
+    denom = 1.0 + z * z / games
+    center = (p + z * z / (2 * games)) / denom
+    margin = z * ((p * (1 - p) + z * z / (4 * games)) / games) ** 0.5 / denom
+    return max(0.0, center - margin)
+
+
 @dataclass
 class GenerationContext:
     """Pre-computed context for one generation."""
@@ -211,34 +229,80 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         log.warning("Replay spotlight analysis failed: %s", e)
 
     # --- P1-2: H2H Anomaly Root Cause Analysis ---
+    # NOTE (root-cause-audit 2026-06-17): the stored `win_rate` field is the
+    # win rate of the lexicographically-FIRST bot in the pair_key (see
+    # elo_daemon pair_key: "a vs b" if a < b), NOT necessarily active_v's win
+    # rate. Reading it directly inverts the sign when active_v is the "b" side
+    # (e.g. "claude_v104 vs claude_v114" stores 0.35 = v104's rate, which was
+    # mis-attributed to v114 as a fake regression). Fix: recompute active_v's
+    # win rate from a_wins/b_wins by pair position — the same perspective
+    # correction compute_h2h_avg_winrate (tool_helpers) already applies.
     if combined:
         try:
             from evolution_infra import H2H_FILE
             if H2H_FILE.exists():
                 h2h_data = json.loads(H2H_FILE.read_text())
-                anomalies = []
+                regressions = []    # active_v LOSING — genuine concern for Master
+                dominations = []    # active_v WINNING — informational only, NOT "attention"
                 v_key = f"claude_v{active_v}"
                 for pair_key, pair_data in h2h_data.items():
-                    if v_key in pair_key:
-                        wr = pair_data.get("win_rate", 0.5)
-                        games = pair_data.get("games", 0)
-                        if games >= 20 and abs(wr - 0.5) > 0.15:
-                            opp = pair_key.replace(v_key, "").replace(" vs ", "").strip()
-                            anomalies.append({
-                                "opponent": opp,
-                                "win_rate": wr,
-                                "games": games,
-                                "delta": round(wr - 0.5, 2),
-                            })
-                if anomalies:
+                    parts = pair_key.split(" vs ")
+                    if len(parts) != 2 or v_key not in parts:
+                        continue
+                    games = pair_data.get("games", 0)
+                    if games < 20:
+                        continue
+                    # Perspective-correct win rate for active_v.
+                    if parts[0] == v_key:
+                        bot_wins = pair_data.get("a_wins", 0)
+                        opp = parts[1]
+                    else:
+                        bot_wins = pair_data.get("b_wins", 0)
+                        opp = parts[0]
+                    wr = bot_wins / games
+                    delta = wr - 0.5
+                    lb = _wilson_lower_bound(bot_wins, games)
+                    entry = {
+                        "opponent": opp,
+                        "win_rate": round(wr, 3),
+                        "games": games,
+                        "delta": round(delta, 2),
+                        "ci_lower": round(lb, 3),
+                    }
+                    # Single-sided regression: only flag matchups active_v is
+                    # genuinely LOSING (wr < 0.40, i.e. delta < -0.10). The old
+                    # abs(wr-0.5)>0.15 two-sided threshold treated "crushing a
+                    # weak opponent" as a problem and, combined with the
+                    # perspective bug, manufactured fake regressions. The Wilson
+                    # lower bound is kept as a confidence column but not a hard
+                    # gate (n=20 makes it too wide to discriminate — a 0.50
+                    # point estimate already has lb≈0.30).
+                    if wr < 0.40:
+                        regressions.append(entry)
+                    elif delta > 0.15:
+                        dominations.append(entry)
+                # Most-severe regressions first (lowest win rate), so the
+                # top-5 surfaced to Master are the most diagnostic.
+                regressions.sort(key=lambda a: a["win_rate"])
+                if regressions:
                     log_system_event("pipeline.h2h_anomaly", "warn",
-                                     f"H2H anomalies for v{active_v}: {len(anomalies)} matchups deviate >15%",
-                                     {"source_v": active_v, "anomalies": anomalies[:5]})
+                                     f"H2H regressions for v{active_v}: {len(regressions)} "
+                                     f"matchups with win rate < 40% (genuine losses); "
+                                     f"{len(dominations)} strong dominations (informational)",
+                                     {"source_v": active_v, "regressions": regressions[:5],
+                                      "domination_count": len(dominations)})
                     # Inject into stagnation_text for Master context
-                    anomaly_text = "\n\n## H2H Anomaly Alert\n"
-                    for a in anomalies[:5]:
-                        anomaly_text += f"- vs {a['opponent']}: WR={a['win_rate']:.1%} (delta={a['delta']:+.0%}, {a['games']} games)\n"
-                    anomaly_text += "These matchups require attention in the next generation.\n"
+                    anomaly_text = "\n\n## H2H Regression Alert\n"
+                    for a in regressions[:5]:
+                        anomaly_text += (
+                            f"- vs {a['opponent']}: WR={a['win_rate']:.0%} "
+                            f"(delta={a['delta']:+.0%}, {a['games']}g, "
+                            f"95% CI lower={a['ci_lower']:.0%})\n"
+                        )
+                    anomaly_text += (
+                        "These matchups show genuine regression — "
+                        "prioritize fixing them in the next generation.\n"
+                    )
                     stagnation_text += anomaly_text
         except Exception as e:
             log.warning("H2H anomaly check error (skipping): %s", e)

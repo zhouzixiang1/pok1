@@ -82,8 +82,32 @@ async def run_direction_audit(args):
     # Persist to checkpoint
     _ckpt = _matching_checkpoint(next_v, source_v)
     existing_plan = _ckpt.get("master_plan") if _ckpt else None
+    # Backward-guard (root-cause-audit 2026-06-17): do NOT regress the pipeline
+    # stage. If this (next_v, source_v) checkpoint has already advanced past
+    # direction_audited (e.g. a successful crossover wrote workers_done, or
+    # master already planned), keep the more-advanced stage and only refresh
+    # the direction_audit payload. Previously this unconditionally wrote
+    # "direction_audited", causing workers_done -> direction_audited regressions
+    # (logged "Illegal stage transition ... Allowing but logging") that discarded
+    # crossover worker-output metadata (parent2_v lost).
+    _current_stage = _ckpt.get("stage") if _ckpt else None
+    try:
+        from evolution_infra import STAGE_ORDER
+        _da_idx = STAGE_ORDER.index("direction_audited")
+        _cur_idx = STAGE_ORDER.index(_current_stage) if _current_stage in STAGE_ORDER else -1
+    except Exception:
+        _da_idx, _cur_idx = 1, -1
+    _target_stage = _current_stage if (_cur_idx > _da_idx) else "direction_audited"
+    if _target_stage != "direction_audited":
+        try:
+            log_system_event("pipeline.direction_audit_skip_regression", "info",
+                             f"Direction audit for v{next_v}: keeping advanced stage '{_current_stage}' "
+                             f"(would have regressed to direction_audited); refreshing audit payload only.",
+                             {"next_v": next_v, "source_v": source_v, "kept_stage": _current_stage})
+        except Exception:
+            pass
     write_pipeline_checkpoint(
-        next_v, source_v, "direction_audited",
+        next_v, source_v, _target_stage,
         direction_audit=direction_audit_payload,
         master_plan=existing_plan,
         worker_failure_count=_ckpt.get("worker_failure_count", 0) if _ckpt else 0,
@@ -118,6 +142,42 @@ async def run_direction_audit(args):
 # ──────────────────────────────────────────────
 # Master Stage
 # ──────────────────────────────────────────────
+
+# Hard cap on total Master-stage failures (plan-JSON-collapse + audit-rejection)
+# per generation. Beyond this, run_master refuses to burn more LLM budget and
+# directs the orchestrator to abandon. Root-cause-audit 2026-06-17: a single
+# cycle hit 6x run_master (≈$8 wasted) because Master JSON systematically
+# collapses under a tight direction-audit (malformed-JSON observed 221× vs
+# signature 50×). The orchestrator prompt's soft "at most 2 times" rule was
+# ignored; this is the mechanical backstop. audit_attempt in the checkpoint
+# doubles as the counter (reset to 0 on successful master_planned write via
+# reset_audit_attempt=True at line ~657).
+MAX_MASTER_TOTAL_FAILURES = 4
+
+
+def _bump_master_fail_count(next_v, source_v, value=None):
+    """Increment (or set) the Master-stage failure counter in the checkpoint.
+
+    Reuses the audit_attempt field: both plan-JSON-collapse (data is None) and
+    audit-rejection are "Master-stage failures", and run_master's hard cap at
+    the top of the function counts them together to stop token-burning loops.
+    Returns the new count (0 on any error / mismatched generation).
+    """
+    try:
+        from evolution_infra import read_pipeline_checkpoint
+        ckpt = read_pipeline_checkpoint() or {}
+        if ckpt.get("next_v") != next_v:
+            return 0
+        cur = int(ckpt.get("audit_attempt") or 0)
+        new = cur + 1 if value is None else int(value)
+        write_pipeline_checkpoint(
+            next_v, source_v, ckpt.get("stage") or "direction_audited",
+            audit_attempt=new, touch_stage_timestamp=True,
+        )
+        return new
+    except Exception:
+        return 0
+
 
 _TUNER_STRUCTURAL_PATTERNS = [
     "add parameter", "add a parameter", "function signature",
@@ -266,6 +326,35 @@ async def run_master(args):
     direction_audit_str = args.get("direction_audit", "")
 
     _set_pipeline_status(f"Master planning for v{next_v}")
+
+    # Hard cap: refuse to re-burn Master LLM budget if it has already failed
+    # (plan-JSON collapse or audit rejection) MAX_MASTER_TOTAL_FAILURES times
+    # this generation. See MAX_MASTER_TOTAL_FAILURES docstring.
+    try:
+        from evolution_infra import read_pipeline_checkpoint
+        _ckpt_m = read_pipeline_checkpoint() or {}
+        _master_fails = int(_ckpt_m.get("audit_attempt") or 0) if _ckpt_m.get("next_v") == next_v else 0
+    except Exception:
+        _master_fails = 0
+    if _master_fails >= MAX_MASTER_TOTAL_FAILURES:
+        _ui = _get_ui()
+        try:
+            log_system_event("pipeline.master_exhausted", "error",
+                             f"Master exhausted {_master_fails} attempts for v{next_v} — refusing retry, directing abandon",
+                             {"next_v": next_v, "source_v": source_v, "fail_count": _master_fails})
+        except Exception:
+            pass
+        return {"content": [{"type": "text", "text": json.dumps({
+            "error": "MASTER_EXHAUSTED",
+            "fail_count": _master_fails,
+            "directive": (f"Master planning has failed {_master_fails} times for v{next_v} "
+                          "(Master JSON collapses under the current direction-audit constraints; "
+                          "retrying again will waste more budget with the same outcome). "
+                          "Do NOT call run_master again. Call abandon_generation to clear this "
+                          "stuck generation so the next cycle can start fresh (it may pick "
+                          "crossover or a different source ancestor)."),
+            "logs": _ui.get_output() if _ui else "",
+        })}]}
 
     # Parse direction audit from arg or checkpoint
     direction_audit = None
@@ -550,7 +639,8 @@ async def run_master(args):
     )
 
     if data is None:
-        return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed to produce a valid plan after 3 retries", "logs": ui.get_output()})}]}
+        _nf = _bump_master_fail_count(next_v, source_v)
+        return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed to produce a valid plan after 3 retries", "fail_count": _nf, "directive": "If run_master keeps failing, do NOT retry indefinitely — call abandon_generation to restart the generation fresh.", "logs": ui.get_output()})}]}
 
     # --- P0-1: Post-Master Plan Verification Audit ---
     # Capped retry loop: on audit rejection with retry_recommended, re-plan AND
@@ -610,7 +700,8 @@ async def run_master(args):
                 opponent_profiles=opponent_profiles,
             )
             if data is None:
-                return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed after audit retry", "logs": ui.get_output()})}]}
+                _nf = _bump_master_fail_count(next_v, source_v, value=_audit_attempt)
+                return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed after audit retry", "fail_count": _nf, "directive": "If run_master keeps failing, call abandon_generation to restart fresh.", "logs": ui.get_output()})}]}
             # Persist audit_attempt so crash-resume resumes at this count (not 0)
             try:
                 write_pipeline_checkpoint(next_v, source_v, "master_planned",
