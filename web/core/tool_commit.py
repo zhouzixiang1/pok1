@@ -186,15 +186,18 @@ async def commit_bot(args):
         if ckpt:
             critic_gate = ckpt.get("gate_results", {}).get("critic", {})
             critic_score = critic_gate.get("score", 0)
-            # Calculate rating delta
+            # Calculate rating delta using conservative ratings (r - 2*rd) so the
+            # critic calibration note reflects skill differences rather than
+            # RD-inflated point estimates. A high-RD new bot shouldn't register a
+            # spurious large positive delta just because its r hasn't converged.
             rating_delta = 0
             ratings_cal = load_ratings()
             vp = ratings_cal.get(f"claude_v{v}")
             sp = ratings_cal.get(f"claude_v{source_v}")
-            v_rating = vp.r if vp else 0
-            s_rating = sp.r if sp else 0
-            if v_rating and s_rating:
-                rating_delta = round(v_rating - s_rating, 1)
+            v_cons = vp.conservative_rating() if vp else None
+            s_cons = sp.conservative_rating() if sp else None
+            if v_cons is not None and s_cons is not None:
+                rating_delta = round(v_cons - s_cons, 1)
             cal_file = RESULTS_DIR / "critic_calibration.jsonl"
             cal_entry = json.dumps({
                 "version": v, "source_v": source_v,

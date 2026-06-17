@@ -27,6 +27,14 @@ import logging
 
 log = logging.getLogger("pok.daemon")
 
+# Stable identifier for this daemon run, stamped into every rating_history
+# snapshot. Lets readers (stagnation_analyzer, etc.) filter to the single
+# continuous timeline produced by THIS run, ignoring snapshots from prior runs
+# that were concatenated into the same file (which corrupt trend analysis).
+# Set once in main(); remains None for ad-hoc save_ratings() calls outside a run.
+import uuid as _uuid
+daemon_run_id: str | None = None
+
 try:
     from battle_scheduler import (
         BattleResult,
@@ -124,6 +132,7 @@ def save_ratings(ratings, save_num=None):
         snapshot = {
             "period": save_num,
             "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "daemon_run_id": daemon_run_id,  # None for ad-hoc calls; set in main()
             "ratings": {name: {"r": p.r, "rd": p.rd, "sigma": p.sigma} for name, p in ratings.items()},
             "win_rates": win_rates,
         }
@@ -397,9 +406,11 @@ def process_result(result, ratings, h2h, bot_stats, verbose=False):
     _default = Glicko2Player()
     player_a = ratings.get(a, _default)
     player_b = ratings.get(b, _default)
-    # Snapshot opponent ratings as they were before this match
-    opp_a_snapshot = Glicko2Player(player_a.r, player_a.rd, player_a.sigma)
-    opp_b_snapshot = Glicko2Player(player_b.r, player_b.rd, player_b.sigma)
+    # Snapshot opponent ratings as they were before this match (carry last_play_period)
+    opp_a_snapshot = Glicko2Player(player_a.r, player_a.rd, player_a.sigma,
+                                   last_play_period=getattr(player_a, 'last_play_period', None))
+    opp_b_snapshot = Glicko2Player(player_b.r, player_b.rd, player_b.sigma,
+                                   last_play_period=getattr(player_b, 'last_play_period', None))
 
     # Build results lists for the rating period (all games in this match)
     results_a = []
@@ -526,11 +537,36 @@ def _refresh_action_stats_async(active_bots):
 
 def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
                played_bots=None, verbose=False):
-    """Write all data files to disk. Apply RD decay to bots that didn't play."""
+    """Write all data files to disk. Apply RD decay to bots that didn't play.
+
+    RD decay now uses the TRUE number of rating periods elapsed since each idle
+    bot last competed (Glickman Step 1b: phi* = sqrt(phi^2 + sigma^2 * t)),
+    rather than a flat one-period hit per save cycle. A bot idle for N cycles
+    receives N periods of uncertainty growth at once. The per-save-cycle sawtooth
+    (play -> RD drops -> idle one cycle -> RD snaps back) is eliminated.
+
+    Bots that played this cycle are "refreshed": their last_play_period is stamped
+    to the current save_num so future idle spans are measured from now.
+    """
     if played_bots is not None:
         for b in active_bots:
-            if b not in played_bots and b in ratings:
-                ratings[b] = decay_rd(ratings[b])
+            if b not in ratings:
+                continue
+            p = ratings[b]
+            if b in played_bots:
+                # Refreshed this cycle — stamp last_play_period so idle spans reset.
+                ratings[b] = Glicko2Player(p.r, p.rd, p.sigma, last_play_period=save_num)
+            else:
+                # Idle: grow RD by the number of periods actually elapsed since
+                # the bot last played. last_play_period is None only for a
+                # never-played bot (still at default rd=350); treat as one period.
+                last_per = getattr(p, 'last_play_period', None)
+                elapsed = (save_num - last_per) if last_per is not None else 1
+                # Clamp to guard against corrupted/gapped period counters
+                # (e.g. a daemon restart that jumps save_num). 50 periods of idle
+                # already pushes RD well past DEFAULT_RD, so this only bounds abuse.
+                elapsed = max(1, min(elapsed, 50))
+                ratings[b] = decay_rd(p, elapsed)
     save_ratings(ratings, save_num=save_num)
 
     # Recompute win rates for H2H
@@ -647,7 +683,11 @@ def main():
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
-    global running
+    global running, daemon_run_id
+    # Stamp this run with a unique id so rating_history readers can isolate the
+    # single continuous timeline produced here, ignoring stale concatenated runs.
+    daemon_run_id = str(_uuid.uuid4())[:8]
+    log.info("Daemon run id: %s", daemon_run_id)
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
 

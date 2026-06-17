@@ -424,18 +424,20 @@ async def diagnose_environment(args):
     else:
         snapshot_lines.append("No recent worker failures.")
 
-    # Rating summary for top bots
+    # Rating summary for top bots. Rank by the conservative rating (r - 2*rd)
+    # so high-RD bots with inflated point estimates don't top the list shown to
+    # the LLM diagnostic. Display r/rd alongside for transparency.
     sorted_bots = sorted(
         [(name, p) for name, p in ratings.items() if name.startswith("claude_v")],
-        key=lambda x: x[1].r, reverse=True,
+        key=lambda x: x[1].conservative_rating(), reverse=True,
     )[:10]
     if sorted_bots:
         snapshot_lines.append("")
-        snapshot_lines.append("Top 10 rated bots:")
+        snapshot_lines.append("Top 10 rated bots (by conservative r-2*rd):")
         for name, p in sorted_bots:
             v_str = name.replace("claude_v", "")
             tag = "✓" if git_has_tag(int(v_str)) else "✗"
-            snapshot_lines.append(f"  {name}: r={p.r:.0f} rd={p.rd:.0f} {tag}")
+            snapshot_lines.append(f"  {name}: r={p.r:.0f} rd={p.rd:.0f} cons={p.conservative_rating():.0f} {tag}")
 
     # Daemon status
     daemon_running = False

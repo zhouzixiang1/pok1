@@ -347,19 +347,21 @@ def _decide_strategy(combined, current_v, ratings):
     # from that oscillating set to break out of the cycle.
     oscillating = _detect_source_oscillation(n=8, max_unique=3)
     if oscillating:
-        # Find highest and lowest rated bots within the oscillating set
+        # Find highest and lowest rated bots within the oscillating set, using the
+        # conservative rating (r - 2*rd) so RD-inflated point estimates don't bias
+        # which bots are treated as "strongest"/"weakest" crossover parents.
         osc_ratings = {}
         for sv in oscillating:
             bot_key = f"claude_v{sv}"
             if bot_key in ratings:
-                osc_ratings[sv] = ratings[bot_key].r
+                osc_ratings[sv] = ratings[bot_key].conservative_rating()
         if len(osc_ratings) >= 2:
             highest_v = max(osc_ratings, key=osc_ratings.get)
             lowest_v = min(osc_ratings, key=osc_ratings.get)
             if highest_v != lowest_v:
                 log.warning(
-                    "Source-v oscillation: forcing crossover between highest-rated v%d (%.0f) "
-                    "and lowest-rated v%d (%.0f) from oscillating set %s",
+                    "Source-v oscillation: forcing crossover between highest-rated v%d (%.0f cons) "
+                    "and lowest-rated v%d (%.0f cons) from oscillating set %s",
                     highest_v, osc_ratings[highest_v],
                     lowest_v, osc_ratings[lowest_v],
                     sorted(oscillating),
@@ -492,10 +494,15 @@ def _detect_source_oscillation(n=8, max_unique=3):
 
 
 def _get_glicko_leader_v(ratings):
-    """Return the version number of the highest-rated active bot."""
+    """Return the version number of the highest-rated active bot.
+
+    Uses the conservative rating (r - 2*rd, the 95% lower bound) rather than
+    bare r, so a high-RD bot with an inflated point estimate cannot hijack the
+    leader slot. This is the seed chosen when a source-v loop forces a branch.
+    """
     if not ratings:
         return None
-    best_bot = max(ratings, key=lambda b: ratings[b].r)
+    best_bot = max(ratings, key=lambda b: ratings[b].conservative_rating())
     try:
         return int(best_bot.split("_v")[1])
     except (ValueError, IndexError):

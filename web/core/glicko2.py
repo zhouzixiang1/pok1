@@ -3,10 +3,18 @@ Glicko-2 Rating System
 Based on Professor Mark Glickman's algorithm:
 http://www.glicko.net/glicko/glicko2.pdf
 
-Each player maintains three values:
-  r     - rating (default 1500)
-  rd    - rating deviation, measures uncertainty (default 350)
-  sigma - volatility, measures expected fluctuation (default 0.06)
+Each player maintains four values:
+  r               - rating (default 1500)
+  rd              - rating deviation, measures uncertainty (default 350)
+  sigma           - volatility, measures expected fluctuation (default 0.06)
+  last_play_period - daemon rating-period INDEX (integer save_num) of the
+                    player's most recent game (None if never played). Enables
+                    real-time-elapsed RD decay (Glickman Step 1b / Lichess
+                    fractional-period practice) so an idle bot's RD grows by
+                    the number of periods actually elapsed since it last
+                    competed, rather than one period per save cycle.
+                    NOTE: this is distinct from the display-only ISO-timestamp
+                    "last_period" field persisted in glicko_ratings.json.
 
 95% confidence interval: r +/- 2*rd
 """
@@ -23,14 +31,21 @@ DEFAULT_SIGMA = 0.06
 
 
 class Glicko2Player:
-    __slots__ = ('r', 'rd', 'sigma')
+    __slots__ = ('r', 'rd', 'sigma', 'last_play_period')
 
-    def __init__(self, r=DEFAULT_R, rd=DEFAULT_RD, sigma=DEFAULT_SIGMA):
+    def __init__(self, r=DEFAULT_R, rd=DEFAULT_RD, sigma=DEFAULT_SIGMA, last_play_period=None):
         self.r = r
         self.rd = rd
         self.sigma = sigma
+        self.last_play_period = last_play_period
 
     def to_dict(self):
+        # NOTE: we deliberately do NOT serialize last_play_period here, because
+        # the persisted glicko_ratings.json reuses the key "last_period" for a
+        # display-only ISO timestamp (see elo_daemon.save_ratings). The in-memory
+        # last_play_period is reconstructed by the daemon each run; it is not a
+        # durable correctness signal (a fresh daemon simply measures idle spans
+        # from startup, which is conservative and correct).
         return {"r": self.r, "rd": self.rd, "sigma": self.sigma}
 
     @staticmethod
@@ -39,6 +54,7 @@ class Glicko2Player:
             r=d.get("r", DEFAULT_R),
             rd=d.get("rd", DEFAULT_RD),
             sigma=d.get("sigma", DEFAULT_SIGMA),
+            last_play_period=None,  # never loaded from disk; set by daemon
         )
 
     def conservative_rating(self):
@@ -46,7 +62,8 @@ class Glicko2Player:
         return self.r - 2 * self.rd
 
     def __repr__(self):
-        return f"Glicko2Player(r={self.r:.1f}, rd={self.rd:.1f}, sigma={self.sigma:.4f})"
+        lp = self.last_play_period if self.last_play_period is not None else "-"
+        return f"Glicko2Player(r={self.r:.1f}, rd={self.rd:.1f}, sigma={self.sigma:.4f}, lpp={lp})"
 
 
 def _g(phi):
@@ -73,11 +90,15 @@ def update_rating_period(player, results):
     mu = (player.r - DEFAULT_R) / SCALE
     phi = player.rd / SCALE
 
+    # Preserve the player's last_play_period across the update (the caller sets
+    # it to the current period after a played match; an unplayed period keeps it).
+    last_play_period = getattr(player, 'last_play_period', None)
+
     # Step 3: Compute g(phi_j) and E(mu, mu_j, phi_j) for each opponent
     if not results:
         # Step 6: Player didn't play, only increase RD
         phi_star = math.sqrt(phi * phi + player.sigma * player.sigma)
-        player_new = Glicko2Player(player.r, phi_star * SCALE, player.sigma)
+        player_new = Glicko2Player(player.r, phi_star * SCALE, player.sigma, last_play_period)
         return player_new
 
     opponents_mu = []
@@ -100,7 +121,7 @@ def update_rating_period(player, results):
     if v_inv < 1e-10:
         # Degenerate case: all opponents at extreme rating difference
         phi_star = math.sqrt(phi * phi + player.sigma * player.sigma)
-        return Glicko2Player(player.r, phi_star * SCALE, player.sigma)
+        return Glicko2Player(player.r, phi_star * SCALE, player.sigma, last_play_period)
 
     v = 1.0 / v_inv
     delta = delta_sum * v
@@ -166,9 +187,9 @@ def update_rating_period(player, results):
     # Reject pathological updates (numerical blow-ups: |delta|>200 or out-of-range)
     if abs(r_new - player.r) > 200 or not (-1000 <= r_new <= 3000):
         phi_star = math.sqrt(phi * phi + player.sigma * player.sigma)
-        return Glicko2Player(player.r, phi_star * SCALE, player.sigma)
+        return Glicko2Player(player.r, phi_star * SCALE, player.sigma, last_play_period)
 
-    return Glicko2Player(r_new, rd_new, sigma_star)
+    return Glicko2Player(r_new, rd_new, sigma_star, last_play_period)
 
 
 def update_single_game(player, opponent, score, tau=TAU):
@@ -195,13 +216,15 @@ def update_single_game(player, opponent, score, tau=TAU):
     g_j = _g(phi_j)
     e_j = _E(mu, mu_j, phi_j)
 
+    last_play_period = getattr(player, 'last_play_period', None)
+
     # Variance contribution from this single game
     v_inv = g_j * g_j * e_j * (1.0 - e_j)
     if v_inv < 1e-10:
         # Degenerate case: extreme rating difference — still grow RD by sigma
         phi = player.rd / SCALE
         phi_star = math.sqrt(phi * phi + player.sigma * player.sigma)
-        return Glicko2Player(player.r, phi_star * SCALE, player.sigma)
+        return Glicko2Player(player.r, phi_star * SCALE, player.sigma, last_play_period)
 
     v = 1.0 / v_inv
     delta_sum = g_j * (score - e_j)
@@ -214,25 +237,39 @@ def update_single_game(player, opponent, score, tau=TAU):
     r_new = mu_new * SCALE + DEFAULT_R
     rd_new = phi_new * SCALE
 
-    return Glicko2Player(r_new, rd_new, player.sigma)
+    return Glicko2Player(r_new, rd_new, player.sigma, last_play_period)
 
 
 def decay_rd(player, elapsed_periods=1):
     """
-    Increase RD for a player who hasn't played recently.
-    Called when a player is inactive for one or more rating periods.
+    Increase RD for a player who hasn't played recently, following Glickman's
+    original Glicko-2 specification (Step 1b):
 
-    RD is clamped at DEFAULT_RD (350) so prolonged inactivity can never push a
-    bot past its initial uncertainty. Active bots (rd well below 350, e.g.
-    rd<100) are unaffected because their post-decay phi_star stays far under
-    DEFAULT_RD/SCALE.
+        phi* = sqrt(phi^2 + sigma^2 * t)
+
+    where t is the number of rating periods elapsed since the player last
+    competed. RD is capped at DEFAULT_RD (350, the uncertainty of an unrated
+    player) but has NO lower floor — so an active bot's RD converges to a low
+    steady state (~40-80 for typical sigma), and only regrows smoothly as real
+    time passes without games.
+
+    This is the standard formulation used by Lichess (fractional rating periods,
+    t = elapsed_time * 0.21436) and online-go/goratings (expand_deviation(age)).
+    The caller passes t = (current_period - player.last_play_period) where
+    player.last_play_period is the rating-period index of the bot's last game.
+
+    PREVIOUS (BUGGY) BEHAVIOR: a floor at RD=150 plus a spurious "*4" multiplier
+    snapped every idle bot's RD back to 150 each save cycle, producing a sawtooth
+    (play -> RD drops to ~50 -> idle one cycle -> RD jumps to 150) that prevented
+    ratings from ever converging and made conservative_score (r-2*rd) meaningless.
     """
+    last_play_period = getattr(player, 'last_play_period', None)
     if elapsed_periods <= 0:
-        return Glicko2Player(player.r, player.rd, player.sigma)
+        return Glicko2Player(player.r, player.rd, player.sigma, last_play_period)
 
     phi = player.rd / SCALE
-    # Allow gradual RD recovery for long-idle bots (current clamp pins rd at ~50)
-    floor_phi = max(phi, 150.0 / SCALE)  # never decrease rd
-    phi_star = math.sqrt(phi * phi + player.sigma * player.sigma * elapsed_periods * 4)
-    phi_star = max(floor_phi, min(phi_star, DEFAULT_RD / SCALE))
-    return Glicko2Player(player.r, phi_star * SCALE, player.sigma)
+    # Official Glicko-2 Step 1b: phi* = sqrt(phi^2 + sigma^2 * t).
+    # No lower floor; only the DEFAULT_RD upper cap from the paper.
+    phi_star = math.sqrt(phi * phi + (player.sigma ** 2) * elapsed_periods)
+    phi_star = min(phi_star, DEFAULT_RD / SCALE)
+    return Glicko2Player(player.r, phi_star * SCALE, player.sigma, last_play_period)

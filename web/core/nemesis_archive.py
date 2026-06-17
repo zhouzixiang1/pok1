@@ -45,7 +45,7 @@ NEMESIS_ARCHIVE_FILE = RESULTS_DIR / "nemesis_archive.json"
 # enough games to be above the H2H noise floor. Mirrors the probe thresholds in
 # tool_helpers so the archive and the live scan agree on what counts as a nemesis.
 NEMESIS_WINRATE_THRESHOLD = 0.40
-NEMESIS_MIN_GAMES = 4
+NEMESIS_MIN_GAMES = 15   # raised from 4: 4-game H2H has ~±0.25 winrate stderr
 
 
 def _h2h_winrate(bot_name, opponent, h2h):

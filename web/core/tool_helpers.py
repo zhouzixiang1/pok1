@@ -38,7 +38,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 # observation about a probable inherited weakness. Default ON because it is
 # non-blocking.
 PRECOMMIT_NEMESIS_SLOT = True
-PRECOMMIT_NEMESIS_MIN_GAMES = 4          # filter low-sample h2h noise
+PRECOMMIT_NEMESIS_MIN_GAMES = 15         # raised from 4: filter low-sample h2h noise
 PRECOMMIT_NEMESIS_WINRATE_THRESHOLD = 0.40  # only probe a real weakness
 
 

@@ -126,11 +126,13 @@ class TestNemesisSlot:
         monkeypatch.setattr(tool_helpers, "get_active_bots",
                             lambda: ["claude_v98", "claude_vA", "claude_vB", "claude_vTop"])
         # v98 is the parent. vB (wr 0.1) is the weak-slot pick; vA (wr 0.3)
-        # is the nemesis probe (next-worst, distinct from weak).
+        # is the nemesis probe (next-worst, distinct from weak). Counts scaled to
+        # >=15 games per pair to clear the raised PRECOMMIT_NEMESIS_MIN_GAMES=15
+        # floor (win rates preserved).
         h2h = self._h2h_with("claude_v98", [
-            ("claude_vA", 3, 10),    # wr 0.3
-            ("claude_vB", 1, 10),    # wr 0.1 -> weak slot
-            ("claude_vTop", 7, 10),  # wr 0.7 -> top
+            ("claude_vA", 6, 20),    # wr 0.3
+            ("claude_vB", 2, 20),    # wr 0.1 -> weak slot
+            ("claude_vTop", 14, 20), # wr 0.7 -> top
         ])
         monkeypatch.setattr(tool_helpers, "_load_h2h_data", lambda: h2h)
         # load_h2h_avg_winrates + _load_h2h_data both read the file; patch the
@@ -206,12 +208,14 @@ class TestNemesisSlot:
         monkeypatch.setattr(tool_helpers, "_bot_main", lambda n: bots_dir / n / "main.py")
         monkeypatch.setattr(tool_helpers, "get_active_bots",
                             lambda: ["claude_v98", "claude_vA", "claude_vB", "claude_vWeak2", "claude_vTop", "claude_vTop2"])
+        # Counts scaled to >=15 games per pair to clear the raised
+        # PRECOMMIT_NEMESIS_MIN_GAMES=15 floor (win rates preserved).
         h2h = self._h2h_with("claude_v98", [
-            ("claude_vA", 5, 10),
-            ("claude_vB", 1, 10),    # wr 0.1 -> weak
-            ("claude_vWeak2", 3, 10),  # wr 0.3 -> nemesis (next-worst)
-            ("claude_vTop", 7, 10),
-            ("claude_vTop2", 6, 10),
+            ("claude_vA", 10, 20),
+            ("claude_vB", 2, 20),     # wr 0.1 -> weak
+            ("claude_vWeak2", 6, 20), # wr 0.3 -> nemesis (next-worst)
+            ("claude_vTop", 14, 20),
+            ("claude_vTop2", 12, 20),
         ])
         monkeypatch.setattr(tool_helpers, "_load_h2h_data", lambda: h2h)
         monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates",

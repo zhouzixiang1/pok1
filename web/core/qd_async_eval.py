@@ -141,20 +141,22 @@ def _select_eval_opponents(source_v: int, max_opponents: int = 3):
             ratings = load_ratings() or {}
         except Exception:
             ratings = {}
-        # Pair name-> (conservative_rating); sort desc.
+        # Pair name -> (conservative_rating r-2*rd); sort desc. Use the standard
+        # 95% lower bound (2*rd) consistent with the rest of the codebase, and
+        # read the real Glicko2Player fields (r, not a non-existent "rating").
+        from glicko2 import Glicko2Player
         scored = []
         for name in active:
             if f"claude_v{source_v}" == name:
                 continue
             try:
-                rec = ratings.get(name, {})
-                if isinstance(rec, dict):
-                    r = rec.get("rating", 1500)
-                    rd = rec.get("rd", 200)
+                rec = ratings.get(name)
+                if rec is None:
+                    cons = Glicko2Player().conservative_rating()  # default 1500-700=800
+                elif isinstance(rec, dict):
+                    cons = rec.get("r", Glicko2Player().r) - 2 * rec.get("rd", Glicko2Player().rd)
                 else:
-                    r = getattr(rec, "rating", 1500)
-                    rd = getattr(rec, "rd", 200)
-                cons = r - rd if rd is not None else r
+                    cons = rec.conservative_rating()  # Glicko2Player method
                 scored.append((cons, name))
             except Exception:
                 scored.append((0.0, name))

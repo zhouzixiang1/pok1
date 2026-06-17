@@ -658,8 +658,13 @@ async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=
     """
     from daemon_management import daemon_proc, _daemon_lock
 
-    EVAL_RD_THRESHOLD = 60
-    EVAL_RD_MIN_GAMES = 20
+    # RD-based confidence early-exit. Now that decay_rd uses the official Glicko-2
+    # formula (no 150 floor), RD genuinely converges as a bot accumulates games,
+    # so this branch is no longer dead. Threshold 90 ≈ a ±180 confidence band;
+    # combined with the ≥30-game sample floor it means "rated well enough to
+    # proceed without waiting the full 600s timeout or 100-game hard gate".
+    EVAL_RD_THRESHOLD = 90
+    EVAL_RD_MIN_GAMES = 30
 
     start = time.time()
     cached_bot_stats = None

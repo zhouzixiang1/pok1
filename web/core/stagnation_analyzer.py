@@ -75,14 +75,45 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui, prev_critic_in
         pass
 
     # ── Daemon period history (top-3, not just top-1) ──
+    # Isolate the single continuous timeline from the most recent daemon run by
+    # its daemon_run_id. rating_history.jsonl is append-only and historically
+    # accumulated concatenated runs (period jumps + backwards timestamps) that
+    # corrupted trend analysis. Each snapshot now carries daemon_run_id; we keep
+    # only the tail contiguous block sharing the latest run id.
     history_file = RESULTS_DIR / "rating_history.jsonl"
     history_ctx = ""
     if history_file.exists():
         with locked_file(history_file, "r") as f:
             lines = f.readlines()
-        for line in lines[-10:]:
+        # Determine the latest run id present, then take the trailing contiguous
+        # block with that id (drops any stale lines from earlier runs).
+        parsed = []
+        latest_run_id = None
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
             try:
-                snap = json.loads(line.strip())
+                snap = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            rid = snap.get("daemon_run_id")
+            parsed.append((rid, snap))
+            if rid is not None:
+                latest_run_id = rid
+        if latest_run_id is not None:
+            # Walk backward from the end while run id matches; older entries with
+            # a different/None id belong to prior runs and are excluded.
+            i = len(parsed)
+            while i > 0 and parsed[i - 1][0] == latest_run_id:
+                i -= 1
+            recent = parsed[i:]
+        else:
+            # Legacy data without run ids: fall back to the last 10 lines as-is.
+            recent = parsed[-10:]
+        # Take at most the last 10 snapshots of the isolated run.
+        for _rid, snap in recent[-10:]:
+            try:
                 wr_data = snap.get("win_rates", {})
                 wrs = [(k, v["h2h_avg_wr"]) for k, v in wr_data.items() if v.get("h2h_avg_wr") is not None]
                 if wrs:
@@ -92,7 +123,7 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui, prev_critic_in
                 else:
                     top = max(p["r"] for p in snap["ratings"].values())
                     history_ctx += f"  Period {snap['period']}: top_r={top:.0f}\n"
-            except (json.JSONDecodeError, KeyError):
+            except (KeyError, TypeError, ValueError):
                 continue
 
     # ── Recent worker failures (for context) ──

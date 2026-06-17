@@ -151,7 +151,7 @@ class TestDecayRd:
         assert p2.rd > p.rd
 
     def test_multiple_periods(self):
-        # Start above the 150 recovery floor so decay still rises with more idle time.
+        # More idle periods => strictly more RD growth (official Step 1b).
         p = Glicko2Player(1500, 200, 0.06)
         p1 = decay_rd(p, 1)
         p2 = decay_rd(p, 2)
@@ -162,21 +162,38 @@ class TestDecayRd:
         p2 = decay_rd(p, 0)
         assert p2.rd == p.rd
 
-    def test_low_rd_recovers_to_floor(self):
-        # Long-idle bots with low RD recover to the ~150 floor (Step 1 P0-A).
+    def test_official_formula_phi_star(self):
+        # Verify phi* = sqrt(phi^2 + sigma^2 * t) exactly (no floor, no *4).
+        # Glickman Step 1b; Lichess/online-go use the same closed form.
+        import math
+        for rd0, sigma, t in [(50, 0.06, 1), (50, 0.06, 5), (80, 0.06, 1),
+                              (30, 0.09, 10), (200, 0.06, 3)]:
+            p = Glicko2Player(1500, rd0, sigma)
+            got = decay_rd(p, t).rd
+            expected = min(math.sqrt((rd0 / SCALE) ** 2 + (sigma ** 2) * t) * SCALE,
+                           DEFAULT_RD)
+            assert abs(got - expected) < 1e-6, f"rd0={rd0} t={t}: got {got} exp {expected}"
+
+    def test_no_floor_low_rd_grows_gradually(self):
+        # The buggy 150 floor used to snap low-RD bots straight to 150 in one
+        # period. The official formula grows RD gradually: a single idle period
+        # from rd=50 with sigma=0.06 should land near 51, NOT 150.
         p = Glicko2Player(1500, 50, 0.06)
-        recovered = decay_rd(p, 5)
-        assert recovered.rd >= 150.0
-        assert recovered.rd <= DEFAULT_RD
+        p1 = decay_rd(p, 1)
+        assert p1.rd < 60, f"single-period decay from rd=50 should stay low, got {p1.rd}"
+        # Even several periods shouldn't snap to 150
+        p5 = decay_rd(p, 5)
+        assert p5.rd < 60, f"5-period decay from rd=50 sigma=0.06 should stay low, got {p5.rd}"
 
     def test_rd_monotonic_non_decreasing(self):
-        # decay_rd must never decrease rd (floor enforces this).
+        # Repeated single-period decay must never decrease rd (sqrt of sum of
+        # positive terms is monotonic). No floor is involved.
         cur = Glicko2Player(1500, 80, 0.06)
         for _ in range(10):
             nxt = decay_rd(cur, 1)
             assert nxt.rd >= cur.rd
             cur = nxt
-        assert 50 <= cur.rd <= DEFAULT_RD
+        assert cur.rd <= DEFAULT_RD
 
     def test_rd_clamped_at_default(self):
         # Large multi-period decay must not push rd past DEFAULT_RD (350).
@@ -191,14 +208,17 @@ class TestDecayRd:
             assert cur.rd <= DEFAULT_RD
         assert cur.rd <= DEFAULT_RD
 
-    def test_rd_recovery_floor_applies_to_low_rd_bots(self):
-        # Step 1 intentionally restores low-RD idle bots to at least ~150 so
-        # conservative_rating reflects uncertainty for long-idle bots.
-        p = Glicko2Player(1600, 80, 0.06)
-        p2 = decay_rd(p, 1)
-        assert p2.rd == 150.0
-        assert p2.rd < DEFAULT_RD
-        assert p2.rd > p.rd
+    def test_elapsed_periods_scale_growth(self):
+        # decay_rd(p, t) should equal t applications of decay_rd(p, 1) in RD
+        # growth: sqrt(phi^2 + sigma^2*t) == iterating sqrt(phi^2+sigma^2) t times.
+        # (Equivalent because sigma is constant and the terms add in quadrature.)
+        p0 = Glicko2Player(1500, 50, 0.06)
+        one_shot = decay_rd(p0, 10).rd
+        cur = p0
+        for _ in range(10):
+            cur = decay_rd(cur, 1)
+        iterated = cur.rd
+        assert abs(one_shot - iterated) < 1e-6, f"one_shot {one_shot} vs iterated {iterated}"
 
 
 class TestDegenerateCases:
