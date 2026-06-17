@@ -84,10 +84,10 @@ def classify_preflop_hand(my_cards):
     # Non-pair hands
     if high == 14 and low >= 12:        # AK, AQ
         return "big_cards"
-    # CROSSOVER (imported from v111, originally v109/v108/v89): explicit
-    # implied-odds bucket for suited broadways (KQs, KJs, QJs, QTs, JTs)
-    # instead of falling into the offsuit 'playable' bucket. These hands flop
-    # strong draws / two-pair+ often enough to play vs raises with implied odds.
+    # CROSSOVER (imported from v109/v108/v89): explicit implied-odds bucket for
+    # suited broadways (KQs, KJs, QJs, QTs, JTs) instead of falling into the
+    # offsuit 'playable' bucket. These hands flop strong draws / two-pair+
+    # often enough to play vs raises with implied odds.
     if suited and 11 <= high <= 13 and low >= 10:
         return "broadway_suited"
     if suited and high == 14:           # A2s-AJs (AK caught above)

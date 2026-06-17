@@ -31,7 +31,6 @@ from strategy_helpers import (
     postflop_call_margin, realized_postflop_equity,
     sizing_exploit_adjustment, bluff_heavy_call_widen,
     exploit_dispatch, river_value_raise_tier,
-    facing_barrel_continuation,
 )
 
 
@@ -236,7 +235,7 @@ def choose_raise(
         ratio += confidence * max(0.0, fold_to_raise - 0.58) * 0.22
     inducing_value = (induce_mode or value_plan.get("induce", False)) and to_call == 0 and value_profile.get("tier") == "nut"
     if inducing_value:
-        induce_cap = 0.35 + 0.05 * round_idx + 0.10 * wetness
+        induce_cap = 0.29 + 0.05 * round_idx + 0.05 * wetness
         ratio = min(ratio, induce_cap)
     if probe_mode:
         probe_ratio = 0.25 + 0.08 * wetness
@@ -249,8 +248,7 @@ def choose_raise(
         ratio = min(ratio, probe_ratio)
     thin_cap = None
     if value_plan.get("thin_control", False) and value_profile.get("tier") != "nut":
-        base_thin = 0.35 if round_idx <= 2 else 0.42
-        thin_cap = base_thin + 0.15 * wetness
+        thin_cap = 0.30 if round_idx <= 2 else 0.38
         ratio = min(ratio, thin_cap)
     low_ratio = 0.28 if inducing_value else 0.22 if probe_mode or (blocker_bluff and to_call == 0) else 0.40
     if thin_cap is not None:
@@ -367,7 +365,7 @@ def _sb_open_bucket_action(hand_cat, opponent_model, trash_hand):
     if hand_cat in ('premium', 'strong_pair', 'mid_pair', 'big_cards'):
         return 'raise'
 
-    implied = hand_cat in ('small_pair', 'suited_ace', 'suited_connector')
+    implied = hand_cat in ('small_pair', 'suited_ace', 'suited_connector', 'broadway_suited')
     marginal = hand_cat == 'playable'
 
     if implied:
@@ -401,15 +399,14 @@ def _bb_vs_raise_bucket_action(hand_cat, opponent_model, pot_odds, preflop_stren
 
     if hand_cat in ('premium', 'big_cards') and not trash_hand:
         return 'value_raise'
-    # CROSSOVER (imported from v111): broadway_suited (KQs/KJs/QJs/QTs/JTs)
+    # CROSSOVER (from v109/v108/v89): broadway_suited (KQs/KJs/QJs/QTs/JTs)
     # gets a dedicated call/fold decision with implied-odds reasoning.
-    # MUTATION (offensive nudge on v104 base): widen pot-odds gate from
-    # v111's 0.36 -> 0.40 (~11% relaxation). v104's defensive framework
-    # (barrel fold signal, single-reraise guard, wetness caps) already
-    # protects against over-calling postflop, so we can defend slightly
-    # wider preflop with implied-odds suited broadways. Memory says
-    # v107-110 exhausted the defensive-guard chain; this is a calibrated
-    # offensive lever that v104 lacks entirely.
+    # MUTATION (v115 offensive widening): relax pot-odds gate 0.36 (v111) -> 0.40
+    # (~11% threshold relaxation) so we defend wider with implied-odds suited
+    # broadways vs opens. Combined with the v102 probe_mode fix (crossover above)
+    # this restores correct value sizing AND widens the broadway defense range —
+    # both offensive moves aligned with the experience-pool directive to pivot
+    # OFFENSE after the exhausted defensive-guard chain (v107-110).
     if hand_cat == 'broadway_suited' and not trash_hand:
         if pot_odds <= 0.40 or win_rate >= pot_odds - 0.02:
             return 'call'
@@ -531,14 +528,12 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
             )
             if raise_amount is not None:
                 return raise_amount
-        # CROSSOVER (imported from v111): call with broadway suited
+        # Call with most limp-range hands, including broadway suited
         # (KQs/KJs/QJs/QTs/JTs) which flop playable draws / two-pair+ often
-        # enough to justify the call vs iso-raise, before the generic
-        # preflop_strength/win_rate gate below (which tends to fold them).
+        # enough to justify the call vs limp.
         _hand_cat_iso = classify_preflop_hand(req['my_cards'])
         if _hand_cat_iso == 'broadway_suited' and not trash_hand:
             return 0
-        # Call with most limp-range hands
         if preflop_strength >= 0.34 or win_rate >= pot_odds_iso - 0.03:
             return 0
         return -1
@@ -671,35 +666,6 @@ def _should_checkraise_trap(value_profile, round_idx, board_texture, opponent_mo
         return False
 
     return True
-
-
-def _single_reraise_stackoff_guard(round_idx, value_profile, made_strength, spot_info, spr):
-    """Cap sub-nut hands facing a SINGLE opponent re-raise on turn/river.
-
-    Targets the blind spot of repeated_raise_trap (which needs >=2 opp raises).
-    When the opponent raised exactly ONCE (a single 3-bet / re-raise) on turn or
-    river, our hand is sub-nut (tier != 'nut'), and SPR is low (< 3.0, meaning
-    effective stack-off territory), return 0 (call) to avoid bot-initiated
-    all-in shoves that lose 20K with one-pair / weak-two-pair hands.
-
-    Only fires for made_strength < 0.70 (not a premium two-pair+ / set).
-    Nut hands and high-SPR spots are left untouched.
-    """
-    if round_idx < 2:
-        return None
-    opp_bet_count = spot_info.get("opp_current_round_bet_count", 0)
-    if opp_bet_count != 1:
-        return None
-    if not spot_info.get("facing_postflop_aggression", False):
-        return None
-    tier = value_profile.get("tier", "none") if value_profile else "none"
-    if tier == "nut":
-        return None
-    if spr >= 3.0:
-        return None
-    if made_strength >= 0.70:
-        return None
-    return 0
 
 
 def get_action(req, requests):
@@ -972,14 +938,6 @@ def get_action(req, requests):
                 line_profile, value_profile, made_strength, draw_strength,
                 round_idx, opponent_model,
             )
-            # Barrel-continuation fold signal: tighten call margin vs multi-street barrels
-            # Grounded in pot-odds — only fires when equity is meaningfully below call price.
-            barrel_fold_signal = facing_barrel_continuation(
-                spot_info, round_idx, made_strength, draw_strength,
-                value_profile, opponent_model, pot, to_call,
-            )
-            if barrel_fold_signal > 0:
-                call_margin -= barrel_fold_signal
             if round_idx == 3 and made_strength < 0.40 and not (blocker_profile and blocker_profile["eligible"]):
                 call_margin += 0.04
             if round_idx == 3 and paired_board_profile is not None and paired_board_profile["fold_to_raise"]:
@@ -1132,14 +1090,6 @@ def get_action(req, requests):
 
         if trap_nut_slowplay:
             return 0
-        # Guard: cap sub-nut hands facing a SINGLE re-raise on turn/river with low SPR.
-        # Targets the blind spot of repeated_raise_trap (needs >=2 opp raises).
-        # Prevents bot-initiated all-in shoves with one-pair/weak-two-pair facing a 3-bet.
-        _single_guard = _single_reraise_stackoff_guard(
-            round_idx, value_profile, made_strength, spot_info, _spr
-        )
-        if _single_guard is not None:
-            return _single_guard
         preflop_defensive_only = (
             round_idx == 0
             and to_call > 0
@@ -1447,6 +1397,13 @@ def get_action(req, requests):
             board_texture=board_texture,
             draw_info=draw_info,
             blocker_bluff=blocker_bluff and win_rate < medium and not semi_bluff,
+            # CROSSOVER (v111×v104 → v115): import v104's probe_mode simplification.
+            # v111 inherited a v101-era probe_mode thin-value extension from its
+            # v100→v111 lineage that the v102 fix REMOVED because it bled value-hand
+            # sizing from 0.60-0.85x down to 0.33-0.41x (the probe_ratio cap inside
+            # choose_raise). v104's lineage (v101→v102→...→v104) carries the v102
+            # fix; v111 was missing it. Removing the thin-value probe extension
+            # restores correct value-hand sizing without touching defensive guards.
             probe_mode=check_probe or small_probe,
             induce_mode=induce_nut_value or value_plan.get("induce", False),
             nutted_risk_score=nutted_risk["risk"],

@@ -269,61 +269,6 @@ def bluff_heavy_call_widen(line_profile, value_profile, made_strength, draw_stre
     return clamp(boost, 0.0, 0.08)
 
 
-def facing_barrel_continuation(spot_info, round_idx, made_strength, draw_strength, value_profile, opponent_model, pot, to_call):
-    """Detect cross-street barrel pressure and return a SMALL fold signal.
-
-    Grounded in pot-odds: only folds when made_strength is meaningfully below
-    the call price. Returns 0.0 (no fold pressure) otherwise. Caller subtracts
-    this from call_margin to tighten the calling range against multi-street
-    value lines. Capped at 0.06 so it never forces a fold — only nudges.
-    """
-    if round_idx < 2:
-        return 0.0
-    if not spot_info.get('facing_postflop_aggression', False):
-        return 0.0
-    prior_raises = spot_info.get('opp_prior_postflop_raise_count', 0)
-    current_bet = spot_info.get('opp_current_round_bet_count', 0)
-    barrel_depth = prior_raises + current_bet
-    if barrel_depth < 2:
-        return 0.0
-    if value_profile is not None and value_profile.get('tier') in ('strong', 'nut'):
-        return 0.0
-    if draw_strength >= 0.18:
-        return 0.0
-
-    # POT-ODDS GROUNDING: only fold if equity is meaningfully below the price.
-    if to_call <= 0 or pot <= 0:
-        return 0.0
-    call_pot_odds = to_call / (pot + to_call)
-    # Never fold a hand that has direct pot odds to call.
-    if made_strength >= call_pot_odds:
-        return 0.0
-    equity_deficit = call_pot_odds - made_strength
-    if equity_deficit < 0.05:
-        return 0.0
-
-    # Base signal scaled by equity deficit and street. REDUCED magnitude.
-    if round_idx == 2:  # turn barrel
-        signal = 0.025 + 0.06 * min(equity_deficit, 0.20)
-    else:               # round_idx == 3 river barrel
-        signal = 0.03 + 0.075 * min(equity_deficit, 0.20)
-
-    # Deeper barrels tighten slightly more.
-    if barrel_depth >= 3:
-        signal *= 1.15
-
-    # Opponent-model amplification only on adequate samples (confidence>=0.15).
-    confidence = opponent_model.get('confidence', 0.0) if opponent_model else 0.0
-    if confidence >= 0.15:
-        barrel_freq = opponent_model.get('barrel_freq', 0.45) if opponent_model else 0.45
-        if barrel_freq >= 0.55:  # value-heavy
-            signal *= (1.0 + 0.3 * (barrel_freq - 0.55))
-        elif barrel_freq <= 0.35:  # passive/trappy — fold less
-            signal *= 0.5
-
-    return min(signal, 0.06)
-
-
 def river_value_raise_tier(round_idx, to_call, made_strength, value_profile, board_texture, opponent_model, pot, my_chips, min_raise, my_round_bet):
     """Graduated river value raise (0.50-0.80x pot) for thin-to-strong hands.
 
