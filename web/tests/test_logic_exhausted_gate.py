@@ -216,6 +216,60 @@ class TestExtractExhaustedBlock:
         # forbidden must come before advisory
         assert block.index("<forbidden_directions>") < block.index("<advisory_directions>")
 
+    def test_recent_single_generation_downgraded_to_advisory(self, tmp_path, monkeypatch):
+        """A RECENT_LESSONS EXHAUSTED entry that references only the CURRENT or
+        PREVIOUS generation is downgraded to advisory — NOT a hard ban.
+
+        Rationale (agent_workers._extract_exhausted_block): RECENT_LESSONS can
+        contain a just-created single-generation mechanism marked [POSSIBLY
+        EXHAUSTED] before the consolidator has 3+ consecutive-generation evidence.
+        Banning such a direction hard would make workers auto-reject Master-
+        authorized new directions (the audit's EXHAUSTED over-annotation P0).
+        Only multi-generation RECENT evidence earns a hard <forbidden_directions>.
+        """
+        import core.agent_workers as aw
+
+        f = tmp_path / "experience_pool.md"
+        f.write_text(
+            "## RECENT_LESSONS\n"
+            "- v110 new barrel-continuation probe is exhausted " + POSSIBLY_MARKER + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(aw, "EXPERIENCE_FILE", f)
+        # current_gen=111 → only_gen=110 >= 111-1 → downgrade_recent=True
+        monkeypatch.setattr(aw, "find_current_v", lambda: 111)
+
+        block = aw._extract_exhausted_block()
+
+        # Single-generation recent entry → advisory, NOT hard ban.
+        assert "<advisory_directions>" in block
+        assert "<forbidden_directions>" not in block, (
+            "single-generation RECENT entry must NOT be a hard ban"
+        )
+        # The advisory block text must explain the single-generation semantics.
+        assert "single-generation" in block or "historical cautions" in block
+
+    def test_recent_multi_generation_stays_hard(self, tmp_path, monkeypatch):
+        """A RECENT_LESSONS EXHAUSTED entry referencing multiple (older) generations
+        retains the hard ban — this is the earned-exhaustion case the tiering
+        preserves."""
+        import core.agent_workers as aw
+
+        f = tmp_path / "experience_pool.md"
+        f.write_text(
+            "## RECENT_LESSONS\n"
+            "- v105-v109 constant defensive-guard tuning exhausted " + POSSIBLY_MARKER + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(aw, "EXPERIENCE_FILE", f)
+        monkeypatch.setattr(aw, "find_current_v", lambda: 111)
+
+        block = aw._extract_exhausted_block()
+
+        # Multi-generation (v105..v109, all < current-1) → hard ban retained.
+        assert "<forbidden_directions>" in block
+        assert "<advisory_directions>" not in block
+
     def test_block_no_marker_residue(self, exhausted_pool, monkeypatch):
         """No '— hard gate]' residue should leak into the constraint block."""
         import core.agent_workers as aw

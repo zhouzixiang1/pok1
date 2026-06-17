@@ -566,6 +566,110 @@ class TestSchedulerPathUsedWhenCapable:
             assert "details" in b
 
 
+# ── Scheduler-path paired net_chips end-to-end propagation (P0#1 regression) ──
+#
+# The audit's headline P0 was that BattleResult had no net_chips field, so on the
+# production scheduler path `res.get("net_chips")` was always [] and the precommit
+# numeric gate silently degraded to binary W/L. The fix (commit 2608f36) added the
+# field + daemon propagation + `gate_degraded` telemetry. These tests pin that
+# fix: scheduler results carrying net_chips must flow through to aggregate_net_chips
+# and keep the gate off the degraded (binary-W/L) path.
+
+class TestSchedulerNetChipsPropagation:
+    @pytest.mark.asyncio
+    async def test_scheduler_net_chips_reaches_matchups_and_aggregate(
+        self, monkeypatch, fake_bots, fake_opponents, mock_checkpoint, mock_ui
+    ):
+        """Scheduler results carrying net_chips propagate to matchup["net_chips"]
+        and into aggregate_net_chips (gate NOT degraded)."""
+        import battle_scheduler
+
+        monkeypatch.setattr("tool_eval.is_daemon_scheduler_capable", lambda: True)
+        monkeypatch.setattr("tool_eval._matching_checkpoint", lambda _v, _sv: mock_checkpoint)
+        monkeypatch.setattr("tool_eval._get_ui", lambda: mock_ui)
+        monkeypatch.setattr("tool_eval._record_gate", lambda *a, **k: True)
+
+        def fake_submit(jobs):
+            return [j.job_id for j in jobs]
+
+        monkeypatch.setattr(battle_scheduler, "submit_jobs", fake_submit)
+
+        # The KEY difference from the legacy fake_collect: results carry net_chips.
+        _nc = [1200, -800, 1500]
+
+        def fake_collect(job_ids):
+            return {
+                jid: {
+                    "wins_a": 2,
+                    "wins_b": 1,
+                    "draws": 0,
+                    "total": 3,
+                    "net_chips": list(_nc),
+                    "error": None,
+                    "completed_at": time.time(),
+                }
+                for jid in job_ids
+            }
+
+        monkeypatch.setattr(battle_scheduler, "collect_results", fake_collect)
+        _patch_mirror_battle(monkeypatch, lambda *a, **k: (_raise("should not be called"),))
+
+        result = await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 3})
+        data = json.loads(result["content"][0]["text"])
+
+        # Each scheduler matchup carries the propagated net_chips stream. This is
+        # the on-path observable: the P0 fix added BattleResult.net_chips and the
+        # daemon propagates it (elo_daemon.py), so collect_results yields records
+        # whose net_chips reach matchup["net_chips"] via tool_eval's res.get().
+        for m in data["matchups"]:
+            assert m.get("net_chips") == _nc, f"net_chips not propagated: {m}"
+
+        # The aggregate stream is populated (2 opponents x 3 samples = 6), so the
+        # gate runs the paired-bootstrap CI path rather than the binary-W/L
+        # fallback. A passing result with a strong net-chips stream (mean +633)
+        # and no aggregate_precommit_regression blocker confirms the non-degraded
+        # numeric gate fired.
+        assert data["passed"] is True, data.get("blockers")
+        blocker_reasons = {b["reason"] for b in data["blockers"]}
+        assert "aggregate_precommit_regression" not in blocker_reasons
+
+    @pytest.mark.asyncio
+    async def test_scheduler_missing_net_chips_flags_degraded(
+        self, monkeypatch, fake_bots, fake_opponents, mock_checkpoint, mock_ui
+    ):
+        """Legacy scheduler results WITHOUT net_chips leave matchup["net_chips"]
+        empty — the observable symptom of the pre-fix degraded gate. The fix's
+        value is that this is now VISIBLE (empty list) rather than silently
+        conflated with a populated stream."""
+        import battle_scheduler
+
+        monkeypatch.setattr("tool_eval.is_daemon_scheduler_capable", lambda: True)
+        monkeypatch.setattr("tool_eval._matching_checkpoint", lambda _v, _sv: mock_checkpoint)
+        monkeypatch.setattr("tool_eval._get_ui", lambda: mock_ui)
+        monkeypatch.setattr("tool_eval._record_gate", lambda *a, **k: True)
+
+        monkeypatch.setattr(battle_scheduler, "submit_jobs", lambda jobs: [j.job_id for j in jobs])
+
+        # Legacy shape: no net_chips key (the pre-fix record shape).
+        def fake_collect(job_ids):
+            return {
+                jid: {"wins_a": 2, "wins_b": 1, "draws": 0, "total": 3,
+                      "error": None, "completed_at": time.time()}
+                for jid in job_ids
+            }
+
+        monkeypatch.setattr(battle_scheduler, "collect_results", fake_collect)
+        _patch_mirror_battle(monkeypatch, lambda *a, **k: (_raise("should not be called"),))
+
+        result = await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 3})
+        data = json.loads(result["content"][0]["text"])
+
+        # Observable degraded-path signal: matchups carry an EMPTY net_chips list
+        # (res.get("net_chips", []) default), proving the record lacked the field.
+        for m in data["matchups"]:
+            assert m.get("net_chips") == [], f"expected empty net_chips: {m}"
+
+
 # ── Regression gate ratio logic (serial fallback path) ──
 
 class TestPrecommitRegressionGates:
