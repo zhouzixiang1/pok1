@@ -124,6 +124,51 @@ def test_reset_without_baseline_falls_back_to_source(tmp_path, monkeypatch):
     assert not (next_dir / "foo.py").exists()
 
 
+# ── B-group extension: undeclared-NEW-file unlink (Fix 1) ──
+
+def test_unlink_undeclared_new_files_removes_worker_created_files(tmp_path):
+    """_unlink_undeclared_new_files removes .py files a worker created that were
+    NOT present before it ran (the undeclared-target gap that
+    _reset_target_files_to_source cannot see, since it only iterates declared
+    target_files)."""
+    next_dir = tmp_path / "bots" / "claude_v106"
+    next_dir.mkdir(parents=True)
+    # Pre-run state: strategy.py + a legitimate sibling NEW file (sibling_extra.py)
+    (next_dir / "strategy.py").write_text("SOURCE", encoding="utf-8")
+    (next_dir / "sibling_extra.py").write_text("# sibling", encoding="utf-8")
+    pre_run = {p.name for p in next_dir.glob("*.py")}
+    # Worker then created two undeclared NEW files (e.g. via Edit on a stray path)
+    (next_dir / "worker_created.py").write_text("# partial", encoding="utf-8")
+    (next_dir / "stray_module.py").write_text("# stale", encoding="utf-8")
+
+    aw._unlink_undeclared_new_files(next_dir, pre_run)
+
+    # Undeclared worker-created files removed.
+    assert not (next_dir / "worker_created.py").exists()
+    assert not (next_dir / "stray_module.py").exists()
+    # Pre-run files (incl. legitimate sibling NEW file) preserved.
+    assert (next_dir / "strategy.py").exists()
+    assert (next_dir / "sibling_extra.py").exists()
+
+
+def test_unlink_undeclared_new_files_noop_without_snapshot(tmp_path):
+    """If pre_run_py_files is empty (snapshot never captured), the helper must
+    NOT remove anything — avoids deleting legitimate files when the safety
+    precondition is unmet."""
+    next_dir = tmp_path / "bots" / "claude_v106"
+    next_dir.mkdir(parents=True)
+    (next_dir / "legit.py").write_text("# keep me", encoding="utf-8")
+
+    aw._unlink_undeclared_new_files(next_dir, set())
+
+    assert (next_dir / "legit.py").exists()
+
+
+def test_unlink_undeclared_new_files_noop_on_missing_dir(tmp_path):
+    """Non-existent next_dir must not raise."""
+    aw._unlink_undeclared_new_files(tmp_path / "does_not_exist", {"a.py"})
+
+
 # ── D-group: normalize_worker_role ──
 
 def test_normalize_worker_role_basic_and_mixed():

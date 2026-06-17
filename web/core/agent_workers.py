@@ -218,6 +218,30 @@ def _reset_target_files_to_source(task, source_v, next_dir, next_v,
             dst_file.unlink(missing_ok=True)
 
 
+def _unlink_undeclared_new_files(next_dir, pre_run_py_files):
+    """Remove .py files a worker created that were NOT present before it ran.
+
+    Complements _reset_target_files_to_source (which only touches declared
+    target_files): an Edit-tool worker can write to a path outside its declared
+    target_files, and such a partial/stale undeclared NEW file would otherwise
+    survive rollback and pollute the next retry or the verification step.
+
+    Safety: only files ABSENT from `pre_run_py_files` are removed, so any file
+    that existed before the worker ran (legitimate sibling edits, cross-ancestor
+    files) is always preserved.
+    """
+    if not next_dir.is_dir() or not pre_run_py_files:
+        # pre_run_py_files == empty set means "snapshot was never captured";
+        # never unlink in that case (would risk removing legitimate files).
+        return
+    for p in next_dir.glob("*.py"):
+        if p.name not in pre_run_py_files:
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def _classify_target_change(src_exists, dst_exists, src_text, dst_text):
     """Classify how a target file changed. Returns one of:
     new_file (worker created with real content, success) | invalid_target (path
@@ -285,6 +309,16 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 _local_snapshots[(idx, rel)] = (
                     fpath.read_text() if fpath.exists() else ""
                 )
+
+    # Snapshot the set of .py files present in next_dir BEFORE any attempt runs.
+    # On rollback this lets us unlink files the worker CREATED that were NOT in
+    # its declared target_files (an Edit-tool worker can write to an undeclared
+    # path). Declared NEW files are handled by the baseline-snapshot path in
+    # _reset_target_files_to_source; this closes the undeclared-file gap. Only
+    # files absent from the pre-run set are ever removed, so legitimate sibling
+    # edits and cross-ancestor files (present pre-run) are always preserved.
+    _pre_run_py_files = {p.name for p in next_dir.glob("*.py")} if next_dir.is_dir() else set()
+
     for attempt in range(MAX_WORKER_RETRIES):
         if not parallel_mode:
             ui.clear_io()
@@ -300,6 +334,8 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 task, source_v, next_dir, next_v,
                 baseline_snapshots=worker_snapshots or _local_snapshots, task_idx=idx,
             )
+            # Also clear undeclared NEW files a prior failed attempt may have left.
+            _unlink_undeclared_new_files(next_dir, _pre_run_py_files)
 
         attempt_note = ""
         if attempt > 0:
@@ -342,6 +378,8 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 task, source_v, next_dir, next_v,
                 baseline_snapshots=worker_snapshots or _local_snapshots, task_idx=idx,
             )
+            # Clear undeclared NEW files the timed-out worker may have created.
+            _unlink_undeclared_new_files(next_dir, _pre_run_py_files)
             base_worker_prompt += (
                 "\n\nPREVIOUS ATTEMPT TIMED OUT. Start fresh with a minimal, focused implementation. "
                 "Implement only the single most impactful change — do NOT try to do everything at once."
