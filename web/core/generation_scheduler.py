@@ -68,6 +68,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     """Phase 1: Analyze state, decide strategy. Disposable on interrupt."""
     from evolution_infra import (
         MAX_ACTIVE_BOTS, MIN_GAMES_FOR_EVAL, find_current_v, find_latest_active_v, get_active_bots, load_ratings,
+        find_max_committed_v, git_dir_is_committed, git_has_tag,
         wait_for_daemon_eval,
     )
 
@@ -75,6 +76,28 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         return None
 
     current_v = find_current_v()       # 版本编号（含 graveyard），用于 next_v
+    # 裸 commit 对账（v117 反复重生循环根因修复, 2026-06-18）：find_max_committed_v()
+    # 返回含裸 commit（绕过 commit_bot 直接 git commit、无 tag+.completed）的最大版本号。
+    # 用它抬高 next_v 下界，使裸 commit 占用的版本号不会被下一代重生覆盖。
+    max_committed_v = find_max_committed_v()
+    if max_committed_v > current_v:
+        _bare = [v for v in range(current_v + 1, max_committed_v + 1)
+                 if git_dir_is_committed(v) and not git_has_tag(v)]
+        if _bare:
+            log_system_event(
+                "pipeline.bare_commit_detected", "error",
+                f"Bare commit(s) v{_bare} are git-tracked but untagged (bypassed commit_bot). "
+                f"next_v floored to {max_committed_v + 1} to prevent regeneration loop.",
+                {"bare_versions": _bare, "current_v": current_v,
+                 "max_committed_v": max_committed_v},
+            )
+            if ui:
+                ui.log_history(
+                    f"⚠️ 裸commit检测: v{_bare} 已git提交但无tag(绕过commit_bot)。"
+                    f"next_v={max_committed_v + 1}(跳过裸commit版本,避免反复重生)。"
+                    f"如需保留该版本请用commit_bot补全tag+.completed,否则它将孤立。",
+                    "warn",
+                )
     active_v = find_latest_active_v()  # 活跃 bot（排除 graveyard），用于 eval/分析
     active_bots = get_active_bots()
     ratings = load_ratings()
@@ -323,7 +346,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     # Best-effort: any failure is observed and swallowed (idempotent phase).
     try:
         from qd_fitness import QD_REEVAL_EVERY, reevaluate_top_elites
-        next_v_planned = current_v + 1
+        next_v_planned = max(current_v, max_committed_v) + 1
         if next_v_planned > 0 and next_v_planned % QD_REEVAL_EVERY == 0:
             from map_elites import read_behavior_archive
             archive = read_behavior_archive()
@@ -341,7 +364,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
 
     return GenerationContext(
         current_v=current_v,
-        next_v=current_v + 1,
+        next_v=max(current_v, max_committed_v) + 1,
         strategy=strategy,
         source_v=source_v,
         crossover_parents=parents,

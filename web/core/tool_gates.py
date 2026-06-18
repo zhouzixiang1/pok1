@@ -373,13 +373,22 @@ async def prepare_next_gen(args):
         return _json_tool_result({"error": f"Source bot v{source_v} is not marked completed. Cannot use incomplete code as source."})
 
     # Guard: verify git tag exists for source bot (authoritative commit proof)
-    from evolution_infra import git_has_tag
+    from evolution_infra import git_has_tag, git_dir_is_committed
     if not git_has_tag(source_v):
         return _json_tool_result({"error": f"Source bot v{source_v} has .completed but no git tag 'bot-v{source_v}'. Cannot evolve from uncommitted code. Try a different source version."})
 
     # Guard: refuse to overwrite a completed bot
     if next_dir.exists() and (next_dir / ".completed").exists():
         return _json_tool_result({"error": f"Target v{next_v} already exists and is completed. Refusing to overwrite."})
+
+    # Guard: refuse to overwrite a bare-committed target (root-cause fix for the
+    # v117 repeated-regeneration loop, 2026-06-18; mirrors run_crossover).
+    if next_dir.exists() and git_dir_is_committed(next_v) and not git_has_tag(next_v):
+        return _json_tool_result({
+            "error": f"Target v{next_v} is git-committed but has no bot-v{next_v} tag (bare commit bypassing commit_bot). "
+                     f"Refusing to overwrite — re-preparing here causes infinite regeneration. "
+                     f"Run commit_bot for v{next_v} to finalize it, or abandon/clear the untagged dir first."
+        })
 
     # Guard: refuse to re-prepare if pipeline has already progressed past "prepared"
     _ckpt = _matching_checkpoint(next_v, source_v)

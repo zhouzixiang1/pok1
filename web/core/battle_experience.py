@@ -56,6 +56,7 @@ TARGET_BATCH = 6  # P2: was 16 — smaller batches cut per-call latency + SIGTER
 MAX_CONCURRENT_LLM = 6  # parallel LLM calls within one batch
 MAX_ANALYSES_PER_HOUR = 240  # rate-limit defense (non-zero budget ~$5/hr)
 LLM_TIMEOUT = 300  # P2: was 120 — thinking-mode + batch calls steadily exceeded 120s
+_LOG_ROTATION_LOCK = threading.Lock()  # P3: serialize battle_exp_llm.log rotation across the 6 concurrent workers
 
 # ──────────────────────────────────────────────
 # SilentUI
@@ -509,6 +510,26 @@ def _run_sync_llm_call(prompt: str) -> str | None:
     """
     ui = SilentUI()
     log_path = RESULTS_DIR / "battle_exp_llm.log"
+    # Rotate the LLM prompt/response dump before appending (root-cause fix for
+    # the 102MB unbounded growth, 2026-06-18). llm_query appends every prompt+
+    # response with no upper bound; cap at one rotated backup (.log.1) so the
+    # file cannot grow without limit. Mirrors orchestrator _rotate_orchestrator_logs.
+    # Serialize rotation across the MAX_CONCURRENT_LLM workers: without a lock,
+    # two workers can both see >50MB and race the rename (one wins, the other's
+    # rename throws FileNotFoundError — swallowed by the except, benign but loses
+    # the backup). The lock makes rotation atomic.
+    with _LOG_ROTATION_LOCK:
+        try:
+            if log_path.exists() and log_path.stat().st_size > 50 * 1024 * 1024:
+                rotated = log_path.with_suffix(log_path.suffix + ".1")
+                if rotated.exists():
+                    try:
+                        rotated.unlink()
+                    except Exception:
+                        pass
+                log_path.rename(rotated)
+        except Exception:
+            pass
 
     async def _async_call():
         from llm_query import run_claude_query

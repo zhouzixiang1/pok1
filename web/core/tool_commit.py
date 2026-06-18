@@ -15,6 +15,7 @@ from evolution_core import (
     load_ratings,
     git_commit_bot,
     git_has_tag,
+    git_dir_is_committed,
     clear_pipeline_checkpoint,
     RESULTS_DIR,
     MAX_ACTIVE_BOTS,
@@ -469,6 +470,22 @@ async def run_crossover(args):
     # Guard: refuse to overwrite a completed bot
     if target_dir.exists() and (target_dir / ".completed").exists():
         return _json_tool_result({"error": f"Target v{target_v} already exists and is completed. Refusing to overwrite."})
+
+    # Guard: refuse to overwrite a BARE-COMMITTED target (root-cause fix for the
+    # v117 repeated-regeneration loop, 2026-06-18). A target dir that is
+    # git-tracked but lacks a bot-v{N} tag was created by a bare `git commit`
+    # bypassing commit_bot. Silently re-running crossover on it regenerates the
+    # same version forever — find_current_v() only trusts tags, so it stays
+    # stale and the orchestrator keeps picking the same target_v. Require
+    # commit_bot finalization or explicit abandon/clear first. (This is the
+    # crossover-side mirror of prepare_next_gen's stage guard, which crossover
+    # previously lacked — the deepest root cause per adversarial verification.)
+    if target_dir.exists() and git_dir_is_committed(target_v) and not git_has_tag(target_v):
+        return _json_tool_result({
+            "error": f"Target v{target_v} is git-committed but has no bot-v{target_v} tag (bare commit bypassing commit_bot). "
+                     f"Refusing to overwrite — re-running crossover here causes infinite regeneration. "
+                     f"Run commit_bot for v{target_v} to finalize it, or abandon/clear the untagged dir first."
+        })
 
     # Guard: parent must exist and be completed
     parent_a_dir = get_bot_dir(parent_a)

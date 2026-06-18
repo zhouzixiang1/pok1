@@ -73,7 +73,7 @@ core/results/
   ├── head_to_head.json      ← Win/loss matrix per pair (daemon writes)
   ├── bot_stats.json         ← Per-bot aggregated stats (daemon writes)
   ├── match_history.jsonl    ← Match summaries as JSONL (daemon writes per match)
-  ├── match_replay/          ← Full replay JSONs (daemon writes, capped at 200)
+  ├── match_replay/          ← Full replay JSONs (daemon writes, capped at 2000)
   ├── pipeline_state.json    ← Pipeline checkpoint for crash recovery (tools write)
   ├── worker_failures.jsonl  ← Worker failure records (agent_workers writes)
   ├── orchestrator_session.json ← Session ID for Orchestrator crash recovery

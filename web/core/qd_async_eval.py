@@ -48,9 +48,21 @@ _qd_eval_running = threading.Event()
 # Cancel flag set by cancel_qd_eval (shutdown) or the per-launch watchdog timer.
 _qd_cancel = threading.Event()
 
-ASYNC_EVAL_TIMEOUT_SEC = 2400  # 40 min hard upper bound (well under a single
-                               # generation budget; the worker normally finishes
-                               # far faster since n_games is small).
+# WHY a reason is tracked (root-cause fix for QD eval 100% cancellation, 2026-06-18):
+# the old code used ONE flag for BOTH shutdown-cancel and watchdog-timeout. Post-eval
+# could not tell them apart, so it discarded results on either — but a watchdog
+# timeout fires AFTER the eval already produced usable fitness samples. Discarding
+# them caused 100% cancellation (20/20 after the e037548 restart) and ZERO k3
+# archive entries. Now: shutdown discards (process exiting); watchdog keeps result.
+_qd_cancel_reason = None  # None | "shutdown" | "watchdog"
+_qd_cancel_reason_lock = threading.Lock()
+
+ASYNC_EVAL_TIMEOUT_SEC = 7200  # 120 min. RAISED from 40min: real QD k=3 load
+                               # (3 opponents × k=3 × n_games=8 = 72 mirror pairs)
+                               # takes 40-55min under daemon resource contention;
+                               # the old 40min watchdog fired mid-eval every time.
+                               # The watchdog is a stuck-worker backstop, NOT a
+                               # normal budget — it must sit well above real load.
 
 _QD_EVENT_START = "pipeline.qd_eval_start"
 _QD_EVENT_DONE = "pipeline.qd_eval_done"
@@ -114,7 +126,14 @@ def cancel_qd_eval() -> None:
     """Best-effort cancel: set the cancel flag. The worker checks it between
     opponents and breaks promptly. A daemon thread cannot be force-killed, so
     this is cooperative — but the worker breaks at the next opponent boundary,
-    which is bounded by a single mirror_battle(n_games small) call."""
+    which is bounded by a single mirror_battle(n_games small) call.
+
+    Marks the reason as "shutdown" so post-eval knows to DISCARD the result
+    (the process is exiting; writing the archive is pointless/unsafe). This
+    contrasts with a watchdog timeout, which KEEPS the result."""
+    global _qd_cancel_reason
+    with _qd_cancel_reason_lock:
+        _qd_cancel_reason = "shutdown"
     _qd_cancel.set()
 
 
@@ -226,6 +245,9 @@ def launch_qd_eval(bot_v: int, source_v: int, *, k: int = 3, n_games: int = 8,
 
     _qd_eval_running.set()
     _qd_cancel.clear()
+    global _qd_cancel_reason
+    with _qd_cancel_reason_lock:
+        _qd_cancel_reason = None
     _bot_v = bot_v
     _source_v = source_v
     _k = k
@@ -237,7 +259,23 @@ def launch_qd_eval(bot_v: int, source_v: int, *, k: int = 3, n_games: int = 8,
         behavior archive. Daemon thread; uses ONLY logging + log_system_event
         (thread-safe). Never touches ui (asyncio-Queue race from non-loop thread).
         """
-        watchdog = threading.Timer(_timeout, _qd_cancel.set)
+        def _watchdog_fire():
+            global _qd_cancel_reason
+            with _qd_cancel_reason_lock:
+                if not _qd_cancel.is_set():  # don't clobber an earlier "shutdown" reason
+                    _qd_cancel_reason = "watchdog"
+            _qd_cancel.set()
+            try:
+                from system_log import log_system_event
+                log_system_event(
+                    "pipeline.qd_eval_watchdog", "warn",
+                    f"v{_bot_v} QD eval watchdog fired at {_timeout}s — result kept if usable",
+                    {"version": _bot_v, "timeout_sec": _timeout},
+                )
+            except Exception:
+                pass
+
+        watchdog = threading.Timer(_timeout, _watchdog_fire)
         watchdog.daemon = True
         watchdog.start()
         try:
@@ -293,15 +331,40 @@ def launch_qd_eval(bot_v: int, source_v: int, *, k: int = 3, n_games: int = 8,
                 cancel_check=_qd_cancel.is_set,
             )
 
-            if _qd_cancel.is_set():
-                log.info("QD eval v%s cancelled after eval (result discarded)", _bot_v)
+            _cancel_reason = _qd_cancel_reason
+            if _qd_cancel.is_set() and _cancel_reason != "watchdog":
+                # Shutdown (or legacy unknown) cancel: discard — the process is
+                # exiting, so writing the archive is pointless/unsafe.
+                log.info("QD eval v%s cancelled after eval, reason=%s (result discarded)", _bot_v, _cancel_reason)
                 log_system_event(
                     _QD_EVENT_CANCELLED, "info",
                     f"v{_bot_v} QD eval cancelled (post-eval; archive not updated)",
-                    {"version": _bot_v, "reason": "cancel_post_eval",
+                    {"version": _bot_v, "reason": _cancel_reason or "cancel_post_eval",
                      "fitness_median": result.get("fitness_median")},
                 )
                 return
+            if _qd_cancel.is_set() and _cancel_reason == "watchdog":
+                # Watchdog fired but the eval COMPLETED with usable samples — KEEP
+                # the result (root-cause fix: old code discarded it here, causing
+                # 100% cancellation and zero k3 archive entries). Fall through to
+                # the archive merge below.
+                _has_data = bool(result and result.get("fitness_samples"))
+                if not _has_data:
+                    log_system_event(
+                        _QD_EVENT_CANCELLED, "info",
+                        f"v{_bot_v} QD eval watchdog-timed with no usable data (discarded)",
+                        {"version": _bot_v, "reason": "watchdog_no_data"},
+                    )
+                    return
+                log.info("QD eval v%s watchdog-timed post-eval — KEEPING result (samples=%s)",
+                         _bot_v, result.get("fitness_samples"))
+                log_system_event(
+                    "pipeline.qd_eval_watchdog_kept", "info",
+                    f"v{_bot_v} QD eval watchdog-timed but result kept (samples={result.get('fitness_samples')})",
+                    {"version": _bot_v, "fitness_median": result.get("fitness_median"),
+                     "fitness_samples": result.get("fitness_samples")},
+                )
+                # fall through to archive merge below
 
             # Merge into behavior_archive.json (atomic, best-effort).
             try:

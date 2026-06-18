@@ -803,6 +803,58 @@ def git_has_tag(version):
     return bool(_git("tag", "-l", f"bot-v{version}", check=False).strip())
 
 
+def git_dir_is_committed(version):
+    """True if bots/claude_v{version}/ has any git-tracked file.
+
+    Detects BARE COMMITS — code that landed in git via a direct `git commit`
+    (e.g. an LLM running git in Bash) but was never finalized through commit_bot,
+    so it lacks both the bot-v{N} tag and the .completed sentinel. This is the
+    root-cause signal of the v117 repeated-regeneration loop (2026-06-18): v117
+    was bare-committed twice (f6bcccf/f6c4eb7) without a tag, so find_current_v()
+    kept returning 116 and the orchestrator regenerated v117 five times until
+    commit_bot finally tagged it (20db34c, 22:02). 'git ls-files' is the test:
+    a directory with on-disk files but no tracked files is an untracked scratch
+    dir (safe to overwrite); a directory with tracked files is committed state.
+    """
+    try:
+        return bool(_git("ls-files", "--", f"bots/claude_v{version}/", check=False).strip())
+    except Exception:
+        return False
+
+
+def find_max_committed_v():
+    """Max version whose bot dir is git-tracked, regardless of tag/.completed.
+
+    Whereas find_current_v() returns the latest *completed* (tagged) version,
+    this returns the latest version whose code has landed in git at all —
+    including bare commits bypassing commit_bot. prepare_generation() uses
+    max(find_current_v(), find_max_committed_v()) + 1 as the next_v floor so a
+    bare-committed version number is never regenerated/overwritten. Returns 0
+    if no claude_v* dir is git-tracked.
+
+    Implementation: a SINGLE `git ls-files bots/claude_v*` call (not one
+    subprocess per directory) keeps this O(1 git call)/generation regardless
+    of how many bot dirs (~125 incl. graveyard) exist.
+    """
+    try:
+        out = _git("ls-files", "--", "bots/claude_v*", check=False)
+    except Exception:
+        return 0
+    max_v = 0
+    for line in out.splitlines():
+        # line like "bots/claude_v117/card_utils.py" — extract the dir version
+        parts = line.split("/")
+        if len(parts) < 2 or not parts[1].startswith("claude_v"):
+            continue
+        try:
+            v = int(parts[1].split("_v")[1])
+        except (ValueError, IndexError):
+            continue
+        if v > max_v:
+            max_v = v
+    return max_v
+
+
 def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=None):
     """Commit a completed bot generation.
 

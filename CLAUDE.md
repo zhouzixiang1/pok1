@@ -379,7 +379,7 @@ Both `engine/judge.py` and `sever/` use the same raise-to-total convention:
 Additional daemon constants (in `elo_daemon.py`):
 | Constant | Value | Purpose |
 |---|---|---|
-| `MAX_REPLAY_FILES` | 200 | Replay file cap |
+| `MAX_REPLAY_FILES` | 2000 | Replay file cap (raised from 200; match_replay/ holds ~1900 files). Note: code value is authoritative, doc was stale. |
 | `SAVE_EVERY_N_GAMES` | 20 | Daemon save frequency (games) |
 | `SAVE_INTERVAL_SEC` | 60 | Daemon save frequency (seconds) |
 | `UNDER_EVAL_BASELINE` | 50 | Baseline for under-evaluated calculation |
@@ -390,7 +390,7 @@ Additional daemon constants (in `elo_daemon.py`):
 
 ### Glicko-2 Daemon (`elo_daemon.py`)
 
-Background subprocess continuously running mirror battles. Match selection: 60% under-evaluated pairs (`UNDER_EVAL_WEIGHT = 0.6`) + 40% rating-diverse pairs (`DIVERSITY_WEIGHT = 0.4`). Per-game Glicko-2 updates (not batch). Writes to all result files with `fcntl` locking. Continuous scheduling via `ProcessPoolExecutor`. Replay files capped at 200 (`MAX_REPLAY_FILES`). Responds to `.reap_signal` for immediate bot list refresh after commit.
+Background subprocess continuously running mirror battles. Match selection: 60% under-evaluated pairs (`UNDER_EVAL_WEIGHT = 0.6`) + 40% rating-diverse pairs (`DIVERSITY_WEIGHT = 0.4`). Per-game Glicko-2 updates (not batch). Writes to all result files with `fcntl` locking. Continuous scheduling via `ProcessPoolExecutor`. Replay files capped at 2000 (`MAX_REPLAY_FILES`). Responds to `.reap_signal` for immediate bot list refresh after commit.
 
 Defaults: `r=1500`, `rd=350`, `sigma=0.06`, `tau=0.5`. Confidence levels: rd<50 `very_confident`, 50-100 `confident`, 100-200 `uncertain`, >200 `very_uncertain`.
 

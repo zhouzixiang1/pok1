@@ -81,6 +81,21 @@ _watchdog_triggered = False
 ORCHESTRATOR_PROMPT = (Path(__file__).parent / "prompts" / "orchestrator.md").read_text()
 LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
 
+# Tools the Orchestrator legitimately calls many times per cycle (exploration,
+# file reads, task bookkeeping). Excluded from the redundant-call warning's
+# strict threshold so the warning keeps signal (root-cause fix for the
+# pipeline.redundant_tool_call noise storm: 264 events/cycle post-restart,
+# almost all Bash/Read/TaskUpdate that are normal multi-step work). Pipeline
+# MCP tools (run_master, run_crossover, commit_bot, ...) stay strict — those
+# should fire ~once per cycle, so any repeat is a real anomaly.
+_NOISY_TOOLS = frozenset({
+    "Bash", "Read", "Grep", "Glob", "LS",
+    "TaskCreate", "TaskUpdate", "TaskOutput", "TaskList", "TaskGet",
+    "Edit", "Write", "NotebookEdit",
+})
+_REDUNDANT_NOISY_THRESHOLD = 6    # noisy tools: warn once at the 6th call
+_REDUNDANT_STRICT_THRESHOLD = 2   # pipeline tools: warn once at the 2nd call
+
 from orchestrator_context import _build_context, _make_precompact_hook, set_cycle_start_time  # noqa: E402
 from orchestrator_session import (  # noqa: E402
     _rotate_orchestrator_logs, _is_rate_limited,
@@ -217,13 +232,18 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 lf.write(f"\n[tool: {block.name}]\n[args] {args_str}\n")
                                 tool_name = block.name.split('__')[-1] if '__' in block.name else block.name
                                 _tool_call_counts[tool_name] = _tool_call_counts.get(tool_name, 0) + 1
-                                if _tool_call_counts[tool_name] > 1:
+                                _thresh = _REDUNDANT_NOISY_THRESHOLD if tool_name in _NOISY_TOOLS else _REDUNDANT_STRICT_THRESHOLD
+                                if _tool_call_counts[tool_name] == _thresh:
+                                    # Warn exactly once when the threshold is first hit (not on every
+                                    # subsequent call). Noisy tools get a high threshold; pipeline
+                                    # tools stay strict. See _NOISY_TOOLS docstring.
                                     log.warning("Tool '%s' called %d times (possible redundant call)", tool_name, _tool_call_counts[tool_name])
                                     try:
                                         from system_log import log_system_event
                                         log_system_event("pipeline.redundant_tool_call", "warn",
                                             f"Orchestrator called {tool_name} {_tool_call_counts[tool_name]}x in one cycle",
-                                            {"tool": tool_name, "count": _tool_call_counts[tool_name]})
+                                            {"tool": tool_name, "count": _tool_call_counts[tool_name],
+                                             "threshold": _thresh})
                                     except Exception:
                                         pass
                             elif isinstance(block, ThinkingBlock):
