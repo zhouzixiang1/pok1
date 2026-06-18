@@ -401,10 +401,14 @@ def _bb_vs_raise_bucket_action(hand_cat, opponent_model, pot_odds, preflop_stren
         return 'value_raise'
     # CROSSOVER (from v109/v108/v89): broadway_suited (KQs/KJs/QJs/QTs/JTs)
     # gets a dedicated call/fold decision with implied-odds reasoning.
-    # MUTATION (offensive pivot): relax pot-odds gate 0.32 (v109) -> 0.36
-    # (~12% threshold relaxation back toward v108) so we defend wider with
-    # implied-odds suited broadways. Memory says v107-110 exhausted the
-    # defensive-guard chain; widening this call range is an offensive nudge.
+    # CROSSOVER v116 (v115 × v111 → v116): REVERT v115's broadway widening
+    # (pot_odds 0.40) back to v111's tighter 0.36 gate. H2H evidence: v115 loses
+    # vs newer aggressive openers where v111 wins (v89 0.50 vs 0.56; v90 0.50 vs
+    # 0.58; v95 0.40 vs 0.52; v96 0.30 vs 0.56; v109 0.40 vs 0.53). The 0.40 gate
+    # over-defends suited broadways into tight opens (paying off iso-raises with
+    # KJs/QTs that need ~4:1 implied odds against tight ranges). KEEP v115's
+    # v102 probe_mode fix (crossover below) — that fix targets value-hand sizing,
+    # an orthogonal axis from BB defense range.
     if hand_cat == 'broadway_suited' and not trash_hand:
         if pot_odds <= 0.36 or win_rate >= pot_odds - 0.02:
             return 'call'
@@ -664,64 +668,6 @@ def _should_checkraise_trap(value_profile, round_idx, board_texture, opponent_mo
         return False
 
     return True
-
-
-def _river_valueheavy_donk_bluff(round_idx, to_call, made_strength, draw_strength,
-                                 line_profile, opponent_model, value_profile,
-                                 board_texture, pot, my_chips, min_raise_action,
-                                 my_round_bet):
-    """River donk-bluff vs value-heavy opponents who polarized their line then checked.
-
-    MUTATION (offensive, from experience pool directive): counters opponents
-    (e.g. v106, which beats v111 at 38%) who exploit v111's polarized river
-    sizing by calling down value bets and folding to checks. When a value-heavy
-    opponent (line_label == 'value_heavy' — they size big with value, give up
-    otherwise) CHECKS the river, their checking range is capped/weak. We convert
-    a medium-weak non-value hand into a ~half-pot donk-bluff to fold out their
-    give-up range. This DEPOLARIZES our river range (we now bet some weak hands
-    alongside value), making our value bets harder to exploit.
-
-    Guardrails (per experience pool):
-      - Fires only on river (round_idx == 3) when opponent checked (to_call == 0).
-      - Requires line_label == 'value_heavy' (polarized opponent line so far).
-      - Adequate confidence (>= 0.30) — sub-30g reads are noise.
-      - Opponent folds enough to river bets (fold_to_bet_river >= 0.40).
-      - Hand is medium-weak (0.12 <= made_strength < 0.42) and not strong/nut/thin
-        value (don't waste value hands as bluffs; air < 0.12 is left to
-        river_blocker_bluff which already covers pure air).
-      - Dry/static board (wetness <= 0.40, not dynamic) so opponent has fewer
-        showdownable draws to hero-call with.
-    Returns raise-to-total int, or None if not eligible.
-    """
-    if round_idx != 3 or to_call != 0:
-        return None
-    if line_profile.get('line_label') != 'value_heavy':
-        return None
-    if opponent_model.get('confidence', 0.0) < 0.30:
-        return None
-    if opponent_model.get('fold_to_bet_river', 0.44) < 0.40:
-        return None
-    if made_strength < 0.12 or made_strength >= 0.42:
-        return None
-    if draw_strength >= 0.18:
-        return None
-    if value_profile is not None and value_profile.get('tier') in ('strong', 'nut', 'thin'):
-        return None
-    if board_texture is None:
-        return None
-    if board_texture.get('wetness', 0.5) > 0.40:
-        return None
-    if board_texture.get('dynamic', False):
-        return None
-    if board_texture.get('paired', False):
-        return None
-    # ~half-pot: fold-efficient vs polarized give-up range, keeps risk bounded.
-    target = int(pot * 0.52)
-    amount = max(min_raise_action, target)
-    amount = min(amount, my_chips - 1)
-    if amount <= 0 or amount < min_raise_action or amount >= my_chips:
-        return None
-    return amount
 
 
 def get_action(req, requests):
@@ -1294,16 +1240,6 @@ def get_action(req, requests):
         )
         if _rvr is not None:
             return _rvr
-        # MUTATION (offensive): river donk-bluff vs value-heavy opponents who
-        # polarized their line then checked (give-up spot). Depolarizes our river
-        # range to counter v106-style exploitation of polarized sizing.
-        _vh_donk = _river_valueheavy_donk_bluff(
-            round_idx, to_call, made_strength, draw_strength,
-            line_profile, opponent_model, value_profile, board_texture,
-            pot, my_chips, state['min_raise_action'], state['my_round_bet'],
-        )
-        if _vh_donk is not None:
-            return _vh_donk
     if big_pot and round_idx == 3 and (value_profile is None or value_profile["tier"] not in ("strong", "nut")):
         if blocker_profile is None or not blocker_profile["eligible"]:
             return 0
@@ -1463,17 +1399,13 @@ def get_action(req, requests):
             board_texture=board_texture,
             draw_info=draw_info,
             blocker_bluff=blocker_bluff and win_rate < medium and not semi_bluff,
-            # CROSSOVER (v111×v104 → v116): import v104's probe_mode simplification.
-            # v111 inherited a v101-era probe_mode thin-value/static-board extension
-            # that the v102 fix REMOVED because it bled value-hand sizing from
-            # 0.60-0.85x down to 0.33-0.41x (the probe_ratio cap inside choose_raise
-            # engaged for thin-value hands on static boards, suppressing value bets).
-            # v104's lineage (v101→v102→...→v104) carries the v102 fix; v111 was
-            # missing it. Removing the thin-value probe extension restores correct
-            # value-hand sizing without touching defensive guards (which the
-            # experience pool flags as POSSIBLY EXHAUSTED). This is the validated
-            # crossover element — v115 applied the same fix; v116 combines it with
-            # an offensive river donk-bluff mutation below.
+            # CROSSOVER (v111×v104 → v115): import v104's probe_mode simplification.
+            # v111 inherited a v101-era probe_mode thin-value extension from its
+            # v100→v111 lineage that the v102 fix REMOVED because it bled value-hand
+            # sizing from 0.60-0.85x down to 0.33-0.41x (the probe_ratio cap inside
+            # choose_raise). v104's lineage (v101→v102→...→v104) carries the v102
+            # fix; v111 was missing it. Removing the thin-value probe extension
+            # restores correct value-hand sizing without touching defensive guards.
             probe_mode=check_probe or small_probe,
             induce_mode=induce_nut_value or value_plan.get("induce", False),
             nutted_risk_score=nutted_risk["risk"],

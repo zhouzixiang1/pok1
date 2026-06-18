@@ -9,7 +9,16 @@ from card_utils import clamp
 from postflop import bet_size_bucket, board_texture_profile
 
 VALUE_PRESSURE_THRESHOLD = 0.65
-BLUFF_OPPORTUNITY_THRESHOLD = 0.55
+# MUTATION v116 (a — threshold adjustment, ~13% lower): relax bluff_heavy
+# detection threshold 0.55 -> 0.48 so the bluff-heavy line label fires more
+# readily on opponents whose stats indicate weak/passive aggression
+# (low postflop_aggr + high fold_to_bet_river + small recent barrels).
+# Downstream `bluff_heavy_call_widen` (strategy.py call path) increases
+# call-margin against perceived bluffers, an OFFENSIVE bluff-catch axis
+# distinct from the EXHAUSTED probe_mode/defensive-guard chain. Per
+# experience pool BLUFF_CALIBRATION: only fires with confidence>=0.15 and
+# concrete fold-equity evidence, so widening 0.55->0.48 stays gated.
+BLUFF_OPPORTUNITY_THRESHOLD = 0.48
 
 
 def line_polarization_profile(public_cards, history, state, spot_info, opponent_model, round_idx):
