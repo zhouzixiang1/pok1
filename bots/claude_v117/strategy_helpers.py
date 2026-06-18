@@ -264,7 +264,18 @@ def bluff_heavy_call_widen(line_profile, value_profile, made_strength, draw_stre
     if draw_strength >= 0.18:
         return 0.0
     bluff_opp = line_profile.get('bluff_opportunity', 0.0)
-    boost = 0.03 + 0.05 * max(0.0, bluff_opp - 0.55)
+    # MUTATION v117 (a — threshold alignment, ~13% tighter baseline):
+    # v116 lowered line_reading.BLUFF_OPPORTUNITY_THRESHOLD 0.55 -> 0.48 so the
+    # 'bluff_heavy' label fires more readily, but this boost formula still used
+    # 0.55 as its growth baseline — meaning for the entire 0.48-0.55 range the
+    # label fired but the boost stayed flat at the 0.03 floor. Aligning the
+    # baseline to 0.48 makes the boost grow linearly from the actual firing
+    # threshold, restoring internal consistency. Effect at bluff_opp=0.70:
+    # 0.0375 -> 0.041 (+9.3%), well within 10-20% mutation budget. Capped at
+    # 0.08 so the call-widen can never dominate other signals. Grounded by
+    # existing confidence>=0.15 + tier/made_strength guards; this only tweaks
+    # the slope of an already-gated offensive bluff-catch axis.
+    boost = 0.03 + 0.05 * max(0.0, bluff_opp - 0.48)
     boost *= confidence
     return clamp(boost, 0.0, 0.08)
 

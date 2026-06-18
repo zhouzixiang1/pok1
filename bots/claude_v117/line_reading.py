@@ -9,7 +9,7 @@ from card_utils import clamp
 from postflop import bet_size_bucket, board_texture_profile
 
 VALUE_PRESSURE_THRESHOLD = 0.65
-# MUTATION v116 (a — threshold adjustment, ~13% lower): relax bluff_heavy
+# v116 mutation (a — threshold adjustment, ~13% lower): relax bluff_heavy
 # detection threshold 0.55 -> 0.48 so the bluff-heavy line label fires more
 # readily on opponents whose stats indicate weak/passive aggression
 # (low postflop_aggr + high fold_to_bet_river + small recent barrels).
@@ -18,6 +18,11 @@ VALUE_PRESSURE_THRESHOLD = 0.65
 # distinct from the EXHAUSTED probe_mode/defensive-guard chain. Per
 # experience pool BLUFF_CALIBRATION: only fires with confidence>=0.15 and
 # concrete fold-equity evidence, so widening 0.55->0.48 stays gated.
+# v117 (crossover v116 x v108): v108 lacks the v102 probe_mode fix and uses
+# the original 0.55 threshold; v116's 0.48 is retained because v108's only
+# H2H wins over v116 (e.g. vs v93) sit below the 30g noise floor. The v117
+# mutation aligns the boost formula baseline in bluff_heavy_call_widen
+# (strategy_helpers.py) with this 0.48 threshold — see that file.
 BLUFF_OPPORTUNITY_THRESHOLD = 0.48
 
 

@@ -25,18 +25,6 @@ from overbet import should_overbet, overbet_sizing
 from donk_probe import should_donk_bet, should_probe_bet, donk_probe_sizing
 from passive_exploit import passive_exploit_trigger, passive_exploit_sizing
 from line_reading import line_polarization_profile
-# MUTATION v117 (option b — heuristic rule from experience_pool planned-but-
-# never-wired task `bots/claude_v111/.task_context/w1.md`): NEW offensive
-# primitive `turn_double_barrel_planner()` fires on flop-cbet-called turn
-# spots vs NON-passive opponents (passivity < 0.60), orthogonal to
-# `passive_exploit` (which fires for passivity >= 0.60). NO new sizing
-# constant — reuses passive_exploit_sizing convention via
-# `barrel_planner_sizing()` (0.50-0.58x pot-fraction). Evidence: v111
-# turn_raise=33.5% (passive) vs v104 turn_raise=38% — more aggression on
-# blank/overcard turn transitions converts vs flop floats.
-from barrel_planning import (
-    turn_double_barrel_planner, barrel_planner_sizing,
-)
 from strategy_helpers import (
     _per_street_diverges, _aligned_signal_boost,
     opponent_pressure_adjustment, aggressive_line_strength,
@@ -1232,26 +1220,6 @@ def get_action(req, requests):
         )
         if anti_lock_attack is not None:
             return anti_lock_attack
-
-    # MUTATION v117: NEW offensive turn double-barrel planner — fires on
-    # flop-cbet-called turn spots vs NON-passive opponents (passivity<0.60),
-    # orthogonal to passive_exploit (which handles passivity>=0.60). Inserted
-    # BEFORE defensive gates so a real +EV turn barrel isn't shadowed by
-    # river-only defensive fold/return-0 paths (e.g. weak_pair_after_raise_barrel
-    # is round_idx>=2 but lives in passive/check territory, not raising paths).
-    opponent_id_barrel = next_player(my_id, 1)
-    barrel_plan = turn_double_barrel_planner(
-        round_idx, to_call, my_id, opponent_id_barrel, spot_info, opponent_model,
-        value_profile, made_strength, draw_strength, board_texture,
-        req.get("history", []), public_cards,
-    )
-    if barrel_plan["active"]:
-        barrel_amount = barrel_planner_sizing(
-            barrel_plan["ratio"], to_call, pot,
-            state["min_raise_action"], my_chips, state["my_round_bet"],
-        )
-        if barrel_amount is not None:
-            return barrel_amount
 
     if opp_double_barrel_then_river_check and weak_pair_river:
         return 0
