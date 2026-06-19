@@ -173,7 +173,12 @@ async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, 
             # on the same backoff schedule. `continue` here runs the finally (aclose) then
             # the for-loop's next attempt. Retries exhausted → fall through to return
             # (caller sees empty output and handles it, same as today, but now rare).
-            if not texts and sdk_attempt < _SIGNATURE_MAX_ATTEMPTS - 1:
+            # Condition covers BOTH empty-output variants: 0 TextBlocks (texts=[]) AND
+            # empty-string TextBlocks (texts=[""] — also out=0, another face of the SDK
+            # signature-truncation bug where a TextBlock carries empty text). The plain
+            # `not texts` check missed the texts=[""] case ([""] is truthy). `not any
+            # (... .strip())` is True iff every text is empty/whitespace, catching both.
+            if not any((t or "").strip() for t in texts) and sdk_attempt < _SIGNATURE_MAX_ATTEMPTS - 1:
                 _backoff = min(5 * (2 ** sdk_attempt), 30)
                 if ui:
                     ui.log_history(
