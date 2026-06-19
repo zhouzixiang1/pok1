@@ -170,6 +170,18 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                 # re-validate independently). Do NOT log "complete" success —
                 # the authoritative signal is the error-level system_event above.
                 return data
+            # SUCCESS path (BUGFIX, root cause of the v107–v127 Master deadlock):
+            # the plan parsed with `tasks`, carries no branch_from override, and
+            # passed schema validation with NO errors. This `return data` was
+            # MISSING for 11+ generations: every valid plan fell through to the
+            # "Master output malformed JSON" branch below, burned all
+            # MAX_MASTER_RETRIES, and returned None. The SDK-signature fix
+            # (48b51f2/c537ff1) only cured the EMPTY-output case — once plans
+            # came back non-empty and valid, this missing return STILL discarded
+            # them, which is exactly why "malformed-JSON persists post-fix" was
+            # observed. NOT a schema/SDK-sig/direction-audit problem.
+            ui.log_history("Master plan accepted (valid JSON, schema-clean).", "info")
+            return data
         ui.log_history("Master output malformed JSON. Retrying...", "warn")
         import asyncio
         await asyncio.sleep(2)
