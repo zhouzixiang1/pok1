@@ -905,10 +905,30 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
     # signal). Failure here MUST NOT abort post_generation_cleanup — every exit
     # in launch_qd_eval is observed via a system_event.
     try:
-        if ctx.next_v > 0:
+        # Committed gate (root-cause fix for qd_eval_failed bot_main_missing, 2026-06-19):
+        # post_generation_cleanup runs on abandoned cycles too: orchestrator.py:968
+        # `if cost >= 0:` triggers cleanup whenever _run_one_cycle returns accumulated
+        # cost (always >=0, even after abandon — abandon has no special return value).
+        # An abandoned generation's bot dir is deleted (abandon_generation rmtree, or the
+        # LLM's own Bash `rm -rf`), but ctx.next_v still holds the planned version, so
+        # launch_qd_eval would fire against a missing main.py and emit qd_eval_failed.
+        # Measured: 100% of the 5 post-restart qd_eval_failed events were preceded by the
+        # dir being deleted. Gate on git_has_tag (authoritative commit proof) so QD eval
+        # only runs for genuinely-committed candidates; symmetric to the exploitability
+        # probe block's main.py guard (generation_scheduler.py:797).
+        from evolution_infra import git_has_tag
+        if ctx.next_v > 0 and git_has_tag(ctx.next_v):
             from qd_async_eval import launch_qd_eval
             launch_qd_eval(ctx.next_v, ctx.source_v, k=3, n_games=8,
                            ui=ui, shutdown_mgr=shutdown_mgr)
+        elif ctx.next_v > 0:
+            log_system_event(
+                "pipeline.qd_eval_skipped", "info",
+                f"v{ctx.next_v} QD eval skipped: not committed "
+                f"(no bot-v{ctx.next_v} tag - abandoned/uncleaned cycle)",
+                {"version": ctx.next_v, "reason": "not_committed",
+                 "source_v": ctx.source_v},
+            )
     except Exception as e:
         log.warning("QD async eval launch failed: %s\n%s", e, traceback.format_exc())
         log_system_event(

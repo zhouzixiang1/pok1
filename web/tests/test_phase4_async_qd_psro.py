@@ -432,7 +432,7 @@ class TestQDAsyncEval:
         assert entry["fitness_median"] == 0.5
         assert entry["fitness_samples"] == [0.4, 0.6, 0.5]
 
-    def test_qd_eval_cancel_skips_archive_write(self, monkeypatch, tmp_path):
+    def test_qd_eval_watchdog_cancel_keeps_result(self, monkeypatch, tmp_path):
         # When the cancel flag is set (e.g. by the watchdog timeout), the worker
         # must NOT merge results into the archive. We simulate this by making the
         # evaluation SLOW and a short watchdog timeout that fires the cancel
@@ -470,11 +470,15 @@ class TestQDAsyncEval:
         while qd_async_eval._qd_eval_running.is_set() and time.time() < deadline:
             time.sleep(0.05)
         assert not qd_async_eval._qd_eval_running.is_set(), "worker did not finish"
-        # Archive entry must still be single (k=3 NOT merged — cancelled).
+        # 9fa730f root-cause fix: a watchdog timeout that fires AFTER the eval already
+        # produced usable fitness samples KEEPS the result. The old code discarded it
+        # (treating watchdog == shutdown), causing 100% QD-eval cancellation and zero k3
+        # archive entries. Now watchdog+samples fall through to the archive merge, so the
+        # entry is updated to k3 with the median (NOT left as the stale single-eval entry).
         out = json.loads(archive_file.read_text())
         entry = out["niches"]["agg1_loose1"]
-        assert entry["eval_mode"] == "single"
-        assert entry.get("fitness_median") in (None,)
+        assert entry["eval_mode"] == "k3"
+        assert entry.get("fitness_median") == 0.5
         qd_async_eval._qd_cancel.clear()
 
     def test_outstanding_async_tasks_count(self, monkeypatch):

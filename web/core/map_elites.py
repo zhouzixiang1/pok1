@@ -103,6 +103,37 @@ def fingerprint_to_bc(fp):
     )
 
 
+def _quantile_edges(values, n_buckets=5):
+    """Return n_buckets-1 ascending edges that split `values` into roughly-equal-count
+    buckets via linear-interpolated quantiles. Used for dynamic BC binning.
+
+    Returns None when there are too few values (< n_buckets) OR when de-duplication
+    collapses the interior edges (many identical values) — caller falls back to the
+    static _AGG_EDGES/_LOOSE_EDGES. None values are skipped before computing.
+
+    Root-cause fix (2026-06-19): static edges packed all mirror-battle bots into one
+    cell; quantile edges over the current active-bot distribution bin by relative rank
+    instead, restoring the diversity signal even when the raw AF/VPIP range is narrow.
+    """
+    clean = sorted(v for v in values if v is not None)
+    if len(clean) < n_buckets:
+        return None
+    edges = []
+    for i in range(1, n_buckets):
+        idx = i * (len(clean) - 1) / n_buckets  # position in [0, len-1]
+        lo = int(idx)
+        hi = min(lo + 1, len(clean) - 1)
+        frac = idx - lo
+        edges.append(clean[lo] + (clean[hi] - clean[lo]) * frac)
+    # Drop non-strictly-increasing edges (identical values produce coincident edges,
+    # which would collapse multiple buckets into one). Require all n_buckets-1 distinct.
+    deduped = []
+    for e in edges:
+        if not deduped or e > deduped[-1]:
+            deduped.append(e)
+    return deduped if len(deduped) == n_buckets - 1 else None
+
+
 def _bot_version(name):
     """Extract integer version from 'claude_v<N>'; None if unparseable."""
     try:
@@ -238,9 +269,32 @@ def build_behavior_archive(replays_dir, active_bots, h2h_winrates=None):
     """
     fingerprints = _scan_behavior_fingerprints(replays_dir, active_bots)
     h2h_winrates = h2h_winrates or {}
+    # Dynamic quantile binning (root-cause fix for archive collapse to a single niche,
+    # 2026-06-19). Static _AGG_EDGES/_LOOSE_EDGES were tuned for a generic AF/VPIP
+    # spread, but mirror-battle behavior collapses: bots land in AF~0.53-0.85 and
+    # VPIP~0.47-0.55 (the same strategy code playing itself), so every bot fell into one
+    # 5x5 cell (agg1_loose3) and _better_niche_occupant kept only the single fittest
+    # (v108 out of 31 bots with accumulator data). Quantile edges over the CURRENT
+    # active-bot distribution bin by relative rank, spreading bots across the grid.
+    # Measured: 31 bots in 1 static niche -> ~19 niches with quantile edges. Falls back
+    # to static edges when too few bots for quantile binning (<5, or degenerate values).
+    afs = [fp.get("aggression_factor") for fp in fingerprints.values() if isinstance(fp, dict)]
+    vpips = [fp.get("vpip") for fp in fingerprints.values() if isinstance(fp, dict)]
+    agg_edges = _quantile_edges(afs) or list(_AGG_EDGES)
+    loose_edges = _quantile_edges(vpips) or list(_LOOSE_EDGES)
     niches = {}
     for bot, fp in fingerprints.items():
-        key, a, l, bc = fingerprint_to_bc(fp)
+        af = fp.get("aggression_factor") if isinstance(fp, dict) else None
+        vpip = fp.get("vpip") if isinstance(fp, dict) else None
+        a = _bucket(af, agg_edges)
+        l = _bucket(vpip, loose_edges)
+        key = niche_key(a, l)
+        bc = {
+            "agg_bucket": a,
+            "loose_bucket": l,
+            "aggression_factor": (round(af, 3) if af is not None else None),
+            "vpip": (round(vpip, 3) if vpip is not None else None),
+        }
         fitness = h2h_winrates.get(bot, 0.5)
         try:
             fitness = float(fitness)
@@ -323,14 +377,25 @@ def write_behavior_archive(replays_dir, active_bots, h2h_winrates=None):
     try:
         prior = read_behavior_archive()
         prior_niches = (prior or {}).get("niches", {}) if isinstance(prior, dict) else {}
+        # Index prior k3 entries by BOT NAME (not niche key). Dynamic quantile edges
+        # (see build_behavior_archive) re-derive niche keys every rebuild from the
+        # current active-bot distribution, so a bot's niche_key can shift across
+        # rebuilds — a niche_key lookup would miss the prior k3 entry and let the
+        # single-eval rebuild clobber the lower-variance k3 median the candidate
+        # earned on commit. A bot-name index is stable across niche shifts.
+        prior_k3_by_bot = {}
+        if isinstance(prior_niches, dict):
+            for _k, pe in prior_niches.items():
+                if (isinstance(pe, dict)
+                        and pe.get("eval_mode") == "k3"
+                        and pe.get("fitness_median") is not None
+                        and pe.get("bot")):
+                    prior_k3_by_bot[pe["bot"]] = pe
         archive = build_behavior_archive(replays_dir, active_bots, h2h_winrates)
         niches = archive.get("niches", {})
         for key, entry in niches.items():
-            prior_entry = prior_niches.get(key)
-            if (isinstance(prior_entry, dict)
-                    and prior_entry.get("bot") == entry.get("bot")
-                    and prior_entry.get("eval_mode") == "k3"
-                    and prior_entry.get("fitness_median") is not None):
+            prior_entry = prior_k3_by_bot.get(entry.get("bot"))
+            if prior_entry is not None:
                 # Re-attach k=3 fields so the median survives a daemon rebuild.
                 entry["fitness_median"] = prior_entry["fitness_median"]
                 entry["fitness_samples"] = prior_entry.get("fitness_samples")

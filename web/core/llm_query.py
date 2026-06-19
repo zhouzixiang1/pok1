@@ -156,6 +156,34 @@ async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, 
                     f"{role_name}: SDK stream recovered after {sdk_attempt} signature retry/retries",
                     "info",
                 )
+            # Empty-output retry (root-cause fix for Master JSON collapse, 2026-06-19).
+            # claude_agent_sdk 0.2.91's signature bug has TWO failure modes:
+            #   (a) raises ClaudeSDKError mid-stream — caught above, retried.
+            #   (b) stream "succeeds" with a ResultMessage (cost/usage present) but ZERO
+            #       TextBlocks → _process_stream returns ([], cost, usage) WITHOUT raising.
+            # Mode (b) escaped ALL retry layers (only ClaudeSDKError was caught), so the
+            # empty output reached the caller, parse_json_output('') returned None, and
+            # the agent logged "malformed JSON" → 3x retry exhaust → abandon_generation.
+            # Measured impact: 140/540 (26%) of MASTER [COST] lines were in=0 out=0, and
+            # 713 "Missing required field ... signature" errors appeared app-wide — this
+            # is the true root cause of the v107-110/v116/v121/v125 "Master JSON collapse"
+            # (previously mis-attributed to direction-audit constraints; that is only a
+            # minor secondary factor for the real-output-but-rejected subset).
+            # Fix: treat 0-TextBlock output as a signature-truncation variant and retry it
+            # on the same backoff schedule. `continue` here runs the finally (aclose) then
+            # the for-loop's next attempt. Retries exhausted → fall through to return
+            # (caller sees empty output and handles it, same as today, but now rare).
+            if not texts and sdk_attempt < _SIGNATURE_MAX_ATTEMPTS - 1:
+                _backoff = min(5 * (2 ** sdk_attempt), 30)
+                if ui:
+                    ui.log_history(
+                        f"{role_name}: SDK stream returned 0 TextBlocks (cost={cost_usd}) — "
+                        f"signature-truncation variant, retrying in {_backoff}s "
+                        f"(attempt {sdk_attempt+1}/{_SIGNATURE_MAX_ATTEMPTS})",
+                        "warn",
+                    )
+                await asyncio.sleep(_backoff)
+                continue
             return texts, cost_usd, usage
         except ClaudeSDKError as e:
             last_sdk_err = e
