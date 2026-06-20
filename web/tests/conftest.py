@@ -290,6 +290,14 @@ def isolate_state(tmp_path, monkeypatch):
     # --- 2. Patch system_log module constant ---
     monkeypatch.setattr(system_log, "SYSTEM_EVENTS_FILE", iso / "system_events.jsonl")
 
+    # --- 2b. Patch event_bus (Phase 0 log redesign): redirect events.jsonl to
+    # tmp and reset correlation context so emit() never touches real results/.
+    # Every log_system_event call now dual-writes through emit(), so this matters
+    # for ALL tests, not just event_bus's own. ---
+    import event_bus
+    monkeypatch.setattr(event_bus, "EVENTS_FILE", results_dir / "events.jsonl")
+    event_bus.reset_for_test()
+
     # --- 3. Patch app_state config file ---
     monkeypatch.setattr(app_state, "_config_file", iso / "app_config.json")
 

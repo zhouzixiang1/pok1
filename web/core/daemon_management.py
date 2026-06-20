@@ -99,6 +99,12 @@ def start_daemon(workers=None, pairs=5, scheduler_capable=True):
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1,
             start_new_session=True,  # Independent process group for clean killpg
+            # Tag the daemon subprocess so event_bus._detect_proc() identifies it
+            # as "daemon" — its events/SSE then carry the correct process identity
+            # (RC6). The daemon serves many generations, so it does NOT receive a
+            # pinned run_id; its events resolve the current generation's run_id
+            # from the live pipeline_state.json at emit time.
+            env={**os.environ, "POK_PROC": "daemon"},
         )
         tmp_pid = daemon_pid_file.with_suffix(".tmp")
         tmp_pid.write_text(json.dumps({"pid": daemon_proc.pid, "ppid": os.getpid(), "scheduler_capable": scheduler_capable}))

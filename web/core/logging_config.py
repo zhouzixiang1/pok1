@@ -11,6 +11,7 @@ Usage:
 """
 
 import logging
+import os
 import sys
 import time
 from logging.handlers import RotatingFileHandler
@@ -70,6 +71,28 @@ class SSEHandler(logging.Handler):
         })
 
 
+class CorrelationFilter(logging.Filter):
+    """Inject run_id + pid into every LogRecord so app.log lines carry the
+    generation correlation key and the originating process (RC6).
+
+    Attached to the root ``pok`` logger, so all 25+ modules that call
+    ``logging.getLogger('pok.*')`` directly (bypassing event_bus) still get
+    pid + run_id in their log lines for free — no per-call-site change needed.
+    """
+
+    def filter(self, record):
+        try:
+            from event_bus import _run_id_cv, _last_known
+            rid = _run_id_cv.get()
+            if not rid:
+                rid = _last_known.get("run_id")
+            record.run_id = rid or "-"
+        except Exception:
+            record.run_id = getattr(record, "run_id", "-")
+        record.pid = os.getpid()
+        return True
+
+
 def configure_logging(
     level="INFO",
     log_dir=None,
@@ -86,11 +109,22 @@ def configure_logging(
     effective_level = logging.DEBUG if dev_mode else getattr(logging, level.upper(), logging.INFO)
     root.setLevel(effective_level)
 
+    # Inject pid + run_id into every record so app.log lines are attributable to
+    # a process + generation (RC6). Attached at the root so every handler
+    # (console/file/SSE) and all 25+ bare getLogger('pok.*') users inherit it.
+    correl_added = any(isinstance(f, CorrelationFilter) for f in root.filters)
+    if not correl_added:
+        root.addFilter(CorrelationFilter())
+
     # Prevent propagation to root logger (avoids duplicate stderr output)
     root.propagate = False
 
-    fmt = "%(asctime)s %(levelname)-8s [%(short_name)s] %(message)s"
-    datefmt = "%H:%M:%S"
+    # pid + run_id are injected by CorrelationFilter (attached to the root
+    # logger below). RC6: previously app.log had no PID and no date, so
+    # daemon/orchestrator/web lines were indistinguishable and unjoinable with
+    # system_events. Date added to disambiguate across days.
+    fmt = "%(asctime)s %(levelname)-8s [pid=%(pid)s v%(run_id)s] [%(short_name)s] %(message)s"
+    datefmt = "%Y-%m-%d %H:%M:%S"
 
     # Console handler
     if not quiet:
