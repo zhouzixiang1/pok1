@@ -30,6 +30,11 @@
 #   logrotate -d scripts/pok.logrotate
 
 /home/zzx/project/pok/web/logs/server.stdout.log {
+    # Run as the directory owner. web/logs/ is group-writable and owned by
+    # zzx:zzx (not root), so logrotate — which defaults to root — refuses to
+    # rotate this log with an "insecure permissions" error unless we tell it
+    # explicitly which user/group to use via the "su" directive.
+    su zzx zzx
     weekly
     rotate 10
     compress
