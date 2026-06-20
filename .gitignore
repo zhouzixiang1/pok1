@@ -34,6 +34,26 @@ bots/graveyard/
 # Claude Code worktrees
 .claude/worktrees/
 
+# Per-generation worker task briefs — transient (Master LLM writes, Workers
+# read at runtime per master_prompt.md). Stale ones archived to
+# archive/task_context/bots/. Ignore active locations to stop git churn.
+.task_context/
+
+# Playwright MCP runtime artifacts (screenshots/console logs); archived to
+# archive/clutter/.playwright-mcp/
+.playwright-mcp/
+
+# Stray root npm lockfile (no root package.json; real one is web/frontend/).
+# Archived to archive/clutter/package-lock.json
+/package-lock.json
+
+# Archived runtime/log data — preserved on disk, NOT tracked (origins were the
+# gitignored web/logs/ and web/core/results/). Keeping them out of git avoids
+# committing bulky logs/replays/.bak into history.
+archive/logs/
+archive/forensic/
+archive/clutter/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -1,0 +1,40 @@
+# logrotate config for the pok web server stdout log.
+#
+# WHAT THIS ROTATES
+#   web/logs/server.stdout.log — the uvicorn process stdout+stderr capture,
+#   appended by `pokctl.sh start` via `nohup ... >> "$STDOUT_LOG" 2>&1 &`.
+#   Unlike app.log (Python RotatingFileHandler 5x10MB) and the role-IO logs
+#   (_append_role_io 20MB cap), this redirect has NO built-in rotation and
+#   grows unbounded across restarts. This config caps it.
+#
+# WHY copytruncate
+#   The uvicorn process holds the file descriptor open. A plain `create`
+#   rotation would leave the process writing to a deleted inode (the new empty
+#   file would never receive data). `copytruncate` copies the content out then
+#   truncates the live file in place, so the held fd keeps writing correctly.
+#   Trade-off: a brief window between copy and truncate can lose a log line —
+#   acceptable for a human-inspect-only stdout capture.
+#
+# INSTALL (one-time, needs sudo):
+#   sudo cp scripts/pok.logrotate /etc/logrotate.d/pok
+#   sudo chmod 644 /etc/logrotate.d/pok
+#   # verify it parses + would run:
+#   sudo logrotate -d /etc/logrotate.d/pok
+#   # force a rotation now to confirm it works:
+#   sudo logrotate -f /etc/logrotate.d/pok
+#
+#   logrotate runs daily via /etc/cron.daily/logrotate on most distros; no extra
+#   scheduling is needed once the drop-in is installed.
+#
+# Dry-run from the repo (no install, no changes):
+#   logrotate -d scripts/pok.logrotate
+
+/home/zzx/project/pok/web/logs/server.stdout.log {
+    weekly
+    rotate 10
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
