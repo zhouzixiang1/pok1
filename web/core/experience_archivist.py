@@ -195,9 +195,22 @@ async def _run_archivist_analysis(version, source_v, snapshot, ui):
             "CYCLE ARCHIVIST", log_file,
             tools=["Bash", "Read"],
         )
-        data = parse_json_output(output)
+        from llm_query import parse_json_output_with_mode
+        data, failure_mode = parse_json_output_with_mode(output)
         if data and isinstance(data, dict):
             return data
-        return {"archive_notes": output[:300] if output else "No output"}
+        # RC4: parse failed — previously returned a silent {archive_notes: output[:300]}
+        # default with no event, hiding NO_JSON/NO_FENCE/PARSE_ERROR behind a
+        # plausible-looking archive_notes string. Emit so the archivist's degraded
+        # state is visible downstream.
+        try:
+            from event_bus import warn
+            warn("pipeline.archivist_parse_failed",
+                 f"Archivist parse failed (mode={failure_mode})",
+                 failure_mode=failure_mode, output_len=len(output or ""))
+        except Exception:
+            pass
+        return {"archive_notes": output[:300] if output else "No output",
+                "parse_failed": True}
     except Exception as e:
         return {"error": str(e)}

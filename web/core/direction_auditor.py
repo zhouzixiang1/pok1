@@ -181,7 +181,8 @@ async def _run_direction_audit(source_v, ui):
         output, _, _ = await run_claude_query(
             audit_prompt, [], ui, "DIRECTION AUDITOR", log_file,
         )
-        data = parse_json_output(output)
+        from llm_query import parse_json_output_with_mode
+        data, failure_mode = parse_json_output_with_mode(output)
         if data and "repetition_detected" in data:
             data, errors = validate_agent_output("direction_auditor", data)
             if errors:
@@ -206,6 +207,25 @@ async def _run_direction_audit(source_v, ui):
                     "llm_failed": True}
         ui.log_history(f"Direction Auditor error: {e}. Skipping.", "warn")
 
+    # RC4 (parse collapse + silent PASS): reaching here means the LLM output
+    # failed to parse (NO_JSON/NO_FENCE/PARSE_ERROR) or lacked the
+    # repetition_detected key, OR an exception skipped the parse. Previously
+    # this fell through to a silent {repetition_detected: False} default, which
+    # tool_planning.run_master consumed as a clean "no repetition" PASS —
+    # marking a FAILED audit gate as an authoritative clean pass. Emit a
+    # failure event and return an explicitly-uncertain result (parse_failed=True)
+    # so Master knows the anti-repetition gate is degraded, not clean.
+    _fm = locals().get("failure_mode", "EXCEPTION")
+    _out = locals().get("output", "") or ""
+    try:
+        from event_bus import warn
+        warn("pipeline.direction_audit_parse_failed",
+             f"Direction Auditor v{source_v} parse failed (mode={_fm}); "
+             "returning uncertain default (gate degraded, not clean PASS)",
+             source_v=source_v, failure_mode=_fm, output_len=len(_out))
+    except Exception:
+        pass
     return {"repetition_detected": False, "exhausted_directions": [],
             "mandatory_constraints": None, "suggested_direction": None,
-            "confidence": "low", "last_directions": []}
+            "confidence": "low", "last_directions": [],
+            "parse_failed": True}

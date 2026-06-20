@@ -457,6 +457,24 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             os.fsync(f.fileno())
         os.replace(str(tmp), str(PIPELINE_STATE_FILE))
 
+        # RC2/RC6: refresh event_bus last-known correlation so events emitted
+        # after this stage advance — and especially after clear_pipeline_checkpoint
+        # post-commit — still resolve the correct run_id/stage/attempt. This makes
+        # stage/attempt correlation automatic for ALL pipeline code, not just call
+        # sites that manually bind(). Also invalidates the checkpoint TTL cache so
+        # the next emit sees the new stage immediately rather than the stale value.
+        try:
+            from event_bus import update_last_known, invalidate_ckpt_cache
+            update_last_known(
+                run_id=f"{next_v}#{existing_generation_attempt}",
+                stage=stage,
+                attempt={"generation": existing_generation_attempt,
+                         "audit": existing_audit_attempt,
+                         "precommit": existing_precommit_attempt})
+            invalidate_ckpt_cache()
+        except Exception:
+            pass
+
 
 def read_pipeline_checkpoint():
     """Return saved pipeline state dict, or None."""

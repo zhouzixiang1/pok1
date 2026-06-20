@@ -242,3 +242,68 @@ def test_emit_does_not_deadlock_when_checkpoint_locked(isolated_files):
     ev = _read_jsonl(isolated_files / "events.jsonl")[-1]
     assert ev["data"]["run_id"] == "7#0"
     assert ev["data"]["stage"] == "master_planned"
+
+
+# ── Phase 1: category separation (RC5) ───────────────────────────────────────
+
+def test_worker_failure_recorded_with_worker_category(isolated_files, monkeypatch):
+    """RC5: _record_worker_failure tags category='worker' so the 49 critic + 9
+    reviewer noise in worker_failures.jsonl can be filtered out."""
+    import agent_workers
+    import evolution_infra
+    wf = isolated_files / "worker_failures.jsonl"
+    monkeypatch.setattr(evolution_infra, "WORKER_FAILURES_FILE", wf)
+    monkeypatch.setattr(agent_workers, "WORKER_FAILURES_FILE", wf)
+    agent_workers._record_worker_failure(127, 1, "LogicArchitect", "compile error")
+    line = json.loads(wf.read_text().strip())
+    assert line["category"] == "worker"
+    assert line["role"] == "LogicArchitect"
+
+
+def test_quality_failure_recorded_with_gate_category(isolated_files, monkeypatch):
+    """RC5: _record_quality_failure (reviewer/critic) tags category='gate',
+    separable from real worker crashes."""
+    import evolution_core
+    import tool_gates
+    wf = isolated_files / "worker_failures.jsonl"
+    monkeypatch.setattr(evolution_core, "WORKER_FAILURES_FILE", wf)
+    tool_gates._record_quality_failure(127, "critic", "Strategy Critic", "rejected")
+    line = json.loads(wf.read_text().strip())
+    assert line["category"] == "gate"
+
+
+# ── Phase 1: checkpoint → last-known auto-correlation (RC2) ──────────────────
+
+def test_write_checkpoint_updates_last_known(isolated_files, monkeypatch):
+    """RC2: write_pipeline_checkpoint refreshes event_bus last-known, so an emit
+    after a stage advance (with no manual bind) auto-carries run_id/stage/attempt.
+    This is what makes correlation automatic for ALL pipeline code."""
+    import evolution_infra
+    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE",
+                        isolated_files / "pipeline_state.json")
+    event_bus.reset_for_test()
+    evolution_infra.write_pipeline_checkpoint(
+        next_v=42, source_v=41, stage="master_planned",
+        generation_attempt=1, audit_attempt=2, precommit_attempt=3)
+    event_bus.emit("pipeline.after_checkpoint_write", "info", "m")
+    data = _read_jsonl(isolated_files / "events.jsonl")[-1]["data"]
+    assert data["run_id"] == "42#1"                  # composite key from checkpoint
+    assert data["stage"] == "master_planned"
+    assert data["attempt"]["generation"] == 1
+    assert data["attempt"]["audit"] == 2
+    assert data["attempt"]["precommit"] == 3
+
+
+def test_last_known_survives_clear_via_write_checkpoint(isolated_files, monkeypatch):
+    """RC2: after write_pipeline_checkpoint then clear_pipeline_checkpoint (the
+    post-commit window), emits still resolve the just-finished generation."""
+    import evolution_infra
+    ckpt = isolated_files / "pipeline_state.json"
+    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", ckpt)
+    event_bus.reset_for_test()
+    evolution_infra.write_pipeline_checkpoint(
+        next_v=50, source_v=49, stage="archived", generation_attempt=0)
+    evolution_infra.clear_pipeline_checkpoint()      # post-commit
+    event_bus.emit("pipeline.post_commit_archivist", "info", "m")
+    data = _read_jsonl(isolated_files / "events.jsonl")[-1]["data"]
+    assert data["run_id"] == "50#0"                  # last-known, not lost

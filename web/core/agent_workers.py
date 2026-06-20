@@ -24,15 +24,23 @@ from evolution_infra import (
 
 
 def _record_worker_failure(gen, worker_id, role, error, failure_type="unknown"):
-    """Append a worker failure record to the JSONL file."""
-    entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error, "failure_type": failure_type}
+    """Append a worker failure record to the JSONL file.
+
+    RC5: category="worker" distinguishes real worker-exec failures from the
+    reviewer/critic gate rejections that _record_quality_failure writes into the
+    same file — historically 49 critic + 9 reviewer + only 1 real worker, all
+    indistinguishable without this field.
+    """
+    entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error,
+             "failure_type": failure_type, "category": "worker"}
     with locked_file(WORKER_FAILURES_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     try:
         from system_log import log_system_event
         log_system_event("pipeline.worker_failed", "error",
                          f"Worker {worker_id} ({role}) failed for v{gen}",
-                         {"gen": gen, "worker_id": worker_id, "role": role, "error": error[:200]})
+                         {"gen": gen, "worker_id": worker_id, "role": role,
+                          "error": error[:200], "category": "worker"})
     except Exception as e:
         log.warning("Failed to log worker failure event: %s", e)
 

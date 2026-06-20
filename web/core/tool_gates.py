@@ -49,9 +49,16 @@ DECISION_TEST_SPRT_ENABLED = False
 
 
 def _record_quality_failure(gen, worker_id, role, error, **extra):
-    """Record a quality gate rejection (reviewer/critic) to worker_failures.jsonl."""
+    """Record a quality gate rejection (reviewer/critic) to worker_failures.jsonl.
+
+    RC5: category="gate" separates these strategic rejections from real
+    worker-exec failures (_record_worker_failure writes category="worker") so
+    the Worker Failures view can filter out the 49 critic / 9 reviewer noise
+    and surface only genuine compile/timeout crashes.
+    """
     from evolution_core import WORKER_FAILURES_FILE, locked_file
-    entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error, "timestamp": time.time()}
+    entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error,
+             "timestamp": time.time(), "category": "gate"}
     entry.update({k: v for k, v in extra.items() if v is not None and v is not False})
     with locked_file(WORKER_FAILURES_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -546,7 +553,8 @@ async def run_review(args):
                 "llm_failed": True})
         ui.log_history(f"Reviewer error: {e}. Defaulting to rejected.", "warn")
         output = None
-    data = parse_json_output(output)
+    from llm_query import parse_json_output_with_mode
+    data, _review_mode = parse_json_output_with_mode(output)
 
     if data and "approved" in data:
         approved = data["approved"] is True
@@ -595,7 +603,7 @@ async def run_review(args):
         error_msg = (
             "Reviewer returned valid JSON but missing 'approved' field"
             if data and isinstance(data, dict)
-            else "Reviewer failed to produce valid JSON"
+            else f"Reviewer failed to produce valid JSON (mode={_review_mode})"
         )
         gate = _gate_payload(
             v,

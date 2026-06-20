@@ -186,6 +186,22 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             # them, which is exactly why "malformed-JSON persists post-fix" was
             # observed. NOT a schema/SDK-sig/direction-audit problem.
             ui.log_history("Master plan accepted (valid JSON, schema-clean).", "info")
+            # RC1 (success-path symmetry): emit the success terminal event here so
+            # the clean-success path is as visible as the failure paths above. The
+            # degraded path (:177) already emits pipeline.master_schema_gate_exhausted
+            # (error) — only this clean branch was event-silent. Without it, a
+            # master-success-return-bug regression (valid plan parsed but the
+            # function then failed to return) is invisible in the event stream;
+            # prepare_done=N vs master_plan_accepted=0 would now expose it at once.
+            try:
+                from event_bus import success
+                success("pipeline.master_plan_accepted",
+                        f"Master v{next_v} plan accepted (schema-clean, try {attempt+1})",
+                        next_v=next_v, source_v=source_v,
+                        master_try=attempt + 1,
+                        num_tasks=len(data.get("tasks", [])))
+            except Exception:
+                pass
             return data
         ui.log_history(
             f"Master output malformed JSON (mode={_failure_mode}). Retrying...",
