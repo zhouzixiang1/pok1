@@ -301,7 +301,8 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
             output, _, _ = await run_claude_query(
                 prompt, [], ui, "COMBINED ANALYST", log_file,
             )
-            result = parse_json_output(output)
+            from llm_query import parse_json_output_with_mode
+            result, failure_mode = parse_json_output_with_mode(output)
             if result:
                 from output_schema import validate_agent_output
                 result, errors = validate_agent_output("combined_analyst", result)
@@ -322,7 +323,7 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
                 result.setdefault("recommended_source", "")
                 result.setdefault("source_rationale", "")
                 return result
-            ui.log_history(f"Combined analyst returned empty (attempt {attempt+1}/3), retrying...", "warn")
+            ui.log_history(f"Combined analyst returned empty (attempt {attempt+1}/3, mode={locals().get('failure_mode', 'UNKNOWN')}), retrying...", "warn")
         except Exception as e:
             from llm_failure import is_llm_infra_error
             if is_llm_infra_error(e):
@@ -344,5 +345,18 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
 
     # If the last attempt crashed as an infra error, safe_default already carries
     # llm_failed=True. Otherwise this is the no-valid-output-after-retries path,
-    # which is a real business failure (empty output), not infra — leave False.
+    # which previously collapsed silently into a business-style safe_default
+    # (llm_failed=False). Emit a classifiable parse-collapse event so the
+    # repeated empty-output failure is visible, and mark the default.
+    if not safe_default.get("llm_failed"):
+        _fm = locals().get("failure_mode", "EXCEPTION")
+        try:
+            from event_bus import warn
+            warn("pipeline.combined_analyst_parse_failed",
+                 f"Combined analyst v{source_v} parse failed after 3 attempts (mode={_fm}); "
+                 "returning safe default (recommendation=continue)",
+                 source_v=source_v, failure_mode=_fm)
+        except Exception:
+            pass
+        safe_default["parse_failed"] = True
     return safe_default

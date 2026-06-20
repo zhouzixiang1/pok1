@@ -338,7 +338,9 @@ def collect_results(job_ids: list[str]) -> dict[str, dict]:
         f.flush()
         os.fsync(f.fileno())
 
-    if collected or len(job_ids) != len(collected):
+    if collected:
+        log.debug("Collected %d/%d requested results", len(collected), len(job_ids))
+    elif len(job_ids) != len(collected):
         log.info("Collected %d/%d requested results", len(collected), len(job_ids))
     return collected
 

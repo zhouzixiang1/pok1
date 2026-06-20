@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import threading
 
 from claude_agent_sdk import (
     query as claude_query,
@@ -23,6 +24,79 @@ from claude_agent_sdk import (
 )
 
 log = logging.getLogger("pok.infra")
+
+# Serialize role-IO log rotation across threads/processes (mirrors
+# battle_experience._LOG_ROTATION_LOCK). Without this lock, two concurrent
+# appenders can both observe the file over the size cap and race the rename
+# (one wins, the other's rename throws FileNotFoundError — swallowed by the
+# except, benign but loses the backup). The lock makes the rotate-then-append
+# atomic. A threading.Lock suffices within one process; cross-process safety
+# for the append itself is provided by fcntl (locked_file below).
+_ROLE_IO_ROTATION_LOCK = threading.Lock()
+
+#: Cap a single role-IO log at 20MB before rotating to one backup (``.1``).
+#: battle_exp_llm.log previously grew to 103MB with no upper bound (root-cause
+#: 6); this is the structural cap. Mirrors battle_experience's 50MB cap
+#: (lowered here because role-IO files are append-heavy and per-role).
+_ROLE_IO_MAX_BYTES = 20 * 1024 * 1024
+
+
+def _append_role_io(log_file_path, text):
+    """Append text to a role-IO log file with fcntl locking + 20MB rotation.
+
+    Replaces the bare ``with open(path, "a") as lf: lf.write(...)`` pattern that
+    had no locking and no size cap (root-cause 6: battle_exp_llm.log reached
+    103MB).
+
+      - fcntl LOCK_EX via ``evolution_infra.locked_file`` → cross-process +
+        cross-thread safe (orchestrator + battle_experience workers append
+        concurrently to the same path).
+      - Before writing: if the file exceeds ``_ROLE_IO_MAX_BYTES`` (20MB),
+        rename it to ``.1`` (single overwrite backup, mirroring
+        battle_experience._LOG_ROTATION_LOCK). Rotation is serialized by
+        ``_ROLE_IO_ROTATION_LOCK`` so two appenders can't race the rename.
+      - Each appended chunk is prefixed with ``[<run_id>] `` (or ``[-]`` when
+        no run_id is resolvable) so role-IO lines join app.log + events.jsonl
+        on the same correlation key (RC6).
+
+    Never raises — logging must not crash the pipeline. Returns silently on any
+    error (the underlying stream processing / return value is unaffected).
+    """
+    try:
+        # Resolve the current run_id for the correlation prefix. event_bus reads
+        # the live checkpoint as fallback, so this works even in long-lived
+        # worker threads that are not pinned to one generation.
+        try:
+            from event_bus import capture_context
+            _ctx = capture_context() or {}
+            _rid = _ctx.get("run_id") or "-"
+        except Exception:
+            _rid = "-"
+        chunk = f"[{_rid}] {text}" if not text.startswith("\n") else f"\n[{_rid}] " + text.lstrip("\n")
+        # Rotation check + rename (serialized; size read without a lock, which
+        # is best-effort — a concurrent writer can grow the file between the
+        # stat and the rename, but that only delays rotation by one cycle).
+        try:
+            if os.path.exists(log_file_path) and os.path.getsize(log_file_path) > _ROLE_IO_MAX_BYTES:
+                with _ROLE_IO_ROTATION_LOCK:
+                    if os.path.exists(log_file_path) and os.path.getsize(log_file_path) > _ROLE_IO_MAX_BYTES:
+                        _rotated = log_file_path + ".1"
+                        try:
+                            if os.path.exists(_rotated):
+                                os.remove(_rotated)
+                        except Exception:
+                            pass
+                        try:
+                            os.rename(log_file_path, _rotated)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        from evolution_infra import locked_file
+        with locked_file(log_file_path, "a", encoding="utf-8") as lf:
+            lf.write(chunk)
+    except Exception:
+        pass
 
 
 def extract_result_error(message) -> str:
@@ -98,18 +172,15 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                     if isinstance(block, TextBlock):
                         text = block.text
                         texts.append(text)
-                        with open(log_file_path, "a") as lf:
-                            lf.write(text + "\n")
+                        _append_role_io(log_file_path, text + "\n")
                         ui.log_io(text, "claude", role_name)
                     elif isinstance(block, ThinkingBlock):
                         thinking = block.thinking or "[thinking...]"
-                        with open(log_file_path, "a") as lf:
-                            lf.write(f"\n[THINKING] {thinking[:2000]}\n")
+                        _append_role_io(log_file_path, f"\n[THINKING] {thinking[:2000]}\n")
                         ui.log_io(thinking, "thinking", role_name)
                     elif isinstance(block, ToolUseBlock):
                         args_str = json.dumps(block.input, ensure_ascii=False, indent=2)[:2000]
-                        with open(log_file_path, "a") as lf:
-                            lf.write(f"\n[TOOL_CALL] {block.name}\n[ARGS] {args_str}\n")
+                        _append_role_io(log_file_path, f"\n[TOOL_CALL] {block.name}\n[ARGS] {args_str}\n")
                         ui.log_io(f"\n[tool: {block.name}]", "tool", role_name)
                         ui.emit_tool_call(block.name, block.input, role_name)
                     elif isinstance(block, ToolResultBlock):
@@ -117,8 +188,7 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                             json.dumps(block.content, ensure_ascii=False) if block.content is not None else ""
                         )
                         if content:
-                            with open(log_file_path, "a") as lf:
-                                lf.write(f"\n[TOOL_RESULT] {content[:3000]}\n")
+                            _append_role_io(log_file_path, f"\n[TOOL_RESULT] {content[:3000]}\n")
                             ui.log_io(content[:3000], "tool_result", role_name)
             elif isinstance(message, ResultMessage):
                 cost_usd = message.total_cost_usd
@@ -145,12 +215,12 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                             "num_turns": _num_turns,
                             "stop_reason": _stop_reason,
                         }
-                        with open(log_file_path, "a") as _lf:
-                            _lf.write(
-                                "\n[RESULT_DIAG] "
-                                + json.dumps(_diag, ensure_ascii=False, default=str)
-                                + "\n"
-                            )
+                        _append_role_io(
+                            log_file_path,
+                            "\n[RESULT_DIAG] "
+                            + json.dumps(_diag, ensure_ascii=False, default=str)
+                            + "\n",
+                        )
                         if ui:
                             ui.log_history(
                                 f"{role_name}: ResultMessage non-success "
@@ -159,11 +229,15 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                                 "warn",
                             )
                             try:
-                                from system_log import log_system_event
-                                log_system_event(
-                                    "pipeline.llm_result_non_success", "warn",
+                                import event_bus
+                                event_bus.warn(
+                                    "pipeline.llm_result_non_success",
                                     f"{role_name} ResultMessage non-success (subtype={_subtype})",
-                                    _diag,
+                                    role=role_name,
+                                    subtype=_subtype,
+                                    is_error=_is_err,
+                                    num_turns=_num_turns,
+                                    stop_reason=_stop_reason,
                                 )
                             except Exception:
                                 pass
@@ -234,12 +308,12 @@ async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, 
                         "warn",
                     )
                     try:
-                        from system_log import log_system_event
-                        log_system_event(
-                            "pipeline.llm_empty_output_retry", "warn",
+                        import event_bus
+                        event_bus.warn(
+                            "pipeline.llm_empty_output_retry",
                             f"{role_name} SDK stream returned 0 TextBlocks (signature-truncation variant)",
-                            {"role": role_name, "cost": cost_usd,
-                             "attempt": sdk_attempt + 1, "max_attempts": _SIGNATURE_MAX_ATTEMPTS},
+                            role=role_name, cost=cost_usd,
+                            attempt=sdk_attempt + 1, max_attempts=_SIGNATURE_MAX_ATTEMPTS,
                         )
                     except Exception:
                         pass
@@ -328,10 +402,12 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
     ui.log_io(prompt[:200] + "...\n[Context Attached]", "prompt", role_name)
     ui.log_io("\n[WAITING FOR CLAUDE...]\n", "prompt", role_name)
 
-    with open(log_file_path, "a") as lf:
-        lf.write(f"\n[{role_name} PROMPT]\n=============================\n")
-        lf.write(full_prompt)
-        lf.write("\n=============================\n[CLAUDE OUTPUT]\n")
+    _append_role_io(
+        log_file_path,
+        f"\n[{role_name} PROMPT]\n=============================\n"
+        + full_prompt
+        + "\n=============================\n[CLAUDE OUTPUT]\n",
+    )
 
     options = ClaudeAgentOptions(
         model=model,

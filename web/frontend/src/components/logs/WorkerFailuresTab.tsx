@@ -4,8 +4,32 @@ import type { WorkerFailure } from "../../api/types";
 import { Badge } from "../shared/Badge";
 import { Skeleton } from "../shared/Skeleton";
 
+// Phase 2+3 log redesign: category filter separates real worker execution
+// failures (category "worker") from critic/reviewer "gate" noise (category
+// "gate") that was polluting the worker-failure stream (root cause 5).
+// The backend reader backfills category on old records, so client-side
+// filtering on the returned category field is the robust path that does not
+// depend on a client.ts query-param extension.
+type CategoryFilter = "all" | "worker" | "gate";
+
+const CATEGORY_OPTIONS: { value: CategoryFilter; label: string }[] = [
+  { value: "worker", label: "Worker 失败" },
+  { value: "gate", label: "门禁噪声(critic/reviewer)" },
+  { value: "all", label: "全部" },
+];
+
+function matchesCategory(f: WorkerFailure, cat: CategoryFilter): boolean {
+  if (cat === "all") return true;
+  const fc = (f.category ?? "").toLowerCase();
+  if (cat === "worker") return fc === "worker" || fc === "";
+  // gate: critic/reviewer gate noise
+  if (cat === "gate") return fc === "gate" || fc.includes("critic") || fc.includes("review");
+  return true;
+}
+
 function FailureCard({ failure }: { failure: WorkerFailure }) {
   const [expanded, setExpanded] = useState(false);
+  const fc = failure.category ?? failure.failure_type;
 
   return (
     <div
@@ -22,6 +46,11 @@ function FailureCard({ failure }: { failure: WorkerFailure }) {
           <span className="text-gray-600 dark:text-gray-300">{failure.role}</span>
           {failure.worker_id && (
             <span className="text-[10px] text-gray-400 font-mono">({failure.worker_id})</span>
+          )}
+          {fc && (
+            <span className="text-[10px] font-mono text-blue-500 dark:text-blue-400 shrink-0">
+              {fc}
+            </span>
           )}
         </div>
         <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
@@ -44,6 +73,7 @@ export default function WorkerFailuresTab() {
   const [error, setError] = useState<string | null>(null);
   const [genFilter, setGenFilter] = useState<number | "">("");
   const [roleFilter, setRoleFilter] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("worker");
   const [allGens, setAllGens] = useState<number[]>([]);
   const [allRoles, setAllRoles] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
@@ -69,8 +99,11 @@ export default function WorkerFailuresTab() {
         limit: 200,
       }, controller.signal);
       if (controller.signal.aborted) return;
-      setFailures(res.failures);
-      setTotal(res.total);
+      // Client-side category filtering on the backfilled category field.
+      // Robust regardless of whether client.ts learns the category query param.
+      const filtered = res.failures.filter((f) => matchesCategory(f, categoryFilter));
+      setFailures(filtered);
+      setTotal(filtered.length);
     } catch (e) {
       if (controller.signal.aborted) return;
       setFailures([]);
@@ -78,7 +111,7 @@ export default function WorkerFailuresTab() {
     } finally {
       if (!controller.signal.aborted) setLoading(false);
     }
-  }, [genFilter, roleFilter]);
+  }, [genFilter, roleFilter, categoryFilter]);
 
   useEffect(() => {
     fetchFailures();
@@ -93,6 +126,15 @@ export default function WorkerFailuresTab() {
       <div className="px-5 py-4 border-b border-gray-100 dark:border-border-subtle flex items-center justify-between gap-4 flex-wrap">
         <h3 className="text-lg font-semibold text-gray-800 dark:text-white">Worker 失败记录</h3>
         <div className="flex items-center gap-2">
+          <select
+            value={categoryFilter}
+            onChange={(e) => setCategoryFilter(e.target.value as CategoryFilter)}
+            className="text-xs border border-gray-200 dark:border-border-subtle dark:bg-surface-1 rounded px-2 py-1"
+          >
+            {CATEGORY_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
           <select
             value={genFilter}
             onChange={(e) => setGenFilter(e.target.value ? Number(e.target.value) : "")}

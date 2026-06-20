@@ -183,7 +183,8 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui, prev_critic_in
             output, _, _ = await run_claude_query(
                 prompt, [], ui, "STAGNATION ANALYST", log_file,
             )
-            result = parse_json_output(output)
+            from llm_query import parse_json_output_with_mode
+            result, failure_mode = parse_json_output_with_mode(output)
             if result:
                 from output_schema import validate_agent_output
                 result, errors = validate_agent_output("stagnation_analyst", result)
@@ -191,7 +192,7 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui, prev_critic_in
                     ui.log_history(f"Stagnation validation issues: {'; '.join(errors[:3])}", "warn")
                 return result
             # Empty output (529/timeout) — retry with backoff
-            ui.log_history(f"Stagnation analysis returned empty (attempt {attempt+1}/3), retrying...", "warn")
+            ui.log_history(f"Stagnation analysis returned empty (attempt {attempt+1}/3, mode={locals().get('failure_mode', 'UNKNOWN')}), retrying...", "warn")
         except Exception as e:
             ui.log_history(f"Stagnation analysis failed: {e} (attempt {attempt+1}/3)", "warn")
             if is_llm_infra_error(e):
@@ -214,4 +215,21 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui, prev_critic_in
             "reason": "Stagnation analysis unavailable: LLM infrastructure error (not a business judgement).",
             "llm_failed": True,
         }
+    # Parse collapse: 3 attempts returned empty/unparseable output with no infra
+    # error. Previously this fell through to a silent None that callers treated
+    # as a business "no stagnation" judgement. Emit a classifiable parse-collapse
+    # event so the failure is visible. Return type stays None to preserve the
+    # existing API contract (callers wrap result as {"analysis": result}).
+    _fm = locals().get("failure_mode", "EXCEPTION")
+    try:
+        from event_bus import warn
+        warn("pipeline.stagnation_analyst_parse_failed",
+             f"Stagnation analyst v{source_v} parse failed after 3 attempts (mode={_fm}); "
+             "returning None (callers treat as no-stagnation — gate degraded)",
+             source_v=source_v, failure_mode=_fm)
+    except Exception:
+        pass
+    log_system_event("pipeline.stagnation_analyst_parse_failed", "warn",
+                     f"Stagnation analyst v{source_v} parse failed after 3 retries (mode={_fm})",
+                     {"source_v": source_v, "failure_mode": _fm})
     return None

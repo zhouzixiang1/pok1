@@ -27,6 +27,12 @@ function EventCard({ event }: { event: SystemEvent }) {
   const [expanded, setExpanded] = useState(false);
   const cfg = SEVERITY_CONFIG[event.severity] ?? SEVERITY_CONFIG.info;
   const typeParts = event.type.split(".");
+  // Phase 2+3: correlation fields mirrored to top level by the backend reader
+  // (also present inside event.data). Prefer the top-level mirror, fall back to
+  // the raw data so old records (or records that only carry data.*) still show.
+  const runId = event.run_id ?? (event.data?.run_id as string | undefined);
+  const stage = event.stage ?? (event.data?.stage as string | null | undefined);
+  const category = event.category ?? (event.data?.category as string | undefined);
 
   return (
     <div
@@ -45,10 +51,29 @@ function EventCard({ event }: { event: SystemEvent }) {
           <span className="text-xs font-medium text-gray-700 dark:text-gray-200 truncate">
             {typeParts.slice(1).join(".")}
           </span>
+          {category && category !== event.type && (
+            <span className="text-[10px] font-mono text-blue-500 dark:text-blue-400 shrink-0">
+              {category}
+            </span>
+          )}
         </div>
         <p className="text-xs text-gray-600 dark:text-gray-300 truncate mt-0.5">
           {event.message}
         </p>
+        {(runId || stage) && (
+          <div className="flex items-center gap-2 mt-0.5">
+            {runId && (
+              <span className="text-[10px] font-mono text-gray-400 dark:text-gray-500 shrink-0">
+                run:{runId.slice(0, 8)}
+              </span>
+            )}
+            {stage && (
+              <span className="text-[10px] font-mono text-gray-400 dark:text-gray-500 shrink-0">
+                {stage}
+              </span>
+            )}
+          </div>
+        )}
         {expanded && event.data && Object.keys(event.data).length > 0 && (
           <pre className="mt-2 text-[10px] font-mono text-gray-500 dark:text-gray-400 whitespace-pre-wrap bg-gray-100 dark:bg-surface-0 rounded p-2 max-h-48 overflow-y-auto">
             {JSON.stringify(event.data, null, 2)}

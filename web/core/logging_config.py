@@ -49,14 +49,13 @@ class SSEHandler(logging.Handler):
         self._broadcaster = broadcaster
         self._max_rate = max_rate
         self._timestamps = []
+        self._drop_count = 0
+        # Throttle summary cadence: every N dropped INFO/DEBUG events we emit
+        # one aggregated "log_event_dropped" notice so the dashboard knows the
+        # stream is shedding noise without flooding it.
+        self._drop_summary_every = 20
 
-    def emit(self, record):
-        now = time.time()
-        self._timestamps = [t for t in self._timestamps if now - t < 1.0]
-        if len(self._timestamps) >= self._max_rate:
-            return
-        self._timestamps.append(now)
-
+    def _broadcast_record(self, record):
         level_map = {
             logging.DEBUG: "debug",
             logging.INFO: "info",
@@ -69,6 +68,41 @@ class SSEHandler(logging.Handler):
             "logger": record.name,
             "msg": self.format(record),
         })
+
+    def emit(self, record):
+        # Level-priority throttling: ERROR/CRITICAL always pass through.
+        # Critic failures, cycle timeouts, and other genuine errors must never
+        # be silently dropped when INFO/DEBUG noise saturates the rate budget.
+        if record.levelno >= logging.ERROR:
+            try:
+                self._broadcast_record(record)
+            except Exception:
+                pass
+            return
+
+        now = time.time()
+        self._timestamps = [t for t in self._timestamps if now - t < 1.0]
+        if len(self._timestamps) >= self._max_rate:
+            # Dropped a low-severity event; periodically emit an aggregate
+            # notice so the dashboard surfaces the throttling.
+            self._drop_count += 1
+            if self._drop_count % self._drop_summary_every == 0:
+                try:
+                    self._broadcaster.broadcast("log_event_dropped", {
+                        "level": "warn",
+                        "logger": record.name,
+                        "msg": "SSE handler throttled %d INFO/DEBUG events (max_rate=%d/s)"
+                               % (self._drop_count, self._max_rate),
+                    })
+                except Exception:
+                    pass
+            return
+        self._timestamps.append(now)
+
+        try:
+            self._broadcast_record(record)
+        except Exception:
+            pass
 
 
 class CorrelationFilter(logging.Filter):
@@ -146,6 +180,14 @@ def configure_logging(
         sse = SSEHandler(broadcaster)
         sse.setFormatter(logging.Formatter("%(message)s"))
         root.addHandler(sse)
+
+    # Quieten high-churn subsystem loggers. These inherit the pok root's INFO
+    # level by default, which floods app.log (root cause 3: ~57% of app.log was
+    # scheduler/webui/workers INFO noise). Only WARNING+ reach the shared
+    # handlers from these loggers now; everything else still works normally in
+    # dev_mode (root DEBUG) via their own effective level.
+    for noisy in ("pok.scheduler", "pok.webui", "pok.workers"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     _configured = True
 

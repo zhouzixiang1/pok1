@@ -89,7 +89,8 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
             critic_prompt, [], ui, "STRATEGY CRITIC", log_file,
             tools=["Bash", "Read"],
         )
-        data = parse_json_output(output)
+        from llm_query import parse_json_output_with_mode
+        data, failure_mode = parse_json_output_with_mode(output)
         if data and "score" in data:
             # Coerce non-string feedback to string (LLM sometimes returns null/list/dict)
             if "feedback" in data and not isinstance(data["feedback"], str):
@@ -110,7 +111,20 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
         ui.log_history(f"Critic error: {e}. Defaulting to rejected.", "warn")
         return {"score": 0, "approved": False, "feedback": str(e), "local_optima_warning": False}
 
-    return {"score": 0, "approved": False, "feedback": "Critic output was not valid JSON.", "local_optima_warning": False}
+    # Parse collapse: reaching here means the LLM output failed to parse
+    # (NO_JSON/NO_FENCE/PARSE_ERROR) or lacked the score key, OR an exception
+    # skipped the parse entirely. Previously this was an opaque "not valid JSON"
+    # default. Emit a classifiable failure event so the parse collapse is visible.
+    _fm = locals().get("failure_mode", "EXCEPTION")
+    _out = locals().get("output", "") or ""
+    try:
+        from event_bus import warn
+        warn("pipeline.critic_parse_failed",
+             f"Critic v{next_v} parse failed (mode={_fm}); defaulting to rejected",
+             version=next_v, source_v=source_v, failure_mode=_fm, output_len=len(_out))
+    except Exception:
+        pass
+    return {"score": 0, "approved": False, "feedback": "Critic output was not valid JSON.", "local_optima_warning": False, "parse_failed": True}
 
 
 async def _run_performance_verification(source_v, ratings, ui):
@@ -263,7 +277,8 @@ async def _run_performance_verification(source_v, ratings, ui):
         output, _, _ = await run_claude_query(
             prompt, [], ui, "PERFORMANCE ANALYST", log_file,
         )
-        data = parse_json_output(output)
+        from llm_query import parse_json_output_with_mode
+        data, failure_mode = parse_json_output_with_mode(output)
         if data:
             return json.dumps(data, ensure_ascii=False)
     except Exception as e:
@@ -280,6 +295,22 @@ async def _run_performance_verification(source_v, ratings, ui):
             return "[LLM_INFRA_ERROR: analysis unavailable]"
         ui.log_history(f"Performance verification failed: {e}", "warn")
 
+    # Parse collapse: reaching here means the LLM output failed to parse
+    # (NO_JSON/NO_FENCE/PARSE_ERROR), or the LLM call threw a non-infra
+    # exception. Previously this was a silent "" return that the Master
+    # prompt builder surfaced as "No performance verification data available"
+    # — hiding a parse failure behind a benign-looking empty-string. Emit a
+    # classifiable failure event so the parse collapse is visible.
+    _fm = locals().get("failure_mode", "EXCEPTION")
+    _out = locals().get("output", "") or ""
+    try:
+        from event_bus import warn
+        warn("pipeline.performance_analyst_parse_failed",
+             f"Performance analyst v{source_v} parse failed (mode={_fm}); "
+             "returning empty (master prompt degrades to no-data)",
+             source_v=source_v, failure_mode=_fm, output_len=len(_out))
+    except Exception:
+        pass
     return ""
 
 

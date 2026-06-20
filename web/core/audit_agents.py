@@ -29,6 +29,24 @@ from llm_failure import is_llm_infra_error
 log = logging.getLogger("pok.audit")
 
 
+def _emit_audit_parse_failure(role, failure_mode, fields=None):
+    """Emit a classifiable parse-collapse event for an audit agent.
+
+    Audits are advisory and silently return a safe default when the LLM output
+    fails to parse. This helper makes the parse collapse visible (root cause 4
+    — parse failure collapsing to an opaque default) by emitting an event_bus
+    warn with the classifiable failure_mode (NO_JSON/NO_FENCE/PARSE_ERROR/
+    EXCEPTION). Logging only — never raises, never changes control flow.
+    """
+    try:
+        from event_bus import warn
+        warn(f"pipeline.{role}_parse_failed",
+             f"{role} parse failed (mode={failure_mode}); returning safe default (advisory)",
+             failure_mode=failure_mode, **(fields or {}))
+    except Exception:
+        pass
+
+
 # ──────────────────────────────────────────────
 # P0-1: Post-Master Plan Verification Audit
 # ──────────────────────────────────────────────
@@ -112,7 +130,8 @@ async def _run_master_plan_audit(master_plan, source_v, ui):
             "MASTER_PLAN_AUDIT", log_file,
         )
 
-        data = parse_json_output(output)
+        from llm_query import parse_json_output_with_mode
+        data, failure_mode = parse_json_output_with_mode(output)
         if data:
             data, errors = validate_agent_output("master_plan_auditor", data)
             if errors:
@@ -130,7 +149,11 @@ async def _run_master_plan_audit(master_plan, source_v, ui):
                              {"source_v": source_v, "error": str(e)})
             return {**safe_default, "llm_failed": True}
 
-    return safe_default
+    # Parse collapse: output failed to parse (NO_JSON/NO_FENCE/PARSE_ERROR) or an
+    # exception skipped the parse. Previously this returned safe_default silently.
+    _emit_audit_parse_failure("master_plan_audit", locals().get("failure_mode", "EXCEPTION"),
+                              {"source_v": source_v})
+    return {**safe_default, "parse_failed": True}
 
 
 # ──────────────────────────────────────────────
@@ -204,7 +227,8 @@ async def _run_worker_cot_check(task, worker_idx, next_v, source_v, next_dir, wo
             f"WORKER_COT_CHECK_{w_id}", log_file,
         )
 
-        data = parse_json_output(output)
+        from llm_query import parse_json_output_with_mode
+        data, failure_mode = parse_json_output_with_mode(output)
         if data:
             data.setdefault("worker_id", w_id)
             data, errors = validate_agent_output("worker_cot_checker", data)
@@ -227,7 +251,11 @@ async def _run_worker_cot_check(task, worker_idx, next_v, source_v, next_dir, wo
                              {"worker_id": w_id, "next_v": next_v, "error": str(e)})
             return {**safe_default, "llm_failed": True}
 
-    return safe_default
+    # Parse collapse: output failed to parse (NO_JSON/NO_FENCE/PARSE_ERROR) or an
+    # exception skipped the parse. Previously this returned safe_default silently.
+    _emit_audit_parse_failure("worker_cot_check", locals().get("failure_mode", "EXCEPTION"),
+                              {"worker_id": w_id, "next_v": next_v})
+    return {**safe_default, "parse_failed": True}
 
 
 # ──────────────────────────────────────────────
@@ -290,7 +318,8 @@ async def _generate_dynamic_tests(next_v, source_v, changed_files, master_plan, 
             "DYNAMIC_TEST_GEN", log_file,
         )
 
-        data = parse_json_output(output)
+        from llm_query import parse_json_output_with_mode
+        data, failure_mode = parse_json_output_with_mode(output)
         if data and "scenarios" in data:
             data, errors = validate_agent_output("dynamic_test_generator", data)
             if errors:
@@ -314,6 +343,14 @@ async def _generate_dynamic_tests(next_v, source_v, changed_files, master_plan, 
             if ui:
                 ui.log_history(f"DYNAMIC_TEST_GEN: LLM infrastructure error (infra) — using predefined scenarios only: {e}", "warn")
 
+    # Parse collapse (NO_JSON/NO_FENCE/PARSE_ERROR with no exception) or a generic
+    # exception skipped the LLM output. Make it visible (root cause 4). The infra
+    # branch above already emits its own event, so only emit here when this is a
+    # genuine parse failure (failure_mode set by the parser, not an exception path).
+    _fm = locals().get("failure_mode")
+    if _fm and _fm != "EXCEPTION":
+        _emit_audit_parse_failure("dynamic_test_gen", _fm,
+                                  {"next_v": next_v, "source_v": source_v})
     return safe_default
 
 
@@ -373,7 +410,8 @@ async def _run_precommit_semantic(v, source_v, matchups, master_plan, ui):
             "PRECOMMIT_SEMANTIC", log_file,
         )
 
-        data = parse_json_output(output)
+        from llm_query import parse_json_output_with_mode
+        data, failure_mode = parse_json_output_with_mode(output)
         if data:
             data, errors = validate_agent_output("precommit_semantic", data)
             if errors:
@@ -391,7 +429,11 @@ async def _run_precommit_semantic(v, source_v, matchups, master_plan, ui):
                              {"version": v, "source_v": source_v, "error": str(e)})
             return {**safe_default, "llm_failed": True}
 
-    return safe_default
+    # Parse collapse: output failed to parse (NO_JSON/NO_FENCE/PARSE_ERROR) or an
+    # exception skipped the parse. Previously this returned safe_default silently.
+    _emit_audit_parse_failure("precommit_semantic", locals().get("failure_mode", "EXCEPTION"),
+                              {"version": v, "source_v": source_v})
+    return {**safe_default, "parse_failed": True}
 
 
 # ──────────────────────────────────────────────
@@ -429,7 +471,8 @@ async def _run_degeneration_diagnosis(source_v, recent_commits, strategy_changes
             "DEGENERATION_DIAGNOSIS", log_file,
         )
 
-        data = parse_json_output(output)
+        from llm_query import parse_json_output_with_mode
+        data, failure_mode = parse_json_output_with_mode(output)
         if data:
             data, errors = validate_agent_output("degeneration_diagnosis", data)
             if errors:
@@ -445,7 +488,11 @@ async def _run_degeneration_diagnosis(source_v, recent_commits, strategy_changes
                              {"source_v": source_v, "error": str(e)})
             return {**safe_default, "llm_failed": True}
 
-    return safe_default
+    # Parse collapse: output failed to parse (NO_JSON/NO_FENCE/PARSE_ERROR) or an
+    # exception skipped the parse. Previously this returned safe_default silently.
+    _emit_audit_parse_failure("degeneration_diagnosis", locals().get("failure_mode", "EXCEPTION"),
+                              {"source_v": source_v})
+    return {**safe_default, "parse_failed": True}
 
 
 # ──────────────────────────────────────────────
@@ -509,7 +556,8 @@ async def _run_crossover_compatibility_audit(parent_a_v, parent_b_v, ui):
             f"CROSSOVER_COMPAT_{parent_a_v}x{parent_b_v}", log_file,
         )
 
-        data = parse_json_output(output)
+        from llm_query import parse_json_output_with_mode
+        data, failure_mode = parse_json_output_with_mode(output)
         if data:
             data, errors = validate_agent_output("crossover_compatibility", data)
             if errors:
@@ -525,7 +573,11 @@ async def _run_crossover_compatibility_audit(parent_a_v, parent_b_v, ui):
                              {"parent_a_v": parent_a_v, "parent_b_v": parent_b_v, "error": str(e)})
             return {**safe_default, "llm_failed": True}
 
-    return safe_default
+    # Parse collapse: output failed to parse (NO_JSON/NO_FENCE/PARSE_ERROR) or an
+    # exception skipped the parse. Previously this returned safe_default silently.
+    _emit_audit_parse_failure("crossover_compatibility", locals().get("failure_mode", "EXCEPTION"),
+                              {"parent_a_v": parent_a_v, "parent_b_v": parent_b_v})
+    return {**safe_default, "parse_failed": True}
 
 
 # ──────────────────────────────────────────────
@@ -586,7 +638,8 @@ async def _run_experience_pool_audit(pool_content, current_ratings, ui):
             "EXPERIENCE_POOL_AUDIT", log_file,
         )
 
-        data = parse_json_output(output)
+        from llm_query import parse_json_output_with_mode
+        data, failure_mode = parse_json_output_with_mode(output)
         if data:
             data, errors = validate_agent_output("experience_pool_audit", data)
             if errors:
@@ -602,7 +655,10 @@ async def _run_experience_pool_audit(pool_content, current_ratings, ui):
                              {"error": str(e)})
             return {**safe_default, "llm_failed": True}
 
-    return safe_default
+    # Parse collapse: output failed to parse (NO_JSON/NO_FENCE/PARSE_ERROR) or an
+    # exception skipped the parse. Previously this returned safe_default silently.
+    _emit_audit_parse_failure("experience_pool_audit", locals().get("failure_mode", "EXCEPTION"), {})
+    return {**safe_default, "parse_failed": True}
 
 
 # ──────────────────────────────────────────────
@@ -642,7 +698,8 @@ async def _run_regression_guardian(v, source_v, pipeline_history, trigger_reason
             f"REGRESSION_GUARDIAN_v{v}", log_file,
         )
 
-        data = parse_json_output(output)
+        from llm_query import parse_json_output_with_mode
+        data, failure_mode = parse_json_output_with_mode(output)
         if data:
             log.info("Regression guardian: severity=%s, stage=%s",
                      data.get("severity"), data.get("failure_stage"))
@@ -659,4 +716,8 @@ async def _run_regression_guardian(v, source_v, pipeline_history, trigger_reason
                              {"v": v, "source_v": source_v, "error": str(e)})
             return {**safe_default, "llm_failed": True}
 
-    return safe_default
+    # Parse collapse: output failed to parse (NO_JSON/NO_FENCE/PARSE_ERROR) or an
+    # exception skipped the parse. Previously this returned safe_default silently.
+    _emit_audit_parse_failure("regression_guardian", locals().get("failure_mode", "EXCEPTION"),
+                              {"v": v, "source_v": source_v})
+    return {**safe_default, "parse_failed": True}

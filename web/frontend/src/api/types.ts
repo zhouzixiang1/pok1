@@ -166,6 +166,10 @@ export interface WorkerFailure {
   role: string;
   error: string;
   timestamp?: number;
+  // Phase 2+3 log redesign: category/failure_type emitted by the unified event bus.
+  // Old records are backfilled by the backend reader, so these are optional.
+  category?: string;
+  failure_type?: string;
 }
 
 // Prompts
@@ -199,6 +203,16 @@ export interface SystemEvent {
   severity: "info" | "warn" | "error" | "success";
   message: string;
   data?: Record<string, unknown>;
+  // Phase 2+3 log redesign: correlation/category fields emitted by the unified
+  // event bus and auto-injected. Old records are backfilled by the backend
+  // reader, so these are all optional. category may also be present at the top
+  // level (mirrored from data by the reader) for convenience.
+  category?: string;
+  run_id?: string;
+  stage?: string | null;
+  attempt?: number | object;
+  pid?: number;
+  failure_mode?: string;
 }
 
 export interface SystemEventsResponse {

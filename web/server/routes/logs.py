@@ -76,9 +76,24 @@ async def get_orchestrator_log(filename: str, tail: int = Query(0, ge=0)):
     return PlainTextResponse(content)
 
 
+def _infer_category_from_type(event_type: str) -> str:
+    """Infer a dot-prefixed category from a legacy event type with no category.
+
+    "pipeline.master_planned" -> "pipeline.", "daemon.save" -> "daemon.".
+    Returns the first dot-delimited segment + trailing "." (or the whole type
+    if there is no dot).
+    """
+    if not event_type:
+        return ""
+    if "." in event_type:
+        return event_type.split(".", 1)[0] + "."
+    return event_type + "."
+
+
 @router.get("/logs/system-events")
 async def get_system_events(
     type: str = Query("", description="Filter by event type prefix (e.g. pipeline.)"),
+    category: str = Query("", description="Filter by data.category or type-prefix category (e.g. pipeline.)"),
     severity: str = Query("", description="Filter by severity: info|warn|error|success"),
     since: float | None = Query(None, description="Only events after this Unix timestamp"),
     limit: int = Query(100, ge=1, le=500),
@@ -104,16 +119,42 @@ async def get_system_events(
                 continue
             if since is not None and entry.get("ts", 0) < since:
                 continue
+            # Category dimension: backfill legacy rows (no data.category) from
+            # the event type's first segment. In-memory only, not written to disk.
+            data = entry.get("data") or {}
+            cat = data.get("category") if isinstance(data, dict) else None
+            if not cat:
+                cat = _infer_category_from_type(entry.get("type", ""))
+                data = dict(data)
+                data["category"] = cat
+                entry["data"] = data
+            if category and not cat.startswith(category):
+                continue
             events.append(entry)
     events.reverse()
     total = len(events)
     return {"events": events[offset:offset + limit], "total": total}
 
 
+def _infer_category_from_role(role: str) -> str:
+    """Backfill a worker_failures category from a legacy row's role.
+
+    Critic/Reviewer rows belong to gates ("gate"), everything else is a worker
+    ("worker").
+    """
+    if not role:
+        return "worker"
+    r = role.lower()
+    if "critic" in r or "reviewer" in r:
+        return "gate"
+    return "worker"
+
+
 @router.get("/logs/worker-failures")
 async def get_worker_failures(
     gen: int = Query(None, description="Filter by generation number"),
     role: str = Query("", description="Filter by role name"),
+    category: str = Query("", description="Filter by category: worker|gate"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
@@ -134,6 +175,14 @@ async def get_worker_failures(
             if gen is not None and entry.get("gen") != gen:
                 continue
             if role and role.lower() not in entry.get("role", "").lower():
+                continue
+            # Category dimension: backfill legacy rows (no category) from role.
+            # In-memory only, not written to disk.
+            cat = entry.get("category")
+            if not cat:
+                cat = _infer_category_from_role(entry.get("role", ""))
+                entry["category"] = cat
+            if category and cat != category:
                 continue
             failures.append(entry)
     failures.reverse()
