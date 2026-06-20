@@ -19,6 +19,13 @@ class TestPrepareNextGen:
         (src / "main.py").write_text("x = 1\n")
         (src / ".completed").touch()
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", fake_bots)
+        # Keep GRAVEYARD_DIR consistent with the overridden BOTS_DIR: get_bot_dir()
+        # falls back to GRAVEYARD_DIR/<v> when the primary path is missing. The
+        # autouse isolate_state fixture symlinks real bots/graveyard (which holds
+        # reaped bots like v100) into its isolation tree; without this override
+        # get_bot_dir(100) resolves to that graveyard copy, prepare_next_gen sees
+        # a completed v100 and refuses to overwrite — KeyError 'prepared'.
+        monkeypatch.setattr(evolution_infra, "GRAVEYARD_DIR", fake_bots / "graveyard")
         monkeypatch.setattr(tool_gates, "get_bot_dir", evolution_infra.get_bot_dir)
 
         fake_results = tmp_path / "results"
