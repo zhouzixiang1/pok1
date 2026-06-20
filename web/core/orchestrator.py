@@ -497,15 +497,56 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     from evolution_core import read_pipeline_checkpoint, write_pipeline_checkpoint
                     ckpt = read_pipeline_checkpoint()
                     if ckpt and ckpt.get("stage") not in ("timed_out", "archived"):
-                        write_pipeline_checkpoint(
-                            ckpt.get("next_v"), ckpt.get("source_v"), "timed_out",
-                            master_plan=ckpt.get("master_plan"),
-                        )
-                        if ui:
-                            ui.log_history(
-                                "[Orchestrator] Pipeline checkpoint marked as timed_out — next cycle will restart.",
-                                "warn",
+                        # B3 (v125 retry-storm fix): if Master repeatedly failed this
+                        # cycle (audit_attempt >= MAX_MASTER_TOTAL_FAILURES=4), the
+                        # timeout was caused by the Master retry-storm itself — abandon
+                        # now instead of marking timed_out + resuming into the same
+                        # stuck Master loop. "verified" is excluded (it has its own
+                        # extension path above; commit is the imminent idempotent step).
+                        _b3_audit = int(ckpt.get("audit_attempt") or 0)
+                        _b3_stage = ckpt.get("stage")
+                        _B3_MASTER_FAIL_THRESHOLD = 4  # mirrors MAX_MASTER_TOTAL_FAILURES (tool_planning.py)
+                        if (_b3_audit >= _B3_MASTER_FAIL_THRESHOLD
+                                and _b3_stage not in ("verified", "archived")):
+                            log.warning(
+                                "Cycle timed out with Master fail count=%d (stage=%s) — "
+                                "abandoning stuck generation instead of marking timed_out.",
+                                _b3_audit, _b3_stage,
                             )
+                            log_system_event(
+                                "pipeline.cycle_timeout_abandon", "error",
+                                f"Cycle timed out after {CYCLE_TIMEOUT}s with Master fail count={_b3_audit} — abandoning",
+                                {"timeout_sec": CYCLE_TIMEOUT, "pipeline_stage": _b3_stage,
+                                 "master_fail_count": _b3_audit},
+                            )
+                            if ui:
+                                ui.log_history(
+                                    f"[Orchestrator] Cycle timed out after Master failed "
+                                    f"{_b3_audit}× — abandoning stuck generation "
+                                    f"(instead of marking timed_out + resuming).",
+                                    "error",
+                                )
+                            try:
+                                from tool_bot_management import _do_abandon_generation
+                                await _do_abandon_generation(
+                                    reason=f"cycle_timeout_master_stuck ({_b3_audit} fails)"
+                                )
+                            except Exception as _ae:
+                                log.warning("B3 forced-abandon failed (%s) — falling back to timed_out", _ae)
+                                write_pipeline_checkpoint(
+                                    ckpt.get("next_v"), ckpt.get("source_v"), "timed_out",
+                                    master_plan=ckpt.get("master_plan"),
+                                )
+                        else:
+                            write_pipeline_checkpoint(
+                                ckpt.get("next_v"), ckpt.get("source_v"), "timed_out",
+                                master_plan=ckpt.get("master_plan"),
+                            )
+                            if ui:
+                                ui.log_history(
+                                    "[Orchestrator] Pipeline checkpoint marked as timed_out — next cycle will restart.",
+                                    "warn",
+                                )
                 except Exception as e:
                     log.warning("Failed to mark checkpoint timed_out: %s", e)
                 try:

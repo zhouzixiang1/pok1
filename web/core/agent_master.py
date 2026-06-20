@@ -113,7 +113,12 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             f"MASTER (Try {attempt+1})", master_log_file,
             tools=["Bash", "Read"],
         )
-        data = parse_json_output(output)
+        # A2 (v125 retry-storm fix): classify the parse failure so the log
+        # distinguishes NO_FENCE (model never emitted JSON) / NO_JSON (empty) /
+        # PARSE_ERROR (had JSON but unparseable) — instead of the undifferentiated
+        # "malformed JSON" that hid three distinct root causes.
+        from llm_query import parse_json_output_with_mode
+        data, _failure_mode = parse_json_output_with_mode(output)
         if data and "tasks" in data:
             # P0 修复：在 Pydantic 剥离 branch_from (extra='ignore') 之前，对原始 dict
             # 跑 Master 的 source-override 硬校验。MasterPlan 删除 branch_from 字段后，
@@ -182,11 +187,38 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             # observed. NOT a schema/SDK-sig/direction-audit problem.
             ui.log_history("Master plan accepted (valid JSON, schema-clean).", "info")
             return data
-        ui.log_history("Master output malformed JSON. Retrying...", "warn")
+        ui.log_history(
+            f"Master output malformed JSON (mode={_failure_mode}). Retrying...",
+            "warn",
+        )
+        try:
+            from system_log import log_system_event
+            log_system_event(
+                "pipeline.master_malformed_json", "warn",
+                f"Master v{next_v} try {attempt+1} output parse failed (mode={_failure_mode})",
+                {"next_v": next_v, "source_v": source_v, "attempt": attempt + 1,
+                 "failure_mode": _failure_mode, "output_len": len(output or "")},
+            )
+        except Exception:
+            pass
         import asyncio
         await asyncio.sleep(2)
 
-    ui.log_history(f"Master failed to plan after {MAX_MASTER_RETRIES} retries.", "error")
+    _final_mode = locals().get("_failure_mode", "UNKNOWN")
+    ui.log_history(
+        f"Master failed to plan after {MAX_MASTER_RETRIES} retries (last mode={_final_mode}).",
+        "error",
+    )
+    try:
+        from system_log import log_system_event
+        log_system_event(
+            "pipeline.master_failed_to_plan", "error",
+            f"Master v{next_v} failed to plan after {MAX_MASTER_RETRIES} retries (last mode={_final_mode})",
+            {"next_v": next_v, "source_v": source_v,
+             "last_failure_mode": _final_mode, "retries": MAX_MASTER_RETRIES},
+        )
+    except Exception:
+        pass
     return None
 
 

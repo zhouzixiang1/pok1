@@ -320,6 +320,47 @@ async def run_master(args):
         next_v = next_v or _v
     if source_v is None or next_v is None:
         return {"content": [{"type": "text", "text": json.dumps({"error": "Missing source_v/next_v and no active checkpoint"})}]}
+    # B1 (v125 retry-storm fix): unify next_v with the checkpoint's authoritative
+    # value. The Master-failure counter (audit_attempt) is keyed on checkpoint
+    # next_v; both the top-of-function circuit-breaker guard (below, ~line 336)
+    # and _bump_master_fail_count gate on `checkpoint.next_v == next_v` and
+    # SILENTLY zero the count on mismatch. When the orchestrator LLM passes a
+    # stale next_v (e.g. from a PreCompact-injected context snapshot), every
+    # failure is silently dropped and the breaker never trips — which is exactly
+    # how v125 retried 47× without ever hitting MAX_MASTER_TOTAL_FAILURES.
+    # Fix: if an ACTIVE checkpoint exists with a different next_v, trust the
+    # checkpoint (system-authoritative) and surface the mismatch. Dead-stage
+    # checkpoints (timed_out/archived/abandoned) are NOT authoritative — the LLM
+    # is likely starting a fresh generation in that case.
+    try:
+        from evolution_infra import read_pipeline_checkpoint
+        _entry_ckpt = read_pipeline_checkpoint() or {}
+        _entry_next_v = _entry_ckpt.get("next_v")
+        _entry_stage = _entry_ckpt.get("stage")
+        _dead_stages = (None, "timed_out", "archived", "abandoned")
+        if (_entry_next_v is not None and _entry_next_v != next_v
+                and _entry_stage not in _dead_stages):
+            _log.warning(
+                "run_master: LLM passed next_v=%s but active checkpoint is "
+                "next_v=%s (stage=%s) — aligning to checkpoint to keep the "
+                "Master-failure counter consistent (v125 bypass fix).",
+                next_v, _entry_next_v, _entry_stage,
+            )
+            try:
+                log_system_event(
+                    "pipeline.master_next_v_mismatch", "warn",
+                    f"run_master next_v={next_v} aligned to checkpoint next_v={_entry_next_v} "
+                    f"(stage={_entry_stage}) — LLM passed a stale version",
+                    {"args_next_v": next_v, "ckpt_next_v": _entry_next_v,
+                     "source_v": source_v, "stage": _entry_stage},
+                )
+            except Exception:
+                pass
+            next_v = _entry_next_v
+            if _entry_ckpt.get("source_v") is not None:
+                source_v = _entry_ckpt["source_v"]
+    except Exception:
+        pass
     stagnation_info = args.get("stagnation_info", "No stagnation detected. Continue from latest version.")
     match_analysis = args.get("match_analysis", "")
     performance_verification = args.get("performance_verification", "")
@@ -340,19 +381,43 @@ async def run_master(args):
         _ui = _get_ui()
         try:
             log_system_event("pipeline.master_exhausted", "error",
-                             f"Master exhausted {_master_fails} attempts for v{next_v} — refusing retry, directing abandon",
+                             f"Master exhausted {_master_fails} attempts for v{next_v} — refusing retry, FORCING abandon",
                              {"next_v": next_v, "source_v": source_v, "fail_count": _master_fails})
         except Exception:
             pass
+        if _ui:
+            _ui.log_history(
+                f"Master exhausted {_master_fails} attempts for v{next_v} — FORCING abandon "
+                f"(no longer relying on a plain-text directive).",
+                "error",
+            )
+        # B2 (v125 retry-storm fix): force-abandon instead of returning a plain-text
+        # directive. The old directive relied on the orchestrator LLM voluntarily
+        # calling abandon_generation, which it often ignored — so the stuck
+        # generation kept burning orchestrator turns until CYCLE_TIMEOUT (v125).
+        # Clear the session FIRST (so the next cycle does not resume the stuck
+        # session), then abandon (clears checkpoint + removes the incomplete dir).
+        try:
+            from orchestrator_session import _clear_orchestrator_session
+            _clear_orchestrator_session()
+        except Exception:
+            pass
+        try:
+            from tool_bot_management import _do_abandon_generation
+            _abandon_result = await _do_abandon_generation(
+                reason=f"master_exhausted ({_master_fails} fails)"
+            )
+        except Exception as _ae:
+            _abandon_result = {"abandoned": False, "error": str(_ae)}
         return {"content": [{"type": "text", "text": json.dumps({
             "error": "MASTER_EXHAUSTED",
             "fail_count": _master_fails,
-            "directive": (f"Master planning has failed {_master_fails} times for v{next_v} "
-                          "(Master JSON collapses under the current direction-audit constraints; "
-                          "retrying again will waste more budget with the same outcome). "
-                          "Do NOT call run_master again. Call abandon_generation to clear this "
-                          "stuck generation so the next cycle can start fresh (it may pick "
-                          "crossover or a different source ancestor)."),
+            **_abandon_result,
+            "directive": (f"Master planning failed {_master_fails} times for v{next_v}. "
+                          "This generation has been ABANDONED (checkpoint cleared, incomplete "
+                          "dir removed, session cleared). The next cycle will start FRESH (it "
+                          "may pick crossover or a different source ancestor). Do NOT call "
+                          "run_master again — call prepare_next_gen to begin a new generation."),
             "logs": _ui.get_output() if _ui else "",
         })}]}
 

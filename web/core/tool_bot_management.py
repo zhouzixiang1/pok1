@@ -176,6 +176,22 @@ class AbandonGenerationInput(TypedDict):
 
 @tool("abandon_generation", "Clear pipeline checkpoint and remove incomplete next-gen directory. Use when a generation is stuck and needs to be restarted.", {})
 async def abandon_generation(args):
+    result = await _do_abandon_generation(reason="abandon_generation")
+    return {"content": [{"type": "text", "text": json.dumps(result)}]}
+
+
+async def _do_abandon_generation(reason: str = "abandon_generation") -> dict:
+    """Core abandon logic — clears the pipeline checkpoint and removes the
+    incomplete next-gen directory.
+
+    Shared by the ``abandon_generation`` MCP tool and forced-abandon paths
+    (notably ``MASTER_EXHAUSTED`` in run_master, B2 v125 fix) so the latter no
+    longer relies on the orchestrator LLM obeying a plain-text directive.
+
+    Returns the abandon result dict (also written as a ``pipeline.abandoned``
+    system event). The caller is responsible for clearing the orchestrator
+    session BEFORE calling this if a stale session must not be resumed.
+    """
     from evolution_core import PIPELINE_STATE_FILE
     checkpoint = read_pipeline_checkpoint() if PIPELINE_STATE_FILE.exists() else None
     cleared_checkpoint = False
@@ -198,14 +214,17 @@ async def abandon_generation(args):
             shutil.rmtree(next_dir)
             removed_dir = f"claude_v{current_v + 1}"
 
-    log_system_event("pipeline.abandoned", "warn", f"Abandoned generation (dir={removed_dir})",
-                     {"removed_dir": removed_dir, "cleared_checkpoint": cleared_checkpoint})
+    log_system_event("pipeline.abandoned", "warn",
+                     f"Abandoned generation ({reason}, dir={removed_dir})",
+                     {"removed_dir": removed_dir, "cleared_checkpoint": cleared_checkpoint,
+                      "reason": reason})
 
-    return {"content": [{"type": "text", "text": json.dumps({
+    return {
         "abandoned": True,
         "cleared_checkpoint": cleared_checkpoint,
         "removed_directory": removed_dir,
-    })}]}
+        "reason": reason,
+    }
 
 
 class TrimExperienceInput(TypedDict):

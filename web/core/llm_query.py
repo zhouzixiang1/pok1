@@ -123,6 +123,52 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             elif isinstance(message, ResultMessage):
                 cost_usd = message.total_cost_usd
                 usage = message.usage
+                # A1 (v125 retry-storm fix): capture ResultMessage diagnostic fields.
+                # Previously this branch read ONLY cost/usage, discarding subtype /
+                # is_error / num_turns / stop_reason. That made every Master-failure
+                # mode (missing-return / NO_FENCE / empty-output) collapse to the SAME
+                # undifferentiated "malformed JSON" symptom downstream, which caused
+                # multiple rounds of mis-attribution (v125 wasted several analysis
+                # cycles before the real root cause was found). Log the diagnostics so
+                # future failures are classifiable. Return signature is UNCHANGED (3-tuple)
+                # — this is pure observation and must not alter retry/circuit behavior.
+                try:
+                    _subtype = getattr(message, "subtype", None)
+                    _is_err = bool(getattr(message, "is_error", False))
+                    if _is_err or (_subtype and _subtype != "success"):
+                        _num_turns = getattr(message, "num_turns", None)
+                        _stop_reason = getattr(message, "stop_reason", None)
+                        _diag = {
+                            "role": role_name,
+                            "subtype": _subtype,
+                            "is_error": _is_err,
+                            "num_turns": _num_turns,
+                            "stop_reason": _stop_reason,
+                        }
+                        with open(log_file_path, "a") as _lf:
+                            _lf.write(
+                                "\n[RESULT_DIAG] "
+                                + json.dumps(_diag, ensure_ascii=False, default=str)
+                                + "\n"
+                            )
+                        if ui:
+                            ui.log_history(
+                                f"{role_name}: ResultMessage non-success "
+                                f"(subtype={_subtype}, is_error={_is_err}, "
+                                f"num_turns={_num_turns}, stop_reason={_stop_reason})",
+                                "warn",
+                            )
+                            try:
+                                from system_log import log_system_event
+                                log_system_event(
+                                    "pipeline.llm_result_non_success", "warn",
+                                    f"{role_name} ResultMessage non-success (subtype={_subtype})",
+                                    _diag,
+                                )
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
     except ClaudeSDKError as e:
         ui.log_io(f"[ERROR] {e}", "error", role_name)
         raise   # propagate so callers distinguish a hard SDK error from an empty-but-valid reply
@@ -187,6 +233,16 @@ async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, 
                         f"(attempt {sdk_attempt+1}/{_SIGNATURE_MAX_ATTEMPTS})",
                         "warn",
                     )
+                    try:
+                        from system_log import log_system_event
+                        log_system_event(
+                            "pipeline.llm_empty_output_retry", "warn",
+                            f"{role_name} SDK stream returned 0 TextBlocks (signature-truncation variant)",
+                            {"role": role_name, "cost": cost_usd,
+                             "attempt": sdk_attempt + 1, "max_attempts": _SIGNATURE_MAX_ATTEMPTS},
+                        )
+                    except Exception:
+                        pass
                 await asyncio.sleep(_backoff)
                 continue
             return texts, cost_usd, usage
@@ -421,3 +477,31 @@ def parse_json_output(output):
     except Exception:
         pass
     return None
+
+
+def parse_json_output_with_mode(output):
+    """Same parsing as parse_json_output, but returns a classifiable failure mode.
+
+    Returns ``(data, failure_mode)`` where ``failure_mode`` is one of:
+      - ``"OK"``          — parsed successfully (data is the dict)
+      - ``"NO_JSON"``     — output empty/whitespace (no text to parse at all)
+      - ``"NO_FENCE"``    — output has text but no JSON structure (no ```json
+                            block and no ``{``); the model never emitted JSON
+      - ``"PARSE_ERROR"`` — output looked like JSON (had a fence or brace) but
+                            every parse strategy failed
+
+    The mode lets callers (notably _run_master_analysis) log a CLASSIFIABLE
+    reason instead of the undifferentiated "malformed JSON" that previously
+    hid three distinct root causes (missing-return / NO_FENCE / empty-output).
+    """
+    if not output or not output.strip():
+        return None, "NO_JSON"
+    data = parse_json_output(output)
+    if data is not None:
+        return data, "OK"
+    # parse_json_output exhausted every strategy — distinguish why.
+    has_fence = "```json" in output
+    has_brace = "{" in output
+    if has_fence or has_brace:
+        return None, "PARSE_ERROR"
+    return None, "NO_FENCE"
