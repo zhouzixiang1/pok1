@@ -23,7 +23,34 @@ _APP_LOG = _LOG_DIR / "app.log"
 _configured = False
 
 
-class ColoredConsoleFormatter(logging.Formatter):
+class _SafeFormatter(logging.Formatter):
+    """Formatter that tolerates missing pid/run_id/short_name fields.
+
+    CorrelationFilter injects pid/run_id on the ``pok`` root logger, but
+    records can reach the shared handlers WITHOUT passing that filter — e.g.
+    uvicorn/starlette loggers propagate to the Python root and their records
+    flow into any handler attached at the global root, or a record formatted
+    during RotatingFileHandler.shouldRollover before the filter ran. A plain
+    ``%(pid)s`` in the fmt string then raises ValueError('pid') and crashes the
+    emitting call site (observed: COMBINED ANALYST log_history → web_ui.log →
+    RotatingFileHandler.shouldRollover → ValueError, killing the orchestrator).
+    Defaulting missing fields to '-' instead of crashing keeps logging safe.
+    """
+
+    def formatMessage(self, record):
+        # Ensure the correlation fields exist before %-formatting runs.
+        if not hasattr(record, "pid"):
+            record.pid = "-"
+        if not hasattr(record, "run_id"):
+            record.run_id = "-"
+        if not hasattr(record, "short_name"):
+            short = record.name.split(".")[-1] if record.name.startswith(
+                _ROOT_LOGGER + ".") else record.name
+            record.short_name = short
+        return super().formatMessage(record)
+
+
+class ColoredConsoleFormatter(_SafeFormatter):
     COLORS = {
         logging.DEBUG: "\033[90m",
         logging.INFO: "\033[0m",
@@ -35,8 +62,12 @@ class ColoredConsoleFormatter(logging.Formatter):
 
     def format(self, record):
         color = self.COLORS.get(record.levelno, self.RESET)
-        short = record.name.split(".")[-1] if record.name.startswith(_ROOT_LOGGER + ".") else record.name
-        record.short_name = short
+        # short_name is filled by _SafeFormatter.formatMessage; but format() may
+        # be called directly (e.g. SSEHandler), so populate it here too.
+        if not hasattr(record, "short_name"):
+            record.short_name = (record.name.split(".")[-1]
+                                 if record.name.startswith(_ROOT_LOGGER + ".")
+                                 else record.name)
         msg = super().format(record)
         return f"{color}{msg}{self.RESET}"
 
@@ -144,11 +175,14 @@ def configure_logging(
     root.setLevel(effective_level)
 
     # Inject pid + run_id into every record so app.log lines are attributable to
-    # a process + generation (RC6). Attached at the root so every handler
-    # (console/file/SSE) and all 25+ bare getLogger('pok.*') users inherit it.
-    correl_added = any(isinstance(f, CorrelationFilter) for f in root.filters)
-    if not correl_added:
-        root.addFilter(CorrelationFilter())
+    # a process + generation (RC6). Attached to each HANDLER (not just the root
+    # logger): Python's callHandlers runs logger-level filters only on the
+    # originating logger, so a record from pok.orchestrator that propagates to
+    # the pok root's handlers would SKIP a root-level filter and reach the
+    # formatter without pid/run_id. Handler-level filters run on every emit.
+    # (_SafeFormatter still defaults missing fields to '-' as a backstop for
+    # non-pok records like uvicorn/starlette.)
+    _correlation_filter = CorrelationFilter()
 
     # Prevent propagation to root logger (avoids duplicate stderr output)
     root.propagate = False
@@ -165,14 +199,17 @@ def configure_logging(
         console = logging.StreamHandler(sys.stderr)
         console.setFormatter(ColoredConsoleFormatter(fmt, datefmt=datefmt))
         console.setLevel(effective_level)
+        console.addFilter(_correlation_filter)
         root.addHandler(console)
 
-    # Rotating file handler
+    # Rotating file handler (uses _SafeFormatter so missing pid/run_id on
+    # non-pok records — uvicorn/starlette — can't crash shouldRollover/format).
     ldir = Path(log_dir) if log_dir else _LOG_DIR
     ldir.mkdir(parents=True, exist_ok=True)
     fh = RotatingFileHandler(ldir / "app.log", maxBytes=10_000_000, backupCount=5, encoding="utf-8")
-    fh.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
+    fh.setFormatter(_SafeFormatter(fmt, datefmt=datefmt))
     fh.setLevel(effective_level)
+    fh.addFilter(_correlation_filter)
     root.addHandler(fh)
 
     # SSE handler (web mode only)
