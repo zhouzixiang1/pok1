@@ -410,7 +410,7 @@ async def run_precommit_eval(args):
             # Poll for results with deadline
             per_game_timeout = max(300, n_games * 120)
             deadline = time.time() + per_game_timeout * len(opponents)
-            poll_interval = 2.0
+            poll_interval = 5.0  # root-cause-audit 2026-06-21: 2s→5s 减少 fcntl 锁竞争（与 SCHEDULER_STALL_ROUNDS 联动，总等待窗不变）
             collected_results = {}
 
             # Circuit breaker: when the daemon/scheduler is unhealthy (e.g. the
@@ -421,7 +421,7 @@ async def run_precommit_eval(args):
             # the cycle restarts, and v107 got stuck replaying this forever.
             # Break out fast once the scheduler has produced nothing for a
             # sustained stretch, so we fall back to the parallel path.
-            SCHEDULER_STALL_ROUNDS = 15  # 15 polls x 2s = ~30s of zero progress
+            SCHEDULER_STALL_ROUNDS = max(60, n_games * 8)  # 自适应：n_games=16 → 128 polls × 5s ≈ 640s 容忍。daemon 完成 n_games mirror battle 需 ~62-145s，旧值 15 polls×2s=30s 在正常负载下也误触发 (root-cause-audit 2026-06-21: 10/10 scheduler_stall 事件 daemon_capable=True)。
             consecutive_stall = 0
 
             while time.time() < deadline:

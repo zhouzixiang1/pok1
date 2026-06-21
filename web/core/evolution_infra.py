@@ -160,16 +160,28 @@ _BLOCKED_MCP_TOOLS = [
     "mcp__zread__search_doc",
 ]
 
-# Lazy-initialised semaphore — created on first use inside the event loop
-_WORKER_SEMAPHORE: "asyncio.Semaphore | None" = None
+# Adaptive semaphores keyed by api_concurrency level — created on first use
+# inside the event loop. level 0 = MAX_PARALLEL_WORKERS(满并发); 503/限速时 level
+# 升 → limit = max(1, base >> level) 自动降 worker 并发。不同 level 用不同
+# Semaphore 实例(换实例时旧 in-flight worker 自然完成,平滑降级,不丢计数)。
+# 这是真正的 LLM 并发源:workers 通过 run_claude_query 打 gateway。
+_WORKER_SEMAPHORE: "dict[int, asyncio.Semaphore]" = {}
 
 
 def _get_worker_semaphore() -> "asyncio.Semaphore":
-    """Return (creating if needed) the module-level worker concurrency semaphore."""
-    global _WORKER_SEMAPHORE
-    if _WORKER_SEMAPHORE is None:
-        _WORKER_SEMAPHORE = asyncio.Semaphore(MAX_PARALLEL_WORKERS)
-    return _WORKER_SEMAPHORE
+    """Return (creating if needed) the worker semaphore for the current adaptive
+    level. 503/限速时 level 升 → worker 并发自动降(base>>level)。"""
+    try:
+        from api_concurrency import get_adaptive_limit, get_level
+        _lvl = get_level()
+        _limit = get_adaptive_limit(MAX_PARALLEL_WORKERS)
+    except Exception:
+        _lvl, _limit = 0, MAX_PARALLEL_WORKERS
+    sem = _WORKER_SEMAPHORE.get(_lvl)
+    if sem is None:
+        sem = asyncio.Semaphore(_limit)
+        _WORKER_SEMAPHORE[_lvl] = sem
+    return sem
 
 
 @contextmanager
@@ -270,7 +282,11 @@ def substitute_template(template, replacements):
         result = result.replace(f"{{{key}}}", str(value))
     remaining = set(re.findall(r'\{([a-z_]+)\}', result))
     if remaining:
-        log.warning("Unreplaced template placeholders: %s", remaining)
+        # root-cause-audit 2026-06-21: worker_prompt 等 template 含 Python f-string 示例代码，
+        # {d}/{n_calls}/{bp}/{cr} 等是合法代码变量非模板占位符，贪婪正则误报(曾 268 WARNING/
+        # 周期，worker 实际收到完整正确代码)。降为 debug：开发期开 DEBUG 可见真未替换占位符，
+        # 生产日志静默。
+        log.debug("Unreplaced template placeholders (likely f-string code vars): %s", remaining)
     return result
 
 
@@ -555,12 +571,17 @@ def _target_rel(path, version):
         return ""
     raw = raw.replace("\\", "/")
     raw = _TARGET_ANNOTATION_RE.sub("", raw).strip()
-    marker = f"bots/claude_v{version}/"
-    if marker in raw:
-        return raw.split(marker, 1)[1]
-    marker = f"claude_v{version}/"
-    if marker in raw:
-        return raw.split(marker, 1)[1]
+    # 剥离任意 bots/claude_v{N}/ 前缀（含 source_v）。
+    # root-cause-audit 2026-06-21: Master context (agent_master.py:100) 注入
+    # bots/claude_v{source_v}/ 路径，worker 非确定性地把它写进 target_files；
+    # 旧版只认 next_v marker，对 source_v 前缀 fallthrough 返回原路径 → 解析到
+    # 不存在的嵌套路径 bots/claude_v{src}/bots/claude_v{src}/... (gen132 3×, gen137 4×)。
+    m = re.search(r'(?:\./)?bots/claude_v\d+/(.+)$', raw)
+    if m:
+        return m.group(1)
+    m = re.search(r'(?:\./)?claude_v\d+/(.+)$', raw)
+    if m:
+        return m.group(1)
     return raw.lstrip("./")
 
 

@@ -55,7 +55,8 @@ def _is_cycle_infra_error(e) -> bool:
             or "missing required field" in err_str
             or "exit code 143" in err_str
             or "command failed with exit code" in err_str
-            or "processerror" in err_str)
+            or "processerror" in err_str
+            or "claude code returned an error result" in err_str)  # root-cause-audit 2026-06-21: SDK query.py:852 裸 Exception
 
 
 class _OrchSignatureRetryable(Exception):
@@ -70,6 +71,19 @@ class _OrchSignatureRetryable(Exception):
     cycle (-0.5 backoff + session clear). Confirmed NOT caused by adaptive
     thinking (disabled mode had 427 errors vs adaptive 70); this is an SDK
     stream bug, so a bounded retry is the correct mitigation until an SDK fix.
+    """
+
+
+class _CostCapTripped(Exception):
+    """Internal signal: cycle spend exceeded MAX_GEN_COST. Hard-stop the LLM
+    stream immediately instead of burning 26-32min until CYCLE_TIMEOUT.
+
+    root-cause-audit 2026-06-21: _check_cost_cap() previously only logged the
+    overrun and relied on CYCLE_TIMEOUT to bound the cycle — verified v139/v143
+    ran 26-32min of pure waste after cap-tripped. Raising propagates out of the
+    `async for message in gen` loop into _run_one_cycle's except handler, which
+    classifies it as infra (−0.5 short backoff) and clears the session so resume
+    can't keep burning budget on the same runaway cycle.
     """
 
 
@@ -187,20 +201,28 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                 try:
                     from evolution_infra import MAX_GEN_COST
                     _spent = ui.gen_cost_total - _cost_at_start
-                    if _spent > MAX_GEN_COST:
-                        _cost_cap_logged = True
-                        log.warning("Cycle cost cap tripped: $%.2f > $%.2f", _spent, MAX_GEN_COST)
+                except Exception as _e:
+                    log.debug("cost-cap check error: %s", _e)
+                    return
+                if _spent > MAX_GEN_COST:
+                    _cost_cap_logged = True
+                    log.warning("Cycle cost cap tripped: $%.2f > $%.2f", _spent, MAX_GEN_COST)
+                    if ui:
                         ui.log_history(
                             f"[Orchestrator] Cost cap tripped (${_spent:.2f} > ${MAX_GEN_COST:.2f}) — "
-                            f"runaway retry detected; CYCLE_TIMEOUT will bound this cycle.",
+                            f"hard-stopping stream (was: runaway retry burned 26-32min until CYCLE_TIMEOUT).",
                             "error",
                         )
+                    try:
                         from system_log import log_system_event
                         log_system_event("pipeline.cost_cap_tripped", "error",
                             f"Cycle spend ${_spent:.2f} exceeded cap ${MAX_GEN_COST}",
                             {"spent": round(_spent, 2), "cap": MAX_GEN_COST})
-                except Exception as _e:
-                    log.debug("cost-cap check error: %s", _e)
+                    except Exception:
+                        pass
+                    # 硬熔断：raise 在 try/except 之外（不被上方 cost-cap-check 的 except 吞），
+                    # 传播到 _run_one_cycle 的 except Exception 归为 infra(-0.5 短退避) + 清 session。
+                    raise _CostCapTripped(f"spend ${_spent:.2f} > cap ${MAX_GEN_COST}")
 
             try:
                 gen = claude_query(prompt=prompt, options=opts)
@@ -326,7 +348,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                 log.info("Tool call summary: %s", dict(sorted(_tool_call_counts.items())))
             return "".join(texts), cost, ok, gen, auth_err
 
-        CYCLE_TIMEOUT = 3600  # 60 minutes max per cycle (was 1800s, increased for retry cycles)
+        CYCLE_TIMEOUT = 5400  # 90 minutes max per cycle. 实测各阶段 elapsed_sec median: master 597s + workers 624s + quality 101 + review 140 + critic 236 + precommit 1368s = 3066s(51min); mean ≈56min. 加 direction_audit/prepare/commit/archivist + API 慢重试 buffer → 3600 频繁超时(82× in 19h). 5400 = mean(56min) + ~34min buffer 覆盖 max case(master 2449s/workers 2276s). (was 3600, before that 1800s)
         # Sentinel returned by the timeout-extension path (stage=verified, first extension).
         # Must be DISTINCT from every other cost signal: -0.5 (infra), -1.0 (generic crash),
         # and the auth clamp -max(abs(total_cost), 1.0) which can reach any negative value
@@ -675,7 +697,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             # ConnectionError, OSError) — same classifier used by tool_gates/agent_review
             # for critic/reviewer infra short-circuit (commit 5c14d01). Keyword fallback
             # remains for defense-in-depth (older SDK error formats).
-            is_infra = _is_cycle_infra_error(e)
+            is_infra = isinstance(e, _CostCapTripped) or _is_cycle_infra_error(e)
             # SDK streaming errors (missing 'signature' field on thinking blocks,
             # observed with claude_agent_sdk 0.2.91 + adaptive thinking) leave the
             # session broken — resuming replays into the same crash (the v84
@@ -1064,6 +1086,10 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                 #       time turned a brief SDK hiccup into a multi-hour stuck loop.
                 # Split them: real auth keeps 300s; generic failures get a short,
                 # escalating backoff (30s -> 60s -> 120s -> cap 300s).
+                # auth_error 只在 _run_one_cycle 作用域声明，orchestrator_loop 无法直接读
+                # (root-cause-audit 2026-06-21: 引用未定义变量致 NameError crash)。从 cost
+                # 推断：auth 失败返回 -max(abs(cost),1.0) (< -1.0)，generic crash 返回 -1.0。
+                auth_error = cost < -1.0
                 if auth_error:
                     if ui:
                         ui.log_history("Orchestrator: API auth error (401/403). Backing off 300s.", "error")

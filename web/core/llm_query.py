@@ -319,6 +319,20 @@ async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, 
                         pass
                 await asyncio.sleep(_backoff)
                 continue
+            # 自适应并发:正常完成上报成功;若 output 含限速标记(529/429/503熔断)上报失败→降并发
+            try:
+                from api_concurrency import record_llm_outcome
+                _joined = "".join(texts or "")
+                if (_is_rate_limited(_joined) or _is_quota_exceeded(_joined)
+                        or ("所有供应商" in _joined and "熔断" in _joined)):
+                    # root-cause-audit 2026-06-21: 删 "503" in _joined[:200] 裸子串——绕过
+                    # _is_rate_limited 的 2000-char guard，误匹配正常输出(筹码 -8503/版本号/对手名)。
+                    # 真实 API 503 走下方 ClaudeSDKError 异常路径的 "503" in _es 检测。
+                    record_llm_outcome(success=False, rate_limited=True)
+                else:
+                    record_llm_outcome(success=True)
+            except Exception:
+                pass
             return texts, cost_usd, usage
         except ClaudeSDKError as e:
             last_sdk_err = e
@@ -336,6 +350,15 @@ async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, 
                     )
                 await asyncio.sleep(_backoff)
                 continue
+            # 自适应并发:非 signature 的 SDK error(可能含 503 熔断/overloaded/429)上报降并发
+            try:
+                _es = str(e).lower()
+                if ("503" in _es or "overloaded" in _es or "熔断" in _es
+                        or "所有供应商" in _es or "rate limit" in _es or "429" in _es):
+                    from api_concurrency import record_llm_outcome
+                    record_llm_outcome(success=False, rate_limited=True)
+            except Exception:
+                pass
             raise  # non-signature SDK error, or signature retries exhausted
         finally:
             # Defensive: ensure SDK generator is closed so subprocess is terminated.

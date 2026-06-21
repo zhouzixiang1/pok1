@@ -14,7 +14,7 @@ from evolution_infra import locked_file, RESULTS_DIR, MAX_PRECOMMIT_RETRIES
 # Module-level cycle start time — set by orchestrator._run_one_cycle at cycle start,
 # read by _build_context and PreCompact hook for time-budget awareness.
 _cycle_start_time = None
-CYCLE_TIMEOUT = 3600  # Must match orchestrator.py
+CYCLE_TIMEOUT = 5400  # Must match orchestrator.py (实测 mean cycle 56min，见 orchestrator.py:329 注释)
 
 
 def set_cycle_start_time(t):
@@ -176,7 +176,7 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         lines.append("\nAVAILABLE TOOLS (call by exact name):")
         lines.append("  prepare_next_gen(source_v, next_v) — copy source bot dir")
         lines.append("  run_direction_audit(source_v, next_v) — detect repetitive evolution directions")
-        lines.append("  run_master(source_v, next_v, stagnation_info, match_analysis, performance_verification) — plan worker tasks")
+        lines.append("  run_master(source_v, next_v, stagnation_info, match_analysis, performance_verification, direction_audit) — plan worker tasks")
         lines.append("  execute_workers(tasks, next_v, source_v, reviewer_feedback) — modify bot code sequentially")
         lines.append("  run_quality_gates(version, source_v) — compile + smoke test + decision tests + file size")
         lines.append("  run_review(version, source_v, plan) — code quality review (boundaries, size, correctness)")

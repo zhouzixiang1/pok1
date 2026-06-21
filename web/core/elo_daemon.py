@@ -770,8 +770,15 @@ def main():
     except Exception as e:
         log.warning("Battle experience thread failed to start (non-fatal): %s", e)
 
+    # 预留 worker slot 给 external(precommit) job。root-cause-audit 2026-06-21: daemon
+    # 启动即用 internal matches 填满全部 n_workers 槽 → 外部 precommit job 只能在某个
+    # in-flight internal match 完成后才拿到 slot（app.log "Drained 3 pending" → "Collected
+    # 0/3" 数十分钟），precommit 永走慢路径 ~22min/代。预留 + _pop_next_job external-first
+    # 让 external job 立即占用预留 slot。steady-state replenish(L898/L913) 是"完成一个补
+    # 一个"维持平衡，不会突破此上限。
+    _ext_reserved = min(2, max(0, n_workers - 2))
     # Fill initial pool (priority-aware: external jobs first)
-    while len(in_flight) < n_workers and match_queue:
+    while len(in_flight) < n_workers - _ext_reserved and match_queue:
         m = _pop_next_job(match_queue)
         if m is None:
             break
@@ -1144,7 +1151,7 @@ def main():
                     matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
                     for a, b in matches:
                         match_queue.append((a, b, bot_path(a), bot_path(b), n_pairs))
-                    while len(in_flight) < n_workers and match_queue:
+                    while len(in_flight) < n_workers - _ext_reserved and match_queue:
                         m = _pop_next_job(match_queue)
                         if m is None:
                             break

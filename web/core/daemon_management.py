@@ -280,9 +280,17 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
                         break
                     if _daemon_shutting_down:
                         break
-                    # Preserve original scheduler_capable flag on restart
-                    was_scheduler_capable = is_daemon_scheduler_capable()
-                    start_daemon(workers=daemon_workers, pairs=daemon_pairs, scheduler_capable=was_scheduler_capable)
+                    # restart 时实际检测 battle_scheduler 可用性,而非读
+                    # is_daemon_scheduler_capable()——该函数第一步 is_daemon_alive()
+                    # 在 restart 上下文里 daemon 已死 → 必返回 False,导致
+                    # scheduler_capable 被 stale 值锁死 false(daemon crash 一次后
+                    # 永久 false,precommit 永走慢路径 parallel mirror battle)。
+                    try:
+                        import battle_scheduler  # noqa: F401 — 实际 import 测试可用性
+                        _restart_scheduler_capable = True
+                    except Exception:
+                        _restart_scheduler_capable = False
+                    start_daemon(workers=daemon_workers, pairs=daemon_pairs, scheduler_capable=_restart_scheduler_capable)
             else:
                 restart_count = 0
             stats = load_daemon_stats()
