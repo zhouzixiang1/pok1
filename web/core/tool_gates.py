@@ -134,6 +134,24 @@ async def run_quality_gates(args):
                              {"version": v, "source_v": source_v})
 
     compile_errors = verify_code(bot_dir)
+    # A3 (evolution-plan-refresh-jun21): placement-shadow advisory (NON-blocking).
+    # Flags detector call-sites placed after a to_call>=my_chips early-return — the
+    # INERTNESS root cause that recurred v138-v143 (guards wired at strategy.py:1041
+    # after the allin-cover early-return at :1018 = unreachable for stack-off spots).
+    placement_shadow_warnings = []
+    try:
+        from code_verification import detect_placement_shadow_warnings
+        placement_shadow_warnings = detect_placement_shadow_warnings(bot_dir)
+        if placement_shadow_warnings:
+            log_system_event(
+                "pipeline.placement_shadow", "warn",
+                f"Placement-shadow detectors in v{v}: {len(placement_shadow_warnings)} "
+                f"call-site(s) after to_call>=my_chips early-return (INERTNESS risk — "
+                f"relocate call-site, do not re-tune)",
+                {"version": v, "warnings": placement_shadow_warnings[:6]},
+            )
+    except Exception as e:
+        _log.warning("placement_shadow check error: %s", e)
     smoke_errors = run_smoke_test(bot_dir)
 
     # --- P0-3: LLM-Generated Dynamic Decision Tests ---
@@ -273,6 +291,8 @@ async def run_quality_gates(args):
         "fix_verification": fix_results,
         "fix_ok": fix_ok,
         "all_passed": all_passed,
+        # A3: advisory only (non-blocking). Reviewer/critic/orchestrator can read these.
+        "placement_shadow_warnings": placement_shadow_warnings,
     }
 
     # Build list of which specific gates failed (for diagnostics)

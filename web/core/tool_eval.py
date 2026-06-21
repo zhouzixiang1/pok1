@@ -896,6 +896,15 @@ async def run_precommit_eval(args):
         "blockers": blockers,
     }
 
+    # A6 (research_governance, evolution-plan-refresh-jun21): feed the precommit
+    # outcome back into any web-derived candidates applied to this bot version, and
+    # trigger a retrieval cooldown if a web-injected gen FAILED (Ratchet anti-pollution).
+    try:
+        from research_governance import record_precommit_outcome
+        record_precommit_outcome(v, passed, next_v=v)
+    except Exception:
+        pass
+
     # ── Task B: FAILED directive ──
     # When precommit fails, tell the Orchestrator exactly what to do next:
     #   - below the retry limit → rework the bot (call execute_workers) OR

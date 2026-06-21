@@ -29,6 +29,7 @@ from tool_pipeline import (  # noqa: F401
     run_quality_gates,
     prepare_next_gen,
     run_direction_audit,
+    run_literature_probe,
     run_review,
     run_critic,
     run_precommit_eval,

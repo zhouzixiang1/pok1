@@ -124,6 +124,9 @@ return None
 ## Replay Spotlight
 {replay_spotlight}
 
+## Research Proposals (web-derived hypotheses, verify before using)
+{research_proposals}
+
 ## Bot Action Statistics
 {bot_action_stats}
 
@@ -210,5 +213,6 @@ The following fixes have been verified as critical and must be preserved in any 
 1. **Wheel Straight (A-2-3-4-5)**: In `card_utils.py` `evaluate_5()`, the wheel straight check `elif set(unique_ranks) == {14, 2, 3, 4, 5}:` must be present. Without it, A-2-3-4-5 is misclassified as high card.
 2. **Re-raise Minimum**: In `state.py`, `min_raise_action` must use `2 * last_raise_to + 1 - my_round_bet` (strictly > 2x, not >= 2x).
 3. **TOTAL_HANDS**: In `constants.py`, `TOTAL_HANDS` must be 70.
+4. **Placement Shadow + Stack-Off Fix (0%-fold leak, unfixed 6 gens v138-v145)**: The `to_call >= my_chips` allin-cover block (strategy.py ~L1018) currently has NO fold gate — marginal hands (made_strength 0.40-0.50) always call because `win_rate >= shove_odds + shove_buffer` (buffer capped +0.14) never folds. This is the root cause of the -15.5k/-20k stack-off leak. The permitted fix = add an **SPR-commitment fold branch** (NEW function `_spr_commitment_gate` using pot-odds equity via `simulation.py monte_carlo_weighted_equity`) wired INSIDE the L1018 block BEFORE the shove_odds return: fold when `round_idx==3 AND tier∈{thin,none} AND made_strength<0.55 AND equity < pot_odds` where `pot_odds = to_call/(pot+2*to_call)`. This is a NEW structural axis (closed-form SPR math), NOT a re-tune of `_river_stackoff_guard` (which is exhausted + placement-shadowed). Any guard MUST be grep-proven to sit BEFORE the L1018 early-return — `run_quality_gates` now AST-flags placement shadows. Add `SPR_FOLD` stderr telemetry (daemon captures stderr now).
 
 If you see these fixes in the source code, preserve them. If they are missing, add them.

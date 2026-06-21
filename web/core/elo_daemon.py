@@ -72,6 +72,10 @@ STATS_FILE = RESULTS_DIR / "elo_daemon_stats.json"
 H2H_FILE = RESULTS_DIR / "head_to_head.json"
 BOT_STATS_FILE = RESULTS_DIR / "bot_stats.json"
 REPLAY_DIR = RESULTS_DIR / "match_replay"
+# A1 (INERTNESS fix, evolution-plan-refresh-jun21): per-bot stderr telemetry.
+# The daemon now captures bot stderr (FOLD_GATE_FIRE / SB_OPEN_OPP_SIZE / ...) that
+# _PersistentBot previously discarded; grep these files to verify detector firing.
+TELEMETRY_DIR = RESULTS_DIR / "bot_telemetry"
 MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 MAX_REPLAY_FILES = 2000
 
@@ -315,6 +319,49 @@ def save_match_replay(a, b, wins_a, wins_b, draws, replay_data):
     return fname
 
 
+def save_bot_telemetry(bot_a_name, bot_b_name, all_logs):
+    """A1 (INERTNESS fix, evolution-plan-refresh-jun21): extract per-bot stderr from
+    match logs and append to results/bot_telemetry/{bot}.jsonl so detector firing
+    (FOLD_GATE_FIRE / SB_OPEN_OPP_SIZE / PROTECT_FLOOR / ...) can be grep-verified.
+
+    The daemon path previously piped bot stderr to /dev/null, making every detector's
+    runtime firing UNVERIFIABLE for 6+ generations. _PersistentBot now drains stderr
+    into the per-decision log entry; this function aggregates it per match per bot.
+    Player key "0" -> bot_a, "1" -> bot_b (bot_paths order in mirror_battle)."""
+    try:
+        stderr_by_bot = {bot_a_name: [], bot_b_name: []}
+        key_to_bot = {"0": bot_a_name, "1": bot_b_name}
+        for game in all_logs:
+            logs = game.get("logs") if isinstance(game, dict) else None
+            if not isinstance(logs, list):
+                continue
+            for entry in logs:
+                if not isinstance(entry, dict):
+                    continue
+                for pkey, bot_name in key_to_bot.items():
+                    pinfo = entry.get(pkey)
+                    if isinstance(pinfo, dict) and pinfo.get("stderr"):
+                        stderr_by_bot[bot_name].append(pinfo["stderr"])
+        os.makedirs(TELEMETRY_DIR, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        opponent_of = {bot_a_name: bot_b_name, bot_b_name: bot_a_name}
+        for bot_name, chunks in stderr_by_bot.items():
+            joined = "".join(chunks).strip()
+            if not joined:
+                continue
+            entry = {
+                "ts": ts,
+                "opponent": opponent_of.get(bot_name, ""),
+                "stderr": joined,
+            }
+            try:
+                append_locked_jsonl(TELEMETRY_DIR / f"{bot_name}.jsonl", entry)
+            except Exception as e:
+                log.debug("Telemetry write failed for %s: %s", bot_name, e)
+    except Exception as e:
+        log.debug("Telemetry extraction failed (%s vs %s): %s", bot_a_name, bot_b_name, e)
+
+
 def cleanup_old_replays():
     if not REPLAY_DIR.exists():
         return
@@ -387,6 +434,13 @@ def run_single_match(args):
             save_match_replay(bot_a_name, bot_b_name, games_a, games_b, games_draw, all_logs)
         except Exception as e:
             log.debug("Replay save failed: %s", e)
+
+        # A1 (INERTNESS fix): capture bot stderr telemetry for detector firing
+        # verification. Best-effort — never blocks match result processing.
+        try:
+            save_bot_telemetry(bot_a_name, bot_b_name, all_logs)
+        except Exception as e:
+            log.debug("Telemetry save failed: %s", e)
 
         return (bot_a_name, bot_b_name, games_a, games_b, games_draw, total, None, list(net_chips_list or []))
     except Exception as e:

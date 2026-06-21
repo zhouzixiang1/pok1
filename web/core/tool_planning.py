@@ -1,6 +1,7 @@
 """Pipeline tools: direction audit, master planning, and worker execution."""
 
 import json
+import os
 import re
 import shutil
 import time
@@ -188,6 +189,75 @@ _TUNER_STRUCTURAL_PATTERNS = [
 ]
 
 
+# A4 (evidence_gate, evolution-plan-refresh-jun21): citation patterns the agents use
+# to reference spotlight hands. Anchored form (G3H25#9a3f1c02) is preferred but the
+# bare form (G3H25) is what fabricated citations usually look like.
+_CITATION_RE = re.compile(r"G\d+H\d+(?:#[0-9a-fA-F]{8})?|H\d+(?:#[0-9a-fA-F]{8})?")
+
+
+def _verify_cited_replays(plan):
+    """A4 (evidence_gate): reject Master/Worker replay citations that don't
+    correspond to any real replay hand in the spotlight manifest.
+
+    The v127-v143 "G3H25/G2H44" fabrication recurred 9x because Master/Worker
+    prompts cited hand IDs that don't exist in any recent replay (real files are
+    timestamp-named; agents invented GxHx IDs). find_critical_hands now writes
+    results/spotlight_manifest.json listing every citation it actually emitted;
+    this function cross-checks the plan's citations against it.
+
+    Returns a list of BLOCKING error strings (FABRICATED evidence is a hard error,
+    unlike the advisory exhausted-direction check).
+    """
+    errors = []
+    try:
+        _manifest_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      "results", "spotlight_manifest.json")
+        if not os.path.exists(_manifest_path):
+            return errors  # spotlight didn't run this gen — can't verify, don't block
+        with open(_manifest_path, encoding="utf-8") as f:
+            manifest = json.load(f)
+    except Exception:
+        return errors  # corrupt/missing manifest — never block the pipeline
+
+    # Map base citation id -> anchor for tamper-check
+    anchor_map = {}
+    for c in manifest.get("citations", []):
+        anchor_map[c.get("id", "")] = c.get("anchor", "")
+
+    tasks = plan if isinstance(plan, list) else (
+        plan.get("tasks", []) if isinstance(plan, dict) else []
+    )
+    for i, task in enumerate(tasks or []):
+        if not isinstance(task, dict):
+            continue
+        text = " ".join([
+            str(task.get("worker_prompt", "")),
+            str(task.get("instruction", "")),
+            str(task.get("targeted_failure", "")),
+        ])
+        cited = sorted(set(_CITATION_RE.findall(text)))
+        for cid in cited:
+            base = cid.split("#", 1)[0]
+            if base not in anchor_map:
+                errors.append(
+                    f"Task {i}: FABRICATED_EVIDENCE — cited replay '{cid}' is NOT in the "
+                    f"spotlight manifest (no such hand exists in recent replays for the "
+                    f"source bot). Only cite hands verbatim from the injected Replay "
+                    f"Spotlight section (format: G<game>H<hand>#<anchor>)."
+                )
+                continue
+            if "#" in cid:
+                cited_anchor = cid.split("#", 1)[1]
+                expected = anchor_map.get(base, "")
+                if expected and cited_anchor.lower() != expected.lower():
+                    errors.append(
+                        f"Task {i}: FABRICATED_EVIDENCE — cited replay '{cid}' anchor "
+                        f"mismatch (expected #{expected}). Possible hallucination or "
+                        f"tampering with a real hand id."
+                    )
+    return errors
+
+
 def _validate_master_plan(plan, next_v=None, precomputed_exhausted_keywords=None):
     """Validate master plan constraints before dispatching workers.
 
@@ -307,10 +377,19 @@ def _validate_master_plan(plan, next_v=None, precomputed_exhausted_keywords=None
                 warnings.append(f"Task {i}: worker prompt matches an EXHAUSTED direction from experience pool (advisory). This direction has been repeatedly tried with no measurable improvement; a fundamentally different approach is recommended but not required.")
                 # advisory only — no longer blocks the plan
 
+    # A4 (evidence_gate, evolution-plan-refresh-jun21): BLOCKING — reject cited
+    # replay hands that don't exist in the spotlight manifest (FABRICATED evidence,
+    # recurred 9x v127-v143). Unlike the exhausted-direction check above, this is a
+    # hard error: a plan built on hallucinated evidence must not reach workers.
+    try:
+        errors.extend(_verify_cited_replays(plan))
+    except Exception:
+        pass  # never let the gate itself crash the pipeline
+
     return errors, warnings
 
 
-@tool("run_master", "Run Master Architect analysis to plan the next generation. Returns a task plan with worker assignments.", {"source_v": int, "next_v": int, "stagnation_info": str, "match_analysis": str, "performance_verification": str, "direction_audit": str})
+@tool("run_master", "Run Master Architect analysis to plan the next generation. Returns a task plan with worker assignments.", {"source_v": int, "next_v": int, "stagnation_info": str, "match_analysis": str, "performance_verification": str, "direction_audit": str, "research_proposals": str})
 async def run_master(args):
     _t0 = time.time()
     source_v = args.get("source_v")
@@ -701,6 +780,7 @@ async def run_master(args):
         battle_experience=battle_experience,
         exploitability_weaknesses=exploitability_weaknesses,
         opponent_profiles=opponent_profiles,
+        research_proposals=args.get("research_proposals", ""),
     )
 
     if data is None:
@@ -820,6 +900,177 @@ async def run_master(args):
         pass
 
     result = {"plan": data, "logs": ui.get_output()}
+    return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
+
+
+# ──────────────────────────────────────────────
+# Literature Probe Stage (A5, evolution-plan-refresh-jun21)
+# ──────────────────────────────────────────────
+
+@tool("run_literature_probe", "Deep-research a specific H2H weakness via web search (Exa) and synthesize ONE codable strategy proposal. Governed by research_governance (cooldown/blacklist/translation gate). Stagnation-triggered. Output is a HYPOTHESIS for run_master — it does NOT modify bot code directly.", {"source_v": int, "next_v": int, "h2h_weakness": str, "stagnation_info": str})
+async def run_literature_probe(args):
+    """DeepEvolve plan→search→reflect→write loop with Ratchet governance.
+
+    Triggered by the orchestrator when stagnation ≥ 2 gens or direction-audit
+    flags repetition. Uses web search (Exa, connected MCP) to find concrete,
+    codable strategy improvements for the current bot's biggest H2H weakness.
+    The output is a hypothesis pool entry (research_governance.add_candidate),
+    NOT a direct code edit — run_master may surface it to workers as a hypothesis.
+    """
+    import asyncio as _asyncio
+    _t0 = time.time()
+    source_v = args.get("source_v")
+    next_v = args.get("next_v")
+    if next_v is None:
+        return {"content": [{"type": "text", "text": json.dumps({"error": "Missing next_v"})}]}
+    h2h_weakness = args.get("h2h_weakness", "") or ""
+    stagnation_info = args.get("stagnation_info", "") or ""
+
+    # ── A6 governance gate: cooldown / blacklist / kill-switch ──
+    try:
+        from research_governance import should_trigger_web_retrieval
+        if not should_trigger_web_retrieval(next_v):
+            try:
+                log_system_event("research_governance.skipped", "info",
+                                 f"run_literature_probe skipped for v{next_v} (cooldown/disabled)",
+                                 {"next_v": next_v})
+            except Exception:
+                pass
+            return {"content": [{"type": "text", "text": json.dumps({
+                "skipped": True, "reason": "web retrieval in cooldown or disabled by governance",
+                "next_v": next_v})}]}
+    except Exception as e:
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"governance gate failed: {e}"})}]}
+
+    ui = _get_ui()
+    try:
+        from llm_query import run_claude_query, parse_json_output
+        from evolution_infra import get_logs_dir, RESULTS_DIR as _RESULTS_DIR
+        from research_governance import add_candidate, translation_gate
+    except Exception as e:
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"import failed: {e}"})}]}
+
+    probe_prompt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "prompts", "literature_probe_prompt.md")
+    try:
+        with open(probe_prompt_path, encoding="utf-8") as f:
+            probe_template = f.read()
+    except Exception as e:
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"prompt load failed: {e}"})}]}
+
+    log_dir = get_logs_dir(next_v)
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    probe_log = log_dir / "literature_probe_io.txt"
+
+    # ── Compose the research brief ──
+    weakness = h2h_weakness.strip() or (
+        "General postflop stack-off leak: 0%-fold facing river all-ins (made_strength "
+        "0.40-0.50 always calls). Need optimal fold frequency vs polarized jam."
+    )
+    brief = (
+        f"{probe_template}\n\n"
+        f"## Current H2H weakness to research\n{weakness}\n\n"
+        f"## Stagnation context\n{stagnation_info or 'Stagnation detected — current axis exhausted.'}\n\n"
+        f"## Source bot version\nv{source_v}\n\n"
+        f"Now execute the 4 steps (PLAN → SEARCH → REFLECT → WRITE) and return the final "
+        f"WRITE-step JSON. You have web search tools available — use them for the SEARCH step."
+    )
+
+    # ── Single research agent run (plan/search/reflect/write in one query, with web tools) ──
+    # The agent has web search (Exa MCP, connected) + WebSearch. Domain whitelist is in the prompt.
+    try:
+        ui.clear_io()
+        output, _, _ = await run_claude_query(
+            brief, [], ui,
+            f"LITERATURE_PROBE (v{next_v})", probe_log,
+            tools=["WebSearch"],  # built-in; Exa MCP auto-available (not in _BLOCKED_MCP_TOOLS)
+        )
+    except Exception as e:
+        return {"content": [{"type": "text", "text": json.dumps({"error": f"research query failed: {e}"})}]}
+
+    # ── Parse the WRITE-step proposal ──
+    data, _mode = parse_json_output(output) if False else (None, None)
+    try:
+        from llm_query import parse_json_output_with_mode
+        data, _fm = parse_json_output_with_mode(output)
+    except Exception:
+        data = None
+
+    proposal = data if isinstance(data, dict) else None
+    candidate_id = None
+    gated_out = False
+    if proposal and proposal.get("target_fn") and proposal.get("numeric_claim"):
+        # A6 translation_gate + cap + blacklist enforced inside add_candidate
+        candidate_id = add_candidate({
+            "claim": proposal.get("claim", ""),
+            "source_url": proposal.get("source_url", ""),
+            "numeric_claim": proposal.get("numeric_claim", ""),
+            "target_fn": proposal.get("target_fn", ""),
+            "proposed_change": proposal.get("proposed_change", ""),
+            "pseudocode": proposal.get("pseudocode", ""),
+            "firing_tuple": proposal.get("firing_tuple", ""),
+            "born_gen": next_v,
+        })
+        gated_out = candidate_id is None
+    elif proposal and proposal.get("claim") is None:
+        # Honest null — no codable evidence. Not an error.
+        pass
+
+    # ── Persist the proposal + return text for master_prompt injection ──
+    try:
+        proposals_dir = _RESULTS_DIR / "research_proposals"
+        proposals_dir.mkdir(parents=True, exist_ok=True)
+        with open(proposals_dir / f"v{next_v}.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "next_v": next_v, "source_v": source_v,
+                "weakness": weakness,
+                "proposal": proposal,
+                "candidate_id": candidate_id,
+                "gated_out": gated_out,
+                "elapsed_sec": round(time.time() - _t0, 1),
+            }, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    try:
+        log_system_event("pipeline.literature_probe", "info",
+                         f"literature_probe v{next_v}: candidate_id={candidate_id} gated_out={gated_out}",
+                         {"next_v": next_v, "candidate_id": candidate_id,
+                          "target_fn": (proposal or {}).get("target_fn", "")})
+    except Exception:
+        pass
+
+    # Text returned to the orchestrator: the proposal (for run_master hypothesis injection)
+    if proposal and candidate_id:
+        inject_text = (
+            "## Research Proposal (web-derived hypothesis, verify before using)\n"
+            f"- claim: {proposal.get('claim','')}\n"
+            f"- target_fn: {proposal.get('target_fn','')}\n"
+            f"- numeric_claim: {proposal.get('numeric_claim','')}\n"
+            f"- firing_tuple: {proposal.get('firing_tuple','')}\n"
+            f"- source: {proposal.get('source_url','')}\n"
+            f"- pseudocode: {proposal.get('pseudocode','')}\n"
+            f"NOTE: this is a hypothesis from web research. It must pass all quality gates "
+            f"(decision tests ≥70%, precommit eval). If precommit fails, this pattern is "
+            f"auto-blacklisted by research_governance."
+        )
+    else:
+        inject_text = (
+            "## Research Proposal\nNo codable proposal survived the reflect/translation gate "
+            f"this generation (gated_out={gated_out}). Proceed with run_master without a web hypothesis."
+        )
+
+    result = {
+        "next_v": next_v,
+        "candidate_id": candidate_id,
+        "gated_out": gated_out,
+        "proposal": proposal,
+        "elapsed_sec": round(time.time() - _t0, 1),
+        "inject_text": inject_text,
+    }
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
 
 

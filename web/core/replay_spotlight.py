@@ -249,8 +249,13 @@ def _iter_hands(game, bot_idx, opp_idx) -> Iterator[dict]:
         }
 
 
-def _summarize_hand(hand, game_num):
-    """Build the public output dict (with board/card strings + assessment)."""
+def _summarize_hand(hand, game_num, replay_file=""):
+    """Build the public output dict (with board/card strings + assessment).
+
+    replay_file is recorded for A4 evidence_gate manifest tracing (not shown in
+    the summary string); it lets _verify_cited_replays confirm a cited hand
+    actually exists in a real replay file.
+    """
     bot_cards = hand["bot_cards"]
     public_cards = hand["public_cards"]
     last_bot_action = hand["last_bot_action"]
@@ -290,6 +295,7 @@ def _summarize_hand(hand, game_num):
         "chip_delta": hand["chip_delta"],
         "swing": hand["swing"],
         "assessment": assessment,
+        "_replay_file": replay_file,
     }
 
 
@@ -369,7 +375,7 @@ def find_critical_hands(bot_name, replays_dir, max_hands=10, recent_n_files=20):
             game_num = game.get("game", "?")
             for hand in _iter_hands(game, bot_idx, opp_idx):
                 if hand["swing"] > 0:
-                    all_swings.append(_summarize_hand(hand, game_num))
+                    all_swings.append(_summarize_hand(hand, game_num, replay_file=path))
 
     if not all_swings:
         return f"No hands with chip swings found for {bot_name}."
@@ -378,12 +384,64 @@ def find_critical_hands(bot_name, replays_dir, max_hands=10, recent_n_files=20):
     all_swings.sort(key=lambda h: h["swing"], reverse=True)
     top = all_swings[:max_hands]
 
+    # A4 (evidence_gate): build a manifest of the citations we actually emit so
+    # _verify_cited_replays can reject Master/Worker citations that don't correspond
+    # to any real replay hand (the v127-v143 "G3H25" fabrication root cause).
+    # Anchor = SHA-256 of the source replay file (first 8 hex) for tamper resistance.
+    import hashlib as _hashlib
+    _anchor_cache = {}
+
+    def _anchor_for(path):
+        if not path:
+            return ""
+        if path not in _anchor_cache:
+            try:
+                with open(path, "rb") as _fb:
+                    _anchor_cache[path] = _hashlib.sha256(_fb.read()).hexdigest()[:8]
+            except Exception:
+                _anchor_cache[path] = ""
+        return _anchor_cache[path]
+
+    manifest_citations = []
+    for h in top:
+        cid_base = "G{}H{}".format(h["game_num"], h["hand_num"]) if h["game_num"] != "?" else "H{}".format(h["hand_num"])
+        anchor = _anchor_for(h.get("_replay_file", ""))
+        h["_anchor"] = anchor
+        manifest_citations.append({
+            "id": cid_base,
+            "id_anchored": f"{cid_base}#{anchor}" if anchor else cid_base,
+            "bot": bot_name,
+            "game": h["game_num"],
+            "hand": h["hand_num"],
+            "replay_file": os.path.basename(h.get("_replay_file", "")),
+            "anchor": anchor,
+        })
+
+    # Persist manifest (best-effort; overwrites the latest). Read by
+    # tool_planning._verify_cited_replays during _validate_master_plan.
+    try:
+        _core_dir = os.path.dirname(os.path.abspath(__file__))
+        _results_dir = os.path.join(_core_dir, "results")
+        os.makedirs(_results_dir, exist_ok=True)
+        _manifest_path = os.path.join(_results_dir, "spotlight_manifest.json")
+        _manifest = {"bot": bot_name, "citations": manifest_citations}
+        import fcntl as _fcntl
+        with open(_manifest_path, "w", encoding="utf-8") as _mf:
+            _fcntl.flock(_mf, _fcntl.LOCK_EX)
+            try:
+                json.dump(_manifest, _mf, ensure_ascii=False)
+            finally:
+                _fcntl.flock(_mf, _fcntl.LOCK_UN)
+    except Exception:
+        pass  # manifest is best-effort; never block spotlight generation
+
     # Build compact summary
     lines = [f"Critical hands for {bot_name} (top {len(top)} by swing):"]
     for h in top:
         gprefix = f"G{h['game_num']}" if h["game_num"] != "?" else ""
+        anchor_suffix = f"#{h['_anchor']}" if h.get("_anchor") else ""
         line = (
-            f"{gprefix}H{h['hand_num']} {h['stage']}: "
+            f"{gprefix}H{h['hand_num']}{anchor_suffix} {h['stage']}: "
             f"board=[{h['board']}] "
             f"bot=[{h['bot_cards']}] "
             f"act={h['bot_action']} "

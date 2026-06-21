@@ -99,6 +99,142 @@ def _detect_dead_code_ast(directory, target_files=None):
     return errors
 
 
+# A3 (evolution-plan-refresh-jun21): detector call-site names that are placement-
+# shadow suspects — if their call appears AFTER a `to_call >= my_chips` early-return,
+# they are structurally unreachable for stack-covering all-ins (the INERTNESS root
+# cause that recurred v138-v143: guards placed at strategy.py:1041 after the
+# allin-cover early-return at :1018).
+import re as _re
+_PLACEMENT_SHADOW_DETECTOR_RE = _re.compile(
+    r"(_river_.*_guard|_spr_.*|sb_open_.*|bb_vs_.*|_vulnerable_.*|_river_value_.*)"
+)
+
+
+def _is_to_call_ge_my_chips(test_node):
+    """Match the `to_call >= my_chips` (or `to_call > my_chips`) comparison test."""
+    import ast as _ast
+    if not isinstance(test_node, _ast.Compare):
+        return False
+    left = test_node.left
+    if not (isinstance(left, _ast.Name) and left.id == "to_call"):
+        return False
+    if not any(isinstance(op, (_ast.GtE, _ast.Gt)) for op in test_node.ops):
+        return False
+    if not test_node.comparators:
+        return False
+    right = test_node.comparators[0]
+    return isinstance(right, _ast.Name) and right.id == "my_chips"
+
+
+def detect_placement_shadow_warnings(directory, target_files=None):
+    """AST-detect detector call-sites placed AFTER a `to_call >= my_chips`
+    early-return — structurally unreachable for stack-covering all-ins.
+
+    This is the placement-shadow INERTNESS root cause: v138 `_river_stackoff_guard`
+    was wired at strategy.py:1041 inside the `if to_call > 0:` block, which sits
+    AFTER the `if to_call >= my_chips:` early-return at :1018 — so for a true
+    stack-covering all-in the guard never runs. Returns advisory warnings
+    (non-blocking; the fix is to RELOCATE the call-site before the early-return,
+    not to re-tune thresholds).
+    """
+    warnings = []
+    strat_path = os.path.join(directory, "strategy.py")
+    if not os.path.exists(strat_path):
+        return warnings
+    try:
+        import ast as _ast
+        with open(strat_path) as fh:
+            source = fh.read()
+        tree = _ast.parse(source, filename=strat_path)
+    except Exception:
+        return warnings
+
+    # Build a parent map so we can find each call's nearest enclosing to_call If.
+    parent = {}
+    for node in _ast.walk(tree):
+        for child in _ast.iter_child_nodes(node):
+            parent[child] = node
+
+    def _nearest_enclosing_to_call_if(call_node):
+        """Walk ancestors; return the nearest If whose test references to_call,
+        or None. Returns (if_node, kind) where kind in {'gt0', 'eq0', 'ge_chips', 'other'}.
+        Skips If nodes whose test CONTAINS the call (those are the If the call
+        defines/conditions, not the branch it's nested in)."""
+        cur = parent.get(call_node)
+        while cur is not None:
+            if isinstance(cur, _ast.If):
+                # Skip the If whose test is/contains this call (the call is the
+                # condition, not nested in the body).
+                if any(c is call_node for c in _ast.walk(cur.test)):
+                    cur = parent.get(cur)
+                    continue
+                test = cur.test
+                refs_to_call = any(
+                    isinstance(n, _ast.Name) and n.id == "to_call"
+                    for n in _ast.walk(test)
+                )
+                if refs_to_call:
+                    kind = "other"
+                    if _is_to_call_ge_my_chips(test):
+                        kind = "ge_chips"
+                    elif isinstance(test, _ast.Compare):
+                        for cmp in test.comparators:
+                            if isinstance(cmp, _ast.Constant) and isinstance(cmp.value, (int, float)):
+                                if cmp.value == 0:
+                                    if any(isinstance(op, _ast.Gt) for op in test.ops):
+                                        kind = "gt0"
+                                    elif any(isinstance(op, _ast.Eq) for op in test.ops):
+                                        kind = "eq0"
+                    return (cur, kind)
+            cur = parent.get(cur)
+        return (None, "none")
+
+    for fn_node in _ast.walk(tree):
+        if not isinstance(fn_node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            continue
+        # Find `to_call>=my_chips` If nodes in this function whose body returns.
+        early_return_lines = []
+        for sub in _ast.walk(fn_node):
+            if isinstance(sub, _ast.If) and _is_to_call_ge_my_chips(sub.test):
+                if any(isinstance(n, _ast.Return) for n in _ast.walk(sub)):
+                    early_return_lines.append(sub.lineno)
+        if not early_return_lines:
+            continue
+        earliest = min(early_return_lines)
+        # Flag detector call-sites after the earliest early-return. Precision: a call
+        # in a `to_call > 0` block is a TRUE shadow (meant to guard bets but cannot
+        # cover to_call>=my_chips all-ins). A call in `to_call == 0` offense is NOT
+        # shadowed (different to_call range) — downgraded to info.
+        seen = set()
+        for sub in _ast.walk(fn_node):
+            if not (isinstance(sub, _ast.Call) and isinstance(sub.func, _ast.Name)
+                    and _PLACEMENT_SHADOW_DETECTOR_RE.match(sub.func.id)
+                    and sub.lineno > earliest):
+                continue
+            key = (sub.func.id, sub.lineno)
+            if key in seen:
+                continue
+            seen.add(key)
+            _enc, kind = _nearest_enclosing_to_call_if(sub)
+            if kind == "eq0":
+                # to_call==0 offense (open-bet/bluff) — correctly NOT covering all-ins.
+                continue
+            severity = "TRUE SHADOW" if kind == "gt0" else "review"
+            warnings.append(
+                "strategy.py:L{ln}: placement_shadow ({sev}) — detector '{fn}' call is "
+                "AFTER to_call>=my_chips early-return at L{er} (enclosing block: {kind}). "
+                "{note}".format(
+                    ln=sub.lineno, sev=severity, fn=sub.func.id, er=earliest,
+                    kind=kind,
+                    note=("Cannot cover to_call>=my_chips stack-covering all-ins — "
+                          "RELOCATE call-site BEFORE the early-return, do NOT re-tune."
+                          ) if kind == "gt0" else
+                         ("Verify this call isn't intended for the all-in path."
+                          ))
+            )
+    return warnings
+
+
 def verify_code(directory, target_files=None):
     """Verify Python files compile. When target_files is given, only check those
     files instead of walking the entire directory — avoids false compile errors

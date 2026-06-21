@@ -7,6 +7,7 @@ import os
 import argparse
 import select
 import threading
+import time
 from datetime import datetime
 
 ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -43,9 +44,23 @@ class _PersistentBot:
         self.bot_path = bot_path
         self.proc = None
         self._alive = False
+        # A1 (INERTNESS fix, evolution-plan-refresh-jun21): continuously drain bot
+        # stderr in a background thread. The daemon path previously piped stderr to
+        # /dev/null, losing ALL detector telemetry (FOLD_GATE_FIRE / SB_OPEN_OPP_SIZE /
+        # PROTECT_FLOOR ...). This thread captures it so call() can snapshot
+        # per-decision stderr for grep-based firing verification
+        # (results/bot_telemetry/{bot}.jsonl written by elo_daemon).
+        self._stderr_buf = []
+        self._stderr_lock = threading.Lock()
+        self._stderr_thread = None
         self._start()
 
     def _start(self):
+        # Clear any stale stderr from a prior crashed proc so re-start attribution
+        # is clean (a crash recovery shouldn't contaminate the new session's first
+        # decision telemetry with the dead session's trailing stderr).
+        with self._stderr_lock:
+            self._stderr_buf.clear()
         try:
             self.proc = subprocess.Popen(
                 [sys.executable, self.bot_path],
@@ -58,19 +73,47 @@ class _PersistentBot:
             self._alive = True
         except Exception:
             self._alive = False
+            return
+        # One drain thread per proc lifetime (not per decision) — avoids per-call
+        # blocking and thread leaks. Dies when stderr closes (proc exits).
+        try:
+            self._stderr_thread = threading.Thread(
+                target=self._stderr_drain_loop, daemon=True
+            )
+            self._stderr_thread.start()
+        except Exception:
+            pass
+
+    def _stderr_drain_loop(self):
+        """Continuously read bot stderr lines into _stderr_buf for the proc's lifetime.
+        Captures FOLD_GATE_FIRE / SB_OPEN_OPP_SIZE / PROTECT_FLOOR style telemetry that
+        the daemon path previously discarded (the #1 INERTNESS root cause)."""
+        try:
+            for line in iter(self.proc.stderr.readline, ''):
+                with self._stderr_lock:
+                    self._stderr_buf.append(line)
+        except Exception:
+            pass
+
+    def _drain_stderr_snapshot(self):
+        """Atomically return accumulated stderr since the last snapshot and clear the buffer."""
+        with self._stderr_lock:
+            snap = "".join(self._stderr_buf)
+            self._stderr_buf.clear()
+        return snap
 
     def call(self, payload):
         if not self._alive:
             self._start()
             if not self._alive:
-                return -1, "CRASH: process not started", None
+                return -1, "CRASH: process not started", None, ""
         try:
             line = json.dumps(payload, separators=(',', ':'))
             self.proc.stdin.write(line + '\n')
             self.proc.stdin.flush()
         except Exception:
             self._alive = False
-            return -1, "CRASH: stdin write failed", None
+            return -1, "CRASH: stdin write failed", None, self._drain_stderr_snapshot()
 
         result_line = [None]
         error = [None]
@@ -91,24 +134,30 @@ class _PersistentBot:
                 self.proc.kill()
             except Exception:
                 pass
-            return -1, "TIMEOUT", None
+            return -1, "TIMEOUT", None, self._drain_stderr_snapshot()
 
         if error[0] is not None:
             self._alive = False
-            return -1, "CRASH: {}".format(error[0]), None
+            return -1, "CRASH: {}".format(error[0]), None, self._drain_stderr_snapshot()
 
         if not result_line[0]:
             self._alive = False
-            return -1, "EOF", None
+            return -1, "EOF", None, self._drain_stderr_snapshot()
 
         try:
             result = json.loads(result_line[0].strip())
             action = int(result.get("response", -1))
             bot_data = result.get("data")
-            return action, "OK", bot_data
+            # Brief grace (1ms) lets the stderr drain thread capture telemetry the
+            # bot writes just before/after its stdout response. Without this the
+            # snapshot can race ahead of the drain for the final line. Kept small —
+            # this runs per decision (~8400/match) so 3ms added ~25s/match of pure
+            # sleep; 1ms is enough for the line to flush into the PIPE buffer.
+            time.sleep(0.001)
+            return action, "OK", bot_data, self._drain_stderr_snapshot()
         except Exception as e:
             self._alive = False
-            return -1, "CRASH: {}".format(e), None
+            return -1, "CRASH: {}".format(e), None, self._drain_stderr_snapshot()
 
     def close(self):
         self._alive = False
@@ -171,7 +220,8 @@ def _call_bot(bot_paths, player_id, request_data, bot_requests, bot_responses,
         except Exception as e:
             action, verdict = -1, "CRASH: {}".format(e)
     elif persistent_procs and persistent_procs[player_id]:
-        action, verdict, _returned_data = persistent_procs[player_id].call(payload)
+        action, verdict, _returned_data, _stderr = persistent_procs[player_id].call(payload)
+        stderr_output = _stderr or ""
     else:
         action, verdict, _returned_data = _call_bot_subprocess(bot_paths[player_id], payload)
 
@@ -308,9 +358,9 @@ def _run_one_mirror_game(judge_func, bot_paths, game, n_games, verbose, aivat_en
                 break
             player_id = int(next(iter(content.keys())))
             request_data = content[str(player_id)]
-            response, _, _ = _call_bot(bot_paths, player_id, request_data, bot_requests, bot_responses,
-                                       bot_data=bot_data, persistent_procs=persistent)
-            log.append({str(player_id): {"response": str(response), "verdict": "OK"}, "output": None})
+            response, _verdict, _stderr = _call_bot(bot_paths, player_id, request_data, bot_requests, bot_responses,
+                                                    bot_data=bot_data, persistent_procs=persistent)
+            log.append({str(player_id): {"response": str(response), "verdict": _verdict, "stderr": _stderr}, "output": None})
             result_str = judge_func(json.dumps({"log": log, "initdata": initdata}))
             result = json.loads(result_str)
             log.append({"output": result})
@@ -349,9 +399,9 @@ def _run_one_mirror_game(judge_func, bot_paths, game, n_games, verbose, aivat_en
                 break
             player_id = int(next(iter(content.keys())))
             request_data = content[str(player_id)]
-            response, _, _ = _call_bot(bot_paths, player_id, request_data, bot_requests_m, bot_responses_m,
-                                       bot_data=bot_data_m, persistent_procs=persistent)
-            log_m.append({str(player_id): {"response": str(response), "verdict": "OK"}, "output": None})
+            response, _verdict, _stderr = _call_bot(bot_paths, player_id, request_data, bot_requests_m, bot_responses_m,
+                                                    bot_data=bot_data_m, persistent_procs=persistent)
+            log_m.append({str(player_id): {"response": str(response), "verdict": _verdict, "stderr": _stderr}, "output": None})
             result_str = judge_func(json.dumps({"log": log_m, "initdata": mirror_initdata}))
             result = json.loads(result_str)
             log_m.append({"output": result})

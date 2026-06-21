@@ -17,6 +17,7 @@ Pipeline order (drive forward only; failures may retreat to `workers` or `master
 |---|---|
 | prepare | `prepare_next_gen` or `run_crossover` |
 | direction_audit | `run_direction_audit` |
+| literature_probe | `run_literature_probe` (stagnation-triggered, optional) |
 | master | `run_master` |
 | workers | `execute_workers` |
 | quality | `run_quality_gates` |
@@ -26,6 +27,14 @@ Pipeline order (drive forward only; failures may retreat to `workers` or `master
 | commit | `commit_bot` |
 | archivist | `run_archivist` |
 </state_machine>
+<literature_probe_guidance>
+**When to call `run_literature_probe`** (optional, stagnation-triggered, DeepEvolve + Ratchet):
+- Call it AFTER `run_direction_audit` returns `repetition_detected: true` OR the stagnation analysis flags ≥2 stagnant generations, AND BEFORE `run_master`.
+- Pass the current bot's biggest H2H weakness as `h2h_weakness` (extract from match analysis / worst swing).
+- It returns a web-derived hypothesis (`inject_text`). Feed that text into `run_master` as part of the context so the Master can surface it to workers as a hypothesis to implement (NOT a direct code edit).
+- If it returns `skipped: true`, the research_governance layer (cooldown/blacklist) has paused web retrieval — proceed directly to `run_master` without a web hypothesis.
+- Do NOT call it every generation — it costs LLM + web-search budget and is governance-gated to prevent retrieval-noise pollution.
+</literature_probe_guidance>
 <validation_handling>
 When `run_master` returns a JSON result:
 - If the result contains `"plan"` key → Master SUCCEEDED. Proceed to `execute_workers`.
