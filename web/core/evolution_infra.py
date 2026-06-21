@@ -571,18 +571,17 @@ def _target_rel(path, version):
         return ""
     raw = raw.replace("\\", "/")
     raw = _TARGET_ANNOTATION_RE.sub("", raw).strip()
-    # 剥离任意 bots/claude_v{N}/ 前缀（含 source_v）。
+    # 循环剥离任意层 bots/claude_v{N}/ 前缀（含 source_v + 双重嵌套）。
     # root-cause-audit 2026-06-21: Master context (agent_master.py:100) 注入
-    # bots/claude_v{source_v}/ 路径，worker 非确定性地把它写进 target_files；
-    # 旧版只认 next_v marker，对 source_v 前缀 fallthrough 返回原路径 → 解析到
-    # 不存在的嵌套路径 bots/claude_v{src}/bots/claude_v{src}/... (gen132 3×, gen137 4×)。
-    m = re.search(r'(?:\./)?bots/claude_v\d+/(.+)$', raw)
-    if m:
-        return m.group(1)
-    m = re.search(r'(?:\./)?claude_v\d+/(.+)$', raw)
-    if m:
-        return m.group(1)
-    return raw.lstrip("./")
+    # bots/claude_v{source_v}/ 路径，worker 非确定性地把它写进 target_files，甚至双重嵌套
+    # bots/claude_v{src}/bots/claude_v{src}/... (gen132 3×, gen137 4×)。单层正则只剥一层仍残留；
+    # 循环剥离直到无版本前缀。
+    while True:
+        m = re.match(r'(?:\./)?(?:bots/)?claude_v\d+/(.+)$', raw)
+        if not m:
+            break
+        raw = m.group(1)
+    return raw
 
 
 def get_active_bots():

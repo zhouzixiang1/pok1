@@ -686,11 +686,15 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             raise
 
         except Exception as e:
-            if query_gen is not None:
-                try:
-                    await query_gen.aclose()
-                except Exception as e:
-                    log.debug("gen.aclose failed: %s", e)
+            # aclose 真实 gen：query_gen 在元组解包成功时赋值，但异常路径（含 _CostCapTripped
+            # 在 AssistantMessage 循环内 raise）可能在解包前抛出 → query_gen 为 None，真实 gen
+            # 在 _gen_ref[0]。两者都尝试关（root-cause-audit bug-check：cost cap 路径泄漏 CLI subprocess）。
+            for _g in (query_gen, _gen_ref[0]):
+                if _g is not None:
+                    try:
+                        await _g.aclose()
+                    except Exception as _ge:
+                        log.debug("gen.aclose failed: %s", _ge)
             cycle_failed = True
             # P2: classify infra (SDK signature/timeout/connection) vs real business failure.
             # is_llm_infra_error is type-based (ClaudeSDKError, asyncio.TimeoutError,
@@ -736,13 +740,13 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
         _clear_orchestrator_session()
 
     # Return negative cost to signal auth error for fast backoff.
-    # P2: auth_error returns must be ≤ -1.0 to never collide with the infra -0.5 sentinel
-    # used by cycle_failed below. Real cycle costs that round to <1.0 (e.g. quick auth-fail
-    # before any sub-agent ran) are clamped up to -1.0.
+    # P2: auth_error returns must be STRICTLY < -1.0 so orchestrator_loop's
+    # `auth_error = cost < -1.0` inference distinguishes auth from generic crash (-1.0).
+    # root-cause-audit bug-check: 旧 -max(abs,1.0) 在 total_cost≤1 时 = -1.0 被误判 generic
+    # (低成本 auth fail 最常见——子 agent 没跑就 401/403)。统一 -0.5 偏移保证 auth 总是 < -1.0
+    # (infra=-0.5 / generic=-1.0 / auth≤-1.5 三者互斥)。
     if auth_error:
-        if total_cost > 0:
-            return -max(abs(total_cost), 1.0)
-        return -1.0
+        return -max(abs(total_cost), 1.0) - 0.5
 
     # P1: a crashed cycle must NOT return partial cost > 0. orchestrator_loop's
     # `if cost >= 0` branch would treat it as success, run cleanup, and log
