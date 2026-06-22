@@ -27,7 +27,13 @@
       "Bash(curl -s http://localhost:8000/api/evolution/state)",
       "Bash(sort -t'v' -k2 -n)",
       "Bash(bash *)",
-      "Bash(awk '{print $5, $9}')"
+      "Bash(awk '{print $5, $9}')",
+      "Bash(gnome-shell --version)",
+      "Bash(dpkg -l)",
+      "Bash(systemctl --user status gnome-remote-desktop)",
+      "Bash(systemctl status *)",
+      "Bash(gsettings list-recursively *)",
+      "Bash(git stash *)"
     ]
   }
 }

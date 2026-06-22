@@ -1,4 +1,4 @@
-from constants import BIG_BLIND, N_PLAYERS
+from constants import BIG_BLIND, N_PLAYERS, SMALL_BLIND
 from card_utils import clamp, next_player
 from state import collect_latest_requests_by_hand
 from tournament import opponent_can_lock_win
@@ -91,12 +91,45 @@ def build_opponent_model(requests, my_id):
     opp_small_bet_count = 0
     opp_large_bet_count = 0
 
+    # NEW: per-street opponent bet-sizing profiler samples.
+    # Each entry is (round_idx, bet_to_pot_ratio) recorded at the moment the
+    # opponent makes a postflop raise, using a reconstructed pot estimate.
+    per_street_sizing_samples = []
+
+    # v151 NEW: per-street call-down frequency tracking.
+    # _pending_my_bet_ratio captures OUR bet-to-pot ratio when we raise
+    # postflop. _calldown_samples accumulates (street, bet_pot_ratio, did_call)
+    # tuples across hands so we can detect opponents who call flop bets but
+    # fold turn/river bets (street-declining call-down pattern).
+    _pending_my_bet_ratio = 0.5
+    _calldown_samples = []
+
     for req in hand_requests:
         if opponent_can_lock_win(req, my_id):
             continue
 
         opp_bet_flop = False
         opp_bet_turn = False
+
+        # NEW: Per-hand pot reconstruction state. Tracks each player's
+        # contribution to the current round so we can estimate the pot at any
+        # point. Accounts for blinds baseline (SB+BB) and call equalization,
+        # avoiding the over-inflation bias of a max-raise-only tracker.
+        sb_player = req.get("dealer_id")
+        if sb_player is None:
+            sb_player = my_id  # safe fallback; only used for blind attribution
+        bb_player = next_player(sb_player, 1)
+        round_bets = {my_id: 0, opponent_id: 0}
+        # Blinds are posted before history begins (judge clears them), so the
+        # preflop round_bets start at the blind levels. prior_rounds_pot tracks
+        # ONLY chips from COMPLETED prior rounds (starts at 0 for preflop) —
+        # blinds are accounted for via round_bets, NOT prior_rounds_pot, to
+        # avoid double-counting the SB+BB baseline (which would inflate the pot
+        # by 150 chips on every street and bias bet-to-pot ratios downward).
+        round_bets[sb_player] = SMALL_BLIND
+        round_bets[bb_player] = BIG_BLIND
+        prior_rounds_pot = 0
+        last_round_seen = 0
 
         history = req.get("history", [])
         if not history:
@@ -119,6 +152,45 @@ def build_opponent_model(requests, my_id):
             action_type = record["action_type"]
             action = record["action"]
             round_idx = record["round"]
+
+            # NEW: Round transition detection. When the round advances, commit
+            # both players' contributions from the prior round to the pot total
+            # and reset the current-round contribution tracker.
+            if round_idx > last_round_seen:
+                prior_rounds_pot += round_bets[my_id] + round_bets[opponent_id]
+                round_bets[my_id] = 0
+                round_bets[opponent_id] = 0
+                last_round_seen = round_idx
+
+            # NEW: Update per-player round contribution for ALL players BEFORE
+            # any early-exit continue. This accounts for calls (equalizing to
+            # the current high bet) AND raises (raise-to-total), giving an
+            # accurate pot estimate that fixes the inflation bias of a
+            # max-raise-only tracker. "allin" action=-2 hides the exact amount,
+            # so we approximate by matching the current high bet (lower bound).
+            if action_type == "raise" and action > 0:
+                # "raise" action field = raise-to-total for this round.
+                # Sample opponent's postflop sizing BEFORE updating tracker.
+                if pid == opponent_id and round_idx > 0:
+                    pot_estimate = prior_rounds_pot + round_bets[my_id] + round_bets[opponent_id]
+                    if pot_estimate > 0:
+                        per_street_sizing_samples.append((round_idx, action / pot_estimate))
+                # v151 NEW: capture OUR bet-to-pot ratio before updating tracker.
+                # pot_estimate uses pre-update round_bets, giving pot-before-our-bet.
+                if pid == my_id and round_idx > 0:
+                    pot_estimate = prior_rounds_pot + round_bets[my_id] + round_bets[opponent_id]
+                    _pending_my_bet_ratio = action / pot_estimate if pot_estimate > 0 else 0.5
+                round_bets[pid] = max(round_bets[pid], action)
+            elif action_type == "call":
+                # Caller matches the current high bet (equalization).
+                high_bet = max(round_bets.values())
+                round_bets[pid] = max(round_bets[pid], high_bet)
+            elif action_type == "allin":
+                # action=-2 hides exact amount; approximate as matching the
+                # current high bet so pot estimate stays a lower bound (avoids
+                # over-inflation flagged in reviewer SECONDARY risk).
+                high_bet = max(round_bets.values())
+                round_bets[pid] = max(round_bets[pid], high_bet)
 
             if pid == my_id and action_type in ("raise", "allin"):
                 pending_my_pressure = True
@@ -195,6 +267,11 @@ def build_opponent_model(requests, my_id):
                     ftr_river_opp += 1
                     if action_type == "fold":
                         ftr_river_fold += 1
+                # v151 NEW: record call-down sample for per-street profile.
+                # Did the opponent call our postflop bet, or fold?
+                if pending_round is not None and pending_round > 0:
+                    did_call = action_type in ('call', 'allin')
+                    _calldown_samples.append((pending_round, _pending_my_bet_ratio, 1 if did_call else 0))
                 pending_my_pressure = False
                 pending_round = None
 
@@ -231,6 +308,38 @@ def build_opponent_model(requests, my_id):
         0.0, 1.0,
     )
 
+    # NEW signal: turn+river calling-station stickiness. Distinct from
+    # passivity_score (which weights flop + check rates). Pure non-fold behavior
+    # on streets where value sizing matters most for value extraction.
+    turn_sticky = 1.0 - ftr_turn
+    river_sticky = 1.0 - ftr_river
+    value_maximizer_index = clamp(
+        call_down_flop_turn_rate * 0.25
+        + call_down_turn_river_rate * 0.35
+        + turn_sticky * 0.20
+        + river_sticky * 0.20,
+        0.0, 1.0,
+    )
+
+    # v151 NEW: per-street call-down frequency profile.
+    # Tracks how often the opponent calls our postflop bets at each street.
+    # Detects "sticky early, foldy late" pattern exploitable by delayed bluffs.
+    calldown_profile = {}
+    for street in (1, 2, 3):
+        street_s = [(ratio, called) for ridx, ratio, called in _calldown_samples if ridx == street]
+        n = len(street_s)
+        if n >= 4:
+            small = [c for ratio, c in street_s if ratio < 0.40]
+            large = [c for ratio, c in street_s if ratio >= 0.60]
+            calldown_profile[street] = {
+                'rate': sum(c for _, c in street_s) / n,
+                'samples': n,
+                'small_bet_rate': sum(small) / len(small) if small else None,
+                'large_bet_rate': sum(large) / len(large) if large else None,
+            }
+        else:
+            calldown_profile[street] = {'rate': 0.5, 'samples': n, 'small_bet_rate': None, 'large_bet_rate': None}
+
     return {
         "confidence": confidence,
         "vpip": smooth_rate(voluntary_preflop, preflop_opportunities, 0.58, 4.0),
@@ -259,7 +368,91 @@ def build_opponent_model(requests, my_id):
         "call_down_flop_turn": call_down_flop_turn_rate,
         "call_down_turn_river": call_down_turn_river_rate,
         "passivity_score": passivity_score,
+        "value_maximizer_index": value_maximizer_index,
+        "sizing_tendency": classify_sizing_tendency(per_street_sizing_samples),
+        "calldown_profile": calldown_profile,
     }
+
+
+def classify_sizing_tendency(samples):
+    """Per-street opponent bet-sizing profiler.
+
+    Classifies an opponent into a sizing tendency bucket based on observed
+    bet-to-pot ratios across postflop streets. Returns a dict.
+
+    Buckets:
+      - "overbettor": >=35% of samples have ratio >= 1.0 (polarized big bets)
+      - "underbettor": >=40% of samples have ratio <= 0.30 (small/min bets)
+      - "standard": majority in 0.30-1.0 pot range
+      - "unknown": fewer than 6 samples
+
+    Returned dict keys:
+      - tendency: str bucket label (see above)
+      - overbet_rate / underbet_rate / standard_rate: float fractions in [0,1]
+      - samples: int count of valid postflop raise samples used
+      - per_street_overbet {1,2,3}: float fraction of overbets per street
+      - per_street_underbet {1,2,3}: float fraction of underbets per street
+      - per_street_samples {1,2,3}: int raw sample count per street (debug aid)
+      - confidence: float in [0,1] = min(1.0, n/20) — sample-size reliability
+    """
+    info = {
+        "tendency": "unknown",
+        "overbet_rate": 0.0,
+        "underbet_rate": 0.0,
+        "standard_rate": 0.0,
+        "samples": 0,
+        "per_street_overbet": {1: 0.0, 2: 0.0, 3: 0.0},
+        "per_street_underbet": {1: 0.0, 2: 0.0, 3: 0.0},
+        "per_street_samples": {1: 0, 2: 0, 3: 0},
+        "confidence": 0.0,
+    }
+    if len(samples) < 6:
+        return info
+
+    street_counts = {1: 0, 2: 0, 3: 0}
+    street_over = {1: 0, 2: 0, 3: 0}
+    street_under = {1: 0, 2: 0, 3: 0}
+    total_over = total_under = total_standard = 0
+    for ridx, ratio in samples:
+        if ridx not in (1, 2, 3):
+            continue
+        # Defensive guard: skip non-finite ratios (NaN/inf) so a single
+        # corrupted sample can't poison the per-street rates. Guards against
+        # rare malformed-history edge cases (e.g., zero-pot_estimate slipping
+        # through if future callers bypass the pot_estimate>0 filter).
+        if ratio != ratio or ratio in (float('inf'), float('-inf')):
+            continue
+        street_counts[ridx] += 1
+        if ratio >= 1.0:
+            total_over += 1
+            street_over[ridx] += 1
+        elif ratio <= 0.30:
+            total_under += 1
+            street_under[ridx] += 1
+        else:
+            total_standard += 1
+
+    n = sum(street_counts.values())
+    if n < 6:
+        return info
+    info["samples"] = n
+    info["overbet_rate"] = total_over / n
+    info["underbet_rate"] = total_under / n
+    info["standard_rate"] = total_standard / n
+    for ridx in (1, 2, 3):
+        info["per_street_samples"][ridx] = street_counts[ridx]
+        if street_counts[ridx] > 0:
+            info["per_street_overbet"][ridx] = street_over[ridx] / street_counts[ridx]
+            info["per_street_underbet"][ridx] = street_under[ridx] / street_counts[ridx]
+    info["confidence"] = min(1.0, n / 20.0)
+
+    if info["overbet_rate"] >= 0.35:
+        info["tendency"] = "overbettor"
+    elif info["underbet_rate"] >= 0.40:
+        info["tendency"] = "underbettor"
+    elif info["standard_rate"] >= 0.50:
+        info["tendency"] = "standard"
+    return info
 
 
 def analyze_current_spot(req, state):

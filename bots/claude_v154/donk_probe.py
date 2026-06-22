@@ -10,6 +10,7 @@ Both are exploitative lines that capitalize on:
 Integration: called from strategy.py:get_action() before the standard value/bluff path.
 """
 
+import sys
 from card_utils import card_number, card_suit, clamp
 
 
@@ -242,14 +243,44 @@ def should_donk_bet(
             result["reason"] = "opponent_cbets_too_much"
             return result
 
+    # v153 NEW: Calldown-aware donk widening vs calling stations.
+    # calldown_profile[1] = flop call-down rate (v151 signal, no prior value consumer).
+    # When opponent calls down frequently on the flop, widen value range and
+    # increase frequency to extract thin value from calling stations.
+    _call_station = False
+    _flop_cd_rate = 0.5
+    _flop_cd_samples = 0
+    if opponent_model is not None:
+        _cd_profile = opponent_model.get('calldown_profile')
+        if _cd_profile is not None:
+            _flop_cd = _cd_profile.get(1, {})
+            _flop_cd_samples = _flop_cd.get('samples', 0)
+            _flop_cd_rate = _flop_cd.get('rate', 0.5)
+            if _flop_cd_samples >= 4 and _flop_cd_rate >= 0.55:
+                _call_station = True
+
+    _effective_min_strength = _DONK_MIN_STRENGTH  # 0.45 default
+    _effective_freq_cap = _DONK_VALUE_FREQ_CAP  # 0.65 default
+    if _call_station:
+        _effective_min_strength = 0.38  # thinner value (top_pair_weak_kicker through second_pair)
+        _effective_freq_cap = 0.80  # more frequent donks
+        try:
+            sys.stderr.write(
+                'CALLDOWN_DONK opp_cd=%.2f samples=%d min_str=%.2f cap=%.2f\n'
+                % (_flop_cd_rate, _flop_cd_samples,
+                   _effective_min_strength, _effective_freq_cap)
+            )
+        except Exception:
+            pass
+
     # Evaluate hand strength for donk type
     has_draw = draw_info is not None and draw_info.get("semi_bluff", False)
     tier = value_profile.get("tier", "none") if value_profile else "none"
 
     # Value donk: strong made hand
-    if tier in ("strong", "nut") or made_strength >= _DONK_MIN_STRENGTH:
+    if tier in ("strong", "nut") or made_strength >= _effective_min_strength:
         freq_roll = _donk_frequency_roll(my_cards, public_cards, round_idx)
-        if freq_roll > _DONK_VALUE_FREQ_CAP:
+        if freq_roll > _effective_freq_cap:
             result["reason"] = "value_frequency_cap"
             return result
 
@@ -266,7 +297,7 @@ def should_donk_bet(
         result["eligible"] = True
         result["ratio"] = ratio
         result["type"] = "value"
-        result["frequency"] = _DONK_VALUE_FREQ_CAP
+        result["frequency"] = _effective_freq_cap
         result["reason"] = "bb_value_donk_vs_pfr"
         return result
 
@@ -475,3 +506,28 @@ def donk_probe_sizing(
     if amount <= to_call or amount < min_raise or amount >= my_chips:
         return None
     return amount
+
+
+if __name__ == '__main__':
+    # Test calldown-aware donk widening
+    _test_model_cd = {
+        'confidence': 0.35, 'flop_aggr': 0.30, 'fold_to_raise': 0.45,
+        'calldown_profile': {1: {'rate': 0.62, 'samples': 8, 'small_bet_rate': 0.70, 'large_bet_rate': 0.50}}
+    }
+    _test_model_normal = {
+        'confidence': 0.35, 'flop_aggr': 0.30, 'fold_to_raise': 0.45,
+        'calldown_profile': {1: {'rate': 0.40, 'samples': 6, 'small_bet_rate': 0.50, 'large_bet_rate': 0.30}}
+    }
+    # Create minimal board_texture, spot_info, etc.
+    _bt = {'wetness': 0.20, 'paired': False, 'dynamic': False, 'flush_draw': False, 'straight_draw': False}
+    _spot = {'my_is_bb': True, 'preflop_spot': 'bb_vs_raise'}
+    _vp = {'tier': 'none'}  # thin hand, no tier
+    _di = {'semi_bluff': False}
+    _state = {'round': 1}
+    # vs calling station: should donk with made_strength=0.40 (< 0.45 but >= 0.38)
+    _r1 = should_donk_bet(1, 0, _spot, _vp, _bt, 0.40, 0.05, _di, _test_model_cd, [0,1], [2,3,4], 500, [], _state)
+    assert _r1['eligible'] == True, f'Expected donk vs caller: {_r1}'
+    # vs normal opponent: should NOT donk with made_strength=0.40 (< 0.45)
+    _r2 = should_donk_bet(1, 0, _spot, _vp, _bt, 0.40, 0.05, _di, _test_model_normal, [0,1], [2,3,4], 500, [], _state)
+    assert _r2['eligible'] == False, f'Expected no donk vs normal: {_r2}'
+    print('v153 donk_probe calldown_widening: 2/2 fixture cases PASS')

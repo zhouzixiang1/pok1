@@ -9,16 +9,18 @@ from card_utils import clamp
 from postflop import bet_size_bucket, board_texture_profile
 
 VALUE_PRESSURE_THRESHOLD = 0.65
-# MUTATION v116 (a — threshold adjustment, ~13% lower): relax bluff_heavy
-# detection threshold 0.55 -> 0.48 so the bluff-heavy line label fires more
-# readily on opponents whose stats indicate weak/passive aggression
-# (low postflop_aggr + high fold_to_bet_river + small recent barrels).
-# Downstream `bluff_heavy_call_widen` (strategy.py call path) increases
-# call-margin against perceived bluffers, an OFFENSIVE bluff-catch axis
-# distinct from the EXHAUSTED probe_mode/defensive-guard chain. Per
-# experience pool BLUFF_CALIBRATION: only fires with confidence>=0.15 and
-# concrete fold-equity evidence, so widening 0.55->0.48 stays gated.
-BLUFF_OPPORTUNITY_THRESHOLD = 0.48
+# CROSSOVER v134 x v111 (Beta-import): revert v116's 0.55 -> 0.48 offensive
+# widening back to v111's tighter 0.55 baseline. H2H evidence (>=30g samples):
+# v111 beats disciplined barrel-aggressive modern bots where v134 loses —
+# v111 vs v93 0.5217 (230g) vs v134 0.40 (10g); v111 vs v117 0.5214 (140g)
+# vs v134 0.40 (10g); v111 vs v114 0.5048 (210g) vs v134 0.40 (10g). v134's
+# 0.48 fires bluff_heavy_call_widen too readily, paying off value bets from
+# disciplined value-blur hybrids (v93/v117 are NOT undisciplined overjammers
+# like v77/v81/v79 — they barrel for value with merged ranges). v111's 0.55
+# baseline validated over 7000+ games with stable 54.78% WR vs diverse field.
+# Experience pool insight #3 (loser-ships-more 10/14 pairs) and #5 (v134
+# overbet leaks vs tight foes) both argue for tighter discipline.
+BLUFF_OPPORTUNITY_THRESHOLD = 0.55
 
 
 def line_polarization_profile(public_cards, history, state, spot_info, opponent_model, round_idx):
