@@ -17,7 +17,7 @@ Pipeline order (drive forward only; failures may retreat to `workers` or `master
 |---|---|
 | prepare | `prepare_next_gen` or `run_crossover` |
 | direction_audit | `run_direction_audit` |
-| literature_probe | `run_literature_probe` (stagnation-triggered, optional) |
+| literature_probe | `run_literature_probe` (MANDATORY when stagnant — see guidance below) |
 | master | `run_master` |
 | workers | `execute_workers` |
 | quality | `run_quality_gates` |
@@ -28,12 +28,12 @@ Pipeline order (drive forward only; failures may retreat to `workers` or `master
 | archivist | `run_archivist` |
 </state_machine>
 <literature_probe_guidance>
-**When to call `run_literature_probe`** (optional, stagnation-triggered, DeepEvolve + Ratchet):
-- Call it AFTER `run_direction_audit` returns `repetition_detected: true` OR the stagnation analysis flags ≥2 stagnant generations, AND BEFORE `run_master`.
-- Pass the current bot's biggest H2H weakness as `h2h_weakness` (extract from match analysis / worst swing).
-- It returns a web-derived hypothesis (`inject_text`). Feed that text into `run_master` as part of the context so the Master can surface it to workers as a hypothesis to implement (NOT a direct code edit).
-- If it returns `skipped: true`, the research_governance layer (cooldown/blacklist) has paused web retrieval — proceed directly to `run_master` without a web hypothesis.
-- Do NOT call it every generation — it costs LLM + web-search budget and is governance-gated to prevent retrieval-noise pollution.
+**When to call `run_literature_probe`** (MANDATORY when stagnant — DeepEvolve + Ratchet):
+- If the "Stagnation analysis:" JSON injected below contains `"is_stagnant": true` (the string is prefixed with `STAGNATION_DETECTED` when so — no need to parse nested JSON), OR if `run_direction_audit` returns `repetition_detected: true`, you MUST call `run_literature_probe` AFTER `run_direction_audit` AND BEFORE `run_master`. Skipping it when stagnant is a pipeline violation, not a judgment call.
+- Only skip when (a) NO `STAGNATION_DETECTED` prefix AND `is_stagnant:false` AND `repetition_detected:false`, OR (b) the tool itself returns `skipped: true` (research_governance cooldown/kill-switch — proceed directly to `run_master`).
+- Pass the current bot's biggest H2H weakness as `h2h_weakness` (extract from match analysis / worst swing / largest negative H2H pair).
+- It returns a web-derived hypothesis (`inject_text`). Feed that text into `run_master` as context so the Master surfaces it to workers as a hypothesis (NOT a direct code edit).
+- Budget safety is enforced inside the tool: `should_trigger_web_retrieval` gates every call on cooldown/blacklist, so calling it cannot waste budget during a cooldown window.
 </literature_probe_guidance>
 <validation_handling>
 When `run_master` returns a JSON result:

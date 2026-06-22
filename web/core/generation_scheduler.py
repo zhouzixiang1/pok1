@@ -233,6 +233,9 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
             log.warning("Degeneration diagnosis error (skipping): %s", e)
 
     stagnation_text = json.dumps(combined, ensure_ascii=False) if combined else ""
+    if combined and combined.get("is_stagnant"):
+        stagnation_text = ("STAGNATION_DETECTED (is_stagnant=true): You MUST call run_literature_probe BEFORE run_master "
+                           "(governance-gated; if it returns skipped:true, proceed to run_master).\n" + stagnation_text)
     perf_text = stagnation_text  # Combined result serves as both
     match_text = match_analysis or ""
 

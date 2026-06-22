@@ -185,6 +185,7 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         lines.append("  commit_bot(version, source_v, strategy, review_approved=true) — git commit + tag (requires all gates passed)")
         lines.append("  run_archivist(version, source_v) — archive + cleanup after commit")
         lines.append("  run_crossover(parent_a, parent_b, target_v) — merge two parent bots (alternative to master+workers)")
+        lines.append("  run_literature_probe(source_v, next_v, h2h_weakness, stagnation_info) — web-search ONE codable strategy hypothesis for the bot's biggest H2H weakness (governance-gated: auto-skips on cooldown). MANDATORY when stagnation analysis shows is_stagnant:true.")
 
         if gen_ctx.stagnation_info:
             lines.append(f"\nStagnation analysis:\n{gen_ctx.stagnation_info}")
@@ -232,7 +233,7 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
 
     # Tool reference — prevents ToolSearch in non-gen_ctx path
     lines.append("\nAVAILABLE TOOLS (call by exact name):")
-    lines.append("  prepare_next_gen | run_direction_audit | run_master | execute_workers | run_quality_gates | run_review | run_critic | run_precommit_eval | commit_bot | run_archivist | run_crossover")
+    lines.append("  prepare_next_gen | run_direction_audit | run_literature_probe | run_master | execute_workers | run_quality_gates | run_review | run_critic | run_precommit_eval | commit_bot | run_archivist | run_crossover")
 
     bot_name = f"claude_v{current_v}"
 
