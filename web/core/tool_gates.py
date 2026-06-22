@@ -152,6 +152,30 @@ async def run_quality_gates(args):
             )
     except Exception as e:
         _log.warning("placement_shadow check error: %s", e)
+    # M6 (b057ead follow-up): telemetry-fidelity AST gate — BLOCKING.
+    # Flags multi-arm margin/delta detectors whose stderr.write telemetry is nested
+    # inside a bucket/signal If-gate (sub-arm-scoped) instead of hoisted to function
+    # scope. Sub-arm-only telemetry yields a false-INERT verdict on daemon grep (v154
+    # 99.98%-delta=+0 artifact → v155 Master misread the LIVE framework as dead and
+    # listed it in do_not_touch). Unlike placement_shadow (advisory — its warnings
+    # never reach reviewer_prompt, so it has zero enforcement), M6 is BLOCKING:
+    # master_prompt.md M6 explicitly acknowledges "Reviewer MUST reject" clauses are
+    # NON-enforceable (Reviewer only receives {master_plan} JSON), so only a hard
+    # precommit gate can stop the 9-gen INERTNESS loop (M5 advisory precedent failed).
+    telemetry_fidelity_warnings = []
+    try:
+        from code_verification import detect_telemetry_fidelity_warnings
+        telemetry_fidelity_warnings = detect_telemetry_fidelity_warnings(bot_dir)
+        if telemetry_fidelity_warnings:
+            log_system_event(
+                "pipeline.telemetry_fidelity", "error",
+                f"Telemetry-fidelity violations in v{v}: {len(telemetry_fidelity_warnings)} "
+                f"multi-arm detector(s) with sub-arm-scoped stderr.write (false-INERT risk)",
+                {"version": v, "warnings": telemetry_fidelity_warnings[:6]},
+            )
+    except Exception as e:
+        _log.warning("telemetry_fidelity check error: %s", e)
+    telemetry_fidelity_ok = len(telemetry_fidelity_warnings) == 0
     smoke_errors = run_smoke_test(bot_dir)
 
     # --- P0-3: LLM-Generated Dynamic Decision Tests ---
@@ -267,6 +291,7 @@ async def run_quality_gates(args):
         and len(oversized) == 0
         and code_changed  # MUST have at least one changed .py file
         and fix_ok  # P1-3: missing mandatory fix blocks the pipeline
+        and telemetry_fidelity_ok  # M6: multi-arm detector telemetry must be function-scope (false-INERT prevention)
     )
 
     result = {
@@ -293,6 +318,11 @@ async def run_quality_gates(args):
         "all_passed": all_passed,
         # A3: advisory only (non-blocking). Reviewer/critic/orchestrator can read these.
         "placement_shadow_warnings": placement_shadow_warnings,
+        # M6: BLOCKING (unlike placement_shadow which is advisory). A multi-arm
+        # detector whose stderr.write is nested in a bucket If-gate yields sub-arm-only
+        # telemetry → false-INERT on daemon grep (v154 99.98%-delta=+0 artifact).
+        "telemetry_fidelity_warnings": telemetry_fidelity_warnings,
+        "telemetry_fidelity_ok": telemetry_fidelity_ok,
     }
 
     # Build list of which specific gates failed (for diagnostics)
@@ -317,6 +347,17 @@ async def run_quality_gates(args):
             _record_quality_failure(
                 v, "fix_verifier", fid,
                 f"Mandatory fix {fid} NOT present: {r.get('reason', '')[:2000]}",
+            )
+    if not telemetry_fidelity_ok:
+        failed_gates_detail.append(
+            f"telemetry_fidelity({'; '.join(w[:120] for w in telemetry_fidelity_warnings[:3])})"
+        )
+        # Record the M6 telemetry-fidelity violation to worker_failures so the next
+        # worker attempt sees the hoist recipe (function-scope stderr.write + fixture).
+        for w in telemetry_fidelity_warnings:
+            _record_quality_failure(
+                v, "telemetry_fidelity", "multi_arm_detector",
+                f"M6 telemetry-fidelity violation (false-INERT risk): {w[:2000]}",
             )
 
     log_system_event(

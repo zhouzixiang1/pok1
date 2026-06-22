@@ -235,6 +235,266 @@ def detect_placement_shadow_warnings(directory, target_files=None):
     return warnings
 
 
+import ast  # M6 telemetry-fidelity AST gate (b057ead follow-up, evolution-plan-refresh-jun21)
+
+# M6 (b057ead follow-up): telemetry-fidelity AST gate — BLOCKING.
+# Multi-arm margin/delta detectors (returned value built from >1 arm: a
+# standard/unconditional arm PLUS bucket-gated arms) whose stderr.write telemetry
+# is nested inside a bucket/signal If-gate yield SUB-ARM-ONLY telemetry → daemon
+# grep delta_adj!=0 returns a false-INERT verdict (v154 99.98%-delta=+0 artifact
+# → v155 Master misread the LIVE framework as dead, listed it in do_not_touch).
+_MULTI_ARM_DETECTOR_RE = _re.compile(
+    r"(postflop_call_margin|sb_open_opp_sizing|bb_vs_.*_sizing|_street_fold_exploit|"
+    r"_delayed_calldown_bluff|_river_value_extraction|_vulnerable_made_protection|"
+    r"street_fold_boost|bb_vs_raise|bb_vs_limp)"
+)
+
+_ACCUMULATOR_HINTS = frozenset(("margin", "adjustment", "adjust", "delta", "boost", "adj"))
+
+_BUCKET_SIGNAL_KW = frozenset((
+    "bucket", "tendency", "sizing", "confidence", "samples",
+    "fold", "vpip", "pfr", "threebet", "limp_rate", "limp",
+    "overbettor", "underbettor", "standard", "postflop_aggr",
+    "open_response", "fold_to_", "calldown",
+))
+
+
+def _build_parent_map(tree):
+    """Build a child→parent dict for an AST tree."""
+    parent = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parent[child] = node
+    return parent
+
+
+def _is_accumulating_assign(node, accum_names):
+    """True if `node` is an AugAssign (+=/-=) or self-update Assign (delta = delta + ...)
+    targeting an accumulator variable."""
+    if isinstance(node, ast.AugAssign):
+        tgt = node.target
+        if isinstance(tgt, ast.Name) and tgt.id in accum_names:
+            return True
+    if isinstance(node, ast.Assign) and len(node.targets) == 1:
+        tgt = node.targets[0]
+        if isinstance(tgt, ast.Name) and tgt.id in accum_names:
+            read_names = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)}
+            if tgt.id in read_names:
+                return True
+    return False
+
+
+def _stderr_call_label(node):
+    """Return a label string if `node` is a telemetry call, else None.
+    Recognizes: sys.stderr.write(...), print(..., file=sys.stderr)."""
+    if not isinstance(node, ast.Call):
+        return None
+    f = node.func
+    if isinstance(f, ast.Attribute):
+        val = f.value
+        if (isinstance(f.attr, str) and f.attr in ("write", "writelines")
+                and isinstance(val, ast.Attribute) and val.attr == "stderr"
+                and isinstance(val.value, ast.Name) and val.value.id == "sys"):
+            return "sys.stderr.write"
+    if isinstance(f, ast.Name) and f.id == "print":
+        for kw in node.keywords:
+            if kw.arg == "file":
+                v = kw.value
+                if (isinstance(v, ast.Attribute) and v.attr == "stderr"
+                        and isinstance(v.value, ast.Name) and v.value.id == "sys"):
+                    return "print(file=stderr)"
+    return None
+
+
+def _is_bucket_signal_test(if_node):
+    """True if the If's test references an opp-signal/bucket/confidence variable."""
+    test_names = {n.id for n in ast.walk(if_node.test) if isinstance(n, ast.Name)}
+    if not test_names:
+        return False
+    for name in test_names:
+        lname = (name or "").lower()
+        if any(kw in lname for kw in _BUCKET_SIGNAL_KW):
+            return True
+    return False
+
+
+def _nearest_enclosing_if(call_node, parent, fn):
+    """Walk ancestors of `call_node`; return the nearest If node (not traversing past `fn`)."""
+    cur = parent.get(call_node)
+    while cur is not None and cur is not fn:
+        if isinstance(cur, ast.If):
+            return cur
+        cur = parent.get(cur)
+    return None
+
+
+def _has_function_scope_telemetry(stderr_calls, parent, fn):
+    """True if at least one stderr call is NOT nested inside any If/Try/With/For/While
+    within the function — meaning telemetry is hoisted to function scope."""
+    for call, _label in stderr_calls:
+        cur = parent.get(call)
+        nested_in_compound = False
+        while cur is not None and cur is not fn:
+            if isinstance(cur, (ast.If, ast.Try, ast.With, ast.For, ast.While)):
+                nested_in_compound = True
+                break
+            cur = parent.get(cur)
+        if not nested_in_compound:
+            return True
+    return False
+
+
+def detect_telemetry_fidelity_warnings(directory, target_files=None):
+    """AST-detect multi-arm margin/delta detectors whose telemetry is nested inside a
+    bucket/signal If-gate (sub-arm-scoped) instead of hoisted to function scope.
+
+    This is the v154 telemetry-fidelity root cause: ``postflop_call_margin`` is
+    behaviorally LIVE via its standard arm A (unconditional hand-property-gated
+    ``margin += ...``), but its ``SIZING_MARGIN_ADJ`` stderr.write sits inside the
+    ``if sizing is not None and samples>=8 and confidence>=0.30`` block (arm B
+    tendency) — daemon grep ``delta_adj!=0`` yields 99.98% +0 → false-INERT verdict
+    → next Master misreads the LIVE framework as dead.
+
+    Mirrors ``detect_placement_shadow_warnings``. Returns list[str] of warnings.
+    A warning is emitted only when ALL THREE hold (precision triple):
+      (1) function is multi-arm  (>=1 bucket-gated accumulator write AND
+          >=1 standard-arm accumulator write or a top-level accumulator write);
+      (2) a stderr.write/telemetry call exists whose nearest enclosing If is a
+          bucket/signal gate (telemetry NOT hoisted to function scope);
+      (3) no self-test fixture (function invoked in __main__ AND an assert present)
+          exists — a no-op call without an assert does NOT count (refinement #3).
+    Single-arm detectors and telemetry already hoisted to FunctionDef do NOT trigger.
+    """
+    warnings = []
+    target_paths = []
+    if target_files:
+        for tf in target_files:
+            path = os.path.join(directory, tf) if not os.path.isabs(tf) else tf
+            if os.path.exists(path) and path.endswith(".py"):
+                target_paths.append(path)
+    else:
+        if not os.path.isdir(directory):
+            return warnings
+        for root, _, files in os.walk(directory):
+            for f in files:
+                if f.endswith(".py"):
+                    target_paths.append(os.path.join(root, f))
+
+    for path in target_paths:
+        try:
+            with open(path) as fh:
+                source = fh.read()
+            tree = ast.parse(source, filename=path)
+        except Exception:
+            continue
+        fname = os.path.basename(path)
+        parent = _build_parent_map(tree)
+
+        # __main__ self-test fixture: detector invoked AND an assert present.
+        # A no-op call without an assert does NOT count (worker cannot trivially
+        # defeat the gate by adding postflop_call_margin(...) with no check).
+        main_call_names = set()
+        main_has_assert = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Compare):
+                t = node.test
+                if (isinstance(t.left, ast.Name) and t.left.id == "__name__"
+                        and any(isinstance(c, ast.Constant) and c.value == "__main__"
+                                for c in t.comparators)):
+                    for sub in ast.walk(node):
+                        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
+                            main_call_names.add(sub.func.id)
+                        if isinstance(sub, ast.Assert):
+                            main_has_assert = True
+
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+
+            # Discover accumulator vars in this fn (AugAssign targets +
+            # self-update Assigns delta = delta + ...).
+            accum_names = set()
+            for sub in ast.walk(fn):
+                if isinstance(sub, ast.AugAssign) and isinstance(sub.target, ast.Name):
+                    n = sub.target.id
+                    if (n in _ACCUMULATOR_HINTS
+                            or any(h in n.lower() for h in _ACCUMULATOR_HINTS)):
+                        accum_names.add(sub.target.id)
+                if isinstance(sub, ast.Assign) and len(sub.targets) == 1:
+                    tgt = sub.targets[0]
+                    if isinstance(tgt, ast.Name) and tgt.id in _ACCUMULATOR_HINTS:
+                        read = {nn.id for nn in ast.walk(sub.value) if isinstance(nn, ast.Name)}
+                        if tgt.id in read:
+                            accum_names.add(tgt.id)
+            if not accum_names:
+                continue
+
+            # Classify accumulator writes:
+            #   top_level  : direct child of FunctionDef body (unconditional arm)
+            #   bucket_arm : nested in an If whose test refs opp-signal/bucket var
+            #   standard_arm: nested in an If whose test is hand/spot-property only
+            top_level = 0
+            bucket_arm = 0
+            standard_arm = 0
+            for sub in ast.walk(fn):
+                if not _is_accumulating_assign(sub, accum_names):
+                    continue
+                par = parent.get(sub)
+                if par is fn:
+                    top_level += 1
+                    continue
+                gate = _nearest_enclosing_if(sub, parent, fn)
+                if gate is not None and _is_bucket_signal_test(gate):
+                    bucket_arm += 1
+                else:
+                    standard_arm += 1
+
+            has_bucket_arm = bucket_arm >= 1
+            has_standard_or_top = (standard_arm >= 1) or (top_level >= 1)
+            is_multi_arm = has_bucket_arm and has_standard_or_top
+            if not is_multi_arm:
+                continue  # single-arm bucketed detector OR pure standard arm
+
+            # Collect telemetry calls.
+            stderr_calls = []
+            for sub in ast.walk(fn):
+                lbl = _stderr_call_label(sub)
+                if lbl:
+                    stderr_calls.append((sub, lbl))
+            if not stderr_calls:
+                continue  # multi-arm but no telemetry -> not a fidelity issue
+
+            # If ANY telemetry is hoisted to function scope, assume the author
+            # instrumented the TOTAL value correctly -> do not flag.
+            if _has_function_scope_telemetry(stderr_calls, parent, fn):
+                continue
+
+            fixture_present = fn.name in main_call_names and main_has_assert
+
+            for call, label in stderr_calls:
+                gate_if = _nearest_enclosing_if(call, parent, fn)
+                if gate_if is None:
+                    continue  # not nested in an If at all
+                if not _is_bucket_signal_test(gate_if):
+                    continue  # nested in a non-bucket If — not the failure mode
+                sev = "BLOCKING" if not fixture_present else "advisory(fixture_present)"
+                warnings.append(
+                    "%s:L%d: telemetry_fidelity (%s) — multi-arm detector '%s' "
+                    "(bucket_gated_acc_writes=%d, standard_arm_acc_writes=%d, top_level=%d) "
+                    "has %s at L%d nested inside bucket/signal gate (If at L%d) — NOT hoisted "
+                    "to function scope. Telemetry covers only the bucket arm; daemon grep "
+                    "yields a false-INERT verdict (v154 99.98%%-delta=+0 artifact). FIX: hoist "
+                    "sys.stderr.write to function scope (same indent as `return`) printing TOTAL "
+                    "margin_milli=round(return*1000) with reason=standard_arm|tendency_fired|"
+                    "conf_gate; add a __main__ self-test calling '%s' with live-pool defaults "
+                    "(tendency='standard', size_bucket='medium', confidence=0.5) asserting "
+                    "margin_milli==round(return*1000)."
+                    % (fname, fn.lineno, sev, fn.name, bucket_arm,
+                       standard_arm, top_level, label, call.lineno, gate_if.lineno, fn.name)
+                )
+    return warnings
+
+
 def verify_code(directory, target_files=None):
     """Verify Python files compile. When target_files is given, only check those
     files instead of walking the entire directory — avoids false compile errors
