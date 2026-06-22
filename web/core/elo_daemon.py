@@ -48,6 +48,7 @@ except Exception as e:
     _SCHEDULER_AVAILABLE = False
 from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime
+from system_log import log_system_event  # Group B: structured events for SIGTERM/orphan source attribution
 
 CORE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CORE_DIR.parent.parent
@@ -101,7 +102,21 @@ running = True
 
 def handle_signal(signum, frame):
     global running
-    log.warning("Received signal %d, shutting down gracefully...", signum)
+    # Group B diagnostic (root-cause-audit follow-up 2026-06-22): record the
+    # signal NAME + active thread count so app.log can distinguish a SIGTERM from
+    # stop_daemon (clean shutdown) vs an external kill / OOM precursor. A signal
+    # carries no sender PID, but the thread snapshot helps tell "stuck in
+    # save_cycle" (many threads, fcntl contention) from "normal idle" apart.
+    try:
+        _sig_name = signal.Signals(signum).name
+    except (ValueError, AttributeError):
+        _sig_name = str(signum)
+    try:
+        _threads = threading.active_count()
+        log.warning("Received signal %s (%d) — shutting down gracefully. active_threads=%d",
+                    _sig_name, signum, _threads)
+    except Exception:
+        log.warning("Received signal %d, shutting down gracefully...", signum)
     running = False
 
 
@@ -1019,7 +1034,15 @@ def main():
                         last_parent_check = now
                         cur_ppid = os.getppid()
                         if cur_ppid == 1 or (_stored_ppid is not None and cur_ppid != _stored_ppid):
-                            log.warning("Parent process died (ppid %d → %d), shutting down...", _stored_ppid, cur_ppid)
+                            # Group B: tag orphan exits distinctly from SIGTERM-driven exits
+                            # (both yield rc=0). grep daemon.orphan_exit vs "Received signal"
+                            # to attribute the rc=0 source.
+                            log.warning("Parent process died (ppid %d → %d), orphan exit", _stored_ppid, cur_ppid)
+                            log_system_event(
+                                "daemon.orphan_exit", "warn",
+                                f"Daemon orphaned (ppid {_stored_ppid} → {cur_ppid}), exiting cleanly (rc=0)",
+                                {"stored_ppid": _stored_ppid, "cur_ppid": cur_ppid},
+                            )
                             running = False
                             break
 

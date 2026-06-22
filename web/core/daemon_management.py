@@ -152,6 +152,15 @@ def stop_daemon():
                 daemon_proc.wait(timeout=8)
             except subprocess.TimeoutExpired:
                 log.warning("Daemon did not exit gracefully in 8s — force killing (SIGKILL)")
+                # Group B: record force-kill so rc=-9 events can be attributed to
+                # stop_daemon's 8s backstop (daemon stuck in save_cycle / heavy I/O)
+                # vs an external SIGKILL / OOM killer.
+                log_system_event(
+                    "daemon.force_killed", "warn",
+                    "stop_daemon: daemon did not exit in 8s, sent SIGKILL (rc=-9). "
+                    "Likely stuck in save_cycle fcntl or heavy battle I/O.",
+                    {"pid": daemon_proc.pid if daemon_proc else None},
+                )
                 try:
                     if pgid is not None:
                         os.killpg(pgid, signal.SIGKILL)

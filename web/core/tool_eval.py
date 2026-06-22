@@ -53,6 +53,28 @@ def _is_nonblocking_reason(reason):
     return reason in _NONBLOCKING_REASONS
 
 
+# Group A (root-cause-audit follow-up 2026-06-22): blocker reasons that indicate
+# INFRASTRUCTURE failure (daemon crash / CPU contention / slow battle-MC), NOT a
+# bot regression. These must NOT force the Orchestrator to rework worker code
+# (which is unchanged and would give the same result) — they trigger an
+# infra-aware retry with lower n_games instead. v147 timed out on attempt 1/2,
+# passed on attempt 3 at n_games=6: the bot was fine, the infra wasn't.
+_INFRA_BLOCKER_REASONS = {
+    "match_timeout",           # mirror battle exceeded per_game_timeout
+    "incomplete_or_timeout",   # n_played < n_games (partial completion)
+    "scheduler_error",         # daemon returned error for this job
+    "match_exception",         # battle raised (subprocess crash etc)
+}
+
+
+def _is_infra_blocker(reason):
+    """True if this blocker reason is an infrastructure failure, not a bot
+    regression. Infra blockers trigger retry-with-lower-n_games; regression
+    blockers (lost_to_parent / aggregate_precommit_regression / semantic_regression)
+    still hard-fail the gate."""
+    return reason in _INFRA_BLOCKER_REASONS
+
+
 # ──────────────────────────────────────────────
 # Precommit eval tuning constants
 # ──────────────────────────────────────────────
@@ -262,6 +284,26 @@ async def run_precommit_eval(args):
     # bootstrap CIs, which are much less noisy than binary W/L at the same n_games.
     requested = int(args.get("n_games", PRECOMMIT_DEFAULT_N_GAMES) or PRECOMMIT_DEFAULT_N_GAMES)
     n_games = min(max(1, requested), PRECOMMIT_MAX_N_GAMES)
+
+    # A4: infra-aware n_games auto-reduction. If the previous precommit attempt
+    # for this (v, source_v) timed out (infra blocker), halve n_games this
+    # attempt so the mirror battle fits within the per_game_timeout window.
+    # Floor at 4 so the paired-bootstrap CI still has >=4 observations. The
+    # MAX_PRECOMMIT_RETRIES hard cap still bounds total attempts.
+    _prev_ckpt_for_n = _matching_checkpoint(v, source_v)
+    if _prev_ckpt_for_n:
+        _prev_gate = _prev_ckpt_for_n.get("gate_results", {}).get("precommit_eval", {})
+        _prev_had_timeout = any(
+            _is_infra_blocker(b.get("reason"))
+            for b in (_prev_gate.get("blockers") or [])
+            if isinstance(b, dict)
+        )
+        if _prev_had_timeout and n_games > 4:
+            n_games = max(4, n_games // 2)
+            log.info(
+                "v%s: previous precommit had infra timeout, auto-reducing n_games %d->%d",
+                v, requested, n_games,
+            )
 
     # Idempotency guard: skip if precommit eval already passed
     _precommit_ckpt = _matching_checkpoint(v, source_v)
@@ -861,6 +903,13 @@ async def run_precommit_eval(args):
                          {"version": v, "semantic": semantic_result})
 
     passed = len(blockers) == 0
+    # Group A: classify blockers so the FAILED directive can distinguish
+    # INFRASTRUCTURE timeouts from real bot regressions. `passed` semantics are
+    # UNCHANGED (any blocker still fails the commit gate) — only the directive
+    # text + next-attempt n_games auto-reduction behave differently.
+    regression_blockers = [b for b in blockers if not _is_infra_blocker(b.get("reason"))]
+    infra_blockers = [b for b in blockers if _is_infra_blocker(b.get("reason"))]
+    infra_only_timeout = (not passed) and (not regression_blockers) and bool(infra_blockers)
     try:
         log_system_event("pipeline.precommit_eval", "info" if passed else "warn",
             f"Precommit eval {'passed' if passed else 'FAILED'} for v{v}: "
@@ -916,7 +965,27 @@ async def run_precommit_eval(args):
     if not passed:
         worst_opponent = _worst_precommit_opponent(matchups, blockers)
         worst_wins, worst_losses = _worst_wins_losses(matchups, worst_opponent)
-        if precommit_attempt >= MAX_PRECOMMIT_RETRIES:
+        if infra_only_timeout:
+            # Infrastructure timeout (daemon/CPU/battle-MC), NOT a bot regression.
+            # Bot code is unchanged and unproven weak — retry precommit (A4
+            # auto-reduces n_games next call). Do NOT rework the bot or abandon.
+            result["directive"] = (
+                f"Precommit TIMED OUT (attempt {precommit_attempt}/{MAX_PRECOMMIT_RETRIES}) — "
+                f"this is an INFRASTRUCTURE failure (daemon/CPU/battle-MC), NOT a bot regression. "
+                f"The bot code is UNCHANGED and has NOT been proven weak. "
+                f"CALL run_precommit_eval AGAIN (it auto-reduces n_games). "
+                f"Do NOT rework the bot or abandon the generation."
+            )
+            result["infra_retry"] = True
+            log_system_event(
+                "pipeline.precommit_infra_timeout", "warn",
+                f"v{v}: precommit infra timeout (attempt {precommit_attempt}/{MAX_PRECOMMIT_RETRIES}) "
+                f"— {len(infra_blockers)} infra blocker(s), 0 regression. Retry with lower n_games.",
+                {"version": v, "source_v": source_v,
+                 "precommit_attempt": precommit_attempt,
+                 "infra_blockers": [b.get("reason") for b in infra_blockers]},
+            )
+        elif precommit_attempt >= MAX_PRECOMMIT_RETRIES:
             result["directive"] = (
                 f"PRECOMMIT HARD LIMIT REACHED ({MAX_PRECOMMIT_RETRIES}/{MAX_PRECOMMIT_RETRIES} attempts). "
                 f"The current bot cannot pass precommit. Do NOT retry precommit or workers. "
