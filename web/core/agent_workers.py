@@ -11,6 +11,7 @@ import re
 import shutil
 import asyncio
 import logging
+from pathlib import Path
 
 log = logging.getLogger("pok.workers")
 
@@ -21,6 +22,9 @@ from evolution_infra import (
     WORKER_FAILURES_FILE, MAX_WORKER_RETRIES, WORKER_TIMEOUT,
     EXPERIENCE_FILE, find_current_v,
 )
+
+# Maximum number of LLM turns for the debug sub-agent (budget cap).
+_DEBUG_AGENT_MAX_TURNS = 5
 
 
 def _record_worker_failure(gen, worker_id, role, error, failure_type="unknown"):
@@ -271,6 +275,66 @@ def _classify_target_change(src_exists, dst_exists, src_text, dst_text):
     return "modified"
 
 
+async def _run_debug_agent(error_output, changed_diff, target_file, next_v, ui):
+    """Run the DeepEvolve debug sub-agent to diagnose and fix a compile/crash error.
+
+    This is a lightweight LLM call with only the Read tool (budget=5 turns max).
+    It examines the error output and changed diff to produce a minimal diagnosis.
+
+    Returns a dict with 'diagnosis', 'fix', 'confidence' keys on success,
+    or an empty dict on failure. Never raises — caller relies on dict emptiness.
+    """
+    from llm_query import parse_json_output
+
+    try:
+        prompt_template_file = Path(__file__).resolve().parent / "prompts" / "debug_worker_prompt.md"
+        if not prompt_template_file.exists():
+            log.warning("Debug agent prompt not found: %s", prompt_template_file)
+            return {}
+
+        prompt_template = prompt_template_file.read_text(encoding="utf-8")
+
+        debug_prompt = (
+            f"{prompt_template}\n\n"
+            f"## Error Output\n```\n{error_output[:3000]}\n```\n\n"
+            f"## Changed Diff\n```\n{changed_diff[:3000]}\n```\n\n"
+            f"## Target File\n{target_file}\n\n"
+            f"Read the target file `{target_file}` for full context, then produce your diagnosis.\n"
+            f"Return ONLY a ```json``` block with your diagnosis, fix, and confidence level."
+        )
+
+        logs_dir = get_logs_dir(next_v)
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        debug_log = logs_dir / "debug_agent_io.txt"
+
+        output, _cost, _usage = await run_claude_query(
+            debug_prompt, [], ui,
+            f"DEBUG AGENT (v{next_v})", debug_log,
+            tools=["Read"],
+        )
+
+        if not output or not output.strip():
+            return {}
+
+        result = parse_json_output(output)
+        if not isinstance(result, dict):
+            return {}
+
+        # Validate required keys
+        if "diagnosis" not in result or "confidence" not in result:
+            return {}
+
+        # Ensure confidence is a valid value
+        if result.get("confidence") not in ("high", "medium", "low"):
+            result["confidence"] = "low"
+
+        return result
+
+    except Exception as e:
+        log.warning("Debug agent failed: %s", e)
+        return {}
+
+
 async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                               context_files, ui, reviewer_feedback,
                               source_v=None, parallel_mode=False, worker_snapshots=None):
@@ -302,6 +366,8 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
     compile_errors = []
     _last_reason = "unknown"
     _last_failure_type = "unknown"
+    _last_error_output = ""   # fix-7: captured error output for debug agent
+    _last_changed_diff = ""   # fix-7: captured changed diff for debug agent
     ui.log_history(f"Worker {w_id} ({role}) started", "info")
     # Capture this worker's own pre-run baseline if caller did not supply
     # snapshots. Retries roll back to this baseline (NOT source) so that, in
@@ -353,6 +419,32 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 f"{'Consider a FUNDAMENTALLY DIFFERENT approach.' if attempt >= 2 else 'Try a different strategy.'}"
             )
 
+            # fix-7: DeepEvolve debug sub-agent for compile/crash failures
+            # Only invoke when the failure is actionable (compile/smoke/timeout) and
+            # we have at least one more retry remaining after this one.
+            if _last_failure_type in ("compile_error", "smoke_test_fail", "timeout") and attempt < MAX_WORKER_RETRIES - 1:
+                try:
+                    _target_file = task.get("target_files", ["unknown"])[0]
+                    debug_result = await _run_debug_agent(
+                        error_output=_last_error_output,
+                        changed_diff=_last_changed_diff,
+                        target_file=_target_file,
+                        next_v=next_v,
+                        ui=ui,
+                    )
+                    if debug_result.get("confidence") in ("high", "medium"):
+                        attempt_note += (
+                            f"\n\n[DEBUG AGENT DIAGNOSIS]: {debug_result['diagnosis']}"
+                        )
+                        if debug_result.get("fix"):
+                            attempt_note += f"\n[PROPOSED FIX]: {debug_result['fix']}"
+                        ui.log_history(
+                            f"Worker {w_id} debug agent diagnosed: {debug_result['diagnosis'][:120]}",
+                            "info",
+                        )
+                except Exception:
+                    pass  # Debug agent failure must not block worker retry
+
         worker_prompt = substitute_template(worker_template, {
             "role": role,
             "worker_prompt": base_worker_prompt + attempt_note,
@@ -372,12 +464,18 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             if isinstance(exc, asyncio.TimeoutError):
                 _last_reason = f"timed out after {WORKER_TIMEOUT}s (attempt {attempt+1}/{MAX_WORKER_RETRIES})"
                 _last_failure_type = "timeout"
+                # fix-7: capture timeout context for debug agent
+                _last_error_output = f"Worker timed out after {WORKER_TIMEOUT}s"
+                _last_changed_diff = "(timeout — partial edits rolled back)"
                 ui.log_history(
                     f"Worker {w_id} ({role}) timed out after {WORKER_TIMEOUT}s. Retrying with simpler task...",
                     "warn",
                 )
             else:
                 _last_reason = f"unexpected error: {type(exc).__name__}: {str(exc)[:200]}"
+                _last_failure_type = "timeout"  # treat as timeout for debug agent trigger
+                _last_error_output = f"{type(exc).__name__}: {str(exc)[:500]}"
+                _last_changed_diff = "(exception — partial edits rolled back)"
                 ui.log_history(f"Worker {w_id} ({role}) error: {exc}", "error")
             # Roll back target files to the worker's pre-run baseline to avoid
             # partial-edit contamination. Baseline (not source) is used so
@@ -448,6 +546,17 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
         if compile_errors:
             _last_reason = f"compile error: {compile_errors[0][:200]}"
             _last_failure_type = "compile_error"
+            # fix-7: capture compile error output for debug agent
+            _last_error_output = "\n".join(compile_errors)
+            # Generate a diff-like summary of what changed for the debug agent
+            _changed_files = []
+            for target in task.get("target_files", []):
+                rel = _target_rel(target, next_v)
+                if rel:
+                    dst_file = next_dir / rel
+                    if dst_file.exists():
+                        _changed_files.append(f"--- {rel} (modified) ---\n{dst_file.read_text()[:2000]}")
+            _last_changed_diff = "\n".join(_changed_files) if _changed_files else "(no diff available)"
             base_worker_prompt += f"\n\nCRITICAL FIX: Fix syntax error:\n{compile_errors[0]}"
             continue
 
