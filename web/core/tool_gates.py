@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import shutil
 import time
 from pathlib import Path
@@ -860,7 +861,7 @@ async def run_critic(args):
         # _run_regression_guardian has a safe_default so it never throws.
         if score_num < 4:
             try:
-                from audit_agents import _run_regression_guardian
+                import audit_agents as _aa
                 _c = _matching_checkpoint(v, source_v)
                 _history = {
                     "score": score_num,
@@ -869,7 +870,7 @@ async def run_critic(args):
                     "master_plan": _c.get("master_plan", {}) if _c else {},
                     "gate_results": _c.get("gate_results", {}) if _c else {},
                 }
-                guardian_diagnosis = await _run_regression_guardian(
+                guardian_diagnosis = await _aa._run_regression_guardian(
                     v, source_v, _history,
                     f"Critic score {score_num} < 4: {data.get('feedback', '')[:200]}",
                     ui,
@@ -952,13 +953,7 @@ async def run_critic(args):
             "root_cause": guardian_diagnosis.get("root_cause", ""),
             "confidence": guardian_diagnosis.get("confidence", "low"),
         }
-    if critic_citation_errors:
-        result["fabricated_citations"] = critic_citation_errors
         # fix-9: surface guardian_diagnosis to experience_pool for next-gen Master.
-        # Previously this data was written only to result["regression_guardian"] and
-        # returned to the orchestrator — with zero downstream consumers. Now it is
-        # persisted to regression_guardian.jsonl so experience consolidation and
-        # Master context building can read it.
         _guardian_text = guardian_diagnosis.get("diagnosis", "")
         if _guardian_text:
             try:
@@ -968,9 +963,10 @@ async def run_critic(args):
             except Exception:
                 pass
             try:
-                from evolution_infra import RESULTS_DIR
-                import fcntl as _fcntl
-                _guardian_file = RESULTS_DIR / "regression_guardian.jsonl"
+                import evolution_infra as _ei
+                _rd = _ei.RESULTS_DIR
+                os.makedirs(_rd, exist_ok=True)
+                _gf_path = _rd / "regression_guardian.jsonl"
                 _entry = json.dumps({
                     "version": v, "source_v": source_v, "score": score_num,
                     "diagnosis": _guardian_text,
@@ -979,12 +975,14 @@ async def run_critic(args):
                     "recovery_recommendation": guardian_diagnosis.get("recovery_recommendation", ""),
                     "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 }, ensure_ascii=False)
-                with open(_guardian_file, "a", encoding="utf-8") as _gf:
-                    _fcntl.flock(_gf, _fcntl.LOCK_EX)
-                    _gf.write(_entry + "\n")
-                    _fcntl.flock(_gf, _fcntl.LOCK_UN)
+                import fcntl as _fl
+                with open(_gf_path, "a", encoding="utf-8") as _fh:
+                    _fl.flock(_fh, _fl.LOCK_EX)
+                    _fh.write(_entry + "\n")
+                    _fl.flock(_fh, _fl.LOCK_UN)
             except Exception:
-                pass  # Non-critical: JSONL write failure should not block pipeline
+                pass
+        result["fabricated_citations"] = critic_citation_errors
     try:
         log_system_event("pipeline.critic_done", "info",
                          f"Critic finished for v{v} in {time.time() - _t0:.1f}s",

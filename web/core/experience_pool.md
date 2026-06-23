@@ -34,6 +34,7 @@
 - Trust git diff over commit messages and Master plans; direct H2H authoritative over transitive chains.
 
 ## RECENT_LESSONS
+- **v168**: Critic evidence: H2H weaknesses: v167: Flat ~50% profile across 23 opponents, no concentrated weakness (110 games, WR=0.564, sample noise), v166: Similar flat profile (250 games, WR=0.552). No specific opponent exploit identified by H2H data; Experience pool refs: RECENT_LESSONS v167: 'River defensive margin axis is 3 generations deep (v157→v166→v167) with diminishing returns — critic prescribed pivoting to offensive arm but Master continued defense', RECENT_LESSONS v166: 'Next gen should use large_bet_ratio for offensive sizing reduction — requires smoothing large_bet_ratio first', PARAMETER_TUNING: 'Raw signals without smooth_rate() (e.g. large_bet_ratio) are noisier early and diverge from every other model field'; Diff refs: strategy_helpers.py L1073: buffer 0.10→0.03 in _river_stackoff_guard pot-odds gate, strategy.py L1251-1256: anti_lock river exclusion broadened from (made<0.55 AND bet∈{medium,large}) to (made<0.59, all bets), strategy_helpers.py L200-236: NEW _river_value_raise_reduce() — continuous delta [-0.18, 0] keyed to raw large_bet_ratio - 0.28, confidence gate 0.10
 - **v167**: River defensive margin axis is 3 generations deep (v157→v166→v167) with diminishing returns — critic and experience_pool prescribed pivoting to offensive arm but Master continued defense. Future Masters should treat repeated same-axis iteration as a blocking signal.
 - **v167**: Anti-lock bypass removal (L1165) is a logic fix not a constant tweak — removing dead-code guards has higher EV per line than adding margin constants.
 - **v167 归档建议**: Smooth large_bet_ratio signal (reduce prior_weight 4.0→2.0 or use empirical+fallback) as v166 prescribed, then build _opponent_sizing_raise_boost() to size DOWN (0.45-0.55x pot) vs large-bet-heavy bluff-catchers — this offensive arm is completely missing after 3 defensive-only generations.
@@ -41,3 +42,4 @@
 - **v166**: Next gen should use large_bet_ratio for offensive sizing reduction (smaller bets vs large-bet-heavy bluff-catchers) — additive to defensive arm, not a reversal. Requires smoothing large_bet_ratio first.
 - **v166**: AND-gated opponent-aware defensive signals with 5-way conditions and 4.5% cap = high INERTNESS risk in 70-hand HU; verify reachability at ≥30 games before adding more layers. [POSSIBLY EXHAUSTED]
 - **v165**: River dispatch ORDER: opponent-aware archetype overrides go AFTER pure-value functions (overbet, amplifier, tier), not before.
+
