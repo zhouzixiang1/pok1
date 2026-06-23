@@ -33,7 +33,10 @@
       "Bash(systemctl --user status gnome-remote-desktop)",
       "Bash(systemctl status *)",
       "Bash(gsettings list-recursively *)",
-      "Bash(git stash *)"
+      "Bash(git stash *)",
+      "Read(//home/zzx/.claude/**)",
+      "Bash(echo \"---OK exit=$?\")",
+      "mcp__exa__web_search_exa"
     ]
   }
 }
