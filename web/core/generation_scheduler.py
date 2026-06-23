@@ -391,6 +391,14 @@ def _decide_strategy(combined, current_v, ratings):
     if combined is None:
         return "master", current_v, ()
 
+    # Load behavior archive for niche-diverse crossover parent selection (fix-6)
+    _archive = None
+    try:
+        from behavior_diversity import load_fingerprints
+        _archive = load_fingerprints()
+    except Exception:
+        pass
+
     # B-class control-flow guard: if the Combined Analyst's LLM call crashed
     # (infrastructure failure, NOT a business judgement), stagnation status is
     # UNKNOWN. The combined result's safe default claims "improving / not
@@ -462,7 +470,7 @@ def _decide_strategy(combined, current_v, ratings):
     # This is the PRIMARY escape hatch from local optima — must fire before
     # recommended_source so stagnation always triggers diversity injection.
     if combined.get("is_stagnant") and combined.get("confidence") != "low":
-        parents = _pick_crossover_parents(ratings, current_v)
+        parents = _pick_crossover_parents(ratings, current_v, archive=_archive)
         if parents:
             return "crossover", parents[0], parents
 
@@ -490,7 +498,7 @@ def _decide_strategy(combined, current_v, ratings):
 
     # Priority 4: Diversity injection
     if combined.get("diversity_needed"):
-        parents = _pick_crossover_parents(ratings, current_v)
+        parents = _pick_crossover_parents(ratings, current_v, archive=_archive)
         if parents:
             log.info("Diversity injection: forcing crossover (%s, %s) to break local optimum",
                      f"v{parents[0]}", f"v{parents[1]}")
@@ -599,13 +607,20 @@ def _get_glicko_leader_v(ratings):
         return None
 
 
-def _pick_crossover_parents(ratings, current_v) -> tuple | None:
+def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
     """Select two diverse parents for crossover.
 
     Parent A: highest h2h_avg_wr (strongest bot).
-    Parent B: highest h2h_avg_wr with version gap >= 3 from parent A
-    (strategy diversity — non-adjacent versions likely differ more).
-    Falls back to second-highest h2h_avg_wr if no gap candidate exists.
+    Parent B: highest h2h_avg_wr from a different niche than parent A (if
+    archive is available), with version gap >= 3. Falls back to second-highest
+    h2h_avg_wr if no niche-diverse candidate exists.
+
+    Args:
+        ratings: Glicko-2 ratings dict.
+        current_v: Current version number.
+        archive: Optional fingerprint archive (dict[str, np.ndarray]).
+            When provided, parent_b is chosen from a different behavioral niche
+            to maximize crossover diversity (fix-6).
     """
     from evolution_infra import get_active_bots
     from tool_helpers import load_h2h_avg_winrates
@@ -628,16 +643,39 @@ def _pick_crossover_parents(ratings, current_v) -> tuple | None:
     except (ValueError, IndexError):
         return None
 
-    # Find diverse parent B: prefer version gap >= 3 for strategy diversity
+    # fix-6: Prefer niche-diverse parent_b if archive is available
     parent_b = None
-    for candidate in ranked[1:]:
+    if archive:
         try:
-            vc = int(candidate.split("_v")[1])
-        except (ValueError, IndexError):
-            continue
-        if abs(vc - va) >= 3:
-            parent_b = candidate
-            break
+            from behavior_diversity import get_niche_for_bot
+            parent_a_niche = get_niche_for_bot(parent_a, archive)
+            if parent_a_niche is not None:
+                niche_candidates = []
+                for candidate in ranked[1:]:
+                    try:
+                        vc = int(candidate.split("_v")[1])
+                    except (ValueError, IndexError):
+                        continue
+                    if abs(vc - va) < 3:
+                        continue
+                    cand_niche = get_niche_for_bot(candidate, archive)
+                    if cand_niche is not None and cand_niche != parent_a_niche:
+                        niche_candidates.append(candidate)
+                if niche_candidates:
+                    parent_b = niche_candidates[0]  # already sorted by h2h
+        except Exception as e:
+            log.warning("Niche-diverse parent selection failed (falling back): %s", e)
+
+    # Original logic: find diverse parent B with version gap >= 3
+    if parent_b is None:
+        for candidate in ranked[1:]:
+            try:
+                vc = int(candidate.split("_v")[1])
+            except (ValueError, IndexError):
+                continue
+            if abs(vc - va) >= 3:
+                parent_b = candidate
+                break
 
     # Fallback: second highest if no gap candidate
     if parent_b is None:
@@ -939,3 +977,15 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
             f"v{ctx.next_v} QD eval launch failed: {e}",
             {"version": ctx.next_v, "error": str(e)[:300]},
         )
+
+    # fix-6: Compute and store decision fingerprint for the just-committed bot.
+    # This feeds behavior_diversity fingerprints.jsonl consumed by crossover
+    # parent selection and the novelty gate in commit_bot.
+    try:
+        from behavior_diversity import compute_decision_fingerprint, save_fingerprint
+        bot_name = f"claude_v{ctx.next_v - 1}"  # committed bot is next_v - 1
+        fp = compute_decision_fingerprint(bot_name)
+        save_fingerprint(bot_name, fp)
+        log.info("Behavior fingerprint saved for %s", bot_name)
+    except Exception as e:
+        log.warning("Fingerprint computation failed (non-fatal): %s", e)
