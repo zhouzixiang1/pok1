@@ -912,6 +912,49 @@ async def run_master(args):
         except Exception:
             pass
 
+    # ── fix-5: Cross-gen direction pivot check ──
+    # Three conditions must ALL be true to force re-planning:
+    #   1. direction_audit confidence == "high"
+    #   2. exhausted_directions is non-empty
+    #   3. Same exhausted direction appeared in >=2 consecutive prior generations
+    #      (checked via cross_gen_exhausted_history.jsonl)
+    # This breaks the "same axis dies 6 gens in a row" loop (v138-v143 stackoff guard).
+    if direction_audit and not direction_audit.get("llm_failed"):
+        _confidence = direction_audit.get("confidence", "low")
+        _exhausted_dirs = direction_audit.get("exhausted_directions", [])
+        if _confidence == "high" and _exhausted_dirs:
+            # Record this generation's exhausted directions
+            _record_cross_gen_exhausted(next_v, source_v, _exhausted_dirs, _confidence)
+            # Check for consecutive same-axis exhaustion
+            _pivot_axis = _check_consecutive_exhaustion(next_v, _exhausted_dirs)
+            if _pivot_axis:
+                _bump_master_fail_count(next_v, source_v)
+                try:
+                    log_system_event("pipeline.cross_gen_pivot", "warn",
+                                     f"Cross-gen direction pivot triggered for v{next_v}: "
+                                     f"exhausted axis '{_pivot_axis}' persisted >=2 consecutive gens. "
+                                     f"Forcing structural alternative.",
+                                     {"next_v": next_v, "source_v": source_v,
+                                      "pivot_axis": _pivot_axis,
+                                      "exhausted_directions": _exhausted_dirs})
+                except Exception:
+                    pass
+                return {"content": [{"type": "text", "text": json.dumps({
+                    "error": "CROSS_GEN_PIVOT",
+                    "pivot_axis": _pivot_axis,
+                    "exhausted_directions": _exhausted_dirs,
+                    "confidence": _confidence,
+                    "directive": (
+                        f"Direction pivot FORCED: the exhausted axis '{_pivot_axis}' has been "
+                        f"flagged for >=2 consecutive generations with HIGH confidence. "
+                        f"The current plan repeats this exhausted direction. You MUST produce a "
+                        f"FUNDAMENTALLY different plan — new structural mechanism, new opp-line "
+                        f"signal, or a completely different strategic axis. "
+                        f"Do NOT re-tune constants in the same exhausted area."
+                    ),
+                    "logs": ui.get_output(),
+                })}]}
+
     # Pre-compute exhausted keywords once (used by _validate_master_plan and potentially others)
     _exhausted_kw = _extract_exhausted_keywords()
     plan_errors, plan_warnings = _validate_master_plan(data, next_v=next_v, precomputed_exhausted_keywords=_exhausted_kw)
@@ -1367,6 +1410,115 @@ def _build_cross_gen_constraint_block(next_v):
         "new decision systems, or structural refactors are still permitted and encouraged.\n"
     )
     return "".join(parts)
+
+
+# ──────────────────────────────────────────────
+# fix-5: Cross-gen direction pivot (consecutive exhaustion detector)
+# ──────────────────────────────────────────────
+# Tracks exhausted directions per generation in a JSONL file so that when the
+# SAME semantic axis is flagged exhausted with HIGH confidence for >=2
+# consecutive generations, run_master forces a structural pivot rather than
+# allowing the bot to keep tuning constants on the dead axis (v138-v143
+# stackoff guard, 6 gens same direction, 0 improvement).
+#
+# The JSONL file is append-only and fcntl-locked (consistent with daemon writes).
+# Each record: {version, source_v, exhausted_directions: [...], confidence, ts}
+# Semantic axis matching: compares exhausted_directions lists by SET INTERSECTION
+# (not literal string match) so "river fold gate" and "postflop fold threshold"
+# are recognized as the same axis when they share >=1 direction keyword.
+
+
+def _record_cross_gen_exhausted(next_v, source_v, exhausted_directions, confidence):
+    """Append a cross-gen exhausted history record for this generation.
+
+    Called from run_master after direction_audit completes with non-empty
+    exhausted_directions. Uses fcntl locking for safe concurrent writes.
+    """
+    from evolution_infra import CROSS_GEN_EXHAUSTED_HISTORY, locked_file
+    record = {
+        "version": next_v,
+        "source_v": source_v,
+        "exhausted_directions": list(exhausted_directions),
+        "confidence": confidence,
+        "timestamp": time.time(),
+    }
+    try:
+        with locked_file(CROSS_GEN_EXHAUSTED_HISTORY, "a") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as e:
+        _log.warning("Failed to record cross-gen exhausted history: %s", e)
+
+
+def _check_consecutive_exhaustion(next_v, current_exhausted, lookback=5, min_consecutive=2):
+    """Check if any exhausted direction axis persisted across >=2 consecutive gens.
+
+    Reads the last `lookback` records from cross_gen_exhausted_history.jsonl and
+    checks for semantic overlap (set intersection of direction keywords) between
+    consecutive entries. Returns the matched axis description if found, else None.
+
+    Semantic matching: tokenizes each exhausted direction string into words,
+    then checks if consecutive entries share >=1 direction-characteristic token
+    (reuses _EXHAUSTED_DIRECTION_TOKENS for consistency).
+    """
+    from evolution_infra import CROSS_GEN_EXHAUSTED_HISTORY, locked_file
+    if not CROSS_GEN_EXHAUSTED_HISTORY.exists():
+        return None
+
+    records = []
+    try:
+        with locked_file(CROSS_GEN_EXHAUSTED_HISTORY, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    # Only include records for generations BEFORE this one
+                    # (don't compare the just-written record against itself)
+                    if rec.get("version", 0) < next_v:
+                        records.append(rec)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+    except Exception:
+        return None
+
+    # Take the last `lookback` records (most recent first)
+    records.sort(key=lambda r: r.get("version", 0), reverse=True)
+    records = records[:lookback]
+
+    if len(records) < min_consecutive - 1:
+        return None  # Not enough history
+
+    def _tokenize_directions(directions):
+        """Extract distinctive tokens from exhausted direction strings."""
+        tokens = set()
+        for d in directions:
+            for word in re.split(r'[^a-z0-9]+', str(d).lower()):
+                if len(word) > 3 and word not in _EXHAUSTED_BLOCKLIST:
+                    tokens.add(word)
+        return tokens
+
+    current_tokens = _tokenize_directions(current_exhausted)
+    if not current_tokens:
+        return None
+
+    # Check consecutive records (sorted newest-first) for axis overlap
+    # We need >= min_consecutive-1 consecutive prior records that share axis
+    consecutive_count = 0
+    matched_axis = None
+    for rec in records:
+        rec_tokens = _tokenize_directions(rec.get("exhausted_directions", []))
+        overlap = current_tokens & rec_tokens
+        if overlap:
+            consecutive_count += 1
+            if matched_axis is None:
+                matched_axis = ", ".join(sorted(overlap)[:3])
+        else:
+            break  # Non-consecutive breaks the streak
+
+    if consecutive_count >= min_consecutive - 1:
+        return matched_axis or "unknown_axis"
+    return None
 
 
 def _incremental_reset_next_dir(next_dir, source_dir):
