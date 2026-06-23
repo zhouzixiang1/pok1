@@ -36,6 +36,9 @@
 - FABRICATED/UNTRACEABLE REPLAY EVIDENCE systemic (v127-v151) — Master/Worker prompts MUST require `ls web/core/results/match_replay/` verification.
 
 ## RECENT_LESSONS
+- **v165**: Archetype-gated primitives MUST respect experience pool confidence thresholds — v165 used 0.30 against explicit 0.15 mandate, risking multi-generation inertness. Future Masters should enforce pool-mandated parameters.
+- **v165**: River dispatch ORDER MATTERS: opponent-aware archetype overrides (station/aggro) should go AFTER pure-value functions (overbet, amplifier, tier), not before, so archetype functions only override opponent-aware sizing and don't block standard pipeline.
+- **v165 归档建议**: Tighten calling_station confidence to 0.15 and relocate _river_vs_station_value_raise dispatch AFTER river_value_raise_tier (L1590+) so thin-tier hands aren't starved; meanwhile validate whether v164's bluff suppression vs calling_station actually fires at ≥30g — if not, the entire v164→165 archetype pipeline is inert.
 - **v165**: Critic evidence: H2H weaknesses: v164 WR<0.40: v154(0.30), v141(0.30), v138(0.30), v148(0.30) — all at n=10, thin data. Overall v164 WR=0.504 at r=1478 (plateau). No confirmed calling-station-specific weakness.; Experience pool refs: v164 归档建议: 'Verify archetype firing rate via reachability_test after ≥30 daemon games — if thresholds never trigger, relax conf 0.20→0.15 and widen bands ±0.05'. v165 INCREASED conf to 0.30, going opposite direction.; Diff refs: strategy_helpers.py L1657-1692: _river_vs_station_value_raise — 38 lines, pot-fraction 0.90(nut)/0.75(strong), gating: round_idx==3, to_call==0, archetype=='calling_station', conf>=0.30, tier in {nut,strong}, strategy.py L1578-1590: dispatch BEFORE all 4 downstream river value functions — blocks missed_cbet, overbet, amplifier, tier for calling stations
 - **v164**: Archetype suppression gates on existing detectors (suppress vs calling_station/rock) are structurally safer than AND-gated new detectors — backward-compat 'standard' default = zero downside; prefer this pattern over adding detectors when facing INERTNESS on the same axis.
 - **v164 归档建议**: Verify archetype firing rate via reachability_test after ≥30 daemon games — if thresholds (ftb_avg<0.38/aggr<0.34/vpip>0.52) never trigger, relax conf 0.20→0.15 and widen bands ±0.05; wire 'aggro' archetype to river call-down tightening site (currently unused bucket).
@@ -45,4 +48,5 @@
 - **v162**: Relocation of shadowed _river_stackoff_guard shipped ~L1057 BEFORE early-returns; reachability_test confirms weak folds (-1), nut calls (-2). META: placement-fix ≠ new gate, does NOT trip fold-side ban. Leak NOT yet daemon-verified closed — PENDING ≥100g H2H confirmation.
 - **v161**: 5-way AND gate + single dispatch site = high INERTNESS risk (recurring since v137); require ≥3 dispatch sites at birth OR pre-relax one AND condition. turn_bluff_continuation_barrel has only 1 site → must add donk/probe sites.
 - **v161**: Bluff-axis (to_call==0 air<0.30) structurally disjoint from value-axis (made>=0.45) — correct offense pattern. daemon ≥100g no WR lift → drop has_equity_fallback + add 2nd/3rd dispatch at donk/probe.
+
 
