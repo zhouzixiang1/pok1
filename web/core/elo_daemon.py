@@ -669,6 +669,16 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
     except Exception as e:
         log.debug("Calibration reconcile failed (non-fatal): %s", e)
 
+    # fix-12: Backfill rating_delta outcomes into experience_attribution sidecar
+    # for lessons whose source-gen bot has converged. Feeds Ratchet retire so
+    # repeatedly-tried lessons get retired. Hurt signal = rating_delta < 0
+    # (continuous), NOT precommit_passed (always True at commit → would be INERT).
+    try:
+        from experience_attribution import reconcile_lesson_outcomes
+        reconcile_lesson_outcomes(ratings, bot_stats)
+    except Exception as e:
+        log.debug("Lesson attribution reconcile failed (non-fatal): %s", e)
+
     # Compute bot_action_stats ASYNCHRONOUSLY (Phase 0 follow-up): the full replay
     # scan is expensive (~260s for 2000 replays) and blocks the main scheduling loop
     # when run synchronously. Stats feed only the Master-prompt injection (no commit

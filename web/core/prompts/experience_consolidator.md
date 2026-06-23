@@ -11,6 +11,7 @@ You are an Experience Pool Consolidator. Your job is to clean up the experience 
 6. Output ONLY the consolidated markdown — no explanation, no code fences.
 7. Sort each lesson into the most relevant category.
 8. RECENT_LESSONS should contain only lessons from the last 3 generations.
+9. **Demote stale directions:** If a lesson/observation has been repeated for >=N generations (N>=3) WITHOUT producing a measurable rating lift (>=100g daemon H2H), append " [STALE — no WR-lift]" and move it to the bottom of its section as a caution rather than an active recommendation. The Ratchet retire section (if present) lists lessons that already failed this test quantitatively (ĉ <= -0.10 over >=30 trials) — demote or drop those explicitly. Do NOT keep recommending a direction that the rating data has already disproven.
 </rules>
 
 <category_headers>
