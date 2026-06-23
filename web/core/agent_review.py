@@ -4,6 +4,7 @@ These agents evaluate worker output and verify strategic improvements.
 """
 
 import json
+import time
 
 from logging_config import get_logger
 _log = get_logger("review")
@@ -59,7 +60,14 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
         calibration_file = RESULTS_DIR / "critic_calibration.jsonl"
         if calibration_file.exists():
             lines = calibration_file.read_text().strip().split('\n')
-            recent = [json.loads(l) for l in lines[-10:] if l.strip()]
+            all_rows = [json.loads(l) for l in lines[-10:] if l.strip()]
+            # fix-2: skip rows where rating_delta is None (unreconciled).
+            # Old rows without "reconciled" field are backward-compat: they
+            # have a real delta value from the old r-2*rd calculation.
+            recent = [
+                r for r in all_rows
+                if r.get("rating_delta") is not None
+            ]
             if len(recent) >= 3:
                 scores = [r.get("critic_score", 0) for r in recent]
                 deltas = [r.get("rating_delta", 0) for r in recent]
@@ -125,6 +133,107 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
     except Exception:
         pass
     return {"score": 0, "approved": False, "feedback": "Critic output was not valid JSON.", "local_optima_warning": False, "parse_failed": True}
+
+
+# ──────────────────────────────────────────────
+# fix-2: Async calibration backfill
+# ──────────────────────────────────────────────
+
+def reconcile_critic_calibration(ratings, bot_stats, rd_threshold=60, min_games=100):
+    """Backfill real rating_delta into critic_calibration.jsonl.
+
+    Called from the daemon's save_cycle so it runs every save cycle (every
+    ~20 games or ~60s). For each row where reconciled=False and rating_delta
+    is None, checks whether the bot (version) has converged (rd < rd_threshold
+    and games >= min_games). If so, computes the real delta = r_bot - r_source
+    and freezes it (reconciled=True). Once frozen, the delta is never recomputed
+    even if source bot's rating changes.
+
+    Args:
+        ratings: dict of bot_name -> Glicko2Player (current daemon ratings).
+        bot_stats: dict of bot_name -> stats dict (must have 'games' key).
+        rd_threshold: max rd to consider a bot converged (default 60).
+        min_games: min games to consider a bot converged (default 100).
+    """
+    import fcntl
+
+    cal_file = RESULTS_DIR / "critic_calibration.jsonl"
+    if not cal_file.exists():
+        return
+
+    try:
+        # Read all rows under shared lock
+        with locked_file(cal_file, "r", encoding="utf-8") as f:
+            raw = f.read()
+        if not raw.strip():
+            return
+
+        lines = raw.strip().split('\n')
+        rows = []
+        changed = False
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                rows.append(line)
+                continue
+
+            # Skip rows that are already reconciled or have a non-None delta
+            if row.get("reconciled") is True or row.get("rating_delta") is not None:
+                rows.append(row)
+                continue
+
+            # This row needs backfill — check if the bot has converged
+            version = row.get("version")
+            source_v = row.get("source_v")
+            if version is None:
+                rows.append(row)
+                continue
+
+            bot_name = f"claude_v{version}"
+            source_name = f"claude_v{source_v}" if source_v is not None else None
+
+            bot_player = ratings.get(bot_name)
+            bot_games = bot_stats.get(bot_name, {}).get("games", 0)
+
+            if bot_player is None or bot_games < min_games:
+                rows.append(row)
+                continue
+            if bot_player.rd >= rd_threshold:
+                rows.append(row)
+                continue
+
+            # Bot has converged — compute real rating delta
+            source_player = ratings.get(source_name) if source_name else None
+            if source_player is not None:
+                delta = round(bot_player.r - source_player.r, 1)
+            else:
+                # Source bot not found (reaped?) — use absolute rating delta from default
+                delta = round(bot_player.r - 1500.0, 1)
+
+            row["rating_delta"] = delta
+            row["reconciled"] = True
+            row["reconciled_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            changed = True
+            rows.append(row)
+            _log.debug("Reconciled calibration v%d: delta=%.1f (rd=%.1f, %d games)",
+                       version, delta, bot_player.rd, bot_games)
+
+        if not changed:
+            return
+
+        # Write back under exclusive lock
+        with locked_file(cal_file, "w", encoding="utf-8") as f:
+            for row in rows:
+                if isinstance(row, str):
+                    f.write(row + "\n")
+                else:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    except Exception:
+        pass  # Calibration reconciliation is advisory
 
 
 async def _run_performance_verification(source_v, ratings, ui):

@@ -661,6 +661,14 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
     _rotate_jsonl(MATCH_HISTORY_FILE, MAX_MATCH_HISTORY_LINES)
     # Note: system_events.jsonl is written by web process, rotated by system_log.py
 
+    # fix-2: Backfill real rating_delta into critic_calibration.jsonl for bots
+    # whose ratings have converged. Non-blocking best-effort.
+    try:
+        from agent_review import reconcile_critic_calibration
+        reconcile_critic_calibration(ratings, bot_stats)
+    except Exception as e:
+        log.debug("Calibration reconcile failed (non-fatal): %s", e)
+
     # Compute bot_action_stats ASYNCHRONOUSLY (Phase 0 follow-up): the full replay
     # scan is expensive (~260s for 2000 replays) and blocks the main scheduling loop
     # when run synchronously. Stats feed only the Master-prompt injection (no commit
