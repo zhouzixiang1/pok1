@@ -80,7 +80,7 @@ Use fewer workers when data is uncertain (few games), more workers when the bot 
 </worker_guidance>
 
 <worker_prompt_quality>
-Each `worker_prompt` MUST be under 6000 characters. For longer rationale,
+Each `worker_prompt` SHOULD target 6000 characters (soft limit); the hard limit is 12000. For longer rationale,
 H2H data, or EXHAUSTED context, write it to `.task_context/w{i}.md` and
 reference via `<task_brief_file>` tag — workers Read that file FIRST.
 Focus on essential changes only:
@@ -171,8 +171,7 @@ Read the experience pool for EXHAUSTED entries — these directions have underpe
 For each worker task, state expected impact:
 - Target opponent + expected WR delta (e.g. "vs v47: 50%→53%, ≥30 mirror pairs")
 - Statistic that will confirm (paired net-chips CI lower bound > 0)
-After commit, "predicted vs actual" delta is logged to experience_pool RECENT_LESSONS.
-This is CREDIT ASSIGNMENT telemetry — does NOT block commit. Use it to learn what works.
+measurement_plan 是 Master 自评估记录，当前不回流。待 rating_delta 异步回填机制（fix-2）就位后，Master 预测与 daemon 实际 delta 将写入 experience_pool RECENT_LESSONS。
 </measurement_plan>
 
 <source_selection>
