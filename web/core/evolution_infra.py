@@ -56,6 +56,9 @@ MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 ARCHIVE_DIR = RESULTS_DIR / "archive"
 LLM_COSTS_FILE = RESULTS_DIR / "llm_costs.jsonl"
 RATING_HISTORY_FILE = RESULTS_DIR / "rating_history.jsonl"
+# fix-5: cross-gen direction pivot — tracks exhausted directions per generation
+# so consecutive same-axis exhaustion can force a structural pivot.
+CROSS_GEN_EXHAUSTED_HISTORY = RESULTS_DIR / "cross_gen_exhausted_history.jsonl"
 
 MAX_ACTIVE_BOTS = 30
 

@@ -125,6 +125,12 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             # 跑 Master 的 source-override 硬校验。MasterPlan 删除 branch_from 字段后，
             # model_validate 会静默丢弃该键，必须在丢弃前拦截。
             from tool_planning import _validate_master_plan
+            # Backward-compat: agent_master calls _validate_master_plan WITHOUT
+            # the direction_audit parameter (which defaults to None). This is
+            # intentional — the cross-gen pivot gate (fix-5) only activates in
+            # run_master (tool_planning.py) where direction_audit is available.
+            # Here we only run hard constraints (task count, file overlap, source
+            # override, evidence gate). The exhausted-keyword check is advisory.
             _errs, _ = _validate_master_plan(data)
             _src_override = any(data.get(f) for f in ("branch_from", "source_override", "source_v_override"))
             if _src_override:

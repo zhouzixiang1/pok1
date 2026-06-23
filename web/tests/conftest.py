@@ -285,6 +285,7 @@ def isolate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(evolution_infra, "ARCHIVE_DIR", results_dir / "archive")
     monkeypatch.setattr(evolution_infra, "LLM_COSTS_FILE", results_dir / "llm_costs.jsonl")
     monkeypatch.setattr(evolution_infra, "RATING_HISTORY_FILE", results_dir / "rating_history.jsonl")
+    monkeypatch.setattr(evolution_infra, "CROSS_GEN_EXHAUSTED_HISTORY", results_dir / "cross_gen_exhausted_history.jsonl")
     monkeypatch.setattr(evolution_infra, "EXPERIENCE_FILE", iso / "experience_pool.md")
 
     # --- 2. Patch system_log module constant ---

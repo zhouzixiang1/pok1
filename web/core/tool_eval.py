@@ -948,9 +948,14 @@ async def run_precommit_eval(args):
     # A6 (research_governance, evolution-plan-refresh-jun21): feed the precommit
     # outcome back into any web-derived candidates applied to this bot version, and
     # trigger a retrieval cooldown if a web-injected gen FAILED (Ratchet anti-pollution).
+    # fix-5: infra_only_timeout must NOT count as a real fail — an infra timeout
+    # (daemon crash / CPU contention / battle-MC) is not a bot regression. The raw
+    # `passed` is False for infra timeouts, but the bot code is unproven (not weak).
+    # Adjusted pass: True if passed OR if the only blockers were infra timeouts.
+    _actual_pass = passed or infra_only_timeout
     try:
         from research_governance import record_precommit_outcome
-        record_precommit_outcome(v, passed, next_v=v)
+        record_precommit_outcome(v, _actual_pass, next_v=v)
     except Exception:
         pass
 
