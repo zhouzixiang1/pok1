@@ -75,3 +75,48 @@ class TestRunQualityGates:
         result = json.loads(resp.json()["result"])
         # Empty dir passes compile (no files to check) but fails decision tests
         assert result["all_passed"] is False
+
+
+class TestCheckCitations:
+    """A4/evidence_gate: _check_citations distinguishes None (skip) from {} (fabricate)."""
+
+    def test_none_skips(self):
+        from tool_planning import _check_citations
+        # None = no manifest loaded, always skip
+        assert _check_citations(["G1H1#abc", "G3H42"], None) == []
+
+    def test_empty_dict_all_fabricated(self):
+        from tool_planning import _check_citations
+        # Empty dict = manifest loaded but empty = ALL citations are fabricated
+        errors = _check_citations(["G1H1#abc"], {})
+        assert len(errors) == 1
+        assert "FABRICATED_EVIDENCE" in errors[0]
+
+    def test_empty_text_no_errors(self):
+        from tool_planning import _check_citations
+        errors = _check_citations(["no citations here"], {"G1H1": "abcd1234"})
+        assert errors == []
+
+    def test_valid_anchor_passes(self):
+        from tool_planning import _check_citations
+        anchor_map = {"G1H1": "abcd1234", "G3H42": "deadbeef"}
+        # Valid base ID with correct anchor
+        errors = _check_citations(["See G1H1#abcd1234"], anchor_map)
+        assert errors == []
+        # Valid base ID without anchor (no tamper check)
+        errors = _check_citations(["See G1H1"], anchor_map)
+        assert errors == []
+
+    def test_wrong_anchor_fails(self):
+        from tool_planning import _check_citations
+        anchor_map = {"G1H1": "abcd1234"}
+        errors = _check_citations(["See G1H1#00000000"], anchor_map)
+        assert len(errors) == 1
+        assert "anchor mismatch" in errors[0]
+
+    def test_invalid_base_fails(self):
+        from tool_planning import _check_citations
+        anchor_map = {"G1H1": "abcd1234"}
+        errors = _check_citations(["See G9H9#abcd1234"], anchor_map)
+        assert len(errors) == 1
+        assert "NOT in the spotlight manifest" in errors[0]
