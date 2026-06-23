@@ -135,6 +135,44 @@ async def commit_bot(args):
             "error": "COMMIT BLOCKED: review_approved=false. Call run_review() first; only pass review_approved=true if it returns approved:true.",
         })
 
+    # fix-6: novelty gate — warn (advisory) if new bot doesn't add behavioral
+    # diversity. This is advisory-only: it does NOT block the commit, because
+    # a bot can improve by fine-tuning within a niche. The warning feeds the
+    # archivist and next generation's Master context.
+    novelty_info = {}
+    try:
+        from behavior_diversity import (
+            compute_decision_fingerprint, compute_delta_vendi,
+            load_fingerprints, save_fingerprint,
+        )
+        from evolution_infra import get_active_bots
+        new_fp = compute_decision_fingerprint(f"claude_v{v}")
+        pool_bots = get_active_bots()
+        # Build pool fingerprints from stored data
+        stored = load_fingerprints()
+        pool_fps = [stored[b] for b in pool_bots if b in stored and b != f"claude_v{v}"]
+        if pool_fps:
+            import numpy as np
+            pool_arr = np.stack(pool_fps)
+            delta_vs = compute_delta_vendi(pool_arr, new_fp)
+            novelty_info = {
+                "delta_vendi_score": round(float(delta_vs), 4),
+                "pool_size": len(pool_fps),
+            }
+            if delta_vs < 0.05:
+                novelty_info["novelty_warning"] = (
+                    f"Low behavioral novelty: delta_VS={delta_vs:.4f} < 0.05. "
+                    f"The new bot occupies a similar behavioral niche as existing pool bots."
+                )
+                log.warning(
+                    "Novelty gate advisory for v%d: delta_VS=%.4f < 0.05",
+                    v, delta_vs,
+                )
+        # Save the new bot's fingerprint for future novelty checks
+        save_fingerprint(f"claude_v{v}", new_fp)
+    except Exception as e:
+        _log.warning("Novelty gate skipped (non-fatal): %s", e)
+
     ratings = load_ratings()
     p = ratings.get(f"claude_v{v}")
     h2h_wr = None
@@ -246,6 +284,8 @@ async def commit_bot(args):
         pass  # non-blocking enrichment
 
     result = {"committed": True, "version": v, "source_v": source_v, "push_ok": push_ok}
+    if novelty_info:
+        result["novelty_gate"] = novelty_info
     active_bots = get_active_bots()
     if len(active_bots) > MAX_ACTIVE_BOTS:
         result["needs_reap"] = True

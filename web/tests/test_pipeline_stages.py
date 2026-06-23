@@ -387,7 +387,7 @@ class TestStagnationConfidenceStrategy:
         combined = {"is_stagnant": True, "confidence": "medium"}
         monkeypatch.setattr(
             "generation_scheduler._pick_crossover_parents",
-            lambda ratings, cv: (30, 20),
+            lambda ratings, cv, **kw: (30, 20),
         )
         strategy, source_v, parents = _decide_strategy(combined, 40, {})
         assert strategy == "crossover"
@@ -398,7 +398,7 @@ class TestStagnationConfidenceStrategy:
         combined = {"is_stagnant": True, "confidence": "high"}
         monkeypatch.setattr(
             "generation_scheduler._pick_crossover_parents",
-            lambda ratings, cv: (30, 20),
+            lambda ratings, cv, **kw: (30, 20),
         )
         strategy, source_v, parents = _decide_strategy(combined, 40, {})
         assert strategy == "crossover"
@@ -415,7 +415,7 @@ class TestStagnationConfidenceStrategy:
         combined = {"diversity_needed": True, "trend": "stagnant"}
         monkeypatch.setattr(
             "generation_scheduler._pick_crossover_parents",
-            lambda ratings, cv: (30, 20),
+            lambda ratings, cv, **kw: (30, 20),
         )
         strategy, source_v, parents = _decide_strategy(combined, 40, {})
         assert strategy == "crossover"

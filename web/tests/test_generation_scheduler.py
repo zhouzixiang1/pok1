@@ -23,7 +23,7 @@ class TestDecideStrategy:
         combined = {"is_stagnant": True, "confidence": "high"}
         monkeypatch.setattr(
             "generation_scheduler._pick_crossover_parents",
-            lambda ratings, cv: (30, 20),
+            lambda ratings, cv, **kw: (30, 20),
         )
         strategy, source_v, parents = _decide_strategy(combined, 40, {})
         assert strategy == "crossover"
@@ -34,7 +34,7 @@ class TestDecideStrategy:
         combined = {"is_stagnant": True, "confidence": "high"}
         monkeypatch.setattr(
             "generation_scheduler._pick_crossover_parents",
-            lambda ratings, cv: None,
+            lambda ratings, cv, **kw: None,
         )
         strategy, source_v, parents = _decide_strategy(combined, 40, {})
         assert strategy == "master"
@@ -52,7 +52,7 @@ class TestDecideStrategy:
         combined = {"is_stagnant": True, "confidence": "high", "recommendation": "branch", "branch_from": "15"}
         monkeypatch.setattr(
             "generation_scheduler._pick_crossover_parents",
-            lambda ratings, cv: (30, 20),
+            lambda ratings, cv, **kw: (30, 20),
         )
         strategy, source_v, parents = _decide_strategy(combined, 40, {})
         assert strategy == "crossover"
@@ -62,7 +62,7 @@ class TestDecideStrategy:
         combined = {"diversity_needed": True}
         monkeypatch.setattr(
             "generation_scheduler._pick_crossover_parents",
-            lambda ratings, cv: (30, 20),
+            lambda ratings, cv, **kw: (30, 20),
         )
         strategy, source_v, parents = _decide_strategy(combined, 40, {})
         assert strategy == "crossover"
@@ -72,7 +72,7 @@ class TestDecideStrategy:
         combined = {"diversity_needed": True}
         monkeypatch.setattr(
             "generation_scheduler._pick_crossover_parents",
-            lambda ratings, cv: None,
+            lambda ratings, cv, **kw: None,
         )
         strategy, source_v, parents = _decide_strategy(combined, 40, {})
         assert strategy == "master"
