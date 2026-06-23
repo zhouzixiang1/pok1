@@ -16,6 +16,7 @@ experience. You must MERGE observations, not replace the document.
 6. Use markdown format with ## sections and - bullet points.
 7. DO NOT wrap output in code fences. Output plain markdown only.
 8. DO NOT add explanatory preamble or postscript — output only the experience document.
+9. **Downgrade stale observations:** If an observation has been repeated across >=3 generations without a corresponding rating/win-rate lift in the data, demote it — append " [STALE — no lift observed]" and deprioritize it relative to observations that DID move the needle. Do not keep surfacing the same recommendation once the H2H data has shown it does not produce gains.
 </rules>
 
 <category_headers>

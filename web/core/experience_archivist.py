@@ -138,12 +138,64 @@ async def _consolidate_experience_pool(ui, exhausted_directions: str = ""):
     except Exception:
         pass  # Guardian insights are advisory — never block consolidation
 
+    # fix-12: Ratchet retire for the experience pool. Lessons that have been
+    # tried across >= RETIRE_N_MIN (30) generations with no rating lift
+    # (ĉ = (help-hurt)/trials <= RETIRE_TAU=-0.10) are retired here, then
+    # surfaced to the consolidator so it can demote/drop them as stale.
+    #
+    # This REUSES research_governance's score_candidate / RETIRE_N_MIN /
+    # RETIRE_TAU primitives (Ratchet arxiv 2605.19576) rather than rebuilding
+    # them. The ablated N_min=20 showed -0.019 active harm, so the floor stays 30.
+    #
+    # The outcome signal is rating_delta (continuous), backfilled by
+    # reconcile_lesson_outcomes in the daemon save_cycle — NOT precommit_passed,
+    # which is structurally always-True at commit time and would make retire
+    # INERT (see experience_attribution module docstring).
+    ratchet_retire_context = ""
+    try:
+        from experience_attribution import retire_lessons, _load_attribution, score_lesson
+        retired = retire_lessons()
+        if retired:
+            attrib = _load_attribution()
+            _lines = []
+            for _lid in retired:
+                _e = attrib.get(_lid, {})
+                _lines.append(
+                    f"- {_lid}: ĉ={score_lesson(_e):.3f}, "
+                    f"trials={_e.get('trials', 0)}, "
+                    f"help={_e.get('attributed_help', 0)}, "
+                    f"hurt={_e.get('attributed_hurt', 0)}"
+                )
+            ratchet_retire_context = (
+                "\n\n# RATCHET RETIRE (experience_attribution)\n"
+                "The following lessons were RETIRED because they were tried across\n"
+                f">={30} generations without a rating lift (ĉ <= -0.10). Demote them\n"
+                "to 'stale/superseded' or DROP them outright — do NOT keep recommending\n"
+                "them as active directions:\n\n"
+                + "\n".join(_lines) + "\n"
+            )
+            try:
+                ui.log_history(
+                    f"fix-12: retired {len(retired)} low-score lesson(s) via Ratchet "
+                    f"(ĉ <= -0.10, >=30 trials).",
+                    "success",
+                )
+            except Exception:
+                pass
+    except Exception as e:
+        try:
+            ui.log_history(f"fix-12: lesson retire failed (non-fatal): {e}", "warn")
+        except Exception:
+            pass  # never block consolidation
+
     try:
         ui.clear_io()
         if audit_context:
             consolidate_prompt += audit_context
         if guardian_insights:
             consolidate_prompt += guardian_insights
+        if ratchet_retire_context:
+            consolidate_prompt += ratchet_retire_context
         output, _, _ = await run_claude_query(
             consolidate_prompt, [], ui,
             "EXPERIENCE CONSOLIDATOR", log_file,

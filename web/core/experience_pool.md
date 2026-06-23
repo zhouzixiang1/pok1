@@ -25,10 +25,10 @@
 - Threshold-only nudges on adjacent gates = constant tuning when no new gating/opp signal added.
 - Don't carry kept-but-inert constants: RAISE to bind or REMOVE the dead bound.
 - Preflop pot_odds windows <10pp virtually never fire in 70-hand HU; widen_threshold must target ≥15pp bands.
-- **Firing verification:** `_PersistentBot` reads ONLY stdout — ALL stderr telemetry invisible to daemon grep. Use reachability_test (code-reachability proxy) + ≥100g H2H WR-lift, NOT telemetry grep.
+- **Firing verification:** `_PersistentBot` now drains stderr in a background thread (A1 fix landed) — stderr telemetry IS visible to daemon grep. Prefer reachability_test (code-reachability proxy) + ≥100g H2H WR-lift as the primary signal, with stderr grep as a secondary confirmation.
 
 ## GENERAL
-- **🔴 HIGHEST-ROI UNBLOCK:** Fix `battle.py` to drain stderr — unblocks ALL telemetry verification currently impossible. reachability_test is a workaround, not a fix.
+- **✅ RESOLVED (A1):** `battle.py` now drains stderr in a background thread — telemetry verification is unblocked. This entry kept as a dogfood trail; do NOT re-flag stderr as unreadable.
 - Master RELIABLE at PLAN-GENERATION — don't reflexively fall back to crossover. Crossover-as-default [POSSIBLY EXHAUSTED] — NEW fn + NEW opp-line signal + birth reqs = new axis.
 - Validation: <30g H2H = noise; ≥30g paired net-chips before re-adding exhausted features; ≥100g to declare success.
 - Do NOT reverse a prior gen's master-planned direction on sub-30g noise. Wait ≥100g daemon H2H.
