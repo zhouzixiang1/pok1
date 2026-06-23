@@ -183,27 +183,21 @@ async def commit_bot(args):
         _log.warning("Archive generation failed for v%d: %s", v, e)
 
     # --- Meta-3: Record Critic Calibration Data (before clearing checkpoint) ---
+    # fix-2: Write rating_delta=None as placeholder. The real delta is backfilled
+    # asynchronously by reconcile_critic_calibration() once the daemon converges
+    # the bot's rating (rd < 60, games >= MIN_GAMES_FOR_EVAL). Writing the stale
+    # r-2*rd value at commit time was 98% zero (new bot rd=350 → delta~0),
+    # rendering calibration inert.
     try:
         if ckpt:
             critic_gate = ckpt.get("gate_results", {}).get("critic", {})
             critic_score = critic_gate.get("score", 0)
-            # Calculate rating delta using conservative ratings (r - 2*rd) so the
-            # critic calibration note reflects skill differences rather than
-            # RD-inflated point estimates. A high-RD new bot shouldn't register a
-            # spurious large positive delta just because its r hasn't converged.
-            rating_delta = 0
-            ratings_cal = load_ratings()
-            vp = ratings_cal.get(f"claude_v{v}")
-            sp = ratings_cal.get(f"claude_v{source_v}")
-            v_cons = vp.conservative_rating() if vp else None
-            s_cons = sp.conservative_rating() if sp else None
-            if v_cons is not None and s_cons is not None:
-                rating_delta = round(v_cons - s_cons, 1)
             cal_file = RESULTS_DIR / "critic_calibration.jsonl"
             cal_entry = json.dumps({
                 "version": v, "source_v": source_v,
                 "critic_score": critic_score,
-                "rating_delta": rating_delta,
+                "rating_delta": None,  # backfilled by reconcile_critic_calibration()
+                "reconciled": False,   # marker for reconcile to find unfilled rows
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
             })
             with open(cal_file, "a", encoding="utf-8") as _cf:
