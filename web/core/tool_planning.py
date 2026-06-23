@@ -468,6 +468,25 @@ async def run_master(args):
                 source_v = _entry_ckpt["source_v"]
     except Exception:
         pass
+    # fix-4: idempotency guard — if master already planned for this (next_v, source_v),
+    # return cached result instead of re-running (LLM intermittently violates
+    # orchestrator.md:43, causing duplicate run_master calls in the same cycle).
+    _ckpt_idempotent = _matching_checkpoint(next_v, source_v)
+    if _ckpt_idempotent and _ckpt_idempotent.get("stage") in (
+        "master_planned", "workers_done", "quality_passed",
+        "reviewed", "critic_checked", "verified", "archived",
+    ):
+        _existing_plan = _ckpt_idempotent.get("master_plan")
+        if _existing_plan:
+            log_system_event("pipeline.master_idempotent", "info",
+                             f"run_master for v{next_v}: plan already exists "
+                             f"(stage={_ckpt_idempotent.get('stage')}), returning cached",
+                             {"next_v": next_v, "source_v": source_v})
+            ui = _get_ui()
+            ui.log_history("Master plan already exists — returning cached (idempotent).", "info")
+            return _json_tool_result({"plan": _existing_plan, "logs": ui.get_output(),
+                                      "idempotent_cache": True})
+
     stagnation_info = args.get("stagnation_info", "No stagnation detected. Continue from latest version.")
     match_analysis = args.get("match_analysis", "")
     performance_verification = args.get("performance_verification", "")
