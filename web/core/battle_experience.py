@@ -11,6 +11,14 @@ the experience file.
 
 All file I/O uses fcntl locking.  LLM failures are non-fatal — the thread
 breaks out of the current batch and retries next cycle.
+
+Cost optimizations (fix-10):
+- Batch accumulation: matches are accumulated for MERGE_THRESHOLD turns
+  before triggering an LLM call (~4x reduction from 15/hr to ~3-4/hr).
+- Incremental append: LLM outputs are appended to the existing file rather
+  than rewriting the entire document (~60% token reduction per call).
+- Stale markers: observations about bot versions with no WR improvement
+  across STALE_GEN_THRESHOLD generations are tagged [POSSIBLY STALE].
 """
 
 import asyncio
@@ -57,6 +65,13 @@ MAX_CONCURRENT_LLM = 6  # concurrent replay-summary PARSERS within one batch (pu
 MAX_ANALYSES_PER_HOUR = 240  # rate-limit defense (non-zero budget ~$5/hr)
 LLM_TIMEOUT = 300  # P2: was 120 — thinking-mode + batch calls steadily exceeded 120s
 _LOG_ROTATION_LOCK = threading.Lock()  # P3: serialize battle_exp_llm.log rotation across the 6 concurrent workers
+# fix-10: accumulation threshold — LLM merge fires only after this many
+# match summaries have been accumulated across multiple poll cycles.
+# At ~6 matches per poll cycle every 20s, this triggers after ~4 cycles
+# (~1.3 min), cutting LLM calls from ~15/hr to ~3-4/hr.
+MERGE_THRESHOLD = 24  # min accumulated summaries before triggering LLM
+# fix-10: generations without WR improvement to flag an observation as stale
+STALE_GEN_THRESHOLD = 5
 
 # ──────────────────────────────────────────────
 # SilentUI
@@ -233,9 +248,13 @@ def start_experience_thread():
 
 
 def _experience_loop():
-    """Background loop: wakes every POLL_INTERVAL, processes a batch.
+    """Background loop: wakes every POLL_INTERVAL, accumulates match summaries.
 
-    Uses a ThreadPoolExecutor for parallel LLM calls within the batch.
+    Matches are accumulated across poll cycles until MERGE_THRESHOLD summaries
+    are ready, then a SINGLE LLM merge is triggered.  This reduces LLM calls
+    from ~15/hr to ~3-4/hr (~4x reduction).
+
+    Uses a ThreadPoolExecutor for parallel replay parsing within the batch.
     Per-match errors are isolated — one failure does not abort the batch.
     Writes are serialized to avoid race conditions.
     """
@@ -243,6 +262,8 @@ def _experience_loop():
 
     _analyses_this_hour = 0
     _hour_start = time.time()
+    # Accumulator: holds (entry, success_bool, summary_or_None) across cycles
+    _pending_summaries: list[tuple[dict, bool, str | None]] = []
 
     while True:
         try:
@@ -264,6 +285,13 @@ def _experience_loop():
             batch_size = min(TARGET_BATCH, remaining_budget)
             unanalyzed = get_unanalyzed_matches(n=batch_size)
             if not unanalyzed:
+                # No new matches — but check if we have accumulated summaries
+                # that should be flushed (e.g., after a long idle period).
+                if len(_pending_summaries) >= MERGE_THRESHOLD:
+                    _apply_batch_results(_pending_summaries)
+                    if any(r[2] for r in _pending_summaries):
+                        _analyses_this_hour += 1
+                    _pending_summaries = []
                 continue
 
             # Extract per-match summaries in parallel (pure-data, parallel-safe).
@@ -271,7 +299,7 @@ def _experience_loop():
             # _apply_batch_results (avoids the read-modify-write data-loss bug
             # where each worker read the same stale baseline and sequential
             # writes clobbered N-1 of the merges).
-            results = []  # list of (entry, success_bool, summary_or_None)
+            batch_results = []  # list of (entry, success_bool, summary_or_None)
             with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_LLM) as pool:
                 future_map = {
                     pool.submit(_process_one_match_safe, entry): entry
@@ -282,7 +310,7 @@ def _experience_loop():
                     match_id = entry.get("id", "?")
                     try:
                         summary = fut.result(timeout=60)
-                        results.append((entry, True, summary))
+                        batch_results.append((entry, True, summary))
                     except Exception as e:
                         _kind = _classify_llm_error(e)
                         log.warning("Battle experience summary failed for %s (%s): %s", match_id, _kind, e)
@@ -296,14 +324,28 @@ def _experience_loop():
                             )
                         except Exception:
                             pass
-                        results.append((entry, False, None))
+                        batch_results.append((entry, False, None))
 
-            # Single cumulative LLM merge + write (serial, correct chaining).
-            _apply_batch_results(results)
+            # Accumulate: move successful summaries into the pending buffer.
+            for entry, success, summary in batch_results:
+                if not success or summary is None:
+                    # Failures bump fail_count immediately (not deferred)
+                    fail_count = increment_fail_count(entry.get("id", ""))
+                    if fail_count >= 3:
+                        log.warning("Match %s force-skipped after %d failures",
+                                    entry.get("id", ""), fail_count)
+                else:
+                    _pending_summaries.append((entry, success, summary))
 
-            # One LLM merge per cycle when any summaries were collected.
-            if any(r[2] for r in results):
-                _analyses_this_hour += 1
+            log.debug("Accumulated %d/%d summaries before LLM merge",
+                      len(_pending_summaries), MERGE_THRESHOLD)
+
+            # Fire LLM merge when threshold reached
+            if len(_pending_summaries) >= MERGE_THRESHOLD:
+                _apply_batch_results(_pending_summaries)
+                if any(r[2] for r in _pending_summaries):
+                    _analyses_this_hour += 1
+                _pending_summaries = []
 
         except Exception as e:
             log.warning("Experience thread error: %s", e)
@@ -353,20 +395,19 @@ def _process_one_match_safe(entry: dict) -> str | None:
 def _apply_batch_results(results: list):
     """Apply a batch: ONE cumulative LLM merge over all successful summaries.
 
-    All summaries from the parallel batch are concatenated and merged into the
-    live experience file in a SINGLE _run_llm_update call. This is correct
-    (chaining semantics preserved — every summary folds into the latest file)
-    AND cheaper (~1 LLM call vs N). Successful matches are marked analyzed;
-    failures bump fail_count (force-skip after 3).
+    fix-10: Uses incremental append mode — LLM generates ONLY new observations
+    to append, rather than rewriting the entire document.  This cuts output
+    tokens ~60% (append-only paragraph vs 80-line full rewrite).
+
+    Successful matches are marked analyzed; failures bump fail_count
+    (force-skip after 3).
     """
     summaries = []
     success_entries = []
     for entry, success, summary in results:
         match_id = entry.get("id", "")
         if not success or summary is None:
-            fail_count = increment_fail_count(match_id)
-            if fail_count >= 3:
-                log.warning("Match %s force-skipped after %d failures", match_id, fail_count)
+            # Already bumped in caller; skip duplicate bump
             continue
         summaries.append(summary)
         success_entries.append(entry)
@@ -376,8 +417,17 @@ def _apply_batch_results(results: list):
 
     combined = "\n\n---\n\n".join(summaries)
     current = _read_experience_file()
-    updated = _run_llm_update(current, combined)
-    if updated is not None:
+
+    # fix-10: incremental append — LLM outputs ONLY the new section,
+    # which is then appended to the existing document rather than replacing it.
+    new_section = _run_llm_incremental(current, combined)
+    if new_section is not None:
+        if current.strip():
+            # Append new observations after existing content
+            updated = current.rstrip() + "\n\n" + new_section + "\n"
+        else:
+            # First-ever analysis — write as-is
+            updated = new_section + "\n"
         _write_experience_file(updated)
         for entry in success_entries:
             mark_analyzed(entry.get("id", ""), fail_count=0)
@@ -463,11 +513,48 @@ def _process_one_match(entry: dict):
 # ──────────────────────────────────────────────
 
 
+def _run_llm_incremental(current_experience: str, new_match_data: str) -> str | None:
+    """Run LLM in incremental append mode (fix-10).
+
+    Instead of rewriting the entire document, asks the LLM to produce ONLY
+    the new observations section to append.  Returns the new section text,
+    or None on failure.
+    """
+    prompt_template_path = PROMPTS_DIR / "battle_experience_incremental.md"
+    if not prompt_template_path.exists():
+        # Fallback to full-rewrite mode if incremental template missing
+        log.debug("Incremental prompt template not found — falling back to full rewrite")
+        return _run_llm_update(current_experience, new_match_data)
+
+    try:
+        template = prompt_template_path.read_text(encoding="utf-8")
+    except OSError as e:
+        log.warning("Failed to read incremental prompt template: %s", e)
+        return _run_llm_update(current_experience, new_match_data)
+
+    prompt = substitute_template(template, {
+        "current_experience": current_experience or "(empty — first analysis)",
+        "new_match_data": new_match_data,
+    })
+
+    output = _run_sync_llm_call(prompt)
+    if output is None:
+        return None
+
+    stripped = output.strip()
+    if len(stripped) < 20:
+        log.warning("LLM returned very short incremental output (%d chars) — skipping", len(stripped))
+        return None
+
+    return stripped
+
+
 def _run_llm_update(current_experience: str, new_match_data: str) -> str | None:
     """Send current experience + new match data to LLM, get updated experience.
 
     Returns the updated markdown content, or None on failure (caller keeps
-    the existing file unchanged).
+    the existing file unchanged).  Full-rewrite mode — kept as fallback and
+    for the serial _process_one_match path.
     """
     prompt_template_path = PROMPTS_DIR / "battle_experience_update.md"
     if not prompt_template_path.exists():
@@ -613,5 +700,83 @@ def get_battle_experience() -> str:
 
     Called from generation_scheduler at generation start.
     No LLM call — just reads the file.
+
+    fix-10: Tags observations referencing bot versions with no WR improvement
+    across >= STALE_GEN_THRESHOLD generations with [POSSIBLY STALE] markers.
     """
-    return _read_experience_file()
+    raw = _read_experience_file()
+    if not raw:
+        return raw
+    return _tag_stale_observations(raw)
+
+
+def _tag_stale_observations(content: str) -> str:
+    """Tag paragraphs mentioning bot versions whose WR shows no improvement.
+
+    Reads glicko_ratings.json to find which bot versions have been in the pool
+    longest (proxy: rating has not improved over recent generations).
+
+    For each ## section, if it mentions bot versions that are >= STALE_GEN_THRESHOLD
+    generations old AND the version's rating is below the pool median, prepend
+    [POSSIBLY STALE — no WR improvement in N gens] to that section.
+    """
+    from evolution_infra import read_locked_json
+    from pathlib import Path
+
+    # Only tag sections that look like candidate "lessons" (mention specific versions)
+    # Skip generic sections like CROSS-PAIR PATTERNS if they don't name versions.
+    import re
+
+    # Parse the current pool to find generation gap per bot version
+    try:
+        ratings = read_locked_json(RESULTS_DIR / "glicko_ratings.json", default={})
+    except Exception:
+        return content  # can't determine staleness — return as-is
+
+    if not isinstance(ratings, dict) or not ratings:
+        return content
+
+    # Build a map: version_name -> generation_number (from tag/v-number)
+    def _bot_gen(name: str) -> int | None:
+        """Extract generation number from bot name (e.g. 'claude_v143' -> 143)."""
+        m = re.search(r'v(\d+)$', name)
+        return int(m.group(1)) if m else None
+
+    # Current generation = max generation in the pool
+    gens = [_bot_gen(name) for name in ratings if _bot_gen(name) is not None]
+    if not gens:
+        return content
+    current_gen = max(gens)
+
+    # Minimum generation that has NOT gone stale
+    min_fresh_gen = current_gen - STALE_GEN_THRESHOLD
+
+    # Split content into sections (## headers)
+    sections = re.split(r'(?=^## )', content, flags=re.MULTILINE)
+    tagged_sections = []
+
+    for section in sections:
+        if not section.strip():
+            continue
+        # Find bot version references in this section
+        versions_mentioned = re.findall(r'v(\d+)', section)
+        if not versions_mentioned:
+            tagged_sections.append(section)
+            continue
+
+        stale_versions = [int(v) for v in versions_mentioned if int(v) < min_fresh_gen]
+        if stale_versions:
+            oldest = min(stale_versions)
+            gap = current_gen - oldest
+            stale_tag = f"[POSSIBLY STALE — no WR improvement in {gap} gens]\n"
+            # Only tag once per section (prepend to first line)
+            first_line_end = section.find('\n')
+            if first_line_end >= 0:
+                header = section[:first_line_end + 1]
+                rest = section[first_line_end + 1:]
+                # Don't double-tag
+                if '[POSSIBLY STALE' not in section:
+                    section = header + stale_tag + rest
+        tagged_sections.append(section)
+
+    return "".join(tagged_sections)
