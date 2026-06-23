@@ -195,6 +195,68 @@ _TUNER_STRUCTURAL_PATTERNS = [
 _CITATION_RE = re.compile(r"G\d+H\d+(?:#[0-9a-fA-F]{8})?|H\d+(?:#[0-9a-fA-F]{8})?")
 
 
+def _load_replay_anchor_map():
+    """Load the spotlight manifest and return {base_id: anchor} map.
+
+    Returns:
+        dict mapping citation base ID (e.g. "G3H25") to anchor string, or
+        None if the manifest is missing/corrupt (caller should skip checks).
+    """
+    try:
+        _manifest_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      "results", "spotlight_manifest.json")
+        if not os.path.exists(_manifest_path):
+            return None  # spotlight didn't run this gen — can't verify
+        with open(_manifest_path, encoding="utf-8") as f:
+            manifest = json.load(f)
+    except Exception:
+        return None  # corrupt/missing manifest — can't verify
+
+    anchor_map = {}
+    for c in manifest.get("citations", []):
+        anchor_map[c.get("id", "")] = c.get("anchor", "")
+    return anchor_map
+
+
+def _check_citations(text_list, anchor_map):
+    """Check text list for fabricated GxHx#anchor citations.
+
+    Args:
+        text_list: List of strings to check for citation patterns.
+        anchor_map: Manifest of valid anchors.
+                   None  = no manifest loaded (skip check, return []).
+                   {}    = manifest loaded but empty = ALL citations fabricated.
+                   {id: anchor, ...} = normal validation.
+
+    Returns:
+        List of error messages for fabricated citations.
+    """
+    if anchor_map is None:
+        return []  # No manifest loaded, skip
+    errors = []
+    for text in text_list:
+        for match in _CITATION_RE.finditer(text):
+            ref = match.group(0)
+            base = ref.split("#", 1)[0] if "#" in ref else ref
+            if base not in anchor_map:
+                errors.append(
+                    f"FABRICATED_EVIDENCE: '{ref}' is NOT in the spotlight manifest "
+                    f"(no such hand exists in recent replays). Only cite hands "
+                    f"verbatim from the injected Replay Spotlight section "
+                    f"(format: G<game>H<hand>#<anchor>)."
+                )
+            elif "#" in ref:
+                cited_anchor = ref.split("#", 1)[1]
+                expected = anchor_map.get(base, "")
+                if expected and cited_anchor.lower() != expected.lower():
+                    errors.append(
+                        f"FABRICATED_EVIDENCE: '{ref}' anchor mismatch "
+                        f"(expected #{expected}). Possible hallucination or "
+                        f"tampering with a real hand id."
+                    )
+    return errors
+
+
 def _verify_cited_replays(plan):
     """A4 (evidence_gate): reject Master/Worker replay citations that don't
     correspond to any real replay hand in the spotlight manifest.
@@ -208,54 +270,20 @@ def _verify_cited_replays(plan):
     Returns a list of BLOCKING error strings (FABRICATED evidence is a hard error,
     unlike the advisory exhausted-direction check).
     """
-    errors = []
-    try:
-        _manifest_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                      "results", "spotlight_manifest.json")
-        if not os.path.exists(_manifest_path):
-            return errors  # spotlight didn't run this gen — can't verify, don't block
-        with open(_manifest_path, encoding="utf-8") as f:
-            manifest = json.load(f)
-    except Exception:
-        return errors  # corrupt/missing manifest — never block the pipeline
-
-    # Map base citation id -> anchor for tamper-check
-    anchor_map = {}
-    for c in manifest.get("citations", []):
-        anchor_map[c.get("id", "")] = c.get("anchor", "")
-
+    anchor_map = _load_replay_anchor_map()
     tasks = plan if isinstance(plan, list) else (
         plan.get("tasks", []) if isinstance(plan, dict) else []
     )
+    texts = []
     for i, task in enumerate(tasks or []):
         if not isinstance(task, dict):
             continue
-        text = " ".join([
+        texts.append(" ".join([
             str(task.get("worker_prompt", "")),
             str(task.get("instruction", "")),
             str(task.get("targeted_failure", "")),
-        ])
-        cited = sorted(set(_CITATION_RE.findall(text)))
-        for cid in cited:
-            base = cid.split("#", 1)[0]
-            if base not in anchor_map:
-                errors.append(
-                    f"Task {i}: FABRICATED_EVIDENCE — cited replay '{cid}' is NOT in the "
-                    f"spotlight manifest (no such hand exists in recent replays for the "
-                    f"source bot). Only cite hands verbatim from the injected Replay "
-                    f"Spotlight section (format: G<game>H<hand>#<anchor>)."
-                )
-                continue
-            if "#" in cid:
-                cited_anchor = cid.split("#", 1)[1]
-                expected = anchor_map.get(base, "")
-                if expected and cited_anchor.lower() != expected.lower():
-                    errors.append(
-                        f"Task {i}: FABRICATED_EVIDENCE — cited replay '{cid}' anchor "
-                        f"mismatch (expected #{expected}). Possible hallucination or "
-                        f"tampering with a real hand id."
-                    )
-    return errors
+        ]))
+    return _check_citations(texts, anchor_map)
 
 
 def _validate_master_plan(plan, next_v=None, precomputed_exhausted_keywords=None):

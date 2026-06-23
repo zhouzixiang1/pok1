@@ -21,6 +21,8 @@ Parent version tag: `bot-v{parent_version}`
 
 ## Head-to-Head Context
 Read `web/core/results/head_to_head.json` and find the current bot's weakest opponent matchups (win rate < 40%). Also check `web/core/results/bot_stats.json` for overall win rate and game count.
+
+If you cite a replay hand, reference it by the anchored GxHx#anchor ID that appears in the injected replay_spotlight block; fabricated IDs will be flagged.
 </context>
 
 <your_scope>

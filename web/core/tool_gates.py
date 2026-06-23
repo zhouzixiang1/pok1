@@ -898,6 +898,23 @@ async def run_critic(args):
         except Exception:
             pass  # Non-critical: evidence write failure should not block pipeline
 
+    # fix-8: check for fabricated replay citations in critic output
+    critic_citation_errors = []
+    try:
+        from tool_planning import _check_citations, _load_replay_anchor_map
+        if evidence:
+            critic_texts = evidence.get("h2h_weaknesses", []) + evidence.get("diff_refs", [])
+            critic_citation_errors = _check_citations(
+                [str(t) for t in critic_texts], _load_replay_anchor_map()
+            )
+        if critic_citation_errors:
+            score_num = min(score_num, 6)
+            log_system_event("fabricated_citation", "warn",
+                             f"Critic cited {len(critic_citation_errors)} fabricated replay(s)",
+                             {"version": v, "errors": critic_citation_errors})
+    except Exception:
+        pass  # Non-critical: citation check should not block pipeline
+
     result = {
         **data,
         "approved": approved,
@@ -919,6 +936,8 @@ async def run_critic(args):
             "root_cause": guardian_diagnosis.get("root_cause", ""),
             "confidence": guardian_diagnosis.get("confidence", "low"),
         }
+    if critic_citation_errors:
+        result["fabricated_citations"] = critic_citation_errors
     try:
         log_system_event("pipeline.critic_done", "info",
                          f"Critic finished for v{v} in {time.time() - _t0:.1f}s",
