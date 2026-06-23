@@ -70,6 +70,53 @@ def _inject_master_plan_hint(checkpoint, lines):
         lines.append("Master plan is saved — do NOT call run_master again.")
 
 
+def _load_guardian_insights(max_entries=3):
+    """Load recent regression_guardian.jsonl entries for context injection.
+
+    Returns a formatted string block with up to *max_entries* recent guardian
+    diagnoses, or empty string if the file doesn't exist or has no entries.
+    fix-9: surfaces guardian_diagnosis to Master context (previously "written
+    and forgotten" — zero downstream consumers).
+    """
+    try:
+        import evolution_infra as _ei
+        _gf = _ei.RESULTS_DIR / "regression_guardian.jsonl"
+        if not _gf.exists():
+            return ""
+        _entries = []
+        with open(_gf, "r", encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line:
+                    try:
+                        _entries.append(json.loads(_line))
+                    except Exception:
+                        pass
+        _recent = _entries[-max_entries:] if len(_entries) > max_entries else _entries
+        if not _recent:
+            return ""
+        _blocks = []
+        for _e in _recent:
+            _ver = _e.get("version", "?")
+            _score = _e.get("score", "?")
+            _diag = _e.get("diagnosis", "")[:300]
+            _rc = _e.get("root_cause", "")
+            _rec = _e.get("recovery_recommendation", "")
+            _block = f"v{_ver} (score={_score}): {_diag}"
+            if _rc:
+                _block += f"\n  Root cause: {_rc[:200]}"
+            if _rec:
+                _block += f"\n  Recommendation: {_rec[:200]}"
+            _blocks.append(_block)
+        return (
+            "\nREGRESSION GUARDIAN INSIGHTS (recent critic score<4 diagnoses):\n"
+            + "\n".join(f"  - {b}" for b in _blocks)
+            + "\nAvoid these pitfalls in the next generation.\n"
+        )
+    except Exception:
+        return ""
+
+
 # Unified stage hints — used by _build_context and _format_checkpoint_info.
 STAGE_HINTS = {
     "prepared":          "Call run_direction_audit first",
@@ -206,6 +253,10 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
                 lines.append(f"\n{eval_summary}")
         except Exception:
             pass
+        # fix-9: inject regression guardian insights into gen_ctx Master context
+        _guardian = _load_guardian_insights(max_entries=3)
+        if _guardian:
+            lines.append(_guardian)
         if one_gen:
             lines.append("MODE: Run exactly ONE generation, then stop.")
         else:
@@ -336,6 +387,11 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         lines.append(
             f"ENVIRONMENT ANOMALIES DETECTED: {', '.join(anomalies)}."
         )
+
+    # fix-9: inject regression guardian insights into non-gen_ctx Master context
+    _guardian = _load_guardian_insights(max_entries=3)
+    if _guardian:
+        lines.append(_guardian)
 
     if one_gen:
         lines.append("MODE: Run exactly ONE generation, then stop.")
