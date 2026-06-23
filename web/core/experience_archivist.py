@@ -91,10 +91,59 @@ async def _consolidate_experience_pool(ui, exhausted_directions: str = ""):
     except Exception:
         pass  # Audit is advisory — never block consolidation
 
+    # fix-9: surface regression_guardian insights into experience consolidation.
+    # Previously guardian_diagnosis (produced when critic score<4) was only returned
+    # to the orchestrator via MCP result — zero downstream consumers. Now the last
+    # N entries from regression_guardian.jsonl are injected as "GUARDIAN INSIGHTS"
+    # into the consolidator prompt so the LLM can fold them into the experience pool.
+    guardian_insights = ""
+    try:
+        from evolution_infra import RESULTS_DIR
+        _gf = RESULTS_DIR / "regression_guardian.jsonl"
+        if _gf.exists():
+            _entries = []
+            with open(_gf, "r", encoding="utf-8") as _f:
+                for _line in _f:
+                    _line = _line.strip()
+                    if _line:
+                        try:
+                            _entries.append(json.loads(_line))
+                        except json.JSONDecodeError:
+                            pass
+            # Take the last 5 entries (most recent)
+            _recent = _entries[-5:] if len(_entries) > 5 else _entries
+            if _recent:
+                _blocks = []
+                for _e in _recent:
+                    _ver = _e.get("version", "?")
+                    _score = _e.get("score", "?")
+                    _diag = _e.get("diagnosis", "")[:300]
+                    _rc = _e.get("root_cause", "")
+                    _rec = _e.get("recovery_recommendation", "")
+                    _block = (
+                        f"v{_ver} (score={_score}): {_diag}"
+                    )
+                    if _rc:
+                        _block += f"\n  Root cause: {_rc[:200]}"
+                    if _rec:
+                        _block += f"\n  Recommendation: {_rec[:200]}"
+                    _blocks.append(_block)
+                guardian_insights = (
+                    "\n\n# GUARDIAN INSIGHTS (regression_guardian diagnosis)\n"
+                    "Below are recent regression-guardian diagnoses from critic scores < 4.\n"
+                    "These diagnose why a bot's strategic quality was deemed poor.\n"
+                    "Consider incorporating actionable lessons into the experience pool.\n\n"
+                    + "\n---\n".join(_blocks) + "\n"
+                )
+    except Exception:
+        pass  # Guardian insights are advisory — never block consolidation
+
     try:
         ui.clear_io()
         if audit_context:
             consolidate_prompt += audit_context
+        if guardian_insights:
+            consolidate_prompt += guardian_insights
         output, _, _ = await run_claude_query(
             consolidate_prompt, [], ui,
             "EXPERIENCE CONSOLIDATOR", log_file,
