@@ -63,7 +63,7 @@ from tool_bot_management import (  # noqa: F401
     abandon_generation,
 )
 
-# ── MCP tools — available to the LLM Orchestrator session (16 tools) ──
+# ── MCP tools — available to the LLM Orchestrator session (17 tools) ──
 
 mcp_tools = [
     # Pipeline tools
@@ -76,6 +76,7 @@ mcp_tools = [
     run_crossover,
     prepare_next_gen,
     run_direction_audit,
+    run_literature_probe,   # fix-1: was missing from mcp_tools, 0 triggers in 145+ gens
     commit_bot,
     run_archivist,
     # Stuck-loop self-heal (root-cause-audit 2026-06-17): the prepare_next_gen

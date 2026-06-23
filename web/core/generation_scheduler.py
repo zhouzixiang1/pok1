@@ -528,7 +528,7 @@ def _read_source_v_history():
             for line in f:
                 try:
                     evt = json.loads(line)
-                    if evt.get("type") == "pipeline.prepare":
+                    if evt.get("type") == "pipeline.prepare_done":
                         sv = evt.get("data", {}).get("source_v")
                         if sv is not None:
                             sources.append(sv)

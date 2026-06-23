@@ -706,7 +706,7 @@ async def run_review(args):
 # Critic Stage
 # ──────────────────────────────────────────────
 
-@tool("run_critic", "Run Poker Strategy Critic on bot changes. Returns score 1-10 and strategic feedback. score ≥ 6 = approved.", {"version": int, "source_v": int, "plan": list, "reviewer_feedback": str, "force_advance": bool})
+@tool("run_critic", "Run Poker Strategy Critic on bot changes. Returns score 1-10 and strategic feedback. ADVISORY ONLY: precommit is the final regression gate; score does NOT block the pipeline.", {"version": int, "source_v": int, "plan": list, "reviewer_feedback": str, "force_advance": bool})
 async def run_critic(args):
     _t0 = time.time()
     v, source_v = _resolve_version_args(args)

@@ -1436,19 +1436,9 @@ async def execute_workers(args):
             "source_v": source_v,
         })
 
-    # When critic has rejected, force re-planning on 2nd+ rejection.
-    # Re-using the same plan that the critic already rejected guarantees repeated failure.
-    generation_attempt = ckpt.get("generation_attempt", 0)
-    if reviewer_feedback and generation_attempt >= 1:
-        return _json_tool_result({
-            "error": f"generation_attempt={generation_attempt}. The critic rejected the plan {generation_attempt} time(s). "
-                     f"You MUST call run_master first to generate a NEW plan incorporating the critic feedback, "
-                     f"then call execute_workers with the new plan.",
-            "require_new_plan": True,
-            "generation_attempt": generation_attempt,
-            "next_v": next_v,
-            "source_v": source_v,
-        })
+    # [fix-13a] require_new_plan guard removed: generation_attempt is never incremented
+    # (all assignments are identity-preserves or run_master resets to 0).
+    # design intent: critic is advisory-only, precommit is final gate.
 
     # When retrying after workers already ran, actually reset code from source first.
     # Previous claim that code was reset was FALSE — now we actually do it.
