@@ -333,8 +333,6 @@ def verify_behavior(master_plan: dict, scenarios: list, actual_actions: list) ->
     passed_count = 0
     total = len(scenarios)
 
-    expected_changes = master_plan.get("expected_behavior_change", {})
-
     for scenario, actual in zip(scenarios, actual_actions):
         expected = scenario.get("expected_behavior", "any_legal")
         action = actual.get("action")
