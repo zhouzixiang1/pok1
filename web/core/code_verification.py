@@ -524,6 +524,19 @@ def verify_code(directory, target_files=None):
     except Exception:
         pass  # AST analysis failures must not block the pipeline
 
+    # fix-3: inline placement-shadow TRUE-SHADOW check (eliminates dual-path).
+    # Previously only run_quality_gates called detect_placement_shadow_warnings;
+    # verify_code did not. This means a bot could pass verify_code but still
+    # have TRUE-SHADOW issues that run_quality_gates would catch -- a confusing
+    # dual-path. Now verify_code also flags TRUE-SHADOW so the gate is unified.
+    try:
+        _shadow = detect_placement_shadow_warnings(directory, target_files)
+        for w in _shadow:
+            if 'TRUE SHADOW' in w:
+                errors.append(w)
+    except Exception:
+        pass  # placement-shadow analysis failures must not block the pipeline
+
     return errors
 
 

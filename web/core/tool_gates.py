@@ -284,6 +284,16 @@ async def run_quality_gates(args):
     fix_ok = all(r.get("ok", False) for r in fix_results.values())
     fix_failed = {fid: r for fid, r in fix_results.items() if not r.get("ok", False)}
 
+    # fix-3: TRUE-SHADOW placement is a blocking gate (INERTNESS root cause).
+    # v156-v165 produced 10 generations of TRUE-SHADOW `_river_stackoff_guard`
+    # that passed quality gates because placement_shadow was advisory-only.
+    true_shadows = [w for w in placement_shadow_warnings if 'TRUE SHADOW' in w]
+    if true_shadows:
+        for w in true_shadows:
+            compile_errors.append(f"BLOCKING: {w}")
+            _record_quality_failure(v, "placement_shadow", "placement_shadow",
+                f"TRUE-SHADOW detector call-site unreachable for stack-covering all-ins. {w}")
+
     all_passed = (
         len(compile_errors) == 0
         and len(smoke_errors) == 0
@@ -316,9 +326,11 @@ async def run_quality_gates(args):
         "fix_verification": fix_results,
         "fix_ok": fix_ok,
         "all_passed": all_passed,
-        # A3: advisory only (non-blocking). Reviewer/critic/orchestrator can read these.
+        # A3/fix-3: TRUE-SHADOW is BLOCKING (added to compile_errors above);
+        # "review" level warnings remain advisory. Reviewer/critic/orchestrator
+        # can read these to distinguish blocking vs advisory.
         "placement_shadow_warnings": placement_shadow_warnings,
-        # M6: BLOCKING (unlike placement_shadow which is advisory). A multi-arm
+        # M6: BLOCKING (unlike placement_shadow "review" level which is advisory).
         # detector whose stderr.write is nested in a bucket If-gate yields sub-arm-only
         # telemetry → false-INERT on daemon grep (v154 99.98%-delta=+0 artifact).
         "telemetry_fidelity_warnings": telemetry_fidelity_warnings,
@@ -329,6 +341,10 @@ async def run_quality_gates(args):
     failed_gates_detail = []
     if compile_errors:
         failed_gates_detail.append("compile")
+    if true_shadows:
+        failed_gates_detail.append(
+            f"placement_shadow({'; '.join(w[:120] for w in true_shadows[:3])})"
+        )
     if smoke_errors:
         failed_gates_detail.append("smoke_test")
     if not decision_ok:
