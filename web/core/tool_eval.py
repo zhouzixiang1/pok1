@@ -463,7 +463,14 @@ async def run_precommit_eval(args):
             # the cycle restarts, and v107 got stuck replaying this forever.
             # Break out fast once the scheduler has produced nothing for a
             # sustained stretch, so we fall back to the parallel path.
-            SCHEDULER_STALL_ROUNDS = max(60, n_games * 8)  # 自适应：n_games=16 → 128 polls × 5s ≈ 640s 容忍。daemon 完成 n_games mirror battle 需 ~62-145s，旧值 15 polls×2s=30s 在正常负载下也误触发 (root-cause-audit 2026-06-21: 10/10 scheduler_stall 事件 daemon_capable=True)。
+            # OPT-1' (precommit-stall fix 2026-06-24): tighten circuit breaker.
+            # Old: max(60, n_games*8) → n_games=16: 128×5s=640s empty polling.
+            # New: max(24, n_games*3) → n_games=16: 48×5s≈240s; n_games=8: 120s.
+            # This is a CIRCUIT breaker (detect 'nothing arriving' fast), not a
+            # wait-for-completion timer (real deadline = per_game_timeout*len(opponents)).
+            # daemon proactive slot-fill should make stall almost never trigger;
+            # this shortens fallback when daemon is genuinely crashed: ~10min → ~2-4min.
+            SCHEDULER_STALL_ROUNDS = max(24, n_games * 3)
             consecutive_stall = 0
 
             while time.time() < deadline:

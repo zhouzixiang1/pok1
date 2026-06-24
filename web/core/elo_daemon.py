@@ -910,6 +910,14 @@ def main():
                                         job["n_pairs"], job.get("priority", 0),
                                     ))
                             pending = drain_pending_jobs()
+                            if pending:
+                                log.info(
+                                    "[dispatch] drained %d external job(s); "
+                                    "match_queue=%d (ext=%d), in_flight=%d",
+                                    len(pending), len(match_queue),
+                                    sum(1 for m in match_queue if _is_external(m)),
+                                    len(in_flight),
+                                )
                             for job in pending:
                                 match_queue.append((
                                     "external", job["job_id"],
@@ -918,6 +926,36 @@ def main():
                                     job["n_pairs"], job.get("priority", 0),
                                 ))
                             _first_iteration = False
+
+                    # OPT-1' (precommit-stall fix 2026-06-24): proactively fill the
+                    # reserved empty slots with queued external (precommit) jobs.
+                    # Steady-state replenish (:992-1006) only fires on `for fut in
+                    # done` (1:1 per completed match), so without this the 2 reserved
+                    # slots stay structurally empty while external jobs wait for an
+                    # in-flight internal match to complete — root cause of the 640s
+                    # scheduler_stall (collected=0/N) then 23-43min serial fallback.
+                    # Only external jobs may claim the reserved slots; internal still
+                    # flows 1:1 through replenish. In_flight rises to n_workers only
+                    # while external jobs are queued, else stays at n_workers-2.
+                    while len(in_flight) < n_workers and match_queue:
+                        _next_ext = None
+                        for _q_idx, _q_m in enumerate(match_queue):
+                            if _is_external(_q_m):
+                                _next_ext = _q_idx
+                                break
+                        if _next_ext is None:
+                            break
+                        _q_m = match_queue[_next_ext]
+                        del match_queue[_next_ext]
+                        _exec_args = _q_m[2:7]
+                        _ext_job_id = _q_m[1]
+                        new_fut = executor.submit(run_single_match, _exec_args)
+                        in_flight[new_fut] = (_exec_args[0], _exec_args[1], _ext_job_id)
+                        log.info(
+                            "[dispatch] proactively submitted external job %s into "
+                            "reserved slot (in_flight=%d, queue=%d)",
+                            _ext_job_id, len(in_flight), len(match_queue),
+                        )
 
                     done, _ = wait(in_flight.keys(), timeout=POLL_TIMEOUT, return_when=FIRST_COMPLETED)
 
