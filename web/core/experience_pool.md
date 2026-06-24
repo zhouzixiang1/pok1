@@ -35,7 +35,11 @@
 - **Plateau states (WR ~0.50 all matchups) have no single DOMINANT exploit** — when H2H shows 45-55% across the board, the correct move is a new structural axis (offense/texture/archetype), not tighter margins on the same decision point.
 
 ## RECENT_LESSONS
+- **v178**: Bidirectional sizing framework is now live (v171 DOWN + v178 UP): future sizing work targets the made-strength/direction coupling, not a new single-direction primitive — helpers.py cap forces reuse of existing scaffolding.
+- **v178**: _value_lead_upsizing_delta is near-inert at default priors (fold_to_bet=0.44, conf=0.15): if reachability <5% at ≥30g, lower the fit-or-fold floor 0.40→0.35 to capture moderately-sticky opponents (ftb 0.40-0.50) before abandoning the axis.
+- **v178 归档建议**: Verify _value_lead_upsizing_delta fires ≥5% on the donk/probe postflop paths vs confirmed fit-or-fold opponents at ≥30g daemon data; if near-inert, relax the 0.40 floor to 0.35 per critic advisory rather than widening made-band, since the binding one-pair leak lives at made 0.22-0.40 where UP-sizing is already active.
 - **v177:** `_weak_one_pair_river_margin()` targets 0.20-0.55 but overshoots — narrow upper bound to 0.45 (0.45-0.55 is sparse, not a true dead zone).
 - **v177:** strategy_helpers.py hit 2500/2500 exact cap — next helpers edit needs extraction/refactoring FIRST; prefer targeting strategy.py/opponent.py.
 - **v176:** Verify band edges against made-strength table (pair 0.22 / two-pair 0.40 / trips 0.58); v176's 0.40-0.80 band missed the one-pair leak at 0.22.
 - **v176/v177 plateau WR ~0.50 with no <40% matchup** — needs a new structural axis (offense/texture/archetype), not margin refinement. [POSSIBLY EXHAUSTED]
+
