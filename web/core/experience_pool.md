@@ -35,6 +35,9 @@
 - **Plateau states (WR ~0.50 all matchups) have no single DOMINANT exploit** — when H2H shows 45-55% across the board, the correct move is a new structural axis (offense/texture/archetype), not tighter margins on the same decision point.
 
 ## RECENT_LESSONS
+- **v177**: made_strength 0.45-0.55 is a DEAD ZONE — no hand evaluates there; river-margin gates MUST target 0.20≤made<0.45 (v175 cross-reference + v177 critic both confirm — v177's upper bound repeats a known mistake).
+- **v177**: pot_odds-scaled deltas with low caps (≤0.06) saturate for all practical bet sizes when made≤0.44 → use bet_ratio/0.75 direct scaling instead, or the gate collapses to a constant margin boost indistinguishable from tuning.
+- **v177 归档建议**: Next gen MUST target strategy.py or opponent.py (strategy_helpers.py is capped at 2500): swap _weak_one_pair_river_margin's pot_odds→bet_ratio/0.75 scaling so it differentiates 0.33x vs 1.5x bets, narrow band to 0.20-0.45 to avoid two-pair overlap, then verify daemon≥30g WOP_MARGIN firing ≥5% + WR-lift vs v169/v165 in river over-call scenarios.
 - **v177**: `_weak_one_pair_river_margin()` at made 0.20-0.55 overshoots the identified 0.20-0.45 one-pair leak — band should narrow to 0.45 max.
 - **v177**: strategy_helpers.py hit 2500/2500 exact cap — zero headroom; any future helpers edit requires extraction/refactoring FIRST.
 - **v177**: v176 plateaued at WR 0.50 with no specific <40% matchup — no single weakness to exploit; needs new structural axis, not margin refinement.
@@ -43,3 +46,4 @@
 - **v175**: CROSSOVER v173×v174: inlined continuous river call_margin tighten [0,+0.08] for over-calling band (made 0.20-0.45). Correct band identified; verify firing rate at ≥30g, then ≥100g H2H for WR-lift.
 - **v174 PIVOT:** Future continuous-margin changes for marginal bands MUST stay river-scoped — do NOT re-broaden to flop/turn (broad scope over-folded marginal hands).
 - **v173 VERIFY task:** daemon ≥30g grep PREFLOP_OFFSUIT_GATE@bb_vs_raise to confirm v172 base fires ≥5%; if the -20k preflop leak has NOT shrunk by ≥100g, treat as secondary given postflop leak dominates.
+
