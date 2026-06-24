@@ -1,18 +1,19 @@
 ## OPPONENT_MODELING
-- Archetype-suppression gates on EXISTING detectors are structurally safer than AND-gated new detectors ('standard' default = zero downside); tight thresholds (e.g. 0.30) without H2H justification risk inertness — respect pool-mandated ≥0.15.
+- Archetype-suppression gates on EXISTING detectors are structurally safer than AND-gated new detectors ('standard' default = zero downside); respect pool-mandated ≥0.15 confidence floor.
 - `large_bet_ratio` is RAW (no smooth_rate wrapper); apply smooth_rate prior_weight BEFORE using as an offensive signal.
 - calldown_profile sample trap: foldy opps never reach n≥4 — use empirical rate at n≥3 + fallback to pool-wide fold_to_raise when per-street samples<2.
-- v172/v173 `_is_offsuit_commitment_risk()` PREFLOP offsuit gate (A2o-A8o/K9o/Q9o/59o/39o/4To → fold; v173 A2o-A5o carve-out vs ultra-loose) is NEAR-INERT in 70h mirrors (VPIP≥0.65 rare) and has NOT closed the -20k stack-off leak. The preflop-trash direction has run 12+ gens without a WR-lift → [STALE — no WR-lift]; do NOT extend — the dominant leak is postflop (see POSTFLOP_STRATEGY).
+- Preflop offsuit-trash axis is DEAD — 12+ gens of gates/carve-outs (v172-v175) without WR-lift. Do NOT extend; postflop tighten is the higher-EV lever. [STALE — no WR-lift]
+- Crossover with older strategy.py as base automatically loses recent defensive/offensive improvements — prefer crossover from highest-rated parent's strategy.py, not arbitrary source_v.
+- v176 H2H evidence: v172 WR 0.20 vs v169, 0.30 vs v165, 0.40 vs v152/v154 — over-calling weakness was real at v173 but v176 plateaued at WR ~0.50 across all matchups; exploitability may be partially addressed. Verify at ≥100g with fresh H2H before assuming still-DOMINANT. [STALE — no WR-lift, plateau observed]
 
 ## POSTFLOP_STRATEGY
-- **RECONCILED LEAK (authoritative):** TWO distinct leaks coexist — do NOT conflate. (1) -20k stack-off from PREFLOP trash commits (59o/39o) — the preflop gate targets but is near-inert and unverified to close it. (2) **POSTFLOP over-calling vs value raises — v173 WR 0.20 vs v169, 0.30 vs v165, 0.40 vs v152/v154 — THIS is the DOMINANT exploitable weakness; the pool's preflop focus does NOT touch it.** Fix each leak with its own lever. (Rebuts the older v171 single-"preflop-origin-leak" framing.)
-- **River defensive-margin call_margin axis [POSSIBLY EXHAUSTED] — RETRACTED/LIVE:** per A1, postflop_call_margin fired 42670× at delta≈0 = INERTNESS (implementation), NOT conceptual exhaustion — the lever was never genuinely tested, so ~50% is NOT proof of a dead axis. A correctly-calibrated river call-margin TIGHTEN (negative delta, fold more vs value/large bets) is a PERMITTED continuous-EV fold margin and the most direct lever for the over-calling leak. Marker retained mechanically; treat as LIVE candidate.
+- **Made-strength score table (authoritative):** pair≈0.22, two-pair≈0.40, trips≈0.58. Bands: one-pair 0.20-0.45, two-pair 0.40-0.58, overlap zone 0.45-0.55. Always verify band edges against this table before committing.
+- **-20k stack-off leak — conflicting diagnoses, NEITHER resolved:** (1) PREFLOP trash commits (59o/39o) — offsuit-trash axis declared DEAD above, (2) RIVER stack-off guard placement — 12+ gens relocation attempts, guard at wrong code path. v174 correctly river-scoped SPR gate but the underlying leak persists. [STALE — no WR-lift from either approach]
 - **FOLD-SIDE RULE:** POSTFLOP binary `return -1` fold gates are dead (13+ gens). Continuous EV-integrated fold margins ARE permitted; relocating existing guards (v162/v174 placement-fix) is allowed (placement-fix ≠ new gate).
-- **STACK-OFF GUARD PLACEMENT INVARIANT:** guards nested inside `to_call>=my_chips` reached ZERO — relocate to `to_call>0` or the opponent_allin branch. v174 applied this to `_spr_commitment_gate`.
+- **River call-margin continuous tighten is PERMITTED** if correctly calibrated to 0.20-0.45 one-pair range. v174 narrowed broad SPR gate to river-only+made<0.45. v177 added `_weak_one_pair_river_margin()` at 0.20≤made<0.55 — band extends to 0.55, overshooting the identified one-pair leak range. Future tighten MUST target 0.20-0.45 only. [POSSIBLY EXHAUSTED]
 - **Dispatch-order shadow:** wire offensive primitives AFTER downstream tiers (overbet/amplifier/value-tier); archetype overrides AFTER pure-value functions; mandate ≥3 wired dispatch sites incl. donk/probe at birth.
 - NEW detectors require 6 BIRTH REQUIREMENTS: new function + new opp-line signal + ≥3 dispatch sites + ≥3 replay folds + ≥30g confidence gate + persistent fixture logs.
-- *(advisory caution)* Sizing adjustments are the WRONG lever for BOTH leaks: v171 DOWN-sizing vs stations did NOT shrink committed pots and can't fix a preflop-trash leak; the postflop leak needs a TIGHTEN not a DOWN-size. Do NOT build a third UP/DOWN-sizing primitive — reuse OR-gate + confidence-scaling scaffolding if revisited. [STALE — no WR-lift]
-- **CAP CONSTRAINTS (CORRECTED):** strategy.py at 2012 lines PASSED quality_gates — the LOC limit is ADAPTIVE = max(2000, src×1.15) ≈ 2300 (~300 headroom, 2500 hard cap). The prior "2000/2000 ZERO HEADROOM" claim (v172/v173 critic/archivist) was MISCALIBRATED and FALSE — strategy.py is NOT the binding constraint. **strategy_helpers.py ~2478/2500 (~22L) IS the genuine near-cap file** — reuse scaffolding and budget extract/refactor before any helpers.py growth; strategy.py remains editable when capacity is needed.
+- **CAP CONSTRAINTS:** strategy.py at 2012/2300 (adaptive limit) — ~300 headroom. **strategy_helpers.py at 2500/2500 = EXACT CAP — zero headroom, must extract/refactor before any growth.**
 
 ## BLUFF_CALIBRATION
 - Bluff only with explicit fold-equity evidence + confidence; low aggression/passivity alone may signal a calling-station.
@@ -21,22 +22,24 @@
 ## PARAMETER_TUNING
 - choose_raise() constant-only nudges [POSSIBLY EXHAUSTED] — saturated ≥6 gens. EXEMPT: offensive imports adding NEW opponent-signal gating AND river value-sizing structural changes.
 - Don't carry kept-but-inert constants: RAISE to bind or REMOVE the dead bound.
-- Preflop pot_odds windows <10pp virtually never fire in 70-hand HU; widen_threshold must target ≥15pp bands (the preflop tightness gate is hand-classification based, not pot-odds-tuning, so this does not block it).
-- **Firing verification:** reachability_test (code-reachability proxy) + ≥100g H2H WR-lift is PRIMARY; stderr is now readable (A1 background-drain) but secondary/noisy — supporting signal, not a gate.
+- Preflop pot_odds windows <10pp virtually never fire in 70-hand HU; widen_threshold must target ≥15pp bands.
+- **Firing verification:** reachability_test (code-reachability proxy) + ≥100g H2H WR-lift is PRIMARY; stderr readable (A1 background-drain) but secondary — supporting signal, not a gate.
 
 ## GENERAL
-- **✅ RESOLVED (A1):** `battle.py` now drains stderr in a background thread — telemetry verification unblocked. Readable but secondary/noisy; do NOT re-flag stderr as unreadable.
-- Master is RELIABLE at PLAN-GENERATION (don't reflexively fall back to crossover: 9 consecutive gens v163→v171 master-from-X). BUT reliability ≠ correctness: the preflop axis v172/v173 produced near-inert carve-outs WITHOUT closing the -20k leak — validate axis PAYOFF (≥100g WR-lift), not just plan cleanliness.
+- **✅ RESOLVED (A1):** `battle.py` now drains stderr in a background thread — telemetry verification unblocked.
+- Master is RELIABLE at PLAN-GENERATION but reliability ≠ correctness: validate axis PAYOFF (≥100g WR-lift), not just plan cleanliness. [advisory]
 - Dead-code/guard removal > adding constants — anti-lock bypass guard removal (v167) is a logic fix with higher EV per line than margin tweaks.
-- **Validation thresholds:** <30g H2H = noise; ≥30g paired net-chips before re-adding exhausted features; ≥100g to declare success. Do NOT reverse a prior gen's master-planned direction on sub-30g noise.
-- Trust git diff over commit messages and Master plans; direct H2H authoritative over transitive chains.
+- **Validation thresholds:** <30g H2H = noise; ≥30g paired net-chips before re-adding exhausted features; ≥100g to declare success.
+- Trust git diff over commit messages and Master plans; direct H2H authoritative over transitive chains. Do NOT base future work on unvalidated bots (no .completed / no Glicko rating).
 - Critic advisory ≤4.0 with `local_optima_warning=true` on an exhausted axis mandates a direction_audit pivot — advisory doesn't gate commit (precommit authoritative) but mandates pivot enforcement.
+- **Plateau states (WR ~0.50 all matchups) have no single DOMINANT exploit** — when H2H shows 45-55% across the board, the correct move is a new structural axis (offense/texture/archetype), not tighter margins on the same decision point.
 
 ## RECENT_LESSONS
-- **v176**: Critic evidence: H2H weaknesses: v172 WR 0.20 vs v169, 0.30 vs v165, 0.40 vs v152/v154 (postflop over-calling DOMINANT leak per experience pool), v172 overall win_rate 0.5645 across 310 games — no single matchup below 0.30 for v172-as-B; Experience pool refs: POSTFLOP_STRATEGY section: 'POSTFLOP over-calling vs value raises — v173 WR 0.20 vs v169, 0.30 vs v165 — THIS is the DOMINANT exploitable weakness', v174 PIVOT SIGNAL: 'Add a PERMITTED continuous river call-margin TIGHTEN for the 0.45-0.55 made-strength band (marginal one-pair/weak two-pair)' — v176 targets 0.40-0.80 but misses one-pair at 0.22, call_margin axis marked RETRACTED/LIVE per A1 audit: 'postflop_call_margin fired 42670× at delta≈0 = INERTNESS (implementation), NOT conceptual exhaustion'; Diff refs: strategy_helpers.py L225-228: band lowered from 0.55→0.40; strength_factor denominator changed from 0.25→0.40, strategy.py: v176 reverts to v172 base — removes v175 bluff_heavy_call_widen dispatch sites, v173 A2o-A5o carve-out, v174 SPR gate narrowing, reachability_test.py: new main_reraise_tighten_widened() verifies made=0.45 fires and 0.35 does not, plus scaling assertion
-- **v174 (LOC corrected):** strategy.py at 2012 lines PASSED quality_gates — LOC limit is ADAPTIVE (max(2000, src×1.15) ≈ 2300), so ~300 headroom; NOT over cap. The "ZERO HEADROOM" emergency (carried from v173) was MISCALIBRATED. The genuine near-cap file is strategy_helpers.py ~2478/2500 — budget extract/refactor before any helpers growth.
-- **v174 SPR gate:** full-scope (all streets, made<0.55) over-folded flop/turn marginal value → clear_regression; river-only + made<0.55→0.45 narrowing recovered it. Future continuous-margin changes for the 0.45-0.55 band MUST stay river-scoped — do NOT re-broaden to flop/turn.
-- **v174 PIVOT SIGNAL (NEXT-gen priority):** v173's dominant exploitable leak is POSTFLOP over-calling, NOT preflop — H2H WR 0.20 (v169), 0.30 (v165), 0.40 (v152/v154). Add a PERMITTED continuous river call-margin TIGHTEN (not a binary gate) for the 0.45-0.55 made-strength band (marginal one-pair/weak two-pair), complementing the made<0.45 binary fold — this re-opens the mis-labeled 'exhausted' axis. Do NOT add more preflop carve-outs.
-- **v173 carve-out:** VPIP≥0.65 too strict for the mirror pool — IF the preflop axis is revisited, tighten to ≥0.70 (cleaner 'ultra-loose') or add an equity-sufficient sub-range, not a bare VPIP relax. Note: preflop axis is STALE — the postflop tighten is the higher-EV next lever.
-- **v173 VERIFY task:** daemon ≥30g grep PREFLOP_OFFSUIT_GATE@bb_vs_raise to confirm v172 base fires ≥5% (regression check); if the -20k preflop leak has NOT shrunk by ≥100g, widen thresholds — but treat as secondary given the postflop leak dominates.
-
+- **v177**: `_weak_one_pair_river_margin()` at made 0.20-0.55 overshoots the identified 0.20-0.45 one-pair leak — band should narrow to 0.45 max.
+- **v177**: strategy_helpers.py hit 2500/2500 exact cap — zero headroom; any future helpers edit requires extraction/refactoring FIRST.
+- **v177**: v176 plateaued at WR 0.50 with no specific <40% matchup — no single weakness to exploit; needs new structural axis, not margin refinement.
+- **v176**: HAND_CLASS_SCORE dead zones matter for band design: pair=0.22, two-pair=0.40, trips=0.58 — verify band edges against actual score table before committing.
+- **v176**: v176 targets call-margin band 0.40-0.80 but misses one-pair at 0.22 — the dominant postflop over-calling leak lives in 0.20-0.45, not the two-pair overlap zone.
+- **v175**: CROSSOVER v173×v174: inlined continuous river call_margin tighten [0,+0.08] for over-calling band (made 0.20-0.45). Correct band identified; verify firing rate at ≥30g, then ≥100g H2H for WR-lift.
+- **v174 PIVOT:** Future continuous-margin changes for marginal bands MUST stay river-scoped — do NOT re-broaden to flop/turn (broad scope over-folded marginal hands).
+- **v173 VERIFY task:** daemon ≥30g grep PREFLOP_OFFSUIT_GATE@bb_vs_raise to confirm v172 base fires ≥5%; if the -20k preflop leak has NOT shrunk by ≥100g, treat as secondary given postflop leak dominates.
