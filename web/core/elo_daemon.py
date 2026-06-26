@@ -96,8 +96,54 @@ DIVERSITY_COUNT_DECAY = 100
 SAVE_EVERY_N_GAMES = 20
 SAVE_INTERVAL_SEC = 60
 POLL_TIMEOUT = 0.5
+# v193 root-cause-audit (2026-06-26): the daemon's main loop was `while running
+# and in_flight` — once in_flight emptied (all mirror battles done / reap canceled
+# matches / pool recovered) the loop exited, and any external (precommit) job
+# submitted AFTER that point was never drained (stayed queued in battle_jobs.jsonl
+# forever). This keep-alive lets the daemon idle-spin and keep draining external
+# jobs even with empty in_flight. DAEMON_IDLE_MAX_SEC bounds the idle spin so a
+# truly idle daemon (no external jobs arriving) eventually exits and the monitor
+# can restart it; any external job submission resets the idle timer. Must exceed
+# the longest plausible precommit submit→drain gap (a generation's master+workers
+# phase can take ~20-40min before precommit submits jobs).
+DAEMON_IDLE_MAX_SEC = 1800  # 30 min idle cap
+# Heartbeat freshness: is_daemon_scheduler_capable() treats the daemon as
+# unhealthy if the heartbeat written into .daemon_pid is older than this. Must
+# exceed the main-loop iteration cadence (POLL_TIMEOUT=0.5s × per-iteration work,
+# including periodic save_cycle which can take seconds) with comfortable margin
+# so a healthy busy daemon is never misclassified as stalled.
+HEARTBEAT_STALE_SEC = 120
 
 running = True
+
+
+def _write_heartbeat(scheduler_capable=True):
+    """Refresh the last_heartbeat field in .daemon_pid atomically.
+
+    v193 root-cause-audit (2026-06-26): the daemon only wrote .daemon_pid once
+    at startup, so is_daemon_scheduler_capable() (a static `scheduler_capable`
+    flag) could not detect a stalled main loop (process alive but not draining
+    jobs). A fresh heartbeat lets the liveness probe treat the daemon as healthy
+    only while the main loop is actually iterating. Safe no-op if the pid file
+    is missing/invalid (e.g. between restarts).
+    """
+    try:
+        from evolution_infra import RESULTS_DIR
+        pid_file = RESULTS_DIR / ".daemon_pid"
+        if not pid_file.exists():
+            return
+        raw = pid_file.read_text().strip()
+        try:
+            info = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            info = {}
+        info["last_heartbeat"] = time.time()
+        tmp = pid_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(info))
+        os.replace(str(tmp), str(pid_file))
+    except Exception:
+        # Heartbeat is advisory; never let it crash the main loop.
+        pass
 
 
 def handle_signal(signum, frame):
@@ -885,6 +931,11 @@ def main():
     games_since_save = 0
     last_save_time = time.time()
     last_parent_check = time.time()
+    # v193 keep-alive: track when the daemon last had real work (in_flight non-empty
+    # OR an external job to drain). Bounds the idle spin so a truly idle daemon
+    # exits after DAEMON_IDLE_MAX_SEC; any external-job submission resets it.
+    last_busy_time = time.time()
+    last_heartbeat_time = 0.0
     save_num = stats.get("total_games", 0) // SAVE_EVERY_N_GAMES
     total_matches = 0
     MAX_POOL_RECOVERIES = 3
@@ -893,9 +944,9 @@ def main():
     last_bot_refresh_time = time.time()
 
     try:
-        while running and in_flight and recovery_count < MAX_POOL_RECOVERIES:
+        while running and recovery_count < MAX_POOL_RECOVERIES:
             try:
-                while running and in_flight:
+                while running:
                     # Poll external job queue
                     if _SCHEDULER_AVAILABLE:
                         ext_in_queue = sum(1 for m in match_queue if _is_external(m))
@@ -956,6 +1007,60 @@ def main():
                             "reserved slot (in_flight=%d, queue=%d)",
                             _ext_job_id, len(in_flight), len(match_queue),
                         )
+
+                    # v193 root-cause-audit (2026-06-26) keep-alive path: with the
+                    # main loop now `while running` (not `while running and in_flight`),
+                    # we reach here even with empty in_flight — which lets external
+                    # (precommit) jobs submitted after the last internal batch be
+                    # drained instead of stranded forever. Two cases:
+                    #  (a) in_flight non-empty: normal — wait on futures as before.
+                    #  (b) in_flight empty: idle-spin. If there's a queued external
+                    #      job it was just submitted above (proactive fill), so loop
+                    #      back immediately; otherwise sleep POLL_TIMEOUT and keep
+                    #      polling the external queue. DAEMON_IDLE_MAX_SEC bounds the
+                    #      spin so a truly idle daemon exits cleanly (rc=0) for the
+                    #      monitor to restart. The empty-set wait() below would raise,
+                    #      so we skip it entirely when in_flight is empty.
+                    _has_external = any(_is_external(m) for m in match_queue)
+                    if in_flight:
+                        last_busy_time = time.time()
+                    elif _has_external:
+                        # External job just got submitted into in_flight (or still
+                        # queued) — reset idle timer and loop back to dispatch it.
+                        last_busy_time = time.time()
+                    if not in_flight:
+                        # Periodic heartbeat even while idle, so the liveness probe
+                        # sees a live main loop (not a stalled one).
+                        if time.time() - last_heartbeat_time >= 5:
+                            _write_heartbeat()
+                            last_heartbeat_time = time.time()
+                        if not _has_external:
+                            # Genuinely idle: bound the spin. rc=0 idle exit lets the
+                            # monitor restart without burning the restart budget.
+                            idle_for = time.time() - last_busy_time
+                            if idle_for >= DAEMON_IDLE_MAX_SEC:
+                                log.info(
+                                    "[dispatch] idle for %.0fs with no in_flight / external "
+                                    "jobs — exiting keep-alive (rc=0).", idle_for,
+                                )
+                                try:
+                                    log_system_event(
+                                        "daemon.idle_exit", "info",
+                                        f"Daemon idle-exit after {idle_for:.0f}s "
+                                        f"(no in_flight/external jobs).",
+                                        {"idle_sec": round(idle_for, 1)},
+                                    )
+                                except Exception:
+                                    pass
+                                running = False
+                                break
+                            time.sleep(POLL_TIMEOUT)
+                            continue
+                        # External job queued but not yet in in_flight (capacity full
+                        # of externals, or reserved slots saturated) — brief sleep,
+                        # loop back; replenish on the next completed future.
+                        time.sleep(POLL_TIMEOUT)
+                        continue
 
                     done, _ = wait(in_flight.keys(), timeout=POLL_TIMEOUT, return_when=FIRST_COMPLETED)
 
@@ -1075,6 +1180,15 @@ def main():
                                 last_save_time = now
                     except Exception as e:
                         log.warning("Save error (non-fatal): %s", e)
+
+                    # v193: refresh heartbeat while busy so the liveness probe sees
+                    # a live main loop (throttled to ~every 5s; aligns with the idle
+                    # path's cadence). last_busy_time already reset above when
+                    # in_flight was non-empty.
+                    now_hb = time.time()
+                    if now_hb - last_heartbeat_time >= 5:
+                        _write_heartbeat()
+                        last_heartbeat_time = now_hb
 
                     # Eval round finalization check
                     try:

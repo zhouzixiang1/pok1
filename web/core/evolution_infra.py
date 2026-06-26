@@ -115,6 +115,9 @@ def validate_stage_transition(current_stage, proposed_stage):
     - Same stage (re-recording gate data, e.g. idempotent re-calls)
     - None -> any (first write or checkpoint cleared)
     - Any -> "timed_out" (watchdog override)
+    - Any -> "infra_timed_out" (v193 fix 2026-06-26: infra-only timeout, preserves
+      gate_results/code so the next cycle can retry precommit instead of
+      discarding the whole generation)
     - Any -> "prepared" (fresh generation restart)
     - "workers_done"/"reviewed"/"critic_checked" -> "master_planned" (intra-gen retry)
     """
@@ -126,6 +129,9 @@ def validate_stage_transition(current_stage, proposed_stage):
 
     if proposed_stage == "timed_out":
         return True, "timeout_override"
+
+    if proposed_stage == "infra_timed_out":
+        return True, "infra_timeout_override"
 
     if proposed_stage == "prepared":
         return True, "fresh_restart"

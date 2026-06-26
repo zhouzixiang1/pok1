@@ -122,6 +122,39 @@ def _startup_recovery(ui=None) -> dict:
         _clear_orchestrator_session()
         return {"action": "fresh_start"}
 
+    # v193 root-cause-audit (2026-06-26): infra-only timeout during precommit.
+    # The cycle timed out NOT because the bot regressed (quality/review/critic all
+    # passed, no regression blocker) but because the daemon/scheduler failed to
+    # deliver battle results. Discarding the generation (like plain timed_out does)
+    # wastes already-passed gates and forces a costly master+workers re-run that may
+    # hit the SAME infra stall. Instead: roll the stage back to critic_checked
+    # (a recoverable stage) WITHOUT clearing the checkpoint, so the next cycle
+    # resumes with a fresh LLM session and re-runs run_precommit_eval on the SAME
+    # code. precommit_attempt is already incremented (tool_eval.py:384-397), so the
+    # existing infra-retry logic + MAX_PRECOMMIT_RETRIES cap still applies — if it
+    # genuinely keeps timing out, it degrades to abandon as before.
+    if stage == "infra_timed_out":
+        from evolution_core import write_pipeline_checkpoint
+        msg = (f"[Recovery] v{next_v} infra-only timeout during precommit (gates passed, "
+               f"no regression). Preserving code/gate_results — will retry precommit "
+               f"(attempt {checkpoint.get('precommit_attempt', 0)}).")
+        if ui:
+            ui.log_history(msg, "warn")
+        else:
+            log.warning(msg)
+        from system_log import log_system_event
+        log_system_event("pipeline.infra_timed_out_recovery", "warn", msg,
+                         {"next_v": next_v, "precommit_attempt": checkpoint.get("precommit_attempt", 0)})
+        # Roll back to critic_checked so the watchdog/recovery treats it as a
+        # recoverable stage and resumes precommit (Case B: new LLM session).
+        write_pipeline_checkpoint(
+            next_v, checkpoint.get("source_v"), "critic_checked",
+            master_plan=checkpoint.get("master_plan"),
+        )
+        _clear_orchestrator_session()
+        # Fall through to the resume path below (stage is now critic_checked).
+        stage = "critic_checked"
+
     if stage == "archived" or (stage == "prepared" and not checkpoint.get("master_plan")):
         if ui:
             ui.log_history(f"[Recovery] Pipeline at '{stage}' for v{next_v}. Clearing stale checkpoint.", "warn")
