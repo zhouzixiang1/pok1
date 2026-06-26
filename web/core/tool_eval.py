@@ -455,39 +455,73 @@ async def run_precommit_eval(args):
             poll_interval = 5.0  # root-cause-audit 2026-06-21: 2s→5s 减少 fcntl 锁竞争（与 SCHEDULER_STALL_ROUNDS 联动，总等待窗不变）
             collected_results = {}
 
-            # Circuit breaker: when the daemon/scheduler is unhealthy (e.g. the
-            # 2026-06-16 OOM rc=-9 storm), results never arrive and this loop
-            # would otherwise block for the full deadline (~15 min for 3
-            # opponents). That long wait is exactly when an SDK signature error
-            # kills the orchestrator cycle mid-poll - precommit never returns,
-            # the cycle restarts, and v107 got stuck replaying this forever.
-            # Break out fast once the scheduler has produced nothing for a
-            # sustained stretch, so we fall back to the parallel path.
-            # OPT-1' (precommit-stall fix 2026-06-24): tighten circuit breaker.
-            # Old: max(60, n_games*8) → n_games=16: 128×5s=640s empty polling.
-            # New: max(24, n_games*3) → n_games=16: 48×5s≈240s; n_games=8: 120s.
-            # This is a CIRCUIT breaker (detect 'nothing arriving' fast), not a
-            # wait-for-completion timer (real deadline = per_game_timeout*len(opponents)).
-            # daemon proactive slot-fill should make stall almost never trigger;
-            # this shortens fallback when daemon is genuinely crashed: ~10min → ~2-4min.
-            SCHEDULER_STALL_ROUNDS = max(24, n_games * 3)
-            consecutive_stall = 0
+            # HARD wall-clock safety net (root-cause-audit 2026-06-26 / v193):
+            # precommit previously had NO independent timeout — it relied solely
+            # on the outer CYCLE_TIMEOUT (5400s/90min). When the daemon stalled
+            # (process alive but scheduler not draining jobs; e.g. in_flight
+            # emptied and the daemon's `while running and in_flight` loop exited),
+            # `collect` returned {} forever and this loop spun for ~70min until
+            # CYCLE_TIMEOUT killed the WHOLE generation — discarding code that
+            # had already passed quality/review/critic. This independent budget
+            # caps the scheduler-poll wall-clock so a stuck daemon degrades to
+            # the parallel fallback instead of abandoning the generation.
+            # Capped at 1500s (25min) so a healthy run is never cut short.
+            PRECOMMIT_POLL_BUDGET = min(per_game_timeout * len(opponents), 1500)
+            poll_budget_deadline = time.time() + PRECOMMIT_POLL_BUDGET
 
-            while time.time() < deadline:
-                partial = await scheduler_client.collect(submitted_ids)
+            # Circuit breaker: detect scheduler 'no progress' fast so we fall
+            # back to the parallel path instead of waiting for the full budget.
+            #
+            # v193 root-cause (2026-06-26): the OLD breaker counted CONSECUTIVE
+            # empty rounds (`consecutive_stall`), reset to 0 whenever `collect`
+            # returned ANY non-empty dict. A half-dead daemon can occasionally
+            # emit a stale/partial result (or `collect` can block on an fcntl
+            # lock held by the daemon's heavy save_cycle I/O), which both
+            # (a) never advances `len(collected_results)` and (b) keeps the old
+            # counter pegged at 0 — so the breaker never tripped and the loop
+            # spun until CYCLE_TIMEOUT.
+            #
+            # Fix: count rounds since the LAST REAL PROGRESS (`collected_results`
+            # actually grew), not rounds since the last non-empty `collect`. A
+            # collect() that returns already-collected job_ids, or that throws/
+            # times out, counts as no-progress. The trip decision is now purely
+            # progress-based and independent of daemon liveness probes.
+            SCHEDULER_STALL_ROUNDS = max(24, n_games * 3)
+            rounds_since_progress = 0
+            prev_collected_count = 0
+            # Cap each collect() call so a wedged fcntl lock cannot hang the
+            # whole poll loop (battle_scheduler.collect_results takes an
+            # exclusive LOCK_EX on battle_results.jsonl).
+            COLLECT_CALL_TIMEOUT = 15.0
+
+            while time.time() < deadline and time.time() < poll_budget_deadline:
+                try:
+                    partial = await asyncio.wait_for(
+                        scheduler_client.collect(submitted_ids),
+                        timeout=COLLECT_CALL_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    # collect() blocked (likely fcntl contention) — treat as
+                    # no-progress this round rather than hanging the loop.
+                    partial = None
                 if partial:
                     collected_results.update(partial)
-                    consecutive_stall = 0
+                if len(collected_results) > prev_collected_count:
+                    prev_collected_count = len(collected_results)
+                    rounds_since_progress = 0
                 else:
-                    consecutive_stall += 1
+                    rounds_since_progress += 1
                 if len(collected_results) >= len(submitted_ids):
                     break
-                if consecutive_stall >= SCHEDULER_STALL_ROUNDS:
+                if rounds_since_progress >= SCHEDULER_STALL_ROUNDS:
+                    # daemon liveness is logged for diagnosis only; the trip
+                    # itself is decided purely by progress stalling so a
+                    # half-dead daemon (alive but not draining) still trips.
                     scheduler_healthy = await scheduler_client.is_available()
                     log_system_event(
                         "pipeline.precommit_eval.scheduler_stall", "warn",
-                        f"v{v}: scheduler stalled {consecutive_stall} rounds "
-                        f"(0 new results in ~{consecutive_stall * poll_interval:.0f}s, "
+                        f"v{v}: scheduler no progress for {rounds_since_progress} rounds "
+                        f"(~{rounds_since_progress * poll_interval:.0f}s, "
                         f"daemon_capable={scheduler_healthy}). Breaking to fallback.",
                         {"version": v, "source_v": source_v,
                          "collected": len(collected_results),
@@ -495,6 +529,21 @@ async def run_precommit_eval(args):
                     )
                     break
                 await asyncio.sleep(poll_interval)
+
+            # Hard-budget trip: time's up before all results collected → degrade
+            # to fallback rather than letting CYCLE_TIMEOUT abandon the generation.
+            if (time.time() >= poll_budget_deadline
+                    and len(collected_results) < len(submitted_ids)):
+                scheduler_healthy = await scheduler_client.is_available()
+                log_system_event(
+                    "pipeline.precommit_eval.poll_budget_exceeded", "warn",
+                    f"v{v}: precommit scheduler-poll hard budget ({PRECOMMIT_POLL_BUDGET:.0f}s) "
+                    f"exceeded with {len(collected_results)}/{len(submitted_ids)} results "
+                    f"(daemon_capable={scheduler_healthy}). Degrading to fallback.",
+                    {"version": v, "source_v": source_v,
+                     "collected": len(collected_results),
+                     "submitted": len(submitted_ids)},
+                )
 
             # Build matchups from scheduler results
             missing_opponents = []

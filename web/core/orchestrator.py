@@ -44,6 +44,15 @@ import logging
 
 log = logging.getLogger("pok.orchestrator")
 
+# Infra-only blocker reasons (mirrors tool_eval._INFRA_BLOCKER_REASONS). Used by
+# the timed_out handler to decide whether a precommit timeout was caused purely
+# by infrastructure (daemon/scheduler) — in which case the generation is
+# preserved for retry — vs a real bot regression. Duplicated here to avoid a
+# circular import; keep in sync with tool_eval._INFRA_BLOCKER_REASONS.
+_INFRA_BLOCKER_REASONS_SET = frozenset({
+    "match_timeout", "incomplete_or_timeout", "scheduler_error", "match_exception",
+})
+
 
 def _is_cycle_infra_error(e) -> bool:
     """Classify an orchestrator exception as LLM-infra (short -0.5 backoff) vs real
@@ -560,15 +569,69 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                     master_plan=ckpt.get("master_plan"),
                                 )
                         else:
-                            write_pipeline_checkpoint(
-                                ckpt.get("next_v"), ckpt.get("source_v"), "timed_out",
-                                master_plan=ckpt.get("master_plan"),
+                            # v193 root-cause-audit (2026-06-26): distinguish an
+                            # INFRA-only timeout from a real regression. When the
+                            # cycle timed out during precommit (i.e. quality +
+                            # review + critic already passed, stage=critic_checked)
+                            # AND precommit produced no regression blocker (the bot
+                            # code itself is fine — the timeout was caused by the
+                            # daemon/scheduler failing to deliver battle results),
+                            # mark `infra_timed_out` instead of `timed_out`. The
+                            # recovery handler then RETRIES precommit on the SAME
+                            # code instead of clearing the checkpoint and discarding
+                            # the generation (which wasted v193's already-passed
+                            # gates). If any regression blocker exists, fall back to
+                            # plain timed_out (a real regression should not be retried).
+                            _gate_results = ckpt.get("gate_results", {}) or {}
+                            _is_precommit_stage = _b3_stage == "critic_checked"
+                            _has_precommit_regression = False
+                            _pc = _gate_results.get("precommit_eval") or {}
+                            if isinstance(_pc, dict):
+                                for _b in (_pc.get("blockers") or []):
+                                    _reason = (_b.get("reason") if isinstance(_b, dict) else _b) or ""
+                                    if _reason not in _INFRA_BLOCKER_REASONS_SET:
+                                        _has_precommit_regression = True
+                                        break
+                            _infra_only = (
+                                _is_precommit_stage
+                                and _gate_results.get("quality", {}).get("passed")
+                                and _gate_results.get("review", {}).get("passed")
+                                and _gate_results.get("critic", {}).get("passed")
+                                and not _has_precommit_regression
                             )
-                            if ui:
-                                ui.log_history(
-                                    "[Orchestrator] Pipeline checkpoint marked as timed_out — next cycle will restart.",
-                                    "warn",
+                            if _infra_only:
+                                log.warning(
+                                    "Cycle timed out during precommit with no regression "
+                                    "blocker (infra-only) — marking infra_timed_out so the "
+                                    "next cycle retries precommit on the same code.",
                                 )
+                                log_system_event(
+                                    "pipeline.cycle_timeout_infra", "warn",
+                                    f"Cycle timed out after {CYCLE_TIMEOUT}s during precommit "
+                                    f"(infra-only, no regression blocker) — preserving gate_results/code for retry",
+                                    {"timeout_sec": CYCLE_TIMEOUT, "pipeline_stage": _b3_stage,
+                                     "precommit_attempt": ckpt.get("precommit_attempt", 0)},
+                                )
+                                write_pipeline_checkpoint(
+                                    ckpt.get("next_v"), ckpt.get("source_v"), "infra_timed_out",
+                                    master_plan=ckpt.get("master_plan"),
+                                )
+                                if ui:
+                                    ui.log_history(
+                                        "[Orchestrator] Infra-only timeout during precommit — "
+                                        "preserving code/gates; next cycle will retry precommit.",
+                                        "warn",
+                                    )
+                            else:
+                                write_pipeline_checkpoint(
+                                    ckpt.get("next_v"), ckpt.get("source_v"), "timed_out",
+                                    master_plan=ckpt.get("master_plan"),
+                                )
+                                if ui:
+                                    ui.log_history(
+                                        "[Orchestrator] Pipeline checkpoint marked as timed_out — next cycle will restart.",
+                                        "warn",
+                                    )
                 except Exception as e:
                     log.warning("Failed to mark checkpoint timed_out: %s", e)
                 try:

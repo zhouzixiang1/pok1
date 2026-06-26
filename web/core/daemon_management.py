@@ -214,7 +214,8 @@ def is_daemon_alive():
 
 
 def is_daemon_scheduler_capable():
-    """Check if the running daemon is alive AND was started with scheduler capability.
+    """Check if the running daemon is alive, was started with scheduler capability,
+    AND its main loop is recently active.
 
     The liveness check (is_daemon_alive) is essential: the .daemon_pid file
     outlives an OOM-killed daemon (rc=-9 storm, 2026-06-16), and without it the
@@ -222,6 +223,15 @@ def is_daemon_scheduler_capable():
     was usable — jobs were submitted to a dead daemon and never completed,
     stranding v107's precommit forever. A capability flag on a dead process
     is meaningless.
+
+    v193 root-cause-audit (2026-06-26): the static `scheduler_capable` flag alone
+    could NOT detect a HALF-DEAD daemon — process alive (poll()==None) but main
+    loop stalled (not draining jobs). v193's precommit jobs were submitted to such
+    a half-dead daemon and never executed, stranding the whole generation for 70min
+    until CYCLE_TIMEOUT. The daemon now writes a `last_heartbeat` into .daemon_pid
+    each main-loop iteration; require it to be fresher than HEARTBEAT_STALE_SEC so
+    a stalled loop (regardless of cause) is treated as incapable and precommit
+    falls back to the parallel path instead of waiting on a dead scheduler.
     """
     if not is_daemon_alive():
         return False
@@ -234,7 +244,24 @@ def is_daemon_scheduler_capable():
         if raw.isdigit():
             return False
         info = json.loads(raw)
-        return info.get("scheduler_capable", False)
+        if not info.get("scheduler_capable", False):
+            return False
+        # Heartbeat freshness: a daemon whose main loop has stalled (but process
+        # still alive) must not be reported as capable. Tolerate a missing
+        # heartbeat for older daemons that predate the heartbeat field, but once
+        # a heartbeat exists, enforce freshness.
+        hb = info.get("last_heartbeat")
+        if hb is not None:
+            try:
+                from elo_daemon import HEARTBEAT_STALE_SEC
+            except Exception:
+                HEARTBEAT_STALE_SEC = 120
+            try:
+                if time.time() - float(hb) > HEARTBEAT_STALE_SEC:
+                    return False
+            except (TypeError, ValueError):
+                return False
+        return True
     except (json.JSONDecodeError, KeyError, TypeError, OSError):
         return False
 
@@ -265,6 +292,20 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
                     # Daemon was replaced by another actor (web UI, orchestrator, etc.)
                     # Don't count against this monitor's restart budget — it wasn't our restart.
                     restart_count = 0
+                elif rc == 0:
+                    # v193 root-cause-audit (2026-06-26): a clean rc=0 exit is NOT a
+                    # crash. With the keep-alive main loop, the daemon now exits rc=0
+                    # when it has been idle (no in_flight / external jobs) for
+                    # DAEMON_IDLE_MAX_SEC, OR when orphaned (parent died), OR on a
+                    # graceful SIGTERM. None of these consume the crash-restart
+                    # budget — treat them like an intentional stop so repeated
+                    # idle-exit→restart cycles don't trip the "failed 5x" guard and
+                    # permanently stop auto-restart. Only non-zero rc (OOM/SIGKILL/
+                    # BrokenProcessPool) counts as a crash.
+                    restart_count = 0
+                    with _daemon_lock:
+                        if daemon_proc is proc:
+                            daemon_proc = None
                 else:
                     restart_count += 1
                     # Clear stale handle immediately so other callers see the
