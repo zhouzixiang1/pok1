@@ -50,6 +50,11 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "requires_graveyard_bot: skip if no graveyard bots found"
     )
+    config.addinivalue_line(
+        # Slow tests run real bot subprocesses; deselected by default via
+        # pytest.ini addopts `-m "not slow"`. Run with: pytest -m slow
+        "markers", "slow: deselect by default (real subprocess, multi-second)"
+    )
 
     # Detect bots at configure time (before collection) so
     # pytest_collection_modifyitems can use the results.
