@@ -122,7 +122,7 @@ def _run_matchup_subprocess(bot0_path, bot1_path, n_games, output_dir, timestamp
         "old_out, old_err = sys.stdout, sys.stderr\n"
         "sys.stdout, sys.stderr = devnull, devnull\n"
         "try:\n"
-        "    match_wins, draws, n_played, all_logs = battle_func(bot0_path, bot1_path, n_games=n_games, verbose=False, save_log=True)\n"
+        "    match_wins, draws, n_played, all_logs, _net_chips = battle_func(bot0_path, bot1_path, n_games=n_games, verbose=False, save_log=True)\n"
         "finally:\n"
         "    sys.stdout, sys.stderr = old_out, old_err\n"
         "    devnull.close()\n"
@@ -808,9 +808,9 @@ def main():
             sys.path.insert(0, ENGINE_DIR)
             try:
                 from battle import mirror_battle as battle_func
-                _wins, dr, _played, logs = battle_func(
+                _wins, dr, _played, logs, _net_chips = battle_func(
                     bot0_path, bot1_path, n_games=n_games,
-                    verbose=False, debug_bots=None, save_log=True
+                    verbose=False, save_log=True
                 )
                 b0w, b1w = _wins[0], _wins[1]
                 chip_sum = sum(g.get("bot0_chips", 0) for g in logs) if logs else 0
