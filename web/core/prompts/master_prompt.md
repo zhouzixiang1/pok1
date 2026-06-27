@@ -179,11 +179,31 @@ The source ancestor to evolve from is decided automatically by the system in pre
 </source_selection>
 
 <output_format>
-Output exactly ONE JSON block:
+⚠️ CRITICAL — OUTPUT FORMAT FAILURE IS THE #1 PIPELINE KILLER. If you write ANY
+prose, markdown headings, or a "report" instead of a raw JSON object, your plan is
+DISCARDED and the generation fails. Prior runs that wrapped the plan in
+"# Master Architect Plan" markdown with embedded ```json code blocks were ALL
+rejected. Do not repeat that mistake.
 
-```json
+HARD RULES (non-negotiable):
+1. Wrap your ENTIRE response in a ```json code fence: the first line is ```json
+   and the last line is ```. The JSON extractor locates this fence, so any brief
+   preamble you write before it is safely ignored instead of corrupting the parse.
+   (Prior failures were prose/heading-wrapped reports WITHOUT a clean ```json
+   fence — a clean fence is REQUIRED and is how the extractor finds your plan.)
+2. Inside the fence: a single raw JSON object. NO markdown headings ("# ...",
+   "## ..."), NO "# Master Architect Plan" wrapper, NO report prose. The object
+   must begin with `{` and end with `}`.
+3. Put ALL your analysis inside the `"analysis"` STRING FIELD of the JSON —
+   never as standalone text outside the object.
+4. The top-level `"tasks"` key is MANDATORY and MUST be a JSON ARRAY, even if it
+   has only one task. The parser requires `{... "tasks": [ {...} ] ...}` at the
+   top level — a bare task object without the `tasks` wrapper is a parse failure.
+
+Required schema (emit exactly this structure as raw JSON):
+
 {
-  "analysis": "Strategic analysis. What weakness are you targeting? Reference H2H data. If diversity injection applies, explain why.",
+  "analysis": "Strategic analysis as a single string. What weakness are you targeting? Reference H2H data. If diversity injection applies, explain why.",
   "targeted_failure": "One dominant failure pattern with strongest evidence source.",
   "expected_behavior_change": "Specific table behavior that should change.",
   "do_not_touch": ["List files/functions/subsystems that must remain unchanged."],
@@ -198,11 +218,13 @@ Output exactly ONE JSON block:
     }
   ]
 }
-```
 
 - Do NOT include `branch_from` or any source-override field — the evolution source is chosen automatically by the system.
 - Each task should involve modifying 1-3 specific functions. Split tasks smaller if previous generations had worker failures.
 - Do not mix unrelated preflop/postflop/sizing rewrites in one generation — the next evaluation must attribute win/loss movement to this plan.
+
+FINAL CHECK before you emit: is your response a ```json fence wrapping a single
+`{...}` JSON object with a `"tasks"` array at the top level? If not, rewrite it.
 </output_format>
 
 ## Known Mandatory Fixes (DO NOT REMOVE)
