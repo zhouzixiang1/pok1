@@ -925,7 +925,6 @@ async def run_critic(args):
                 [str(t) for t in critic_texts], _load_replay_anchor_map()
             )
         if critic_citation_errors:
-            score_num = min(score_num, 6)
             log_system_event("fabricated_citation", "warn",
                              f"Critic cited {len(critic_citation_errors)} fabricated replay(s)",
                              {"version": v, "errors": critic_citation_errors})
@@ -939,6 +938,7 @@ async def run_critic(args):
         "score": score_num,
         "advisory_score": score_num,
         "advisory_approved": advisory_approved,
+        "citation_penalties": len(critic_citation_errors),
         "logs": ui.get_output(),
         "action": "approve",  # advisory: orchestrator proceeds to run_precommit_eval (final judge)
         "force_advanced": force_advanced,

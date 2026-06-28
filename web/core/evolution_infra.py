@@ -85,7 +85,7 @@ MAX_CROSSOVER_RETRIES = 3
 MAX_GENESIS_RETRIES = 3
 MAX_PRECOMMIT_RETRIES = 3   # Max run_precommit_eval attempts against the SAME bot code (resets on worker rework)
 MAX_MASTER_AUDIT_RETRIES = 2  # Master plan audit re-plan cap (prevents bug #6b retry loop)
-MAX_GEN_COST = 5.0            # Per-cycle LLM cost cap (top of $4.5-5 band; above 4-attempt retry budget ~$5-7)
+MAX_GEN_COST = 7.0            # Per-cycle LLM cost cap (safety net above normal 4-attempt retry budget ~$5-7)
 WORKER_TIMEOUT = 1000         # Seconds before a hung worker call is aborted + retried
 MAX_PARALLEL_WORKERS = 3      # Hard cap on simultaneous LLM worker calls (Semaphore)
 

@@ -164,7 +164,7 @@ async def commit_bot(args):
                     f"Low behavioral novelty: delta_VS={delta_vs:.4f} < 0.05. "
                     f"The new bot occupies a similar behavioral niche as existing pool bots."
                 )
-                log.warning(
+                _log.warning(
                     "Novelty gate advisory for v%d: delta_VS=%.4f < 0.05",
                     v, delta_vs,
                 )
@@ -203,7 +203,7 @@ async def commit_bot(args):
     priority_file = RESULTS_DIR / "priority_eval.json"
     try:
         with locked_file(priority_file, "w") as f:
-            json.dump({"bot": f"claude_v{v}", "min_games": 100, "since": time.time()}, f)
+            json.dump({"bot": f"claude_v{v}", "min_games": 500, "since": time.time()}, f)
     except Exception as e:
         _log.warning("Priority eval signal write failed for v%d: %s", v, e)
 
