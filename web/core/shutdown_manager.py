@@ -35,13 +35,20 @@ class ShutdownManager:
             self._event.set()
 
     def install_signal_handlers(self, loop: asyncio.AbstractEventLoop):
-        """Install SIGINT/SIGTERM handlers on the event loop.
+        """Install SIGINT/SIGTERM/SIGHUP handlers on the event loop.
 
         Must be called from within a running event loop.
         NOTE: Do NOT call this inside a uvicorn lifespan — it overwrites
         uvicorn's signal handlers and prevents graceful shutdown.
         """
-        for sig in (signal.SIGINT, signal.SIGTERM):
+        # C6: include SIGHUP so a terminal disconnect (SSH hangup / closed
+        # window) triggers graceful shutdown + flush instead of the default
+        # instant-kill that orphans the daemon and corrupts checkpoints.
+        sigs = [signal.SIGINT, signal.SIGTERM]
+        hup = getattr(signal, "SIGHUP", None)
+        if hup is not None:  # POSIX only; absent on Windows
+            sigs.append(hup)
+        for sig in sigs:
             loop.add_signal_handler(sig, self._on_signal, sig)
 
     def _on_signal(self, sig):

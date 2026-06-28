@@ -65,9 +65,9 @@ def start_daemon(workers=None, pairs=5, scheduler_capable=True):
 
     with _daemon_lock:
         # Clear any stale shutdown flag from a previous stop_daemon() so the
-        # new daemon (and its monitor thread) can actually run. stop_daemon()
-        # sets the flag before acquiring the lock (line 106), so a narrow
-        # race window exists, but it is pre-existing and extremely unlikely.
+        # new daemon (and its monitor thread) can actually run. Both stop_daemon
+        # and start_daemon now mutate this flag under _daemon_lock (C4), so the
+        # prior pre-lock assignment race is closed.
         _daemon_shutting_down = False
         # Check in-memory handle first — if daemon is alive, no need to touch PID file.
         # This MUST happen before reading the PID file to avoid killing a running daemon
@@ -107,7 +107,15 @@ def start_daemon(workers=None, pairs=5, scheduler_capable=True):
             env={**os.environ, "POK_PROC": "daemon"},
         )
         tmp_pid = daemon_pid_file.with_suffix(".tmp")
-        tmp_pid.write_text(json.dumps({"pid": daemon_proc.pid, "ppid": os.getpid(), "scheduler_capable": scheduler_capable}))
+        # C3: fsync before atomic replace so a crash/power loss can't leave an
+        # empty/torn PID file (which would make is_daemon_scheduler_capable()
+        # hit JSONDecodeError and strand precommit jobs).
+        _pid_fd = os.open(str(tmp_pid), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            os.write(_pid_fd, json.dumps({"pid": daemon_proc.pid, "ppid": os.getpid(), "scheduler_capable": scheduler_capable}).encode("utf-8"))
+            os.fsync(_pid_fd)
+        finally:
+            os.close(_pid_fd)
         os.replace(str(tmp_pid), str(daemon_pid_file))
     # Drain daemon stdout to prevent pipe buffer deadlock
     threading.Thread(target=_drain_stdout, args=(daemon_proc,), daemon=True).start()
@@ -123,8 +131,13 @@ def start_daemon(workers=None, pairs=5, scheduler_capable=True):
 def stop_daemon():
     """Stop the daemon subprocess and its entire process group."""
     global daemon_proc, _daemon_shutting_down
-    _daemon_shutting_down = True
+    # C4: set _daemon_shutting_down INSIDE the lock (moved from before it) so it
+    # is mutated atomically with start_daemon, which clears it under the same
+    # lock. The old pre-lock assignment left a window where a racing start_daemon
+    # could spawn a fresh daemon that this stop then killed (code's own comment
+    # at the start_daemon flag-clear acknowledged this race).
     with _daemon_lock:
+        _daemon_shutting_down = True
         if daemon_proc is None:
             # No in-memory handle — try PID file for orphan cleanup
             _kill_orphan_from_pid_file()

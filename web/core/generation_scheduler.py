@@ -453,7 +453,20 @@ def _decide_strategy(combined, current_v, ratings):
             bot_key = f"claude_v{sv}"
             if bot_key in ratings:
                 osc_ratings[sv] = ratings[bot_key].conservative_rating()
-        if len(osc_ratings) >= 2:
+        # E2: convergence guard. If the Glicko leader (strongest active bot by
+        # conservative rating) is itself inside the oscillating set, the lineage
+        # has converged ONTO an elite ancestor rather than truly oscillating
+        # without progress — forcing crossover here would blow apart a winning
+        # lineage (BUG2). Only force crossover when none of the recurring sources
+        # is the current leader, i.e. genuine stuckness on weaker ancestors.
+        leader_v = _get_glicko_leader_v(ratings)
+        if leader_v is not None and leader_v in osc_ratings:
+            log.info(
+                "Source-v oscillation suppressed: leader v%d (%.0f cons) is within the "
+                "recurring set %s — treating as convergence, not oscillation (E2).",
+                leader_v, osc_ratings[leader_v], sorted(oscillating),
+            )
+        elif len(osc_ratings) >= 2:
             highest_v = max(osc_ratings, key=osc_ratings.get)
             lowest_v = min(osc_ratings, key=osc_ratings.get)
             if highest_v != lowest_v:

@@ -138,8 +138,18 @@ def _write_heartbeat(scheduler_capable=True):
         except (json.JSONDecodeError, ValueError):
             info = {}
         info["last_heartbeat"] = time.time()
-        tmp = pid_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(info))
+        # C3: use a heartbeat-specific temp name to avoid colliding with
+        # start_daemon's ".daemon_pid.tmp" when an orphan-cleanup restart races
+        # with a heartbeat write (both used the identical path → torn JSON →
+        # liveness probe false-negative). Also fsync before atomic replace so a
+        # crash/power loss can't leave an empty/torn PID file.
+        tmp = pid_file.with_suffix(".hb.tmp")
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            os.write(fd, json.dumps(info).encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
         os.replace(str(tmp), str(pid_file))
     except Exception:
         # Heartbeat is advisory; never let it crash the main loop.

@@ -288,10 +288,12 @@ def _experience_loop():
                 # No new matches — but check if we have accumulated summaries
                 # that should be flushed (e.g., after a long idle period).
                 if len(_pending_summaries) >= MERGE_THRESHOLD:
-                    _apply_batch_results(_pending_summaries)
-                    if any(r[2] for r in _pending_summaries):
-                        _analyses_this_hour += 1
-                    _pending_summaries = []
+                    try:
+                        _apply_batch_results(_pending_summaries)
+                        if any(r[2] for r in _pending_summaries):
+                            _analyses_this_hour += 1
+                    finally:
+                        _pending_summaries = []
                 continue
 
             # Extract per-match summaries in parallel (pure-data, parallel-safe).
@@ -342,10 +344,18 @@ def _experience_loop():
 
             # Fire LLM merge when threshold reached
             if len(_pending_summaries) >= MERGE_THRESHOLD:
-                _apply_batch_results(_pending_summaries)
-                if any(r[2] for r in _pending_summaries):
-                    _analyses_this_hour += 1
-                _pending_summaries = []
+                # L1: wrap merge + reset so a raised exception between
+                # _apply_batch_results() and the reset cannot leave
+                # _pending_summaries accumulating across iterations (a slow
+                # memory leak under repeated LLM/asyncio errors). The summaries
+                # have already been handed to _apply_batch_results; on failure it
+                # bumps fail_count for each entry, so dropping them here is safe.
+                try:
+                    _apply_batch_results(_pending_summaries)
+                    if any(r[2] for r in _pending_summaries):
+                        _analyses_this_hour += 1
+                finally:
+                    _pending_summaries = []
 
         except Exception as e:
             log.warning("Experience thread error: %s", e)

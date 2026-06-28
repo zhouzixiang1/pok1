@@ -19,6 +19,52 @@ from evolution_infra import (
 )
 
 
+def _isolated_recent_snaps(max_n=10):
+    """Read rating_history.jsonl, returning only the trailing contiguous block
+    of snapshots sharing the latest daemon_run_id.
+
+    E1: rating_history.jsonl is append-only and historically accumulated
+    concatenated runs (period jumps + backwards timestamps) that corrupted trend
+    analysis. Each snapshot carries daemon_run_id; we keep only the tail
+    contiguous block sharing the latest run id before applying [-max_n:]. Falls
+    back to the last max_n lines verbatim for legacy data without run ids.
+    Returns a list of parsed snapshot dicts (most-recent-last), possibly empty.
+    """
+    history_file = RESULTS_DIR / "rating_history.jsonl"
+    if not history_file.exists():
+        return []
+    try:
+        with locked_file(history_file, "r") as f:
+            lines = f.readlines()
+    except Exception:
+        return []
+    parsed = []
+    latest_run_id = None
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            snap = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        rid = snap.get("daemon_run_id") if isinstance(snap, dict) else None
+        parsed.append((rid, snap))
+        if rid is not None:
+            latest_run_id = rid
+    if latest_run_id is not None:
+        # Walk backward from the end while run id matches; older entries with a
+        # different/None id belong to prior runs and are excluded.
+        i = len(parsed)
+        while i > 0 and parsed[i - 1][0] == latest_run_id:
+            i -= 1
+        recent = parsed[i:]
+    else:
+        # Legacy data without run ids: fall back to the last lines as-is.
+        recent = parsed[-max_n:]
+    return [snap for _rid, snap in recent[-max_n:]]
+
+
 def _statistical_stagnation_check(source_v, ratings):
     """Pure-code stagnation check using sliding window on rating history.
 
@@ -32,22 +78,19 @@ def _statistical_stagnation_check(source_v, ratings):
         return None
 
     bot_name = f"claude_v{source_v}"
-    try:
-        with locked_file(history_file, "r") as f:
-            lines = f.readlines()
-    except Exception:
-        return None
+    # E1: use daemon_run_id-isolated snapshots (cross-run period jumps would
+    # otherwise corrupt the recent-vs-previous delta).
+    snaps = _isolated_recent_snaps(max_n=10)
 
     # Extract bot's rating from last 10 periods
     recent_ratings = []
-    for line in lines[-10:]:
+    for snap in snaps:
         try:
-            snap = json.loads(line.strip())
             bot_rating = snap.get("ratings", {}).get(bot_name, {})
             r = bot_rating.get("r")
             if r is not None:
                 recent_ratings.append(r)
-        except (json.JSONDecodeError, KeyError):
+        except (AttributeError, KeyError):
             continue
 
     if len(recent_ratings) < 6:
@@ -178,11 +221,11 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
     history_file = RESULTS_DIR / "rating_history.jsonl"
     history_ctx = ""
     if history_file.exists():
-        with locked_file(history_file, "r") as f:
-            lines = f.readlines()
-        for line in lines[-10:]:
+        # E1: use daemon_run_id-isolated snapshots so the LLM history context
+        # only reflects the current continuous run (cross-run period jumps /
+        # backwards timestamps would otherwise mislead the analyst).
+        for snap in _isolated_recent_snaps(max_n=10):
             try:
-                snap = json.loads(line.strip())
                 wr_data = snap.get("win_rates", {})
                 wrs = [(k, v["h2h_avg_wr"]) for k, v in wr_data.items() if v.get("h2h_avg_wr") is not None]
                 if wrs:
@@ -192,7 +235,7 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
                 else:
                     top = max(p["r"] for p in snap["ratings"].values())
                     history_ctx += f"  Period {snap['period']}: top_r={top:.0f}\n"
-            except (json.JSONDecodeError, KeyError):
+            except (AttributeError, KeyError, ValueError):
                 continue
 
     # Worker failures

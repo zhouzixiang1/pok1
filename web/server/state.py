@@ -82,6 +82,15 @@ class AppState:
         with self._lock:
             if self.running == running:
                 return False
+            if running:
+                # C1: starting a fresh orchestrator — cancel any leftover
+                # evolution task from a prior run whose cleanup path set
+                # running=False but never nulled _evolution_task. Otherwise the
+                # subsequent set_task() would overwrite the handle and leave two
+                # orchestrators mutating ratings/commits concurrently.
+                if self._evolution_task is not None and not self._evolution_task.done():
+                    self._evolution_task.cancel()
+                self._evolution_task = None
             self.running = running
             return True
 
