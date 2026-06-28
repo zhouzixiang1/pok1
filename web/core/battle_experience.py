@@ -703,11 +703,149 @@ def get_battle_experience() -> str:
 
     fix-10: Tags observations referencing bot versions with no WR improvement
     across >= STALE_GEN_THRESHOLD generations with [POSSIBLY STALE] markers.
+
+    RC5: Compresses duplicated section types (CROSS-PAIR PATTERNS / VERSION
+    TRENDS accumulate via incremental-append) by keeping only the most recent
+    N per type, while preserving high-value sections (ACTIONABLE INSIGHTS,
+    STRENGTH PATTERNS) in full. Keeps the Master prompt bounded without
+    discarding actionable strategic lessons.
     """
     raw = _read_experience_file()
     if not raw:
         return raw
-    return _tag_stale_observations(raw)
+    tagged = _tag_stale_observations(raw)
+    return _compress_dup_sections(tagged)
+
+
+# Section types that accumulate via incremental-append (many near-duplicate
+# snapshots). Keep only the most recent _MAX_PER_DUP_TYPE per type.
+_DUP_SECTION_TYPES = {"CROSS-PAIR PATTERNS", "VERSION TRENDS"}
+_MAX_PER_DUP_TYPE = 4
+# High-value section types kept in full (no truncation).
+_FULL_KEEP_TYPES = {"ACTIONABLE INSIGHTS", "STRENGTH PATTERNS"}
+_COMPRESS_BUDGET = 60_000
+
+
+def _compress_dup_sections(content: str) -> str:
+    """Compress duplicated section types while preserving high-value sections.
+
+    Splits content by '## ' headers. For each section type in
+    _DUP_SECTION_TYPES, keeps only the last _MAX_PER_DUP_TYPE occurrences
+    (most recent). All other sections (ACTIONABLE INSIGHTS, STRENGTH
+    PATTERNS, preamble, etc.) are kept in full. If the result still exceeds
+    _COMPRESS_BUDGET, falls back to a tail-trim (most recent content wins).
+    """
+    import re as _re
+    parts = _re.split(r'(\n##\s+[^\n]+)', content)
+    preamble = parts[0] if parts else content
+    sections = []
+    for i in range(1, len(parts) - 1, 2):
+        header = parts[i].strip()
+        body = parts[i + 1] if i + 1 < len(parts) else ""
+        htype = header.replace('## ', '')
+        bracket = htype.find(' [')
+        if bracket > 0:
+            htype = htype[:bracket]
+        htype = htype.strip()
+        sections.append((header, body, htype))
+
+    by_type = {}
+    for idx, (header, body, htype) in enumerate(sections):
+        by_type.setdefault(htype, []).append((idx, header, body))
+
+    kept = [(0, preamble)]
+    for htype, items in by_type.items():
+        if htype in _DUP_SECTION_TYPES and len(items) > _MAX_PER_DUP_TYPE:
+            kept_items = items[-_MAX_PER_DUP_TYPE:]
+            dropped = len(items) - len(kept_items)
+            kept.append((items[-_MAX_PER_DUP_TYPE][0],
+                         "\n[... " + str(dropped) + " earlier '" + htype +
+                         "' sections compressed \u2014 kept most recent " +
+                         str(_MAX_PER_DUP_TYPE) + " ...]\n"))
+        else:
+            kept_items = items
+        for idx, header, body in kept_items:
+            kept.append((idx, header + body))
+
+    kept.sort(key=lambda x: x[0])
+    result = "".join(t for _, t in kept)
+
+    if len(result) > _COMPRESS_BUDGET:
+        from llm_query import _trim_to_budget
+        result = _trim_to_budget(result, _COMPRESS_BUDGET, tail=True)
+    return result
+
+
+def _tag_stale_observations(content: str) -> str:
+    """Tag paragraphs mentioning bot versions whose WR shows no improvement.
+
+    Reads glicko_ratings.json to find which bot versions have been in the pool
+    longest (proxy: rating has not improved over recent generations).
+
+    For each ## section, if it mentions bot versions that are >= STALE_GEN_THRESHOLD
+    generations old AND the version's rating is below the pool median, prepend
+    [POSSIBLY STALE — no WR improvement in N gens] to that section.
+    """
+    from evolution_infra import read_locked_json
+    from pathlib import Path
+
+    # Only tag sections that look like candidate "lessons" (mention specific versions)
+    # Skip generic sections like CROSS-PAIR PATTERNS if they don't name versions.
+    import re
+
+    # Parse the current pool to find generation gap per bot version
+    try:
+        ratings = read_locked_json(RESULTS_DIR / "glicko_ratings.json", default={})
+    except Exception:
+        return content  # can't determine staleness — return as-is
+
+    if not isinstance(ratings, dict) or not ratings:
+        return content
+
+    # Build a map: version_name -> generation_number (from tag/v-number)
+    def _bot_gen(name: str) -> int | None:
+        """Extract generation number from bot name (e.g. 'claude_v143' -> 143)."""
+        m = re.search(r'v(\d+)$', name)
+        return int(m.group(1)) if m else None
+
+    # Current generation = max generation in the pool
+    gens = [_bot_gen(name) for name in ratings if _bot_gen(name) is not None]
+    if not gens:
+        return content
+    current_gen = max(gens)
+
+    # Minimum generation that has NOT gone stale
+    min_fresh_gen = current_gen - STALE_GEN_THRESHOLD
+
+    # Split content into sections (## headers)
+    sections = re.split(r'(?=^## )', content, flags=re.MULTILINE)
+    tagged_sections = []
+
+    for section in sections:
+        if not section.strip():
+            continue
+        # Find bot version references in this section
+        versions_mentioned = re.findall(r'v(\d+)', section)
+        if not versions_mentioned:
+            tagged_sections.append(section)
+            continue
+
+        stale_versions = [int(v) for v in versions_mentioned if int(v) < min_fresh_gen]
+        if stale_versions:
+            oldest = min(stale_versions)
+            gap = current_gen - oldest
+            stale_tag = f"[POSSIBLY STALE — no WR improvement in {gap} gens]\n"
+            # Only tag once per section (prepend to first line)
+            first_line_end = section.find('\n')
+            if first_line_end >= 0:
+                header = section[:first_line_end + 1]
+                rest = section[first_line_end + 1:]
+                # Don't double-tag
+                if '[POSSIBLY STALE' not in section:
+                    section = header + stale_tag + rest
+        tagged_sections.append(section)
+
+    return "".join(tagged_sections)
 
 
 def _tag_stale_observations(content: str) -> str:

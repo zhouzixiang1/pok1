@@ -72,6 +72,18 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
     match_analysis_trimmed = _trim_to_budget(match_analysis_rendered, 10_000, tail=True)
     perf_trimmed = _trim_to_budget(perf_rendered, 4_000)
 
+    battle_experience_trimmed = battle_experience or "No battle experience data available yet."
+    bot_action_stats_trimmed = _trim_to_budget(
+        bot_action_stats or "No bot action statistics available.", 12_000)
+    opponent_profiles_trimmed = _trim_to_budget(
+        opponent_profiles or "No per-opponent behavior profiles available.", 8_000)
+    replay_spotlight_trimmed = _trim_to_budget(
+        replay_spotlight or "No replay spotlight data available.", 8_000)
+    exploitability_trimmed = _trim_to_budget(
+        exploitability_weaknesses or "No exploitability probe data available yet.", 6_000)
+    research_trimmed = _trim_to_budget(
+        research_proposals or "No web-derived research proposals this generation (run_literature_probe not triggered or returned none).", 4_000)
+
     # Build eval round summary BEFORE substitute_template so it's included in one pass
     eval_round_summary = "No eval round data available yet."
     try:
@@ -88,13 +100,13 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         "match_analysis": match_analysis_trimmed,
         "performance_verification": perf_trimmed,
         "source_v": str(source_v),
-        "replay_spotlight": replay_spotlight or "No replay spotlight data available.",
-        "bot_action_stats": bot_action_stats or "No bot action statistics available.",
-        "opponent_profiles": opponent_profiles or "No per-opponent behavior profiles available.",
+        "replay_spotlight": replay_spotlight_trimmed,
+        "bot_action_stats": bot_action_stats_trimmed,
+        "opponent_profiles": opponent_profiles_trimmed,
         "eval_round_summary": eval_round_summary,
-        "battle_experience": battle_experience or "No battle experience data available yet.",
-        "exploitability_weaknesses": exploitability_weaknesses or "No exploitability probe data available yet.",
-        "research_proposals": research_proposals or "No web-derived research proposals this generation (run_literature_probe not triggered or returned none).",
+        "battle_experience": battle_experience_trimmed,
+        "exploitability_weaknesses": exploitability_trimmed,
+        "research_proposals": research_trimmed,
     })
     master_ctx = (
         f"Current evolution: v{source_v} → v{next_v}\n"

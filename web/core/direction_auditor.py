@@ -122,11 +122,11 @@ async def _run_direction_audit(source_v, ui):
         if log_file.exists():
             try:
                 content = log_file.read_text()
-                # Extract last "analysis" field from JSON output
                 import re
+                m = None
                 for m in re.finditer(r'"analysis":\s*"([^"]{0,300})', content):
                     pass
-                if m:
+                if m is not None:
                     master_log_lines.append(f"  v{check_v} Master: {m.group(1)}")
             except Exception:
                 pass

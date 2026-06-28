@@ -88,7 +88,7 @@ MAX_SYSTEM_EVENTS_LINES = 5000
 # Match selection priority weights
 UNDER_EVAL_WEIGHT = 0.6
 DIVERSITY_WEIGHT = 0.4
-UNDER_EVAL_BASELINE = 50
+UNDER_EVAL_BASELINE = 90
 RATING_GAP_SCALE = 200
 DIVERSITY_COUNT_DECAY = 100
 
@@ -513,6 +513,9 @@ def process_result(result, ratings, h2h, bot_stats, verbose=False):
     a, b, wins_a, wins_b, draws, total, err, *_extra = result
     if err is not None:
         log.error("Error in %s vs %s: %s", a, b, err)
+        return 0
+    if total == 0:
+        log.warning("Skipping 0-game match %s vs %s (all mirror games skipped) — no rating update", a, b)
         return 0
 
     log.debug("%s vs %s: %d-%d-%d (%d games)", a, b, wins_a, wins_b, draws, total)
