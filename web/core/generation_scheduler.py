@@ -701,10 +701,64 @@ def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
         return None
 
 
+def _finalize_bare_commit(v, ckpt=None):
+    """H3 (2026-06-29): finalize a bare-committed generation.
+
+    A bare commit (code landed via `git commit` but no bot-v{N} tag and no
+    .completed sentinel) happens when CYCLE_TIMEOUT/503 interrupts commit_bot
+    mid-way (e.g. crossover's git_commit_bot ran the commit but not the tag).
+    Previously `_cleanup_incomplete` would rmtree such a dir on the next restart,
+    silently destroying committed code. This helper re-runs the idempotent
+    git_commit_bot to retroactively tag + mark .completed, so the generation is
+    recovered instead of lost.
+
+    Returns True if finalized (or already finalized), False if it could not be
+    finalized (caller should leave the dir intact — git history still holds it).
+    """
+    try:
+        from evolution_infra import git_has_tag, git_commit_bot
+        from tool_commit import get_bot_dir, RESULTS_DIR
+    except Exception as e:
+        log.warning("_finalize_bare_commit imports failed for v%d: %s", v, e)
+        return False
+    if git_has_tag(v):
+        return True  # already tagged by a prior finalize or normal commit
+    bot_dir = get_bot_dir(v)
+    if not bot_dir.exists():
+        return False
+    source_v = (ckpt or {}).get("source_v")
+    parent2_v = (ckpt or {}).get("parent2_v")
+    if source_v is None:
+        log.warning(
+            "bare-commit v%d has no source_v in checkpoint — leaving dir intact "
+            "(git history preserves it), not finalizing.", v)
+        return False
+    strategy = ((ckpt or {}).get("master_plan") or {}).get("strategy_summary") \
+        or ((ckpt or {}).get("master_plan") or {}).get("strategy") \
+        or f"bare-commit recovery for v{v}"
+    try:
+        git_commit_bot(v, source_v, strategy, rating_info="", parent2_v=parent2_v)
+        if not git_has_tag(v):
+            log.warning("finalize for v%d ran git_commit_bot but tag still absent — leaving dir.", v)
+            return False
+        (bot_dir / ".completed").touch()
+        log.info("H3: finalized bare-commit v%d (source v%d, parent2=%s)", v, source_v, parent2_v)
+        try:
+            log_system_event("pipeline.bare_commit_finalized", "success",
+                             f"Recovered bare-commit v{v} via finalize (source v{source_v})",
+                             {"version": v, "source_v": source_v, "parent2_v": parent2_v})
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        log.warning("H3: finalize failed for v%d (%s) — leaving dir intact", v, e)
+        return False
+
+
 def _cleanup_incomplete():
     """Remove incomplete bot directories that have no git tag and no active checkpoint."""
     import shutil
-    from evolution_infra import PROJECT_ROOT, git_has_tag, RESULTS_DIR
+    from evolution_infra import PROJECT_ROOT, git_has_tag, git_dir_is_committed, RESULTS_DIR
 
     bots_dir = PROJECT_ROOT / "bots"
     if not bots_dir.exists():
@@ -717,6 +771,27 @@ def _cleanup_incomplete():
                 except (ValueError, IndexError):
                     continue
                 if not git_has_tag(v):
+                    # H3 (2026-06-29): a bare-commit dir (git-tracked files but no
+                    # tag) is committed code interrupted mid-finalize. rmtree here
+                    # would destroy it. Attempt finalize instead; only rmtree if
+                    # finalize cannot recover AND there's no active checkpoint.
+                    if git_dir_is_committed(v):
+                        _ckpt = None
+                        checkpoint_file = RESULTS_DIR / "pipeline_state.json"
+                        if checkpoint_file.exists():
+                            try:
+                                _ckpt = json.loads(checkpoint_file.read_text())
+                            except Exception:
+                                _ckpt = None
+                        finalized = _finalize_bare_commit(v, _ckpt)
+                        if finalized:
+                            continue
+                        # Could not finalize — preserve git-tracked dir (history
+                        # still holds it). Do NOT rmtree committed code.
+                        log.warning(
+                            "H3: preserving bare-commit v%d dir (git-tracked, no tag, "
+                            "finalize failed) — not removing committed code.", v)
+                        continue
                     # Skip if there's an active pipeline checkpoint for this version
                     checkpoint_file = RESULTS_DIR / "pipeline_state.json"
                     if checkpoint_file.exists():

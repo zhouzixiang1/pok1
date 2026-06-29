@@ -957,9 +957,49 @@ def main():
     last_bot_refresh_time = time.time()
 
     try:
+        # H4 (2026-06-29): track priority_eval.json mtime so a newly-committed bot's
+        # priority signal takes effect without waiting for the current match_queue
+        # (potentially hundreds of daemon matches) to drain. When the file's mtime
+        # changes, the daemon-internal matches in match_queue are cleared so the
+        # next refill (pick_matches) re-reads the updated priority. External
+        # (precommit) jobs are preserved — they have deadlines and are priority-
+        # dispatched anyway. Initialized to the current mtime so a fresh start does
+        # not immediately nuke the seed queue.
+        _priority_eval_mtime = 0.0
+        try:
+            if PRIORITY_EVAL_FILE.exists():
+                _priority_eval_mtime = os.path.getmtime(PRIORITY_EVAL_FILE)
+        except OSError:
+            pass
+
         while running and recovery_count < MAX_POOL_RECOVERIES:
             try:
                 while running:
+                    # H4: hot-reload priority signal. If priority_eval.json was
+                    # rewritten (new commit), drop daemon-internal queued matches so
+                    # the next pick_matches picks up the new priority bot. External
+                    # jobs are kept (they are deadline-bound + priority-dispatched).
+                    try:
+                        if PRIORITY_EVAL_FILE.exists():
+                            _mt = os.path.getmtime(PRIORITY_EVAL_FILE)
+                            if _mt != _priority_eval_mtime:
+                                _kept = [m for m in match_queue if _is_external(m)]
+                                _dropped = len(match_queue) - len(_kept)
+                                if _dropped > 0:
+                                    match_queue.clear()
+                                    match_queue.extend(_kept)
+                                    _priority_bot_now = _load_priority_eval()
+                                    log.info(
+                                        "H4: priority_eval.json changed (mtime %.0f→%.0f); "
+                                        "dropped %d internal queued match(es), kept %d external; "
+                                        "priority_bot=%s",
+                                        _priority_eval_mtime, _mt, _dropped, len(_kept),
+                                        _priority_bot_now,
+                                    )
+                                _priority_eval_mtime = _mt
+                    except OSError:
+                        pass
+
                     # Poll external job queue
                     if _SCHEDULER_AVAILABLE:
                         ext_in_queue = sum(1 for m in match_queue if _is_external(m))

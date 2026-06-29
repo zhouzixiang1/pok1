@@ -663,6 +663,16 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             return_exceptions=True,
         )
 
+        # H2 (2026-06-29): CancelledError must propagate, not be swallowed.
+        # return_exceptions=True turns CancelledError into a result element; the
+        # generic `isinstance(result, Exception)` branch below would then treat a
+        # CYCLE_TIMEOUT/cancel as an ordinary worker failure (reset files, return
+        # False) instead of unwinding the gather so the orchestrator's timeout
+        # handler can take over. Detect CancelledError explicitly and re-raise.
+        for result in results:
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+
         # Check results — roll back failed workers' target files from source.
         # Since files are disjoint, rolling back one worker cannot corrupt another.
         any_failed = False

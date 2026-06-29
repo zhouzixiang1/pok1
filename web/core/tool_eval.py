@@ -6,6 +6,7 @@ import logging
 import os
 import statistics
 import sys
+import threading
 import time
 import uuid
 
@@ -46,6 +47,36 @@ log = get_logger("tool_eval")
 # nemesis probe (Phase 3) and the PSRO MixtureBot meta-opponent (Phase 4) both
 # degrade non-blocking so an early MixtureBot collapse cannot strand a commit.
 _NONBLOCKING_REASONS = {"nemesis_probe", "psro_meta_opponent"}
+
+# H1 (2026-06-29): thread-safe shutdown flag for precommit-eval cancellation.
+# `loop.run_in_executor` submits mirror battles to the default ThreadPool; once
+# running, the executor Future cannot be cancelled and the in-thread subprocess
+# keeps spawning battles for up to per_game_timeout (observed: 49 stale battle
+# procs, 5h daemon stall after CYCLE_TIMEOUT). This Event is checked between
+# mirror games inside the drain functions (thread-safe `is_set()`) so an
+# orchestrator CYCLE_TIMEOUT can abort the in-flight precommit promptly.
+# Set by orchestrator via set_precommit_shutdown() on timeout/cancel.
+_PRECOMMIT_SHUTDOWN = threading.Event()
+
+
+def set_precommit_shutdown():
+    """Signal in-flight precommit mirror battles to abort ASAP.
+
+    Called by the orchestrator's CYCLE_TIMEOUT / CancelledError handler so
+    subprocess-spawning drain loops break out instead of running to completion.
+    Idempotent; reset_precommit_shutdown() clears it before the next cycle.
+    """
+    _PRECOMMIT_SHUTDOWN.set()
+
+
+def reset_precommit_shutdown():
+    """Clear the precommit shutdown flag (call at the start of each cycle)."""
+    _PRECOMMIT_SHUTDOWN.clear()
+
+
+def is_precommit_shutdown() -> bool:
+    """True if precommit battles have been signalled to abort."""
+    return _PRECOMMIT_SHUTDOWN.is_set()
 
 
 def _is_nonblocking_reason(reason):
@@ -692,6 +723,17 @@ async def run_precommit_eval(args):
                 "n_played": 0,
             }
             item_blockers = []
+            # H1: if orchestrator signalled shutdown (CYCLE_TIMEOUT/cancel) before
+            # this matchup even started, skip it entirely. Avoids spawning fresh
+            # subprocesses for an already-aborted precommit round.
+            if _PRECOMMIT_SHUTDOWN.is_set():
+                item_blockers.append({
+                    "reason": "precommit_shutdown",
+                    "opponent": opponent,
+                    "details": "precommit aborted by orchestrator shutdown signal",
+                })
+                matchup["blockers"] = item_blockers
+                return matchup
             try:
                 async with _battle_sem:
                     nc = []
@@ -708,6 +750,12 @@ async def run_precommit_eval(args):
                                 verbose=False,
                                 save_log=False,
                             ):
+                                # H1: abort in-flight precommit when orchestrator
+                                # signalled shutdown (CYCLE_TIMEOUT/cancel). Returns
+                                # partial results so the caller records a blocker
+                                # instead of hanging on a dead subprocess pool.
+                                if _PRECOMMIT_SHUTDOWN.is_set():
+                                    break
                                 # Generator yields a bare net_chips_0 int when
                                 # aivat_enabled=False (the production default);
                                 # a (raw, aivat) tuple when True. Unpack defensively
@@ -733,12 +781,18 @@ async def run_precommit_eval(args):
                         # Non-parent: still use the generator for W/L parity with
                         # the parent path, but run to completion (no early-stop).
                         def _drain_full(_cm=str(candidate_main), _om=str(opponent_main)):
-                            local = [int(net[0] if isinstance(net, tuple) else net) for net in mirror_battle_generator(
+                            # H1: explicit loop (not a list comprehension) so the
+                            # thread-safe shutdown flag can break out between games.
+                            local = []
+                            for net in mirror_battle_generator(
                                 _cm, _om,
                                 n_games=n_games,
                                 verbose=False,
                                 save_log=False,
-                            )]
+                            ):
+                                if _PRECOMMIT_SHUTDOWN.is_set():
+                                    break
+                                local.append(int(net[0] if isinstance(net, tuple) else net))
                             return local, None, False
 
                         battle_result = await asyncio.wait_for(

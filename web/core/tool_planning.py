@@ -928,6 +928,10 @@ async def run_master(args):
             # Check for consecutive same-axis exhaustion
             _pivot_axis = _check_consecutive_exhaustion(next_v, _exhausted_dirs)
             if _pivot_axis:
+                # H5: persist the pivot result into experience_pool.md so the next
+                # run_master sees this axis as EXHAUSTED via _extract_exhausted_keywords
+                # (otherwise master can re-propose the same dead axis).
+                _mark_axis_exhausted_in_pool(_pivot_axis, next_v)
                 _bump_master_fail_count(next_v, source_v)
                 try:
                     log_system_event("pipeline.cross_gen_pivot", "warn",
@@ -1521,6 +1525,50 @@ def _check_consecutive_exhaustion(next_v, current_exhausted, lookback=5, min_con
     return None
 
 
+def _mark_axis_exhausted_in_pool(axis, version):
+    """H5 (2026-06-29): write a cross-gen-pivot result back into experience_pool.md.
+
+    `_check_consecutive_exhaustion` reads cross_gen_exhausted_history.jsonl and
+    fires a pivot directive, but until that axis is marked in the experience
+    pool the next run_master call cannot see it via `_extract_exhausted_keywords`
+    (which only reads the pool). The result: master keeps proposing the same
+    exhausted axis and the pivot keeps firing. This helper appends an
+    `[EXHAUSTED — cross_gen_pivot auto-mark]` line to the pool so the marker_re
+    regex in `_extract_exhausted_keywords` (matches `[A-Z ]*EXHAUSTED`) picks it
+    up on the very next generation.
+
+    Idempotent within a generation: a per-version tag in the line prevents the
+    same (version, axis) from being appended twice.
+    """
+    try:
+        from evolution_infra import locked_file
+        if not EXPERIENCE_FILE.exists():
+            return
+        marker_line = f"- [EXHAUSTED — cross_gen_pivot auto-mark v{version}] {axis}"
+        with locked_file(EXPERIENCE_FILE, "r", encoding="utf-8") as f:
+            text = f.read()
+        if marker_line in text:
+            return  # already marked for this version+axis
+        addition = marker_line + "\n"
+        if "## EXHAUSTED" in text:
+            # Insert right after the section header
+            idx = text.index("## EXHAUSTED")
+            nl = text.index("\n", idx)
+            new_text = text[:nl + 1] + addition + text[nl + 1:]
+        else:
+            # No section yet — append one
+            new_text = text.rstrip() + f"\n\n## EXHAUSTED (cross-gen pivot auto-marks)\n{addition}"
+        with locked_file(EXPERIENCE_FILE, "w", encoding="utf-8") as f:
+            f.write(new_text)
+        log_system_event(
+            "pipeline.cross_gen_pivot_marked", "warn",
+            f"Marked axis '{axis}' EXHAUSTED in experience_pool for v{version}",
+            {"version": version, "axis": axis},
+        )
+    except Exception as e:
+        _log.warning("H5: _mark_axis_exhausted_in_pool failed for v%d axis=%s: %s", version, axis, e)
+
+
 def _incremental_reset_next_dir(next_dir, source_dir):
     """Incremental reset: overwrite files present in source (undo worker edits to
     existing files), PRESERVE worker-created NEW files (absent from source). Returns
@@ -1634,6 +1682,66 @@ async def execute_workers(args):
             "next_v": next_v,
             "source_v": source_v,
         })
+
+    # H6 (2026-06-29): CROSS-GENERATION circuit breaker. The single-gen breaker
+    # above limits failures within one generation; this one catches a different
+    # failure mode — workers failing across >= N DISTINCT recent generations
+    # (v214-from-v212 retried workers on the exhausted commitment/defense/gate
+    # axis across gens 213/214 without converging). When this trips, direct
+    # master to pivot axis/parent rather than spawning more identical workers.
+    # Only counts category="worker" exec failures (not reviewer/critic gates).
+    # Uses a dynamic path from evolution_infra.RESULTS_DIR so tests that
+    # monkeypatch RESULTS_DIR also isolate this check (the module-level
+    # WORKER_FAILURES_FILE in agent_workers would otherwise read the real file).
+    _H6_CROSS_GEN_THRESHOLD = 2
+    try:
+        from evolution_infra import RESULTS_DIR as _h6_results
+        _h6_wf_file = _h6_results / "worker_failures.jsonl"
+        _recent = []
+        if _h6_wf_file.exists():
+            try:
+                from evolution_infra import locked_file
+                with locked_file(_h6_wf_file, "r", encoding="utf-8") as f:
+                    for _line in f:
+                        _line = _line.strip()
+                        if _line:
+                            try:
+                                _recent.append(json.loads(_line))
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+            except Exception:
+                pass
+        _recent = _recent[-(_H6_CROSS_GEN_THRESHOLD * 4):]
+        _worker_fails = [r for r in _recent if r.get("category", "worker") == "worker"]
+        _distinct_gens_failed = sorted({r.get("gen") for r in _worker_fails
+                                        if isinstance(r.get("gen"), int)}, reverse=True)
+        if len(_distinct_gens_failed) >= _H6_CROSS_GEN_THRESHOLD:
+            try:
+                log_system_event(
+                    "pipeline.worker_circuit_breaker_cross_gen", "error",
+                    f"Cross-gen worker circuit breaker tripped for v{next_v}: workers "
+                    f"failed across {len(_distinct_gens_failed)} distinct gens "
+                    f"{_distinct_gens_failed[:3]}. Directing master to pivot axis/parent.",
+                    {"next_v": next_v, "source_v": source_v,
+                     "failed_gens": _distinct_gens_failed[:5]},
+                )
+            except Exception:
+                pass
+            return {"content": [{"type": "text", "text": json.dumps({
+                "error": "WORKER_CIRCUIT_BREAKER_CROSS_GEN",
+                "failed_gens": _distinct_gens_failed[:5],
+                "directive": (
+                    f"Workers failed across {len(_distinct_gens_failed)} distinct recent "
+                    f"generations ({_distinct_gens_failed[:3]}). The current strategic "
+                    f"axis (source v{source_v}) is unlikely to converge via more worker "
+                    f"retries. Produce a FUNDAMENTALLY different plan: new structural "
+                    f"mechanism, different strategic axis, or pivot to a different "
+                    f"parent via run_crossover. Do NOT repeat the same worker tasks."
+                ),
+                "logs": _get_ui().get_output() if _get_ui() else "",
+            })}]}
+    except Exception as _ce:
+        _log.debug("H6 cross-gen circuit breaker check failed (non-fatal): %s", _ce)
 
     # [fix-13a] require_new_plan guard removed: generation_attempt is never incremented
     # (all assignments are identity-preserves or run_master resets to 0).

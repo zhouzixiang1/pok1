@@ -370,6 +370,13 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
         # asyncio.wait_for raises TimeoutError BEFORE tuple unpacking completes,
         # so query_gen remains None. We store gen here from inside _stream_response.
         _gen_ref = [None]
+        # H1: clear the precommit shutdown flag at the start of every cycle so a
+        # previous cycle's CYCLE_TIMEOUT doesn't poison the next precommit round.
+        try:
+            from tool_eval import reset_precommit_shutdown
+            reset_precommit_shutdown()
+        except Exception:
+            pass
         try:
             try:
                 # Signature-retry loop for the orchestrator's own SDK stream.
@@ -434,6 +441,20 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                         await _timed_out_gen.aclose()
                     except Exception as e:
                         log.debug("gen.aclose failed during timeout: %s", e)
+
+                # H1+H2 (2026-06-29): signal in-flight precommit mirror battles to
+                # abort. wait_for cancels the stream + aclose()s the generator, but
+                # mirror battles run via loop.run_in_executor (ThreadPool) whose
+                # Future cannot be cancelled once running — subprocesses keep
+                # spawning for up to per_game_timeout. The thread-safe flag set here
+                # is checked between games inside the drain loops (tool_eval.py), so
+                # the stalled precommit breaks out instead of exhausting the daemon
+                # worker pool for hours (root cause of the v214-from-v212 5h stall).
+                try:
+                    from tool_eval import set_precommit_shutdown
+                    set_precommit_shutdown()
+                except Exception as _se:
+                    log.debug("set_precommit_shutdown failed: %s", _se)
 
                 # Stage-aware timeout skip: if pipeline is at the "verified" stage,
                 # commit is the next gate (idempotent) — grant ONE extension.
@@ -740,6 +761,13 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     await query_gen.aclose()
                 except Exception as e:
                     log.debug("gen.aclose failed during cancel: %s", e)
+            # H1: signal in-flight precommit battles to abort (cancel, like timeout,
+            # strands executor subprocesses that can't be cancelled mid-run).
+            try:
+                from tool_eval import set_precommit_shutdown
+                set_precommit_shutdown()
+            except Exception:
+                pass
             # Session file PRESERVED — next startup can resume from checkpoint
             if ui:
                 ui.log_history("[Orchestrator] Cancelled — session preserved for resume.", "warn")

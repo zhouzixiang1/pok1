@@ -221,6 +221,16 @@ def isolate_state(tmp_path, monkeypatch):
     import tool_helpers
     tool_helpers.inject_ui(None)
 
+    # H1 (2026-06-29): reset the precommit shutdown flag. test_orchestrator_timeout_extension
+    # exercises the CYCLE_TIMEOUT handler, which now calls set_precommit_shutdown(); without
+    # this reset the flag leaks into later tests and breaks precommit mirror-battle drain
+    # loops (test_phase2_cs_sprt TestPrecommitGeneratorEarlyStop wins==0 from immediate break).
+    try:
+        import tool_eval
+        tool_eval.reset_precommit_shutdown()
+    except Exception:
+        pass
+
     # --- Create temp directory structure under a private subdirectory ---
     # Use _pok_isolated to avoid colliding with tests that create their own
     # tmp_path/bots or tmp_path/results directories.
