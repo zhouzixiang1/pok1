@@ -37,6 +37,7 @@
 - Active-axis prescription RETIRED: v208+v209 EXECUTED the deal-local-detector + divergence OVERRIDE directions — the prior "ONLY permitted = new deal-local detector" is superseded. Validate v208/v209 firing @≥30g before spawning further new axes; do NOT re-recommend the executed prescription.
 
 ## RECENT_LESSONS
+- **v219**: Critic evidence: H2H weaknesses: v204 vs v206 WR=0.350 (n=20) — worst nemesis; v195 vs v206 WR=0.525 (n=40) — the edge the port targets, v204 vs v197 WR=0.467 (n=30); v195 vs v197 WR=0.625 (n=40), v204 vs v202 WR=0.400 (n=10); v195 vs v202 WR=0.500 (n=50), NOTE: Master plan claim 'v195 beats v204 H2H 0.60' is WRONG — v204 beats v195 0.567 (n=30); crossover logic holds via complementary-strengths rationale, not the stated head-to-head; Experience pool refs: Line 11: 'Fold-side GATE attacks are CROSS_GEN_PIVOT-BLOCKED (dir-audit forbids fold-port ~8 gens) — attack sibling sites via crossover-bypass' — v219 IS the prescribed crossover-bypass, Line 4: '_opp_betsize_polarity (n≥4): deal-local signal feeding fold-calibration' — validated structural axis; v219 consumes it correctly, Line 23: 'choose_raise() constant nudges [POSSIBLY EXHAUSTED] — EXEMPT only structural rewrites adding NEW DEAL-LOCAL opponent-signal gating' — v219 qualifies (betsize_polarity is deal-local); Diff refs: opponent.py L938-953: +17 LOC block flooring bluff_freq at 0.30 when betsize_polarity.tendency=='underbettor' && confidence>=0.20 — the ONLY source change vs v204 (12/16 files byte-identical), opponent.py L988-992: discount = 0.40 + bluff_freq maps floor 0.30 → discount 0.70 (vs standard 0.65) → higher calibrated_equity → smaller equity_gap → less aggressive folding at L1042/1115, opponent.py L1306: confidence = min(1.0, total/12.0); L1282: len(samples)<4 returns 'unknown' — PROVES the 0.20 vs 0.25 gate is INERT (confidence is 0.0 or ≥0.333, never in [0.20,0.25))
 - **v218**: Unconditional value-tier sizing floors that ignore opponent/pot-control signals create blowout leaks within one generation — v217 added the floor, v218 had to gate it; always gate value-tier aggression on deal-local opp fields (value_maximizer_index, fold_to_bet_turn) from the start.
 - **v218**: Opponent-gated fixes are inert if the gate never fires against the actual nemeses — reachability-test gate suppression (>=5% of turn/river spots vs v198/v207/v209) BEFORE adding more opponent clauses; if sticky, tighten the 0.66/0.75x ratios instead.
 - **v218 归档建议 (mixed)**: MANDATORY next step (per critic): reachability-test the v218 floor-suppression gate at >=30g vs v207/v209/v198 on the turn/river — if those nemeses are sticky (fold_to_bet_turn<0.40), the vmi/ftr_turn OR-branch will NOT suppress the floor and you must tighten the 0.66/0.75x pot ratios rather than layering more opponent clauses; evaluate by paired-board NET-CHIPS/blowout-frequency, NOT W-L.
@@ -75,6 +76,7 @@
 
 ## EXHAUSTED (cross-gen pivot auto-marks)
 - [EXHAUSTED — cross_gen_pivot auto-mark v215] gate, polarized, shove
+
 
 
 
