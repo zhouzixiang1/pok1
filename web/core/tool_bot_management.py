@@ -196,9 +196,11 @@ async def _do_abandon_generation(reason: str = "abandon_generation") -> dict:
     checkpoint = read_pipeline_checkpoint() if PIPELINE_STATE_FILE.exists() else None
     cleared_checkpoint = False
     removed_dir = None
+    abandoned_v = None
 
     if checkpoint:
         next_v = checkpoint.get("next_v")
+        abandoned_v = next_v
         clear_pipeline_checkpoint()
         cleared_checkpoint = True
         if next_v is not None:
@@ -211,19 +213,36 @@ async def _do_abandon_generation(reason: str = "abandon_generation") -> dict:
         current_v = find_current_v()
         next_dir = get_bot_dir(current_v + 1)
         if next_dir.exists() and not (next_dir / ".completed").exists():
+            abandoned_v = current_v + 1
             shutil.rmtree(next_dir)
             removed_dir = f"claude_v{current_v + 1}"
+
+    # P2 (2026-06-29 reboot analysis): record the abandoned version number so the
+    # next prepare_generation skips it. Without this, the same next_v is reused
+    # (find_current_v returns the last TAGGED version, so next_v = tagged+1 == the
+    # just-abandoned number), causing the bot to retry the exact same dead-end
+    # version (observed: v218 abandoned then re-prepared as v218 and committed).
+    if abandoned_v is not None:
+        try:
+            from evolution_infra import RESULTS_DIR
+            ab_file = RESULTS_DIR / "abandoned_versions.jsonl"
+            with open(ab_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"v": abandoned_v, "reason": reason,
+                                    "timestamp": __import__("time").time()}) + "\n")
+        except Exception:
+            pass
 
     log_system_event("pipeline.abandoned", "warn",
                      f"Abandoned generation ({reason}, dir={removed_dir})",
                      {"removed_dir": removed_dir, "cleared_checkpoint": cleared_checkpoint,
-                      "reason": reason})
+                      "reason": reason, "abandoned_v": abandoned_v})
 
     return {
         "abandoned": True,
         "cleared_checkpoint": cleared_checkpoint,
         "removed_directory": removed_dir,
         "reason": reason,
+        "abandoned_v": abandoned_v,
     }
 
 

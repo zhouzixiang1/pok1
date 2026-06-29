@@ -206,6 +206,10 @@ def _reset_target_files_to_source(task, source_v, next_dir, next_v,
         src_dir_exists = False
 
     have_baseline = baseline_snapshots is not None and task_idx is not None
+    # LOG GAP FIX (2026-06-29): track which files were reset + the mode used, so
+    # silent rollbacks are auditable (previously this function had zero logging).
+    _reset_log = []
+    _skip_no_source = []
 
     for target in task.get("target_files", []):
         rel = _target_rel(target, next_v)
@@ -217,17 +221,39 @@ def _reset_target_files_to_source(task, source_v, next_dir, next_v,
             snap = baseline_snapshots[(task_idx, rel)]
             if snap:
                 dst_file.write_text(snap)
+                _reset_log.append(rel + " (baseline)")
             elif dst_file.exists():
                 dst_file.unlink(missing_ok=True)
+                _reset_log.append(rel + " (baseline-unlink)")
             continue
 
         if not src_dir_exists:
+            _skip_no_source.append(rel)
             continue
         src_file = src_dir / rel
         if src_file.exists():
             dst_file.write_text(src_file.read_text())
+            _reset_log.append(rel + " (source)")
         elif dst_file.exists():
             dst_file.unlink(missing_ok=True)
+            _reset_log.append(rel + " (source-unlink)")
+
+    # Emit one structured event per reset call summarizing what was rolled back.
+    if _reset_log or _skip_no_source:
+        try:
+            from system_log import log_system_event
+            log_system_event(
+                "pipeline.worker_files_reset", "info",
+                f"v{next_v}: reset {len(_reset_log)} file(s) for task_idx={task_idx} "
+                f"(mode={'baseline' if have_baseline else 'source'}, "
+                f"skipped_no_source={len(_skip_no_source)})",
+                {"next_v": next_v, "source_v": source_v, "task_idx": task_idx,
+                 "mode": "baseline" if have_baseline else "source",
+                 "reset_files": _reset_log[:20],
+                 "skipped_no_source": _skip_no_source[:10]},
+            )
+        except Exception:
+            pass
 
 
 def _unlink_undeclared_new_files(next_dir, pre_run_py_files):

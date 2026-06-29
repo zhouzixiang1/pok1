@@ -434,3 +434,160 @@ def _make_precompact_hook():
             lines.append(time_budget)
         return SyncHookJSONOutput(reason="\n".join(lines))
     return {"PreCompact": [HookMatcher(matcher="*", hooks=[handler])]}
+
+
+def _make_bot_dir_guard_hook():
+    """P1 root-cause fix (2026-06-29): PreToolUse hook that BLOCKS the
+    orchestrator LLM from bypassing pipeline gates by directly mutating bot
+    code OR critical pipeline state files with its built-in Bash/Edit/Write tools.
+
+    Root cause of the v218 gate-bypass: the H6 cross-gen circuit breaker tripped
+    and execute_workers returned an error, but the orchestrator LLM then used its
+    built-in Bash tool (6 calls in one cycle) to hand-edit bots/claude_v218/*.py.
+    This completely bypassed execute_workers and every gate it enforces (circuit
+    breaker, boundary validation, CoT audit, file_size check). The bot then
+    passed quality gates on the hand-edited code and was committed — defeating
+    the entire pipeline contract.
+
+    Multi-agent exploration (2026-06-29) found additional bypass vectors that
+    this hook now also covers:
+      - pipeline_state.json: forge stage="verified" + all-passed gate_results
+        to skip every gate and commit arbitrary code.
+      - worker_failures.jsonl: truncate to reset the H6 cross-gen breaker.
+      - git commit/tag/push: bypass commit_bot's gate checks.
+    The orchestrator LLM's task-orchestration is done via MCP tools, so these
+    built-in file-mutation paths are never legitimately needed.
+
+    The fix is structural: bot code AND pipeline-critical state may ONLY be
+    written by the designated MCP tools. Read-only Bash (grep/cat/git status) is
+    still permitted — only mutations are blocked.
+    """
+    import os
+    # Bot code lives under PROJECT_ROOT/bots/claude_v*. Resolve once.
+    try:
+        from evolution_infra import PROJECT_ROOT, RESULTS_DIR
+        _bots_root = str((PROJECT_ROOT / "bots").resolve())
+        _results_root = str(RESULTS_DIR.resolve())
+    except Exception:
+        _bots_root = None
+        _results_root = None
+
+    # Bash commands that MUTATE files (vs read-only inspection). A Bash call is
+    # blocked only if it targets a protected path AND contains a mutation verb —
+    # so legitimate read-only git/grep/cat on bot dirs still works.
+    _BASH_MUTATION_PATTERNS = (
+        "> ", ">>",         # redirection (write/append)
+        "sed -i",           # in-place edit
+        "tee ",             # write via tee
+        "rm ", "rmdir",     # deletion
+        "mv ", "cp ",       # move/copy INTO protected path
+        "mkdir",            # dir creation in protected path
+        "touch ",           # file creation
+        "cat > ", "cat >>",  # heredoc write
+        "python -c",        # script that could write
+        "patch ",           # apply patch
+        "git add", "git rm", "git checkout", "git restore",  # git mutations of bot files
+        "echo ", "printf ",  # common write vectors
+    )
+
+    # Pipeline-critical state files that, if forged by the LLM, let it bypass
+    # gates or reset protective breakers. These must only be written by the
+    # designated tools (write_pipeline_checkpoint / commit_bot / agent_workers),
+    # never by the orchestrator's Bash/Edit.
+    _PROTECTED_STATE_FILES = (
+        "pipeline_state.json",
+        "worker_failures.jsonl",
+        "circuit_breaker_state.json",
+        "priority_eval.json",
+        "glicko_ratings.json",
+        "bot_stats.json",
+        "cross_gen_exhausted_history.jsonl",
+        "abandoned_versions.jsonl",
+    )
+
+    def _targets_protected(text):
+        """True if the command/text references a protected path:
+        bots/claude_v* (bot code) OR a pipeline-critical state file."""
+        if not text:
+            return False
+        low = str(text).lower()
+        # Bot code dir
+        if "bots/claude_v" in low or "bots\\claude_v" in low:
+            return True
+        if _bots_root and _bots_root.lower() in low:
+            return True
+        # Pipeline-critical state files (match by filename anywhere in path/cmd)
+        for sf in _PROTECTED_STATE_FILES:
+            if sf in low:
+                return True
+        return False
+
+    def _bash_is_mutation(command):
+        """True if a Bash command writes/deletes/edits files (vs read-only).
+        Also treats any git commit/tag/push as a mutation (these bypass commit_bot)."""
+        low = str(command).lower()
+        if any(p in low for p in _BASH_MUTATION_PATTERNS):
+            return True
+        # Block git commit/tag/push outright — these must go through commit_bot.
+        if "git commit" in low or "git tag" in low or "git push" in low:
+            return True
+        return False
+
+    async def handler(hook_input, tool_use_id, context):
+        try:
+            tool_name = hook_input.get("tool_name", "") if isinstance(hook_input, dict) else ""
+            tool_input = hook_input.get("tool_input", {}) if isinstance(hook_input, dict) else {}
+
+            blocked_reason = None
+            if tool_name == "Bash":
+                cmd = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
+                if _targets_protected(cmd) and _bash_is_mutation(cmd):
+                    blocked_reason = (
+                        "Bash command targets a protected path (bot code or pipeline state) "
+                        "and appears to mutate files. Bot code may ONLY be modified via "
+                        "execute_workers or run_crossover; pipeline state only via designated "
+                        "tools; git commits only via commit_bot. Direct mutations bypass all "
+                        "pipeline gates. Command: " + str(cmd)[:120]
+                    )
+            elif tool_name in ("Edit", "Write", "NotebookEdit"):
+                file_path = tool_input.get("file_path", "") or tool_input.get("notebook_path", "")
+                if _targets_protected(file_path):
+                    blocked_reason = (
+                        tool_name + " targets a protected path (" + str(file_path) +
+                        "). Bot code may ONLY be modified via execute_workers or run_crossover; "
+                        "pipeline-critical state files may ONLY be written by designated tools. "
+                        "Direct edits bypass all pipeline gates (circuit breaker, boundary "
+                        "validation, CoT, gate_results integrity)."
+                    )
+
+            if blocked_reason:
+                from system_log import log_system_event
+                try:
+                    log_system_event(
+                        "pipeline.guard_block", "error",
+                        "BLOCKED " + tool_name + " from mutating protected path: "
+                        + blocked_reason[:140],
+                        {"tool": tool_name, "reason": blocked_reason[:200],
+                         "tool_use_id": str(tool_use_id)[:64]},
+                    )
+                except Exception:
+                    pass
+                return SyncHookJSONOutput(
+                    hookSpecificOutput={
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": blocked_reason,
+                    }
+                )
+        except Exception:
+            pass
+        return SyncHookJSONOutput()
+
+    return {
+        "PreToolUse": [
+            HookMatcher(matcher="Bash", hooks=[handler]),
+            HookMatcher(matcher="Edit", hooks=[handler]),
+            HookMatcher(matcher="Write", hooks=[handler]),
+            HookMatcher(matcher="NotebookEdit", hooks=[handler]),
+        ]
+    }

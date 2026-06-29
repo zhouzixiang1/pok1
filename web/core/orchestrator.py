@@ -119,7 +119,7 @@ _NOISY_TOOLS = frozenset({
 _REDUNDANT_NOISY_THRESHOLD = 6    # noisy tools: warn once at the 6th call
 _REDUNDANT_STRICT_THRESHOLD = 2   # pipeline tools: warn once at the 2nd call
 
-from orchestrator_context import _build_context, _make_precompact_hook, set_cycle_start_time  # noqa: E402
+from orchestrator_context import _build_context, _make_precompact_hook, _make_bot_dir_guard_hook, set_cycle_start_time  # noqa: E402
 from orchestrator_session import (  # noqa: E402
     _rotate_orchestrator_logs, _is_rate_limited,
     _save_orchestrator_session, _load_orchestrator_session, _clear_orchestrator_session,
@@ -154,6 +154,10 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
         )
 
     from evolution_core import _BLOCKED_MCP_TOOLS
+    # P1 (2026-06-29): merge PreCompact hook (state preservation) with the
+    # bot_dir_guard PreToolUse hook (blocks LLM from hand-editing bot code via
+    # Bash/Edit/Write, which bypassed the H6 circuit breaker in v218).
+    _hooks = {**_make_precompact_hook(), **_make_bot_dir_guard_hook()}
     options = ClaudeAgentOptions(
         model="sonnet",
         permission_mode="bypassPermissions",
@@ -161,7 +165,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
         mcp_servers={"evolution": evolution_server},
         strict_mcp_config=True,
         disallowed_tools=_BLOCKED_MCP_TOOLS,
-        hooks=_make_precompact_hook(),
+        hooks=_hooks,
         max_turns=max_turns,
         thinking={"type": "adaptive"},  # let Claude decide thinking depth (was disabled to dodge an old SDK signature bug; adaptive is now the documented default)
         **resume_kwargs,
@@ -683,7 +687,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     mcp_servers={"evolution": evolution_server},
                     strict_mcp_config=True,
                     disallowed_tools=_BLOCKED_MCP_TOOLS,
-                    hooks=_make_precompact_hook(),
+                    hooks={**_make_precompact_hook(), **_make_bot_dir_guard_hook()},
                     max_turns=max_turns,
                     thinking={"type": "adaptive"},  # let Claude decide thinking depth
                     **_resume_kwargs,

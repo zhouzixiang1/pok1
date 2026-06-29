@@ -207,8 +207,35 @@ async def commit_bot(args):
     except Exception as e:
         _log.warning("Priority eval signal write failed for v%d: %s", v, e)
 
-    log_system_event("pipeline.committed", "success", f"Committed v{v} from v{source_v}: {strategy[:80]}",
-                     {"version": v, "source_v": source_v, "strategy": strategy[:100]})
+    # LOG GAP FIX (2026-06-29): enrich the commit audit event with rating,
+    # file_size, and gate_results summary so a committed generation is fully
+    # auditable from the event log alone (previously only version/source/strategy).
+    _commit_audit = {"version": v, "source_v": source_v, "strategy": strategy[:120]}
+    try:
+        if p is not None:
+            _commit_audit["rating"] = {"r": round(p.r, 1), "rd": round(p.rd, 1)}
+        if h2h_wr is not None:
+            _commit_audit["h2h_avg_wr"] = round(h2h_wr, 4)
+    except Exception:
+        pass
+    try:
+        _py_files = list(bot_dir.glob("*.py"))
+        _commit_audit["file_size_total"] = sum(f.stat().st_size for f in _py_files)
+        _commit_audit["n_py_files"] = len(_py_files)
+    except Exception:
+        pass
+    try:
+        _gr = (ckpt or {}).get("gate_results", {}) or {}
+        _commit_audit["gate_results"] = {
+            "quality_passed": (_gr.get("quality") or {}).get("passed"),
+            "review_score": (_gr.get("review") or {}).get("score"),
+            "critic_score": (_gr.get("critic") or {}).get("score"),
+            "precommit_passed": (_gr.get("precommit_eval") or {}).get("passed"),
+        }
+    except Exception:
+        pass
+    log_system_event("pipeline.committed", "success",
+                     f"Committed v{v} from v{source_v}: {strategy[:80]}", _commit_audit)
 
     _set_pipeline_status(f"Committed v{v}", is_working=False)
 

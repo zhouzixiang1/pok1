@@ -167,6 +167,13 @@ _BLOCKED_MCP_TOOLS = [
     "mcp__zread__get_repo_structure",
     "mcp__zread__read_file",
     "mcp__zread__search_doc",
+    # P1 (2026-06-29): disable built-in Task tools for the orchestrator. Task
+    # sub-agents do NOT inherit the PreToolUse guard hook, so the LLM could
+    # spawn a Task sub-agent whose Bash/Edit writes bot code / pipeline state
+    # without any gate check — a full bypass of the pipeline guard. The
+    # orchestrator's work is done via MCP tools (run_master/execute_workers/...),
+    # so it never legitimately needs Task sub-agents.
+    "Task", "TaskCreate", "TaskUpdate", "TaskOutput", "TaskList", "TaskGet",
 ]
 
 # Adaptive semaphores keyed by api_concurrency level — created on first use
@@ -920,13 +927,40 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
         f"strategy: {strategy_tag}\n"
         f"{rating_info}"
     )
-    _git("add", f"bots/claude_v{version}", check=False)
+    # LOG GAP FIX (2026-06-29): record what gets staged so a hand-edit bypass
+    # (orchestrator LLM mutating bot code outside execute_workers) is visible.
+    _staged = _git("add", f"bots/claude_v{version}", check=False)
+    _exp_added = False
     if EXPERIENCE_FILE.exists():
         _git("add", str(EXPERIENCE_FILE.relative_to(PROJECT_ROOT)), check=False)
+        _exp_added = True
+    # Capture the staged file list right before commit for auditability.
+    _staged_files = _git("diff", "--cached", "--name-only", check=False).strip().splitlines()
+    try:
+        from system_log import log_system_event
+        log_system_event(
+            "pipeline.git_commit_staged", "info",
+            f"v{version}: staging {len(_staged_files)} file(s) for commit",
+            {"version": version, "source_v": source_v,
+             "staged_files": _staged_files[:30],
+             "experience_added": _exp_added},
+        )
+    except Exception:
+        pass
     _git("commit", "-m", msg)
+    _commit_hash = _git("rev-parse", "HEAD", check=False).strip()[:12]
     tag = f"bot-v{version}"
     _git("tag", "-d", tag, check=False)
     _git("tag", tag, "-m", f"Bot v{version}: {strategy_tag}")
+    try:
+        from system_log import log_system_event
+        log_system_event(
+            "pipeline.git_commit_done", "success",
+            f"v{version}: committed {_commit_hash} + tag {tag}",
+            {"version": version, "commit_hash": _commit_hash, "tag": tag},
+        )
+    except Exception:
+        pass
 
     push_ok = False
     if os.environ.get("EVOLUTION_GIT_PUSH") == "1":

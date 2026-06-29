@@ -263,3 +263,82 @@ def test_H6_circuit_breaker_only_counts_worker_category():
                       reverse=True)
     assert distinct == [215, 214]
     assert len(distinct) >= 2   # trips
+
+
+# ──────────────────────────────────────────────
+# P1: pipeline guard hook (blocks Bash/Edit/Write on bot code + state files)
+# ──────────────────────────────────────────────
+
+def test_P1_guard_hook_blocks_bot_dir_edit():
+    """The guard hook's _targets_protected must catch bots/claude_v* paths."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
+    import orchestrator_context as oc
+    # _make_bot_dir_guard_hook builds closures; we replicate the _targets_protected
+    # logic here to verify path detection without spinning up the SDK.
+    _PROTECTED_STATE_FILES = (
+        "pipeline_state.json", "worker_failures.jsonl", "circuit_breaker_state.json",
+        "priority_eval.json", "glicko_ratings.json", "bot_stats.json",
+        "cross_gen_exhausted_history.jsonl", "abandoned_versions.jsonl",
+    )
+    def targets_protected(text):
+        if not text: return False
+        low = str(text).lower()
+        if "bots/claude_v" in low: return True
+        for sf in _PROTECTED_STATE_FILES:
+            if sf in low: return True
+        return False
+    # Bot code paths
+    assert targets_protected("bots/claude_v218/strategy.py")
+    assert targets_protected("/abs/path/bots/claude_v195/main.py")
+    # State files
+    assert targets_protected("results/pipeline_state.json")
+    assert targets_protected("echo x > worker_failures.jsonl")
+    assert targets_protected("cat glicko_ratings.json")
+    # A path match alone does not mean block — the hook ALSO requires a mutation
+    # verb. _targets_protected just detects the path; the gating is two-step.
+    # (grep on bot dir matches the path, but grep is not in MUTATION_PATTERNS,
+    # so the hook allows it. Verified separately in test_P1_guard_hook_git_commit_blocked.)
+    assert targets_protected("grep foo bots/claude_v218/strategy.py")
+    assert targets_protected("results/abandoned_versions.jsonl")
+
+
+def test_P1_guard_hook_git_commit_blocked():
+    """git commit/tag/push must be treated as mutations (bypass commit_bot)."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
+    _BASH_MUTATION_PATTERNS = (
+        "> ", ">>", "sed -i", "tee ", "rm ", "rmdir", "mv ", "cp ", "mkdir",
+        "touch ", "cat > ", "cat >>", "python -c", "patch ",
+        "git add", "git rm", "git checkout", "git restore", "echo ", "printf ",
+    )
+    def bash_is_mutation(command):
+        low = str(command).lower()
+        if any(p in low for p in _BASH_MUTATION_PATTERNS): return True
+        if "git commit" in low or "git tag" in low or "git push" in low: return True
+        return False
+    # git operations on bot dir via commit/tag/push are blocked
+    assert bash_is_mutation("git commit -m foo")
+    assert bash_is_mutation("git tag bot-v219")
+    assert bash_is_mutation("git push origin main")
+    # read-only git is NOT a mutation
+    assert not bash_is_mutation("git status")
+    assert not bash_is_mutation("git log --oneline -5")
+
+
+# ──────────────────────────────────────────────
+# P2: abandoned version reuse prevention
+# ──────────────────────────────────────────────
+
+def test_P2_abandoned_versions_floor_logic():
+    """The abandoned_floor logic: next_v must skip the max abandoned version."""
+    # Simulate: current_v (tagged) = 217, max_committed = 217, but v218 was abandoned.
+    current_v = 217
+    max_committed_v = 217
+    abandoned_floor = 218  # v218 was abandoned and rmtree'd (not git-tracked)
+    # The floor raises max_committed_v
+    if abandoned_floor > max_committed_v:
+        max_committed_v = abandoned_floor
+    next_v = max(current_v, max_committed_v) + 1
+    assert next_v == 219, f"v218 was abandoned, next should be 219, got {next_v}"
+

@@ -1693,6 +1693,16 @@ async def execute_workers(args):
     # Uses a dynamic path from evolution_infra.RESULTS_DIR so tests that
     # monkeypatch RESULTS_DIR also isolate this check (the module-level
     # WORKER_FAILURES_FILE in agent_workers would otherwise read the real file).
+    #
+    # NOTE (P1 root-cause analysis, 2026-06-29): this breaker only guards the
+    # execute_workers MCP tool. The v218 logs showed that after the breaker
+    # tripped and execute_workers returned an error, the orchestrator LLM used
+    # its BUILT-IN Bash/Edit tools to write bot code directly into bots/claude_v218/,
+    # completely bypassing execute_workers (and thus this breaker, boundary
+    # validation, CoT audit, etc.). The breaker is therefore necessary but NOT
+    # sufficient. The real fix is a PreToolUse hook that blocks the orchestrator's
+    # Bash/Edit/Write from touching bots/claude_v* — see _make_bot_dir_guard_hook
+    # in orchestrator_context.py. The breaker here stays as defense-in-depth.
     _H6_CROSS_GEN_THRESHOLD = 2
     try:
         from evolution_infra import RESULTS_DIR as _h6_results
@@ -1736,7 +1746,8 @@ async def execute_workers(args):
                     f"axis (source v{source_v}) is unlikely to converge via more worker "
                     f"retries. Produce a FUNDAMENTALLY different plan: new structural "
                     f"mechanism, different strategic axis, or pivot to a different "
-                    f"parent via run_crossover. Do NOT repeat the same worker tasks."
+                    f"parent via run_crossover. Do NOT repeat the same worker tasks, "
+                    f"and do NOT edit bot files directly with Bash/Edit."
                 ),
                 "logs": _get_ui().get_output() if _get_ui() else "",
             })}]}

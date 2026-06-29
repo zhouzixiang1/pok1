@@ -80,6 +80,48 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     # 返回含裸 commit（绕过 commit_bot 直接 git commit、无 tag+.completed）的最大版本号。
     # 用它抬高 next_v 下界，使裸 commit 占用的版本号不会被下一代重生覆盖。
     max_committed_v = find_max_committed_v()
+    # P2 (2026-06-29 reboot analysis): also account for abandoned versions.
+    # _do_abandon_generation rmtree's the dir (so it's not git-tracked and
+    # invisible to find_max_committed_v), then logs the version to
+    # abandoned_versions.jsonl. Without this, next_v reuses the just-abandoned
+    # number (find_current_v returns the last TAGGED v, so next_v = tagged+1 ==
+    # the abandoned v), causing a dead-end retry (observed: v218 abandon→re-prepare
+    # as v218). Read the max abandoned v and fold it into the next_v floor.
+    _abandoned_floor = 0
+    try:
+        from evolution_infra import RESULTS_DIR as _ab_results
+        _ab_file = _ab_results / "abandoned_versions.jsonl"
+        if _ab_file.exists():
+            with open(_ab_file, "r", encoding="utf-8") as _af:
+                for _line in _af:
+                    _line = _line.strip()
+                    if not _line:
+                        continue
+                    try:
+                        _av = json.loads(_line).get("v")
+                        if isinstance(_av, int) and _av > _abandoned_floor:
+                            _abandoned_floor = _av
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+    except Exception as _ab_e:
+        # LOG GAP FIX (2026-06-29): if abandoned_versions.jsonl is unreadable,
+        # next_v floor falls back to max_committed_v and may reuse an abandoned
+        # version — the exact bug P2 was written to prevent. Warn so it's visible.
+        try:
+            log_system_event(
+                "pipeline.abandoned_floor_unavailable", "warn",
+                f"abandoned_versions.jsonl unreadable; next_v floor may reuse an "
+                f"abandoned version: {_ab_e}",
+                {"error": str(_ab_e)[:200]},
+            )
+        except Exception:
+            pass
+    if _abandoned_floor > max_committed_v:
+        max_committed_v = _abandoned_floor
+        log.info(
+            "P2: next_v floor raised to %d based on abandoned_versions.jsonl "
+            "(preventing reuse of just-abandoned version)", max_committed_v + 1,
+        )
     if max_committed_v > current_v:
         _bare = [v for v in range(current_v + 1, max_committed_v + 1)
                  if git_dir_is_committed(v) and not git_has_tag(v)]
@@ -365,9 +407,26 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     except Exception as e:
         log.warning("QD elite re-eval trigger failed (non-fatal): %s", e)
 
+    # LOG GAP FIX (2026-06-29): record the final next_v decision with all inputs
+    # so the version-number allocation is fully auditable. Previously only the
+    # abnormal paths (bare commit, abandoned floor) logged; the normal case left
+    # no trace of how next_v was computed.
+    _final_next_v = max(current_v, max_committed_v) + 1
+    try:
+        log_system_event(
+            "pipeline.generation_prepared", "info",
+            f"Prepared v{_final_next_v} from v{source_v} (strategy={strategy[:40]})",
+            {"next_v": _final_next_v, "current_v": current_v,
+             "max_committed_v": max_committed_v,
+             "abandoned_floor": _abandoned_floor,
+             "source_v": source_v, "strategy": strategy[:80]},
+        )
+    except Exception:
+        pass
+
     return GenerationContext(
         current_v=current_v,
-        next_v=max(current_v, max_committed_v) + 1,
+        next_v=_final_next_v,
         strategy=strategy,
         source_v=source_v,
         crossover_parents=parents,
