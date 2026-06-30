@@ -26,6 +26,60 @@ from claude_agent_sdk import (
 log = logging.getLogger("pok.infra")
 
 
+_SUBAGENT_BASH_MUTATION_PATTERNS = (
+    "sed -i", "tee ", "rm ", "rmdir", "mv ", "cp ", "mkdir",
+    "touch ", "cat > ", "cat >>", "patch ",
+    "git add", "git rm", "git checkout", "git restore", "git commit",
+    "git tag", "git push",
+)
+_SUBAGENT_REDIRECT_RE = re.compile(r"(^|[^<>=])>>?($|[^<>=])")
+_SUBAGENT_PYTHON_WRITE_PATTERNS = (
+    ".write_text(", ".unlink(", ".rename(",
+    ".mkdir(", ".rmdir(", "shutil.move", "shutil.copy",
+    "shutil.copytree", "shutil.rmtree", "os.remove", "os.unlink",
+    "os.rename", "os.replace", "os.makedirs",
+)
+_SUBAGENT_PYTHON_OPEN_WRITE_RE = re.compile(r"open\([^)]*,\s*['\"][^'\"]*[wax+]")
+
+
+def _subagent_bash_is_mutation(command):
+    """Return True when a Bash command appears to write/delete/move files."""
+    text = str(command)
+    low = text.lower()
+    if _SUBAGENT_REDIRECT_RE.search(text):
+        return True
+    if "python" in low:
+        if _SUBAGENT_PYTHON_OPEN_WRITE_RE.search(low):
+            return True
+        if any(p in low for p in _SUBAGENT_PYTHON_WRITE_PATTERNS):
+            return True
+    return any(p in low for p in _SUBAGENT_BASH_MUTATION_PATTERNS)
+
+
+def _subagent_is_outside_allowed(path_or_cmd, allowed_dir):
+    """True if a target path/command references protected paths outside allowed_dir."""
+    text = str(path_or_cmd or "")
+    if not text:
+        return False
+    low = text.lower()
+    allowed = str(allowed_dir or "")
+    if allowed and allowed.lower() in low:
+        return False
+    try:
+        marker = allowed.lower().split("bots/")[-1]
+        if marker and marker in low:
+            return False
+    except Exception:
+        pass
+    if "bots/claude_v" in low or "bots\\claude_v" in low:
+        return True
+    for protected in ("web/core", "web/server", "results/pipeline_state",
+                      "worker_failures", "pipeline_state.json", ".git"):
+        if protected in low:
+            return True
+    return False
+
+
 def _make_subagent_write_guard(allowed_write_dir):
     """A1 (2026-06-30): build a PreToolUse hook that restricts a sub-agent's
     Bash/Edit/Write/NotebookEdit to ONLY mutate files under `allowed_write_dir`.
@@ -45,45 +99,6 @@ def _make_subagent_write_guard(allowed_write_dir):
     except Exception:
         _allowed = str(allowed_write_dir)
 
-    _BASH_MUTATION_PATTERNS = (
-        "> ", ">>", "sed -i", "tee ", "rm ", "rmdir", "mv ", "cp ", "mkdir",
-        "touch ", "cat > ", "cat >>", "python -c", "patch ",
-        "git add", "git rm", "git checkout", "git restore", "git commit",
-        "git tag", "git push", "echo ", "printf ",
-    )
-
-    def _is_outside_allowed(path_or_cmd):
-        """True if the target path/command references a path outside allowed_write_dir."""
-        text = str(path_or_cmd or "")
-        if not text:
-            return False
-        low = text.lower()
-        # If it explicitly references the allowed dir, it's inside.
-        if _allowed.lower() in low:
-            return False
-        # bots/claude_vN relative path matching the allowed bot dir is inside.
-        # We check by seeing if the path looks like a bot file under the SAME version.
-        # allowed_write_dir is like .../bots/claude_v220 ; extract the version marker.
-        try:
-            marker = _allowed.lower().split("bots/")[-1]  # e.g. "claude_v220"
-            if marker and marker in low:
-                return False
-        except Exception:
-            pass
-        # Any bots/claude_v* path that is NOT the allowed one -> outside.
-        if "bots/claude_v" in low or "bots\\claude_v" in low:
-            return True
-        # web/core, results/, pipeline_state, etc. -> outside (protected paths).
-        for protected in ("web/core", "web/server", "results/pipeline_state",
-                          "worker_failures", "pipeline_state.json", ".git"):
-            if protected in low:
-                return True
-        return False
-
-    def _bash_is_mutation(command):
-        low = str(command).lower()
-        return any(p in low for p in _BASH_MUTATION_PATTERNS)
-
     async def handler(hook_input, tool_use_id, context):
         try:
             from claude_agent_sdk.types import SyncHookJSONOutput
@@ -92,13 +107,13 @@ def _make_subagent_write_guard(allowed_write_dir):
             blocked = None
             if tool_name == "Bash":
                 cmd = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
-                if _bash_is_mutation(cmd) and _is_outside_allowed(cmd):
+                if _subagent_bash_is_mutation(cmd) and _subagent_is_outside_allowed(cmd, _allowed):
                     blocked = ("Bash mutation targets a path outside the allowed bot dir "
                                + _allowed + ". Sub-agents may only edit their assigned "
                                "target bot directory. Command: " + str(cmd)[:100])
             elif tool_name in ("Edit", "Write", "NotebookEdit"):
                 fp = tool_input.get("file_path", "") or tool_input.get("notebook_path", "")
-                if _is_outside_allowed(fp):
+                if _subagent_is_outside_allowed(fp, _allowed):
                     blocked = (tool_name + " targets a path outside the allowed bot dir "
                                + _allowed + " (" + str(fp) + "). Sub-agents may only edit "
                                "their assigned target bot directory.")

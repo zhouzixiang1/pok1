@@ -247,6 +247,45 @@ class BattleSchedulerClient:
             None, lambda: battle_scheduler.collect_results(job_ids)
         )
 
+    async def status(self, job_ids: list[str]) -> dict:
+        """Peek scheduler queue state for the given job_ids without consuming results."""
+        import battle_scheduler
+        return await self._loop.run_in_executor(
+            None, lambda: battle_scheduler.get_job_status(job_ids)
+        )
+
+
+def _scheduler_stall_reason(
+    *,
+    collected_count: int,
+    submitted_count: int,
+    rounds_since_progress: int,
+    pending_stall_rounds: int,
+    missing_stall_rounds: int,
+    pending_count: int,
+    claimed_count: int,
+    completed_count: int,
+    scheduler_stall_rounds: int,
+    claimed_job_stall_rounds: int,
+) -> str:
+    """Return the scheduler stall reason, or an empty string if it should keep waiting."""
+    if collected_count >= submitted_count:
+        return ""
+    if missing_stall_rounds >= 3:
+        return "jobs_missing_from_scheduler_files"
+    if pending_count > 0 and pending_stall_rounds >= scheduler_stall_rounds:
+        return "jobs_never_claimed"
+    if (
+        claimed_count == 0
+        and pending_count == 0
+        and completed_count == 0
+        and rounds_since_progress >= scheduler_stall_rounds
+    ):
+        return "no_scheduler_activity"
+    if claimed_count > 0 and rounds_since_progress >= claimed_job_stall_rounds:
+        return "claimed_jobs_exceeded_grace"
+    return ""
+
 
 # ──────────────────────────────────────────────
 # Precommit Eval
@@ -470,6 +509,22 @@ async def run_precommit_eval(args):
 
         try:
             submitted_ids = await scheduler_client.submit(jobs)
+            log_system_event(
+                "pipeline.precommit_eval.scheduler_jobs_submitted", "info",
+                f"v{v}: scheduler accepted {len(submitted_ids)}/{len(jobs)} precommit job(s)",
+                {"version": v, "source_v": source_v,
+                 "jobs": [
+                     {
+                         "job_id": jid,
+                         "opponent": job_id_to_opponent.get(jid, {}).get("name"),
+                         "reason": job_id_to_opponent.get(jid, {}).get("reason"),
+                         "n_games": n_games,
+                         "timeout_sec": max(300, n_games * 120),
+                     }
+                     for jid in submitted_ids
+                 ],
+                 "poll_budget_sec": min(max(300, n_games * 120) * len(opponents), 1500)},
+            )
         except Exception as exc:
             log_system_event(
                 "pipeline.precommit_eval.scheduler_rejected", "warn",
@@ -518,8 +573,16 @@ async def run_precommit_eval(args):
             # times out, counts as no-progress. The trip decision is now purely
             # progress-based and independent of daemon liveness probes.
             SCHEDULER_STALL_ROUNDS = max(24, n_games * 3)
+            CLAIMED_JOB_STALL_ROUNDS = max(
+                SCHEDULER_STALL_ROUNDS,
+                int(max(600, n_games * 90) / poll_interval),
+            )
             rounds_since_progress = 0
+            pending_stall_rounds = 0
+            missing_stall_rounds = 0
             prev_collected_count = 0
+            last_status_log = 0.0
+            last_scheduler_status = {}
             # Cap each collect() call so a wedged fcntl lock cannot hang the
             # whole poll loop (battle_scheduler.collect_results takes an
             # exclusive LOCK_EX on battle_results.jsonl).
@@ -544,19 +607,82 @@ async def run_precommit_eval(args):
                     rounds_since_progress += 1
                 if len(collected_results) >= len(submitted_ids):
                     break
-                if rounds_since_progress >= SCHEDULER_STALL_ROUNDS:
+                try:
+                    last_scheduler_status = await asyncio.wait_for(
+                        scheduler_client.status(submitted_ids),
+                        timeout=COLLECT_CALL_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    last_scheduler_status = {}
+
+                pending_count = int(last_scheduler_status.get("pending_count", 0) or 0)
+                claimed_count = int(last_scheduler_status.get("claimed_count", 0) or 0)
+                completed_count = int(last_scheduler_status.get("completed_count", 0) or 0)
+                missing_count = int(last_scheduler_status.get("missing_count", 0) or 0)
+                if claimed_count > 0:
+                    pending_stall_rounds = 0
+                    missing_stall_rounds = 0
+                elif pending_count > 0:
+                    pending_stall_rounds += 1
+                    missing_stall_rounds = 0
+                elif completed_count > 0:
+                    pending_stall_rounds = 0
+                    missing_stall_rounds = 0
+                elif len(collected_results) < len(submitted_ids):
+                    missing_stall_rounds += 1
+
+                now_for_status = time.time()
+                if (
+                    rounds_since_progress > 0
+                    and now_for_status - last_status_log >= 60
+                    and len(collected_results) < len(submitted_ids)
+                ):
+                    log_system_event(
+                        "pipeline.precommit_eval.scheduler_waiting", "info",
+                        f"v{v}: waiting for scheduler results "
+                        f"({len(collected_results)}/{len(submitted_ids)} collected; "
+                        f"pending={pending_count}, claimed={claimed_count}, completed_peek={completed_count}, "
+                        f"missing={missing_count})",
+                        {"version": v, "source_v": source_v,
+                         "collected": len(collected_results),
+                         "submitted": len(submitted_ids),
+                         "pending": pending_count,
+                         "claimed": claimed_count,
+                         "completed_peek": completed_count,
+                         "missing": missing_count},
+                    )
+                    last_status_log = now_for_status
+
+                stall_reason = _scheduler_stall_reason(
+                    collected_count=len(collected_results),
+                    submitted_count=len(submitted_ids),
+                    rounds_since_progress=rounds_since_progress,
+                    pending_stall_rounds=pending_stall_rounds,
+                    missing_stall_rounds=missing_stall_rounds,
+                    pending_count=pending_count,
+                    claimed_count=claimed_count,
+                    completed_count=completed_count,
+                    scheduler_stall_rounds=SCHEDULER_STALL_ROUNDS,
+                    claimed_job_stall_rounds=CLAIMED_JOB_STALL_ROUNDS,
+                )
+                if stall_reason:
                     # daemon liveness is logged for diagnosis only; the trip
-                    # itself is decided purely by progress stalling so a
-                    # half-dead daemon (alive but not draining) still trips.
+                    # itself is decided by progress plus queue state. Claimed
+                    # jobs are allowed a much larger grace window because real
+                    # 8-pair mirror battles often take 7-10 minutes before the
+                    # first result appears.
                     scheduler_healthy = await scheduler_client.is_available()
                     log_system_event(
                         "pipeline.precommit_eval.scheduler_stall", "warn",
                         f"v{v}: scheduler no progress for {rounds_since_progress} rounds "
                         f"(~{rounds_since_progress * poll_interval:.0f}s, "
-                        f"daemon_capable={scheduler_healthy}). Breaking to fallback.",
+                        f"daemon_capable={scheduler_healthy}, reason={stall_reason}). "
+                        f"Breaking to fallback.",
                         {"version": v, "source_v": source_v,
                          "collected": len(collected_results),
-                         "submitted": len(submitted_ids)},
+                         "submitted": len(submitted_ids),
+                         "reason": stall_reason,
+                         "scheduler_status": last_scheduler_status},
                     )
                     break
                 await asyncio.sleep(poll_interval)
@@ -573,7 +699,8 @@ async def run_precommit_eval(args):
                     f"(daemon_capable={scheduler_healthy}). Degrading to fallback.",
                     {"version": v, "source_v": source_v,
                      "collected": len(collected_results),
-                     "submitted": len(submitted_ids)},
+                     "submitted": len(submitted_ids),
+                     "scheduler_status": last_scheduler_status},
                 )
 
             # Build matchups from scheduler results

@@ -887,6 +887,47 @@ def _pop_next_job(match_queue):
     return match_queue.popleft()
 
 
+def _log_external_dispatch(job_id, bot_a, bot_b, source, in_flight_count, queue_count):
+    try:
+        log_system_event(
+            "daemon.external_job_dispatched", "info",
+            f"Dispatched external job {job_id}: {bot_a} vs {bot_b} ({source})",
+            {
+                "job_id": job_id,
+                "bot_a": bot_a,
+                "bot_b": bot_b,
+                "source": source,
+                "in_flight": in_flight_count,
+                "queue": queue_count,
+            },
+        )
+    except Exception:
+        pass
+
+
+def _log_external_result(job_id, bot_a, bot_b, result=None, error=None):
+    try:
+        payload = {"job_id": job_id, "bot_a": bot_a, "bot_b": bot_b}
+        severity = "info"
+        message = f"External job {job_id} completed: {bot_a} vs {bot_b}"
+        if error is not None:
+            severity = "warn"
+            message = f"External job {job_id} failed: {bot_a} vs {bot_b}"
+            payload["error"] = str(error)[:500]
+        elif result is not None:
+            payload.update({
+                "wins_a": result[2],
+                "wins_b": result[3],
+                "draws": result[4],
+                "total": result[5],
+                "error": result[6] if len(result) > 6 and result[6] else None,
+                "net_chips_samples": len(result[7]) if len(result) > 7 and result[7] else 0,
+            })
+        log_system_event("daemon.external_job_result", severity, message, payload)
+    except Exception:
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser(description="Background Rating Daemon")
     parser.add_argument("--pairs", type=int, default=5, help="Mirror pairs per match")
@@ -1004,6 +1045,10 @@ def main():
             ext_job_id = m[1]
             fut = executor.submit(run_single_match, exec_args)
             in_flight[fut] = (exec_args[0], exec_args[1], ext_job_id)
+            _log_external_dispatch(
+                ext_job_id, exec_args[0], exec_args[1],
+                "initial_fill", len(in_flight), len(match_queue),
+            )
         else:
             if m[0] not in active_bots or m[1] not in active_bots:
                 continue
@@ -1124,6 +1169,10 @@ def main():
                         _ext_job_id = _q_m[1]
                         new_fut = executor.submit(run_single_match, _exec_args)
                         in_flight[new_fut] = (_exec_args[0], _exec_args[1], _ext_job_id)
+                        _log_external_dispatch(
+                            _ext_job_id, _exec_args[0], _exec_args[1],
+                            "proactive_reserved_slot", len(in_flight), len(match_queue),
+                        )
                         log.info(
                             "[dispatch] proactively submitted external job %s into "
                             "reserved slot (in_flight=%d, queue=%d)",
@@ -1204,6 +1253,7 @@ def main():
                                             completed_at=time.time(),
                                             source="scheduler",
                                         ))
+                                        _log_external_result(ext_job_id, a, b, result=result)
                                     except Exception as wr_err:
                                         log.warning("write_result failed for %s: %s", ext_job_id, wr_err)
                             except Exception as e:
@@ -1217,6 +1267,7 @@ def main():
                                             completed_at=time.time(),
                                             source="scheduler",
                                         ))
+                                        _log_external_result(ext_job_id, a, b, error=e)
                                     except Exception as wr_err:
                                         log.warning("write_result(error) failed for %s: %s", ext_job_id, wr_err)
                             continue
@@ -1264,6 +1315,10 @@ def main():
                                     ext_job_id = m[1]
                                     new_fut = executor.submit(run_single_match, exec_args)
                                     in_flight[new_fut] = (exec_args[0], exec_args[1], ext_job_id)
+                                    _log_external_dispatch(
+                                        ext_job_id, exec_args[0], exec_args[1],
+                                        "replenish_after_done", len(in_flight), len(match_queue),
+                                    )
                                 else:
                                     if m[0] not in active_bots or m[1] not in active_bots:
                                         continue
@@ -1283,6 +1338,10 @@ def main():
                                         ext_job_id = m[1]
                                         new_fut = executor.submit(run_single_match, exec_args)
                                         in_flight[new_fut] = (exec_args[0], exec_args[1], ext_job_id)
+                                        _log_external_dispatch(
+                                            ext_job_id, exec_args[0], exec_args[1],
+                                            "replenish_after_refill", len(in_flight), len(match_queue),
+                                        )
                                     else:
                                         if m[0] not in active_bots or m[1] not in active_bots:
                                             continue
