@@ -544,6 +544,19 @@ class TestSaveRatingsAtomic:
         elo_daemon.save_ratings({"claude_v10": MockPlayer()})
         assert not (tmp_path / "glicko_ratings.tmp").exists()
 
+    def test_write_failure_preserves_existing_json(self, tmp_path):
+        """Atomic writer must not truncate the live file before tmp replace."""
+        from evolution_infra import write_locked_json
+
+        ratings_file = tmp_path / "glicko_ratings.json"
+        ratings_file.write_text('{"claude_v9": {"r": 1490}}', encoding="utf-8")
+
+        with pytest.raises(TypeError):
+            write_locked_json(ratings_file, {"bad": object()})
+
+        data = json.loads(ratings_file.read_text(encoding="utf-8"))
+        assert data == {"claude_v9": {"r": 1490}}
+
 
 # ══════════════════════════════════════════════════════════════════════
 # Stage 10: Pipeline checkpoint fsync

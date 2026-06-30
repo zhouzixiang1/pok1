@@ -260,7 +260,10 @@ def write_locked_json(path, data, indent=2):
     path = Path(path)
     os.makedirs(str(path.parent), exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    with locked_file(path, "w", encoding="utf-8", lock_type=fcntl.LOCK_EX) as _lock_guard:
+    # Lock the target path without truncating it. Using mode="w" here would
+    # empty the live JSON before the tmp+replace step; if the daemon is killed
+    # between truncate and replace, readers see a permanent 0-byte file.
+    with locked_file(path, "a+", encoding="utf-8", lock_type=fcntl.LOCK_EX) as _lock_guard:
         # Write to temp file, then atomically replace
         with open(str(tmp), "w", encoding="utf-8") as f:
             f.write(json.dumps(data, indent=indent, ensure_ascii=False))

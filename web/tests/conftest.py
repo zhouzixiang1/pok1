@@ -165,11 +165,32 @@ def sample_h2h():
 
 @pytest.fixture(scope="session")
 def active_bot_version():
-    from evolution_infra import get_active_bots
+    import json
+    import time
+
+    from evolution_infra import RATINGS_FILE, get_active_bots, locked_file
+
     bots = get_active_bots()
     if not bots:
         return None
-    versions = sorted(int(b.split("_v")[1]) for b in bots)
+    rated = set()
+    for _ in range(5):
+        try:
+            if RATINGS_FILE.exists():
+                with locked_file(RATINGS_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                rated = set(data) if isinstance(data, dict) else set()
+                break
+        except (json.JSONDecodeError, OSError, ValueError):
+            time.sleep(0.1)
+    rated_versions = sorted(
+        int(b.split("_v")[1])
+        for b in bots
+        if b in rated and b.split("_v")[1].isdigit()
+    )
+    if rated_versions:
+        return rated_versions[len(rated_versions) // 2]
+    versions = sorted(int(b.split("_v")[1]) for b in bots if b.split("_v")[1].isdigit())
     return versions[len(versions) // 2]
 
 

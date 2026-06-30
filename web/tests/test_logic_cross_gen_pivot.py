@@ -241,6 +241,47 @@ class TestPlanRepeatsExhaustedDirection:
         assert repeats is False
         assert matched == ""
 
+    def test_fold_gate_positioning_for_new_raise_path_is_not_fold_gate_edit(self):
+        import core.tool_planning as tp
+
+        plan = {
+            "targeted_failure": (
+                "v224 only calls/folds with draw+weak-made hands facing "
+                "coordinated turn underbets, leaving fold equity unexploited."
+            ),
+            "expected_behavior_change": (
+                "Add a turn semi-bluff raise constructor that creates a new "
+                "raise path from fold equity + draw equity."
+            ),
+            "do_not_touch": [
+                "opponent.py fold-side calibration",
+                "_estimate_bluff_frequency",
+                "_multibarrel_line_fold",
+            ],
+            "tasks": [{
+                "target_files": ["strategy.py"],
+                "worker_prompt": (
+                    "Add _semibluff_raise_construct in strategy.py. Insert the "
+                    "dispatch immediately after `if to_call > 0:` and BEFORE "
+                    "the existing fold gates so draw+weak-made hands raise "
+                    "instead of being folded. Do NOT modify choose_raise(), any "
+                    "fold gate, opponent.py, state.py, or postflop.py."
+                ),
+            }],
+        }
+
+        repeats, matched = tp._plan_repeats_exhausted_direction(
+            plan,
+            [
+                "fold-side fold-threshold/ceiling calibration on opponent.py "
+                "(_estimate_bluff_frequency betsize_polarity floor, "
+                "_multibarrel_line_fold ceiling, made_strength cutoffs)",
+            ],
+        )
+
+        assert repeats is False
+        assert matched == ""
+
 
 class TestInfraTimeoutNotCountedAsFail:
     """Test that infra_only_timeout does not pollute cross-gen fail counts.

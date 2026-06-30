@@ -1466,12 +1466,38 @@ def _plan_repeats_exhausted_direction(plan: dict, exhausted_directions: list[str
         "semi-bluff", "semibluff", "raise constructor", "raise_construct",
         "draw equity", "fold equity", "chip path", "constructs a raise",
     ))
-    explicit_fold_edit = any(term in plan_text for term in (
+    fold_edit_terms = (
         "_multibarrel_line_fold", "_allin_polarized_equity_fold",
         "_river_potodds_equity_margin", "_estimate_bluff_frequency",
-        "betsize_polarity", "fold threshold", "fold ceiling", "fold gate",
-        "made_strength cutoff", "bluff frequency",
-    ))
+        "betsize_polarity", "fold threshold", "fold thresholds",
+        "fold ceiling", "fold ceilings", "fold gate", "fold gates",
+        "fold-side", "made_strength cutoff", "made_strength cutoffs",
+        "bluff frequency",
+    )
+    fold_edit_verbs = (
+        "adjust", "alter", "calibrate", "change", "edit", "increase",
+        "lower", "modify", "narrow", "raise the", "recalibrate",
+        "retune", "tune", "widen",
+    )
+    fold_position_cues = (
+        "before the existing fold", "before any fold", "before fold",
+        "ahead of the existing fold", "ahead of fold", "runs before",
+        "run before", "not a fold", "never in a fold", "fold equity",
+        "fold_to_raise",
+    )
+
+    def _is_explicit_fold_edit(segment: str) -> bool:
+        if not any(term in segment for term in fold_edit_terms):
+            return False
+        # A new action constructor often has to be placed before existing fold
+        # gates. That is a control-flow position, not a fold-gate retune.
+        if any(cue in segment for cue in fold_position_cues):
+            return False
+        return any(verb in segment for verb in fold_edit_verbs)
+
+    explicit_fold_edit = bool(target_files & {"opponent.py", "state.py"}) or any(
+        _is_explicit_fold_edit(segment) for segment in positive_segments
+    )
     if fold_axis and offense_constructor and not explicit_fold_edit:
         # A structural raise/semi-bluff constructor is the intended escape from
         # the fold-side axis. Do not treat mentions of "fold equity" or guarded
