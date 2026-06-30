@@ -213,6 +213,17 @@ ImportError: cannot import name '_allin_polarized_equity_fold' from 'opponent'
 3. 将 `bots/claude_v229/`、`bots/claude_v230/`、`bots/claude_v231/` 移入 `bots/graveyard/failed_v229_v231_20260630/`，附 manifest；或按用户确认直接删除。
 4. 保留 `docs/reference-patches/danlm-parallel-explorer.patch`，暂不把父仓库 gitlink 指到外部 remote 不可达 commit，除非先推到可访问 fork。
 
+### 本次已执行的止血动作
+
+在报告首次合并后，后台演化仍继续运行并生成了 `bots/claude_v231/`。为冻结证据范围，已执行以下非代码改动：
+
+1. 已停止运行中的 `orchestrator.py`、`elo_daemon.py` 及其 Claude SDK 子进程。
+2. 已将 `bots/claude_v229/`、`bots/claude_v230/`、`bots/claude_v231/` 移入已 gitignore 的 `bots/graveyard/failed_v229_v231_20260630/`，保留现场但不再污染 active bot 目录。
+3. 已恢复 `web/core/experience_pool.md` 到 tracked 版本，撤销失败 `v230` 自动写入的 EXHAUSTED 标记。
+4. 已将 `ref/DanLM` 工作树切回父仓库记录的 gitlink commit `6b010211`；新增参考代码通过 `docs/reference-patches/danlm-parallel-explorer.patch` 在父仓库中保持可复现跟踪。
+
+注意：`web/core/results/pipeline_state.json` 属于运行态文件，当前可能仍记录 `v231` 的中断 checkpoint。恢复自动演化前应明确清除/归档该 runtime checkpoint，或用专门的恢复工具重新初始化下一代。
+
 ### P1：硬 gate 修复
 
 1. 增加 `import_closure` gate，覆盖 `main/strategy/postflop/opponent/state`。
