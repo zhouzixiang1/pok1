@@ -1,0 +1,1316 @@
+From 85989b7b6d35ba41ba765c728eb5219dbc2bb840 Mon Sep 17 00:00:00 2001
+From: Claude AI <claude@anthropic.com>
+Date: Tue, 30 Jun 2026 16:53:24 +0800
+Subject: [PATCH] Add parallel exploration utilities
+
+---
+ danzero/explorer/__init__.py |   30 +
+ danzero/explorer/explorer.py | 1019 ++++++++++++++++++++++++++++++++++
+ scripts/parallel_explore.py  |  232 ++++++++
+ 3 files changed, 1281 insertions(+)
+ create mode 100644 danzero/explorer/__init__.py
+ create mode 100644 danzero/explorer/explorer.py
+ create mode 100644 scripts/parallel_explore.py
+
+diff --git a/danzero/explorer/__init__.py b/danzero/explorer/__init__.py
+new file mode 100644
+index 0000000..f74dabb
+--- /dev/null
++++ b/danzero/explorer/__init__.py
+@@ -0,0 +1,30 @@
++"""Multi-Agent Parallel Exploration Framework for DanLM.
++
++Provides a scalable, fault-tolerant system for parallel game exploration
++using multiple AI agent instances. Supports diverse exploration strategies,
++adaptive task allocation, and comprehensive result aggregation.
++
++Architecture:
++    ExplorerCoordinator  — Central orchestrator (task generation, allocation, aggregation)
++    ExplorationWorker    — Per-process worker (game simulation, strategy execution)
++    ExplorationTask      — Typed task descriptor
++    ExplorationResult    — Structured result with statistics and traces
++"""
++
++from __future__ import annotations
++
++from .explorer import (
++    ExplorationMode,
++    ExplorationResult,
++    ExplorationTask,
++    ExplorerCoordinator,
++    StrategyConfig,
++)
++
++__all__ = [
++    "ExplorationMode",
++    "ExplorationResult",
++    "ExplorationTask",
++    "ExplorerCoordinator",
++    "StrategyConfig",
++]
+diff --git a/danzero/explorer/explorer.py b/danzero/explorer/explorer.py
+new file mode 100644
+index 0000000..1bda613
+--- /dev/null
++++ b/danzero/explorer/explorer.py
+@@ -0,0 +1,1019 @@
++"""Multi-Agent Parallel Exploration Core.
++
++Design:
++    ┌─────────────────────────────────────────────────────────────┐
++    │                  ExplorerCoordinator                        │
++    │  - 任务生成 (Task Generation)                               │
++    │  - 任务分配策略 (Task Allocation Strategy)                   │
++    │  - 结果整合 (Result Aggregation)                            │
++    │  - 进度监控 (Progress Monitoring)                           │
++    └──────────┬──────────┬──────────┬──────────┬─────────────────┘
++               │          │          │          │
++          ┌────▼───┐ ┌────▼───┐ ┌────▼───┐ ┌────▼───┐
++          │Worker 0│ │Worker 1│ │Worker 2│ │Worker N│
++          │(proc)  │ │(proc)  │ │(proc)  │ │(proc)  │
++          └────────┘ └────────┘ └────────┘ └────────┘
++               │          │          │          │
++          ┌────▼──────────▼──────────▼──────────▼─────┐
++          │   共享任务队列 / 结果收集管道               │
++          │   (Shared Task Queue / Result Pipeline)    │
++          └────────────────────────────────────────────┘
++
++Communication:
++    Coordinator <-> Workers: multiprocessing.Queue (task dispatch + result return)
++    Workers are independent: each loads its own model, runs games autonomously
++    No inter-worker communication needed (embarrassingly parallel)
++
++Task Allocation Strategies:
++    - round_robin:   均匀分配，适合均匀任务
++    - dynamic:       动态分发，worker 完成后领取新任务，适合不均匀任务
++    - stratified:    按策略分层分配，每个 worker 固定一种探索策略
++
++Result Integration:
++    - 统计聚合 (胜率、平均轮数、奖励分布)
++    - 策略对比 (不同探索策略的效果对比)
++    - 异常检测 (crash、超时、异常结果)
++"""
++
++from __future__ import annotations
++
++import copy
++import enum
++import logging
++import multiprocessing as mp
++import os
++import queue
++import time
++import traceback
++from dataclasses import dataclass, field
++from typing import Any, Callable
++
++import numpy as np
++
++logger = logging.getLogger(__name__)
++
++
++# ---------------------------------------------------------------------------
++# Data Structures
++# ---------------------------------------------------------------------------
++
++class ExplorationMode(enum.Enum):
++    """Exploration strategy modes for agents."""
++    GREEDY = "greedy"           # Always pick the best action (Q-value argmax)
++    EPSILON_GREEDY = "eps_greedy"  # ε-greedy exploration
++    BOLTZMANN = "boltzmann"     # Boltzmann (softmax) sampling
++    DIVERSE = "diverse"         # Top-k diverse sampling with Q-value weighting
++    MCTS_ROLLOUT = "mcts"       # MCTS-style rollout with Q-value prior
++
++
++@dataclass
++class StrategyConfig:
++    """Configuration for an exploration strategy.
++
++    Attributes:
++        mode: Exploration mode.
++        epsilon: ε value for ε-greedy (0.0-1.0).
++        temperature: Temperature for Boltzmann sampling (higher = more random).
++        top_k: Number of top actions to consider for diverse sampling.
++        num_rollouts: Number of rollouts per decision for MCTS mode.
++        rollout_depth: Max depth of each rollout for MCTS mode.
++        seed_offset: Per-worker seed offset for reproducibility.
++    """
++    mode: ExplorationMode = ExplorationMode.EPSILON_GREEDY
++    epsilon: float = 0.1
++    temperature: float = 0.5
++    top_k: int = 5
++    num_rollouts: int = 10
++    rollout_depth: int = 20
++    seed_offset: int = 0
++
++
++@dataclass
++class ExplorationTask:
++    """A single exploration task to be dispatched to a worker.
++
++    Attributes:
++        task_id: Unique task identifier.
++        spec_a: Agent A specification (path or spec string).
++        spec_b: Agent B specification (path or spec string).
++        num_games: Number of complete games to play.
++        max_rounds: Max rounds per game.
++        base_seed: Base random seed (worker adds seed_offset).
++        strategy: Exploration strategy configuration.
++        device: Compute device (e.g., 'cpu', 'cuda').
++        full_game: If True, play complete multi-round games; otherwise single rounds.
++    """
++    task_id: str
++    spec_a: str
++    spec_b: str
++    num_games: int = 10
++    max_rounds: int = 200
++    base_seed: int = 0
++    strategy: StrategyConfig = field(default_factory=StrategyConfig)
++    device: str = "cpu"
++    full_game: bool = True
++
++
++@dataclass
++class GameTrace:
++    """Trace of a single game for analysis.
++
++    Attributes:
++        seed: Game seed used.
++        winner_team: Winning team (0 or 1), -1 for draw.
++        rounds_played: Number of rounds in the game.
++        final_levels: Final levels [team0, team1].
++        duration_seconds: Wall-clock time for this game.
++        actions_log: Optional list of (player, action_idx, q_value) tuples.
++    """
++    seed: int
++    winner_team: int
++    rounds_played: int
++    final_levels: list[int]
++    duration_seconds: float = 0.0
++    actions_log: list[tuple[int, int, float]] = field(default_factory=list)
++
++
++@dataclass
++class ExplorationResult:
++    """Aggregated result from an exploration task.
++
++    Attributes:
++        task_id: Corresponding task ID.
++        worker_id: Worker that produced this result.
++        games_played: Number of games completed.
++        wins: Team 0 wins.
++        losses: Team 1 wins.
++        draws: Draws.
++        avg_rounds: Average rounds per game.
++        avg_duration: Average seconds per game.
++        total_duration: Total wall-clock time.
++        game_traces: Individual game traces (optional, for detailed analysis).
++        error: Error message if the task failed.
++    """
++    task_id: str
++    worker_id: int = -1
++    games_played: int = 0
++    wins: int = 0
++    losses: int = 0
++    draws: int = 0
++    avg_rounds: float = 0.0
++    avg_duration: float = 0.0
++    total_duration: float = 0.0
++    game_traces: list[GameTrace] = field(default_factory=list)
++    error: str | None = None
++
++    @property
++    def win_rate(self) -> float:
++        decided = self.wins + self.losses
++        return self.wins / decided if decided > 0 else float("nan")
++
++    def merge(self, other: ExplorationResult) -> ExplorationResult:
++        """Merge another result into this one."""
++        self.games_played += other.games_played
++        self.wins += other.wins
++        self.losses += other.losses
++        self.draws += other.draws
++        self.total_duration += other.total_duration
++        self.game_traces.extend(other.game_traces)
++        if self.games_played > 0:
++            self.avg_rounds = (
++                (self.avg_rounds * (self.games_played - other.games_played)
++                 + other.avg_rounds * other.games_played)
++                / self.games_played
++            )
++            self.avg_duration = self.total_duration / self.games_played
++        return self
++
++
++# ---------------------------------------------------------------------------
++# Exploration Strategy Implementations
++# ---------------------------------------------------------------------------
++
++class ExplorationStrategy:
++    """Base class for action selection strategies during exploration."""
++
++    def __init__(self, config: StrategyConfig):
++        self.config = config
++        self._rng = np.random.default_rng(config.seed_offset)
++
++    def select_action(
++        self,
++        q_values: np.ndarray,
++        legal_plays: np.ndarray,
++        obs: Any = None,
++        round_obj: Any = None,
++    ) -> int:
++        """Select an action index given Q-values and legal plays.
++
++        Args:
++            q_values: Q-values for each legal action (shape: [N]).
++            legal_plays: Legal play vectors (shape: [N, 80]).
++            obs: Current observation (for context).
++            round_obj: Current round object (for context).
++
++        Returns:
++            Index into legal_plays / q_values.
++        """
++        raise NotImplementedError
++
++
++class GreedyStrategy(ExplorationStrategy):
++    """Always pick the action with highest Q-value."""
++
++    def select_action(self, q_values, legal_plays, obs=None, round_obj=None):
++        return int(np.argmax(q_values))
++
++
++class EpsilonGreedyStrategy(ExplorationStrategy):
++    """ε-greedy: explore with probability ε, exploit otherwise."""
++
++    def select_action(self, q_values, legal_plays, obs=None, round_obj=None):
++        if self._rng.random() < self.config.epsilon:
++            return int(self._rng.integers(len(q_values)))
++        return int(np.argmax(q_values))
++
++
++class BoltzmannStrategy(ExplorationStrategy):
++    """Boltzmann (softmax) sampling with temperature τ."""
++
++    def select_action(self, q_values, legal_plays, obs=None, round_obj=None):
++        temp = self.config.temperature
++        # Numerically stable softmax
++        shifted = q_values - np.max(q_values)
++        exp_q = np.exp(shifted / max(temp, 1e-8))
++        probs = exp_q / np.sum(exp_q)
++        return int(self._rng.choice(len(probs), p=probs))
++
++
++class DiverseStrategy(ExplorationStrategy):
++    """Top-k diverse sampling: pick from top-k actions weighted by Q-values."""
++
++    def select_action(self, q_values, legal_plays, obs=None, round_obj=None):
++        k = min(self.config.top_k, len(q_values))
++        top_idx = np.argsort(q_values)[::-1][:k]
++        top_q = q_values[top_idx]
++        # Weight by exponentiated Q-values
++        weights = np.exp(top_q - np.max(top_q))
++        weights /= weights.sum()
++        chosen = int(self._rng.choice(top_idx, p=weights))
++        return chosen
++
++
++class MCTSRolloutStrategy(ExplorationStrategy):
++    """MCTS-style rollout: run multiple rollouts to estimate action values.
++
++    Uses Q-values as prior, then runs random rollouts to refine estimates.
++    """
++
++    def select_action(self, q_values, legal_plays, obs=None, round_obj=None):
++        # Use Q-value prior to narrow candidates
++        k = min(self.config.top_k, len(q_values))
++        top_idx = np.argsort(q_values)[::-1][:k]
++
++        # If no round_obj available, fall back to Q-value ranking
++        if round_obj is None:
++            return int(top_idx[0])
++
++        best_action = top_idx[0]
++        best_score = -float("inf")
++
++        for action_idx in top_idx:
++            score = self._rollout_score(action_idx, obs, round_obj)
++            if score > best_score:
++                best_score = score
++                best_action = action_idx
++
++        return int(best_action)
++
++    def _rollout_score(self, action_idx: int, obs: Any, round_obj: Any) -> float:
++        """Run rollouts from the given action and return average reward."""
++        rewards = []
++        for _ in range(self.config.num_rollouts):
++            try:
++                rnd_copy = copy.deepcopy(round_obj)
++                new_obs = rnd_copy.step(action_idx)
++                reward = self._random_rollout(new_obs, rnd_copy)
++                rewards.append(reward)
++            except Exception:
++                rewards.append(0.0)
++        return np.mean(rewards) if rewards else 0.0
++
++    def _random_rollout(self, obs: Any, rnd: Any) -> float:
++        """Random rollout to end of round."""
++        depth = 0
++        while not rnd.done and depth < self.config.rollout_depth:
++            if obs is None:
++                break
++            n_legal = len(obs.legal_plays)
++            if n_legal == 0:
++                break
++            action = int(self._rng.integers(n_legal))
++            obs = rnd.step(action)
++            depth += 1
++
++        # Simple reward: 1 if we finish first, -1 if last
++        if rnd.done and hasattr(rnd, "finish_order") and rnd.finish_order:
++            fo = rnd.finish_order
++            # Assume perspective of player who made the original action
++            team = fo[0] % 2
++            return 1.0 if fo[0] % 2 == team else -1.0
++        return 0.0
++
++
++def create_strategy(config: StrategyConfig) -> ExplorationStrategy:
++    """Factory: create an exploration strategy from config."""
++    strategies = {
++        ExplorationMode.GREEDY: GreedyStrategy,
++        ExplorationMode.EPSILON_GREEDY: EpsilonGreedyStrategy,
++        ExplorationMode.BOLTZMANN: BoltzmannStrategy,
++        ExplorationMode.DIVERSE: DiverseStrategy,
++        ExplorationMode.MCTS_ROLLOUT: MCTSRolloutStrategy,
++    }
++    cls = strategies.get(config.mode)
++    if cls is None:
++        raise ValueError(f"Unknown exploration mode: {config.mode}")
++    return cls(config)
++
++
++# ---------------------------------------------------------------------------
++# Worker Process
++# ---------------------------------------------------------------------------
++
++def _exploration_worker(
++    worker_id: int,
++    task_queue: mp.Queue,
++    result_queue: mp.Queue,
++    shutdown_event: mp.Event,
++) -> None:
++    """Worker process: picks tasks from queue, runs games, returns results.
++
++    Each worker:
++    1. Loads models independently (no cross-process sharing)
++    2. Creates 4 agents (2 per team) with the configured strategy
++    3. Runs games specified by the task
++    4. Returns ExplorationResult through the result queue
++
++    Communication is purely via queues — no shared state.
++    """
++    from danzero.eval.agents import create_agent
++
++    # Cache loaded agents to avoid reloading for same specs
++    _agent_cache: dict[str, Any] = {}
++
++    def get_agents(spec: str, device: str):
++        if spec not in _agent_cache:
++            _agent_cache[spec] = create_agent(spec, device)
++        return _agent_cache[spec]
++
++    while not shutdown_event.is_set():
++        try:
++            task = task_queue.get(timeout=1.0)
++        except queue.Empty:
++            continue
++        except Exception:
++            break
++
++        if task is None:  # Sentinel: shutdown
++            break
++
++        assert isinstance(task, ExplorationTask)
++        result = _run_task(worker_id, task, get_agents)
++        result_queue.put(result)
++
++    logger.debug(f"Worker {worker_id} shutting down")
++
++
++def _run_task(
++    worker_id: int,
++    task: ExplorationTask,
++    get_agents_fn: Callable,
++) -> ExplorationResult:
++    """Execute a single exploration task and return the result."""
++    t_start = time.time()
++    traces: list[GameTrace] = []
++    wins = losses = draws = 0
++
++    try:
++        from danzero.engine.game import GuanDanRound, compute_level_up
++        from danzero.engine.cards import deal_hands
++    except ImportError as e:
++        return ExplorationResult(
++            task_id=task.task_id,
++            worker_id=worker_id,
++            error=f"Engine import failed: {e}",
++            total_duration=time.time() - t_start,
++        )
++
++    strategy = create_strategy(task.strategy)
++
++    for game_idx in range(task.num_games):
++        if task.full_game:
++            trace = _run_complete_game(
++                worker_id, game_idx, task, strategy, get_agents_fn,
++            )
++        else:
++            trace = _run_single_round(
++                worker_idx=worker_id,
++                game_idx=game_idx,
++                task=task,
++                strategy=strategy,
++                get_agents_fn=get_agents_fn,
++            )
++
++        traces.append(trace)
++        w = trace.winner_team
++        if w == 0:
++            wins += 1
++        elif w == 1:
++            losses += 1
++        else:
++            draws += 1
++
++    total = time.time() - t_start
++    n = len(traces)
++    avg_rounds = np.mean([t.rounds_played for t in traces]) if traces else 0.0
++
++    return ExplorationResult(
++        task_id=task.task_id,
++        worker_id=worker_id,
++        games_played=n,
++        wins=wins,
++        losses=losses,
++        draws=draws,
++        avg_rounds=avg_rounds,
++        avg_duration=total / max(n, 1),
++        total_duration=total,
++        game_traces=traces,
++    )
++
++
++def _run_complete_game(
++    worker_id: int,
++    game_idx: int,
++    task: ExplorationTask,
++    strategy: ExplorationStrategy,
++    get_agents_fn: Callable,
++) -> GameTrace:
++    """Run a complete multi-round game with the exploration strategy."""
++    from danzero.engine.cards import BIG_JOKER, deal_hands, single_card_power
++    from danzero.engine.game import GuanDanRound, NUM_PLAYERS, TEAM_PAIRS, compute_level_up
++    from danzero.engine.tribute import (
++        TributeRecord,
++        perform_tribute,
++        transfer_card,
++        tribute_back_legal_cards,
++        tribute_give_legal_cards,
++    )
++
++    game_seed = task.base_seed + game_idx * 100_000 + task.strategy.seed_offset
++    t_start = time.time()
++
++    agent_a = get_agents_fn(task.spec_a, task.device)
++    agent_b = get_agents_fn(task.spec_b, task.device)
++    agents = {0: agent_a, 1: agent_b, 2: copy.copy(agent_a), 3: copy.copy(agent_b)}
++
++    team_levels = [2, 2]
++    game_point_failures = [0, 0]
++    last_winners = None
++    rng = np.random.default_rng(game_seed)
++
++    def team_of(p):
++        return p % 2
++
++    for round_idx in range(task.max_rounds):
++        round_seed = game_seed + round_idx * 1000
++        hands = deal_hands(seed=round_seed)
++        anti_tribute_abs = None
++
++        # --- Tribute phase ---
++        if last_winners is None:
++            first_player = int(rng.integers(NUM_PLAYERS))
++            owner = first_player
++            level = team_levels[team_of(owner)]
++            tribute_records = []
++        else:
++            owner = last_winners[0]
++            level = team_levels[team_of(owner)]
++            p1st, p2nd, p3rd, p4th = last_winners
++            same_team = (p3rd - p4th) % 4 == 2
++
++            if same_team:
++                anti = hands[p4th][BIG_JOKER] + hands[p3rd][BIG_JOKER] >= 2
++            else:
++                anti = hands[p4th][BIG_JOKER] >= 2
++
++            if anti:
++                anti_tribute_abs = np.zeros((4, 54), dtype=np.float32)
++                tribute_records, first_player = perform_tribute(
++                    hands, last_winners, level,
++                )
++            else:
++                tribute_records = []
++                if same_team:
++                    givers = [p4th, p3rd]
++                    receivers = [None, None]
++                else:
++                    givers = [p4th]
++                    receivers = [p1st]
++
++                for pid, agent in agents.items():
++                    agent.reset(pid, level)
++
++                for gi, giver in enumerate(givers):
++                    legal = tribute_give_legal_cards(hands[giver], level)
++                    if len(legal) == 1:
++                        chosen = legal[0]
++                    else:
++                        chosen = agents[giver].select_tribute_give(
++                            hands[giver], legal, same_team, receivers[gi],
++                        )
++                    rec = TributeRecord(giver=giver, receiver=-1, card=chosen)
++                    tribute_records.append(rec)
++
++                if same_team:
++                    card_4th = tribute_records[0].card
++                    card_3rd = tribute_records[1].card
++                    power_4th = single_card_power(card_4th, level)
++                    power_3rd = single_card_power(card_3rd, level)
++                    if power_4th == power_3rd:
++                        recv_4th = (p4th + 3) % 4
++                        recv_3rd = (p3rd + 3) % 4
++                    elif power_4th > power_3rd:
++                        recv_4th = p1st
++                        recv_3rd = p2nd
++                    else:
++                        recv_4th = p2nd
++                        recv_3rd = p1st
++                    tribute_records[0].receiver = recv_4th
++                    tribute_records[1].receiver = recv_3rd
++                    receivers = [recv_4th, recv_3rd]
++                    transfer_card(hands, p4th, recv_4th, card_4th)
++                    transfer_card(hands, p3rd, recv_3rd, card_3rd)
++                    first_player = p4th if recv_4th == p1st else p3rd
++                else:
++                    receiver = receivers[0]
++                    tribute_records[0].receiver = receiver
++                    card = tribute_records[0].card
++                    transfer_card(hands, givers[0], receiver, card)
++                    first_player = givers[0]
++
++                give_records = list(tribute_records)
++                for bi, returner in enumerate(receivers):
++                    back_to = givers[bi]
++                    legal = tribute_back_legal_cards(hands[returner], level)
++                    if len(legal) == 1:
++                        chosen = legal[0]
++                    else:
++                        chosen = agents[returner].select_tribute_back(
++                            hands[returner], legal, back_to, give_records,
++                        )
++                    rec = TributeRecord(giver=returner, receiver=back_to, card=chosen)
++                    tribute_records.append(rec)
++                    transfer_card(hands, returner, back_to, chosen)
++
++        # --- Reset and play phase ---
++        for pid, agent in agents.items():
++            agent.reset(pid, level)
++        for agent in agents.values():
++            agent.notify_tribute(tribute_records, anti_tribute_abs=anti_tribute_abs)
++
++        rnd = GuanDanRound(
++            level=level,
++            hands=hands,
++            first_player=first_player,
++            team_levels=tuple(team_levels),
++        )
++
++        for pid, agent in agents.items():
++            agent.notify_start(rnd.state.hands[pid].copy())
++
++        obs = rnd.get_observation()
++        for _ in range(2000):
++            if rnd.done:
++                break
++            p = obs.player
++            n_legal = len(obs.legal_plays)
++
++            # Get Q-values from the agent
++            try:
++                q_vals = agents[p].get_q_values(obs, rnd)
++            except Exception:
++                q_vals = np.zeros(n_legal)
++
++            # Apply exploration strategy
++            action_idx = strategy.select_action(q_vals, obs.legal_plays, obs, rnd)
++
++            # Clamp to valid range
++            action_idx = max(0, min(action_idx, n_legal - 1))
++
++            play = obs.legal_plays[action_idx].copy()
++            obs = rnd.step(action_idx)
++            new_trick = obs is not None and obs.is_leading
++            for agent in agents.values():
++                agent.observe_action(p, play, new_trick)
++            if obs is None:
++                break
++
++        assert rnd.done
++        fo = rnd.finish_order
++        round_owner = last_winners[0] if last_winners is not None else fo[0]
++        round_owner_team = team_of(round_owner)
++        last_winners = fo
++        winner_team = team_of(fo[0])
++        level_up = compute_level_up(fo)
++        new_level = min(14, team_levels[winner_team] + level_up)
++        team_levels[winner_team] = new_level
++
++        if level == 14:
++            owner_players = TEAM_PAIRS[round_owner_team]
++            if fo[0] in owner_players and fo[-1] not in owner_players:
++                return GameTrace(
++                    seed=game_seed,
++                    winner_team=round_owner_team,
++                    rounds_played=round_idx + 1,
++                    final_levels=list(team_levels),
++                    duration_seconds=time.time() - t_start,
++                )
++            game_point_failures[round_owner_team] += 1
++            if game_point_failures[round_owner_team] >= 3:
++                team_levels[round_owner_team] = 2
++
++    winner = 0 if team_levels[0] > team_levels[1] else (1 if team_levels[1] > team_levels[0] else -1)
++    return GameTrace(
++        seed=game_seed,
++        winner_team=winner,
++        rounds_played=task.max_rounds,
++        final_levels=list(team_levels),
++        duration_seconds=time.time() - t_start,
++    )
++
++
++def _run_single_round(
++    worker_idx: int,
++    game_idx: int,
++    task: ExplorationTask,
++    strategy: ExplorationStrategy,
++    get_agents_fn: Callable,
++) -> GameTrace:
++    """Run a single round game with the exploration strategy."""
++    from danzero.engine.game import GuanDanRound
++    from danzero.engine.cards import deal_hands
++
++    game_seed = task.base_seed + game_idx * 1000 + task.strategy.seed_offset
++    t_start = time.time()
++
++    agent_a = get_agents_fn(task.spec_a, task.device)
++    agent_b = get_agents_fn(task.spec_b, task.device)
++    agents = {0: agent_a, 1: agent_b, 2: copy.copy(agent_a), 3: copy.copy(agent_b)}
++
++    level = 2
++    hands = deal_hands(seed=game_seed)
++    first_player = game_seed % 4
++
++    for pid, agent in agents.items():
++        agent.reset(pid, level)
++
++    rnd = GuanDanRound(
++        level=level,
++        hands=hands,
++        first_player=first_player,
++        team_levels=(2, 2),
++    )
++
++    for pid, agent in agents.items():
++        agent.notify_start(rnd.state.hands[pid].copy())
++
++    obs = rnd.get_observation()
++    for _ in range(2000):
++        if rnd.done:
++            break
++        p = obs.player
++        n_legal = len(obs.legal_plays)
++
++        try:
++            q_vals = agents[p].get_q_values(obs, rnd)
++        except Exception:
++            q_vals = np.zeros(n_legal)
++
++        action_idx = strategy.select_action(q_vals, obs.legal_plays, obs, rnd)
++        action_idx = max(0, min(action_idx, n_legal - 1))
++
++        play = obs.legal_plays[action_idx].copy()
++        obs = rnd.step(action_idx)
++        new_trick = obs is not None and obs.is_leading
++        for agent in agents.values():
++            agent.observe_action(p, play, new_trick)
++        if obs is None:
++            break
++
++    fo = rnd.finish_order if rnd.done else [0, 1, 2, 3]
++    winner_team = fo[0] % 2
++
++    return GameTrace(
++        seed=game_seed,
++        winner_team=winner_team,
++        rounds_played=1,
++        final_levels=[2, 2],
++        duration_seconds=time.time() - t_start,
++    )
++
++
++# ---------------------------------------------------------------------------
++# Coordinator
++# ---------------------------------------------------------------------------
++
++class ExplorerCoordinator:
++    """Central orchestrator for multi-agent parallel exploration.
++
++    Responsibilities:
++    1. Task Generation: Create exploration tasks with diverse configurations
++    2. Task Allocation: Distribute tasks across workers
++    3. Progress Monitoring: Track completion and detect failures
++    4. Result Aggregation: Merge partial results into final statistics
++
++    Usage:
++        coordinator = ExplorerCoordinator(
++            spec_a="ckpts/DanLM_v1/dansformer_v1_best_eval.pt",
++            spec_b="random",
++            num_games=100,
++            num_workers=4,
++        )
++        result = coordinator.run()
++        print(f"Win rate: {result.win_rate:.1%}")
++    """
++
++    def __init__(
++        self,
++        spec_a: str,
++        spec_b: str,
++        num_games: int = 100,
++        num_workers: int = 4,
++        max_rounds: int = 200,
++        base_seed: int = 42,
++        device: str = "cpu",
++        full_game: bool = True,
++        strategies: list[StrategyConfig] | None = None,
++        allocation: str = "round_robin",
++        task_size: int = 10,
++    ) -> None:
++        """Initialize the coordinator.
++
++        Args:
++            spec_a: Agent A specification.
++            spec_b: Agent B specification.
++            num_games: Total number of games to play.
++            num_workers: Number of parallel worker processes.
++            max_rounds: Maximum rounds per game.
++            base_seed: Base random seed for reproducibility.
++            device: Compute device.
++            full_game: True for complete games, False for single rounds.
++            strategies: List of strategy configs. If None, uses default ε-greedy.
++                When multiple strategies are provided, games are distributed
++                across strategies proportionally.
++            allocation: Task allocation mode: 'round_robin' or 'dynamic'.
++            task_size: Number of games per task chunk.
++        """
++        self.spec_a = spec_a
++        self.spec_b = spec_b
++        self.num_games = num_games
++        self.num_workers = num_workers
++        self.max_rounds = max_rounds
++        self.base_seed = base_seed
++        self.device = device
++        self.full_game = full_game
++        self.allocation = allocation
++        self.task_size = task_size
++
++        # Default strategy: ε-greedy with 0.1
++        if strategies is None:
++            self.strategies = [StrategyConfig(mode=ExplorationMode.EPSILON_GREEDY, epsilon=0.1)]
++        else:
++            self.strategies = strategies
++
++        # Validate allocation mode
++        if allocation not in ("round_robin", "dynamic"):
++            raise ValueError(f"Unknown allocation mode: {allocation}")
++
++    def _generate_tasks(self) -> list[ExplorationTask]:
++        """Generate exploration tasks with strategy diversity.
++
++        If multiple strategies are configured, games are split evenly
++        across strategies. Each strategy's games are then chunked into
++        task_size-sized tasks.
++        """
++        tasks = []
++        n_strategies = len(self.strategies)
++        games_per_strategy = self.num_games // n_strategies
++        remainder = self.num_games % n_strategies
++
++        task_counter = 0
++        for si, strategy in enumerate(self.strategies):
++            n_games = games_per_strategy + (1 if si < remainder else 0)
++            strategy = copy.deepcopy(strategy)
++            strategy.seed_offset = si * 1_000_000
++
++            # Split into chunks
++            remaining = n_games
++            while remaining > 0:
++                chunk = min(remaining, self.task_size)
++                task_id = f"task_{task_counter:04d}"
++                task_counter += 1
++
++                tasks.append(ExplorationTask(
++                    task_id=task_id,
++                    spec_a=self.spec_a,
++                    spec_b=self.spec_b,
++                    num_games=chunk,
++                    max_rounds=self.max_rounds,
++                    base_seed=self.base_seed + task_counter * 10_000,
++                    strategy=copy.deepcopy(strategy),
++                    device=self.device,
++                    full_game=self.full_game,
++                ))
++                remaining -= chunk
++
++        return tasks
++
++    def run(self, progress_callback: Callable[[int, int], None] | None = None) -> ExplorationResult:
++        """Execute all exploration tasks in parallel.
++
++        Args:
++            progress_callback: Optional callback(completed, total) for progress updates.
++
++        Returns:
++            Aggregated ExplorationResult.
++        """
++        tasks = self._generate_tasks()
++        total_tasks = len(tasks)
++
++        logger.info(
++            f"Starting exploration: {self.num_games} games, "
++            f"{self.num_workers} workers, {total_tasks} tasks, "
++            f"{len(self.strategies)} strategies"
++        )
++
++        # Use spawn context for safety (no fork issues with loaded models)
++        ctx = mp.get_context("spawn")
++
++        task_queue = ctx.Queue()
++        result_queue = ctx.Queue()
++        shutdown_event = ctx.Event()
++
++        # Populate task queue
++        if self.allocation == "round_robin":
++            for task in tasks:
++                task_queue.put(task)
++        # dynamic mode also pre-fills the queue; workers pull as they finish
++
++        # Start workers
++        workers = []
++        for i in range(self.num_workers):
++            p = ctx.Process(
++                target=_exploration_worker,
++                args=(i, task_queue, result_queue, shutdown_event),
++                name=f"explorer-worker-{i}",
++                daemon=True,
++            )
++            p.start()
++            workers.append(p)
++
++        # Collect results
++        aggregated = ExplorationResult(task_id="aggregated")
++        completed = 0
++        expected_results = total_tasks
++
++        try:
++            while completed < expected_results:
++                try:
++                    result = result_queue.get(timeout=300)  # 5 min timeout
++                except queue.Empty:
++                    logger.warning("Timeout waiting for results, checking workers...")
++                    alive = [w for w in workers if w.is_alive()]
++                    if not alive:
++                        logger.error("All workers died unexpectedly")
++                        break
++                    continue
++
++                completed += 1
++
++                if result.error:
++                    logger.error(
++                        f"Task {result.task_id} (worker {result.worker_id}) failed: "
++                        f"{result.error}"
++                    )
++                    # Still aggregate partial results
++                else:
++                    logger.debug(
++                        f"Task {result.task_id} completed: "
++                        f"{result.games_played} games, "
++                        f"{result.wins}W/{result.losses}L/{result.draws}D"
++                    )
++
++                aggregated.merge(result)
++
++                if progress_callback:
++                    progress_callback(completed, total_tasks)
++
++        finally:
++            # Shutdown workers
++            shutdown_event.set()
++            for _ in workers:
++                try:
++                    task_queue.put(None, timeout=1)  # Sentinel
++                except Exception:
++                    pass
++
++            for w in workers:
++                w.join(timeout=10)
++                if w.is_alive():
++                    w.terminate()
++
++        logger.info(
++            f"Exploration complete: {aggregated.games_played} games, "
++            f"win_rate={aggregated.win_rate:.1%}, "
++            f"avg_rounds={aggregated.avg_rounds:.1f}, "
++            f"duration={aggregated.total_duration:.1f}s"
++        )
++
++        return aggregated
++
++    def run_with_strategy_comparison(
++        self,
++        progress_callback: Callable[[int, int], None] | None = None,
++    ) -> dict[str, ExplorationResult]:
++        """Run exploration and return per-strategy results for comparison.
++
++        Returns:
++            Dict mapping strategy name to its ExplorationResult.
++        """
++        tasks = self._generate_tasks()
++        total_tasks = len(tasks)
++
++        # Group tasks by strategy
++        strategy_names = {
++            s.mode.value for s in self.strategies
++        }
++
++        ctx = mp.get_context("spawn")
++        task_queue = ctx.Queue()
++        result_queue = ctx.Queue()
++        shutdown_event = ctx.Event()
++
++        for task in tasks:
++            task_queue.put(task)
++
++        workers = []
++        for i in range(self.num_workers):
++            p = ctx.Process(
++                target=_exploration_worker,
++                args=(i, task_queue, result_queue, shutdown_event),
++                name=f"explorer-worker-{i}",
++                daemon=True,
++            )
++            p.start()
++            workers.append(p)
++
++        # Per-strategy results
++        per_strategy: dict[str, ExplorationResult] = {
++            name: ExplorationResult(task_id=f"strategy_{name}")
++            for name in strategy_names
++        }
++
++        completed = 0
++        try:
++            while completed < total_tasks:
++                try:
++                    result = result_queue.get(timeout=300)
++                except queue.Empty:
++                    alive = [w for w in workers if w.is_alive()]
++                    if not alive:
++                        break
++                    continue
++
++                completed += 1
++
++                # Find which strategy this task belongs to
++                matching_task = next(
++                    (t for t in tasks if t.task_id == result.task_id), None
++                )
++                if matching_task:
++                    strat_name = matching_task.strategy.mode.value
++                    per_strategy[strat_name].merge(result)
++
++                if progress_callback:
++                    progress_callback(completed, total_tasks)
++
++        finally:
++            shutdown_event.set()
++            for _ in workers:
++                try:
++                    task_queue.put(None, timeout=1)
++                except Exception:
++                    pass
++            for w in workers:
++                w.join(timeout=10)
++                if w.is_alive():
++                    w.terminate()
++
++        return per_strategy
+diff --git a/scripts/parallel_explore.py b/scripts/parallel_explore.py
+new file mode 100644
+index 0000000..ed0a872
+--- /dev/null
++++ b/scripts/parallel_explore.py
+@@ -0,0 +1,232 @@
++#!/usr/bin/env python3
++"""Parallel Exploration CLI for DanLM.
++
++Provides a command-line interface for the multi-agent parallel exploration
++framework. Supports multiple exploration strategies, parallel workers,
++and strategy comparison mode.
++
++Examples:
++    # Basic ε-greedy exploration (4 workers, 100 games)
++    python scripts/parallel_explore.py \
++        --model ckpts/DanLM_v1/dansformer_v1_best_eval.pt \
++        --model-b random \
++        --games 100 --workers 4
++
++    # Strategy comparison: greedy vs ε-greedy vs Boltzmann
++    python scripts/parallel_explore.py \
++        --model ckpts/DanLM_v1/dansformer_v1_best_eval.pt \
++        --model-b random \
++        --games 300 --workers 6 \
++        --compare-strategies
++
++    # Custom exploration with specific ε and temperature
++    python scripts/parallel_explore.py \
++        --model ckpts/DanLM_v1/dansformer_v1_best_eval.pt \
++        --model-b ckpts/DanZero_v3_rep_v1t/v3_rep_v1t_best_eval_001_int8.onnx \
++        --games 200 --workers 8 \
++        --strategy eps_greedy --epsilon 0.2
++
++    # MCTS rollout exploration
++    python scripts/parallel_explore.py \
++        --model ckpts/DanLM_v1/dansformer_v1_best_eval.pt \
++        --games 50 --workers 4 \
++        --strategy mcts --top-k 5 --rollouts 20
++"""
++
++from __future__ import annotations
++
++import argparse
++import sys
++import time
++
++from danzero.explorer import (
++    ExplorationMode,
++    ExplorerCoordinator,
++    StrategyConfig,
++)
++
++
++def _build_strategy_configs(args: argparse.Namespace) -> list[StrategyConfig]:
++    """Build strategy configurations from CLI arguments."""
++    if args.compare_strategies:
++        # Run all strategies in parallel for comparison
++        return [
++            StrategyConfig(
++                mode=ExplorationMode.GREEDY,
++                epsilon=0.0,
++                seed_offset=0,
++            ),
++            StrategyConfig(
++                mode=ExplorationMode.EPSILON_GREEDY,
++                epsilon=args.epsilon,
++                seed_offset=1_000_000,
++            ),
++            StrategyConfig(
++                mode=ExplorationMode.BOLTZMANN,
++                temperature=args.temperature,
++                seed_offset=2_000_000,
++            ),
++            StrategyConfig(
++                mode=ExplorationMode.DIVERSE,
++                top_k=args.top_k,
++                seed_offset=3_000_000,
++            ),
++        ]
++
++    # Single strategy
++    mode_map = {
++        "greedy": ExplorationMode.GREEDY,
++        "eps_greedy": ExplorationMode.EPSILON_GREEDY,
++        "boltzmann": ExplorationMode.BOLTZMANN,
++        "diverse": ExplorationMode.DIVERSE,
++        "mcts": ExplorationMode.MCTS_ROLLOUT,
++    }
++    mode = mode_map[args.strategy]
++
++    return [
++        StrategyConfig(
++            mode=mode,
++            epsilon=args.epsilon,
++            temperature=args.temperature,
++            top_k=args.top_k,
++            num_rollouts=args.rollouts,
++            rollout_depth=args.rollout_depth,
++        )
++    ]
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser(
++        description="DanLM Multi-Agent Parallel Exploration",
++        formatter_class=argparse.RawDescriptionHelpFormatter,
++    )
++
++    # Agent specs
++    parser.add_argument("--model", type=str, required=True,
++                        help="Agent A: checkpoint path or spec")
++    parser.add_argument("--model-b", type=str, default="random",
++                        help="Agent B: checkpoint path or spec (default: random)")
++
++    # Game settings
++    parser.add_argument("--games", type=int, default=100,
++                        help="Total number of games (default: 100)")
++    parser.add_argument("--max-rounds", type=int, default=200,
++                        help="Max rounds per game (default: 200)")
++    parser.add_argument("--single-round", action="store_true",
++                        help="Single-round mode instead of full games")
++
++    # Parallel settings
++    parser.add_argument("--workers", type=int, default=4,
++                        help="Number of parallel workers (default: 4)")
++    parser.add_argument("--task-size", type=int, default=10,
++                        help="Games per task chunk (default: 10)")
++    parser.add_argument("--allocation", type=str, default="round_robin",
++                        choices=["round_robin", "dynamic"],
++                        help="Task allocation mode (default: round_robin)")
++    parser.add_argument("--device", type=str, default="cpu",
++                        help="Compute device (default: cpu)")
++
++    # Strategy settings
++    parser.add_argument("--strategy", type=str, default="eps_greedy",
++                        choices=["greedy", "eps_greedy", "boltzmann", "diverse", "mcts"],
++                        help="Exploration strategy (default: eps_greedy)")
++    parser.add_argument("--epsilon", type=float, default=0.1,
++                        help="ε for ε-greedy (default: 0.1)")
++    parser.add_argument("--temperature", type=float, default=0.5,
++                        help="Temperature for Boltzmann (default: 0.5)")
++    parser.add_argument("--top-k", type=int, default=5,
++                        help="Top-k for diverse/MCTS (default: 5)")
++    parser.add_argument("--rollouts", type=int, default=10,
++                        help="Rollouts per action for MCTS (default: 10)")
++    parser.add_argument("--rollout-depth", type=int, default=20,
++                        help="Max rollout depth for MCTS (default: 20)")
++
++    # Special modes
++    parser.add_argument("--compare-strategies", action="store_true",
++                        help="Run all strategies and compare results")
++    parser.add_argument("--seed", type=int, default=42,
++                        help="Base random seed (default: 42)")
++    parser.add_argument("--verbose", action="store_true",
++                        help="Print per-task progress")
++
++    args = parser.parse_args()
++
++    strategies = _build_strategy_configs(args)
++
++    coordinator = ExplorerCoordinator(
++        spec_a=args.model,
++        spec_b=args.model_b,
++        num_games=args.games,
++        num_workers=args.workers,
++        max_rounds=args.max_rounds,
++        base_seed=args.seed,
++        device=args.device,
++        full_game=not args.single_round,
++        strategies=strategies,
++        allocation=args.allocation,
++        task_size=args.task_size,
++    )
++
++    print(f"DanLM Parallel Exploration")
++    print(f"  Agents: {args.model} vs {args.model_b}")
++    print(f"  Games: {args.games} | Workers: {args.workers} | Device: {args.device}")
++    print(f"  Mode: {'full game' if not args.single_round else 'single round'}")
++    print(f"  Strategies: {', '.join(s.mode.value for s in strategies)}")
++    print()
++
++    t0 = time.time()
++
++    if args.compare_strategies:
++        print("--- Strategy Comparison Mode ---")
++        progress = [0]
++
++        def on_progress(completed, total):
++            progress[0] = completed
++            if args.verbose:
++                print(f"  Progress: {completed}/{total} tasks completed")
++
++        results = coordinator.run_with_strategy_comparison(
++            progress_callback=on_progress,
++        )
++
++        elapsed = time.time() - t0
++        print()
++        print(f"{'Strategy':<20} {'Win%':>8} {'W':>6} {'L':>6} {'D':>6} "
++              f"{'Games':>6} {'AvgRnds':>8} {'Time':>8}")
++        print("-" * 80)
++
++        total_games = 0
++        for name, result in sorted(results.items()):
++            decided = result.wins + result.losses
++            wr = f"{result.win_rate:.1%}" if decided > 0 else "N/A"
++            print(f"{name:<20} {wr:>8} {result.wins:>6} {result.losses:>6} "
++                  f"{result.draws:>6} {result.games_played:>6} "
++                  f"{result.avg_rounds:>8.1f} {result.total_duration:>7.1f}s")
++            total_games += result.games_played
++
++        print("-" * 80)
++        print(f"  Total: {total_games} games in {elapsed:.1f}s "
++              f"({elapsed / max(total_games, 1):.2f}s/game)")
++    else:
++        def on_progress(completed, total):
++            if args.verbose:
++                print(f"  Progress: {completed}/{total} tasks completed")
++
++        result = coordinator.run(progress_callback=on_progress)
++        elapsed = time.time() - t0
++
++        print()
++        decided = result.wins + result.losses
++        draws_note = f", {result.draws} draws" if result.draws > 0 else ""
++        print(f"  Result: {result.win_rate:.1%} win rate "
++              f"({result.wins}W/{result.losses}L{draws_note})")
++        print(f"  Games: {result.games_played} | "
++              f"Avg rounds: {result.avg_rounds:.1f}")
++        print(f"  Time: {elapsed:.1f}s ({elapsed / max(result.games_played, 1):.2f}s/game)")
++
++        if result.error:
++            print(f"  WARNING: {result.error}")
++
++
++if __name__ == "__main__":
++    main()
+-- 
+2.43.0
+
