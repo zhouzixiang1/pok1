@@ -410,13 +410,34 @@ async def run_quality_gates(args):
             )
 
     result["failed_gates"] = failed_gates_detail if not all_passed else []
+    quality_detail = {
+        "all_passed": all_passed,
+        "critical_scenarios_passed": critical_ok,
+        "decision_pass_rate": round(decision_rate, 4),
+        "decision_ok": decision_ok,
+        "failed_gates": result["failed_gates"],
+        "compile_ok": result["compile_ok"],
+        "compile_errors": result["compile_errors"],
+        "import_ok": result["import_ok"],
+        "import_errors": result["import_errors"],
+        "smoke_ok": result["smoke_ok"],
+        "smoke_errors": result["smoke_errors"],
+        "national_protocol_ok": result["national_protocol_ok"],
+        "national_protocol_errors": result["national_protocol_errors"],
+        "size_ok": result["size_ok"],
+        "oversized_files": result["oversized_files"],
+        "code_changed": code_changed,
+        "changed_files": changed_files_list[:20],
+        "fix_ok": fix_ok,
+        "telemetry_fidelity_ok": telemetry_fidelity_ok,
+        "critical_failures": critical_failures[:3],
+    }
 
     log_system_event(
         "pipeline.quality_passed" if all_passed else "pipeline.quality_failed",
         "success" if all_passed else "error",
         f"Quality gates {'passed' if all_passed else 'failed'} for v{v}: {', '.join(failed_gates_detail) or 'all checks passed'}",
-        {"version": v, "pass_rate": round(decision_rate, 2), "all_passed": all_passed,
-         "failed_gates": failed_gates_detail if not all_passed else []},
+        {"version": v, "pass_rate": round(decision_rate, 2), **quality_detail},
     )
 
     _ckpt = _matching_checkpoint(v, source_v) if source_v is not None else _matching_checkpoint(v)
@@ -426,12 +447,7 @@ async def run_quality_gates(args):
             v,
             source_v,
             all_passed,
-            all_passed=all_passed,
-            critical_scenarios_passed=critical_ok,
-            decision_pass_rate=round(decision_rate, 4),
-            critical_failures=critical_failures,
-            import_ok=len(import_errors) == 0,
-            import_errors=import_errors[:3] if import_errors else [],
+            **quality_detail,
         )
         _record_gate(
             v,

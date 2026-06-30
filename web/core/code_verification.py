@@ -690,6 +690,8 @@ def run_smoke_test(directory):
     if proc.returncode != 0:
         return [proc.stderr.strip() or proc.stdout.strip()]
     output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    if "Smoke test passed successfully." in output:
+        output = _strip_benign_smoke_cleanup_noise(output)
     failure_tokens = (
         "Traceback (most recent call last)",
         "ImportError",
@@ -702,6 +704,36 @@ def run_smoke_test(directory):
     if any(token in output for token in failure_tokens):
         return [f"smoke test emitted failure output despite exit 0: {output[-2000:]}"]
     return []
+
+
+def _strip_benign_smoke_cleanup_noise(output):
+    """Remove battle subprocess cleanup noise after a successful smoke test.
+
+    mirror_battle can emit CPython finalizer BrokenPipeError tracebacks while
+    cleaning up file handles for child subprocesses even when the smoke test has
+    already completed and exited 0. Keep all other traceback output intact so a
+    real bot/runtime exception still fails the gate.
+    """
+    lines = output.splitlines()
+    cleaned = []
+    in_cleanup_block = False
+    for line in lines:
+        starts_cleanup = (
+            "Exception ignored while finalizing file <_io.TextIOWrapper" in line
+            or (
+                "while finalizing file <_io.TextIOWrapper" in line
+                and "Exception ignored" in line
+            )
+        )
+        if starts_cleanup:
+            in_cleanup_block = True
+            continue
+        if in_cleanup_block:
+            if "BrokenPipeError: [Errno 32] Broken pipe" in line:
+                in_cleanup_block = False
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned).strip()
 
 
 def run_decision_test_details(directory, extra_scenarios=None):
