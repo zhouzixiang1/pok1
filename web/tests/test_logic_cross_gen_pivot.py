@@ -200,6 +200,47 @@ class TestPlanRepeatsExhaustedDirection:
         assert repeats is True
         assert matched == "postflop fold-side calibration"
 
+    def test_turn_semibluff_constructor_does_not_repeat_fold_side_axis(self):
+        import core.tool_planning as tp
+
+        plan = {
+            "targeted_failure": (
+                "Missing turn semi-bluff raise path: the bot folds too often "
+                "with draw+weak-made hands facing turn bets."
+            ),
+            "expected_behavior_change": (
+                "Add a NEW OFFENSE turn semi-bluff raise constructor that "
+                "constructs a raise from fold equity + draw equity."
+            ),
+            "do_not_touch": [
+                "opponent.py fold-side code",
+                "_estimate_bluff_frequency",
+                "_multibarrel_line_fold",
+            ],
+            "tasks": [{
+                "target_files": ["postflop.py", "strategy.py"],
+                "worker_prompt": (
+                    "Add _semibluff_raise_construct to postflop.py and dispatch "
+                    "from strategy.py when draw outs >= 8, board is coordinated, "
+                    "opponent underbets, and fold_to_raise > 0.50. Do NOT touch "
+                    "opponent.py, state.py, fold thresholds, fold ceilings, or "
+                    "_estimate_bluff_frequency."
+                ),
+            }],
+        }
+
+        repeats, matched = tp._plan_repeats_exhausted_direction(
+            plan,
+            [
+                "fold-side fold-threshold/ceiling calibration on opponent.py "
+                "(_estimate_bluff_frequency betsize_polarity floor, "
+                "_multibarrel_line_fold ceiling, made_strength cutoffs)",
+            ],
+        )
+
+        assert repeats is False
+        assert matched == ""
+
 
 class TestInfraTimeoutNotCountedAsFail:
     """Test that infra_only_timeout does not pollute cross-gen fail counts.
