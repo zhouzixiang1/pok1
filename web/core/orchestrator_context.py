@@ -49,9 +49,22 @@ def _inject_master_plan_hint(checkpoint, lines):
     """
     plan = checkpoint.get("master_plan")
     if not plan:
+        if checkpoint.get("parent2_v"):
+            lines.append(
+                "Crossover checkpoint has no task plan because bot code is already generated. "
+                "Do NOT call run_master or execute_workers for planning; proceed according to stage "
+                "(workers_done -> run_quality_gates, quality_failed -> retry execute_workers with exact gate feedback or abandon)."
+            )
+            return
         lines.append("WARNING: Master plan NOT in checkpoint — call run_master first, then execute_workers.")
         return
     tasks = plan.get("tasks", [])
+    if plan.get("strategy") == "crossover" and checkpoint.get("parent2_v"):
+        lines.append(
+            "Crossover plan is saved — do NOT call run_master and do NOT execute workers. "
+            "The child bot code already exists; proceed to run_quality_gates unless the stage is quality_failed."
+        )
+        return
     if tasks:
         lines.append(
             "Master plan is saved — do NOT call run_master again. "
@@ -123,6 +136,7 @@ STAGE_HINTS = {
     "direction_audited": "Direction audited → call run_master",
     "master_planned":    "Master done → call execute_workers",
     "workers_done":      "Workers done → call run_quality_gates",
+    "quality_failed":    "Quality failed → call execute_workers with exact gate failure feedback, or abandon_generation. Do NOT call run_master.",
     "quality_passed":    "Quality passed → call run_review",
     "reviewed":          "Review passed → call run_critic",
     "critic_checked":    "Critic done → call run_precommit_eval",
@@ -137,6 +151,7 @@ STAGE_HINTS_COMPACT = {
     "direction_audited": "run_master",
     "master_planned":    "execute_workers",
     "workers_done":      "run_quality_gates",
+    "quality_failed":    "execute_workers with quality feedback",
     "quality_passed":    "run_review",
     "reviewed":          "run_critic",
     "critic_checked":    "run_precommit_eval",

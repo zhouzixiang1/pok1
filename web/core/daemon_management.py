@@ -73,6 +73,11 @@ def start_daemon(workers=None, pairs=5, scheduler_capable=True):
         # This MUST happen before reading the PID file to avoid killing a running daemon
         # whose PID file still exists from a previous start_daemon() call.
         if daemon_proc and daemon_proc.poll() is None:
+            log_system_event(
+                "daemon.already_running", "info",
+                f"Daemon already running (pid={daemon_proc.pid})",
+                {"pid": daemon_proc.pid, "workers": workers, "pairs": pairs},
+            )
             return daemon_proc  # Already running
 
         # Daemon is dead or never started — check PID file for orphan from a previous process
@@ -87,7 +92,17 @@ def start_daemon(workers=None, pairs=5, scheduler_capable=True):
                     old_pid = int(raw)
                 try:
                     os.killpg(os.getpgid(old_pid), signal.SIGTERM)
+                    log_system_event(
+                        "daemon.orphan_found", "warn",
+                        f"Found stale daemon pid file; sent SIGTERM to orphan pid={old_pid}",
+                        {"pid": old_pid},
+                    )
                     time.sleep(0.5)  # Wait for orphan to die
+                    log_system_event(
+                        "daemon.orphan_killed", "info",
+                        f"Stale daemon orphan cleanup finished for pid={old_pid}",
+                        {"pid": old_pid},
+                    )
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
             except ValueError:
@@ -117,6 +132,13 @@ def start_daemon(workers=None, pairs=5, scheduler_capable=True):
         finally:
             os.close(_pid_fd)
         os.replace(str(tmp_pid), str(daemon_pid_file))
+        log_system_event(
+            "daemon.pid_written", "info",
+            f"Daemon PID file written for pid={daemon_proc.pid}",
+            {"pid": daemon_proc.pid, "ppid": os.getpid(),
+             "workers": workers, "pairs": pairs,
+             "scheduler_capable": scheduler_capable},
+        )
     # Drain daemon stdout to prevent pipe buffer deadlock
     threading.Thread(target=_drain_stdout, args=(daemon_proc,), daemon=True).start()
     if not _atexit_registered:
@@ -137,11 +159,22 @@ def stop_daemon():
     # could spawn a fresh daemon that this stop then killed (code's own comment
     # at the start_daemon flag-clear acknowledged this race).
     with _daemon_lock:
+        _stop_t0 = time.time()
         _daemon_shutting_down = True
         if daemon_proc is None:
             # No in-memory handle — try PID file for orphan cleanup
+            log_system_event(
+                "daemon.stop_requested", "info",
+                "Daemon stop requested with no in-memory process handle",
+                {"pid": None},
+            )
             _kill_orphan_from_pid_file()
             return
+        log_system_event(
+            "daemon.stop_requested", "info",
+            f"Daemon stop requested for pid={daemon_proc.pid}",
+            {"pid": daemon_proc.pid},
+        )
         if daemon_proc.poll() is None:
             try:
                 pgid = os.getpgid(daemon_proc.pid)
@@ -163,6 +196,13 @@ def stop_daemon():
                 # 8s gives comfortable headroom; SIGKILL below is the backstop for a
                 # truly wedged daemon.
                 daemon_proc.wait(timeout=8)
+                rc = getattr(daemon_proc, "returncode", daemon_proc.poll())
+                log_system_event(
+                    "daemon.stop_result", "success",
+                    f"Daemon stopped gracefully (pid={daemon_proc.pid}, rc={rc})",
+                    {"pid": daemon_proc.pid, "returncode": rc,
+                     "elapsed_sec": round(time.time() - _stop_t0, 2), "forced": False},
+                )
             except subprocess.TimeoutExpired:
                 log.warning("Daemon did not exit gracefully in 8s — force killing (SIGKILL)")
                 # Group B: record force-kill so rc=-9 events can be attributed to
@@ -185,6 +225,12 @@ def stop_daemon():
                     daemon_proc.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     pass
+                log_system_event(
+                    "daemon.stop_result", "warn",
+                    f"Daemon required SIGKILL (pid={daemon_proc.pid})",
+                    {"pid": daemon_proc.pid, "returncode": daemon_proc.poll(),
+                     "elapsed_sec": round(time.time() - _stop_t0, 2), "forced": True},
+                )
         daemon_proc = None
         # Clean up PID file
         daemon_pid_file = RESULTS_DIR / ".daemon_pid"
@@ -319,6 +365,11 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
                     with _daemon_lock:
                         if daemon_proc is proc:
                             daemon_proc = None
+                    log_system_event(
+                        "daemon.exited_cleanly", "info",
+                        f"Daemon exited cleanly (rc=0, pid={proc.pid})",
+                        {"pid": proc.pid, "returncode": rc},
+                    )
                 else:
                     restart_count += 1
                     # Clear stale handle immediately so other callers see the
@@ -361,4 +412,12 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
             ui.update_daemon_status(stats, ratings)
         except Exception as e:
             ui.log_history(f"Daemon monitor error: {e}", "error")
+            try:
+                log_system_event(
+                    "daemon.monitor_error", "error",
+                    f"Daemon monitor error: {e}",
+                    {"error": str(e)},
+                )
+            except Exception:
+                pass
         stop_event.wait(3)

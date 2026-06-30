@@ -51,7 +51,7 @@ def _emit_audit_parse_failure(role, failure_mode, fields=None):
 # P0-1: Post-Master Plan Verification Audit
 # ──────────────────────────────────────────────
 
-async def _run_master_plan_audit(master_plan, source_v, ui):
+async def _run_master_plan_audit(master_plan, source_v, ui, next_v=None):
     """Verify Master plan coherence and alignment before Workers execute.
 
     Returns MasterPlanAuditResult dict.
@@ -105,13 +105,53 @@ async def _run_master_plan_audit(master_plan, source_v, ui):
         except Exception:
             pass
 
+        target_v = next_v
+        if target_v is None:
+            target_v = master_plan.get("next_v") or master_plan.get("target_v") or "unknown"
+
+        identity_errors = []
+        if next_v is not None:
+            for key in ("next_v", "target_v", "version"):
+                value = master_plan.get(key)
+                if value is not None:
+                    try:
+                        if int(value) != int(next_v):
+                            identity_errors.append(f"{key}=v{value} but checkpoint target is v{next_v}")
+                    except Exception:
+                        identity_errors.append(f"{key}={value!r} but checkpoint target is v{next_v}")
+        for key in ("source_v", "parent_version", "branch_from"):
+            value = master_plan.get(key)
+            if value is not None:
+                try:
+                    if int(value) != int(source_v):
+                        identity_errors.append(f"{key}=v{value} but checkpoint source is v{source_v}")
+                except Exception:
+                    identity_errors.append(f"{key}={value!r} but checkpoint source is v{source_v}")
+        if identity_errors:
+            feedback = "; ".join(identity_errors)
+            log_system_event(
+                "pipeline.master_plan_identity_mismatch", "error",
+                f"Master plan identity mismatch for v{target_v}: {feedback}",
+                {"source_v": source_v, "next_v": target_v, "errors": identity_errors},
+            )
+            return {
+                "plan_coherent": False,
+                "contradiction_found": True,
+                "contradictions": identity_errors,
+                "experience_alignment": "misaligned",
+                "direction_novelty": "repetitive",
+                "overall_pass": False,
+                "feedback": feedback,
+                "retry_recommended": True,
+            }
+
         prompt = substitute_template(template, {
             "master_plan": json.dumps(master_plan, indent=2, ensure_ascii=False),
             "experience_pool": experience_text[:3000] or "No experience pool data",
             "recent_commits": recent_commits or "No recent commits",
             "direction_audit": direction_audit_text,
             "source_v": str(source_v),
-            "next_v": str(master_plan.get("next_v", (source_v + 1) if isinstance(source_v, int) else "unknown")),
+            "next_v": str(target_v),
             "branch_from_note": (
                 f"This generation evolves FROM v{source_v}. The source ancestor is "
                 f"decided automatically by the system in prepare_generation; the Master "
@@ -124,7 +164,8 @@ async def _run_master_plan_audit(master_plan, source_v, ui):
             ),
         })
 
-        log_file = get_logs_dir(source_v) / "master_plan_audit_io.txt"
+        log_version = target_v if isinstance(target_v, int) else source_v
+        log_file = get_logs_dir(log_version) / "master_plan_audit_io.txt"
         output, _, _ = await run_claude_query(
             prompt, [], ui,
             "MASTER_PLAN_AUDIT", log_file,

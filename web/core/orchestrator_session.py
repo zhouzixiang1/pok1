@@ -45,6 +45,15 @@ def _save_orchestrator_session(session_id: str):
     finally:
         os.close(fd)
     os.replace(str(tmp), str(ORCHESTRATOR_SESSION_FILE))
+    try:
+        from system_log import log_system_event
+        log_system_event(
+            "orchestrator.session_saved", "info",
+            f"Saved orchestrator session {session_id[:8]}",
+            {"session_id_prefix": session_id[:8]},
+        )
+    except Exception:
+        pass
 
 
 def _load_orchestrator_session() -> "str | None":
@@ -57,9 +66,19 @@ def _load_orchestrator_session() -> "str | None":
         return None
 
 
-def _clear_orchestrator_session():
+def _clear_orchestrator_session(reason="completed_or_reset"):
     """Delete session file after a naturally completed cycle."""
+    existed = ORCHESTRATOR_SESSION_FILE.exists()
     ORCHESTRATOR_SESSION_FILE.unlink(missing_ok=True)
+    try:
+        from system_log import log_system_event
+        log_system_event(
+            "orchestrator.session_cleared", "info",
+            f"Cleared orchestrator session ({reason})",
+            {"reason": reason, "existed": existed},
+        )
+    except Exception:
+        pass
 
 
 def _startup_recovery(ui=None) -> dict:
@@ -81,7 +100,26 @@ def _startup_recovery(ui=None) -> dict:
                 ui.log_history("[Recovery] Stale session file (no pipeline checkpoint). Clearing.", "warn")
             else:
                 log.warning("Stale session file (no pipeline checkpoint). Clearing.")
-            _clear_orchestrator_session()
+            _clear_orchestrator_session(reason="stale_session_no_checkpoint")
+            try:
+                from system_log import log_system_event
+                log_system_event(
+                    "orchestrator.recovery_decision", "warn",
+                    "Startup recovery: stale session cleared; fresh start",
+                    {"case": "stale_session_clear", "session_present": True},
+                )
+            except Exception:
+                pass
+        else:
+            try:
+                from system_log import log_system_event
+                log_system_event(
+                    "orchestrator.recovery_decision", "info",
+                    "Startup recovery: fresh start",
+                    {"case": "fresh", "session_present": False},
+                )
+            except Exception:
+                pass
         return {"action": "fresh_start"}
 
     stage = checkpoint.get("stage", "unknown")
@@ -108,7 +146,7 @@ def _startup_recovery(ui=None) -> dict:
                              {"next_v": next_v, "stage": stage, "elapsed_s": round(elapsed, 1),
                               "watchdog_timeout": WATCHDOG_TIMEOUT})
             # Clear session to force new LLM conversation, but keep checkpoint for stage resume
-            _clear_orchestrator_session()
+            _clear_orchestrator_session(reason="watchdog_recovery")
             session_id = None  # file is gone — force fresh LLM session (Case B below)
             # Fall through to recovery below — session_id is None → Case B
 
@@ -119,7 +157,17 @@ def _startup_recovery(ui=None) -> dict:
         else:
             log.warning("v%s timed out — clearing stale checkpoint.", next_v)
         clear_pipeline_checkpoint()
-        _clear_orchestrator_session()
+        _clear_orchestrator_session(reason="timed_out_checkpoint")
+        try:
+            from system_log import log_system_event
+            log_system_event(
+                "orchestrator.recovery_decision", "warn",
+                f"Startup recovery: timed_out v{next_v} cleared",
+                {"case": "timed_out_clear", "next_v": next_v, "stage": stage,
+                 "session_present": bool(session_id)},
+            )
+        except Exception:
+            pass
         return {"action": "fresh_start"}
 
     # v193 root-cause-audit (2026-06-26): infra-only timeout during precommit.
@@ -151,7 +199,7 @@ def _startup_recovery(ui=None) -> dict:
             next_v, checkpoint.get("source_v"), "critic_checked",
             master_plan=checkpoint.get("master_plan"),
         )
-        _clear_orchestrator_session()
+        _clear_orchestrator_session(reason="infra_timeout_retry")
         # Fall through to the resume path below (stage is now critic_checked).
         stage = "critic_checked"
 
@@ -161,7 +209,17 @@ def _startup_recovery(ui=None) -> dict:
         else:
             log.warning("Pipeline at '%s' for v%s. Clearing stale checkpoint.", stage, next_v)
         clear_pipeline_checkpoint()
-        _clear_orchestrator_session()
+        _clear_orchestrator_session(reason=f"stale_stage_{stage}")
+        try:
+            from system_log import log_system_event
+            log_system_event(
+                "orchestrator.recovery_decision", "warn",
+                f"Startup recovery: stale stage {stage} cleared",
+                {"case": "stale_checkpoint_clear", "next_v": next_v,
+                 "stage": stage, "session_present": bool(session_id)},
+            )
+        except Exception:
+            pass
         return {"action": "fresh_start"}
 
     # Aborted pipeline: no git tag for next_v + checkpoint is stale (>=30 min old)
@@ -192,7 +250,18 @@ def _startup_recovery(ui=None) -> dict:
                     else:
                         log.warning(msg)
                     clear_pipeline_checkpoint()
-                    _clear_orchestrator_session()
+                    _clear_orchestrator_session(reason="untagged_old_checkpoint")
+                    try:
+                        from system_log import log_system_event
+                        log_system_event(
+                            "orchestrator.recovery_decision", "warn",
+                            f"Startup recovery: old untagged v{next_v} checkpoint cleared",
+                            {"case": "untagged_old_clear", "next_v": next_v,
+                             "stage": stage, "age_minutes": round(age_minutes, 1),
+                             "session_present": bool(session_id)},
+                        )
+                    except Exception:
+                        pass
                     return {"action": "fresh_start"}
             except (ValueError, TypeError):
                 pass
@@ -213,4 +282,15 @@ def _startup_recovery(ui=None) -> dict:
     if ui:
         ui.log_history(msg, "warn")
         log.warning(msg)
+    try:
+        from system_log import log_system_event
+        log_system_event(
+            "orchestrator.recovery_decision", "warn",
+            msg,
+            {"case": "resume_same_session" if session_id else "resume_new_session",
+             "next_v": next_v, "source_v": checkpoint.get("source_v"),
+             "stage": stage, "session_present": bool(session_id)},
+        )
+    except Exception:
+        pass
     return recovery

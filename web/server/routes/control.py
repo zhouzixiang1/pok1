@@ -205,6 +205,15 @@ async def clear_orchestrator_session():
     """Delete the Orchestrator session file — forces a fresh conversation on next startup."""
     existed = ORCHESTRATOR_SESSION_FILE.exists()
     ORCHESTRATOR_SESSION_FILE.unlink(missing_ok=True)
+    try:
+        from system_log import log_system_event
+        log_system_event(
+            "control.session_cleared", "warn",
+            "Control API cleared orchestrator session",
+            {"existed": existed},
+        )
+    except Exception:
+        pass
     return {"cleared": existed, "message": "Session reset. Next Orchestrator start will begin a new conversation."}
 
 

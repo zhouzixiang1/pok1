@@ -325,8 +325,20 @@ async def commit_bot(args):
 # ──────────────────────────────────────────────
 
 def _append_experience_updates(version: int, updates: list[str],
-                                strategic_advice: str = "", generation_assessment: str = ""):
+                                strategic_advice: str = "", generation_assessment: str = "",
+                                require_committed: bool = True):
     """Append archivist experience_updates, strategic_advice, and assessment to experience_pool.md."""
+    if require_committed and not git_has_tag(version):
+        try:
+            log_system_event(
+                "pipeline.experience_write_blocked_uncommitted", "warn",
+                f"Blocked experience_pool.md write for uncommitted v{version}",
+                {"version": version, "updates": updates[:5],
+                 "generation_assessment": generation_assessment},
+            )
+        except Exception:
+            pass
+        return
 
     # Build the lines to insert
     new_lines = [f"- **v{version}**: {u}" for u in updates if u.strip()]
@@ -591,12 +603,28 @@ async def run_crossover(args):
 
     # Write checkpoint so quality gates → review → critic → commit can proceed
     if success:
+        crossover_plan = {
+            "strategy": "crossover",
+            "tasks": [],
+            "parents": [parent_a, parent_b],
+            "source_v": parent_a,
+            "next_v": target_v,
+            "note": "Crossover already generated bot code. Skip run_master and execute_workers; proceed to run_quality_gates.",
+        }
         write_pipeline_checkpoint(target_v, parent_a, "workers_done",
-                                  parent2_v=parent_b)
+                                  master_plan=crossover_plan,
+                                  parent2_v=parent_b,
+                                  audit_context={"crossover": {"parent_a": parent_a, "parent_b": parent_b}})
         try:
             log_system_event('pipeline.crossover_done', 'info',
                 f'Crossover v{parent_a}×v{parent_b} → v{target_v} succeeded',
                 {'target_v': target_v, 'parent_a': parent_a, 'parent_b': parent_b})
+            log_system_event(
+                "pipeline.crossover_resume_quality", "info",
+                f"Crossover v{target_v} checkpoint ready; next step is run_quality_gates",
+                {"target_v": target_v, "parent_a": parent_a,
+                 "parent_b": parent_b, "next_step": "run_quality_gates"},
+            )
         except Exception:
             pass
     else:

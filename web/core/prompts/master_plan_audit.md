@@ -31,6 +31,8 @@ Analyze the Master plan systematically:
 - This generation's source (parent) version is **v{source_v}**, target is **v{next_v}**.
 - {branch_from_note}
 - The plan's tasks MUST target bots/claude_v{next_v}/, NOT bots/claude_v{source_v}/.
+- If the plan states, implies, or hardcodes a different target version than v{next_v}, reject it.
+- If the plan targets the parent path `bots/claude_v{source_v}/` for worker edits, reject it.
 - A plan that fixes correctness bugs present in v{source_v} is VALID even if a later lineage already fixed them — evolution branches from v{source_v}.
 - Only reject on grounds of data staleness if the analysis references a version OTHER than v{source_v} or the plan's stated branch_from.
 </branch_from_semantics>
@@ -72,7 +74,7 @@ If plan has issues:
 - `contradictions`: List of specific contradictions found
 - `experience_alignment`: "aligned" (follows lessons), "misaligned" (ignores lessons), "unrelated" (no relevant lessons)
 - `direction_novelty`: "novel" (new approach), "incremental" (small variation), "repetitive" (same failed approach)
-- `overall_pass`: Should the plan proceed? Set false ONLY for serious issues.
+- `overall_pass`: Should the plan proceed? `false` is a BLOCKING result; Workers must not execute the rejected plan.
 - `feedback`: Explanation of issues and suggested alternatives
-- `retry_recommended`: Should the Master re-plan? Only true for serious issues, not minor concerns.
+- `retry_recommended`: Should the Master re-plan? Use true for fixable blocking issues. If false while `overall_pass` is false, the pipeline treats it as a terminal rejection and blocks the generation.
 </output_format>

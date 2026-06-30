@@ -93,12 +93,13 @@ MAX_PARALLEL_WORKERS = 3      # Hard cap on simultaneous LLM worker calls (Semap
 MAX_PROMPT_CHARS = 700_000
 
 # Pipeline stage constants
-STAGE_ORDER = ["prepared", "direction_audited", "master_planned", "workers_done", "quality_passed", "reviewed", "critic_checked", "verified", "archived"]
+STAGE_ORDER = ["prepared", "direction_audited", "master_planned", "workers_done", "quality_failed", "quality_passed", "reviewed", "critic_checked", "verified", "archived"]
 STAGE_GATE_ALLOWLIST = {
     "prepared": set(),
     "direction_audited": set(),
     "master_planned": set(),
     "workers_done": set(),
+    "quality_failed": {"quality"},
     "quality_passed": {"quality"},
     "reviewed": {"quality", "review"},
     "critic_checked": {"quality", "review", "critic"},
@@ -119,7 +120,7 @@ def validate_stage_transition(current_stage, proposed_stage):
       gate_results/code so the next cycle can retry precommit instead of
       discarding the whole generation)
     - Any -> "prepared" (fresh generation restart)
-    - "workers_done"/"reviewed"/"critic_checked" -> "master_planned" (intra-gen retry)
+    - "workers_done"/"quality_failed"/"reviewed"/"critic_checked" -> "master_planned" (intra-gen retry)
     """
     if proposed_stage is None or current_stage is None:
         return True, "no_guard"
@@ -137,9 +138,17 @@ def validate_stage_transition(current_stage, proposed_stage):
         return True, "fresh_restart"
 
     # Allow retry: from later stages back to master_planned (intra-gen retry)
-    retry_sources = {"workers_done", "quality_passed", "reviewed", "critic_checked"}
+    retry_sources = {"workers_done", "quality_failed", "quality_passed", "reviewed", "critic_checked"}
     if proposed_stage == "master_planned" and current_stage in retry_sources:
         return True, "retry_reset"
+
+    # Same-code re-evaluation and explicit post-precommit rework paths.
+    if current_stage == "critic_checked" and proposed_stage == "reviewed":
+        return True, "review_recheck"
+    if current_stage == "critic_checked" and proposed_stage == "workers_done":
+        return True, "critic_rework_done"
+    if current_stage == "verified" and proposed_stage in {"workers_done", "master_planned"}:
+        return True, "verified_rework_reset"
 
     # Forward progression check
     if current_stage in STAGE_ORDER and proposed_stage in STAGE_ORDER:
@@ -368,6 +377,31 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 existing_parent2_v = existing.get("parent2_v")
             existing_direction_audit = existing.get("direction_audit")
             existing_audit_context = existing.get("audit_context", {}) or {}
+        elif existing:
+            active_stage = existing.get("stage")
+            dead_stages = {None, "timed_out", "infra_timed_out", "archived", "abandoned"}
+            if active_stage not in dead_stages:
+                log.warning(
+                    "Refusing checkpoint identity mismatch: active v%s/source v%s stage=%s, attempted v%s/source v%s stage=%s",
+                    existing.get("next_v"), existing.get("source_v"), active_stage,
+                    next_v, source_v, stage,
+                )
+                try:
+                    from system_log import log_system_event
+                    log_system_event(
+                        "pipeline.identity_mismatch_blocked", "error",
+                        f"Blocked checkpoint identity mismatch: active v{existing.get('next_v')} "
+                        f"from v{existing.get('source_v')} at {active_stage}; attempted v{next_v} from v{source_v}",
+                        {"ckpt_next_v": existing.get("next_v"),
+                         "ckpt_source_v": existing.get("source_v"),
+                         "ckpt_stage": active_stage,
+                         "args_next_v": next_v,
+                         "args_source_v": source_v,
+                         "args_stage": stage},
+                    )
+                except Exception:
+                    pass
+                return False
 
         # Explicit reset: run_master produced a fresh plan → clear critic-rejection counter.
         # Without this, generation_attempt stays >=1 after a critic rejection and
@@ -404,27 +438,21 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         old_stage = existing.get("stage") if existing else None
         is_valid, reason = validate_stage_transition(old_stage, stage)
         if not is_valid:
-            # Backward transition. Some are legitimate rework (e.g.
-            # critic_checked->reviewed re-evaluation; workers_done->master_planned
-            # retry is allowlisted as valid by validate_stage_transition), and the
-            # _STAGE_RANK auto-reset block below depends on these regressions being
-            # allowed to recompute precommit_attempt/timeout_extensions. So we still
-            # ALLOW them — but record a system_event so regressions are observable
-            # in system_events.jsonl, not buried in the log stream.
-            # (root-cause-audit 2026-06-17: the specific workers_done->
-            # direction_audited regression that lost crossover output is now
-            # prevented at the caller by the backward-guard in run_direction_audit.)
             log.warning(
-                "Illegal stage transition: %s -> %s (%s). Allowing but logging.",
+                "Illegal stage transition: %s -> %s (%s). Blocking checkpoint write.",
                 old_stage, stage, reason,
             )
             try:
                 from system_log import log_system_event
-                log_system_event("pipeline.stage_backward_allowed", "warn",
-                    f"Backward stage transition allowed: {old_stage} -> {stage} ({reason})",
-                    {"old_stage": old_stage, "new_stage": stage, "reason": reason})
+                log_system_event(
+                    "pipeline.stage_transition_blocked", "error",
+                    f"Blocked illegal stage transition: {old_stage} -> {stage} ({reason})",
+                    {"old_stage": old_stage, "new_stage": stage, "reason": reason,
+                     "next_v": next_v, "source_v": source_v},
+                )
             except Exception:
                 pass
+            return False
         # touch_stage_timestamp forces last_stage_change_ts to now even when the
         # stage did not change, e.g. the orchestrator's timeout-extension refresh
         # so the watchdog does not immediately re-fire after a cycle resume.
@@ -445,11 +473,12 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "direction_audited": 1,
             "master_planned": 2,
             "workers_done": 3,
-            "quality_passed": 4,
-            "reviewed": 5,
-            "critic_checked": 6,
-            "verified": 7,
-            "archived": 8,
+            "quality_failed": 4,
+            "quality_passed": 5,
+            "reviewed": 6,
+            "critic_checked": 7,
+            "verified": 8,
+            "archived": 9,
         }
         if old_stage and stage in _STAGE_RANK and old_stage in _STAGE_RANK:
             old_rank = _STAGE_RANK[old_stage]
@@ -506,6 +535,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             invalidate_ckpt_cache()
         except Exception:
             pass
+        return True
 
 
 def read_pipeline_checkpoint():
@@ -526,10 +556,31 @@ def clear_pipeline_checkpoint():
     """
     if not PIPELINE_STATE_FILE.exists():
         return
-    with locked_file(PIPELINE_STATE_FILE, "w", lock_type=fcntl.LOCK_EX) as f:
+    previous = None
+    with locked_file(PIPELINE_STATE_FILE, "a+", lock_type=fcntl.LOCK_EX) as f:
+        f.seek(0)
+        raw = f.read()
+        if raw.strip():
+            try:
+                previous = json.loads(raw)
+            except Exception:
+                previous = None
         # Truncate under lock, then unlink — both inside the lock to prevent TOCTOU
+        f.seek(0)
         f.truncate(0)
         PIPELINE_STATE_FILE.unlink(missing_ok=True)
+    try:
+        from system_log import _write_system_event_raw
+        _write_system_event_raw(
+            "pipeline.checkpoint_cleared", "info",
+            "Pipeline checkpoint cleared",
+            {"next_v": previous.get("next_v") if previous else None,
+             "source_v": previous.get("source_v") if previous else None,
+             "stage": previous.get("stage") if previous else None,
+             "category": "pipeline.checkpoint_cleared"},
+        )
+    except Exception:
+        pass
 
 
 # ──────────────────────────────────────────────
@@ -1146,5 +1197,6 @@ from llm_query import (  # noqa: F401, E402
 from rate_limiter import rate_limiter, RateLimiter  # noqa: F401, E402
 from code_verification import (  # noqa: F401, E402
     verify_code, check_code_size, run_smoke_test,
-    run_decision_test_details, run_national_protocol_tests, seed_initial_bots,
+    run_decision_test_details, run_national_protocol_tests,
+    run_import_contract_test, seed_initial_bots,
 )

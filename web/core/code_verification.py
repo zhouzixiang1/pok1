@@ -1,6 +1,7 @@
 """Code verification tools: compile check, file size, smoke test, decision tests."""
 
 import os
+import json
 import shutil
 import subprocess
 import sys
@@ -540,6 +541,109 @@ def verify_code(directory, target_files=None):
     return errors
 
 
+def _production_import_modules(directory):
+    """Return bot modules whose import-time contracts must hold.
+
+    `py_compile` proves syntax only; it does not execute `from module import name`
+    bindings. Importing the production modules in a fresh subprocess catches the
+    class of crossover failures where one parent adds a symbol dependency that the
+    merged child never defines.
+    """
+    preferred = ["main", "strategy", "postflop", "opponent", "state"]
+    modules = []
+    for name in preferred:
+        if os.path.exists(os.path.join(directory, f"{name}.py")):
+            modules.append(name)
+    if "main" not in modules and os.path.exists(os.path.join(directory, "main.py")):
+        modules.insert(0, "main")
+    return modules
+
+
+def run_import_contract_test(directory, modules=None, timeout=20):
+    """Import production bot modules in a clean subprocess.
+
+    Returns a list of structured error dictionaries. An empty list means the
+    runtime import contract is intact.
+    """
+    directory = os.path.abspath(str(directory))
+    if not os.path.isdir(directory):
+        return [{
+            "module": "<bot_dir>",
+            "exception": "FileNotFoundError",
+            "message": f"bot directory not found: {directory}",
+            "traceback": "",
+        }]
+
+    modules = list(modules or _production_import_modules(directory))
+    if not modules:
+        return [{
+            "module": "<modules>",
+            "exception": "FileNotFoundError",
+            "message": f"no importable production modules found in {directory}",
+            "traceback": "",
+        }]
+
+    probe = r"""
+import importlib
+import json
+import os
+import sys
+import traceback
+
+bot_dir = os.path.abspath(sys.argv[1])
+modules = sys.argv[2:]
+sys.path.insert(0, bot_dir)
+for module_name in modules:
+    try:
+        importlib.import_module(module_name)
+    except BaseException as exc:
+        print(json.dumps({
+            "module": module_name,
+            "exception": exc.__class__.__name__,
+            "message": str(exc),
+            "traceback": traceback.format_exc(),
+        }, ensure_ascii=False), file=sys.stderr)
+        raise SystemExit(1)
+print(json.dumps({"ok": True, "modules": modules}, ensure_ascii=False))
+"""
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-B", "-c", probe, directory, *modules],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return [{
+            "module": ",".join(modules),
+            "exception": "TimeoutExpired",
+            "message": f"runtime import contract timed out after {timeout}s",
+            "traceback": "",
+        }]
+
+    if proc.returncode == 0:
+        return []
+
+    stderr = (proc.stderr or "").strip()
+    for line in reversed(stderr.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+            if isinstance(data, dict):
+                return [data]
+        except Exception:
+            continue
+    return [{
+        "module": ",".join(modules),
+        "exception": f"ProcessExit{proc.returncode}",
+        "message": stderr or (proc.stdout or "").strip() or "runtime import contract failed",
+        "traceback": stderr,
+    }]
+
+
 def check_code_size(directory, max_lines_per_file=None, source_dir=None):
     """Check single-file LOC limits (excluding backup files). Returns (total, oversized_files).
 
@@ -576,12 +680,27 @@ def run_smoke_test(directory):
     main_path = os.path.join(directory, "main.py")
     if not os.path.exists(main_path):
         return ["main.py not found!"]
-    proc = subprocess.run(
-        [sys.executable, str(CORE_DIR / "smoke_tester.py"), main_path],
-        capture_output=True, text=True
-    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(CORE_DIR / "smoke_tester.py"), main_path],
+            capture_output=True, text=True, timeout=90,
+        )
+    except subprocess.TimeoutExpired:
+        return ["smoke test timed out after 90s"]
     if proc.returncode != 0:
         return [proc.stderr.strip() or proc.stdout.strip()]
+    output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    failure_tokens = (
+        "Traceback (most recent call last)",
+        "ImportError",
+        "ModuleNotFoundError",
+        "NameError",
+        "BrokenPipeError",
+        "Exception ignored",
+        "Bot process exited",
+    )
+    if any(token in output for token in failure_tokens):
+        return [f"smoke test emitted failure output despite exit 0: {output[-2000:]}"]
     return []
 
 
