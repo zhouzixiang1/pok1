@@ -321,3 +321,66 @@ def test_is_daemon_scheduler_capable_missing():
         assert dm.is_daemon_scheduler_capable() is False
     finally:
         evolution_infra.RESULTS_DIR = orig_dir
+
+
+def test_scheduler_capability_false_logs_reason(daemon_pid_file, monkeypatch):
+    """Capability false should explain why the scheduler path is unavailable."""
+    import daemon_management as dm
+    import evolution_infra
+
+    events = []
+    live_proc = MagicMock()
+    live_proc.pid = 12345
+    live_proc.poll.return_value = None
+    daemon_pid_file.write_text(
+        json.dumps({"pid": 12345, "ppid": 1000, "scheduler_capable": False})
+    )
+    monkeypatch.setattr(dm, "daemon_proc", live_proc)
+    monkeypatch.setattr(dm, "_last_scheduler_capability_log", {"key": None, "ts": 0.0})
+    monkeypatch.setattr(dm, "log_system_event", lambda *event: events.append(event))
+
+    orig_dir = evolution_infra.RESULTS_DIR
+    evolution_infra.RESULTS_DIR = daemon_pid_file.parent
+    try:
+        assert dm.is_daemon_scheduler_capable() is False
+    finally:
+        evolution_infra.RESULTS_DIR = orig_dir
+
+    assert events
+    assert events[0][0] == "daemon.scheduler_capability_false"
+    assert events[0][3]["reason"] == "flag_false"
+    assert events[0][3]["daemon_pid"] == 12345
+
+
+def test_scheduler_capability_false_logs_stale_heartbeat(daemon_pid_file, monkeypatch):
+    """A live but stale daemon should log heartbeat age instead of a bare False."""
+    import daemon_management as dm
+    import evolution_infra
+
+    events = []
+    live_proc = MagicMock()
+    live_proc.pid = 12345
+    live_proc.poll.return_value = None
+    daemon_pid_file.write_text(
+        json.dumps({
+            "pid": 12345,
+            "ppid": 1000,
+            "scheduler_capable": True,
+            "last_heartbeat": 100.0,
+        })
+    )
+    monkeypatch.setattr(dm, "daemon_proc", live_proc)
+    monkeypatch.setattr(dm, "_last_scheduler_capability_log", {"key": None, "ts": 0.0})
+    monkeypatch.setattr(dm, "log_system_event", lambda *event: events.append(event))
+    monkeypatch.setattr(dm.time, "time", lambda: 1000.0)
+
+    orig_dir = evolution_infra.RESULTS_DIR
+    evolution_infra.RESULTS_DIR = daemon_pid_file.parent
+    try:
+        assert dm.is_daemon_scheduler_capable() is False
+    finally:
+        evolution_infra.RESULTS_DIR = orig_dir
+
+    assert events
+    assert events[0][3]["reason"] == "heartbeat_stale"
+    assert events[0][3]["heartbeat_age_sec"] == 900.0

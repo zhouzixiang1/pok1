@@ -271,11 +271,13 @@ class TestSchedulerPathUsedWhenCapable:
 
         # Only return result for first job
         first_job_id = None
+        collected_once = [False]
 
         def fake_collect(job_ids):
             nonlocal first_job_id
             if first_job_id is None:
                 first_job_id = job_ids[0]
+            collected_once[0] = True
             return {
                 first_job_id: {
                     "wins_a": 2,
@@ -289,19 +291,13 @@ class TestSchedulerPathUsedWhenCapable:
 
         monkeypatch.setattr(battle_scheduler, "collect_results", fake_collect)
 
-        # Mock time so the polling loop runs at least once then exits.
-        # Calls 1-2: submitted_at for each BattleJob
-        # Call 3: deadline calculation
-        # Call 4: while loop check (should return small so loop enters)
-        # Call 5+: return large to exceed deadline → loop exits
+        # Mock time so the polling loop runs at least once, collects the first
+        # partial result, then exits. This tracks the behavior being tested
+        # instead of depending on the exact number of time.time() call sites.
         import tool_eval
-        _call_count = [0]
         class _FakeTime:
             def time(self):
-                _call_count[0] += 1
-                if _call_count[0] <= 5:
-                    return 100.0
-                return 999999.0
+                return 999999.0 if collected_once[0] else 100.0
         monkeypatch.setattr(tool_eval, "time", _FakeTime())
 
         # Speed up polling sleep

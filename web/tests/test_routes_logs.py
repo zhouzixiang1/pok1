@@ -1,5 +1,7 @@
 """Tests for /api/logs/* endpoints."""
 
+import json
+
 import pytest
 
 
@@ -87,3 +89,38 @@ class TestOrchestratorLogs:
     def test_not_found(self, client):
         resp = client.get("/api/logs/orchestrator/orchestrator_29990101_000000.txt")
         assert resp.status_code == 404
+
+
+class TestSystemEvents:
+    def test_structured_source_filters_run_id_and_stage(self, client, tmp_path, monkeypatch):
+        from server.routes import logs
+
+        events_file = tmp_path / "events.jsonl"
+        events_file.write_text(
+            json.dumps({
+                "ts": 1.0,
+                "type": "pipeline.master_done",
+                "severity": "info",
+                "message": "done",
+                "data": {
+                    "category": "pipeline.master_done",
+                    "run_id": "231#0",
+                    "stage": "master_planned",
+                },
+            }) + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(logs, "RESULTS_DIR", tmp_path)
+
+        resp = client.get(
+            "/api/logs/system-events?source=structured&run_id=231%230&stage=master_planned"
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["events"][0]["type"] == "pipeline.master_done"
+
+    def test_system_events_rejects_unknown_source(self, client):
+        resp = client.get("/api/logs/system-events?source=unknown")
+        assert resp.status_code == 400

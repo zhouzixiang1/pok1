@@ -19,6 +19,39 @@ from server.state import app_state
 
 router = APIRouter(prefix="/api/control", tags=["control"])
 _last_status_sync_correction: tuple | None = None
+_SENSITIVE_ARG_MARKERS = ("password", "token", "secret", "key", "credential", "cookie", "auth")
+
+
+def _control_log(event_type: str, severity: str, message: str, data: dict | None = None) -> None:
+    """Best-effort structured logging for control-plane actions."""
+    try:
+        from system_log import log_system_event
+        log_system_event(event_type, severity, message, data or {})
+    except Exception:
+        pass
+
+
+def _summarize_tool_args(args: dict | None) -> dict:
+    """Return a compact, non-secret argument summary for system events."""
+    if not isinstance(args, dict):
+        return {"arg_type": type(args).__name__}
+    summary = {}
+    for key, value in args.items():
+        key_s = str(key)
+        key_l = key_s.lower()
+        if any(marker in key_l for marker in _SENSITIVE_ARG_MARKERS):
+            summary[key_s] = "<redacted>"
+        elif isinstance(value, (int, float, bool)) or value is None:
+            summary[key_s] = value
+        elif isinstance(value, str):
+            summary[key_s] = value if len(value) <= 160 else value[:157] + "..."
+        elif isinstance(value, list):
+            summary[key_s] = {"type": "list", "len": len(value)}
+        elif isinstance(value, dict):
+            summary[key_s] = {"type": "dict", "keys": sorted(map(str, value.keys()))[:12]}
+        else:
+            summary[key_s] = {"type": type(value).__name__}
+    return summary
 
 
 def _sync_evolution_fields(state: dict) -> dict:
@@ -50,11 +83,19 @@ def _sync_evolution_fields(state: dict) -> dict:
 
         if checkpoint.get("next_v") is not None and checkpoint.get("stage") not in (None, "archived"):
             next_v = int(checkpoint["next_v"])
+            generation_attempt = int(checkpoint.get("generation_attempt") or 0)
+            audit_attempt = int(checkpoint.get("audit_attempt") or 0)
+            precommit_attempt = int(checkpoint.get("precommit_attempt") or 0)
             active_generation = {
                 "next_v": next_v,
                 "source_v": checkpoint.get("source_v"),
                 "stage": checkpoint.get("stage"),
-                "run_id": checkpoint.get("run_id"),
+                "run_id": checkpoint.get("run_id") or f"{next_v}#{generation_attempt}",
+                "attempt": {
+                    "generation": generation_attempt,
+                    "audit": audit_attempt,
+                    "precommit": precommit_attempt,
+                },
             }
         else:
             next_v = max(current_v, max_committed_v) + 1
@@ -214,11 +255,23 @@ async def stop_evolution():
 @router.post("/tool/{tool_name}")
 async def call_tool(tool_name: str, req: ToolRequest = Body(default=None)):
     tools = _get_tool_map()
+    args = (req.args if req else None) or {}
+    arg_summary = _summarize_tool_args(args)
     if tool_name not in tools:
+        _control_log(
+            "control.tool_unknown", "warn",
+            f"Unknown control tool requested: {tool_name}",
+            {"tool": tool_name, "args": arg_summary, "available_count": len(tools)},
+        )
         raise HTTPException(status_code=404, detail=f"Unknown tool: {tool_name}. Available: {list(tools.keys())}")
 
+    _control_log(
+        "control.tool_requested", "info",
+        f"Control tool requested: {tool_name}",
+        {"tool": tool_name, "args": arg_summary},
+    )
     try:
-        result = await tools[tool_name]((req.args if req else None) or {})
+        result = await tools[tool_name](args)
         text = ""
         if isinstance(result, dict):
             content = result.get("content", [])
@@ -234,12 +287,32 @@ async def call_tool(tool_name: str, req: ToolRequest = Body(default=None)):
         elif tool_name == "stop_daemon":
             app_state.update_config(daemon_enabled=False)
 
+        _control_log(
+            "control.tool_succeeded", "success",
+            f"Control tool succeeded: {tool_name}",
+            {"tool": tool_name, "result_chars": len(text), "decision_preview": text[:200]},
+        )
         return {"tool": tool_name, "result": text}
     except KeyError as e:
+        _control_log(
+            "control.tool_failed", "error",
+            f"Control tool failed: {tool_name} missing parameter {e}",
+            {"tool": tool_name, "error_type": "KeyError", "error": str(e), "args": arg_summary},
+        )
         raise HTTPException(status_code=400, detail=f"Missing parameter: {e}")
     except (TypeError, ValueError) as e:
+        _control_log(
+            "control.tool_failed", "error",
+            f"Control tool failed: {tool_name} invalid parameter",
+            {"tool": tool_name, "error_type": type(e).__name__, "error": str(e), "args": arg_summary},
+        )
         raise HTTPException(status_code=400, detail=f"Invalid parameter: {e}")
     except Exception as e:
+        _control_log(
+            "control.tool_failed", "error",
+            f"Control tool failed: {tool_name}",
+            {"tool": tool_name, "error_type": type(e).__name__, "error": str(e), "args": arg_summary},
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -111,6 +111,12 @@ async def get_bot_info(args):
     ratings = load_ratings()
     p = ratings.get(bot_name)
     parent = git_get_parent(v) if git_has_tag(v) else None
+    parent_v = None
+    if parent is not None:
+        try:
+            parent_v = int(str(parent).replace("claude_v", "").replace("v", ""))
+        except ValueError:
+            parent_v = None
 
     result = {
         "version": v,
@@ -118,7 +124,7 @@ async def get_bot_info(args):
         "completed": (bot_dir / ".completed").exists(),
         "has_git_tag": git_has_tag(v),
         "rating": {"r": round(p.r, 1), "rd": round(p.rd, 1)} if p else None,
-        "parent_v": parent,
+        "parent_v": parent_v if parent_v is not None else parent,
     }
 
     # Code size info — use parent as source_dir for adaptive limits
@@ -126,10 +132,13 @@ async def get_bot_info(args):
         py_files = list(bot_dir.glob("*.py"))
         result["files"] = [f.name for f in py_files]
         result["total_lines"] = sum(count_lines(f) for f in py_files)
-        source_dir = get_bot_dir(parent) if parent else None
+        source_dir = get_bot_dir(parent_v) if parent_v else None
         _, oversized = check_code_size(bot_dir, source_dir=source_dir)
         if oversized:
-            result["oversized_files"] = {name: lines for name, lines in oversized}
+            result["oversized_files"] = {
+                name: {"lines": lines, "limit": limit}
+                for name, lines, limit in oversized
+            }
 
     return _json_tool_result(result)
 

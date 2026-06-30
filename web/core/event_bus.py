@@ -313,15 +313,23 @@ def emit(category, severity, message, *, stage=None, attempt=None, run_id=None,
                 gen_attempt = 0
             payload_run_id = f"{payload_v}#{gen_attempt}"
 
+    emitter_proc = current_proc()
     data = {
         **fields,
         "category": category,
         "stage": stage if stage is not None else ctx_stage,
         "attempt": attempt if attempt is not None else ctx_attempt,
         "run_id": run_id if run_id is not None else (payload_run_id or rid),
-        "pid": _PID,
-        "proc": current_proc(),
+        "emitter_pid": _PID,
+        "emitter_ppid": os.getppid(),
+        "emitter_proc": emitter_proc,
     }
+    # Preserve caller-supplied business identity. Daemon lifecycle events often
+    # use pid/proc for the target daemon; overwriting those with the web process
+    # made stop/crash logs actively misleading. For old callers that do not pass
+    # pid/proc, keep the legacy data.pid/data.proc fields as emitter identity.
+    data.setdefault("pid", _PID)
+    data.setdefault("proc", emitter_proc)
     if failure_mode is not None:
         data["failure_mode"] = failure_mode
     if remapped:

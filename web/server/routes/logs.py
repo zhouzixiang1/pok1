@@ -95,12 +95,17 @@ async def get_system_events(
     type: str = Query("", description="Filter by event type prefix (e.g. pipeline.)"),
     category: str = Query("", description="Filter by data.category or type-prefix category (e.g. pipeline.)"),
     severity: str = Query("", description="Filter by severity: info|warn|error|success"),
+    source: str = Query("legacy", description="Event source: legacy|structured"),
+    run_id: str = Query("", description="Filter by data.run_id, e.g. 231#0"),
+    stage: str = Query("", description="Filter by data.stage"),
     since: float | None = Query(None, description="Only events after this Unix timestamp"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     from system_log import SYSTEM_EVENTS_FILE
-    events_file = SYSTEM_EVENTS_FILE
+    if source not in {"legacy", "structured"}:
+        raise HTTPException(status_code=400, detail="source must be 'legacy' or 'structured'")
+    events_file = RESULTS_DIR / "events.jsonl" if source == "structured" else SYSTEM_EVENTS_FILE
     if not events_file.exists():
         return {"events": [], "total": 0}
     events = []
@@ -129,6 +134,10 @@ async def get_system_events(
                 data["category"] = cat
                 entry["data"] = data
             if category and not cat.startswith(category):
+                continue
+            if run_id and data.get("run_id") != run_id:
+                continue
+            if stage and data.get("stage") != stage:
                 continue
             events.append(entry)
     events.reverse()

@@ -183,6 +183,13 @@ def log_fix_application(
     """Log fix application results to system events."""
     from system_log import log_system_event
 
+    target_v = None
+    if bot_dir.name.startswith("claude_v"):
+        try:
+            target_v = int(bot_dir.name.split("claude_v", 1)[1])
+        except (TypeError, ValueError, IndexError):
+            target_v = None
+
     severity = "warn" if skipped and applied else "info"
     msg_parts = []
     if applied:
@@ -196,6 +203,7 @@ def log_fix_application(
         f"Fix injection for {bot_dir.name} from v{source_v}: " + "; ".join(msg_parts),
         {
             "bot_dir": str(bot_dir.name),
+            "target_v": target_v,
             "source_v": source_v,
             "applied": applied,
             "skipped": skipped,

@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 
 
 def test_import_contract_catches_missing_symbol_that_py_compile_misses(tmp_path):
@@ -136,3 +137,56 @@ def test_illegal_stage_regression_is_not_written():
     assert evolution_infra.write_pipeline_checkpoint(10, 9, "workers_done") is True
     assert evolution_infra.write_pipeline_checkpoint(10, 9, "direction_audited") is False
     assert evolution_infra.read_pipeline_checkpoint()["stage"] == "workers_done"
+
+
+def test_fix_application_event_includes_target_version(monkeypatch):
+    import fix_injection
+    import system_log
+
+    events = []
+    monkeypatch.setattr(system_log, "log_system_event", lambda *event: events.append(event))
+
+    fix_injection.log_fix_application(["BOT-001a"], [], Path("/tmp/claude_v231"), 224)
+
+    assert events
+    assert events[0][0] == "pipeline.fixes_applied"
+    assert events[0][3]["target_v"] == 231
+
+
+def test_git_get_parent_reads_annotated_tag_target_commit(monkeypatch):
+    import evolution_infra
+
+    def fake_git(*args, **_kwargs):
+        if args[:3] == ("tag", "-l", "bot-v202"):
+            return "bot-v202\n"
+        if args[:3] == ("rev-list", "-n", "1"):
+            return "abc123\n"
+        if args[:3] == ("show", "-s", "--format=%B"):
+            return "evolve: v201 -> v202\n\nparent: claude_v201\nstrategy: master\n"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(evolution_infra, "_git", fake_git)
+
+    assert evolution_infra.git_get_parent(202) == 201
+
+
+def test_get_bot_info_handles_parent_and_oversized_triples(tmp_path, monkeypatch):
+    import tool_status
+
+    bot_dir = tmp_path / "claude_v202"
+    bot_dir.mkdir()
+    (bot_dir / "main.py").write_text("print('ok')\n")
+
+    monkeypatch.setattr(tool_status, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+    monkeypatch.setattr(tool_status, "load_ratings", lambda: {})
+    monkeypatch.setattr(tool_status, "git_has_tag", lambda _v: True)
+    monkeypatch.setattr(tool_status, "git_get_parent", lambda _v: "claude_v201")
+    monkeypatch.setattr(tool_status, "check_code_size", lambda *_a, **_k: (
+        2501, [("strategy.py", 2501, 2500)]
+    ))
+
+    result = asyncio.run(tool_status.get_bot_info.handler({"version": 202}))
+    data = json.loads(result["content"][0]["text"])
+
+    assert data["parent_v"] == 201
+    assert data["oversized_files"] == {"strategy.py": {"lines": 2501, "limit": 2500}}

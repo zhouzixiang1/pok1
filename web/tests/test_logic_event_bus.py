@@ -65,6 +65,17 @@ def test_emit_schema_has_correlation_fields(isolated_files):
         assert k in data, f"missing correlation field {k}"
     assert data["category"] == "pipeline.x"
     assert data["pid"] == os.getpid()
+    assert data["emitter_pid"] == os.getpid()
+
+
+def test_emit_preserves_business_pid_and_records_emitter(isolated_files):
+    """Daemon lifecycle logs may carry a target pid; event_bus must not overwrite it."""
+    event_bus.emit("daemon.stop_requested", "info", "stop", pid=12345, proc="daemon")
+    data = _read_jsonl(isolated_files / "events.jsonl")[0]["data"]
+    assert data["pid"] == 12345
+    assert data["proc"] == "daemon"
+    assert data["emitter_pid"] == os.getpid()
+    assert data["emitter_proc"] == event_bus.current_proc()
 
 
 # ── severity normalisation ────────────────────────────────────────────────────
