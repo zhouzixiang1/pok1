@@ -6,6 +6,7 @@ _make_precompact_hook preserves evolution state across LLM context compaction.
 
 import json
 import re
+import shlex
 import time
 
 from claude_agent_sdk.types import HookMatcher, SyncHookJSONOutput
@@ -42,6 +43,18 @@ _BASH_MUTATION_PATTERNS = (
     "git checkout",
     "git restore",
 )
+_GIT_TAG_READONLY_OPTIONS_WITH_VALUE = {
+    "--sort", "--format", "--points-at", "--contains", "--no-contains",
+    "--merged", "--no-merged", "--column", "--color",
+}
+_GIT_TAG_READONLY_FLAGS = {
+    "-l", "--list", "-n", "--ignore-case", "--no-column", "--no-color",
+}
+_GIT_TAG_MUTATION_FLAGS = {
+    "-a", "--annotate", "-s", "--sign", "-u", "--local-user", "-f",
+    "--force", "-d", "--delete",
+}
+_GIT_TAG_RE = re.compile(r"\bgit\s+tag\b([^;&|]*)", re.IGNORECASE)
 
 
 def _bash_has_file_write_redirect(command: str) -> bool:
@@ -64,6 +77,55 @@ def _python_snippet_is_mutating(command: str) -> bool:
     return any(pattern in low for pattern in _PYTHON_WRITE_PATTERNS)
 
 
+def _git_tag_invocation_is_mutating(args: list[str]) -> bool:
+    if not args:
+        return False
+
+    list_mode = False
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        low = arg.lower()
+
+        if low in _GIT_TAG_MUTATION_FLAGS:
+            return True
+        if low.startswith("--delete=") or low.startswith("--force="):
+            return True
+        if low in _GIT_TAG_READONLY_FLAGS or low.startswith("-n"):
+            if low in {"-l", "--list"}:
+                list_mode = True
+            i += 1
+            continue
+        if any(low.startswith(opt + "=") for opt in _GIT_TAG_READONLY_OPTIONS_WITH_VALUE):
+            i += 1
+            continue
+        if low in _GIT_TAG_READONLY_OPTIONS_WITH_VALUE:
+            i += 2
+            continue
+        if list_mode:
+            i += 1
+            continue
+        if low.startswith("-"):
+            return True
+        return True
+
+    return False
+
+
+def _git_tag_is_mutating(command: str) -> bool:
+    for match in _GIT_TAG_RE.finditer(str(command)):
+        rest = match.group(1).strip()
+        if not rest:
+            continue
+        try:
+            args = shlex.split(rest)
+        except ValueError:
+            args = rest.split()
+        if _git_tag_invocation_is_mutating(args):
+            return True
+    return False
+
+
 def _orchestrator_bash_is_mutation(command: str) -> bool:
     """True if a Bash command writes/deletes/edits files rather than inspecting."""
     low = str(command).lower()
@@ -73,7 +135,9 @@ def _orchestrator_bash_is_mutation(command: str) -> bool:
         return True
     if any(p in low for p in _BASH_MUTATION_PATTERNS):
         return True
-    if "git commit" in low or "git tag" in low or "git push" in low:
+    if "git commit" in low or "git push" in low:
+        return True
+    if _git_tag_is_mutating(command):
         return True
     return False
 

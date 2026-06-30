@@ -519,18 +519,22 @@ def test_subagent_guard_allows_readonly_parent_probe_but_blocks_writes():
         "print(Path('bots/claude_v221/strategy.py').read_text()[:10])\""
     )
     readonly_wc = "wc -l web/core/experience_pool.md 2>/dev/null"
+    readonly_tag = "git tag -l 'bot-v2*' | tail -10"
     write_redirect = "echo x > bots/claude_v224/strategy.py"
     write_python = (
         "python -c \"from pathlib import Path; "
         "Path('bots/claude_v221/strategy.py').write_text('x')\""
     )
+    write_tag = "git tag bot-v999"
 
     assert llm_query._subagent_is_outside_allowed(readonly_ls, allowed) is True
     assert llm_query._subagent_bash_is_mutation(readonly_ls) is False
     assert llm_query._subagent_bash_is_mutation(readonly_python) is False
     assert llm_query._subagent_bash_is_mutation(readonly_wc) is False
+    assert llm_query._subagent_bash_is_mutation(readonly_tag) is False
     assert llm_query._subagent_bash_is_mutation(write_redirect) is True
     assert llm_query._subagent_bash_is_mutation(write_python) is True
+    assert llm_query._subagent_bash_is_mutation(write_tag) is True
 
 
 def test_orchestrator_guard_allows_readonly_redirection_but_blocks_writes():
@@ -540,6 +544,11 @@ def test_orchestrator_guard_allows_readonly_redirection_but_blocks_writes():
         "git status --short --branch | head -30 && echo \"---\" && "
         "ls -d bots/claude_v221 bots/claude_v206 2>&1"
     )
+    readonly_tag_probe = (
+        "git status --short --branch | head -20 && echo \"---TAGS---\" && "
+        "git tag -l 'bot-v2*' | tail -10 && echo \"---PARENT DIRS---\" && "
+        "ls -d bots/claude_v206 bots/claude_v221 bots/claude_v235 2>&1"
+    )
     readonly_python = "python -c \"print(open('bots/claude_v221/main.py').read()[:10])\""
     write_redirect = "echo x > bots/claude_v221/main.py"
     write_python = (
@@ -548,9 +557,14 @@ def test_orchestrator_guard_allows_readonly_redirection_but_blocks_writes():
     )
 
     assert orchestrator_context._orchestrator_bash_is_mutation(readonly) is False
+    assert orchestrator_context._orchestrator_bash_is_mutation(readonly_tag_probe) is False
+    assert orchestrator_context._orchestrator_bash_is_mutation("git tag --list 'bot-v23*' | sort -V") is False
+    assert orchestrator_context._orchestrator_bash_is_mutation("git tag --sort=-creatordate | head -5") is False
     assert orchestrator_context._orchestrator_bash_is_mutation(readonly_python) is False
     assert orchestrator_context._orchestrator_bash_is_mutation(write_redirect) is True
     assert orchestrator_context._orchestrator_bash_is_mutation(write_python) is True
+    assert orchestrator_context._orchestrator_bash_is_mutation("git tag bot-v999") is True
+    assert orchestrator_context._orchestrator_bash_is_mutation("git tag -a bot-v999 -m x") is True
 
 
 def test_archivist_housekeeping_commit_stages_only_curated_paths(monkeypatch):
