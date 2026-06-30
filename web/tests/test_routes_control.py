@@ -1,6 +1,8 @@
 """Tests for /api/control/* endpoints."""
 
 import json
+import sys
+from types import SimpleNamespace
 
 
 class TestConfig:
@@ -36,6 +38,33 @@ class TestStatus:
         assert "running" in data
         assert "mode" in data
         assert "daemon_enabled" in data
+
+    def test_status_uses_active_checkpoint_target(self, client, monkeypatch):
+        import server.routes.control as control
+        from server.state import app_state
+
+        app_state.bootstrap(224)
+        control._last_status_sync_correction = None
+        fake_evolution_core = SimpleNamespace(
+            find_current_v=lambda: 224,
+            find_max_committed_v=lambda: 230,
+            read_pipeline_checkpoint=lambda: {
+                "next_v": 231,
+                "source_v": 224,
+                "stage": "prepared",
+                "run_id": "231#0",
+            },
+        )
+        monkeypatch.setitem(sys.modules, "evolution_core", fake_evolution_core)
+
+        resp = client.get("/api/control/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["current_v"] == 224
+        assert data["next_v"] == 231
+        assert data["generation_count"] == 224
+        assert data["active_generation"]["stage"] == "prepared"
 
 
 class TestDecisions:
