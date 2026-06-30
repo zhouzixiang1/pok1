@@ -37,6 +37,9 @@
 - Active-axis prescription RETIRED: v208+v209 EXECUTED the deal-local-detector + divergence OVERRIDE directions — the prior "ONLY permitted = new deal-local detector" is superseded. Validate v208/v209 firing @≥30g before spawning further new axes; do NOT re-recommend the executed prescription.
 
 ## RECENT_LESSONS
+- **v224**: PLAN/IMPLEMENTATION DRIFT at v224: the committed DEFENSE fold-ceiling tweak (opponent.py _multibarrel_line_fold 0.42→0.48) does NOT match the declared Master OFFENSE _turn_float_value_donk port, which already existed in v195 — Master plan and committed code describe opposite sides of the value/bluff ledger. Require post-worker plan-vs-code reconciliation before review to catch this divergence early.
+- **v224**: Reachability firing-rate evidence has been skipped 5+ consecutive generations despite being a BINDING gate (experience pool L11); threshold edits proven INERT in prior gens (v219 confidence 0.25→0.20 mathematically unreachable, v221 mid_pair unconditional). Require reachability_test @≥30g confirming ≥5% fire-rate before approving any further threshold-ceiling generation.
+- **v224 归档建议**: Before raising the 0.45→0.48 ceiling any further, run reachability_test @≥30g vs v182 (v195's actual worst nemesis WR 0.371) and gate the 0.45→0.48 upper-two-pair sub-band on board-texture nut-disadvantage (the _nut_disadvantage_commit_check the lit_probe derived but couldn't land via crossover) rather than blanket-folding on every confirmed multi-barrel line.
 - **v224**: Critic evidence: H2H weaknesses: Plan claims v195 vs v178=0.429 — ACTUAL head_to_head.json: 0.489 (near-TIE, overstated), Plan claims v195 vs v194=0.417 — ACTUAL: 0.471 (mild loss, overstated), v195 vs v200=0.440 ✓ (matches plan), v195 ACTUALLY BEATS v206 (0.520, n=50) and TIES v212 (0.500, n=40) — plan mis-attributes these as nemeses, v195's REAL weakest: v182=0.371 (n=70, UNMENTIONED in plan), v200=0.440, v203=0.450, v167=0.470, v187=0.475, v204=0.475, v213=0.475; Experience pool refs: L10-11: 'Over-call leak band 0.20≤made<0.45 vs value-heavy shovers' (#1 multi-site -20k leak, 13+ gens RESILIENT) — mutation targets this, L11: 'Fold-side GATE attacks are CROSS_GEN_PIVOT-BLOCKED ~8 gens — attack sibling sites via crossover-bypass' — v224 IS the prescribed bypass, L11 BINDING GATE: 'reachability-test @≥30g before ANY threshold movement' — SKIPPED again (v204/v205/v208/v220/v224 pattern); Diff refs: opponent.py L720: `if made_strength >= 0.48: return False` (was 0.42) — the ONLY behavioral change, opponent.py L707-719: 13-line comment block documenting rationale + v215 cross-reference, opponent.py L1515-1522: +4 self-tests (0.45/0.47 fold, 0.48/0.58 protected) — logic-proof only, no reachability
 - **v221**: Crossover H2H rationale MUST be verified against head_to_head.json before dispatch — v221 fabricated 'v204 loses to v199/v178/v195/v193' when v204 actually ties/beats them; valid complementary-strength picks come from opponents the parent loses to (v206) that the donor beats (v195 0.525)
 - **v221**: Unconditional fold/continuation gate widening (pot_odds 0.35→0.42) WITHOUT opponent conditioning is -EV vs value-heavy shovers — always gate mid_pair (77-99) continuation on VPIP>0.60 OR betsize_polarity.tendency to preserve wins vs v196/v200/v212-class tight shovers
@@ -87,6 +90,7 @@
 - [EXHAUSTED — cross_gen_pivot auto-mark v223] calibration, exhausted, experience
 - [EXHAUSTED — cross_gen_pivot auto-mark v222] defense, gate
 - [EXHAUSTED — cross_gen_pivot auto-mark v215] gate, polarized, shove
+
 
 
 
