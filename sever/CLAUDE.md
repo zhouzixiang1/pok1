@@ -92,6 +92,7 @@ Do not revert, reset, restore, clean, or checkout unrelated files unless the use
 `sever/` 改代码规范：
 
 - 先对照 `sever/国赛平台/` 文档确认协议事实，再改 TCP 解析、validator、game flow、adapter 或 THP。
+- 改代码前先从 `main` 开任务分支，默认命名 `codex/<task-name>`；在分支内完成修改和提交，再切回 `main` 合并并 push。
 - 只改当前任务需要的文件，不顺手重构、不统一无关风格、不碰 `records/` 等运行产物。
 - 协议行为、下注语义、postflop check/call、all-in runout、card mapping、THP 顺序等变更必须配套 `sever/tests` 回归测试。
 - 改 adapter 时必须记住源 bot 仍是 Botzone/local JSON bot，TCP 文本只由 adapter 生成。
@@ -102,8 +103,13 @@ Stage only files changed for the current task. Do not use `git add -A` unless th
 After a task that changes files, commit and push task-related changes:
 
 ```bash
+git switch main
+git pull --ff-only
+git switch -c codex/<task-name>
 git add <files you changed>
 git commit -m "<descriptive message>"
+git switch main
+git merge --no-ff codex/<task-name>
 git push
 ```
 

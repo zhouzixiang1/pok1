@@ -100,11 +100,12 @@ python -m pytest sever/tests/test_national_alignment.py -q
 
 1. 先确认边界，再动代码。`engine/`、`web/`、`sever/`、`rl/` 不能混成一个模型；涉及协议、进化提示词、质量门、文档时，要一起检查影响面。
 2. 动手前先看 `git status --short --branch`，识别已有脏项。已有的用户改动、未完成 bot 目录、gitlink 噪声一律不回滚、不清理、不顺手提交。
-3. 只改当前任务需要的文件。除非你明确要求，不做顺手重构、不改无关风格、不碰运行产物和生成目录。
-4. 手工代码修改保持小步、可审查。优先沿用当前模块风格和已有 helper；只有真实降低复杂度或匹配现有架构时才新增抽象。
-5. 协议类变更必须有回归测试。像 TCP action、下注语义、card mapping、THP、adapter 这类边界，只改代码不加测试不算完成。
-6. Web 进化相关变更要同时检查提示词和质量门。不能只修 Python 代码，却让 Master/Worker/Reviewer 继续传播旧规则。
-7. 提交前至少跑和改动范围匹配的验证。窄改动跑 py_compile/目标 pytest；跨协议或质量门改动要跑 `sever/tests` 和相关 Web import/调用冒烟。
-8. 暂存只显式列出本次任务文件，不用 `git add -A`。`web/core/results/`、`web/logs/`、`web/frontend/dist/`、`web/server/static/`、`results/*.json`、`ladder_results/`、`bots/graveyard/`、`.completed` 等运行/生成产物默认不提交。
-9. 需要提交时，提交信息描述行为变化；提交后推送。推送失败就报告具体错误，不伪装完成。
-10. 最终汇报要说明改了什么、验证了什么、提交/推送结果，以及仍然存在但未触碰的无关脏项。
+3. 改代码前先从 `main` 开任务分支，默认命名 `codex/<task-name>`；在分支内完成修改和提交，再切回 `main` 合并并 push。
+4. 只改当前任务需要的文件。除非你明确要求，不做顺手重构、不改无关风格、不碰运行产物和生成目录。
+5. 手工代码修改保持小步、可审查。优先沿用当前模块风格和已有 helper；只有真实降低复杂度或匹配现有架构时才新增抽象。
+6. 协议类变更必须有回归测试。像 TCP action、下注语义、card mapping、THP、adapter 这类边界，只改代码不加测试不算完成。
+7. Web 进化相关变更要同时检查提示词和质量门。不能只修 Python 代码，却让 Master/Worker/Reviewer 继续传播旧规则。
+8. 提交前至少跑和改动范围匹配的验证。窄改动跑 py_compile/目标 pytest；跨协议或质量门改动要跑 `sever/tests` 和相关 Web import/调用冒烟。
+9. 暂存只显式列出本次任务文件，不用 `git add -A`。`web/core/results/`、`web/logs/`、`web/frontend/dist/`、`web/server/static/`、`results/*.json`、`ladder_results/`、`bots/graveyard/`、`.completed` 等运行/生成产物默认不提交。
+10. 需要提交时，提交信息描述行为变化；提交后切回 `main` 做 `git merge --no-ff codex/<task-name>`，再 push `main`。推送失败就报告具体错误，不伪装完成。
+11. 最终汇报要说明改了什么、验证了什么、分支名、合并/推送结果，以及仍然存在但未触碰的无关脏项。
