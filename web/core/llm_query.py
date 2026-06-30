@@ -33,7 +33,6 @@ _SUBAGENT_BASH_MUTATION_PATTERNS = (
     "git add", "git rm", "git checkout", "git restore", "git commit",
     "git push",
 )
-_SUBAGENT_WRITE_REDIRECT_RE = re.compile(r"(?<![<>=])(?:&>>?|[0-9]*>>?)\s*([^\s;&|]+)")
 _SAFE_REDIRECT_TARGETS = {"/dev/null", "nul"}
 _SUBAGENT_GIT_TAG_RE = re.compile(r"\bgit\s+tag\b([^;&|]*)", re.IGNORECASE)
 _SUBAGENT_GIT_TAG_READONLY_OPTIONS_WITH_VALUE = {
@@ -105,12 +104,153 @@ def _subagent_git_tag_is_mutating(command):
     return False
 
 
+def _strip_heredoc_bodies(command):
+    """Remove heredoc bodies so Python comparisons inside them are not parsed as shell."""
+    lines = str(command).splitlines()
+    output = []
+    pending = []
+    for line in lines:
+        if pending:
+            if line.strip() == pending[0]:
+                pending.pop(0)
+            continue
+        output.append(line)
+        pending.extend(_shell_heredoc_delimiters(line))
+    return "\n".join(output)
+
+
+def _shell_heredoc_delimiters(line):
+    delimiters = []
+    quote = None
+    escaped = False
+    i = 0
+    text = str(line)
+    while i < len(text):
+        ch = text[i]
+        if escaped:
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\":
+            escaped = True
+            i += 1
+            continue
+        if quote:
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if text.startswith("<<<", i):
+            i += 3
+            continue
+        if text.startswith("<<", i):
+            i += 2
+            if i < len(text) and text[i] == "-":
+                i += 1
+            while i < len(text) and text[i].isspace():
+                i += 1
+            token, i = _read_shell_token(text, i)
+            token = token.strip("'\"")
+            if token:
+                delimiters.append(token)
+            continue
+        i += 1
+    return delimiters
+
+
+def _read_shell_token(text, start):
+    token = []
+    quote = None
+    escaped = False
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if escaped:
+            token.append(ch)
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\":
+            escaped = True
+            i += 1
+            continue
+        if quote:
+            if ch == quote:
+                quote = None
+            else:
+                token.append(ch)
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch.isspace() or ch in ";&|":
+            break
+        token.append(ch)
+        i += 1
+    return "".join(token), i
+
+
+def _iter_shell_write_redirect_targets(command):
+    text = _strip_heredoc_bodies(command)
+    quote = None
+    escaped = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if escaped:
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\":
+            escaped = True
+            i += 1
+            continue
+        if quote:
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+
+        op_start = None
+        if text.startswith("&>>", i):
+            op_start = i + 3
+        elif text.startswith("&>", i):
+            op_start = i + 2
+        elif ch == ">":
+            if i + 1 < len(text) and text[i + 1] == "=":
+                i += 2
+                continue
+            op_start = i + (2 if i + 1 < len(text) and text[i + 1] == ">" else 1)
+
+        if op_start is None:
+            i += 1
+            continue
+
+        j = op_start
+        while j < len(text) and text[j].isspace():
+            j += 1
+        target, end = _read_shell_token(text, j)
+        if target:
+            yield target
+        i = max(end, j + 1)
+
+
 def _subagent_bash_mutation_detector(command):
     """Return the detector name when Bash appears to write/delete/move files."""
     text = str(command)
     low = text.lower()
-    for match in _SUBAGENT_WRITE_REDIRECT_RE.finditer(text):
-        target = match.group(1).strip("'\"")
+    for target in _iter_shell_write_redirect_targets(text):
+        target = target.strip("'\"")
         if target.startswith("&") or target.lower() in _SAFE_REDIRECT_TARGETS:
             continue
         return f"write_redirect:{target[:120]}"

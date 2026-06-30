@@ -518,9 +518,28 @@ def test_subagent_guard_allows_readonly_parent_probe_but_blocks_writes():
         "python -c \"from pathlib import Path; "
         "print(Path('bots/claude_v221/strategy.py').read_text()[:10])\""
     )
+    readonly_python_assignment = """python -c "
+import json
+h2h = json.load(open('web/core/results/head_to_head.json'))
+for opp, wr in [('claude_v206', 0.44)]:
+    if wr > 0.10:
+        print(opp)
+"
+"""
+    readonly_python_heredoc = """python3 << 'PYEOF'
+import json
+h2h = json.load(open('web/core/results/head_to_head.json'))
+if 0.55 > 0.10:
+    print('readonly')
+PYEOF
+"""
     readonly_wc = "wc -l web/core/experience_pool.md 2>/dev/null"
     readonly_tag = "git tag -l 'bot-v2*' | tail -10"
     write_redirect = "echo x > bots/claude_v224/strategy.py"
+    write_heredoc_redirect = """python3 << 'PYEOF' > bots/claude_v224/notes.txt
+print('x')
+PYEOF
+"""
     write_python = (
         "python -c \"from pathlib import Path; "
         "Path('bots/claude_v221/strategy.py').write_text('x')\""
@@ -530,15 +549,21 @@ def test_subagent_guard_allows_readonly_parent_probe_but_blocks_writes():
     assert llm_query._subagent_is_outside_allowed(readonly_ls, allowed) is True
     assert llm_query._subagent_bash_is_mutation(readonly_ls) is False
     assert llm_query._subagent_bash_is_mutation(readonly_python) is False
+    assert llm_query._subagent_bash_is_mutation(readonly_python_assignment) is False
+    assert llm_query._subagent_bash_is_mutation(readonly_python_heredoc) is False
     assert llm_query._subagent_bash_is_mutation(readonly_wc) is False
     assert llm_query._subagent_bash_is_mutation(readonly_tag) is False
     assert llm_query._subagent_bash_mutation_detector(readonly_ls) is None
     assert llm_query._subagent_bash_mutation_detector(readonly_python) is None
+    assert llm_query._subagent_bash_mutation_detector(readonly_python_assignment) is None
+    assert llm_query._subagent_bash_mutation_detector(readonly_python_heredoc) is None
     assert llm_query._subagent_bash_mutation_detector(readonly_tag) is None
     assert llm_query._subagent_bash_is_mutation(write_redirect) is True
+    assert llm_query._subagent_bash_is_mutation(write_heredoc_redirect) is True
     assert llm_query._subagent_bash_is_mutation(write_python) is True
     assert llm_query._subagent_bash_is_mutation(write_tag) is True
     assert llm_query._subagent_bash_mutation_detector(write_redirect).startswith("write_redirect:")
+    assert llm_query._subagent_bash_mutation_detector(write_heredoc_redirect).startswith("write_redirect:")
     assert llm_query._subagent_bash_mutation_detector(write_python) == "python_write_pattern:.write_text("
     assert llm_query._subagent_bash_mutation_detector(write_tag) == "git_tag_mutation"
 
@@ -556,7 +581,17 @@ def test_orchestrator_guard_allows_readonly_redirection_but_blocks_writes():
         "ls -d bots/claude_v206 bots/claude_v221 bots/claude_v235 2>&1"
     )
     readonly_python = "python -c \"print(open('bots/claude_v221/main.py').read()[:10])\""
+    readonly_python_comparison = """python3 << 'PYEOF'
+for wr in [0.20, 0.55]:
+    if wr > 0.10:
+        print(wr)
+PYEOF
+"""
     write_redirect = "echo x > bots/claude_v221/main.py"
+    write_heredoc_redirect = """python3 << 'PYEOF' > bots/claude_v221/tmp.txt
+print('x')
+PYEOF
+"""
     write_python = (
         "python -c \"from pathlib import Path; "
         "Path('bots/claude_v221/main.py').write_text('x')\""
@@ -567,7 +602,9 @@ def test_orchestrator_guard_allows_readonly_redirection_but_blocks_writes():
     assert orchestrator_context._orchestrator_bash_is_mutation("git tag --list 'bot-v23*' | sort -V") is False
     assert orchestrator_context._orchestrator_bash_is_mutation("git tag --sort=-creatordate | head -5") is False
     assert orchestrator_context._orchestrator_bash_is_mutation(readonly_python) is False
+    assert orchestrator_context._orchestrator_bash_is_mutation(readonly_python_comparison) is False
     assert orchestrator_context._orchestrator_bash_is_mutation(write_redirect) is True
+    assert orchestrator_context._orchestrator_bash_is_mutation(write_heredoc_redirect) is True
     assert orchestrator_context._orchestrator_bash_is_mutation(write_python) is True
     assert orchestrator_context._orchestrator_bash_is_mutation("git tag bot-v999") is True
     assert orchestrator_context._orchestrator_bash_is_mutation("git tag -a bot-v999 -m x") is True
