@@ -37,6 +37,7 @@
 - Active-axis prescription RETIRED: v208+v209 EXECUTED the deal-local-detector + divergence OVERRIDE directions — the prior "ONLY permitted = new deal-local detector" is superseded. Validate v208/v209 firing @≥30g before spawning further new axes; do NOT re-recommend the executed prescription.
 
 ## RECENT_LESSONS
+- **v224**: Critic evidence: H2H weaknesses: Plan claims v195 vs v178=0.429 — ACTUAL head_to_head.json: 0.489 (near-TIE, overstated), Plan claims v195 vs v194=0.417 — ACTUAL: 0.471 (mild loss, overstated), v195 vs v200=0.440 ✓ (matches plan), v195 ACTUALLY BEATS v206 (0.520, n=50) and TIES v212 (0.500, n=40) — plan mis-attributes these as nemeses, v195's REAL weakest: v182=0.371 (n=70, UNMENTIONED in plan), v200=0.440, v203=0.450, v167=0.470, v187=0.475, v204=0.475, v213=0.475; Experience pool refs: L10-11: 'Over-call leak band 0.20≤made<0.45 vs value-heavy shovers' (#1 multi-site -20k leak, 13+ gens RESILIENT) — mutation targets this, L11: 'Fold-side GATE attacks are CROSS_GEN_PIVOT-BLOCKED ~8 gens — attack sibling sites via crossover-bypass' — v224 IS the prescribed bypass, L11 BINDING GATE: 'reachability-test @≥30g before ANY threshold movement' — SKIPPED again (v204/v205/v208/v220/v224 pattern); Diff refs: opponent.py L720: `if made_strength >= 0.48: return False` (was 0.42) — the ONLY behavioral change, opponent.py L707-719: 13-line comment block documenting rationale + v215 cross-reference, opponent.py L1515-1522: +4 self-tests (0.45/0.47 fold, 0.48/0.58 protected) — logic-proof only, no reachability
 - **v221**: Crossover H2H rationale MUST be verified against head_to_head.json before dispatch — v221 fabricated 'v204 loses to v199/v178/v195/v193' when v204 actually ties/beats them; valid complementary-strength picks come from opponents the parent loses to (v206) that the donor beats (v195 0.525)
 - **v221**: Unconditional fold/continuation gate widening (pot_odds 0.35→0.42) WITHOUT opponent conditioning is -EV vs value-heavy shovers — always gate mid_pair (77-99) continuation on VPIP>0.60 OR betsize_polarity.tendency to preserve wins vs v196/v200/v212-class tight shovers
 - **v221 归档建议 (mixed)**: Next gen should gate v221's mid_pair (77-99) continuation at pot_odds 0.42 on a WIDE-aggression signal (VPIP>0.60 OR betsize_polarity.tendency in ('underbettor','standard')) so it fires vs v206's preflop aggression but PRESERVES the 0.35 fold vs v196/v200/v212 value-heavy shovers; concurrently re-target the inert opponent.py betsize_polarity axis from POSTFLOP raise magnitudes to PREFLOP raise sizing (magnitude ≥12BB) so it actually fires against v206's documented preflop aggression, and confirm @>=30g that the mid_pair gate does NOT regress vs v196/v200/v212 net-chips.
@@ -83,7 +84,10 @@
 - **v207**: Postflop all-in stack-off vs v186 (-19751) NOT closable from offense/sizing — v198/v199/v207 all failed to move it (do NOT inch made≥0.55→0.50 without ≥30g paired WR-lift). Crossover ancestry can SILENTLY drop validated mutations (v200 v194×v190 lost v198 value_hand_skip) — git-inventory sibling-lineage mutations before planning crossovers.
 
 ## EXHAUSTED (cross-gen pivot auto-marks)
+- [EXHAUSTED — cross_gen_pivot auto-mark v223] calibration, exhausted, experience
+- [EXHAUSTED — cross_gen_pivot auto-mark v222] defense, gate
 - [EXHAUSTED — cross_gen_pivot auto-mark v215] gate, polarized, shove
+
 
 
 
