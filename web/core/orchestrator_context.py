@@ -18,7 +18,6 @@ from evolution_infra import locked_file, RESULTS_DIR, MAX_PRECOMMIT_RETRIES
 _cycle_start_time = None
 CYCLE_TIMEOUT = 5400  # Must match orchestrator.py (实测 mean cycle 56min，见 orchestrator.py:329 注释)
 
-_BASH_WRITE_REDIRECT_RE = re.compile(r"(?<![<>=])(?:&>>?|[0-9]*>>?)\s*([^\s;&|]+)")
 _SAFE_REDIRECT_TARGETS = {"/dev/null", "nul"}
 _PYTHON_OPEN_WRITE_RE = re.compile(r"open\([^)]*,\s*['\"][^'\"]*[wax+]")
 _PYTHON_WRITE_PATTERNS = (
@@ -57,9 +56,150 @@ _GIT_TAG_MUTATION_FLAGS = {
 _GIT_TAG_RE = re.compile(r"\bgit\s+tag\b([^;&|]*)", re.IGNORECASE)
 
 
+def _strip_heredoc_bodies(command: str) -> str:
+    """Remove heredoc bodies so quoted code comparisons are not shell redirects."""
+    lines = str(command).splitlines()
+    output = []
+    pending = []
+    for line in lines:
+        if pending:
+            if line.strip() == pending[0]:
+                pending.pop(0)
+            continue
+        output.append(line)
+        pending.extend(_shell_heredoc_delimiters(line))
+    return "\n".join(output)
+
+
+def _shell_heredoc_delimiters(line: str) -> list[str]:
+    delimiters = []
+    quote = None
+    escaped = False
+    i = 0
+    text = str(line)
+    while i < len(text):
+        ch = text[i]
+        if escaped:
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\":
+            escaped = True
+            i += 1
+            continue
+        if quote:
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if text.startswith("<<<", i):
+            i += 3
+            continue
+        if text.startswith("<<", i):
+            i += 2
+            if i < len(text) and text[i] == "-":
+                i += 1
+            while i < len(text) and text[i].isspace():
+                i += 1
+            token, i = _read_shell_token(text, i)
+            token = token.strip("'\"")
+            if token:
+                delimiters.append(token)
+            continue
+        i += 1
+    return delimiters
+
+
+def _read_shell_token(text: str, start: int) -> tuple[str, int]:
+    token = []
+    quote = None
+    escaped = False
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if escaped:
+            token.append(ch)
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\":
+            escaped = True
+            i += 1
+            continue
+        if quote:
+            if ch == quote:
+                quote = None
+            else:
+                token.append(ch)
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch.isspace() or ch in ";&|":
+            break
+        token.append(ch)
+        i += 1
+    return "".join(token), i
+
+
+def _iter_shell_write_redirect_targets(command: str):
+    text = _strip_heredoc_bodies(command)
+    quote = None
+    escaped = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if escaped:
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\":
+            escaped = True
+            i += 1
+            continue
+        if quote:
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+
+        op_start = None
+        if text.startswith("&>>", i):
+            op_start = i + 3
+        elif text.startswith("&>", i):
+            op_start = i + 2
+        elif ch == ">":
+            if i + 1 < len(text) and text[i + 1] == "=":
+                i += 2
+                continue
+            op_start = i + (2 if i + 1 < len(text) and text[i + 1] == ">" else 1)
+
+        if op_start is None:
+            i += 1
+            continue
+
+        j = op_start
+        while j < len(text) and text[j].isspace():
+            j += 1
+        target, end = _read_shell_token(text, j)
+        if target:
+            yield target
+        i = max(end, j + 1)
+
+
 def _bash_has_file_write_redirect(command: str) -> bool:
-    for match in _BASH_WRITE_REDIRECT_RE.finditer(str(command)):
-        target = match.group(1).strip("'\"")
+    for target in _iter_shell_write_redirect_targets(command):
+        target = target.strip("'\"")
         if target.startswith("&"):
             continue
         if target.lower() in _SAFE_REDIRECT_TARGETS:
