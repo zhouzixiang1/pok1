@@ -345,6 +345,55 @@ def collect_results(job_ids: list[str]) -> dict[str, dict]:
     return collected
 
 
+def get_job_status(job_ids: list[str]) -> dict:
+    """Return non-destructive queue state for the requested job ids.
+
+    Unlike collect_results(), this only peeks at pending/claimed/results files and
+    never removes result records. The precommit caller uses it to distinguish a
+    genuinely wedged scheduler from long-running claimed battles.
+    """
+    if not job_ids:
+        return {
+            "pending": [],
+            "claimed": [],
+            "completed": [],
+            "missing": [],
+            "pending_count": 0,
+            "claimed_count": 0,
+            "completed_count": 0,
+            "missing_count": 0,
+        }
+
+    requested = set(job_ids)
+    pending = {
+        rec.get("job_id", "")
+        for rec in _read_jsonl(BATTLE_JOBS_FILE)
+        if rec.get("job_id", "") in requested
+    }
+    claimed = {
+        rec.get("job_id", "")
+        for rec in _read_jsonl(BATTLE_CLAIMED_FILE)
+        if rec.get("job_id", "") in requested
+    }
+    completed = {
+        rec.get("job_id", "")
+        for rec in _read_jsonl(BATTLE_RESULTS_FILE)
+        if rec.get("job_id", "") in requested
+    }
+    accounted = pending | claimed | completed
+    missing = requested - accounted
+    return {
+        "pending": sorted(pending),
+        "claimed": sorted(claimed),
+        "completed": sorted(completed),
+        "missing": sorted(missing),
+        "pending_count": len(pending),
+        "claimed_count": len(claimed),
+        "completed_count": len(completed),
+        "missing_count": len(missing),
+    }
+
+
 def cleanup_stale(max_age_sec: int = 3600) -> int:
     """Remove result records older than *max_age_sec*.
 

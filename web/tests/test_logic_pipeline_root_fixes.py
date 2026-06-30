@@ -437,3 +437,136 @@ def test_get_bot_info_handles_parent_and_oversized_triples(tmp_path, monkeypatch
 
     assert data["parent_v"] == 201
     assert data["oversized_files"] == {"strategy.py": {"lines": 2501, "limit": 2500}}
+
+
+def test_battle_scheduler_status_peeks_pending_claimed_completed(tmp_path, monkeypatch):
+    import battle_scheduler
+
+    jobs = tmp_path / "battle_jobs.jsonl"
+    claimed = tmp_path / "battle_jobs.claimed"
+    results = tmp_path / "battle_results.jsonl"
+    monkeypatch.setattr(battle_scheduler, "BATTLE_JOBS_FILE", jobs)
+    monkeypatch.setattr(battle_scheduler, "BATTLE_CLAIMED_FILE", claimed)
+    monkeypatch.setattr(battle_scheduler, "BATTLE_RESULTS_FILE", results)
+
+    jobs.write_text(json.dumps({"job_id": "pending"}) + "\n")
+    claimed.write_text(json.dumps({"job_id": "claimed"}) + "\n")
+    results.write_text(json.dumps({"job_id": "done", "total": 16}) + "\n")
+
+    status = battle_scheduler.get_job_status(["pending", "claimed", "done", "missing"])
+
+    assert status["pending"] == ["pending"]
+    assert status["claimed"] == ["claimed"]
+    assert status["completed"] == ["done"]
+    assert status["missing"] == ["missing"]
+
+
+def test_scheduler_stall_reason_treats_claimed_jobs_as_running():
+    import tool_eval
+
+    assert tool_eval._scheduler_stall_reason(
+        collected_count=0,
+        submitted_count=4,
+        rounds_since_progress=24,
+        pending_stall_rounds=0,
+        missing_stall_rounds=0,
+        pending_count=0,
+        claimed_count=4,
+        completed_count=0,
+        scheduler_stall_rounds=24,
+        claimed_job_stall_rounds=120,
+    ) == ""
+    assert tool_eval._scheduler_stall_reason(
+        collected_count=0,
+        submitted_count=4,
+        rounds_since_progress=120,
+        pending_stall_rounds=0,
+        missing_stall_rounds=0,
+        pending_count=0,
+        claimed_count=4,
+        completed_count=0,
+        scheduler_stall_rounds=24,
+        claimed_job_stall_rounds=120,
+    ) == "claimed_jobs_exceeded_grace"
+    assert tool_eval._scheduler_stall_reason(
+        collected_count=0,
+        submitted_count=4,
+        rounds_since_progress=24,
+        pending_stall_rounds=24,
+        missing_stall_rounds=0,
+        pending_count=4,
+        claimed_count=0,
+        completed_count=0,
+        scheduler_stall_rounds=24,
+        claimed_job_stall_rounds=120,
+    ) == "jobs_never_claimed"
+
+
+def test_subagent_guard_allows_readonly_parent_probe_but_blocks_writes():
+    import llm_query
+
+    allowed = "/home/zzx/project/pok/bots/claude_v234"
+    readonly_ls = "ls bots/claude_v224/ && python -c \"print(open('bots/claude_v224/strategy.py').read()[:10])\""
+    readonly_python = (
+        "python -c \"from pathlib import Path; "
+        "print(Path('bots/claude_v221/strategy.py').read_text()[:10])\""
+    )
+    write_redirect = "echo x > bots/claude_v224/strategy.py"
+    write_python = (
+        "python -c \"from pathlib import Path; "
+        "Path('bots/claude_v221/strategy.py').write_text('x')\""
+    )
+
+    assert llm_query._subagent_is_outside_allowed(readonly_ls, allowed) is True
+    assert llm_query._subagent_bash_is_mutation(readonly_ls) is False
+    assert llm_query._subagent_bash_is_mutation(readonly_python) is False
+    assert llm_query._subagent_bash_is_mutation(write_redirect) is True
+    assert llm_query._subagent_bash_is_mutation(write_python) is True
+
+
+def test_archivist_housekeeping_commit_stages_only_curated_paths(monkeypatch):
+    import tool_commit
+
+    calls = []
+
+    def fake_git(*args, **_kwargs):
+        calls.append(args)
+        if args[:3] == ("diff", "--cached", "--name-only") and "--" not in args:
+            return ""
+        if args[:3] == ("status", "--porcelain", "--"):
+            path = args[-1]
+            if path == "web/core/experience_pool.md":
+                return " M web/core/experience_pool.md\n"
+            if path == "bots/claude_v204":
+                return " D bots/claude_v204/main.py\n"
+            return ""
+        if args[:3] == ("diff", "--cached", "--name-only") and args[-1] == "web/core/experience_pool.md":
+            return "web/core/experience_pool.md\n"
+        if args[:3] == ("diff", "--cached", "--name-only") and args[-1] == "bots/claude_v204":
+            return "bots/claude_v204/main.py\n"
+        if args[:1] == ("add",):
+            return ""
+        if args[:1] == ("commit",):
+            return ""
+        if args[:3] == ("rev-parse", "--short", "HEAD"):
+            return "abc123\n"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(tool_commit, "_git", fake_git)
+    monkeypatch.setattr(tool_commit, "log_system_event", lambda *_a, **_k: None)
+
+    result = tool_commit._archive_housekeeping_commit(
+        234,
+        {"reaped": True, "culled": "claude_v204"},
+        experience_touched=True,
+        preexisting_dirty=set(),
+    )
+
+    assert result["committed"] is True
+    assert result["staged_files"] == [
+        "web/core/experience_pool.md",
+        "bots/claude_v204/main.py",
+    ]
+    assert ("add", "--", "web/core/experience_pool.md") in calls
+    assert ("add", "-u", "--", "bots/claude_v204") in calls
+    assert not any(call[:2] == ("add", "-A") for call in calls)

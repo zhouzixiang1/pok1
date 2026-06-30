@@ -1,6 +1,7 @@
 """Pipeline tools: commit, archivist, and crossover."""
 
 import json
+import os
 import time
 from typing import Annotated, TypedDict
 
@@ -37,6 +38,8 @@ from tool_helpers import (
     read_pipeline_checkpoint,
 )
 from system_log import log_system_event
+
+from evolution_infra import _git
 
 
 # ──────────────────────────────────────────────
@@ -378,6 +381,120 @@ def _append_experience_updates(version: int, updates: list[str],
         f.write("\n".join(lines) + "\n")
 
 
+def _git_dirty_paths() -> set[str]:
+    """Return porcelain dirty paths without mutating git state."""
+    out = _git("status", "--porcelain", check=False)
+    paths: set[str] = set()
+    for line in out.splitlines():
+        if not line:
+            continue
+        # Porcelain v1: XY<space>path, rename: XY old -> new.
+        path = line[3:] if len(line) > 3 else line
+        if " -> " in path:
+            old, new = path.split(" -> ", 1)
+            paths.add(old.strip())
+            paths.add(new.strip())
+        else:
+            paths.add(path.strip())
+    return paths
+
+
+def _path_was_dirty(path: str, preexisting_dirty: set[str]) -> bool:
+    prefix = path.rstrip("/") + "/"
+    return any(p == path or p.startswith(prefix) for p in preexisting_dirty)
+
+
+def _archive_housekeeping_commit(version: int, reap_result: dict | None,
+                                 experience_touched: bool,
+                                 preexisting_dirty: set[str]) -> dict:
+    """Commit archivist/reap tracked-file side effects so the worktree stays clean.
+
+    commit_bot owns the bot commit and tag. run_archivist can still create tracked
+    housekeeping changes after that point: experience_pool.md updates and tracked
+    bot deletions from auto-reap. Those must be explicit, path-scoped commits
+    rather than hidden user-facing dirty state.
+    """
+    preexisting_staged = [
+        p for p in _git("diff", "--cached", "--name-only", check=False).splitlines()
+        if p
+    ]
+    if preexisting_staged:
+        log_system_event(
+            "pipeline.archivist_housekeeping_skip_staged", "warn",
+            f"v{version}: skipped housekeeping commit because staged files already exist",
+            {"version": version, "staged_files": preexisting_staged[:40]},
+        )
+        return {
+            "committed": False,
+            "reason": "preexisting_staged_files",
+            "preexisting_staged": preexisting_staged,
+        }
+
+    candidates: list[tuple[str, str]] = []
+    if experience_touched:
+        try:
+            candidates.append((str(EXPERIENCE_FILE.relative_to(PROJECT_ROOT)), "add"))
+        except ValueError:
+            pass
+    if reap_result and reap_result.get("reaped") and reap_result.get("culled"):
+        candidates.append((f"bots/{reap_result['culled']}", "add-u"))
+
+    staged_paths: list[str] = []
+    skipped_preexisting: list[str] = []
+    for path, mode in candidates:
+        if _path_was_dirty(path, preexisting_dirty):
+            skipped_preexisting.append(path)
+            continue
+        dirty_now = _git("status", "--porcelain", "--", path, check=False).strip()
+        if not dirty_now:
+            continue
+        if mode == "add-u":
+            _git("add", "-u", "--", path, check=False)
+        else:
+            _git("add", "--", path, check=False)
+        staged_paths.extend(
+            p for p in _git("diff", "--cached", "--name-only", "--", path, check=False).splitlines()
+            if p and p not in staged_paths
+        )
+
+    if skipped_preexisting:
+        log_system_event(
+            "pipeline.archivist_housekeeping_skip_dirty", "warn",
+            f"v{version}: skipped pre-existing dirty housekeeping path(s)",
+            {"version": version, "paths": skipped_preexisting},
+        )
+    if not staged_paths:
+        return {
+            "committed": False,
+            "reason": "no_housekeeping_changes",
+            "skipped_preexisting": skipped_preexisting,
+        }
+
+    log_system_event(
+        "pipeline.archivist_git_commit_staged", "info",
+        f"v{version}: staging {len(staged_paths)} archivist housekeeping file(s)",
+        {"version": version, "staged_files": staged_paths[:40]},
+    )
+    _git("commit", "-m", f"chore: archive v{version} evolution housekeeping")
+    commit_hash = _git("rev-parse", "--short", "HEAD", check=False).strip()
+    push_ok = False
+    if os.environ.get("EVOLUTION_GIT_PUSH") == "1":
+        _git("push", "origin", "main", check=False)
+        push_ok = True
+    log_system_event(
+        "pipeline.archivist_git_commit_done", "success",
+        f"v{version}: committed archivist housekeeping {commit_hash}",
+        {"version": version, "commit": commit_hash, "push_ok": push_ok},
+    )
+    return {
+        "committed": True,
+        "commit": commit_hash,
+        "push_ok": push_ok,
+        "staged_files": staged_paths,
+        "skipped_preexisting": skipped_preexisting,
+    }
+
+
 @tool("run_archivist", "Run post-commit archive audit for a completed generation. Verifies consistency, auto-reaps if needed, calls LLM for strategic assessment and experience pool updates.", {"version": int, "source_v": int})
 async def run_archivist(args):
     v, source_v = _resolve_version_args(args)
@@ -389,6 +506,7 @@ async def run_archivist(args):
     _set_pipeline_status(f"Archiving v{v}")
 
     ui = _get_ui()
+    preexisting_dirty = _git_dirty_paths()
 
     # 1. Verify post-commit consistency
     bot_dir = get_bot_dir(v)
@@ -456,6 +574,7 @@ async def run_archivist(args):
 
     # 4. LLM archivist analysis — run every commit to populate experience pool
     llm_result = None
+    experience_touched = False
     try:
         from experience_archivist import _run_archivist_analysis
         llm_result = await _run_archivist_analysis(v, source_v, snapshot, ui)
@@ -476,8 +595,22 @@ async def run_archivist(args):
                     strategic_advice=advice,
                     generation_assessment=assessment,
                 )
+                experience_touched = True
     except Exception as e:
         llm_result = {"error": str(e)}
+
+    housekeeping_commit = None
+    try:
+        housekeeping_commit = _archive_housekeeping_commit(
+            v, reap_result, experience_touched, preexisting_dirty
+        )
+    except Exception as e:
+        housekeeping_commit = {"error": str(e)}
+        log_system_event(
+            "pipeline.archivist_git_commit_failed", "error",
+            f"v{v}: archivist housekeeping commit failed: {str(e)[:180]}",
+            {"version": v, "error": str(e)[:500]},
+        )
 
     result = {
         "version": v,
@@ -488,6 +621,7 @@ async def run_archivist(args):
         "pool_size": len(active_bots),
         "snapshot": snapshot,
         "llm_analysis": llm_result,
+        "housekeeping_commit": housekeeping_commit,
     }
 
     # Record archived stage in checkpoint (then clear)
