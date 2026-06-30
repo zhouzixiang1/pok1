@@ -550,42 +550,78 @@ def _make_bot_dir_guard_hook():
             return True
         return False
 
+    def _current_stage_directive():
+        """Return a compact MCP recovery directive for denied direct mutations."""
+        try:
+            from evolution_core import read_pipeline_checkpoint
+            checkpoint = read_pipeline_checkpoint() or {}
+        except Exception:
+            checkpoint = {}
+        stage = checkpoint.get("stage")
+        next_v = checkpoint.get("next_v")
+        source_v = checkpoint.get("source_v")
+        next_step = STAGE_HINTS_COMPACT.get(stage) if stage else None
+        if not stage or not next_step:
+            return (
+                "Recovery: do NOT retry the denied direct mutation. Call get_status, "
+                "then continue using MCP pipeline tools only."
+            ), {"stage": stage, "next_v": next_v, "source_v": source_v, "next_step": next_step}
+        return (
+            f"Recovery: current checkpoint is v{next_v} from v{source_v}, "
+            f"stage={stage}. Do NOT retry the denied Bash/Edit/Write call. "
+            f"NEXT MCP TOOL: {next_step}."
+        ), {"stage": stage, "next_v": next_v, "source_v": source_v, "next_step": next_step}
+
     async def handler(hook_input, tool_use_id, context):
         try:
             tool_name = hook_input.get("tool_name", "") if isinstance(hook_input, dict) else ""
             tool_input = hook_input.get("tool_input", {}) if isinstance(hook_input, dict) else {}
 
             blocked_reason = None
+            blocked_command = ""
+            blocked_data = {}
             if tool_name == "Bash":
                 cmd = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
                 if _targets_protected(cmd) and _bash_is_mutation(cmd):
+                    blocked_command = str(cmd)
+                    directive, blocked_data = _current_stage_directive()
                     blocked_reason = (
                         "Bash command targets a protected path (bot code or pipeline state) "
                         "and appears to mutate files. Bot code may ONLY be modified via "
                         "execute_workers or run_crossover; pipeline state only via designated "
                         "tools; git commits only via commit_bot. Direct mutations bypass all "
-                        "pipeline gates. Command: " + str(cmd)[:120]
+                        "pipeline gates. " + directive
                     )
             elif tool_name in ("Edit", "Write", "NotebookEdit"):
                 file_path = tool_input.get("file_path", "") or tool_input.get("notebook_path", "")
                 if _targets_protected(file_path):
+                    blocked_command = str(file_path)
+                    directive, blocked_data = _current_stage_directive()
                     blocked_reason = (
                         tool_name + " targets a protected path (" + str(file_path) +
                         "). Bot code may ONLY be modified via execute_workers or run_crossover; "
                         "pipeline-critical state files may ONLY be written by designated tools. "
                         "Direct edits bypass all pipeline gates (circuit breaker, boundary "
-                        "validation, CoT, gate_results integrity)."
+                        "validation, CoT, gate_results integrity). " + directive
                     )
 
             if blocked_reason:
                 from system_log import log_system_event
                 try:
+                    preview_limit = 1000
+                    event_data = {
+                        "tool": tool_name,
+                        "reason": blocked_reason[:1000],
+                        "tool_use_id": str(tool_use_id)[:64],
+                        "command_preview": blocked_command[:preview_limit],
+                        "command_truncated": len(blocked_command) > preview_limit,
+                    }
+                    event_data.update(blocked_data)
                     log_system_event(
                         "pipeline.guard_block", "error",
                         "BLOCKED " + tool_name + " from mutating protected path: "
                         + blocked_reason[:140],
-                        {"tool": tool_name, "reason": blocked_reason[:200],
-                         "tool_use_id": str(tool_use_id)[:64]},
+                        event_data,
                     )
                 except Exception:
                     pass
