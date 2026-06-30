@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import threading
 
 from claude_agent_sdk import (
@@ -30,10 +31,22 @@ _SUBAGENT_BASH_MUTATION_PATTERNS = (
     "sed -i", "tee ", "rm ", "rmdir", "mv ", "cp ", "mkdir",
     "touch ", "cat > ", "cat >>", "patch ",
     "git add", "git rm", "git checkout", "git restore", "git commit",
-    "git tag", "git push",
+    "git push",
 )
 _SUBAGENT_WRITE_REDIRECT_RE = re.compile(r"(?<![<>=])(?:&>>?|[0-9]*>>?)\s*([^\s;&|]+)")
 _SAFE_REDIRECT_TARGETS = {"/dev/null", "nul"}
+_SUBAGENT_GIT_TAG_RE = re.compile(r"\bgit\s+tag\b([^;&|]*)", re.IGNORECASE)
+_SUBAGENT_GIT_TAG_READONLY_OPTIONS_WITH_VALUE = {
+    "--sort", "--format", "--points-at", "--contains", "--no-contains",
+    "--merged", "--no-merged", "--column", "--color",
+}
+_SUBAGENT_GIT_TAG_READONLY_FLAGS = {
+    "-l", "--list", "-n", "--ignore-case", "--no-column", "--no-color",
+}
+_SUBAGENT_GIT_TAG_MUTATION_FLAGS = {
+    "-a", "--annotate", "-s", "--sign", "-u", "--local-user", "-f",
+    "--force", "-d", "--delete",
+}
 _SUBAGENT_PYTHON_WRITE_PATTERNS = (
     ".write_text(", ".unlink(", ".rename(",
     ".mkdir(", ".rmdir(", "shutil.move", "shutil.copy",
@@ -41,6 +54,55 @@ _SUBAGENT_PYTHON_WRITE_PATTERNS = (
     "os.rename", "os.replace", "os.makedirs",
 )
 _SUBAGENT_PYTHON_OPEN_WRITE_RE = re.compile(r"open\([^)]*,\s*['\"][^'\"]*[wax+]")
+
+
+def _subagent_git_tag_invocation_is_mutating(args):
+    if not args:
+        return False
+
+    list_mode = False
+    i = 0
+    while i < len(args):
+        arg = str(args[i])
+        low = arg.lower()
+
+        if low in _SUBAGENT_GIT_TAG_MUTATION_FLAGS:
+            return True
+        if low.startswith("--delete=") or low.startswith("--force="):
+            return True
+        if low in _SUBAGENT_GIT_TAG_READONLY_FLAGS or low.startswith("-n"):
+            if low in {"-l", "--list"}:
+                list_mode = True
+            i += 1
+            continue
+        if any(low.startswith(opt + "=") for opt in _SUBAGENT_GIT_TAG_READONLY_OPTIONS_WITH_VALUE):
+            i += 1
+            continue
+        if low in _SUBAGENT_GIT_TAG_READONLY_OPTIONS_WITH_VALUE:
+            i += 2
+            continue
+        if list_mode:
+            i += 1
+            continue
+        if low.startswith("-"):
+            return True
+        return True
+
+    return False
+
+
+def _subagent_git_tag_is_mutating(command):
+    for match in _SUBAGENT_GIT_TAG_RE.finditer(str(command)):
+        rest = match.group(1).strip()
+        if not rest:
+            continue
+        try:
+            args = shlex.split(rest)
+        except ValueError:
+            args = rest.split()
+        if _subagent_git_tag_invocation_is_mutating(args):
+            return True
+    return False
 
 
 def _subagent_bash_is_mutation(command):
@@ -57,7 +119,9 @@ def _subagent_bash_is_mutation(command):
             return True
         if any(p in low for p in _SUBAGENT_PYTHON_WRITE_PATTERNS):
             return True
-    return any(p in low for p in _SUBAGENT_BASH_MUTATION_PATTERNS)
+    if any(p in low for p in _SUBAGENT_BASH_MUTATION_PATTERNS):
+        return True
+    return _subagent_git_tag_is_mutating(command)
 
 
 def _subagent_is_outside_allowed(path_or_cmd, allowed_dir):

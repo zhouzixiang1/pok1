@@ -307,23 +307,19 @@ def test_P1_guard_hook_git_commit_blocked():
     """git commit/tag/push must be treated as mutations (bypass commit_bot)."""
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
-    _BASH_MUTATION_PATTERNS = (
-        "> ", ">>", "sed -i", "tee ", "rm ", "rmdir", "mv ", "cp ", "mkdir",
-        "touch ", "cat > ", "cat >>", "python -c", "patch ",
-        "git add", "git rm", "git checkout", "git restore", "echo ", "printf ",
-    )
-    def bash_is_mutation(command):
-        low = str(command).lower()
-        if any(p in low for p in _BASH_MUTATION_PATTERNS): return True
-        if "git commit" in low or "git tag" in low or "git push" in low: return True
-        return False
+    from orchestrator_context import _orchestrator_bash_is_mutation as bash_is_mutation
+
     # git operations on bot dir via commit/tag/push are blocked
     assert bash_is_mutation("git commit -m foo")
     assert bash_is_mutation("git tag bot-v219")
+    assert bash_is_mutation("git tag -a bot-v219 -m evolve")
     assert bash_is_mutation("git push origin main")
     # read-only git is NOT a mutation
     assert not bash_is_mutation("git status")
     assert not bash_is_mutation("git log --oneline -5")
+    assert not bash_is_mutation("git tag")
+    assert not bash_is_mutation("git tag -l 'bot-v2*' | tail -10")
+    assert not bash_is_mutation("git tag --sort=-creatordate | head -5")
 
 
 def test_P1_guard_hook_returns_stage_recovery_and_command_preview():
