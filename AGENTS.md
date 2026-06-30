@@ -366,7 +366,17 @@ Important generated or runtime locations:
 - `bots/graveyard/`
 - `.completed` sentinel files
 
-The working tree may already contain user or evolution-system changes. Do not revert or stage unrelated changes. When asked to commit, commit only the files changed for the current task unless the user explicitly asks for a full `git add -A` snapshot.
+## Git And Change Hygiene
+
+The working tree may already contain user changes, evolution-system output, incomplete bot generations, or dirty gitlinks. Treat that as normal. Check `git status --short --branch` before editing and again before committing so unrelated files are visible.
+
+Do not revert, reset, restore, or checkout unrelated changes unless the user explicitly asks for that exact destructive operation. Do not clean untracked bot directories, generated outputs, or gitlink directories as part of an unrelated task.
+
+Stage only the files changed for the current task. Do not use `git add -A` unless the user explicitly asks for a full repository snapshot. Runtime/generated paths such as `web/core/results/`, `web/logs/`, `web/frontend/dist/`, `web/server/static/`, `results/*.json`, `ladder_results/`, `bots/graveyard/`, and `.completed` sentinels should not be staged unless the task is specifically about them.
+
+Evolution-generated bot versions are complete only when the orchestrator `commit_bot` flow has passed its gates, committed the bot, and created the annotated `bot-v{N}` tag. Do not hand-edit bot lineage tags or `.completed` sentinels unless the task is explicitly about evolution recovery.
+
+`ref/DanLM` and `ref/neuron_poker` are gitlinks in this checkout, but `.gitmodules` is currently absent. `git submodule status` may fail or report noise; do not repair or stage gitlink changes unless the task is specifically about references/submodules.
 
 After a task that changes files, commit and push task-related changes:
 
@@ -376,4 +386,4 @@ git commit -m "<descriptive message>"
 git push
 ```
 
-If the repository is dirty before the task, mention that in the final response and avoid mixing unrelated files into the commit.
+If the repository is dirty before the task, mention that in the final response and avoid mixing unrelated files into the commit. If commit or push fails because of credentials, remote state, hooks, or network problems, report the exact failure and leave the worktree otherwise intact.

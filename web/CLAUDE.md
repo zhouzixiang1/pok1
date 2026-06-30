@@ -46,7 +46,7 @@ Each tool function receives an `args` dict, executes business logic (often spawn
 | `execute_workers` | Coding | Call Worker LLMs (parallel via semaphore, max 3) to edit bot code |
 | `run_quality_gates` | Validation | Automated checks: compile, smoke test, decision tests, file size |
 | `run_review` | Review | Call Reviewer LLM to score diff quality, enforce role boundaries |
-| `run_critic` | Critique | Call Critic LLM for strategic assessment (score ≥6 = approved) |
+| `run_critic` | Critique | Call Critic LLM for strategic assessment and risk recording; precommit eval is the final regression gate |
 | `run_precommit_eval` | Pre-commit | Mirror battle regression check vs parent + top opponents |
 | `commit_bot` | Commit | Git commit + tag, enforced by gate ledger (all gates must pass) |
 
@@ -145,15 +145,22 @@ Test naming: `test_routes_*.py` (HTTP endpoint tests), `test_logic_*.py` (pure f
 - LLM: `claude_agent_sdk` (provides `query`, `ClaudeAgentOptions`, streaming types, `@tool` decorator, `create_sdk_mcp_server`)
 - Battle engine: `engine/battle.py` (mirror_battle, subprocess-based bot execution)
 
-## Post-Task Workflow
+## Git And Change Hygiene
 
-After completing each task, you MUST do both of the following:
+The working tree may already contain user changes, evolution-system output, incomplete bot generations, or dirty gitlinks. Treat that as normal. Check `git status --short --branch` before editing and again before committing so unrelated files are visible.
 
-1. **Git commit and push** all changes:
+Do not revert, reset, restore, or checkout unrelated changes unless the user explicitly asks for that exact destructive operation. Do not clean untracked bot directories, generated outputs, or gitlink directories as part of an unrelated task.
+
+Stage only the files changed for the current task. Do not use `git add -A` unless the user explicitly asks for a full repository snapshot. Runtime/generated paths such as `web/core/results/`, `web/logs/`, `web/frontend/dist/`, `web/server/static/`, `results/*.json`, `ladder_results/`, `bots/graveyard/`, and `.completed` sentinels should not be staged unless the task is specifically about them.
+
+Evolution-generated bot versions are complete only when the orchestrator `commit_bot` flow has passed its gates, committed the bot, and created the annotated `bot-v{N}` tag. Do not hand-edit bot lineage tags or `.completed` sentinels unless the task is explicitly about evolution recovery.
+
+After a task that changes files, commit and push task-related changes:
+
 ```bash
-git add -A
+git add <files you changed>
 git commit -m "<descriptive message>"
 git push
 ```
 
-2. **Update memory** in `~/.claude/projects/-Users-zhouzixiang-Documents-pok/memory/`. Save what you learned during the task — surprising findings, user corrections, non-obvious constraints, or validated approaches. Check existing memories first to avoid duplicates; update stale ones rather than creating new ones.
+If the repository is dirty before the task, mention that in the final response and avoid mixing unrelated files into the commit. If commit or push fails because of credentials, remote state, hooks, or network problems, report the exact failure and leave the worktree otherwise intact.

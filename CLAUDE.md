@@ -4,12 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A Texas Hold'em poker AI bot self-evolution framework. The system uses a multi-agent LLM pipeline (Master Architect → Worker Agents → Code Reviewer → Critic) to iteratively improve heads-up No-Limit Texas Hold'em bots for the Botzone platform (botzone.org.cn). A background Glicko-2 daemon continuously evaluates bots through mirror battles, and a React 19 + FastAPI dashboard provides real-time monitoring.
+A Texas Hold'em poker AI bot framework that started as a Botzone evolution project and now has four important code paths. Do not collapse them into one mental model:
 
-The project has three independent poker engines serving different purposes:
-- `engine/` — CLI battle runner for local bot testing (subprocess JSON protocol, used by the evolution system)
-- `sever/` — TCP competition server for network-based bot matches (independent codebase)
-- `engine/judge.py` — Stateless judge function used by both `engine/battle.py` and Botzone
+1. `engine/` — local Botzone-style subprocess battle engine for Python bots.
+2. `web/` — unified evolution system, FastAPI backend, and React dashboard.
+3. `sever/` — national competition TCP self-play platform based on the documents in `sever/国赛平台/`.
+4. `rl/` — reinforcement learning experiments that wrap the local Hold'em engine.
+
+There are two protocol families:
+
+- Botzone/local protocol: bots are Python subprocesses that read JSON from stdin and write JSON to stdout. This is implemented by `engine/` and used by most `bots/claude_v*/` code and the evolution system.
+- National competition protocol: AI engines connect to a TCP server and exchange line-delimited strings such as `preflop|SMALLBLIND|<0,3><1,3>`, `raise 200`, `call`, `check`, `fold`, `allin`. This is implemented by `sever/`.
+
+The evolution pipeline lives under `web/core/`. It uses LLM agents, Glicko-2 ratings, mirror battles, quality gates, precommit regression evaluation, and accumulated strategy lessons to generate new bot versions.
+
+The old `web/tui.py` Textual TUI no longer exists. Treat `web/main.py` as a web app launcher, not a TUI or mode-switching CLI.
 
 Additional modules:
 - `rl/` — Reinforcement learning training framework (DanLM-inspired DMC self-play). Wraps `engine/judge.py` as a Gymnasium environment, supports MLP and Transformer Q-networks.
@@ -41,6 +50,7 @@ Top-level documentation:
 
 ```bash
 python web/main.py                           # Full stack: orchestrator + daemon + frontend on :8000
+python web/main.py --port 3000               # Custom port
 python web/main.py --no-daemon               # No background daemon
 python web/main.py --dev                     # Enable uvicorn auto-reload
 python web/main.py --no-build                # Skip frontend build
@@ -108,8 +118,10 @@ python merge_bot.py --all                        # Batch merge all bot directori
 
 ```bash
 cd sever && python main.py                    # Start TCP :10001 + Web :18080
-cd sever && python bot_adapter.py --bot ../bots/claude_v49 --name test  # Bridge bot to TCP server
-cd sever && python -m pytest tests/ -v        # All tests (evaluator, validator, game, protocol, integration)
+cd sever && python main.py --tcp-port 20001 --web-port 28080
+cd sever && python test_client.py 127.0.0.1 10001 BotA
+cd sever && python test_client.py 127.0.0.1 10001 BotB
+cd sever && python bot_adapter.py --bot ../bots/claude_v224 --name test  # Bridge bot to TCP server
 ```
 
 ## Architecture
@@ -118,7 +130,7 @@ cd sever && python -m pytest tests/ -v        # All tests (evaluator, validator,
 
 Each evolution generation follows a three-phase cycle managed by `generation_scheduler.py`:
 
-1. **Phase 1 — `prepare_generation()`**: Code-layer analysis (stagnation + performance verification via `combined_analyst.py`). Decides strategy: `master` (evolve from ancestor) or `crossover` (merge two parents). Creates `GenerationContext` with pre-computed data. **Disposable** — safe to re-run on interrupt.
+1. **Phase 1 — `prepare_next_gen` / `run_crossover`**: Code-layer analysis (stagnation + performance verification via `combined_analyst.py`). Decides the source version and strategy before the Master prompt runs. **Disposable** — safe to re-run on interrupt.
 2. **Phase 2 — `_run_one_cycle()` in `orchestrator.py`**: LLM-driven pipeline execution. Orchestrator Claude agent calls MCP tools in sequence. **Preserves state** on interrupt via session + checkpoint files.
 3. **Phase 3 — `post_generation_cleanup()`**: Reap weakest bot if pool > 30, consolidate experience pool every 3 gens. **Idempotent** — safe to re-run.
 
@@ -127,11 +139,11 @@ Each evolution generation follows a three-phase cycle managed by `generation_sch
 The Orchestrator LLM calls these MCP tools in order:
 
 1. **Direction Auditor**: Pre-Master LLM gate that checks git history for repetitive evolution directions. Forces structural alternatives if stuck.
-2. **Master Architect** (`prompts/master_prompt.md`): Analyzes ratings, experience pool, match data. Produces JSON task plan with 2 worker assignments — one "Algorithmic Logic Architect" (structural changes) and one "Hyperparameter Tuner" (constants only). Can set `branch_from` to evolve from a different ancestor.
+2. **Master Architect** (`prompts/master_prompt.md`): Analyzes ratings, experience pool, match data, and the pre-selected source version. Produces JSON task plan with worker assignments. It must not set `branch_from` or source-override fields; source selection is handled before Master planning.
 3. **Workers** (`prompts/worker_prompt.md`): Execute tasks in parallel (max 3 via semaphore), 4 retries each. Workers directly edit bot source files using Bash/Read/Edit tools.
 4. **Quality Gates** (automated, no LLM): `py_compile` check, 1 mirror battle smoke test, decision tests (≥70% pass), file size ≤2000 lines (core strategy files) / ≤1500 lines (helpers), adaptive limit based on source bot size + 15% growth budget, hard cap 2500.
 5. **Code Reviewer** (`prompts/reviewer_prompt.md`): LLM reviews diff, enforces role boundaries, scores 1-10. Up to 3 retries.
-6. **Critic** (`prompts/critic_prompt.md`): Independent strategic quality gate. Score ≥6 to approve. Up to 2 intra-generation retries feeding feedback back to workers.
+6. **Critic** (`prompts/critic_prompt.md`): Independent strategic review. It records strategic risk and can feed feedback into retries, but the current pipeline treats precommit evaluation as the final regression gate.
 7. **Pre-commit Eval**: Mirror battle regression check vs parent + top opponents.
 8. **Commit**: Git commit + `bot-v{N}` annotated tag. Tags are authoritative completion proof.
 9. **Archivist**: Snapshot, rotate, and verify old generation files.
@@ -176,7 +188,7 @@ web/core/results/
   ├── head_to_head.json      ← Win/loss matrix per pair (daemon writes)
   ├── bot_stats.json         ← Per-bot aggregated stats (daemon writes)
   ├── match_history.jsonl    ← Match summaries as JSONL (daemon writes per match)
-  ├── match_replay/          ← Full replay JSONs (daemon writes, capped at 200)
+  ├── match_replay/          ← Full replay JSONs (daemon writes, capped at 2000)
   ├── commentary/            ← Match replay commentary JSONs (commentary.py writes)
   ├── worker_failures.jsonl  ← Worker failure records (agent_workers writes)
   ├── app_config.json        ← Daemon config persisted across restarts (state.py writes)
@@ -275,12 +287,13 @@ Local CLI poker battle system for testing bots offline.
 
 ### TCP Server (`sever/`)
 
-A self-contained poker competition platform. Bots connect as TCP clients and play 70-hand matches. Has its own engine (`sever/engine/`), validator (13-rule action legality), web dashboard (`:18080`), and test suite.
+A self-contained poker competition platform. Bots connect as TCP clients and play 70-hand matches. It has its own engine (`sever/engine/`), validator (13-rule action legality), web dashboard (`:18080`), and smoke clients; this checkout currently does not have a `sever/tests/` pytest suite.
 
-**Startup & testing:**
+**Startup & smoke testing:**
 ```bash
 cd sever && python main.py                    # TCP :10001 + Web :18080
-cd sever && python -m pytest tests/ -v        # All tests (evaluator, validator, game, protocol, integration)
+cd sever && python test_client.py 127.0.0.1 10001 BotA
+cd sever && python test_client.py 127.0.0.1 10001 BotB
 ```
 
 **Structure:** `engine/game.py` (stateful GameEngine), `engine/validator.py` (13-rule validation), `engine/evaluator.py` (hand comparison), `engine/deck.py` (Card class, `<suit,rank>`), `server/tcp_server.py` (async TCP), `server/protocol.py` (message encode/decode), `bot_adapter.py` (bridges `engine/judge.py` bots to TCP server), `web/app.py` (FastAPI + SSE dashboard).
@@ -319,7 +332,7 @@ Both `engine/judge.py` and `sever/` use the same raise-to-total convention:
 
 **Re-raise boundary clarification**: "一倍以上" in 非法行为说明.docx means strictly >2x, NOT >=2x. The 补充说明.docx example uses raise 400 → raise 801 (not 800), confirming the strictly-greater interpretation. E.g., after raise 400, minimum re-raise is 801.
 
-**`bot_adapter.py` bridge:** Converts bot integer output directly: `>0` → `raise {value}`. Since both engines use raise-to-total, the adapter works correctly without conversion.
+**`bot_adapter.py` bridge:** Converts bot integer output directly for actions: `>0` → `raise {value}`. Since both engines use raise-to-total, the action amount does not need delta conversion.
 
 ### `sever/` Game Flow & Rules Summary
 
@@ -344,11 +357,12 @@ Both `engine/judge.py` and `sever/` use the same raise-to-total convention:
 12. After opponent allin → only `call`/`fold`
 13. Two consecutive `allin` → second illegal
 
-**Card conversion** (`bot_adapter.py`): Server `<suit,rank>` → Bot integer: `card = rank * 4 + suit`. The formula is mathematically identical to `engine/judge.py`'s `(number-2)*4 + suit`, but the **suit mapping differs**: `engine/judge.py` uses `{♥=0, ♦=1, ♠=2, ♣=3}` while `sever/` uses `{♠=0, ♥=1, ♦=2, ♣=3}`. The same real-world card gets a different integer in each system (e.g., ♠A = 50 in engine vs 48 via adapter). This doesn't break hand evaluation because all cards are converted consistently within a session, but suit-specific bot logic would misinterpret suits.
+**Card conversion** (`bot_adapter.py`): Server `<suit,rank>` must be mapped to the local bot integer suit order. TCP uses `{♠=0, ♥=1, ♦=2, ♣=3}` while `engine/judge.py` uses `{♥=0, ♦=1, ♠=2, ♣=3}`. The adapter maps TCP suits through `_TCP_TO_JUDGE_SUIT` before computing `rank * 4 + judge_suit`; do not reuse the TCP suit directly.
 
 ### Bot Versioning & Conventions
 
-- Bots: `bots/claude_v{N}/` (N monotonically increasing). `.completed` sentinel + `bot-v{N}` git tag.
+- Bots: `bots/claude_v{N}/` (N monotonically increasing). Treat active evolved versions as non-continuous: the highest `claude_v*` directory is not necessarily completed, tagged, or committed.
+- Evolution-generated bot versions are complete only when the orchestrator `commit_bot` flow has passed gates, committed the bot, and created the annotated `bot-v{N}` tag.
 - Pool capped at 30 active; weakest culled by H2H average win rate to `bots/graveyard/`.
 - Botzone game ID: `63dcfaddee1bce5e6c8f4b53`.
 
@@ -448,7 +462,7 @@ Defaults: `r=1500`, `rd=350`, `sigma=0.06`, `tau=0.5`. Confidence levels: rd<50 
 **Supporting subdirectories:**
 - `engine/` — Copy of `engine/battle.py` + modified `engine/judge.py` for web context
 - `reference_bots/bot1`-`bot6` — Reference bot implementations used by the evolution pipeline
-- `prompts/` — 14 LLM prompt templates: `master_prompt.md`, `worker_prompt.md`, `reviewer_prompt.md`, `critic_prompt.md`, `direction_auditor_prompt.md`, `combined_analyst.md`, `match_analyst.md`, `performance_analyst.md`, `stagnation_analyzer.md`, `experience_consolidator.md`, `crossover_prompt.md`, `archivist.md`, `orchestrator.md`, `initial_prompt.md`
+- `prompts/` — LLM prompt templates for orchestration, planning, workers, review, critic, crossover, audits, experience updates, and dynamic tests. Use the files present in `web/core/prompts/` as authoritative; this directory currently contains more than the original 14 templates.
 
 ### Reinforcement Learning Module (`rl/`)
 
@@ -581,17 +595,39 @@ Algorithms: random baseline, equity-based threshold, genetic self-improvement (p
 - Test naming: `test_routes_*.py` (HTTP endpoints), `test_logic_*.py` (pure functions), `test_mcp_*.py` (MCP tool handlers)
 - `results/` at project root stores timestamped competition result JSONs (e.g., `20260608_100329_main_vs_main.json`), separate from `web/core/results/` which stores live daemon/orchestrator data
 - `archive/` stores deprecated code: old dashboard (backend+frontend), old orchestrator, old evolution_workspace
-- `ref/DanLM/` and `ref/neuron_poker/` are git submodules; `ref/player_api.js` and `ref/TexasHoldem2p.html` are Botzone platform API references
+- `ref/DanLM/` and `ref/neuron_poker/` are gitlinks in this checkout, but `.gitmodules` is currently absent. `git submodule status` may fail or report noise; do not repair or stage gitlink changes unless the task is specifically about references/submodules.
 
-## Post-Task Workflow
+## Repository Hygiene
 
-After completing each task, you MUST do both of the following:
+Important generated or runtime locations:
 
-1. **Git commit and push** all changes:
+- `web/core/results/`
+- `web/logs/`
+- `web/frontend/dist/`
+- `web/server/static/`
+- `results/*.json`
+- `ladder_results/`
+- `bots/graveyard/`
+- `.completed` sentinel files
+
+## Git And Change Hygiene
+
+The working tree may already contain user changes, evolution-system output, incomplete bot generations, or dirty gitlinks. Treat that as normal. Check `git status --short --branch` before editing and again before committing so unrelated files are visible.
+
+Do not revert, reset, restore, or checkout unrelated changes unless the user explicitly asks for that exact destructive operation. Do not clean untracked bot directories, generated outputs, or gitlink directories as part of an unrelated task.
+
+Stage only the files changed for the current task. Do not use `git add -A` unless the user explicitly asks for a full repository snapshot. Runtime/generated paths such as `web/core/results/`, `web/logs/`, `web/frontend/dist/`, `web/server/static/`, `results/*.json`, `ladder_results/`, `bots/graveyard/`, and `.completed` sentinels should not be staged unless the task is specifically about them.
+
+Evolution-generated bot versions are complete only when the orchestrator `commit_bot` flow has passed its gates, committed the bot, and created the annotated `bot-v{N}` tag. Do not hand-edit bot lineage tags or `.completed` sentinels unless the task is explicitly about evolution recovery.
+
+`ref/DanLM` and `ref/neuron_poker` are gitlinks in this checkout, but `.gitmodules` is currently absent. `git submodule status` may fail or report noise; do not repair or stage gitlink changes unless the task is specifically about references/submodules.
+
+After a task that changes files, commit and push task-related changes:
+
 ```bash
-git add -A
+git add <files you changed>
 git commit -m "<descriptive message>"
 git push
 ```
 
-2. **Update memory** in `~/.claude/projects/-home-zzx-project-pok/memory/`. Save what you learned during the task — surprising findings, user corrections, non-obvious constraints, or validated approaches. Check existing memories first to avoid duplicates; update stale ones rather than creating new ones.
+If the repository is dirty before the task, mention that in the final response and avoid mixing unrelated files into the commit. If commit or push fails because of credentials, remote state, hooks, or network problems, report the exact failure and leave the worktree otherwise intact.
