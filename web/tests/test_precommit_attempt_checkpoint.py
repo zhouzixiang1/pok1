@@ -39,6 +39,15 @@ def test_fresh_checkpoint_defaults_precommit_attempt_to_zero():
     assert state.get("precommit_attempt") == 0
 
 
+def test_fresh_checkpoint_persists_log_correlation_fields():
+    """Fresh checkpoints carry the same correlation key the event bus emits."""
+    state = _write_basic(stage="prepared")
+    assert state.get("run_id") == "100#0"
+    assert state.get("generation_attempt") == 0
+    assert state.get("audit_attempt") == 0
+    assert state.get("precommit_attempt") == 0
+
+
 def test_precommit_attempt_kwarg_persists_value():
     """write_pipeline_checkpoint(precommit_attempt=2) stores 2."""
     # First establish a checkpoint with a known source/next so the merge path

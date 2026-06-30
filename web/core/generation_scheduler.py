@@ -131,7 +131,8 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                 f"Bare commit(s) v{_bare} are git-tracked but untagged (bypassed commit_bot). "
                 f"next_v floored to {max_committed_v + 1} to prevent regeneration loop.",
                 {"bare_versions": _bare, "current_v": current_v,
-                 "max_committed_v": max_committed_v},
+                 "max_committed_v": max_committed_v,
+                 "next_v": max_committed_v + 1},
             )
             if ui:
                 ui.log_history(
@@ -419,7 +420,8 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
             {"next_v": _final_next_v, "current_v": current_v,
              "max_committed_v": max_committed_v,
              "abandoned_floor": _abandoned_floor,
-             "source_v": source_v, "strategy": strategy[:80]},
+             "source_v": source_v, "strategy": strategy[:80],
+             "stage": "prepared"},
         )
     except Exception:
         pass

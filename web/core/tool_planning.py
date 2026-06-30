@@ -1012,33 +1012,50 @@ async def run_master(args):
             # Check for consecutive same-axis exhaustion
             _pivot_axis = _check_consecutive_exhaustion(next_v, _exhausted_dirs)
             if _pivot_axis:
-                _bump_master_fail_count(next_v, source_v)
-                try:
-                    log_system_event("pipeline.cross_gen_pivot_runtime_only", "warn",
-                                     f"Cross-gen direction pivot triggered for v{next_v}: "
-                                     f"exhausted axis '{_pivot_axis}' persisted >=2 consecutive gens. "
-                                     f"Forcing structural alternative without writing experience_pool.md before commit.",
-                                     {"next_v": next_v, "source_v": source_v,
-                                      "pivot_axis": _pivot_axis,
-                                      "exhausted_directions": _exhausted_dirs,
-                                      "experience_pool_marked": False})
-                except Exception:
-                    pass
-                return {"content": [{"type": "text", "text": json.dumps({
-                    "error": "CROSS_GEN_PIVOT",
-                    "pivot_axis": _pivot_axis,
-                    "exhausted_directions": _exhausted_dirs,
-                    "confidence": _confidence,
-                    "directive": (
-                        f"Direction pivot FORCED: the exhausted axis '{_pivot_axis}' has been "
-                        f"flagged for >=2 consecutive generations with HIGH confidence. "
-                        f"The current plan repeats this exhausted direction. You MUST produce a "
-                        f"FUNDAMENTALLY different plan — new structural mechanism, new opp-line "
-                        f"signal, or a completely different strategic axis. "
-                        f"Do NOT re-tune constants in the same exhausted area."
-                    ),
-                    "logs": ui.get_output(),
-                })}]}
+                _plan_repeats, _matched_direction = _plan_repeats_exhausted_direction(
+                    data, _exhausted_dirs
+                )
+                if not _plan_repeats:
+                    log_system_event(
+                        "pipeline.cross_gen_pivot_satisfied", "info",
+                        f"Cross-gen pivot axis '{_pivot_axis}' is present in history, "
+                        f"but Master v{next_v} plan appears to use a different execution axis; continuing.",
+                        {"next_v": next_v, "source_v": source_v,
+                         "pivot_axis": _pivot_axis,
+                         "exhausted_directions": _exhausted_dirs,
+                         "plan_repeats_exhausted": False},
+                    )
+                else:
+                    _bump_master_fail_count(next_v, source_v)
+                    try:
+                        log_system_event("pipeline.cross_gen_pivot_runtime_only", "warn",
+                                         f"Cross-gen direction pivot triggered for v{next_v}: "
+                                         f"exhausted axis '{_pivot_axis}' persisted >=2 consecutive gens "
+                                         f"and the accepted Master plan still matches '{_matched_direction}'. "
+                                         f"Forcing structural alternative without writing experience_pool.md before commit.",
+                                         {"next_v": next_v, "source_v": source_v,
+                                          "pivot_axis": _pivot_axis,
+                                          "matched_direction": _matched_direction,
+                                          "exhausted_directions": _exhausted_dirs,
+                                          "experience_pool_marked": False})
+                    except Exception:
+                        pass
+                    return {"content": [{"type": "text", "text": json.dumps({
+                        "error": "CROSS_GEN_PIVOT",
+                        "pivot_axis": _pivot_axis,
+                        "matched_direction": _matched_direction,
+                        "exhausted_directions": _exhausted_dirs,
+                        "confidence": _confidence,
+                        "directive": (
+                            f"Direction pivot FORCED: the exhausted axis '{_pivot_axis}' has been "
+                            f"flagged for >=2 consecutive generations with HIGH confidence, and "
+                            f"the current plan still matches '{_matched_direction}'. You MUST produce a "
+                            f"FUNDAMENTALLY different plan — new structural mechanism, new opp-line "
+                            f"signal, or a completely different strategic axis. "
+                            f"Do NOT re-tune constants in the same exhausted area."
+                        ),
+                        "logs": ui.get_output(),
+                    })}]}
 
     # Pre-compute exhausted keywords once (used by _validate_master_plan and potentially others)
     _exhausted_kw = _extract_exhausted_keywords()
@@ -1389,6 +1406,68 @@ def _fuzzy_match_exhausted(prompt_text: str, keywords: list, require_direction_t
                 continue
         return True
     return False
+
+
+def _plan_repeats_exhausted_direction(plan: dict, exhausted_directions: list[str]) -> tuple[bool, str]:
+    """Return whether a Master plan actively repeats a currently exhausted axis.
+
+    Cross-gen exhaustion is historical evidence, not proof that the new plan is
+    bad. Only positive execution fields are inspected; `do_not_touch` and audit
+    constraint prose are ignored so "avoid fold calibration" is not treated as
+    fold calibration.
+    """
+    if not isinstance(plan, dict) or not exhausted_directions:
+        return False, ""
+
+    chunks = [
+        str(plan.get("targeted_failure", "")),
+        str(plan.get("expected_behavior_change", "")),
+    ]
+    for task in plan.get("tasks", []) or []:
+        if not isinstance(task, dict):
+            continue
+        chunks.extend([
+            str(task.get("worker_prompt", "")),
+            str(task.get("instruction", "")),
+            str(task.get("targeted_failure", "")),
+        ])
+    negative_cues = (
+        "do not", "don't", "must not", "never", "avoid", "preserve",
+        "unchanged", "forbidden", "no retune", "no tuning", "without modifying",
+    )
+    positive_segments = []
+    for chunk in chunks:
+        for segment in re.split(r"[\n.;]+", str(chunk)):
+            segment_l = segment.lower()
+            if not segment_l.strip():
+                continue
+            if any(cue in segment_l for cue in negative_cues):
+                continue
+            positive_segments.append(segment_l)
+    plan_text = "\n".join(positive_segments)
+    if not plan_text.strip():
+        return False, ""
+    plan_tokens = {
+        t for t in re.split(r"[^a-z0-9]+", plan_text)
+        if len(t) > 3 and t not in _EXHAUSTED_BLOCKLIST
+    }
+
+    for direction in exhausted_directions:
+        tokens = {
+            t for t in re.split(r"[^a-z0-9]+", str(direction).lower())
+            if len(t) > 3 and t not in _EXHAUSTED_BLOCKLIST
+        }
+        if not tokens:
+            continue
+        matches = sorted(tokens & plan_tokens)
+        if len(matches) >= min(2, len(tokens)):
+            pivot_direction_tokens = _EXHAUSTED_DIRECTION_TOKENS | {
+                "calibration", "frequency", "floor", "ceiling", "continuation",
+            }
+            if not any(t in pivot_direction_tokens for t in matches):
+                continue
+            return True, str(direction)
+    return False, ""
 
 
 # ──────────────────────────────────────────────

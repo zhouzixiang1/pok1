@@ -23,7 +23,7 @@
 - choose_raise() constant-only nudges [POSSIBLY EXHAUSTED] — saturated ≥6 gens. EXEMPT only structural rewrites adding NEW DEAL-LOCAL opponent-signal gating; CLOSED archetype axis does NOT reopen.
 - Don't carry kept-but-inert constants: RAISE to bind or REMOVE the dead bound.
 - Preflop pot_odds windows <10pp rarely fire in 70-hand HU; widen_threshold must target ≥15pp bands.
-- Firing verification: reachability_test + ≥100g H2H WR-lift is the ONLY reliable gate. stderr NOT readable (_PersistentBot stdout-only); daemon-grep "fired≥5%" UNFULFILLABLE — gate must be reachability/H2H-WR, NOT a grep count.
+- Firing verification: reachability_test + ≥100g H2H WR-lift remains authoritative. RESOLVED (A1): daemon/battle now drain bot stderr into telemetry, so stderr-token checks are readable again; use daemon telemetry to confirm detector fire-rate (target ≥5% after ≥30g) as an early placement/reachability signal, but do not treat grep counts alone as H2H proof.
 
 ## GENERAL
 - Master RELIABLE at plan-generation but reliability ≠ correctness: validate axis PAYLOAD (≥100g WR-lift), not just plan cleanliness.
@@ -93,8 +93,6 @@
 - [EXHAUSTED — cross_gen_pivot auto-mark v223] calibration, exhausted, experience
 - [EXHAUSTED — cross_gen_pivot auto-mark v222] defense, gate
 - [EXHAUSTED — cross_gen_pivot auto-mark v215] gate, polarized, shove
-
-
 
 
 

@@ -492,11 +492,17 @@ class TestMatchAnalystSentinel:
         # Provide enough match-history data so the function reaches the LLM call.
         import evolution_infra
         history = evolution_infra.MATCH_HISTORY_FILE
+        replay_dir = evolution_infra.REPLAY_DIR
+        monkeypatch.setattr(agent_master, "MATCH_HISTORY_FILE", history)
+        monkeypatch.setattr(agent_master, "REPLAY_DIR", replay_dir)
+        monkeypatch.setattr(agent_master, "summarize_replay_for_analysis", lambda *_a, **_k: "summary")
         history.parent.mkdir(parents=True, exist_ok=True)
+        replay_dir.mkdir(parents=True, exist_ok=True)
         history.write_text(json.dumps({
             "id": "replay-x", "bot0": "claude_v50", "bot1": "claude_v40",
             "bot0_wins": 1, "bot1_wins": 5,
         }) + "\n")
+        (replay_dir / "replay-x").write_text(json.dumps({"hands": []}))
 
         result = asyncio.run(agent_master._analyze_recent_matches(50, _UI()))
         assert result == LLM_INFRA_SENTINEL

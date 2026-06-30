@@ -24,6 +24,31 @@ daemon_proc = None
 _daemon_lock = threading.Lock()
 _atexit_registered = False
 _daemon_shutting_down = False
+_last_scheduler_capability_log: dict[str, object] = {"key": None, "ts": 0.0}
+_SCHEDULER_CAPABILITY_LOG_INTERVAL = 60.0
+
+
+def _log_scheduler_capability_false(reason: str, **fields) -> None:
+    """Log daemon scheduler unavailability without flooding hot polling paths."""
+    now = time.time()
+    daemon_pid = fields.get("daemon_pid")
+    key = (reason, daemon_pid)
+    if (
+        _last_scheduler_capability_log.get("key") == key
+        and now - float(_last_scheduler_capability_log.get("ts") or 0.0)
+        < _SCHEDULER_CAPABILITY_LOG_INTERVAL
+    ):
+        return
+    _last_scheduler_capability_log["key"] = key
+    _last_scheduler_capability_log["ts"] = now
+    try:
+        log_system_event(
+            "daemon.scheduler_capability_false", "warn",
+            f"Daemon scheduler unavailable: {reason}",
+            {"reason": reason, **fields},
+        )
+    except Exception:
+        pass
 
 
 def _drain_stdout(proc):
@@ -291,18 +316,42 @@ def is_daemon_scheduler_capable():
     a stalled loop (regardless of cause) is treated as incapable and precommit
     falls back to the parallel path instead of waiting on a dead scheduler.
     """
-    if not is_daemon_alive():
+    with _daemon_lock:
+        proc = daemon_proc
+    if proc is None or proc.poll() is not None:
+        _log_scheduler_capability_false(
+            "not_alive",
+            daemon_pid=getattr(proc, "pid", None),
+            returncode=(proc.poll() if proc is not None else None),
+        )
         return False
     from evolution_infra import RESULTS_DIR
     daemon_pid_file = RESULTS_DIR / ".daemon_pid"
     if not daemon_pid_file.exists():
+        _log_scheduler_capability_false(
+            "pid_file_missing",
+            daemon_pid=getattr(proc, "pid", None),
+            pid_file=str(daemon_pid_file),
+        )
         return False
     try:
         raw = daemon_pid_file.read_text().strip()
         if raw.isdigit():
+            _log_scheduler_capability_false(
+                "legacy_pid_file",
+                daemon_pid=int(raw),
+                pid_file=str(daemon_pid_file),
+                raw_format="plain_pid",
+            )
             return False
         info = json.loads(raw)
         if not info.get("scheduler_capable", False):
+            _log_scheduler_capability_false(
+                "flag_false",
+                daemon_pid=info.get("pid", getattr(proc, "pid", None)),
+                pid_file=str(daemon_pid_file),
+                scheduler_capable=info.get("scheduler_capable", False),
+            )
             return False
         # Heartbeat freshness: a daemon whose main loop has stalled (but process
         # still alive) must not be reported as capable. Tolerate a missing
@@ -315,12 +364,33 @@ def is_daemon_scheduler_capable():
             except Exception:
                 HEARTBEAT_STALE_SEC = 120
             try:
-                if time.time() - float(hb) > HEARTBEAT_STALE_SEC:
+                heartbeat_age = time.time() - float(hb)
+                if heartbeat_age > HEARTBEAT_STALE_SEC:
+                    _log_scheduler_capability_false(
+                        "heartbeat_stale",
+                        daemon_pid=info.get("pid", getattr(proc, "pid", None)),
+                        pid_file=str(daemon_pid_file),
+                        heartbeat_age_sec=round(heartbeat_age, 2),
+                        heartbeat_stale_sec=HEARTBEAT_STALE_SEC,
+                    )
                     return False
             except (TypeError, ValueError):
+                _log_scheduler_capability_false(
+                    "heartbeat_invalid",
+                    daemon_pid=info.get("pid", getattr(proc, "pid", None)),
+                    pid_file=str(daemon_pid_file),
+                    heartbeat=hb,
+                )
                 return False
         return True
-    except (json.JSONDecodeError, KeyError, TypeError, OSError):
+    except (json.JSONDecodeError, KeyError, TypeError, OSError) as exc:
+        _log_scheduler_capability_false(
+            "pid_file_unreadable",
+            daemon_pid=getattr(proc, "pid", None),
+            pid_file=str(daemon_pid_file),
+            error_type=type(exc).__name__,
+            error=str(exc)[:200],
+        )
         return False
 
 

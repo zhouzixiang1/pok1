@@ -45,6 +45,21 @@
 - `pokctl.sh` 停 daemon 改为 SIGTERM grace，再 SIGKILL；`.server.pid` 写入 pid/pgid/port/cmd/started_at。
 - 新增 `scripts/pok_restart_observe.sh`：带锁、快照、可选备份清 checkpoint、写 daemon config、调用 `pokctl.sh restart`、HTTP health check、按 terminal events 观察若干代。
 
+## 追加闭环（本轮）
+
+本轮继续修复“日志不够全面”和“近几代根因未闭环”的剩余问题：
+
+1. checkpoint 现在持久化 `run_id`，并把 `generation_attempt/audit_attempt/precommit_attempt` 规范为整数，避免 API 和事件里出现 `run_id=null` 或 `audit=null`。
+2. `clear_pipeline_checkpoint()` 改为走 event bus，checkpoint 清理事件也能进入新版 `events.jsonl` 并保留 run/stage/attempt。
+3. event bus 不再覆盖调用方传入的业务 `pid/proc`；新增 `emitter_pid/emitter_ppid/emitter_proc`，区分“被操作的 daemon pid”和“写日志的 web/orchestrator 进程”。
+4. `/api/control/status` 会从旧 checkpoint 派生 `run_id` 和 attempt；`/api/control/tool/*` 记录请求、成功、失败，并对 token/secret/password 等参数脱敏。
+5. `/api/logs/system-events` 增加 `source=structured`、`run_id`、`stage` 过滤，可直接查询新版 `events.jsonl`。
+6. `daemon_management.is_daemon_scheduler_capable()` 对 `not_alive/pid_file_missing/flag_false/heartbeat_stale/pid_file_unreadable` 等失败原因记录节流事件 `daemon.scheduler_capability_false`。
+7. `fixes_applied`、`generation_prepared`、`bare_commit_detected` 等 checkpoint 前事件补足 `target_v/next_v/stage`，减少早期 prepare 日志断链。
+8. cross-gen pivot 不再只因历史同轴 exhausted 就打断已接受 Master plan；现在会检查新计划正向执行文本是否仍重复 exhausted 方向。若计划已经转到新执行轴，记录 `pipeline.cross_gen_pivot_satisfied` 并继续写 `master_planned`。
+9. `git_get_parent()` 现在解引用 annotated tag 到目标 commit 后解析 parent，并把 `claude_v201` 规范成整数 `201`；`get_bot_info` 正确处理 `check_code_size()` 的三元组 oversized 返回。
+10. `experience_pool.md` 中 “stderr 不可读、daemon grep 不可用” 的旧结论已更新为 `RESOLVED (A1)`：stderr telemetry 可读，fire-rate 可作为早期可达性信号，但 H2H/net-chips 仍是最终证据。
+
 ## 验证
 
 已通过：
@@ -56,14 +71,12 @@
 - audit/regression/context focused tests：34 passed。
 - `scripts/pok_restart_observe.sh --clear-checkpoint backup-and-clear --observe-generations 0 --dry-run` 成功输出预期动作。
 
-全量 `cd web && python -m pytest tests -q` 当前结果：1169 passed，1 skipped，1 deselected，6 failed。
+上一轮全量测试剩余的 6 个失败已分别处理：
 
-剩余 6 个失败未归入本轮改动：
-
-- `TestMatchAnalystSentinel.test_infra_error_returns_sentinel`：测试没有创建 replay 文件，`_analyze_recent_matches` 在 LLM 前返回空串。
-- `TestDriftEntryUpdated.test_pool_no_longer_claims_stderr_unreadable`：当前 tracked `experience_pool.md` 缺少测试期望的 `RESOLVED (A1)` 文案。
-- `get_bot_info` 相关 3 个失败：测试选择 active bot v202，但接口返回 400，需单独查当前 bot/tag/fixture 状态。
-- `TestSchedulerPathUsedWhenCapable.test_partial_results_fallback`：scheduler partial fallback 期望 1 次 serial，实际 2 次。
+- `get_bot_info` 3 个失败：修复 annotated tag parent 解析、parent 版本规范化、oversized 三元组解包。
+- `experience_pool` drift：更新 tracked 经验池旧结论，明确 `RESOLVED (A1)`。
+- `match analyst sentinel`：修复测试 fixture，补 replay/summary 前置条件，确保 LLM infra error 路径可达。
+- `scheduler partial fallback`：修复测试 fake clock，不再依赖内部 `time.time()` 调用次数。
 
 ## 重启策略
 

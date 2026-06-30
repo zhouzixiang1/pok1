@@ -153,6 +153,54 @@ class TestCheckConsecutiveExhaustion:
         assert result is not None  # Both records share the axis
 
 
+class TestPlanRepeatsExhaustedDirection:
+    def test_new_offensive_axis_does_not_repeat_fold_calibration(self):
+        import core.tool_planning as tp
+
+        plan = {
+            "targeted_failure": "Passive missed fold-equity construction on coordinated turns",
+            "expected_behavior_change": "Create a turn semi-bluff raise with opponent fit-or-relinquish signal",
+            "do_not_touch": ["Do not retune postflop fold-side calibration"],
+            "tasks": [{
+                "worker_prompt": (
+                    "Add _coordinated_turn_semibluff_raise in strategy_helpers.py and call it "
+                    "from strategy.py when hero has strong draws and villain overfolds to medium bets. "
+                    "Do not retune postflop fold-side calibration."
+                )
+            }],
+        }
+
+        repeats, matched = tp._plan_repeats_exhausted_direction(
+            plan,
+            ["postflop fold-side calibration", "opponent bluff-frequency floor tuning"],
+        )
+
+        assert repeats is False
+        assert matched == ""
+
+    def test_repeated_threshold_tuning_is_detected(self):
+        import core.tool_planning as tp
+
+        plan = {
+            "targeted_failure": "Current postflop fold-side calibration is too loose",
+            "expected_behavior_change": "Retune fold thresholds",
+            "tasks": [{
+                "worker_prompt": (
+                    "Adjust postflop fold-side calibration by widening the fold threshold "
+                    "and retuning made-strength continuation margins."
+                )
+            }],
+        }
+
+        repeats, matched = tp._plan_repeats_exhausted_direction(
+            plan,
+            ["postflop fold-side calibration", "medium-strength hand continuation threshold tuning"],
+        )
+
+        assert repeats is True
+        assert matched == "postflop fold-side calibration"
+
+
 class TestInfraTimeoutNotCountedAsFail:
     """Test that infra_only_timeout does not pollute cross-gen fail counts.
 

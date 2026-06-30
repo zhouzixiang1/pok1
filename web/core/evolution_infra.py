@@ -487,14 +487,21 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 existing_precommit_attempt = 0
                 existing_timeout_extensions = 0
 
-        # Ensure int type invariant: precommit_attempt must be an int >= 0 in the
-        # persisted state. None arises only on a fresh checkpoint (no existing
-        # value, caller didn't pass one) — default to 0 per the contract.
+        # Ensure int type invariants for persisted counters. None arises on a
+        # fresh checkpoint when the caller did not pass a counter; defaulting
+        # here keeps log correlation complete instead of emitting
+        # {"audit": null, ...} for the rest of the generation.
+        if existing_generation_attempt is None:
+            existing_generation_attempt = 0
+        if existing_audit_attempt is None:
+            existing_audit_attempt = 0
         if existing_precommit_attempt is None:
             existing_precommit_attempt = 0
+        run_id = f"{next_v}#{existing_generation_attempt}"
 
         state = {
             "next_v": next_v, "source_v": source_v, "stage": stage,
+            "run_id": run_id,
             "master_plan": existing_master_plan, "reviewer_feedback": existing_reviewer_feedback,
             "generation_attempt": existing_generation_attempt,
             "audit_attempt": existing_audit_attempt,
@@ -527,7 +534,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         try:
             from event_bus import update_last_known, invalidate_ckpt_cache
             update_last_known(
-                run_id=f"{next_v}#{existing_generation_attempt}",
+                run_id=run_id,
                 stage=stage,
                 attempt={"generation": existing_generation_attempt,
                          "audit": existing_audit_attempt,
@@ -570,17 +577,37 @@ def clear_pipeline_checkpoint():
         f.truncate(0)
         PIPELINE_STATE_FILE.unlink(missing_ok=True)
     try:
-        from system_log import _write_system_event_raw
-        _write_system_event_raw(
+        from event_bus import emit
+        next_v = previous.get("next_v") if previous else None
+        gen_attempt = previous.get("generation_attempt", 0) if previous else 0
+        audit_attempt = previous.get("audit_attempt", 0) if previous else 0
+        precommit_attempt = previous.get("precommit_attempt", 0) if previous else 0
+        emit(
             "pipeline.checkpoint_cleared", "info",
             "Pipeline checkpoint cleared",
-            {"next_v": previous.get("next_v") if previous else None,
-             "source_v": previous.get("source_v") if previous else None,
-             "stage": previous.get("stage") if previous else None,
-             "category": "pipeline.checkpoint_cleared"},
+            run_id=(previous.get("run_id") if previous else None) or (
+                f"{next_v}#{gen_attempt}" if next_v is not None else None
+            ),
+            stage=previous.get("stage") if previous else None,
+            attempt={"generation": gen_attempt, "audit": audit_attempt,
+                     "precommit": precommit_attempt},
+            next_v=next_v,
+            source_v=previous.get("source_v") if previous else None,
         )
     except Exception:
-        pass
+        try:
+            from system_log import _write_system_event_raw
+            _write_system_event_raw(
+                "pipeline.checkpoint_cleared", "info",
+                "Pipeline checkpoint cleared",
+                {"next_v": previous.get("next_v") if previous else None,
+                 "source_v": previous.get("source_v") if previous else None,
+                 "stage": previous.get("stage") if previous else None,
+                 "run_id": previous.get("run_id") if previous else None,
+                 "category": "pipeline.checkpoint_cleared"},
+            )
+        except Exception:
+            pass
 
 
 # ──────────────────────────────────────────────
@@ -1026,7 +1053,10 @@ def git_get_parent(version):
     tag = f"bot-v{version}"
     tags = _git("tag", "-l", tag, check=False)
     if tags:
-        msg = _git("for-each-ref", f"refs/tags/{tag}", "--format=%(contents)")
+        commit_hash = _git("rev-list", "-n", "1", tag, check=False).strip()
+        if not commit_hash:
+            return None
+        msg = _git("show", "-s", "--format=%B", commit_hash, check=False)
     else:
         log = _git("log", "--diff-filter=A", "--oneline", "-1", "--",
                     f"bots/claude_v{version}/", check=False)
@@ -1036,7 +1066,11 @@ def git_get_parent(version):
         msg = _git("show", "-s", "--format=%B", commit_hash, check=False)
     for line in (msg or "").split("\n"):
         if line.strip().startswith("parent:"):
-            return line.split(":", 1)[1].strip()
+            parent = line.split(":", 1)[1].strip()
+            try:
+                return int(parent.replace("claude_v", "").replace("v", ""))
+            except ValueError:
+                return parent
     return None
 
 
