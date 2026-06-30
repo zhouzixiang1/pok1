@@ -30,6 +30,23 @@ log = logging.getLogger("pok.scheduler")
 _probe_running = threading.Event()
 
 
+def _save_committed_bot_fingerprint(committed_v: int) -> str:
+    """Compute and persist the behavior fingerprint for a committed bot."""
+    from behavior_diversity import compute_decision_fingerprint, save_fingerprint
+
+    bot_name = f"claude_v{int(committed_v)}"
+    fp = compute_decision_fingerprint(bot_name)
+    save_fingerprint(bot_name, fp)
+    log.info("Behavior fingerprint saved for %s", bot_name)
+    log_system_event(
+        "pipeline.fingerprint_saved",
+        "info",
+        f"Behavior fingerprint saved for {bot_name}",
+        {"version": int(committed_v), "bot": bot_name},
+    )
+    return bot_name
+
+
 def _wilson_lower_bound(wins, games, z=1.96):
     """95% lower confidence bound on the true win rate (Wilson score interval).
 
@@ -1215,10 +1232,6 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
     # This feeds behavior_diversity fingerprints.jsonl consumed by crossover
     # parent selection and the novelty gate in commit_bot.
     try:
-        from behavior_diversity import compute_decision_fingerprint, save_fingerprint
-        bot_name = f"claude_v{ctx.next_v - 1}"  # committed bot is next_v - 1
-        fp = compute_decision_fingerprint(bot_name)
-        save_fingerprint(bot_name, fp)
-        log.info("Behavior fingerprint saved for %s", bot_name)
+        _save_committed_bot_fingerprint(ctx.next_v)
     except Exception as e:
         log.warning("Fingerprint computation failed (non-fatal): %s", e)
