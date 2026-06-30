@@ -532,9 +532,15 @@ def test_subagent_guard_allows_readonly_parent_probe_but_blocks_writes():
     assert llm_query._subagent_bash_is_mutation(readonly_python) is False
     assert llm_query._subagent_bash_is_mutation(readonly_wc) is False
     assert llm_query._subagent_bash_is_mutation(readonly_tag) is False
+    assert llm_query._subagent_bash_mutation_detector(readonly_ls) is None
+    assert llm_query._subagent_bash_mutation_detector(readonly_python) is None
+    assert llm_query._subagent_bash_mutation_detector(readonly_tag) is None
     assert llm_query._subagent_bash_is_mutation(write_redirect) is True
     assert llm_query._subagent_bash_is_mutation(write_python) is True
     assert llm_query._subagent_bash_is_mutation(write_tag) is True
+    assert llm_query._subagent_bash_mutation_detector(write_redirect).startswith("write_redirect:")
+    assert llm_query._subagent_bash_mutation_detector(write_python) == "python_write_pattern:.write_text("
+    assert llm_query._subagent_bash_mutation_detector(write_tag) == "git_tag_mutation"
 
 
 def test_orchestrator_guard_allows_readonly_redirection_but_blocks_writes():
