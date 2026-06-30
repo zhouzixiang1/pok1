@@ -137,14 +137,14 @@ cmd_stop() {
             echo "发现端口 $port 上有进程 (PID: $found_pid)"
             pid="$found_pid"
         else
-            exit 0
+            return 0
         fi
     fi
 
     if ! is_alive "$pid"; then
         echo "服务未运行 (PID $pid 已不存在)"
         rm -f "$PID_FILE"
-        exit 0
+        return 0
     fi
 
     echo "正在停止服务 (PID: $pid)..."
