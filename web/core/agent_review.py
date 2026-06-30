@@ -14,7 +14,7 @@ from llm_failure import is_llm_infra_error, infra_payload
 from evolution_infra import (
     run_claude_query, parse_json_output, substitute_template,
     locked_file, get_bot_dir, get_logs_dir, get_active_bots,
-    verify_code, run_smoke_test,
+    verify_code, run_import_contract_test, run_smoke_test,
     PROMPTS_DIR, RESULTS_DIR, MATCH_HISTORY_FILE, H2H_FILE, BOT_STATS_FILE,
     MAX_CROSSOVER_RETRIES,
     Glicko2Player,
@@ -478,6 +478,23 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
         compile_errors = verify_code(target_dir)
         if compile_errors:
             ui.log_history("Crossover compile error, retrying...", "warn")
+            continue
+
+        import_errors = run_import_contract_test(target_dir)
+        if import_errors:
+            try:
+                from system_log import log_system_event
+                log_system_event(
+                    "pipeline.crossover_import_contract_failed", "error",
+                    f"Crossover v{target_v} import contract failed on attempt {attempt+1}: "
+                    f"{import_errors[0].get('module')} {import_errors[0].get('exception')}: "
+                    f"{import_errors[0].get('message')}",
+                    {"target_v": target_v, "parent_a": parent_a_v, "parent_b": parent_b_v,
+                     "attempt": attempt + 1, "errors": import_errors[:3]},
+                )
+            except Exception:
+                pass
+            ui.log_history("Crossover runtime import contract failed, retrying...", "warn")
             continue
 
         smoke_errors = run_smoke_test(target_dir)

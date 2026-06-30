@@ -1,6 +1,7 @@
 import sys
 import os
 from pathlib import Path
+import importlib
 
 # Add core/ to sys.path (core/ → web/ → pok/)
 CORE_DIR = Path(__file__).resolve().parent
@@ -8,6 +9,14 @@ PROJECT_ROOT = CORE_DIR.parent.parent
 sys.path.append(str(CORE_DIR))
 
 from engine.battle import mirror_battle
+
+
+def _run_entry_import_probe(target_bot_path):
+    bot_dir = Path(target_bot_path).resolve().parent
+    sys.path.insert(0, str(bot_dir))
+    for module_name in ("main", "strategy", "postflop", "opponent", "state"):
+        if (bot_dir / f"{module_name}.py").exists():
+            importlib.import_module(module_name)
 
 def smoke_test(target_bot_path):
     # Use reference_bots for a stable opponent (always available, never graveyarded)
@@ -18,6 +27,7 @@ def smoke_test(target_bot_path):
         stable_bot_path = str(PROJECT_ROOT / "bots" / "bot1" / "main.py")
         
     try:
+        _run_entry_import_probe(target_bot_path)
         # Run exactly 1 match (2 games because of mirror)
         # This will quickly trigger runtime exceptions if the bot code has severe bugs
         mirror_battle(target_bot_path, stable_bot_path, 1)

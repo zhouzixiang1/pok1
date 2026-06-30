@@ -17,6 +17,7 @@ from evolution_core import (
     get_logs_dir,
     find_current_v,
     verify_code,
+    run_import_contract_test,
     check_code_size,
     run_smoke_test,
     run_decision_test_details,
@@ -136,6 +137,21 @@ async def run_quality_gates(args):
                              {"version": v, "source_v": source_v})
 
     compile_errors = verify_code(bot_dir)
+    import_errors = run_import_contract_test(bot_dir)
+    if import_errors:
+        log_system_event(
+            "pipeline.import_contract_failed", "error",
+            f"Runtime import contract failed for v{v}: "
+            f"{import_errors[0].get('module')} {import_errors[0].get('exception')}: "
+            f"{import_errors[0].get('message')}",
+            {"version": v, "source_v": source_v, "errors": import_errors[:3]},
+        )
+    else:
+        log_system_event(
+            "pipeline.import_contract_passed", "info",
+            f"Runtime import contract passed for v{v}",
+            {"version": v, "source_v": source_v},
+        )
     # A3 (evolution-plan-refresh-jun21): placement-shadow advisory (NON-blocking).
     # Flags detector call-sites placed after a to_call>=my_chips early-return — the
     # INERTNESS root cause that recurred v138-v143 (guards wired at strategy.py:1041
@@ -299,6 +315,7 @@ async def run_quality_gates(args):
 
     all_passed = (
         len(compile_errors) == 0
+        and len(import_errors) == 0
         and len(smoke_errors) == 0
         and len(national_protocol_errors) == 0
         and decision_ok
@@ -314,6 +331,8 @@ async def run_quality_gates(args):
         "changed_files": changed_files_list,
         "compile_ok": len(compile_errors) == 0,
         "compile_errors": compile_errors[:3] if compile_errors else [],
+        "import_ok": len(import_errors) == 0,
+        "import_errors": import_errors[:3] if import_errors else [],
         "smoke_ok": len(smoke_errors) == 0,
         "smoke_errors": smoke_errors[:3] if smoke_errors else [],
         "national_protocol_ok": len(national_protocol_errors) == 0,
@@ -347,6 +366,12 @@ async def run_quality_gates(args):
     failed_gates_detail = []
     if compile_errors:
         failed_gates_detail.append("compile")
+    if import_errors:
+        first_import = import_errors[0]
+        failed_gates_detail.append(
+            f"runtime_import({first_import.get('module')}: "
+            f"{first_import.get('exception')} {first_import.get('message')})"
+        )
     if true_shadows:
         failed_gates_detail.append(
             f"placement_shadow({'; '.join(w[:120] for w in true_shadows[:3])})"
@@ -384,6 +409,8 @@ async def run_quality_gates(args):
                 f"M6 telemetry-fidelity violation (false-INERT risk): {w[:2000]}",
             )
 
+    result["failed_gates"] = failed_gates_detail if not all_passed else []
+
     log_system_event(
         "pipeline.quality_passed" if all_passed else "pipeline.quality_failed",
         "success" if all_passed else "error",
@@ -403,13 +430,15 @@ async def run_quality_gates(args):
             critical_scenarios_passed=critical_ok,
             decision_pass_rate=round(decision_rate, 4),
             critical_failures=critical_failures,
+            import_ok=len(import_errors) == 0,
+            import_errors=import_errors[:3] if import_errors else [],
         )
         _record_gate(
             v,
             source_v,
             "quality",
             gate,
-            stage="quality_passed" if all_passed else _ckpt.get("stage", "workers_done"),
+            stage="quality_passed" if all_passed else "quality_failed",
         )
         result["checkpoint_recorded"] = True
         result["source_v"] = source_v

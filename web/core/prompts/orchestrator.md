@@ -11,11 +11,13 @@ Do NOT use Bash to modify `pipeline_state.json`, `glicko_ratings.json`, or any f
 </read_only_warning>
 
 <state_machine>
-Pipeline order (drive forward only; failures may retreat to `workers` or `master`):
+Pipeline order (drive forward only). There are TWO valid generation paths:
+
+Normal path:
 
 | Stage | Tool |
 |---|---|
-| prepare | `prepare_next_gen` or `run_crossover` |
+| prepare | `prepare_next_gen` |
 | direction_audit | `run_direction_audit` |
 | literature_probe | `run_literature_probe` (MANDATORY when stagnant — see guidance below) |
 | master | `run_master` |
@@ -26,6 +28,21 @@ Pipeline order (drive forward only; failures may retreat to `workers` or `master
 | verification | `run_precommit_eval` |
 | commit | `commit_bot` |
 | archivist | `run_archivist` |
+
+Crossover path:
+
+| Stage | Tool |
+|---|---|
+| crossover | `run_crossover` |
+| quality | `run_quality_gates` |
+| review | `run_review` |
+| critic | `run_critic` |
+| verification | `run_precommit_eval` |
+| commit | `commit_bot` |
+| archivist | `run_archivist` |
+
+After `run_crossover` returns success, the bot code already exists and the checkpoint is at `workers_done`.
+Do NOT call `run_direction_audit`, `run_master`, or `execute_workers` to plan the crossover child.
 </state_machine>
 <literature_probe_guidance>
 **When to call `run_literature_probe`** (MANDATORY when stagnant — DeepEvolve + Ratchet):
@@ -39,17 +56,22 @@ Pipeline order (drive forward only; failures may retreat to `workers` or `master
 When `run_master` returns a JSON result:
 - If the result contains `"plan"` key → Master SUCCEEDED. Proceed to `execute_workers`.
 - If the result contains `"error"` key but NO `"plan"` key → Master FAILED. You may retry.
+- If the error is `MASTER_AUDIT_REJECTED`, the plan is blocked. Do NOT call `execute_workers` with that plan.
+- If the error is `CROSSOVER_ALREADY_DONE`, do NOT call `run_master`; follow the returned directive.
 - `validation_warnings` in a successful result are INFORMATIONAL ONLY — they do NOT block execution.
 - NEVER retry `run_master` when the result contains a valid `"plan"`. This wastes $0.8-1.0 and 3-5 minutes per retry.
 </validation_handling>
 
 <advisory_vs_blocking>
 EXHAUSTED-direction matches and worker_prompt size warnings are ADVISORY, not
-errors. They MUST NOT block `execute_workers`. Only py_compile failure, decision
-test < 70%, file size violation, and precommit statistical regression BLOCK the
-pipeline. LLM-gated rejections (critic score, direction_audit `repetition_detected`)
-are ADVISORY signals injected into the next worker prompt as hints — they surface
-risk but do not hard-block when a valid Master plan exists.
+errors. They MUST NOT block `execute_workers`. Runtime import contract failure,
+py_compile failure, smoke failure, decision test < 70%, critical decision failures,
+file size violation, missing mandatory fixes, national protocol regression, and
+precommit statistical regression BLOCK the pipeline.
+
+Master plan audit rejection is BLOCKING. Critic score and direction_audit
+`repetition_detected` are advisory signals unless a tool explicitly returns an
+error without a valid plan.
 </advisory_vs_blocking>
 
 <code_change_verification>
@@ -73,7 +95,7 @@ Do NOT call `commit_bot()` unless ALL of these are satisfied:
 <retry_rules>
 - Track `intra_gen_attempts` (start at 0)
 - Master fails → retry at most 2 times total. If still failing, abandon this generation.
-- Quality gates fail → retry workers with failure message
+- Quality gates fail → retry workers with the exact failure message; do NOT call `run_master` from `quality_failed` unless the tool explicitly says to abandon and start fresh.
 - Reviewer rejects → inject feedback, retry workers (counts toward attempts)
 - Critic score is ADVISORY ONLY: it does NOT block and does NOT force retry. Critic feedback + local_optima_warning are injected into the NEXT generation's worker prompt as improvement hints. ALWAYS proceed to run_precommit_eval regardless of critic score — precommit paired-bootstrap statistical gate is the sole regression gate.
 - Precommit fails → inject exact blocker, retry workers or return to Master

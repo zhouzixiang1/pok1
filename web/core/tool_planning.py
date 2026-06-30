@@ -473,11 +473,34 @@ async def run_master(args):
     # orchestrator.md:43, causing duplicate run_master calls in the same cycle).
     _ckpt_idempotent = _matching_checkpoint(next_v, source_v)
     if _ckpt_idempotent and _ckpt_idempotent.get("stage") in (
-        "master_planned", "workers_done", "quality_passed",
+        "master_planned", "workers_done", "quality_failed", "quality_passed",
         "reviewed", "critic_checked", "verified", "archived",
     ):
         _existing_plan = _ckpt_idempotent.get("master_plan")
         if _existing_plan:
+            if (_ckpt_idempotent.get("parent2_v")
+                    and isinstance(_existing_plan, dict)
+                    and _existing_plan.get("strategy") == "crossover"):
+                log_system_event(
+                    "pipeline.crossover_master_call_blocked", "warn",
+                    f"run_master called after crossover already produced v{next_v}; proceed to quality/retry workers, not Master",
+                    {"next_v": next_v, "source_v": source_v,
+                     "parent2_v": _ckpt_idempotent.get("parent2_v"),
+                     "stage": _ckpt_idempotent.get("stage"),
+                     "has_synthetic_plan": True},
+                )
+                return _json_tool_result({
+                    "error": "CROSSOVER_ALREADY_DONE",
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "parent2_v": _ckpt_idempotent.get("parent2_v"),
+                    "stage": _ckpt_idempotent.get("stage"),
+                    "directive": (
+                        "Crossover already produced the target bot. Do NOT call run_master "
+                        "and do NOT execute workers. If stage=workers_done call run_quality_gates; "
+                        "if stage=quality_failed call execute_workers with exact gate feedback or abandon_generation."
+                    ),
+                })
             log_system_event("pipeline.master_idempotent", "info",
                              f"run_master for v{next_v}: plan already exists "
                              f"(stage={_ckpt_idempotent.get('stage')}), returning cached",
@@ -486,6 +509,29 @@ async def run_master(args):
             ui.log_history("Master plan already exists — returning cached (idempotent).", "info")
             return _json_tool_result({"plan": _existing_plan, "logs": ui.get_output(),
                                       "idempotent_cache": True})
+        if _ckpt_idempotent.get("parent2_v") and _ckpt_idempotent.get("stage") in (
+            "workers_done", "quality_failed", "quality_passed",
+            "reviewed", "critic_checked", "verified", "archived",
+        ):
+            log_system_event(
+                "pipeline.crossover_master_call_blocked", "warn",
+                f"run_master called after crossover already produced v{next_v}; proceed to quality/retry workers, not Master",
+                {"next_v": next_v, "source_v": source_v,
+                 "parent2_v": _ckpt_idempotent.get("parent2_v"),
+                 "stage": _ckpt_idempotent.get("stage")},
+            )
+            return _json_tool_result({
+                "error": "CROSSOVER_ALREADY_DONE",
+                "next_v": next_v,
+                "source_v": source_v,
+                "parent2_v": _ckpt_idempotent.get("parent2_v"),
+                "stage": _ckpt_idempotent.get("stage"),
+                "directive": (
+                    "Crossover already produced the target bot. Do NOT call run_master. "
+                    "If stage=workers_done call run_quality_gates; if stage=quality_failed "
+                    "call execute_workers with the exact quality failure feedback or abandon_generation."
+                ),
+            })
 
     stagnation_info = args.get("stagnation_info", "No stagnation detected. Continue from latest version.")
     match_analysis = args.get("match_analysis", "")
@@ -856,7 +902,12 @@ async def run_master(args):
         _audit_attempt = int(_ckpt0.get("audit_attempt") or 0)
 
         for _audit_iter in range(MAX_MASTER_AUDIT_RETRIES + 1):
-            audit_result = await _run_master_plan_audit(data, source_v, ui)
+            try:
+                audit_result = await _run_master_plan_audit(data, source_v, ui, next_v=next_v)
+            except TypeError as _audit_te:
+                if "next_v" not in str(_audit_te) and "keyword" not in str(_audit_te):
+                    raise
+                audit_result = await _run_master_plan_audit(data, source_v, ui)
             master_audit_ctx = audit_result  # Save for audit_context chain
             if audit_result.get("overall_pass", True):
                 break  # plan passed audit
@@ -864,15 +915,42 @@ async def run_master(args):
             log_system_event("pipeline.master_audit_rejected", "warn",
                              f"Master plan audit rejected for v{next_v} (attempt {_audit_attempt + 1}): {audit_result.get('feedback', '')[:200]}",
                              {"next_v": next_v, "audit": audit_result, "audit_attempt": _audit_attempt + 1})
-            if not audit_result.get("retry_recommended"):
-                break  # advisory-only rejection: accept the plan as-is
             if _audit_attempt + 1 > MAX_MASTER_AUDIT_RETRIES:
-                log_system_event("pipeline.master_audit_exhausted", "warn",
-                                 f"Master audit exhausted {MAX_MASTER_AUDIT_RETRIES} retries for v{next_v} — accepting plan to avoid retry loop",
-                                 {"next_v": next_v})
-                break
+                _nf = _bump_master_fail_count(next_v, source_v, value=_audit_attempt + 1)
+                log_system_event("pipeline.master_audit_exhausted_abandon", "error",
+                                 f"Master audit exhausted {MAX_MASTER_AUDIT_RETRIES} retries for v{next_v} — blocking plan",
+                                 {"next_v": next_v, "source_v": source_v,
+                                  "fail_count": _nf, "audit": audit_result})
+                try:
+                    from orchestrator_session import _clear_orchestrator_session
+                    _clear_orchestrator_session()
+                except Exception:
+                    pass
+                try:
+                    from tool_bot_management import _do_abandon_generation
+                    _abandon_result = await _do_abandon_generation(
+                        reason=f"master_audit_rejected v{next_v}: {audit_result.get('feedback', '')[:300]}"
+                    )
+                except Exception as _ae:
+                    _abandon_result = {"abandoned": False, "error": str(_ae)}
+                return _json_tool_result({
+                    "error": "MASTER_AUDIT_REJECTED",
+                    "fail_count": _nf,
+                    "audit": audit_result,
+                    **_abandon_result,
+                    "directive": (
+                        "Master plan audit is blocking. This generation was abandoned "
+                        "after audit retries were exhausted. Start a fresh generation; "
+                        "do not execute workers from the rejected plan."
+                    ),
+                    "logs": ui.get_output(),
+                })
             # Re-plan with rejection feedback, then re-audit the new plan
             _audit_attempt += 1
+            log_system_event("pipeline.master_audit_blocked", "error",
+                             f"Master plan audit blocked v{next_v}; retrying Master attempt {_audit_attempt}",
+                             {"next_v": next_v, "source_v": source_v,
+                              "audit_attempt": _audit_attempt, "audit": audit_result})
             performance_verification += (
                 f"\n\n# PLAN AUDIT REJECTION (attempt {_audit_attempt})\n"
                 f"The previous plan was rejected by the Plan Verification Auditor.\n"
@@ -896,8 +974,14 @@ async def run_master(args):
                 return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed after audit retry", "fail_count": _nf, "directive": "If run_master keeps failing, call abandon_generation to restart fresh.", "logs": ui.get_output()})}]}
             # Persist audit_attempt so crash-resume resumes at this count (not 0)
             try:
-                write_pipeline_checkpoint(next_v, source_v, "master_planned",
-                                          master_plan=data, audit_attempt=_audit_attempt)
+                _ckpt_retry = read_pipeline_checkpoint() or {}
+                write_pipeline_checkpoint(
+                    next_v, source_v,
+                    _ckpt_retry.get("stage", "direction_audited"),
+                    audit_attempt=_audit_attempt,
+                    direction_audit=_ckpt_retry.get("direction_audit") or direction_audit,
+                    audit_context={"master_audit_rejection": master_audit_ctx},
+                )
             except Exception:
                 pass
             log_system_event("pipeline.master_audit_retry", "info",
@@ -928,19 +1012,16 @@ async def run_master(args):
             # Check for consecutive same-axis exhaustion
             _pivot_axis = _check_consecutive_exhaustion(next_v, _exhausted_dirs)
             if _pivot_axis:
-                # H5: persist the pivot result into experience_pool.md so the next
-                # run_master sees this axis as EXHAUSTED via _extract_exhausted_keywords
-                # (otherwise master can re-propose the same dead axis).
-                _mark_axis_exhausted_in_pool(_pivot_axis, next_v)
                 _bump_master_fail_count(next_v, source_v)
                 try:
-                    log_system_event("pipeline.cross_gen_pivot", "warn",
+                    log_system_event("pipeline.cross_gen_pivot_runtime_only", "warn",
                                      f"Cross-gen direction pivot triggered for v{next_v}: "
                                      f"exhausted axis '{_pivot_axis}' persisted >=2 consecutive gens. "
-                                     f"Forcing structural alternative.",
+                                     f"Forcing structural alternative without writing experience_pool.md before commit.",
                                      {"next_v": next_v, "source_v": source_v,
                                       "pivot_axis": _pivot_axis,
-                                      "exhausted_directions": _exhausted_dirs})
+                                      "exhausted_directions": _exhausted_dirs,
+                                      "experience_pool_marked": False})
                 except Exception:
                     pass
                 return {"content": [{"type": "text", "text": json.dumps({
@@ -1673,7 +1754,7 @@ async def execute_workers(args):
     # redundant call must be refused so the orchestrator proceeds to the next gate.
     _b6_stage = ckpt.get("stage")
     if (not reviewer_feedback
-            and _b6_stage in ("workers_done", "quality_passed", "reviewed", "critic_checked", "verified")):
+            and _b6_stage in ("workers_done", "quality_failed", "quality_passed", "reviewed", "critic_checked", "verified")):
         try:
             log_system_event(
                 "pipeline.workers_redundant_call_blocked", "warn",
@@ -1789,7 +1870,7 @@ async def execute_workers(args):
 
     # When retrying after workers already ran, actually reset code from source first.
     # Previous claim that code was reset was FALSE — now we actually do it.
-    if reviewer_feedback and ckpt.get("stage") in ("workers_done", "reviewed", "critic_checked"):
+    if reviewer_feedback and ckpt.get("stage") in ("workers_done", "quality_failed", "reviewed", "critic_checked"):
         source_dir_r = get_bot_dir(source_v)
         if source_dir_r.exists() and next_dir.exists():
             _log.info(f"Resetting v{next_v} code from source v{source_v} before worker retry (incremental, preserves NEW files)")

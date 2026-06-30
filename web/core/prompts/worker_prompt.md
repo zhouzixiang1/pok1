@@ -125,7 +125,8 @@ After editing:
 2. **Verify changes**: Use `diff -rq bots/claude_v{parent_version}/ bots/claude_v{version}/` to list changed files, then `diff` each changed file. Ensure no unintended modifications outside `target_files`.
 
 3. **Run quality checks**:
-   - Compile: `python -m py_compile bots/claude_v{version}/main.py`
+   - Compile all bot modules: `python -m py_compile bots/claude_v{version}/*.py`
+   - Runtime import contract: `cd bots/claude_v{version} && python -B -c "import importlib; [importlib.import_module(m) for m in ('main','strategy','postflop','opponent','state') if __import__('pathlib').Path(m + '.py').exists()]"`
    - Smoke test: `python web/core/smoke_tester.py bots/claude_v{version}/main.py`
    - Fix any errors before finishing.
 

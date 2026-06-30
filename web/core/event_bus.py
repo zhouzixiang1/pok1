@@ -295,13 +295,30 @@ def emit(category, severity, message, *, stage=None, attempt=None, run_id=None,
 
     sev_canon, remapped = _normalise_severity(severity)
     rid, ctx_stage, ctx_attempt = _resolve_context()
+    payload_v = fields.get("next_v")
+    if payload_v is None:
+        payload_v = fields.get("version")
+    if payload_v is None:
+        payload_v = fields.get("target_v")
+    payload_run_id = None
+    if run_id is None and payload_v is not None:
+        prefix = f"{payload_v}#"
+        if rid is None or not str(rid).startswith(prefix):
+            gen_attempt = fields.get("generation_attempt")
+            if gen_attempt is None and isinstance(ctx_attempt, dict):
+                gen_attempt = ctx_attempt.get("generation", 0)
+            try:
+                gen_attempt = int(gen_attempt or 0)
+            except Exception:
+                gen_attempt = 0
+            payload_run_id = f"{payload_v}#{gen_attempt}"
 
     data = {
         **fields,
         "category": category,
         "stage": stage if stage is not None else ctx_stage,
         "attempt": attempt if attempt is not None else ctx_attempt,
-        "run_id": run_id if run_id is not None else rid,
+        "run_id": run_id if run_id is not None else (payload_run_id or rid),
         "pid": _PID,
         "proc": current_proc(),
     }

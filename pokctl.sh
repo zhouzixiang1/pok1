@@ -101,7 +101,11 @@ cmd_start() {
     local server_pid=$!
 
     # 写入 PID 文件
-    echo "{\"pid\": $server_pid}" > "$PID_FILE"
+    local cmd_text cmd_json
+    cmd_text="$PYTHON $MAIN_PY $*"
+    cmd_json="$(printf '%s' "$cmd_text" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+    printf '{"pid": %s, "pgid": %s, "port": %s, "cmd": "%s", "started_at": "%s"}\n' \
+        "$server_pid" "$server_pid" "$port" "$cmd_json" "$(date -Iseconds)" > "$PID_FILE"
 
     # 等待验证进程存活
     sleep 2
@@ -145,15 +149,24 @@ cmd_stop() {
 
     echo "正在停止服务 (PID: $pid)..."
 
-    # Phase 1: 读取 daemon PID 并先杀 daemon（daemon 在独立进程组，kill -- -$pid 打不到它）
+    # Phase 1: 读取 daemon PID 并先优雅停止 daemon（daemon 在独立进程组，kill -- -$pid 打不到它）
     local daemon_pid_file="$SCRIPT_DIR/web/core/results/.daemon_pid"
     if [ -f "$daemon_pid_file" ]; then
         local daemon_pid
         daemon_pid=$(python3 -c "import json; print(json.load(open('$daemon_pid_file'))['pid'])" 2>/dev/null || echo "")
         # 验证 PID 是合法正整数 (>1)，防止 PID 0 或负数导致 kill 误杀
         if [ -n "$daemon_pid" ] && [[ "$daemon_pid" =~ ^[0-9]+$ ]] && [ "$daemon_pid" -gt 1 ] && is_alive "$daemon_pid"; then
-            echo "  停止 daemon (PID: $daemon_pid, 独立进程组)..."
-            kill -9 -"$daemon_pid" 2>/dev/null || kill -9 "$daemon_pid" 2>/dev/null || true
+            echo "  优雅停止 daemon (PID: $daemon_pid, 独立进程组)..."
+            kill -- -"$daemon_pid" 2>/dev/null || kill "$daemon_pid" 2>/dev/null || true
+            local daemon_waited=0
+            while [ $daemon_waited -lt 12 ] && is_alive "$daemon_pid"; do
+                sleep 1
+                daemon_waited=$((daemon_waited + 1))
+            done
+            if is_alive "$daemon_pid"; then
+                echo "  daemon ${daemon_waited}s 未退出，强制终止..."
+                kill -9 -"$daemon_pid" 2>/dev/null || kill -9 "$daemon_pid" 2>/dev/null || true
+            fi
         fi
     fi
 

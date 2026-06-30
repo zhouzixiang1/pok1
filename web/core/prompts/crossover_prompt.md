@@ -40,10 +40,12 @@ Parent A has tight preflop ranges (VPIP 18%) but weak river play. Parent B has a
 2. Design crossover + mutation strategy based on H2H data and code analysis
 3. Write the full Python code into `bots/claude_v{version}/`
 4. Run quality checks:
-   - `python -m py_compile bots/claude_v{version}/main.py`
+   - `python -m py_compile bots/claude_v{version}/*.py`
+   - `cd bots/claude_v{version} && python -B -c "import importlib; [importlib.import_module(m) for m in ('main','strategy','postflop','opponent','state') if __import__('pathlib').Path(m + '.py').exists()]"`
    - `python web/core/smoke_tester.py bots/claude_v{version}/main.py`
-5. The bot must output `{"response": int}` via stdout. Action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.
-6. National TCP compatibility is via `sever/bot_adapter.py`: keep the JSON bot protocol, never output `bet`, never represent all-in as a positive raise that consumes all remaining chips, and preserve raise-to-total semantics. Do not introduce logic that assumes TCP postflop `check-check` is legal; the adapter maps JSON `0` to TCP `call` after a postflop check.
+5. These checks are crossover-local sanity checks only. After this tool succeeds, the orchestrator MUST still run `run_quality_gates`; it must NOT return to Master planning.
+6. The bot must output `{"response": int}` via stdout. Action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.
+7. National TCP compatibility is via `sever/bot_adapter.py`: keep the JSON bot protocol, never output `bet`, never represent all-in as a positive raise that consumes all remaining chips, and preserve raise-to-total semantics. Do not introduce logic that assumes TCP postflop `check-check` is legal; the adapter maps JSON `0` to TCP `call` after a postflop check.
 </action>
 
 ## Known Mandatory Fixes (DO NOT REMOVE)

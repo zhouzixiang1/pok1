@@ -206,6 +206,15 @@ def _record_gate(version, source_v, gate_name, gate_data, stage=None,
     ckpt = _matching_checkpoint(version, source_v)
     if not ckpt:
         log.warning("_record_gate: no matching checkpoint for v%s/v%s, gate '%s' dropped", version, source_v, gate_name)
+        try:
+            from system_log import log_system_event
+            log_system_event(
+                "pipeline.gate_record_dropped", "error",
+                f"Gate '{gate_name}' dropped because no matching checkpoint exists for v{version}/source v{source_v}",
+                {"version": version, "source_v": source_v, "gate": gate_name},
+            )
+        except Exception:
+            pass
         return False
     current_stage = ckpt.get("stage", "")
     # Preserve previous critic result when overwriting with a new one

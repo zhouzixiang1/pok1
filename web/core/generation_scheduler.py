@@ -932,6 +932,18 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
 
     if should_consolidate:
         try:
+            from evolution_infra import git_has_tag
+            if not git_has_tag(ctx.next_v):
+                try:
+                    from system_log import log_system_event
+                    log_system_event(
+                        "pipeline.experience_write_blocked_uncommitted", "warn",
+                        f"Skipped experience consolidation for uncommitted v{ctx.next_v}",
+                        {"version": ctx.next_v, "writer": "post_generation_cleanup"},
+                    )
+                except Exception:
+                    pass
+                return
             from experience_archivist import _consolidate_experience_pool
             # Extract exhausted_directions from pipeline checkpoint
             exhausted_dirs = ""
