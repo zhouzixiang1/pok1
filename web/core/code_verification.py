@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 from evolution_infra import (
-    CORE_DIR, REFERENCE_DIR, RESULTS_DIR,
+    CORE_DIR, PROJECT_ROOT, REFERENCE_DIR, RESULTS_DIR,
     MAX_LINES_PER_FILE, MAX_LINES_HELPER, MAX_LINES_HARD_CAP,
     LINE_GROWTH_BUDGET, CORE_STRATEGY_FILES, _COPY_IGNORE,
     get_bot_dir,
@@ -601,6 +601,30 @@ def run_decision_test_details(directory, extra_scenarios=None):
         }
     from decision_tester import run_decision_tests_detail as _run_detail
     return _run_detail(main_path, verbose=False, extra_scenarios=extra_scenarios)
+
+
+def run_national_protocol_tests():
+    """Run the national TCP platform/adapter alignment tests.
+
+    The evolution loop still evaluates JSON-subprocess bots, but those bots are
+    deployed to the national TCP platform through sever/bot_adapter.py. This
+    gate keeps protocol parsing, validator behavior, runout handling, and THP
+    output aligned with the national documents.
+    """
+    test_path = PROJECT_ROOT / "sever" / "tests" / "test_national_alignment.py"
+    if not test_path.exists():
+        return ["sever national alignment tests not found"]
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", str(test_path), "-q"],
+        cwd=str(PROJECT_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        output = (proc.stdout + "\n" + proc.stderr).strip()
+        return [output or f"pytest exited with {proc.returncode}"]
+    return []
 
 
 def seed_initial_bots(ui):

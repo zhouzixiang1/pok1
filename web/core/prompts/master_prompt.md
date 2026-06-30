@@ -37,6 +37,7 @@ Bot action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注
 Game parameters: 70 hands/match, 20000 starting chips per hand, blinds 50/100.
 Heads-up: dealer=SB acts first preflop; BB acts first postflop.
 Minimum raise: preflop first raise-to >= 200, postflop first raise-to >= 100, re-raise must be >2x previous raise-to (strictly greater).
+National TCP deployment uses `sever/bot_adapter.py`: the evolved bot remains a JSON subprocess bot, while the adapter converts actions to `raise <amount>`, `call`, `check`, `fold`, and `allin`. Plans must not ask workers to emit TCP text from JSON bots. Use "bet" only as poker strategy prose; wire/protocol actions must be raise-to-total. Avoid plans that rely on TCP postflop check-check being legal; after a TCP postflop check, the second pass is `call`.
 </game_rules>
 
 <poker_theory_reference>

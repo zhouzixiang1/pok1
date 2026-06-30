@@ -200,16 +200,22 @@ class GameEngine:
                     flop_cards = deck.deal(3)
                     community.extend(flop_cards)
                     await self._send_stage_cards("flop", flop_cards)
+                    if self.recorder:
+                        self.recorder.on_stage_cards("flop", [(c.suit, c.rank) for c in flop_cards])
                     stages_done = 2
                 if stages_done < 3:  # 还没发 turn
                     turn_card = deck.deal(1)
                     community.extend(turn_card)
                     await self._send_stage_cards("turn", turn_card)
+                    if self.recorder:
+                        self.recorder.on_stage_cards("turn", [(c.suit, c.rank) for c in turn_card])
                     stages_done = 3
                 if stages_done < 4:  # 还没发 river
                     river_card = deck.deal(1)
                     community.extend(river_card)
                     await self._send_stage_cards("river", river_card)
+                    if self.recorder:
+                        self.recorder.on_stage_cards("river", [(c.suit, c.rank) for c in river_card])
                 return await self._showdown(sb_idx, bb_idx, community, pot)
 
         # ── Showdown ──
@@ -359,10 +365,6 @@ class GameEngine:
                 if stage == "preflop" and is_bb and action_counts[current_idx] == 1:
                     if len(actions) >= 2 and actions[-2][0] == "call":
                         break
-
-                # postflop: 对手已行动且双方都 check → 阶段结束
-                if stage != "preflop" and action_counts[waiting_idx] > 0:
-                    break
 
                 current_idx, waiting_idx = waiting_idx, current_idx
                 continue

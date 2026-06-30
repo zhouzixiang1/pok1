@@ -29,6 +29,7 @@ cd web && python -m pytest tests/ -v              # All backend tests
 cd web && python -m pytest tests/test_routes_*.py  # Route endpoint tests
 cd web && python -m pytest tests/test_logic_*.py   # Pure logic tests
 cd web && python -m pytest tests/test_mcp_*.py     # MCP tool tests
+python -m pytest sever/tests -q                   # National TCP adapter/protocol gate
 ```
 
 ## Architecture — Two Patterns of LLM Usage
@@ -44,7 +45,7 @@ Each tool function receives an `args` dict, executes business logic (often spawn
 | `prepare_next_gen` | Setup | Copy source bot dir, write `prepared` checkpoint |
 | `run_master` | Planning | Call Master LLM → returns JSON task plan with worker assignments |
 | `execute_workers` | Coding | Call Worker LLMs (parallel via semaphore, max 3) to edit bot code |
-| `run_quality_gates` | Validation | Automated checks: compile, smoke test, decision tests, file size |
+| `run_quality_gates` | Validation | Automated checks: compile, smoke test, decision tests, national TCP protocol tests, file size |
 | `run_review` | Review | Call Reviewer LLM to score diff quality, enforce role boundaries |
 | `run_critic` | Critique | Call Critic LLM for strategic assessment and risk recording; precommit eval is the final regression gate |
 | `run_precommit_eval` | Pre-commit | Mirror battle regression check vs parent + top opponents |
@@ -122,6 +123,7 @@ React frontend:
 ## Key Conventions
 
 - All shared files use `fcntl` file locking for concurrent access between daemon subprocess, orchestrator, and API server
+- The evolution target remains Botzone/local JSON bots; national TCP deployment goes through `sever/bot_adapter.py`, and quality gates run `sever/tests/test_national_alignment.py` to prevent adapter/platform drift.
 - Worker role boundaries enforced by prompts and reviewer: Logic Architects cannot tune constants, Hyperparameter Tuners cannot add functions
 - Max 2000 lines for core strategy files (strategy.py, postflop.py), 1500 lines for other `.py` files — adaptive from source bot size + 15% growth budget, hard cap 2500. Reviewer rejects oversized files.
 - Decision test pass rate ≥70% (prevents catastrophic regressions like folding AA preflop)

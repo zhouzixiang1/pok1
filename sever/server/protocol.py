@@ -55,16 +55,10 @@ def parse_action(raw: str) -> tuple[str, int | None]:
 
     返回 (action_type, amount)。raise 时 amount 为加注到的阶段总额。
     """
-    raw = raw.strip()
-    # raise <amount>
-    if raw.startswith("raise ") or raw.startswith("raise\t"):
-        parts = raw.split(None, 1)
-        if len(parts) == 2:
-            try:
-                return ("raise", int(parts[1]))
-            except ValueError:
-                return ("unknown", None)
-        return ("unknown", None)
+    # 文档要求行为关键字和筹码量之间有且只有一个空格。
+    # 不 strip 原始动作；前后空格、多空格、Tab 都按非法格式处理。
+    if re.fullmatch(r"raise [0-9]+", raw):
+        return ("raise", int(raw.split(" ", 1)[1]))
     if raw == "call":
         return ("call", None)
     if raw == "check":
@@ -74,7 +68,7 @@ def parse_action(raw: str) -> tuple[str, int | None]:
     if raw == "allin":
         return ("allin", None)
     # bet 不允许，但需要识别以便返回非法
-    if raw.startswith("bet ") or raw.startswith("bet\t"):
+    if re.fullmatch(r"bet [0-9]+", raw):
         return ("bet", None)
     return ("unknown", None)
 

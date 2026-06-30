@@ -140,6 +140,9 @@ cd sever && python test_client.py 127.0.0.1 10001 BotB
 
 # Bridge an existing Botzone-style bot to the TCP platform.
 cd sever && python bot_adapter.py --bot ../bots/claude_v224 --name test
+
+# National protocol regression tests.
+python -m pytest sever/tests -q
 ```
 
 ### Reinforcement Learning
@@ -233,13 +236,18 @@ Core protocol facts from those documents:
 - Blinds are 50/100. Small blind acts first preflop; big blind acts first on flop/turn/river.
 - Each decision has a 60 second limit. Timeout is treated as fold.
 - Client actions are line-delimited strings: `raise <amount>`, `fold`, `call`, `check`, `allin`.
+- `raise <amount>` must use exactly one space between keyword and amount; leading/trailing spaces, tabs, and extra spaces are illegal protocol formats.
 - `bet` must not be sent; the protocol uses `raise` in place of bet.
 - `raise X` means raise to total stage bet `X`, not add `X`.
 - Consecutive raises must be strictly greater than 2x the previous raise-to value in the implementation.
+- Postflop first action `call` is illegal. Postflop after any first action, `check` is illegal; when one player checks first, the second player passes the street by sending `call`.
+- After `allin` is called, clients should only receive runout cards and settlement messages for that hand; they must not act again before `earnChips`.
 - Server card format is `<suit,rank>` with `suit 0=Spade, 1=Heart, 2=Diamond, 3=Club` and `rank 0=2 .. 12=Ace`.
 - Important server-to-client messages include `name`, `preflop|SMALLBLIND|...`, `preflop|BIGBLIND|...`, `flop|...`, `turn|...`, `river|...`, `earnChips <amount>`, and `oppo_hands|...`.
 
 All illegal actions are treated as fold. The validator implements the national document's bet/call/check/raise/allin restrictions in `sever/engine/validator.py`.
+
+When two clients are connected, `sever/server/tcp_server.py` starts the match automatically. The Web `/api/start` endpoint is retained as a dashboard control/fallback and rejects duplicate starts while a match task is running.
 
 Card conversion matters:
 
@@ -250,10 +258,11 @@ Card conversion matters:
 THP records:
 
 - `sever/engine/thp_recorder.py` writes national standard THP text records.
-- Filename style is `THP-{teamA} vs {teamB}-{winner}胜-{yyyymmddHHMM}.txt`.
+- Filename style is `THP-{teamA} vs {teamB}-{winner}胜-{yyyymmddHHMM}-CCGC.txt`, sanitized for filesystem-unsafe characters.
 - Each hand line is `STATE:N:actions:cards:earnings:players;`.
 - Actions use `r{amount}` for bet/raise, `c` for check/call, `f` for fold, with `/` separating streets.
 - Cards use rank/suit strings such as `Ah`, `Ts`; hand cards are recorded as big blind first, then small blind.
+- Earnings and players are also recorded in the hand's big-blind-first order, matching the hand-card order.
 - Export encoding is GB2312.
 
 ---
@@ -294,6 +303,7 @@ Important current thresholds:
 - Helper `.py` files have a 1500 line base limit.
 - Hard cap is 2500 lines, with a 15 percent growth budget from the source bot.
 - Decision tests require pass rate at least 70 percent and no critical scenario failures.
+- `run_quality_gates` also runs `sever/tests/test_national_alignment.py` so prompt/adapter/platform regressions are caught before bot commits.
 - Worker concurrency is capped by `MAX_PARALLEL_WORKERS = 3`, with adaptive throttling under API pressure.
 - `run_precommit_eval` is the final regression gate; critic is advisory in the current orchestrator prompt.
 

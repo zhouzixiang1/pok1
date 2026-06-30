@@ -18,5 +18,6 @@ Create a robust, multi-file Texas Hold'em poker bot in the `bots/claude_v1/` dir
    - Output JSON to `stdout`. Example response:
      `{"response": 100}`
    - Actions: `0` (call/check), `-1` (fold), `-2` (all-in), `>0` (raise-to-total: 加注到的阶段总额).
+   - National TCP deployment is handled by `sever/bot_adapter.py`; keep this JSON protocol. Do not output TCP strings from the bot. A strategy "bet" must still be represented as a positive raise-to-total value, and all-in must be `-2`.
 3. **Execution**:
    Please create these files and write functional baseline code. Make sure the logic is separated cleanly and the bot does not crash.

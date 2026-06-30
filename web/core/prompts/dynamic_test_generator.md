@@ -11,6 +11,9 @@ Based on actual code changes made by Workers, generate targeted test scenarios t
 - Request format: {"public_cards": [int,...], "my_cards": [int,...], "chips": [my_chips, opp_chips], "pot": int, "action_history": "string", "my_bet": int, "opp_bet": int}
 - Starting chips: 20000, blinds: 50/100
 - For preflop (no public_cards yet): use empty list []
+- Use `raise###` in action-history prose for bets/raises. Do not write `bet###`;
+  national TCP protocol forbids the `bet` token and represents first bets as
+  `raise <amount>`.
 </game_format>
 
 <analysis>
@@ -47,7 +50,7 @@ Output exactly ONE JSON block:
           "my_cards": [0, 1],
           "chips": [18000, 18000],
           "pot": 800,
-          "action_history": "call/check/bet200/call/check/check/bet150",
+          "action_history": "call/check/raise200/call/check/call/raise150",
           "my_bet": 0,
           "opp_bet": 150
         }],

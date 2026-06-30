@@ -71,13 +71,8 @@ def validate_action(action_type: str, action_amount: int | None,
             return True, ""
         # flop/turn/river
         # 规则 4：非第一个行为出现 check → 非法
-        # 但 check-check（对手已 check 且下注匹配）是合法的轮结束
         if not is_first_in_stage:
-            opponent_bet = game_state["opponent_bet"]
-            player_bet = game_state["player_bet"]
-            if opponent_bet > player_bet:
-                return False, "check is illegal when there is a pending bet to call"
-            # 对手下注 ≤ 自己下注 → 合法 check-check
+            return False, "check is illegal after the first action in flop/turn/river"
         return True, ""
 
     # ── allin 相关规则 ─────────────────────────────────────
@@ -90,6 +85,12 @@ def validate_action(action_type: str, action_amount: int | None,
     # ── raise 相关规则 ─────────────────────────────────────
     if action_type == "raise":
         amount = action_amount  # raise-to-total（加注到的阶段总额）
+        if amount is None:
+            return False, "raise amount is required"
+        if amount <= 0:
+            return False, "raise amount must be positive"
+        if amount <= player_bet:
+            return False, "raise-to amount must exceed current player bet"
         needed = amount - player_bet  # 需要额外投入的筹码
 
         # 规则 11：raise 金额等于全部筹码 → 必须 allin
@@ -101,6 +102,8 @@ def validate_action(action_type: str, action_amount: int | None,
         # 规则 12：allin 后不能 raise
         if game_state["allin_occurred"]:
             return False, "raise is illegal after allin; only call or fold"
+
+        last_raise = _last_raise_amount(actions)
 
         if stage == "preflop":
             # 规则 6：preflop SB 第一个 raise 必须 ≥ 200
@@ -121,12 +124,11 @@ def validate_action(action_type: str, action_amount: int | None,
                             return False, f"preflop BB raise must be > {RAISE_MULTIPLIER}x SB raise ({last_action[1]})"
         else:
             # 规则 9：flop/turn/river 第一个 raise 必须 ≥ 100
-            if is_first_in_stage:
+            if last_raise is None:
                 if amount < MIN_RAISE_POSTFLOP:
                     return False, f"first raise in {stage} must be >= {MIN_RAISE_POSTFLOP}"
 
         # 规则 8：连续 raise 必须 > 2× 上一次 raise-to（严格大于）
-        last_raise = _last_raise_amount(actions)
         if last_raise is not None:
             if amount <= last_raise * RAISE_MULTIPLIER:
                 return False, f"consecutive raise must be > {RAISE_MULTIPLIER}x previous ({last_raise})"

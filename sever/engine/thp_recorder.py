@@ -186,11 +186,11 @@ class THPRecorder:
             hand_str += "/" + "/".join(community_parts)
         parts.append(hand_str)
 
-        # 筹码：player0赢筹码|player1赢筹码
-        parts.append(f"{rec.earnings[0]}|{rec.earnings[1]}")
+        # 筹码：按本手 BB|SB 顺序，和手牌/参赛者字段保持一致
+        parts.append(f"{rec.earnings[bb_idx]}|{rec.earnings[sb_idx]}")
 
-        # 参赛者：player0_name|player1_name
-        parts.append(f"{self.team_names[0]}|{self.team_names[1]}")
+        # 参赛者：记录时大盲注在前，小盲注在后
+        parts.append(f"{self.team_names[bb_idx]}|{self.team_names[sb_idx]}")
 
         return ":".join(parts) + ";"
 

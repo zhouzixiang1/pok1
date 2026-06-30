@@ -38,6 +38,7 @@ def run_client(host, port, name):
     is_small_blind = False
     stage = None
     my_action_count = 0
+    in_allin_runout = False
 
     def recv():
         nonlocal buf
@@ -76,6 +77,7 @@ def run_client(host, port, name):
             is_small_blind = (blind == "SMALLBLIND")
             stage = "preflop"
             my_action_count = 0
+            in_allin_runout = False
             print(f"   [Cards: {cards}, Blind: {blind}]", flush=True)
             if is_small_blind:
                 send("call")
@@ -86,7 +88,7 @@ def run_client(host, port, name):
             stage = "flop"
             my_action_count = 0
             print(f"   [Flop: {cards}]", flush=True)
-            if not is_small_blind:
+            if not is_small_blind and not in_allin_runout:
                 send("check")
             continue
 
@@ -95,7 +97,7 @@ def run_client(host, port, name):
             stage = "turn"
             my_action_count = 0
             print(f"   [Turn: {cards}]", flush=True)
-            if not is_small_blind:
+            if not is_small_blind and not in_allin_runout:
                 send("check")
             continue
 
@@ -104,12 +106,13 @@ def run_client(host, port, name):
             stage = "river"
             my_action_count = 0
             print(f"   [River: {cards}]", flush=True)
-            if not is_small_blind:
+            if not is_small_blind and not in_allin_runout:
                 send("check")
             continue
 
         # --- 结算 ---
         if msg.startswith("earnChips"):
+            in_allin_runout = False
             print(f"   [Earned: {int(msg.split()[1])}]", flush=True)
             continue
 
@@ -132,12 +135,13 @@ def run_client(host, port, name):
         if msg == "check":
             print(f"   [Opponent checks]", flush=True)
             if stage != "preflop":
-                send("check")
+                send("call")
             continue
 
         if msg == "allin":
             print(f"   [Opponent all-in]", flush=True)
             send("call")
+            in_allin_runout = True
             continue
 
         if msg.startswith("raise "):

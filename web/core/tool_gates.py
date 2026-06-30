@@ -20,6 +20,7 @@ from evolution_core import (
     check_code_size,
     run_smoke_test,
     run_decision_test_details,
+    run_national_protocol_tests,
     parse_json_output,
     run_claude_query,
     _run_critic,
@@ -178,6 +179,7 @@ async def run_quality_gates(args):
         _log.warning("telemetry_fidelity check error: %s", e)
     telemetry_fidelity_ok = len(telemetry_fidelity_warnings) == 0
     smoke_errors = run_smoke_test(bot_dir)
+    national_protocol_errors = run_national_protocol_tests()
 
     # --- P0-3: LLM-Generated Dynamic Decision Tests ---
     dynamic_scenarios = []
@@ -298,6 +300,7 @@ async def run_quality_gates(args):
     all_passed = (
         len(compile_errors) == 0
         and len(smoke_errors) == 0
+        and len(national_protocol_errors) == 0
         and decision_ok
         and len(oversized) == 0
         and code_changed  # MUST have at least one changed .py file
@@ -313,6 +316,8 @@ async def run_quality_gates(args):
         "compile_errors": compile_errors[:3] if compile_errors else [],
         "smoke_ok": len(smoke_errors) == 0,
         "smoke_errors": smoke_errors[:3] if smoke_errors else [],
+        "national_protocol_ok": len(national_protocol_errors) == 0,
+        "national_protocol_errors": national_protocol_errors[:3] if national_protocol_errors else [],
         "decision_pass_rate": round(decision_rate, 2),
         "decision_ok": decision_ok,
         "critical_scenarios_passed": critical_ok,
@@ -348,6 +353,8 @@ async def run_quality_gates(args):
         )
     if smoke_errors:
         failed_gates_detail.append("smoke_test")
+    if national_protocol_errors:
+        failed_gates_detail.append("national_protocol_tests")
     if not decision_ok:
         failed_gates_detail.append(f"decision_tests({decision_rate:.0%})")
     if not code_changed:

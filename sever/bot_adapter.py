@@ -157,6 +157,7 @@ class BotAdapter:
         self._my_action_count = 0  # 本阶段已行动次数
         self._my_chips = self.INITIAL_CHIPS  # 当前剩余筹码
         self._my_stage_bet = 0    # 本阶段已下注额
+        self._in_allin_runout = False  # allin+call 后只接收公共牌/结算，不再行动
 
         # 持久化状态
         self._bot_data = None     # bot 返回的 data（跨决策持久化）
@@ -218,6 +219,7 @@ class BotAdapter:
             self._bot_data = None  # 新手牌重置 bot data
             self._my_action_count = 0
             self._my_chips = self.INITIAL_CHIPS  # 一局一复位
+            self._in_allin_runout = False
             if self._is_sb:
                 self._my_chips -= SMALL_BLIND
                 self._my_stage_bet = SMALL_BLIND
@@ -250,6 +252,9 @@ class BotAdapter:
             self._my_stage_bet = 0     # 新阶段下注归零
             logger.info(f"Stage: {self._stage}, public count: {len(self._public_cards)}")
 
+            if self._in_allin_runout:
+                return
+
             # postflop: BB 先行动
             if not self._is_sb:
                 await self._bot_decide()
@@ -261,6 +266,7 @@ class BotAdapter:
             self._total_win_chips[self._my_id] += earned
             if earned > 0:
                 self._total_win_games[self._my_id] += 1
+            self._in_allin_runout = False
             logger.info(f"Hand {self._hand_num} earned: {earned}, "
                         f"total: {self._total_win_chips[self._my_id]}")
             return
@@ -275,6 +281,8 @@ class BotAdapter:
 
         # 记录到 history
         self._record_opponent_action(action_type, amount)
+        if action_type == "call" and self._current_round_has_allin():
+            self._in_allin_runout = True
 
         # 判断是否需要响应
         need_respond = self._should_respond(action_type)
@@ -298,7 +306,7 @@ class BotAdapter:
         - preflop call 其他情况 → 不需要（阶段结束）
         - postflop call → 不需要（阶段结束）
         - preflop check → 不需要（BB check 结束 preflop）
-        - postflop check when we haven't acted → 需要（对手先 check）
+        - postflop check when we haven't acted → 需要（对手先 check，本方用 call 结束阶段）
         - postflop check when we have acted → 不需要（对手 call 后 check？不可能）
         """
         if action_type == "fold":
@@ -324,6 +332,15 @@ class BotAdapter:
             return False
 
         return False
+
+    def _current_round_has_allin(self):
+        """当前阶段是否已有任意一方 allin。"""
+        stage_map = {"preflop": 0, "flop": 1, "turn": 2, "river": 3}
+        round_num = stage_map.get(self._stage, 0)
+        return any(
+            h["round"] == round_num and h["action_type"] == "allin"
+            for h in self._history
+        )
 
     def _record_opponent_action(self, action_type, amount):
         """将对手行为记录到 judge.py 格式的 history。"""
@@ -429,6 +446,8 @@ class BotAdapter:
         action_str, tcp_type, tcp_amount = self._convert_action(response)
         await self._send_line(action_str)
         self._record_my_action(tcp_type, tcp_amount)
+        if tcp_type == "call" and self._current_round_has_allin():
+            self._in_allin_runout = True
         self._update_chips(tcp_type, tcp_amount)
         self._my_action_count += 1
 
@@ -511,13 +530,6 @@ class BotAdapter:
         if raise_to < min_raise:
             raise_to = min_raise
 
-        # If raise needs all remaining chips, return as-is (server will auto-convert
-        # or reject; but we avoid setting it to exactly chips to prevent rule 11)
-        needed = raise_to - self._my_stage_bet
-        if needed >= self._my_chips:
-            # Would need all or more chips — let server handle via allin
-            return raise_to
-
         return raise_to
 
     def _convert_action(self, action):
@@ -542,6 +554,9 @@ class BotAdapter:
         if action_int > 0:
             # Client-side raise validation: clamp to legal minimum
             action_int = self._clamp_raise(action_int)
+            needed = action_int - self._my_stage_bet
+            if needed >= self._my_chips:
+                return "allin", "allin", None
             return f"raise {action_int}", "raise", action_int
         if action_int == 0:
             # 判断是 call 还是 check
@@ -564,7 +579,14 @@ class BotAdapter:
             # preflop BB 面对 SB call → check
             if self._stage == "preflop" and not self._is_sb:
                 return "check", "check", None
-            # postflop 没有对手 raise → check
+            if self._stage != "preflop":
+                opp_acted = any(
+                    h["round"] == round_num and h["player_id"] == opp_id
+                    for h in self._history
+                )
+                if opp_acted:
+                    return "call", "call", None
+            # postflop 首个行动且没有对手行为 → check
             return "check", "check", None
         return "fold", "fold", None
 

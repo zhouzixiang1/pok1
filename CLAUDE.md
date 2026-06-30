@@ -71,6 +71,7 @@ cd web && python -m pytest tests/test_routes_*.py  # Route endpoint tests only
 cd web && python -m pytest tests/test_logic_*.py   # Pure logic tests only
 cd web && python -m pytest tests/test_mcp_*.py     # MCP tool tests only
 cd web && python -m pytest tests/test_logic_helpers.py -k "test_h2h"  # Single test
+python -m pytest sever/tests -q                   # National TCP protocol/adapter tests
 ```
 
 ### Frontend
@@ -122,6 +123,7 @@ cd sever && python main.py --tcp-port 20001 --web-port 28080
 cd sever && python test_client.py 127.0.0.1 10001 BotA
 cd sever && python test_client.py 127.0.0.1 10001 BotB
 cd sever && python bot_adapter.py --bot ../bots/claude_v224 --name test  # Bridge bot to TCP server
+python -m pytest sever/tests -q               # Protocol regression suite
 ```
 
 ## Architecture
@@ -141,7 +143,7 @@ The Orchestrator LLM calls these MCP tools in order:
 1. **Direction Auditor**: Pre-Master LLM gate that checks git history for repetitive evolution directions. Forces structural alternatives if stuck.
 2. **Master Architect** (`prompts/master_prompt.md`): Analyzes ratings, experience pool, match data, and the pre-selected source version. Produces JSON task plan with worker assignments. It must not set `branch_from` or source-override fields; source selection is handled before Master planning.
 3. **Workers** (`prompts/worker_prompt.md`): Execute tasks in parallel (max 3 via semaphore), 4 retries each. Workers directly edit bot source files using Bash/Read/Edit tools.
-4. **Quality Gates** (automated, no LLM): `py_compile` check, 1 mirror battle smoke test, decision tests (≥70% pass), file size ≤2000 lines (core strategy files) / ≤1500 lines (helpers), adaptive limit based on source bot size + 15% growth budget, hard cap 2500.
+4. **Quality Gates** (automated, no LLM): `py_compile` check, 1 mirror battle smoke test, decision tests (≥70% pass), national TCP protocol/adapter regression tests, file size ≤2000 lines (core strategy files) / ≤1500 lines (helpers), adaptive limit based on source bot size + 15% growth budget, hard cap 2500.
 5. **Code Reviewer** (`prompts/reviewer_prompt.md`): LLM reviews diff, enforces role boundaries, scores 1-10. Up to 3 retries.
 6. **Critic** (`prompts/critic_prompt.md`): Independent strategic review. It records strategic risk and can feed feedback into retries, but the current pipeline treats precommit evaluation as the final regression gate.
 7. **Pre-commit Eval**: Mirror battle regression check vs parent + top opponents.
@@ -287,13 +289,14 @@ Local CLI poker battle system for testing bots offline.
 
 ### TCP Server (`sever/`)
 
-A self-contained poker competition platform. Bots connect as TCP clients and play 70-hand matches. It has its own engine (`sever/engine/`), validator (13-rule action legality), web dashboard (`:18080`), and smoke clients; this checkout currently does not have a `sever/tests/` pytest suite.
+A self-contained poker competition platform. Bots connect as TCP clients and play 70-hand matches. It has its own engine (`sever/engine/`), validator (13-rule action legality), web dashboard (`:18080`), smoke clients, and a `sever/tests/` national-alignment pytest suite.
 
 **Startup & smoke testing:**
 ```bash
 cd sever && python main.py                    # TCP :10001 + Web :18080
 cd sever && python test_client.py 127.0.0.1 10001 BotA
 cd sever && python test_client.py 127.0.0.1 10001 BotB
+python -m pytest sever/tests -q
 ```
 
 **Structure:** `engine/game.py` (stateful GameEngine), `engine/validator.py` (13-rule validation), `engine/evaluator.py` (hand comparison), `engine/deck.py` (Card class, `<suit,rank>`), `server/tcp_server.py` (async TCP), `server/protocol.py` (message encode/decode), `bot_adapter.py` (bridges `engine/judge.py` bots to TCP server), `web/app.py` (FastAPI + SSE dashboard).
@@ -301,10 +304,11 @@ cd sever && python test_client.py 127.0.0.1 10001 BotB
 **Protocol differences from `engine/`:**
 - Line-delimited text over TCP (not subprocess JSON)
 - Card format: `<suit,rank>` tuples where `suit ∈ {0=♠,1=♥,2=♦,3=♣}`, `rank ∈ {0=2..12=A}`
-- Actions: text strings (`"call"`, `"fold"`, `"raise 200"`, `"allin"`)
+- Actions: exact text strings (`"call"`, `"check"`, `"fold"`, `"allin"`, `"raise 200"`). `raise` uses exactly one space before the amount; `bet` is always illegal.
 - Stateful `GameEngine` object (not stateless `judge()` function)
 - Strict action validation via 13-rule validator (illegal = auto-fold)
 - 70 hands per match, 20000 starting chips, blinds 50/100, 60s decision timeout
+- A match starts automatically after the second client connects; `/api/start` is retained as a dashboard fallback and rejects duplicate running tasks.
 
 ### CRITICAL: Raise Semantics — Both Engines Use Raise-to-Total
 
@@ -349,13 +353,15 @@ Both `engine/judge.py` and `sever/` use the same raise-to-total convention:
 1. `bet` always illegal
 2. Postflop first action `call` → illegal
 3. Preflop BB call after SB call → illegal
-4. Postflop non-first action `check` → illegal
+4. Postflop non-first action `check` → illegal; after a first-player postflop `check`, the second player must send `call` to pass the street
 5. Preflop check only allowed as BB's first action
 6-9. Minimum raise constraints (200 preflop, 100 postflop, 2x for re-raises)
 10. Raise exceeding available chips → illegal
 11. Raise equaling all chips → must use `allin`
 12. After opponent allin → only `call`/`fold`
 13. Two consecutive `allin` → second illegal
+
+After `allin` is called, the server runs out remaining public cards, records them in THP, and clients must not act again until `earnChips`.
 
 **Card conversion** (`bot_adapter.py`): Server `<suit,rank>` must be mapped to the local bot integer suit order. TCP uses `{♠=0, ♥=1, ♦=2, ♣=3}` while `engine/judge.py` uses `{♥=0, ♦=1, ♠=2, ♣=3}`. The adapter maps TCP suits through `_TCP_TO_JUDGE_SUIT` before computing `rank * 4 + judge_suit`; do not reuse the TCP suit directly.
 

@@ -24,6 +24,11 @@ Parent version tag: `bot-v{parent_version}`
 <action_semantics>
 When reviewing diffs, verify that positive return values represent raise-to-total (NOT raise-by-increment).
 A return of 0 means call/check (context-dependent). The minimum valid re-raise after raise X is X*2+1 (strictly >2x).
+The evolved bot remains a Botzone/local JSON bot, but it must stay compatible
+with the national TCP adapter. Reject code that emits TCP text on stdout, returns
+positive raises that consume the entire remaining stack instead of `-2`, assumes
+wire-level `bet` is legal, or hard-codes postflop TCP `check-check` as a valid
+platform action. The adapter maps JSON `0` to TCP `call` after a postflop check.
 </action_semantics>
 
 <your_scope>

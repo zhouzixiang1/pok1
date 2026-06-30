@@ -25,6 +25,9 @@ python test_client.py 127.0.0.1 10001 BotB
 
 # Bot 桥接（将本地 bot 连接到 TCP 服务器）
 python bot_adapter.py --bot ../bots/claude_v5 --name test
+
+# 协议对齐回归测试
+python -m pytest tests -q
 ```
 
 ## Architecture
@@ -52,9 +55,13 @@ records/                   # THP 棋谱文件输出目录
 - **Card format**: `<suit,rank>` where suit 0-3=♠♥♦♣, rank 0-12=2-A
 - **Match**: 70 hands, 20000 chips per hand (reset each hand), blinds 50/100
 - **Action order**: Preflop SB first; Flop/Turn/River BB first
+- **Client actions**: `raise <amount>`, `fold`, `call`, `check`, `allin`; `raise` 与金额之间有且只有一个空格，`bet` 永远非法
 - **Raise semantics**: `raise X` = raise TO X (total stage bet), consecutive > 2× previous (strictly greater)
+- **Postflop pass**: postflop 第一个行动不能 `call`；第一个玩家 `check` 后，第二个玩家必须用 `call` 结束该街，不能再发 `check`
+- **All-in runout**: `allin` 被 `call` 后只发剩余公共牌、`earnChips` 和必要的 `oppo_hands`，客户端不得继续行动
 - **Timeout**: 60 seconds per action → fold
 - **Illegal action → fold**: 13 rules covering bet/call/check/raise/allin restrictions
+- **Match start**: 第二个客户端连接后自动开赛；Web `/api/start` 仅作为仪表盘控制/兜底，比赛进行中会拒绝重复启动
 
 ## Card Encoding Difference
 
@@ -67,11 +74,29 @@ bot_adapter.py 转换: `card_int = rank * 4 + _TCP_TO_JUDGE_SUIT[tcp_suit]` (经
 ## THP Record Format
 
 比赛结束后自动生成国赛标准 THP 棋谱文件到 `records/` 目录。
-- 文件命名: `THP-{teamA} vs {teamB}-{winner}胜-{yyyymmddHHMM}.txt`
+- 文件命名: `THP-{teamA} vs {teamB}-{winner}胜-{yyyymmddHHMM}-CCGC.txt`，文件名会替换路径危险字符
 - 格式: `STATE:N:actions:cards:earnings:players;` (每手一行，GB2312 编码)
 - 卡牌: `{rank}{suit}` (rank=23456789TJQKA, suit=shdc)
 - 动作: `r{amount}`=raise, `c`=call/check, `f`=fold, 阶段用`/`分隔
 - 手牌: BB手牌|SB手牌/flop/turn/river (大盲注在前)
-- 筹码: `A赢|B赢` (正=赢, 负=输)
+- 筹码和参赛者: 按本手 BB|SB 顺序记录，和手牌顺序一致
 - 文件尾: `{[THP][teamA][teamB][result][datetime][event]}`
 - API: `GET /api/record/thp` 列表, `GET /api/record/thp/{filename}` 下载
+
+## Git And Change Hygiene
+
+The working tree may already contain user changes, generated match records, bot generations, or dirty gitlinks. Check `git status --short --branch` before editing and again before committing.
+
+Do not revert, reset, restore, clean, or checkout unrelated files unless the user explicitly asks for that exact destructive operation.
+
+Stage only files changed for the current task. Do not use `git add -A` unless the user explicitly asks for a full repository snapshot. Generated `records/`, runtime logs, bot generation sentinels, and unrelated bot directories should not be staged unless the task is specifically about them.
+
+After a task that changes files, commit and push task-related changes:
+
+```bash
+git add <files you changed>
+git commit -m "<descriptive message>"
+git push
+```
+
+If the repository was dirty before the task, mention that in the final response and do not mix unrelated files into the commit.

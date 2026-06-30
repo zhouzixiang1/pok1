@@ -9,6 +9,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+import re
 from engine.game import GameEngine, HANDS_PER_MATCH, TIMEOUT_SECONDS
 from engine.thp_recorder import THPRecorder
 
@@ -45,7 +46,7 @@ class ClientConnection:
             # 检查缓冲区
             if "\n" in self._buffer:
                 line, self._buffer = self._buffer.split("\n", 1)
-                return line.strip()
+                return line.rstrip("\r")
 
             # 等待数据
             async with asyncio.timeout(timeout):
@@ -57,7 +58,7 @@ class ClientConnection:
                     self._buffer += data.decode("utf-8")
 
             line, self._buffer = self._buffer.split("\n", 1)
-            return line.strip()
+            return line.rstrip("\r")
         except (asyncio.TimeoutError, ConnectionResetError, OSError):
             return None
 
@@ -104,6 +105,8 @@ class MatchManager:
 
         if len(self.clients) == 2:
             self._connected_event.set()
+            if self._match_task is None or self._match_task.done():
+                self._match_task = asyncio.create_task(self.start_match())
 
     async def start_match(self):
         """开始一场比赛（2 个客户端已连接）。"""
@@ -166,9 +169,11 @@ class MatchManager:
                 os.makedirs("records", exist_ok=True)
                 winner = name0 if engine.total_earnings[0] > engine.total_earnings[1] else name1
                 if engine.total_earnings[0] == engine.total_earnings[1]:
-                    winner = f"{name0}={name1}"
+                    winner = "平局"
                 dt = datetime.now().strftime("%Y%m%d%H%M")
-                filename = f"THP-{name0} vs {name1}-{winner}胜-{dt}.txt"
+                filename = _safe_record_filename(
+                    f"THP-{name0} vs {name1}-{winner}胜-{dt}-CCGC.txt"
+                )
                 filepath = os.path.join("records", filename)
                 try:
                     recorder.export_file(filepath)
@@ -222,6 +227,11 @@ class MatchManager:
             "total_earnings": list(self.engine.total_earnings),
             "hands_per_match": HANDS_PER_MATCH,
         }
+
+
+def _safe_record_filename(filename: str) -> str:
+    """Return a filesystem-safe THP filename while keeping readable names."""
+    return re.sub(r'[\\/:*?"<>|]+', "_", filename)
 
 
 async def run_tcp_server(host: str, port: int, manager: MatchManager):

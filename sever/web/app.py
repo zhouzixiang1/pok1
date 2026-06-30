@@ -80,11 +80,13 @@ def create_app(match_manager) -> FastAPI:
         """开始比赛（需已连接 2 个客户端）。"""
         if len(match_manager.clients) < 2:
             return JSONResponse({"error": "需要 2 个客户端连接"}, status_code=400)
-        if match_manager.engine is not None:
+        if match_manager.engine is not None or (
+            match_manager._match_task is not None and not match_manager._match_task.done()
+        ):
             return JSONResponse({"error": "比赛进行中"}, status_code=400)
 
         # 在后台启动比赛
-        asyncio.create_task(match_manager.start_match())
+        match_manager._match_task = asyncio.create_task(match_manager.start_match())
         return JSONResponse({"status": "started"})
 
     @app.post("/api/reset")
