@@ -513,11 +513,12 @@ def test_subagent_guard_allows_readonly_parent_probe_but_blocks_writes():
     import llm_query
 
     allowed = "/home/zzx/project/pok/bots/claude_v234"
-    readonly_ls = "ls bots/claude_v224/ && python -c \"print(open('bots/claude_v224/strategy.py').read()[:10])\""
+    readonly_ls = "ls -d bots/claude_v224 bots/claude_v206 2>&1"
     readonly_python = (
         "python -c \"from pathlib import Path; "
         "print(Path('bots/claude_v221/strategy.py').read_text()[:10])\""
     )
+    readonly_wc = "wc -l web/core/experience_pool.md 2>/dev/null"
     write_redirect = "echo x > bots/claude_v224/strategy.py"
     write_python = (
         "python -c \"from pathlib import Path; "
@@ -527,8 +528,29 @@ def test_subagent_guard_allows_readonly_parent_probe_but_blocks_writes():
     assert llm_query._subagent_is_outside_allowed(readonly_ls, allowed) is True
     assert llm_query._subagent_bash_is_mutation(readonly_ls) is False
     assert llm_query._subagent_bash_is_mutation(readonly_python) is False
+    assert llm_query._subagent_bash_is_mutation(readonly_wc) is False
     assert llm_query._subagent_bash_is_mutation(write_redirect) is True
     assert llm_query._subagent_bash_is_mutation(write_python) is True
+
+
+def test_orchestrator_guard_allows_readonly_redirection_but_blocks_writes():
+    import orchestrator_context
+
+    readonly = (
+        "git status --short --branch | head -30 && echo \"---\" && "
+        "ls -d bots/claude_v221 bots/claude_v206 2>&1"
+    )
+    readonly_python = "python -c \"print(open('bots/claude_v221/main.py').read()[:10])\""
+    write_redirect = "echo x > bots/claude_v221/main.py"
+    write_python = (
+        "python -c \"from pathlib import Path; "
+        "Path('bots/claude_v221/main.py').write_text('x')\""
+    )
+
+    assert orchestrator_context._orchestrator_bash_is_mutation(readonly) is False
+    assert orchestrator_context._orchestrator_bash_is_mutation(readonly_python) is False
+    assert orchestrator_context._orchestrator_bash_is_mutation(write_redirect) is True
+    assert orchestrator_context._orchestrator_bash_is_mutation(write_python) is True
 
 
 def test_archivist_housekeeping_commit_stages_only_curated_paths(monkeypatch):

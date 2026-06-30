@@ -32,7 +32,8 @@ _SUBAGENT_BASH_MUTATION_PATTERNS = (
     "git add", "git rm", "git checkout", "git restore", "git commit",
     "git tag", "git push",
 )
-_SUBAGENT_REDIRECT_RE = re.compile(r"(^|[^<>=])>>?($|[^<>=])")
+_SUBAGENT_WRITE_REDIRECT_RE = re.compile(r"(?<![<>=])(?:&>>?|[0-9]*>>?)\s*([^\s;&|]+)")
+_SAFE_REDIRECT_TARGETS = {"/dev/null", "nul"}
 _SUBAGENT_PYTHON_WRITE_PATTERNS = (
     ".write_text(", ".unlink(", ".rename(",
     ".mkdir(", ".rmdir(", "shutil.move", "shutil.copy",
@@ -46,7 +47,10 @@ def _subagent_bash_is_mutation(command):
     """Return True when a Bash command appears to write/delete/move files."""
     text = str(command)
     low = text.lower()
-    if _SUBAGENT_REDIRECT_RE.search(text):
+    for match in _SUBAGENT_WRITE_REDIRECT_RE.finditer(text):
+        target = match.group(1).strip("'\"")
+        if target.startswith("&") or target.lower() in _SAFE_REDIRECT_TARGETS:
+            continue
         return True
     if "python" in low:
         if _SUBAGENT_PYTHON_OPEN_WRITE_RE.search(low):

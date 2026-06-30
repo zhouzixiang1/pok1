@@ -5,6 +5,7 @@ _make_precompact_hook preserves evolution state across LLM context compaction.
 """
 
 import json
+import re
 import time
 
 from claude_agent_sdk.types import HookMatcher, SyncHookJSONOutput
@@ -15,6 +16,66 @@ from evolution_infra import locked_file, RESULTS_DIR, MAX_PRECOMMIT_RETRIES
 # read by _build_context and PreCompact hook for time-budget awareness.
 _cycle_start_time = None
 CYCLE_TIMEOUT = 5400  # Must match orchestrator.py (实测 mean cycle 56min，见 orchestrator.py:329 注释)
+
+_BASH_WRITE_REDIRECT_RE = re.compile(r"(?<![<>=])(?:&>>?|[0-9]*>>?)\s*([^\s;&|]+)")
+_SAFE_REDIRECT_TARGETS = {"/dev/null", "nul"}
+_PYTHON_OPEN_WRITE_RE = re.compile(r"open\([^)]*,\s*['\"][^'\"]*[wax+]")
+_PYTHON_WRITE_PATTERNS = (
+    ".write_text(", ".unlink(", ".rename(", ".mkdir(", ".rmdir(",
+    "shutil.move", "shutil.copy", "shutil.copytree", "shutil.rmtree",
+    "os.remove", "os.unlink", "os.rename", "os.replace", "os.makedirs",
+)
+_BASH_MUTATION_PATTERNS = (
+    "sed -i",
+    "tee ",
+    "rm ",
+    "rmdir",
+    "mv ",
+    "cp ",
+    "mkdir",
+    "touch ",
+    "cat > ",
+    "cat >>",
+    "patch ",
+    "git add",
+    "git rm",
+    "git checkout",
+    "git restore",
+)
+
+
+def _bash_has_file_write_redirect(command: str) -> bool:
+    for match in _BASH_WRITE_REDIRECT_RE.finditer(str(command)):
+        target = match.group(1).strip("'\"")
+        if target.startswith("&"):
+            continue
+        if target.lower() in _SAFE_REDIRECT_TARGETS:
+            continue
+        return True
+    return False
+
+
+def _python_snippet_is_mutating(command: str) -> bool:
+    low = str(command).lower()
+    if "python" not in low:
+        return False
+    if _PYTHON_OPEN_WRITE_RE.search(low):
+        return True
+    return any(pattern in low for pattern in _PYTHON_WRITE_PATTERNS)
+
+
+def _orchestrator_bash_is_mutation(command: str) -> bool:
+    """True if a Bash command writes/deletes/edits files rather than inspecting."""
+    low = str(command).lower()
+    if _bash_has_file_write_redirect(command):
+        return True
+    if _python_snippet_is_mutating(command):
+        return True
+    if any(p in low for p in _BASH_MUTATION_PATTERNS):
+        return True
+    if "git commit" in low or "git tag" in low or "git push" in low:
+        return True
+    return False
 
 
 def set_cycle_start_time(t):
@@ -489,24 +550,6 @@ def _make_bot_dir_guard_hook():
         _bots_root = None
         _results_root = None
 
-    # Bash commands that MUTATE files (vs read-only inspection). A Bash call is
-    # blocked only if it targets a protected path AND contains a mutation verb —
-    # so legitimate read-only git/grep/cat on bot dirs still works.
-    _BASH_MUTATION_PATTERNS = (
-        "> ", ">>",         # redirection (write/append)
-        "sed -i",           # in-place edit
-        "tee ",             # write via tee
-        "rm ", "rmdir",     # deletion
-        "mv ", "cp ",       # move/copy INTO protected path
-        "mkdir",            # dir creation in protected path
-        "touch ",           # file creation
-        "cat > ", "cat >>",  # heredoc write
-        "python -c",        # script that could write
-        "patch ",           # apply patch
-        "git add", "git rm", "git checkout", "git restore",  # git mutations of bot files
-        "echo ", "printf ",  # common write vectors
-    )
-
     # Pipeline-critical state files that, if forged by the LLM, let it bypass
     # gates or reset protective breakers. These must only be written by the
     # designated tools (write_pipeline_checkpoint / commit_bot / agent_workers),
@@ -537,17 +580,6 @@ def _make_bot_dir_guard_hook():
         for sf in _PROTECTED_STATE_FILES:
             if sf in low:
                 return True
-        return False
-
-    def _bash_is_mutation(command):
-        """True if a Bash command writes/deletes/edits files (vs read-only).
-        Also treats any git commit/tag/push as a mutation (these bypass commit_bot)."""
-        low = str(command).lower()
-        if any(p in low for p in _BASH_MUTATION_PATTERNS):
-            return True
-        # Block git commit/tag/push outright — these must go through commit_bot.
-        if "git commit" in low or "git tag" in low or "git push" in low:
-            return True
         return False
 
     def _current_stage_directive():
@@ -582,7 +614,7 @@ def _make_bot_dir_guard_hook():
             blocked_data = {}
             if tool_name == "Bash":
                 cmd = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
-                if _targets_protected(cmd) and _bash_is_mutation(cmd):
+                if _targets_protected(cmd) and _orchestrator_bash_is_mutation(cmd):
                     blocked_command = str(cmd)
                     directive, blocked_data = _current_stage_directive()
                     blocked_reason = (
