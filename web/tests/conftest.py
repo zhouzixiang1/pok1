@@ -266,12 +266,17 @@ def isolate_state(tmp_path, monkeypatch):
     real_results = PROJECT_ROOT / "web" / "core" / "results"
     _SYMLINK_FILES = [
         "glicko_ratings.json", "head_to_head.json", "bot_stats.json",
-        "elo_daemon_stats.json", "rating_history.jsonl", "match_history.jsonl",
+        "elo_daemon_stats.json", "rating_history.jsonl",
     ]
     for fname in _SYMLINK_FILES:
         src = real_results / fname
         if src.exists():
             (results_dir / fname).symlink_to(src)
+    # match_history.jsonl is copied, not symlinked: some tests append/write a
+    # synthetic history file, and a symlink would corrupt production runtime data.
+    match_history_src = real_results / "match_history.jsonl"
+    if match_history_src.exists():
+        (results_dir / "match_history.jsonl").write_bytes(match_history_src.read_bytes())
 
     # --- Snapshot real state for restoration ---
     real_config = app_state._config_file
