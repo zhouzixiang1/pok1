@@ -35,7 +35,7 @@ from evolution_core import (
     RESULTS_DIR,
     locked_file,
 )
-from tool_helpers import load_h2h_avg_winrates
+from tool_helpers import load_h2h_avg_winrates, load_strength_scores
 
 from tool_helpers import (
     _get_ui, _ratings_summary, _json_tool_result, _bot_main,
@@ -88,6 +88,7 @@ async def get_status(args):
         "current_bot_rd": current_bot_rd,
         "current_bot_games": games_played,
         "current_bot_win_rate": cur_bs.get("win_rate", 0.0),
+        "current_bot_leaderboard_score": load_strength_scores().get(f"claude_v{current_v}", 0.5),
         "current_bot_h2h_avg_wr": load_h2h_avg_winrates().get(f"claude_v{current_v}", 0.5),
         "rating_reliable": rating_reliable,
         "recent_worker_failures": recent_failures,

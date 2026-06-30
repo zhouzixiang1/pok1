@@ -22,8 +22,9 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui, prev_critic_in
     Returns a dict with: is_stagnant, confidence, recommendation, branch_from, reason.
     Returns None on failure.
     """
-    from tool_helpers import load_h2h_avg_winrates, load_h2h_avg_winrates_with_coverage
+    from tool_helpers import load_h2h_avg_winrates, load_h2h_avg_winrates_with_coverage, load_strength_scores
     h2h_winrates = load_h2h_avg_winrates()
+    strength_scores = load_strength_scores()
     coverage_data = load_h2h_avg_winrates_with_coverage()
 
     # ── Data sufficiency check ──
@@ -56,8 +57,9 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui, prev_critic_in
                 v_name = f"claude_v{v}"
                 cov = coverage_data.get(v_name, {})
                 wr = cov.get("h2h_avg_wr", h2h_winrates.get(v_name, 0.0))
+                score = cov.get("leaderboard_score", strength_scores.get(v_name, 0.0))
                 cov_pct = cov.get("opponent_coverage", 0.0)
-                gen_trend_lines.append(f"  v{v}: h2h_avg_wr={wr:.2%} (coverage={cov_pct:.0%})")
+                gen_trend_lines.append(f"  v{v}: score={score:.4f}, h2h_avg_wr={wr:.2%} (coverage={cov_pct:.0%})")
             except (ValueError, KeyError):
                 continue
     except Exception:
@@ -141,17 +143,18 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui, prev_critic_in
     except Exception:
         pass
 
-    sorted_bots = sorted(active_bots, key=lambda b: h2h_winrates.get(b, 0.0), reverse=True)[:5]
+    sorted_bots = sorted(active_bots, key=lambda b: strength_scores.get(b, 0.0), reverse=True)[:5]
 
     # Build top bots section
     top_bots_lines = []
     for b in sorted_bots:
         p = ratings.get(b, Glicko2Player())
         wr = h2h_winrates.get(b, 0.0)
+        score = strength_scores.get(b, 0.0)
         cov_info = coverage_data.get(b, {})
         cov_pct = cov_info.get("opponent_coverage", 1.0)
         cov_tag = f" [LOW COVERAGE {cov_pct:.0%}]" if cov_pct < 0.8 else ""
-        top_bots_lines.append(f"  {b}: h2h_avg_wr={wr:.2%} (r={p.r:.0f} rd={p.rd:.0f}){cov_tag}")
+        top_bots_lines.append(f"  {b}: score={score:.4f}, h2h_avg_wr={wr:.2%} (r={p.r:.0f} rd={p.rd:.0f}){cov_tag}")
 
     # Load template and substitute
     template_file = PROMPTS_DIR / "stagnation_analyzer.md"

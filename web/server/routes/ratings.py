@@ -21,6 +21,7 @@ STATS_FILE = RESULTS_DIR / "elo_daemon_stats.json"
 H2H_FILE = RESULTS_DIR / "head_to_head.json"
 BOT_STATS_FILE = RESULTS_DIR / "bot_stats.json"
 HISTORY_FILE = RESULTS_DIR / "rating_history.jsonl"
+MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 
 router = APIRouter(prefix="/api", tags=["ratings"])
 
@@ -30,7 +31,7 @@ async def get_ratings():
     data = cached_read("ratings", RATINGS_FILE)
     bot_stats_data = cached_read("bot_stats", BOT_STATS_FILE) or {}
     h2h_data = cached_read("h2h", H2H_FILE) or {}
-    return build_ranked_ratings(data or {}, bot_stats_data, h2h_data)
+    return build_ranked_ratings(data or {}, bot_stats_data, h2h_data, match_history_path=MATCH_HISTORY_FILE)
 
 
 @router.get("/ratings/{bot_name}")
@@ -40,6 +41,10 @@ async def get_rating_detail(bot_name: str):
     h2h_data = cached_read("h2h", H2H_FILE) or {}
     if not data or bot_name not in data:
         raise HTTPException(status_code=404, detail="Bot not found")
+    rows = build_ranked_ratings(data, bot_stats_data, h2h_data, match_history_path=MATCH_HISTORY_FILE)
+    for row in rows:
+        if row["name"] == bot_name:
+            return row
     return build_rating_row(bot_name, data[bot_name], bot_stats_data, h2h_data)
 
 

@@ -25,7 +25,7 @@ Top 5 bots by H2H avg win rate:
 </context>
 
 <rules>
-1. A bot with coverage < 80% may have an inflated or deflated h2h_avg_wr — treat with caution.
+1. A bot with coverage < 80% may have an inflated or deflated h2h_avg_wr — treat with caution and prefer leaderboard_score/conservative rating until coverage improves.
 2. "Stagnation" means multiple consecutive generations FAILED to improve. If the last successful bot is strong and only 1-2 generations failed, that's normal iteration, not stagnation.
 3. If recent failures show critic repeatedly demanding "structural innovation" but workers keep producing constant-tuning changes, this is a system deadlock. Recommend "crossover" to break the impasse.
 4. If recommending branch_from, check lineage: do NOT branch from an ancestor if a later descendant already improved from that ancestor.

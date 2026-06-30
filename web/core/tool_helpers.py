@@ -148,17 +148,19 @@ class ToolUI(BaseUI):
 # ──────────────────────────────────────────────
 
 def _ratings_summary(ratings, n=10):
-    """Get top N bots as a compact summary, sorted by H2H avg win rate."""
+    """Get top N bots as a compact summary, sorted by unified strength."""
+    strength_scores = load_strength_scores()
     h2h_winrates = load_h2h_avg_winrates()
     sorted_bots = sorted(
         [(name, p) for name, p in ratings.items()],
-        key=lambda x: h2h_winrates.get(x[0], 0.0), reverse=True,
+        key=lambda x: strength_scores.get(x[0], 0.0), reverse=True,
     )[:n]
     return [
         {
             "name": name,
             "r": round(p.r, 1),
             "rd": round(p.rd, 1),
+            "leaderboard_score": round(strength_scores.get(name, 0.0), 4),
             "h2h_avg_wr": round(h2h_winrates.get(name, 0.0), 4),
         }
         for name, p in sorted_bots
@@ -318,30 +320,24 @@ def _h2h_stats(bot_name, opponent, h2h):
             return None
         bot_wins = value.get("a_wins", 0) if bot_name == a else value.get("b_wins", 0)
         opp_wins = value.get("b_wins", 0) if bot_name == a else value.get("a_wins", 0)
+        draws = value.get("draws", 0)
         return {
             "wins": bot_wins,
             "losses": opp_wins,
+            "draws": draws,
             "games": games,
-            "win_rate": bot_wins / games,
+            "win_rate": (bot_wins + 0.5 * draws) / games,
         }
     return None
 
 
 def compute_h2h_avg_winrate(bot_name, h2h_data):
-    """Equal-weighted average win rate across all H2H opponents."""
-    opponent_rates = []
-    for key, value in h2h_data.items():
-        parts = key.split(" vs ")
-        if len(parts) != 2 or bot_name not in parts:
-            continue
-        games = value.get("games", 0)
-        if games <= 0:
-            continue
-        bot_wins = value.get("a_wins", 0) if parts[0] == bot_name else value.get("b_wins", 0)
-        opponent_rates.append(bot_wins / games)
-    if not opponent_rates:
-        return None
-    return sum(opponent_rates) / len(opponent_rates)
+    """Equal-weighted average win rate across all H2H opponents.
+
+    Draws count as half a win, matching the Glicko update semantics.
+    """
+    from rating_snapshot import h2h_winrate_for_bot
+    return h2h_winrate_for_bot(bot_name, h2h_data)
 
 
 def _batch_compute_h2h_winrates(h2h_data, active_bots):
@@ -359,39 +355,53 @@ def _batch_compute_h2h_winrates(h2h_data, active_bots):
         if games <= 0:
             continue
         if a in bot_rates:
-            bot_rates[a].append(value.get("a_wins", 0) / games)
+            bot_rates[a].append((value.get("a_wins", 0) + 0.5 * value.get("draws", 0)) / games)
         if b in bot_rates:
-            bot_rates[b].append(value.get("b_wins", 0) / games)
+            bot_rates[b].append((value.get("b_wins", 0) + 0.5 * value.get("draws", 0)) / games)
     return bot_rates
 
 
-def load_h2h_avg_winrates():
-    """Load H2H avg win rates for all bots. Falls back to bot_stats then Glicko r.
+def _match_history_file():
+    import evolution_infra
+    return evolution_infra.MATCH_HISTORY_FILE
 
-    Returns dict mapping bot_name -> float (average win rate across H2H opponents).
-    """
+
+def _rating_rows_for_active():
+    from rating_snapshot import build_strength_rows
     h2h_data = _load_h2h_data()
     bot_stats_data = _read_json(PROJECT_ROOT / "web" / "core" / "results" / "bot_stats.json", {})
     ratings = load_ratings()
+    active = list(get_active_bots())
+    return build_strength_rows(
+        ratings,
+        bot_stats_data,
+        h2h_data,
+        active_bots=active,
+        match_history_path=_match_history_file(),
+    )
 
-    active = set(get_active_bots())
-    bot_rates = _batch_compute_h2h_winrates(h2h_data, active)
 
+def load_strength_scores():
+    """Load unified leaderboard strength scores for active bots."""
+    rows = _rating_rows_for_active()
+    if rows:
+        return {row["name"]: row["leaderboard_score"] for row in rows}
+    return {name: 0.5 for name in get_active_bots()}
+
+
+def load_h2h_avg_winrates():
+    """Load H2H avg win rates for all active bots from the unified snapshot.
+
+    Returns dict mapping bot_name -> float (average win rate across H2H opponents).
+    """
+    rows = _rating_rows_for_active()
     result = {}
-    for bot_name in active:
-        rates = bot_rates.get(bot_name, [])
-        if rates:
-            result[bot_name] = sum(rates) / len(rates)
+    for row in rows:
+        bot_name = row["name"]
+        if row.get("h2h_avg_wr") is not None:
+            result[bot_name] = row["h2h_avg_wr"]
         else:
-            bs = bot_stats_data.get(bot_name, {})
-            if bs.get("games", 0) > 0:
-                result[bot_name] = bs.get("win_rate", 0.5)
-            else:
-                p = ratings.get(bot_name)
-                if p:
-                    result[bot_name] = max(0.0, min(1.0, 0.5 + (p.r - 1500) / 1000.0))
-                else:
-                    result[bot_name] = 0.5
+            result[bot_name] = row.get("win_rate") if row.get("win_rate") is not None else row.get("leaderboard_score", 0.5)
     return result
 
 
@@ -413,24 +423,20 @@ def _batch_compute_opponent_coverage(h2h_data, active_bots):
 
 def load_h2h_avg_winrates_with_coverage():
     """Like load_h2h_avg_winrates but returns coverage metadata per bot."""
-    h2h_data = _load_h2h_data()
-
-    active = set(get_active_bots())
-    active_list = list(active)
-
-    wrs = load_h2h_avg_winrates()
-    opponent_counts = _batch_compute_opponent_coverage(h2h_data, active_list)
-    n_total = len(active_list) - 1
-
+    rows = _rating_rows_for_active()
     result = {}
-    for bot_name in active:
-        n_eval = opponent_counts.get(bot_name, 0)
-        cov = n_eval / n_total if n_total > 0 else 1.0
+    for row in rows:
+        bot_name = row["name"]
         result[bot_name] = {
-            "h2h_avg_wr": wrs.get(bot_name, 0.5),
-            "opponent_coverage": cov,
-            "opponents_evaluated": n_eval,
-            "opponents_total": n_total,
+            "h2h_avg_wr": row.get("h2h_avg_wr", 0.5),
+            "leaderboard_score": row.get("leaderboard_score", 0.5),
+            "rank_basis": row.get("rank_basis", ""),
+            "strength_confidence": row.get("strength_confidence", "low"),
+            "h2h_source": row.get("h2h_source", "head_to_head"),
+            "opponent_coverage": row.get("h2h_coverage", 0.0),
+            "opponents_evaluated": row.get("h2h_opponents", 0),
+            "opponents_total": row.get("h2h_opponents_total", 0),
+            "h2h_games": row.get("h2h_games", 0),
         }
     return result
 
@@ -446,6 +452,12 @@ def _select_precommit_opponents(version, source_v, max_top=2, max_weak=1):
     active = [b for b in get_active_bots() if b != candidate and _bot_main(b).exists()]
     ratings = load_ratings()
     h2h = _load_h2h_data()
+    try:
+        from rating_snapshot import choose_h2h_source
+        h2h_selection = choose_h2h_source(active, h2h, _match_history_file())
+        h2h = h2h_selection["h2h"]
+    except Exception:
+        h2h_selection = {"source": "head_to_head"}
 
     selected = []
     reasons = {}
@@ -458,14 +470,14 @@ def _select_precommit_opponents(version, source_v, max_top=2, max_weak=1):
 
     add(parent, "parent")
 
-    h2h_winrates = load_h2h_avg_winrates()
+    strength_scores = load_strength_scores()
     top = sorted(
         active,
-        key=lambda name: h2h_winrates.get(name, 0.0),
+        key=lambda name: strength_scores.get(name, 0.0),
         reverse=True,
     )
     for name in top[:max_top]:
-        add(name, "top_h2h_wr")
+        add(name, "top_strength")
 
     source_name = parent
     weak = []
@@ -511,6 +523,37 @@ def _select_precommit_opponents(version, source_v, max_top=2, max_weak=1):
             # entry from a stale snapshot does not inject a non-weakness probe).
             if nemesis_wr < PRECOMMIT_NEMESIS_WINRATE_THRESHOLD:
                 add(nemesis_opp, "nemesis_probe")
+
+    try:
+        from system_log import log_system_event
+        coverage = load_h2h_avg_winrates_with_coverage()
+        details = []
+        for name in selected:
+            cov = coverage.get(name, {})
+            pair_stats = _h2h_stats(parent, name, h2h) if name != parent else None
+            details.append({
+                "name": name,
+                "reason": reasons.get(name),
+                "leaderboard_score": round(strength_scores.get(name, 0.0), 4),
+                "h2h_avg_wr": round(cov.get("h2h_avg_wr", 0.0), 4),
+                "h2h_coverage": round(cov.get("opponent_coverage", 0.0), 4),
+                "h2h_games": cov.get("h2h_games", 0),
+                "h2h_source": cov.get("h2h_source", h2h_selection.get("source", "head_to_head")),
+                "pair_vs_parent": pair_stats,
+            })
+        log_system_event(
+            "pipeline.precommit_opponents_selected",
+            "info",
+            f"Selected {len(selected)} precommit opponents for {candidate}",
+            {
+                "candidate": candidate,
+                "parent": parent,
+                "h2h_source": h2h_selection.get("source", "head_to_head"),
+                "opponents": details,
+            },
+        )
+    except Exception:
+        pass
 
     return [{"name": name, "reason": reasons[name]} for name in selected]
 

@@ -105,7 +105,7 @@ Do NOT call `commit_bot()` unless ALL of these are satisfied:
 </retry_rules>
 
 <optimization_metric>
-**H2H Average Win Rate** (`h2h_avg_wr`) — equal-weighted across all opponents. Glicko rating is secondary.
+**Unified Leaderboard Strength** (`leaderboard_score`) — composite active-pool strength using H2H coverage, H2H games, conservative Glicko rating, RD uncertainty, and aggregate win rate. Use `h2h_avg_wr` as matchup evidence, not as the sole ranking truth.
 </optimization_metric>
 
 <context>

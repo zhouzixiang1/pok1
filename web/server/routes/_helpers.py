@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from tool_helpers import compute_h2h_avg_winrate
+from rating_snapshot import build_strength_rows, h2h_winrate_for_bot
 from evolution_infra import count_lines
 
 
@@ -26,36 +26,55 @@ def confidence(rd: float) -> str:
 def build_rating_row(name: str, r_data: dict, bot_stats: dict, h2h_data: dict) -> dict:
     r, rd = r_data["r"], r_data["rd"]
     bs = bot_stats.get(name, {})
-    wr = compute_h2h_avg_winrate(name, h2h_data)
+    wr = h2h_winrate_for_bot(name, h2h_data)
+    conservative = r - 2 * rd
     return {
         "name": name,
         "rating": round(r, 1),
         "rd": round(rd, 1),
         "sigma": round(r_data.get("sigma", 0.06), 4),
-        "conservative_rating": round(r - 2 * rd, 1),
+        "conservative_rating": round(conservative, 1),
         "confidence": confidence(rd),
         "last_period": r_data.get("last_period", ""),
         "win_rate": bs.get("win_rate"),
         "games": bs.get("games", 0),
         "h2h_avg_wr": round(wr, 4) if wr is not None else None,
+        "h2h_source": "head_to_head",
+        "leaderboard_score": round(max(0.0, min(1.0, 0.5 + (conservative - 1500) / 800)), 4),
+        "rank_basis": "single_bot_detail",
+        "strength_confidence": confidence(rd),
     }
 
 
-def build_ranked_ratings(ratings_data: dict, bot_stats_data: dict, h2h_data: dict) -> list[dict]:
+def build_ranked_ratings(
+    ratings_data: dict,
+    bot_stats_data: dict,
+    h2h_data: dict,
+    *,
+    active_bots: list[str] | None = None,
+    match_history_path: Path | str | None = None,
+) -> list[dict]:
     if not ratings_data:
         return []
-    rows = []
-    for name, d in ratings_data.items():
-        rows.append(build_rating_row(name, d, bot_stats_data, h2h_data))
-    rows.sort(key=lambda x: x["h2h_avg_wr"] if x["h2h_avg_wr"] is not None else 0.0, reverse=True)
-    for i, row in enumerate(rows):
-        row["rank"] = i + 1
-    return rows
+    return build_strength_rows(
+        ratings_data,
+        bot_stats_data,
+        h2h_data,
+        active_bots=active_bots,
+        match_history_path=match_history_path,
+    )
 
 
 
 
-def build_bot_summary(bot_dir: Path, bot_name: str, ratings: dict, bot_stats_data: dict, h2h_data: dict) -> dict:
+def build_bot_summary(
+    bot_dir: Path,
+    bot_name: str,
+    ratings: dict,
+    bot_stats_data: dict,
+    h2h_data: dict,
+    strength_rows: dict[str, dict] | None = None,
+) -> dict:
     version_match = re.search(r"\d+", bot_name)
     version = int(version_match.group()) if version_match else 0
     py_files = list(bot_dir.glob("*.py"))
@@ -67,13 +86,25 @@ def build_bot_summary(bot_dir: Path, bot_name: str, ratings: dict, bot_stats_dat
         r, rd = r_data.get("r", 1500), r_data.get("rd", 350)
         rating_info = {"r": round(r, 1), "rd": round(rd, 1), "conservative": round(r - 2 * rd, 1)}
     bs = bot_stats_data.get(bot_name, {})
-    wr = compute_h2h_avg_winrate(bot_name, h2h_data)
-    return {
+    strength = (strength_rows or {}).get(bot_name, {})
+    wr = strength.get("h2h_avg_wr")
+    if wr is None:
+        raw_wr = h2h_winrate_for_bot(bot_name, h2h_data)
+        wr = round(raw_wr, 4) if raw_wr is not None else None
+    summary = {
         "name": bot_name, "version": version, "completed": completed,
         "total_lines": total_lines, "files": [f.name for f in py_files], "rating": rating_info,
         "win_rate": bs.get("win_rate"), "games": bs.get("games", 0),
-        "h2h_avg_wr": round(wr, 4) if wr is not None else None,
+        "h2h_avg_wr": wr,
     }
+    for key in (
+        "leaderboard_score", "rank_basis", "strength_confidence", "h2h_coverage",
+        "h2h_games", "h2h_opponents", "h2h_opponents_total", "h2h_source",
+        "h2h_weighted_wr",
+    ):
+        if key in strength:
+            summary[key] = strength[key]
+    return summary
 
 
 def build_match_stats(stats_data: dict | None) -> dict:

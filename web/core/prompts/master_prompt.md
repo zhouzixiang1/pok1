@@ -6,9 +6,10 @@ You have Read and Bash tools. Use Read for local files, Bash for git commands. D
 
 <data_files>
 Read these files FIRST to understand current state:
-- `web/core/results/head_to_head.json` — **PRIMARY DATA**: H2H matrix. Compute h2h_avg_wr per bot (equal-weighted). Opponents with WR < 40% = weakness, > 60% = strength.
-- `web/core/results/glicko_ratings.json` — Glicko-2 ratings (secondary reference)
-- `web/core/results/bot_stats.json` — Per-bot stats (games-weighted, biased by frequency — use H2H for equal weighting)
+- `web/core/results/head_to_head.json` — H2H matrix for specific matchup strengths/weaknesses. Opponents with WR < 40% = weakness, > 60% = strength only when games and coverage are adequate.
+- `web/core/results/match_history.jsonl` — append-only match results; use it to sanity-check H2H coverage when `head_to_head.json` is sparse.
+- `web/core/results/glicko_ratings.json` — Glicko-2 ratings and RD uncertainty. Conservative rating (`r - 2*rd`) discounts unreliable raw ratings.
+- `web/core/results/bot_stats.json` — Per-bot aggregate stats. Useful as a broad signal, but frequency-weighted by scheduler choices.
 - `web/core/results/rating_history.jsonl` — Performance snapshots over time
 - `web/core/experience_pool.md` — Strategic lessons from past generations (prioritise: RECENT_LESSONS, OPPONENT_MODELING, [POSSIBLY EXHAUSTED] entries)
 - `bots/claude_v{source_v}/` — Current source bot code
@@ -16,7 +17,7 @@ Read these files FIRST to understand current state:
 </data_files>
 
 <task>
-1. Read H2H data, compute per-opponent performance and h2h_avg_wr (primary metric)
+1. Read H2H, match history, ratings, and stats; evaluate source strength by `leaderboard_score`/coverage/RD when available, and use per-opponent H2H for weakness diagnosis
 2. Read the performance verification report below for objective trend analysis
 3. Read experience pool to learn from past iterations
 4. Read current bot source code and reference bots to identify weaknesses

@@ -10,6 +10,7 @@ from fastapi.responses import PlainTextResponse, Response
 
 from server.cache import cached_read
 from server.routes._helpers import build_bot_summary, _bot_sort_key
+from rating_snapshot import build_strength_rows
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BOTS_DIR = PROJECT_ROOT / "bots"
@@ -17,6 +18,7 @@ RESULTS_DIR = PROJECT_ROOT / "web" / "core" / "results"
 RATINGS_FILE = RESULTS_DIR / "glicko_ratings.json"
 BOT_STATS_FILE = RESULTS_DIR / "bot_stats.json"
 H2H_FILE = RESULTS_DIR / "head_to_head.json"
+MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 
 router = APIRouter(prefix="/api/bots", tags=["bots"])
 
@@ -38,12 +40,26 @@ async def list_bots(include_graveyard: bool = Query(False)):
     h2h_data = cached_read("h2h", H2H_FILE) or {}
     active = []
     graveyard = []
+    active_dirs = []
 
     if BOTS_DIR.exists():
         for d in sorted(BOTS_DIR.iterdir(), key=lambda p: _bot_sort_key(p.name)):
             if d.is_dir() and d.name.startswith("claude_v") and d.name != "claude_v0":
                 if (d / ".completed").exists():
-                    active.append(build_bot_summary(d, d.name, ratings, bot_stats_data, h2h_data))
+                    active_dirs.append(d)
+    active_names = [d.name for d in active_dirs]
+    strength_rows = {
+        row["name"]: row
+        for row in build_strength_rows(
+            ratings,
+            bot_stats_data,
+            h2h_data,
+            active_bots=active_names,
+            match_history_path=MATCH_HISTORY_FILE,
+        )
+    }
+    for d in active_dirs:
+        active.append(build_bot_summary(d, d.name, ratings, bot_stats_data, h2h_data, strength_rows))
 
     # Graveyard bots
     if include_graveyard:
@@ -87,7 +103,17 @@ async def bot_detail(version: int):
     ratings = _load_ratings()
     bot_stats_data = cached_read("bot_stats_detail", BOT_STATS_FILE) or {}
     h2h_data = cached_read("h2h_detail", H2H_FILE) or {}
-    summary = build_bot_summary(bot_dir, bot_name, ratings, bot_stats_data, h2h_data)
+    strength_rows = {
+        row["name"]: row
+        for row in build_strength_rows(
+            ratings,
+            bot_stats_data,
+            h2h_data,
+            active_bots=list(ratings.keys()),
+            match_history_path=MATCH_HISTORY_FILE,
+        )
+    }
+    summary = build_bot_summary(bot_dir, bot_name, ratings, bot_stats_data, h2h_data, strength_rows)
 
     # Try to get git parent from tag
     try:

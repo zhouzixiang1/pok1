@@ -10,6 +10,15 @@ export interface BotRating {
   win_rate?: number;
   games?: number;
   h2h_avg_wr?: number;
+  h2h_weighted_wr?: number;
+  h2h_games?: number;
+  h2h_opponents?: number;
+  h2h_opponents_total?: number;
+  h2h_coverage?: number;
+  h2h_source?: string;
+  leaderboard_score?: number;
+  rank_basis?: string;
+  strength_confidence?: string;
 }
 
 export interface MatchStats {
@@ -127,6 +136,15 @@ export interface BotSummary {
   win_rate?: number;
   games?: number;
   h2h_avg_wr?: number;
+  h2h_weighted_wr?: number;
+  h2h_games?: number;
+  h2h_opponents?: number;
+  h2h_opponents_total?: number;
+  h2h_coverage?: number;
+  h2h_source?: string;
+  leaderboard_score?: number;
+  rank_basis?: string;
+  strength_confidence?: string;
   graveyard?: boolean;
 }
 

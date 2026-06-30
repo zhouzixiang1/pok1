@@ -125,7 +125,7 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
       branch_from, verified_improvements, persistent_weaknesses, reason, suggestion
     Returns a safe default on failure.
     """
-    from tool_helpers import load_h2h_avg_winrates, load_h2h_avg_winrates_with_coverage
+    from tool_helpers import load_h2h_avg_winrates, load_h2h_avg_winrates_with_coverage, load_strength_scores
 
     safe_default = {
         "is_stagnant": False,
@@ -149,6 +149,7 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
     }
 
     h2h_winrates = load_h2h_avg_winrates()
+    strength_scores = load_strength_scores()
     coverage_data = load_h2h_avg_winrates_with_coverage()
 
     # ── Data sufficiency check ──
@@ -203,8 +204,9 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
                 v_name = f"claude_v{v}"
                 cov = coverage_data.get(v_name, {})
                 wr = cov.get("h2h_avg_wr", h2h_winrates.get(v_name, 0.0))
+                score = cov.get("leaderboard_score", strength_scores.get(v_name, 0.0))
                 cov_pct = cov.get("opponent_coverage", 0.0)
-                gen_trend_lines.append(f"  v{v}: h2h_avg_wr={wr:.2%} (coverage={cov_pct:.0%})")
+                gen_trend_lines.append(f"  v{v}: score={score:.4f}, h2h_avg_wr={wr:.2%} (coverage={cov_pct:.0%})")
             except (ValueError, KeyError):
                 continue
     except Exception as e:
@@ -251,15 +253,16 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
                     failure_ctx += f"  - v{e.get('gen','?')} {e.get('role','?')}: {e.get('error','')[:120]}\n"
     except Exception as e:
         log.debug('Worker failure context load failed: %s', e)
-    sorted_bots = sorted(active_bots, key=lambda b: h2h_winrates.get(b, 0.0), reverse=True)[:5]
+    sorted_bots = sorted(active_bots, key=lambda b: strength_scores.get(b, 0.0), reverse=True)[:5]
     top_bots_lines = []
     for b in sorted_bots:
         p = ratings.get(b, Glicko2Player())
         wr = h2h_winrates.get(b, 0.0)
+        score = strength_scores.get(b, 0.0)
         cov_info = coverage_data.get(b, {})
         cov_pct = cov_info.get("opponent_coverage", 1.0)
         cov_tag = f" [LOW COVERAGE {cov_pct:.0%}]" if cov_pct < 0.8 else ""
-        top_bots_lines.append(f"  {b}: h2h_avg_wr={wr:.2%} (r={p.r:.0f} rd={p.rd:.0f}){cov_tag}")
+        top_bots_lines.append(f"  {b}: score={score:.4f}, h2h_avg_wr={wr:.2%} (r={p.r:.0f} rd={p.rd:.0f}){cov_tag}")
 
     # Bot stats
     bot_stats_line = "  No stats available"

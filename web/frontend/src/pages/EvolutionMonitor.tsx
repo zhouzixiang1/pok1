@@ -213,7 +213,7 @@ export default function EvolutionMonitor() {
     onEvalTable: (rows) => {
       setLeaderboard((prev) => {
         const prevMap = new Map(prev.map((b) => [b.name, b]));
-        return rows.map((r: { rank: number; name: string; rating: number; rd: number; sigma?: number; conservative_rating: number; confidence?: string; h2h_avg_wr?: number }) => {
+        return rows.map((r: { rank: number; name: string; rating: number; rd: number; sigma?: number; conservative_rating: number; confidence?: string; h2h_avg_wr?: number; leaderboard_score?: number; h2h_coverage?: number }) => {
           const existing = prevMap.get(r.name);
           return {
             name: r.name, rank: r.rank, rating: r.rating, rd: r.rd,
@@ -221,6 +221,8 @@ export default function EvolutionMonitor() {
             conservative_rating: r.conservative_rating,
             confidence: r.confidence ?? existing?.confidence ?? "uncertain",
             last_period: existing?.last_period ?? "", win_rate: existing?.win_rate, games: existing?.games, h2h_avg_wr: r.h2h_avg_wr,
+            leaderboard_score: r.leaderboard_score ?? existing?.leaderboard_score,
+            h2h_coverage: r.h2h_coverage ?? existing?.h2h_coverage,
           };
         });
       });

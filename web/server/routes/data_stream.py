@@ -38,7 +38,7 @@ def _get_ratings() -> list[dict]:
         return []
     bot_stats_data = cached_read("ds_bot_stats_ratings", BOT_STATS_FILE) or {}
     h2h_data = cached_read("ds_h2h_ratings", H2H_FILE) or {}
-    return build_ranked_ratings(data, bot_stats_data, h2h_data)
+    return build_ranked_ratings(data, bot_stats_data, h2h_data, match_history_path=MATCH_HISTORY_FILE)
 
 
 def _get_daemon_status() -> dict:
@@ -57,16 +57,31 @@ def _get_daemon_status() -> dict:
 
 def _get_bots() -> dict:
     from server.routes._helpers import _bot_sort_key, build_bot_summary
+    from rating_snapshot import build_strength_rows
     ratings = cached_read("ds_ratings_bots", RATINGS_FILE) or {}
     bot_stats_data = cached_read("ds_bot_stats_bots", BOT_STATS_FILE) or {}
     h2h_data = cached_read("ds_h2h_bots", H2H_FILE) or {}
 
     active, graveyard = [], []
+    active_dirs = []
     if BOTS_DIR.exists():
         for d in sorted(BOTS_DIR.iterdir(), key=lambda p: _bot_sort_key(p.name)):
             if d.is_dir() and d.name.startswith("claude_v") and d.name != "claude_v0":
                 if (d / ".completed").exists():
-                    active.append(build_bot_summary(d, d.name, ratings, bot_stats_data, h2h_data))
+                    active_dirs.append(d)
+    active_names = [d.name for d in active_dirs]
+    strength_rows = {
+        row["name"]: row
+        for row in build_strength_rows(
+            ratings,
+            bot_stats_data,
+            h2h_data,
+            active_bots=active_names,
+            match_history_path=MATCH_HISTORY_FILE,
+        )
+    }
+    for d in active_dirs:
+        active.append(build_bot_summary(d, d.name, ratings, bot_stats_data, h2h_data, strength_rows))
     graveyard_dir = BOTS_DIR / "graveyard"
     if graveyard_dir.exists():
         for d in sorted(graveyard_dir.iterdir(), key=lambda p: _bot_sort_key(p.name)):

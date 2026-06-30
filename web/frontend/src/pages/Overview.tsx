@@ -177,9 +177,10 @@ export default function Overview() {
     );
   }
 
-  const maxRating = Math.max(...ratings.map((b) => b.rating));
-  const minRating = Math.min(...ratings.map((b) => b.rating));
-  const ratingRange = maxRating - minRating || 1;
+  const scoreOf = (b: (typeof ratings)[number]) => b.leaderboard_score ?? Math.max(0, Math.min(1, 0.5 + (b.conservative_rating - 1500) / 800));
+  const maxScore = Math.max(...ratings.map(scoreOf));
+  const minScore = Math.min(...ratings.map(scoreOf));
+  const scoreRange = maxScore - minScore || 1;
   const top5 = ratings.slice(0, 5);
   const rest = ratings.slice(5);
   const daemonAge = daemon?.last_update_age_seconds;
@@ -261,11 +262,12 @@ export default function Overview() {
                     </Link>
                   </div>
                   <div className="mt-2 flex items-baseline gap-2">
-                    <span className="text-3xl font-bold text-gray-900 dark:text-white tabular-nums">{bot.rating.toFixed(1)}</span>
-                    <span className="text-xs text-gray-500">评分</span>
+                    <span className="text-3xl font-bold text-gray-900 dark:text-white tabular-nums">{scoreOf(bot).toFixed(4)}</span>
+                    <span className="text-xs text-gray-500">综合强度</span>
                   </div>
                   <div className="mt-2 flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
                     <span>H2H {bot.h2h_avg_wr != null ? `${(bot.h2h_avg_wr * 100).toFixed(1)}%` : "—"}</span>
+                    <span>覆盖 {bot.h2h_coverage != null ? `${(bot.h2h_coverage * 100).toFixed(0)}%` : "—"}</span>
                     {sparkData.length >= 2 && <Sparkline data={sparkData} color={sparkColor} />}
                     {s && (s.wr_trend != null ? (
                       <Badge variant={s.wr_trend > 0 ? "success" : s.wr_trend < 0 ? "error" : "neutral"} size="sm">
@@ -284,7 +286,7 @@ export default function Overview() {
             {/* #2-5 — compact cards */}
             {top5.slice(1).map((bot) => {
               const s = summary[bot.name];
-              const ratingPct = ((bot.rating - minRating) / ratingRange) * 100;
+              const scorePct = ((scoreOf(bot) - minScore) / scoreRange) * 100;
               return (
                 <div key={bot.name} className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-border-subtle dark:bg-surface-1">
                   <div className="flex items-center justify-between">
@@ -301,13 +303,14 @@ export default function Overview() {
                     </span>
                   </div>
                   <div className="mt-2 flex items-baseline gap-2">
-                    <span className="text-xl font-bold text-gray-900 dark:text-white tabular-nums">{bot.rating.toFixed(1)}</span>
+                    <span className="text-xl font-bold text-gray-900 dark:text-white tabular-nums">{scoreOf(bot).toFixed(4)}</span>
                     <div className="flex-1 h-1.5 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
-                      <div className="h-full bg-brand-500 rounded-full transition-all" style={{ width: `${ratingPct}%` }} />
+                      <div className="h-full bg-brand-500 rounded-full transition-all" style={{ width: `${scorePct}%` }} />
                     </div>
                   </div>
                   <div className="mt-1.5 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
                     <span>H2H {bot.h2h_avg_wr != null ? `${(bot.h2h_avg_wr * 100).toFixed(1)}%` : "—"}</span>
+                    <span>覆盖 {bot.h2h_coverage != null ? `${(bot.h2h_coverage * 100).toFixed(0)}%` : "—"}</span>
                     {s && (s.wr_trend != null ? (
                       <Badge variant={s.wr_trend > 0 ? "success" : s.wr_trend < 0 ? "error" : "neutral"} size="sm">
                         {s.wr_trend > 0 ? "↑" : s.wr_trend < 0 ? "↓" : "→"} {(Math.abs(s.wr_trend) * 100).toFixed(1)}pp
@@ -357,8 +360,9 @@ export default function Overview() {
                 <tr className="border-b border-gray-100 dark:border-border-subtle text-left text-xs text-gray-400 dark:text-gray-500">
                   <th className="px-5 py-2 font-medium w-12">#</th>
                   <th className="px-5 py-2 font-medium">Bot</th>
-                  <th className="px-5 py-2 font-medium">评分</th>
-                  <th className="px-5 py-2 font-medium">对局胜率</th>
+                  <th className="px-5 py-2 font-medium">强度分</th>
+                  <th className="px-5 py-2 font-medium">H2H</th>
+                  <th className="px-5 py-2 font-medium">覆盖</th>
                   <th className="px-5 py-2 font-medium">场数</th>
                   <th className="px-5 py-2 font-medium">趋势</th>
                   <th className="px-5 py-2 font-medium">置信</th>
@@ -367,7 +371,7 @@ export default function Overview() {
               <tbody>
                 {rest.map((bot) => {
                   const s = summary[bot.name];
-                  const ratingPct = ((bot.rating - minRating) / ratingRange) * 100;
+                  const scorePct = ((scoreOf(bot) - minScore) / scoreRange) * 100;
                   return (
                     <tr key={bot.name} className={cn(
                       "border-b border-gray-50 dark:border-border-subtle/50 hover:bg-gray-50 dark:hover:bg-white/[0.02] transition-colors",
@@ -380,14 +384,17 @@ export default function Overview() {
                       </td>
                       <td className="px-5 py-2.5">
                         <div className="flex items-center gap-2">
-                          <span className="font-mono font-semibold text-gray-700 dark:text-gray-200 tabular-nums">{bot.rating.toFixed(1)}</span>
+                          <span className="font-mono font-semibold text-gray-700 dark:text-gray-200 tabular-nums">{scoreOf(bot).toFixed(4)}</span>
                           <div className="w-12 h-1 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
-                            <div className="h-full bg-brand-500/60 rounded-full" style={{ width: `${ratingPct}%` }} />
+                            <div className="h-full bg-brand-500/60 rounded-full" style={{ width: `${scorePct}%` }} />
                           </div>
                         </div>
                       </td>
                       <td className="px-5 py-2.5 text-gray-600 dark:text-gray-300 text-xs tabular-nums">
                         {bot.h2h_avg_wr != null ? `${(bot.h2h_avg_wr * 100).toFixed(1)}%` : "—"}
+                      </td>
+                      <td className="px-5 py-2.5 text-gray-600 dark:text-gray-300 text-xs tabular-nums">
+                        {bot.h2h_coverage != null ? `${(bot.h2h_coverage * 100).toFixed(0)}%` : "—"}
                       </td>
                       <td className="px-5 py-2.5 text-gray-500 text-xs tabular-nums">{bot.games ?? "—"}</td>
                       <td className="px-5 py-2.5">

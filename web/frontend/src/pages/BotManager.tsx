@@ -116,6 +116,9 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
 
   const displayName = bot.name.replace("claude_", "");
   const conserv = bot.rating ? bot.rating.conservative.toFixed(0) : "—";
+  const fallbackStrength = bot.rating ? Math.max(0, Math.min(1, 0.5 + (bot.rating.conservative - 1500) / 800)) : null;
+  const strengthValue = bot.leaderboard_score ?? fallbackStrength;
+  const strength = strengthValue != null ? strengthValue.toFixed(4) : "—";
 
   return (
     <div className={`rounded-xl border ${bot.graveyard ? "border-gray-300 opacity-60" : "border-gray-200 dark:border-border-subtle"} bg-white dark:bg-surface-1 overflow-hidden`}>
@@ -134,6 +137,7 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
           {bot.graveyard && <span className="px-1.5 py-0.5 text-[10px] rounded bg-gray-100 text-gray-400">已归档</span>}
         </div>
         <div className="flex items-center gap-4 text-sm text-gray-500">
+          <span className="text-xs text-gray-500">强度 {strength}</span>
           {bot.rating && <RatingBadge r={bot.rating.r} rd={bot.rating.rd} h2hWr={bot.h2h_avg_wr} games={bot.games} />}
           <span className="text-xs text-gray-400">{bot.total_lines} 行</span>
           <span className="text-xs text-gray-400">保守 {conserv}</span>
@@ -262,14 +266,18 @@ type BotSortMode = "version" | "h2h_wr" | "rating";
 export default function BotManager() {
   const { active: rawBots, graveyard: rawGraveyard } = useBots();
   const h2hData = useH2H();
-  const [sortMode, setSortMode] = useState<BotSortMode>("h2h_wr");
+  const [sortMode, setSortMode] = useState<BotSortMode>("rating");
 
   const bots = useMemo(() => {
     const sorted = [...rawBots];
     if (sortMode === "h2h_wr") {
       sorted.sort((a, b) => (b.h2h_avg_wr ?? 0) - (a.h2h_avg_wr ?? 0));
     } else if (sortMode === "rating") {
-      sorted.sort((a, b) => (b.rating?.conservative ?? 0) - (a.rating?.conservative ?? 0));
+      sorted.sort((a, b) => {
+        const aScore = a.leaderboard_score ?? (a.rating ? Math.max(0, Math.min(1, 0.5 + (a.rating.conservative - 1500) / 800)) : 0);
+        const bScore = b.leaderboard_score ?? (b.rating ? Math.max(0, Math.min(1, 0.5 + (b.rating.conservative - 1500) / 800)) : 0);
+        return bScore - aScore;
+      });
     } else {
       sorted.sort((a, b) => b.version - a.version);
     }
@@ -353,7 +361,7 @@ export default function BotManager() {
                     : "hover:bg-gray-100 dark:hover:bg-gray-700"
                 }`}
               >
-                {mode === "h2h_wr" ? "H2H 胜率" : mode === "rating" ? "评分" : "版本"}
+                {mode === "h2h_wr" ? "H2H 胜率" : mode === "rating" ? "综合强度" : "版本"}
               </button>
             ))}
           </div>

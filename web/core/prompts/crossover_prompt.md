@@ -4,7 +4,7 @@ Generate a new poker bot (Child) from TWO elite parent bots. Use Read and Bash t
 </instructions>
 
 <data_context>
-Read `web/core/results/head_to_head.json` to understand each parent's strengths/weaknesses against specific opponents. Find matchups where one parent loses (WR < 40%) and the other wins (WR > 55%). If Parent B beats opponents that Parent A loses to, strongly consider importing Parent B's approach for those matchups. Read `web/core/results/bot_stats.json` for overall win rates.
+Read `web/core/results/head_to_head.json` and `web/core/results/match_history.jsonl` to understand each parent's strengths/weaknesses against specific opponents and to verify coverage. Find matchups where one parent loses (WR < 40%) and the other wins (WR > 55%) only when sample size is meaningful. If Parent B beats opponents that Parent A loses to, strongly consider importing Parent B's approach for those matchups. Read `web/core/results/glicko_ratings.json` for RD/conservative-rating reliability and `web/core/results/bot_stats.json` for overall win rates.
 </data_context>
 
 <crossover_strategy>
