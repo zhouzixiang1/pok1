@@ -138,6 +138,13 @@ START_ARGS=(--host "$HOST" --port "$PORT")
 if [ "$NO_BUILD" = "1" ]; then
     START_ARGS+=(--no-build)
 fi
+
+# Do not let the long-lived web server inherit the restart lock fd. Bash file
+# descriptors are inherited by child processes by default; if web/main.py keeps
+# fd 9 open, every later restart sees restart.lock as permanently held.
+log "releasing restart lock before spawning web service"
+flock -u 9
+exec 9>&-
 run ./pokctl.sh restart "${START_ARGS[@]}"
 
 if [ "$DRY_RUN" = "0" ]; then
