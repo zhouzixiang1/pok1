@@ -227,7 +227,6 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                             "error",
                         )
                     try:
-                        from system_log import log_system_event
                         log_system_event("pipeline.cost_cap_tripped", "error",
                             f"Cycle spend ${_spent:.2f} exceeded cap ${MAX_GEN_COST}",
                             {"spent": round(_spent, 2), "cap": MAX_GEN_COST})
@@ -274,7 +273,6 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                     # tools stay strict. See _NOISY_TOOLS docstring.
                                     log.warning("Tool '%s' called %d times (possible redundant call)", tool_name, _tool_call_counts[tool_name])
                                     try:
-                                        from system_log import log_system_event
                                         log_system_event("pipeline.redundant_tool_call", "warn",
                                             f"Orchestrator called {tool_name} {_tool_call_counts[tool_name]}x in one cycle",
                                             {"tool": tool_name, "count": _tool_call_counts[tool_name],
@@ -833,7 +831,6 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                 else:
                     log.warning("LLM infra error (%s), session cleared: %s", type(e).__name__, e)
                 try:
-                    from system_log import log_system_event
                     log_system_event("pipeline.sdk_stream_error", "warn",
                         f"Orchestrator LLM infra error ({type(e).__name__}): {e}",
                         {"session_cleared": True, "exception_type": type(e).__name__})
