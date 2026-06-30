@@ -18,6 +18,74 @@ sys.path.insert(0, str(WEB_DIR / "core"))
 from server.state import app_state
 
 router = APIRouter(prefix="/api/control", tags=["control"])
+_last_status_sync_correction: tuple | None = None
+
+
+def _sync_evolution_fields(state: dict) -> dict:
+    """Overlay cheap authoritative evolution fields for status reads.
+
+    AppState is initialized from the latest completed tag, but the active
+    pipeline may skip ahead because bare commits, abandoned versions, or a
+    resume checkpoint reserve a later target. Keep /api/control/status aligned
+    with the files the orchestrator actually uses, without mutating AppState
+    from a read-only endpoint.
+    """
+    global _last_status_sync_correction
+    before = (
+        state.get("current_v"),
+        state.get("next_v"),
+        state.get("generation_count"),
+    )
+    try:
+        from evolution_core import (
+            find_current_v,
+            find_max_committed_v,
+            read_pipeline_checkpoint,
+        )
+
+        current_v = int(find_current_v())
+        max_committed_v = int(find_max_committed_v())
+        checkpoint = read_pipeline_checkpoint() or {}
+        active_generation = None
+
+        if checkpoint.get("next_v") is not None and checkpoint.get("stage") not in (None, "archived"):
+            next_v = int(checkpoint["next_v"])
+            active_generation = {
+                "next_v": next_v,
+                "source_v": checkpoint.get("source_v"),
+                "stage": checkpoint.get("stage"),
+                "run_id": checkpoint.get("run_id"),
+            }
+        else:
+            next_v = max(current_v, max_committed_v) + 1
+
+        state["current_v"] = current_v
+        state["next_v"] = next_v
+        state["generation_count"] = current_v
+        state["active_generation"] = active_generation
+
+        after = (current_v, next_v, current_v)
+        if before != after:
+            key = (before, after, active_generation["stage"] if active_generation else None)
+            if key != _last_status_sync_correction:
+                _last_status_sync_correction = key
+                try:
+                    from system_log import log_system_event
+                    log_system_event(
+                        "control.status_sync_corrected", "info",
+                        f"Control status corrected from {before} to {after}",
+                        {
+                            "before": before,
+                            "after": after,
+                            "active_generation": active_generation,
+                            "max_committed_v": max_committed_v,
+                        },
+                    )
+                except Exception:
+                    pass
+    except Exception as exc:
+        state["status_sync_error"] = str(exc)[:200]
+    return state
 
 
 async def _run_with_cleanup(coro):
@@ -87,7 +155,7 @@ async def set_config(req: ConfigRequest):
 
 @router.get("/status")
 async def control_status():
-    return app_state.to_dict()
+    return _sync_evolution_fields(app_state.to_dict())
 
 
 @router.get("/decisions")
