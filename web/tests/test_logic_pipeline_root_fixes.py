@@ -1,4 +1,5 @@
 import asyncio
+import ast
 import json
 from pathlib import Path
 
@@ -180,6 +181,31 @@ def test_quality_gate_records_smoke_failure_details(monkeypatch):
     assert quality["smoke_ok"] is False
     assert quality["smoke_errors"] == data["smoke_errors"]
     assert quality["failed_gates"] == ["smoke_test"]
+
+
+def test_log_system_event_is_not_reimported_inside_runtime_functions():
+    """Inner imports make log_system_event a local and can crash earlier calls."""
+    web_root = Path(__file__).resolve().parents[1]
+    targets = [
+        web_root / "core" / "orchestrator.py",
+        web_root / "core" / "generation_scheduler.py",
+    ]
+
+    offenders = []
+    for target in targets:
+        tree = ast.parse(target.read_text(), filename=str(target))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for inner in ast.walk(node):
+                if (
+                    isinstance(inner, ast.ImportFrom)
+                    and inner.module == "system_log"
+                    and any(alias.name == "log_system_event" for alias in inner.names)
+                ):
+                    offenders.append(f"{target.name}:{node.name}:L{inner.lineno}")
+
+    assert offenders == []
 
 
 def test_run_master_blocks_after_crossover_checkpoint_without_analysis(monkeypatch):
