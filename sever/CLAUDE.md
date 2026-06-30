@@ -89,6 +89,14 @@ The working tree may already contain user changes, generated match records, bot 
 
 Do not revert, reset, restore, clean, or checkout unrelated files unless the user explicitly asks for that exact destructive operation.
 
+`sever/` 改代码规范：
+
+- 先对照 `sever/国赛平台/` 文档确认协议事实，再改 TCP 解析、validator、game flow、adapter 或 THP。
+- 只改当前任务需要的文件，不顺手重构、不统一无关风格、不碰 `records/` 等运行产物。
+- 协议行为、下注语义、postflop check/call、all-in runout、card mapping、THP 顺序等变更必须配套 `sever/tests` 回归测试。
+- 改 adapter 时必须记住源 bot 仍是 Botzone/local JSON bot，TCP 文本只由 adapter 生成。
+- 最终汇报必须说明改了什么、跑了什么验证、提交/推送结果，以及哪些已有脏项未触碰。
+
 Stage only files changed for the current task. Do not use `git add -A` unless the user explicitly asks for a full repository snapshot. Generated `records/`, runtime logs, bot generation sentinels, and unrelated bot directories should not be staged unless the task is specifically about them.
 
 After a task that changes files, commit and push task-related changes:

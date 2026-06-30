@@ -153,6 +153,14 @@ The working tree may already contain user changes, evolution-system output, inco
 
 Do not revert, reset, restore, or checkout unrelated changes unless the user explicitly asks for that exact destructive operation. Do not clean untracked bot directories, generated outputs, or gitlink directories as part of an unrelated task.
 
+`web/` 改代码规范：
+
+- 先确认变更属于 Web 进化系统、FastAPI 后端、React 前端、还是国赛 adapter 边界；不要把本地 JSON battle 和 TCP 协议混成一个输出协议。
+- 只改当前任务需要的文件，不顺手重构、不统一无关风格、不碰运行产物。
+- 进化逻辑变更要同步检查 Python 工具、prompt、quality gates 和测试，避免 LLM 继续按旧规则生成代码。
+- 涉及国赛兼容时，必须保持 evolved bot 的 JSON stdout 协议，并通过 `sever/bot_adapter.py` 对接 TCP。
+- 最终汇报必须说明改了什么、跑了什么验证、提交/推送结果，以及哪些已有脏项未触碰。
+
 Stage only the files changed for the current task. Do not use `git add -A` unless the user explicitly asks for a full repository snapshot. Runtime/generated paths such as `web/core/results/`, `web/logs/`, `web/frontend/dist/`, `web/server/static/`, `results/*.json`, `ladder_results/`, `bots/graveyard/`, and `.completed` sentinels should not be staged unless the task is specifically about them.
 
 Evolution-generated bot versions are complete only when the orchestrator `commit_bot` flow has passed its gates, committed the bot, and created the annotated `bot-v{N}` tag. Do not hand-edit bot lineage tags or `.completed` sentinels unless the task is explicitly about evolution recovery.
