@@ -1011,8 +1011,8 @@ async def run_precommit_eval(args):
                 if opponent == parent_name and matchup["wins"] < matchup["losses"]:
                     # Parent is the true regression baseline. Primary gate is a
                     # paired net-chips bootstrap 95% CI: block only when the CI
-                    # LOWER bound is below the loss threshold (candidate loses
-                    # >= PARENT_NET_CHIPS_LOSS_THRESHOLD chips per mirror pair).
+                    # UPPER bound is below the loss threshold, meaning the whole
+                    # interval is confidently worse than the allowed loss floor.
                     # The old binary W/L ratio gate stays as a fallback when no
                     # net-chip observations are available.
                     decided = matchup["wins"] + matchup["losses"]
@@ -1147,6 +1147,20 @@ async def run_precommit_eval(args):
             "details": f"Aggregate mirror result {total_wins}-{total_losses}-{total_draws}.",
         })
 
+    paired_bootstrap_payload = {
+        "aggregate_ci_lower": round(agg_ci_lower, 1) if agg_ci_lower is not None else None,
+        "aggregate_ci_upper": round(agg_ci_upper, 1) if agg_ci_upper is not None else None,
+        "aggregate_threshold": AGGREGATE_NET_CHIPS_LOSS_THRESHOLD,
+        "aggregate_gate_bound": round(agg_ci_upper, 1) if agg_ci_upper is not None else None,
+        "aggregate_gate_rule": "block_if_ci_upper_below_threshold",
+        "net_chips_samples": len(aggregate_net_chips),
+        "gate_degraded": len(aggregate_net_chips) == 0,
+        "net_chips_mean": round(sum(aggregate_net_chips)/len(aggregate_net_chips), 1) if aggregate_net_chips else None,
+        "net_chips_std": round(statistics.pstdev(aggregate_net_chips), 1) if len(aggregate_net_chips) > 1 else None,
+        "net_chips_min": round(min(aggregate_net_chips), 1) if aggregate_net_chips else None,
+        "net_chips_max": round(max(aggregate_net_chips), 1) if aggregate_net_chips else None,
+    }
+
     # P0-4: Semantic blocker — LLM detects regression patterns that numbers miss
     if semantic_result and semantic_result.get("recommended_action") == "block":
         blockers.append({
@@ -1173,17 +1187,7 @@ async def run_precommit_eval(args):
             {"version": v, "source_v": source_v, "passed": passed,
              "total_wins": total_wins, "total_losses": total_losses,
              "total_draws": total_draws, "blockers": blockers,
-             "paired_bootstrap": {
-                 "aggregate_ci_lower": round(agg_ci_lower, 1) if agg_ci_lower is not None else None,
-                 "aggregate_ci_upper": round(agg_ci_upper, 1) if agg_ci_upper is not None else None,
-                 "aggregate_threshold": AGGREGATE_NET_CHIPS_LOSS_THRESHOLD,
-                 "net_chips_samples": len(aggregate_net_chips),
-                 "gate_degraded": len(aggregate_net_chips) == 0,
-                 "net_chips_mean": round(sum(aggregate_net_chips)/len(aggregate_net_chips), 1) if aggregate_net_chips else None,
-                 "net_chips_std": round(statistics.pstdev(aggregate_net_chips), 1) if len(aggregate_net_chips) > 1 else None,
-                 "net_chips_min": round(min(aggregate_net_chips), 1) if aggregate_net_chips else None,
-                 "net_chips_max": round(max(aggregate_net_chips), 1) if aggregate_net_chips else None,
-             },
+             "paired_bootstrap": paired_bootstrap_payload,
              "n_opponents": len(all_opponents),
              "elapsed_sec": round(time.time() - _t0, 2)})
     except Exception:
@@ -1199,6 +1203,7 @@ async def run_precommit_eval(args):
         "total_draws": total_draws,
         "passed": passed,
         "blockers": blockers,
+        "paired_bootstrap": paired_bootstrap_payload,
     }
 
     # A6 (research_governance, evolution-plan-refresh-jun21): feed the precommit

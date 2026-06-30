@@ -610,6 +610,38 @@ PYEOF
     assert orchestrator_context._orchestrator_bash_is_mutation("git tag -a bot-v999 -m x") is True
 
 
+def test_post_generation_fingerprint_uses_committed_next_v(monkeypatch):
+    import behavior_diversity
+    import generation_scheduler
+
+    saved = []
+    events = []
+
+    def fake_compute(bot_name):
+        return ("fingerprint-for", bot_name)
+
+    monkeypatch.setattr(behavior_diversity, "compute_decision_fingerprint", fake_compute)
+    monkeypatch.setattr(
+        behavior_diversity,
+        "save_fingerprint",
+        lambda bot_name, fp: saved.append((bot_name, fp)),
+    )
+    monkeypatch.setattr(
+        generation_scheduler,
+        "log_system_event",
+        lambda *args: events.append(args),
+    )
+
+    bot_name = generation_scheduler._save_committed_bot_fingerprint(237)
+
+    assert bot_name == "claude_v237"
+    assert saved == [("claude_v237", ("fingerprint-for", "claude_v237"))]
+    assert events
+    assert events[0][0] == "pipeline.fingerprint_saved"
+    assert events[0][3]["version"] == 237
+    assert events[0][3]["bot"] == "claude_v237"
+
+
 def test_archivist_housekeeping_commit_stages_only_curated_paths(monkeypatch):
     import tool_commit
 
