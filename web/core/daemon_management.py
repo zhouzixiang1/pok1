@@ -144,7 +144,6 @@ def start_daemon(workers=None, pairs=5, scheduler_capable=True):
     if not _atexit_registered:
         atexit.register(stop_daemon)
         _atexit_registered = True
-    from system_log import log_system_event
     log_system_event("daemon.started", "success", f"Daemon started (workers={workers}, pairs={pairs})",
                      {"workers": workers, "pairs": pairs})
     return daemon_proc
@@ -380,14 +379,12 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
 
                 if restart_count > 5:
                     ui.log_history(f"Daemon failed 5x consecutively, stopping auto-restart (last rc={rc})", "error")
-                    from system_log import log_system_event
                     log_system_event("daemon.crashed", "error", f"Daemon failed {restart_count}x, auto-restart stopped",
                                      {"restart_count": restart_count, "returncode": rc})
                     break
                 if restart_count > 0:
                     backoff = min(3 * (2 ** (restart_count - 1)), 120)
                     ui.log_history(f"⚠️ Daemon exited (rc={rc}), restarting in {backoff}s (attempt {restart_count})", "warn")
-                    from system_log import log_system_event
                     log_system_event("daemon.crashed", "error", f"Daemon exited rc={rc}, restarting (attempt {restart_count})",
                                      {"restart_count": restart_count, "returncode": rc})
                     if stop_event.wait(backoff):
