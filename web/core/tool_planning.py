@@ -180,6 +180,123 @@ def _bump_master_fail_count(next_v, source_v, value=None):
         return 0
 
 
+def _normalize_master_plan_paths(plan, source_v, next_v):
+    """Rewrite parent bot paths in a Master plan to the target bot path.
+
+    Master can inspect the source bot, but worker edit and verification paths
+    must point at the prepared target directory. Keep the rewrite path-scoped so
+    prose such as "claude_v206 is weak vs underbets" remains intact.
+    """
+    meta = {
+        "source_v": source_v,
+        "next_v": next_v,
+        "replacements": 0,
+        "fields": [],
+    }
+    if not isinstance(plan, (dict, list)) or source_v is None or next_v is None:
+        return plan, meta
+    try:
+        source_i = int(source_v)
+        next_i = int(next_v)
+    except (TypeError, ValueError):
+        return plan, meta
+    if source_i == next_i:
+        return plan, meta
+
+    source_bot = f"claude_v{source_i}"
+    target_bot = f"claude_v{next_i}"
+    rel_source = f"bots/{source_bot}"
+    rel_target = f"bots/{target_bot}"
+    win_source = f"bots\\{source_bot}"
+    win_target = f"bots\\{target_bot}"
+    abs_source = str(PROJECT_ROOT / "bots" / source_bot)
+    abs_target = str(PROJECT_ROOT / "bots" / target_bot)
+    abs_win_source = abs_source.replace("/", "\\")
+    abs_win_target = abs_target.replace("/", "\\")
+
+    literal_replacements = [
+        (rel_source + "/", rel_target + "/"),
+        (win_source + "\\", win_target + "\\"),
+        (abs_source + "/", abs_target + "/"),
+        (abs_win_source + "\\", abs_win_target + "\\"),
+    ]
+    quoted_dirs = [
+        (rel_source, rel_target),
+        (win_source, win_target),
+        (abs_source, abs_target),
+        (abs_win_source, abs_win_target),
+    ]
+
+    def replace_text(text):
+        changed = 0
+        out = text
+        for src, dst in literal_replacements:
+            n = out.count(src)
+            if n:
+                out = out.replace(src, dst)
+                changed += n
+        for src, dst in quoted_dirs:
+            pattern = re.compile(rf"(?P<q>['\"]){re.escape(src)}(?P=q)")
+
+            def _quoted(match, replacement=dst):
+                return f"{match.group('q')}{replacement}{match.group('q')}"
+
+            out, n = pattern.subn(_quoted, out)
+            changed += n
+
+            cd_pattern = re.compile(
+                rf"(?P<prefix>\bcd\s+){re.escape(src)}"
+                rf"(?P<suffix>\s*(?:&&|;|\||\n|$))"
+            )
+            out, n = cd_pattern.subn(
+                lambda m, replacement=dst: (
+                    f"{m.group('prefix')}{replacement}{m.group('suffix')}"
+                ),
+                out,
+            )
+            changed += n
+        return out, changed
+
+    def walk(value, path):
+        if isinstance(value, str):
+            new_value, count = replace_text(value)
+            if count:
+                meta["replacements"] += count
+                meta["fields"].append(path)
+            return new_value
+        if isinstance(value, list):
+            return [walk(item, f"{path}[{idx}]") for idx, item in enumerate(value)]
+        if isinstance(value, dict):
+            return {key: walk(item, f"{path}.{key}") for key, item in value.items()}
+        return value
+
+    if isinstance(plan, dict):
+        normalized = dict(plan)
+        if "tasks" in normalized:
+            normalized["tasks"] = walk(normalized["tasks"], "plan.tasks")
+    else:
+        normalized = walk(plan, "plan")
+    if meta["fields"]:
+        meta["fields"] = sorted(set(meta["fields"]))
+    return normalized, meta
+
+
+def _normalize_and_log_master_plan_paths(plan, source_v, next_v):
+    normalized, meta = _normalize_master_plan_paths(plan, source_v, next_v)
+    if meta.get("replacements", 0) > 0:
+        try:
+            log_system_event(
+                "pipeline.master_plan_paths_normalized", "warn",
+                f"Normalized {meta['replacements']} parent-path reference(s) "
+                f"in Master plan v{next_v}: bots/claude_v{source_v} -> "
+                f"bots/claude_v{next_v}",
+                meta,
+            )
+        except Exception:
+            pass
+    return normalized
+
+
 _TUNER_STRUCTURAL_PATTERNS = [
     "add parameter", "add a parameter", "function signature",
     "add function", "new function", "add method",
@@ -879,6 +996,7 @@ async def run_master(args):
     if data is None:
         _nf = _bump_master_fail_count(next_v, source_v)
         return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed to produce a valid plan after 3 retries", "fail_count": _nf, "directive": "If run_master keeps failing, do NOT retry indefinitely — call abandon_generation to restart the generation fresh.", "logs": ui.get_output()})}]}
+    data = _normalize_and_log_master_plan_paths(data, source_v, next_v)
 
     # --- P0-1: Post-Master Plan Verification Audit ---
     # Capped retry loop: on audit rejection with retry_recommended, re-plan AND
@@ -972,6 +1090,7 @@ async def run_master(args):
             if data is None:
                 _nf = _bump_master_fail_count(next_v, source_v, value=_audit_attempt)
                 return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed after audit retry", "fail_count": _nf, "directive": "If run_master keeps failing, call abandon_generation to restart fresh.", "logs": ui.get_output()})}]}
+            data = _normalize_and_log_master_plan_paths(data, source_v, next_v)
             # Persist audit_attempt so crash-resume resumes at this count (not 0)
             try:
                 _ckpt_retry = read_pipeline_checkpoint() or {}

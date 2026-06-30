@@ -194,18 +194,47 @@ events_file = pathlib.Path(sys.argv[1])
 target = int(sys.argv[2])
 timeout = int(sys.argv[3])
 log_file = pathlib.Path(sys.argv[4])
-terminal = {
+generation_terminal = {
     "pipeline.commit_done",
-    "pipeline.archived",
-    "pipeline.quality_failed",
+    "pipeline.archivist_done",
+    "pipeline.abandoned",
+    "pipeline.master_exhausted",
+    "pipeline.master_audit_exhausted_abandon",
     "pipeline.cycle_timeout",
     "pipeline.cycle_timeout_abandon",
-    "orchestrator.crashed",
+    "pipeline.precommit_hard_limit",
+}
+alert_events = {
     "daemon.crashed",
+    "orchestrator.crashed",
+    "pipeline.quality_failed",
+    "pipeline.guard_block",
+    "pipeline.redundant_tool_call",
+    "pipeline.precommit_eval",
+    "pipeline.precommit_infra_timeout",
 }
 seen = 0
+seen_generations = set()
 pos = events_file.stat().st_size if events_file.exists() else 0
 deadline = time.time() + timeout
+
+def generation_key(event):
+    data = event.get("data") or {}
+    for key in ("abandoned_v", "version", "next_v", "target_v"):
+        value = data.get(key)
+        if value is not None:
+            return f"v{value}"
+    run_id = data.get("run_id")
+    if run_id:
+        return f"run:{run_id}"
+    return f"{event.get('type')}:{int(event.get('ts') or 0)}"
+
+def should_alert(event):
+    etype = event.get("type")
+    if etype == "pipeline.precommit_eval":
+        return not bool((event.get("data") or {}).get("passed", True))
+    return etype in alert_events
+
 while time.time() < deadline and seen < target:
     if not events_file.exists():
         time.sleep(2)
@@ -221,9 +250,22 @@ while time.time() < deadline and seen < target:
                 event = json.loads(line)
             except Exception:
                 continue
-            if event.get("type") in terminal:
+            if should_alert(event):
+                msg = f"[alert] {event.get('type')} {event.get('message')} data={event.get('data', {})}"
+                print(msg)
+                with log_file.open("a", encoding="utf-8") as out:
+                    out.write(msg + "\n")
+            if event.get("type") in generation_terminal:
+                key = generation_key(event)
+                if key in seen_generations:
+                    msg = f"[observe] duplicate terminal for {key}: {event.get('type')} {event.get('message')}"
+                    print(msg)
+                    with log_file.open("a", encoding="utf-8") as out:
+                        out.write(msg + "\n")
+                    continue
+                seen_generations.add(key)
                 seen += 1
-                msg = f"[observe] {seen}/{target} {event.get('type')} {event.get('message')} data={event.get('data', {})}"
+                msg = f"[observe] {seen}/{target} {key} {event.get('type')} {event.get('message')} data={event.get('data', {})}"
                 print(msg)
                 with log_file.open("a", encoding="utf-8") as out:
                     out.write(msg + "\n")

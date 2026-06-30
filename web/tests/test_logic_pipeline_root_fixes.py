@@ -131,6 +131,125 @@ def test_run_master_blocks_after_crossover_checkpoint_with_synthetic_plan(monkey
     assert called == []
 
 
+def test_normalize_master_plan_paths_rewrites_only_task_path_refs():
+    import tool_planning
+
+    source_v = 224
+    next_v = 232
+    abs_source = tool_planning.PROJECT_ROOT / "bots" / f"claude_v{source_v}"
+    plan = {
+        "analysis": (
+            "The source path bots/claude_v224/ is discussed here as read-only; "
+            "plain claude_v224 and claude_v2244 should stay untouched."
+        ),
+        "source_v": source_v,
+        "tasks": [{
+            "target_files": ["bots/claude_v224/strategy.py", "strategy.py"],
+            "worker_prompt": (
+                "Edit bots/claude_v224/strategy.py, then run "
+                "cd bots/claude_v224 && python -m py_compile strategy.py. "
+                f"Also test sys.path.insert(0, '{abs_source}'). "
+                "Do not rewrite plain claude_v224 or claude_v2244 labels."
+            ),
+        }],
+    }
+
+    normalized, meta = tool_planning._normalize_master_plan_paths(
+        plan, source_v=source_v, next_v=next_v
+    )
+
+    task = normalized["tasks"][0]
+    prompt = task["worker_prompt"]
+    assert task["target_files"][0] == "bots/claude_v232/strategy.py"
+    assert "bots/claude_v232/strategy.py" in prompt
+    assert "cd bots/claude_v232 &&" in prompt
+    assert f"'{tool_planning.PROJECT_ROOT / 'bots' / 'claude_v232'}'" in prompt
+    assert "bots/claude_v224/" not in json.dumps(normalized["tasks"])
+    assert "plain claude_v224" in prompt
+    assert "claude_v2244" in prompt
+    assert normalized["analysis"] == plan["analysis"]
+    assert meta["replacements"] >= 3
+
+
+def test_run_master_normalizes_parent_paths_before_audit(monkeypatch):
+    import audit_agents
+    import evolution_infra
+    import replay_spotlight
+    import tool_planning
+
+    async def _fake_master(*_args, **_kwargs):
+        return {
+            "analysis": "targeted plan",
+            "targeted_failure": "missed turn semi-bluff raise",
+            "expected_behavior_change": "raise draws instead of folding",
+            "do_not_touch": ["opponent.py"],
+            "measurement_plan": "compare target to parent",
+            "tasks": [{
+                "worker_id": 1,
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["bots/claude_v224/strategy.py"],
+                "worker_prompt": (
+                    "Modify bots/claude_v224/strategy.py and run "
+                    "python -m py_compile bots/claude_v224/strategy.py"
+                ),
+            }],
+        }
+
+    captured_audit = {}
+
+    async def _fake_audit(plan, _source_v, _ui, next_v=None):
+        captured_audit["plan"] = plan
+        captured_audit["next_v"] = next_v
+        return {"overall_pass": True}
+
+    checkpoint = {
+        "next_v": 232,
+        "source_v": 224,
+        "stage": "direction_audited",
+        "audit_attempt": 0,
+        "direction_audit": {"repetition_detected": False, "llm_failed": False},
+    }
+    writes = []
+
+    class _UI:
+        def clear_io(self):
+            pass
+
+        def log_history(self, *_args, **_kwargs):
+            pass
+
+        def get_output(self):
+            return ""
+
+    monkeypatch.setattr(tool_planning, "_run_master_analysis", _fake_master)
+    monkeypatch.setattr(tool_planning, "_matching_checkpoint", lambda *_a, **_k: checkpoint)
+    monkeypatch.setattr(tool_planning, "_get_ui", lambda: _UI())
+    monkeypatch.setattr(tool_planning, "_build_cross_gen_constraint_block", lambda _v: "")
+    monkeypatch.setattr(tool_planning, "_extract_exhausted_keywords", lambda: [])
+    monkeypatch.setattr(tool_planning, "log_system_event", lambda *a, **k: None)
+    monkeypatch.setattr(replay_spotlight, "find_critical_hands", lambda **_k: "")
+    monkeypatch.setattr(evolution_infra, "read_pipeline_checkpoint", lambda: checkpoint)
+    monkeypatch.setattr(audit_agents, "_run_master_plan_audit", _fake_audit)
+
+    def _fake_write(_next_v, _source_v, stage, **kwargs):
+        writes.append((stage, kwargs))
+        return True
+
+    monkeypatch.setattr(tool_planning, "write_pipeline_checkpoint", _fake_write)
+
+    result = asyncio.run(tool_planning.run_master.handler({"next_v": 232, "source_v": 224}))
+    data = json.loads(result["content"][0]["text"])
+
+    audited_task = captured_audit["plan"]["tasks"][0]
+    persisted_task = writes[-1][1]["master_plan"]["tasks"][0]
+    returned_task = data["plan"]["tasks"][0]
+    for task in (audited_task, persisted_task, returned_task):
+        text = json.dumps(task)
+        assert "bots/claude_v232/strategy.py" in text
+        assert "bots/claude_v224/strategy.py" not in text
+    assert captured_audit["next_v"] == 232
+
+
 def test_illegal_stage_regression_is_not_written():
     import evolution_infra
 
