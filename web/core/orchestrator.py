@@ -648,6 +648,24 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                         "warn",
                                     )
                             else:
+                                # LOG GAP FIX (2026-06-30): plain timed_out (the most
+                                # common timeout path) previously had NO structured
+                                # event — only cycle_timeout_abandon/infra logged.
+                                # Record stage + reason so timeouts are auditable.
+                                try:
+                                    log_system_event(
+                                        "pipeline.cycle_timeout_plain", "error",
+                                        f"Cycle timed out after {CYCLE_TIMEOUT}s at stage="
+                                        f"{_b3_stage} — marking timed_out (next cycle restarts)",
+                                        {"timeout_sec": CYCLE_TIMEOUT,
+                                         "pipeline_stage": _b3_stage,
+                                         "next_v": ckpt.get("next_v"),
+                                         "source_v": ckpt.get("source_v"),
+                                         "precommit_attempt": ckpt.get("precommit_attempt", 0),
+                                         "master_fail_count": _b3_audit},
+                                    )
+                                except Exception:
+                                    pass
                                 write_pipeline_checkpoint(
                                     ckpt.get("next_v"), ckpt.get("source_v"), "timed_out",
                                     master_plan=ckpt.get("master_plan"),

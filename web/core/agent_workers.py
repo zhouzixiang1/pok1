@@ -484,6 +484,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 worker_prompt, context_files, ui,
                 f"WORKER {w_id} ({role})", worker_log_file,
                 tools=["Bash", "Read", "Edit"],
+                allowed_write_dir=next_dir,  # A1: scope writes to target bot dir only
             ))
             await asyncio.wait_for(llm_task, timeout=WORKER_TIMEOUT)
         except (asyncio.TimeoutError, Exception) as exc:

@@ -23,6 +23,9 @@ from evolution_infra import read_pipeline_checkpoint
 from experience_pool import trim_experience_pool
 from code_verification import seed_initial_bots
 
+# A4 (2026-06-30): rate-limit state for abandon_generation. [timestamp, reason].
+_LAST_ABANDON_TS = [0.0, ""]
+
 
 class ReapWeakestInput(TypedDict):
     pass
@@ -192,6 +195,25 @@ async def _do_abandon_generation(reason: str = "abandon_generation") -> dict:
     system event). The caller is responsible for clearing the orchestrator
     session BEFORE calling this if a stale session must not be resumed.
     """
+    # A4 (2026-06-30): rate-limit abandons to prevent evolution-DoS / version-space
+    # leak. A rogue or stuck LLM could spam abandon_generation, monotonically
+    # incrementing next_v via the abandoned_versions floor and never letting any
+    # generation reach the gates. Enforce a 60s cooldown between abandons.
+    import time as _t
+    now = _t.time()
+    if (now - _LAST_ABANDON_TS[0]) < 60:
+        try:
+            log_system_event(
+                "pipeline.abandon_rate_limited", "warn",
+                f"abandon_generation rate-limited (cooldown {60 - (now - _LAST_ABANDON_TS[0]):.0f}s remaining). "
+                f"Recent abandon was {_LAST_ABANDON_TS[1]}.",
+                {"cooldown_remaining": 60 - (now - _LAST_ABANDON_TS[0]),
+                 "last_abandon_reason": _LAST_ABANDON_TS[1]},
+            )
+        except Exception:
+            pass
+        return {"abandoned": False, "rate_limited": True,
+                "reason": f"abandon cooldown active ({60 - (now - _LAST_ABANDON_TS[0]):.0f}s remaining)"}
     from evolution_core import PIPELINE_STATE_FILE
     checkpoint = read_pipeline_checkpoint() if PIPELINE_STATE_FILE.exists() else None
     cleared_checkpoint = False
@@ -236,6 +258,9 @@ async def _do_abandon_generation(reason: str = "abandon_generation") -> dict:
                      f"Abandoned generation ({reason}, dir={removed_dir})",
                      {"removed_dir": removed_dir, "cleared_checkpoint": cleared_checkpoint,
                       "reason": reason, "abandoned_v": abandoned_v})
+    # A4: update rate-limit timestamp on successful abandon.
+    _LAST_ABANDON_TS[0] = now
+    _LAST_ABANDON_TS[1] = reason
 
     return {
         "abandoned": True,

@@ -1665,6 +1665,35 @@ async def execute_workers(args):
                 "source_v": source_v,
             })
 
+    # B6 (2026-06-30): redundant-call guard. execute_workers is NOT idempotent —
+    # a redundant call (no reviewer_feedback) when workers already ran resets code
+    # from source + re-runs every Worker-LLM (the single most expensive pipeline
+    # step), wasting cost and mutating already-gated code. Only allow a re-run when
+    # there is reviewer_feedback (a legitimate retry-after-reviewer-reject). A pure
+    # redundant call must be refused so the orchestrator proceeds to the next gate.
+    _b6_stage = ckpt.get("stage")
+    if (not reviewer_feedback
+            and _b6_stage in ("workers_done", "quality_passed", "reviewed", "critic_checked", "verified")):
+        try:
+            log_system_event(
+                "pipeline.workers_redundant_call_blocked", "warn",
+                f"execute_workers called again for v{next_v} at stage={_b6_stage} with no "
+                f"reviewer_feedback — refusing re-run (would reset code + waste Worker-LLM "
+                f"cost). Proceed to the next gate instead.",
+                {"next_v": next_v, "source_v": source_v, "stage": _b6_stage},
+            )
+        except Exception:
+            pass
+        return _json_tool_result({
+            "info": (f"Workers already ran for v{next_v} (stage={_b6_stage}). The code is in place. "
+                     f"Do NOT call execute_workers again — proceed to the next pipeline gate "
+                     f"(run_quality_gates / run_review / run_critic / run_precommit_eval / commit_bot)."),
+            "next_v": next_v,
+            "source_v": source_v,
+            "stage": _b6_stage,
+            "redundant_call_blocked": True,
+        })
+
     # Circuit breaker: limit total worker failures per generation
     # Backward compat: old checkpoints used worker_invocation_count instead of worker_failure_count
     failure_count = ckpt.get("worker_failure_count", ckpt.get("worker_invocation_count", 0))

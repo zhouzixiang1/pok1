@@ -25,6 +25,113 @@ from claude_agent_sdk import (
 
 log = logging.getLogger("pok.infra")
 
+
+def _make_subagent_write_guard(allowed_write_dir):
+    """A1 (2026-06-30): build a PreToolUse hook that restricts a sub-agent's
+    Bash/Edit/Write/NotebookEdit to ONLY mutate files under `allowed_write_dir`.
+
+    Sub-agents (workers, crossover) run with bypassPermissions + Bash/Edit tools
+    but the orchestrator-level guard hook (_make_bot_dir_guard_hook) does NOT
+    cover them (different ClaudeAgentOptions, no hooks= passed). A rogue worker
+    prompt could otherwise edit web/core/*.py, other bot dirs, or pipeline state.
+    This hook closes that gap by scoping writes to the agent's target bot dir.
+
+    Read-only operations (grep/cat/git status) are allowed anywhere; only
+    mutations outside allowed_write_dir are denied.
+    """
+    try:
+        from pathlib import Path
+        _allowed = str(Path(allowed_write_dir).resolve())
+    except Exception:
+        _allowed = str(allowed_write_dir)
+
+    _BASH_MUTATION_PATTERNS = (
+        "> ", ">>", "sed -i", "tee ", "rm ", "rmdir", "mv ", "cp ", "mkdir",
+        "touch ", "cat > ", "cat >>", "python -c", "patch ",
+        "git add", "git rm", "git checkout", "git restore", "git commit",
+        "git tag", "git push", "echo ", "printf ",
+    )
+
+    def _is_outside_allowed(path_or_cmd):
+        """True if the target path/command references a path outside allowed_write_dir."""
+        text = str(path_or_cmd or "")
+        if not text:
+            return False
+        low = text.lower()
+        # If it explicitly references the allowed dir, it's inside.
+        if _allowed.lower() in low:
+            return False
+        # bots/claude_vN relative path matching the allowed bot dir is inside.
+        # We check by seeing if the path looks like a bot file under the SAME version.
+        # allowed_write_dir is like .../bots/claude_v220 ; extract the version marker.
+        try:
+            marker = _allowed.lower().split("bots/")[-1]  # e.g. "claude_v220"
+            if marker and marker in low:
+                return False
+        except Exception:
+            pass
+        # Any bots/claude_v* path that is NOT the allowed one -> outside.
+        if "bots/claude_v" in low or "bots\\claude_v" in low:
+            return True
+        # web/core, results/, pipeline_state, etc. -> outside (protected paths).
+        for protected in ("web/core", "web/server", "results/pipeline_state",
+                          "worker_failures", "pipeline_state.json", ".git"):
+            if protected in low:
+                return True
+        return False
+
+    def _bash_is_mutation(command):
+        low = str(command).lower()
+        return any(p in low for p in _BASH_MUTATION_PATTERNS)
+
+    async def handler(hook_input, tool_use_id, context):
+        try:
+            from claude_agent_sdk.types import SyncHookJSONOutput
+            tool_name = hook_input.get("tool_name", "") if isinstance(hook_input, dict) else ""
+            tool_input = hook_input.get("tool_input", {}) if isinstance(hook_input, dict) else {}
+            blocked = None
+            if tool_name == "Bash":
+                cmd = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
+                if _bash_is_mutation(cmd) and _is_outside_allowed(cmd):
+                    blocked = ("Bash mutation targets a path outside the allowed bot dir "
+                               + _allowed + ". Sub-agents may only edit their assigned "
+                               "target bot directory. Command: " + str(cmd)[:100])
+            elif tool_name in ("Edit", "Write", "NotebookEdit"):
+                fp = tool_input.get("file_path", "") or tool_input.get("notebook_path", "")
+                if _is_outside_allowed(fp):
+                    blocked = (tool_name + " targets a path outside the allowed bot dir "
+                               + _allowed + " (" + str(fp) + "). Sub-agents may only edit "
+                               "their assigned target bot directory.")
+            if blocked:
+                try:
+                    from system_log import log_system_event
+                    log_system_event("pipeline.subagent_guard_block", "error",
+                                     "BLOCKED sub-agent " + tool_name + ": " + blocked[:120],
+                                     {"tool": tool_name, "reason": blocked[:200],
+                                      "allowed_dir": _allowed})
+                except Exception:
+                    pass
+                return SyncHookJSONOutput(hookSpecificOutput={
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": blocked,
+                })
+        except Exception:
+            pass
+        from claude_agent_sdk.types import SyncHookJSONOutput
+        return SyncHookJSONOutput()
+
+    try:
+        from claude_agent_sdk.types import HookMatcher
+        return {"PreToolUse": [
+            HookMatcher(matcher="Bash", hooks=[handler]),
+            HookMatcher(matcher="Edit", hooks=[handler]),
+            HookMatcher(matcher="Write", hooks=[handler]),
+            HookMatcher(matcher="NotebookEdit", hooks=[handler]),
+        ]}
+    except Exception:
+        return None
+
 # Serialize role-IO log rotation across threads/processes (mirrors
 # battle_experience._LOG_ROTATION_LOCK). Without this lock, two concurrent
 # appenders can both observe the file over the size cap and race the rename
@@ -370,11 +477,17 @@ async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, 
         raise last_sdk_err
 
 
-async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, model="sonnet", tools=None):
+async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, model="sonnet", tools=None, allowed_write_dir=None):
     """Run a Claude query via the Agent SDK with cost tracking and typed streaming.
 
     tools: list of built-in tool names (e.g. ["Bash", "Read"]) or a ToolsPreset dict.
            When None, no built-in tools are exposed to the model.
+    allowed_write_dir: A1 fix (2026-06-30): when set (a pathlib.Path / str), a
+           PreToolUse guard hook is installed that BLOCKS this sub-agent's
+           Bash/Edit/Write from mutating anything OUTSIDE this directory.
+           Workers/crossover pass their target bot dir so a rogue worker prompt
+           cannot edit web/core/*.py, other bot dirs, or pipeline state (the
+           orchestrator-level guard does not cover sub-agents).
     """
     # Pre-check: if already rate-limited, wait before making any API call
     from rate_limiter import rate_limiter
@@ -432,20 +545,24 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         + "\n=============================\n[CLAUDE OUTPUT]\n",
     )
 
-    options = ClaudeAgentOptions(
+    # A1 (2026-06-30): install a write-scoped guard hook when allowed_write_dir is
+    # set, so sub-agents (workers/crossover) can ONLY mutate their target bot dir.
+    _sub_hooks = None
+    if allowed_write_dir is not None and tools and any(
+        t in ("Bash", "Edit", "Write", "NotebookEdit") for t in (tools if isinstance(tools, list) else [])
+    ):
+        _sub_hooks = _make_subagent_write_guard(allowed_write_dir)
+    options_kwargs = dict(
         model=model,
         permission_mode="bypassPermissions",
         cwd=str(PROJECT_ROOT),  # pok/ — workers use relative paths like bots/claude_vN/
         tools=tools,
         disallowed_tools=_BLOCKED_MCP_TOOLS,
-        # Adaptive thinking: let Claude decide when/how much to think (Opus 4.6+).
-        # Previously disabled because adaptive was combined with `display:summarized`
-        # (an Opus-4.7-only flag) which interacted badly with older models. Plain
-        # `{"type":"adaptive"}` is the documented default and no longer co-triggers
-        # the SDK signature-field bug. See llm_query._run_stream_with_signature_retry
-        # for the remaining transient-signature safety net.
         thinking={"type": "adaptive"},
     )
+    if _sub_hooks:
+        options_kwargs["hooks"] = _sub_hooks
+    options = ClaudeAgentOptions(**options_kwargs)
 
     # Initial query — retry transient SDK stream errors (signature field missing).
     # claude_agent_sdk 0.2.91 intermittently raises ClaudeSDKError "Missing required

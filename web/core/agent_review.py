@@ -467,6 +467,7 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
                 f"CROSSOVER v{parent_a_v}×v{parent_b_v}→v{target_v}",
                 log_file,
                 tools=["Bash", "Read", "Edit"],
+                allowed_write_dir=target_dir,  # A1: scope writes to target bot dir only
             )
         except Exception as e:
             # SDK error (e.g. ClaudeSDKError now propagates from run_claude_query)
@@ -483,6 +484,32 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
         if smoke_errors:
             ui.log_history("Crossover smoke test failed, retrying...", "warn")
             continue
+
+        # LOG GAP FIX (2026-06-30): record which files the crossover LLM actually
+        # changed vs parent_a, so the modification is auditable (parity with the
+        # worker_files_reset event on the evolve path).
+        try:
+            parent_a_dir = get_bot_dir(parent_a_v)
+            changed = []
+            if parent_a_dir.exists():
+                import os as _os
+                src_files = {f.name for f in parent_a_dir.glob("*.py")}
+                for f in target_dir.glob("*.py"):
+                    src_f = parent_a_dir / f.name
+                    if f.name not in src_files:
+                        changed.append(f.name + " (new)")
+                    elif src_f.exists() and f.read_text() != src_f.read_text():
+                        changed.append(f.name + " (modified)")
+            from system_log import log_system_event
+            log_system_event(
+                "pipeline.crossover_files_changed", "info",
+                f"Crossover v{target_v} (v{parent_a_v}×v{parent_b_v}): {len(changed)} "
+                f"file(s) changed vs parent v{parent_a_v} (attempt {attempt+1})",
+                {"target_v": target_v, "parent_a": parent_a_v, "parent_b": parent_b_v,
+                 "attempt": attempt + 1, "changed_files": changed[:20]},
+            )
+        except Exception:
+            pass
 
         return True
 

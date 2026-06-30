@@ -439,6 +439,25 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     )
 
 
+def _log_crossover_decision(trigger, source_v, parents, cons_a=None, cons_b=None):
+    """LOG GAP FIX (2026-06-30): record WHY crossover was chosen + which parents,
+    so the parent-selection rationale is auditable (previously only the result was
+    logged via pipeline.generation_prepared's strategy field)."""
+    try:
+        log_system_event(
+            "pipeline.crossover_decided", "info",
+            f"Crossover decided (trigger={trigger}): v{parents[0]}×v{parents[1]} "
+            f"(source v{source_v})",
+            {"trigger": trigger, "source_v": source_v,
+             "parent_a": parents[0], "parent_b": parents[1],
+             "version_gap": abs(parents[0] - parents[1]),
+             "conservative_a": round(cons_a, 0) if cons_a else None,
+             "conservative_b": round(cons_b, 0) if cons_b else None},
+        )
+    except Exception:
+        pass
+
+
 def _decide_strategy(combined, current_v, ratings):
     """Deterministic strategy selection based on combined analysis results.
 
@@ -536,6 +555,8 @@ def _decide_strategy(combined, current_v, ratings):
                     lowest_v, osc_ratings[lowest_v],
                     sorted(oscillating),
                 )
+                _log_crossover_decision("oscillation", highest_v, (highest_v, lowest_v),
+                                        osc_ratings.get(highest_v), osc_ratings.get(lowest_v))
                 return "crossover", highest_v, (highest_v, lowest_v)
 
     # Priority 1: Stagnation with high/medium confidence → crossover
@@ -544,6 +565,7 @@ def _decide_strategy(combined, current_v, ratings):
     if combined.get("is_stagnant") and combined.get("confidence") != "low":
         parents = _pick_crossover_parents(ratings, current_v, archive=_archive)
         if parents:
+            _log_crossover_decision("stagnation", parents[0], parents)
             return "crossover", parents[0], parents
 
     # Priority 2: LLM-recommended source (only for non-stagnant systems).
@@ -574,6 +596,7 @@ def _decide_strategy(combined, current_v, ratings):
         if parents:
             log.info("Diversity injection: forcing crossover (%s, %s) to break local optimum",
                      f"v{parents[0]}", f"v{parents[1]}")
+            _log_crossover_decision("diversity", parents[0], parents)
             return "crossover", parents[0], parents
 
     # Fallback: LLM did not recommend a source, use current_v

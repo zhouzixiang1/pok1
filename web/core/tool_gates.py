@@ -879,13 +879,30 @@ async def run_critic(args):
                 _log.warning("Regression guardian dispatch failed for v%s: %s", v, e)
 
     try:
+        # LOG GAP FIX (2026-06-30): enrich critic event with feedback/reasoning so
+        # the reject rationale is visible in the event stream (not just worker_failures.jsonl).
+        _critic_payload = {"version": v, "score": score_num, "approved": approved,
+                           "advisory_approved": advisory_approved}
+        if not advisory_approved:
+            _critic_payload["feedback"] = str(data.get("feedback", ""))[:500] if isinstance(data, dict) else ""
+            _critic_payload["local_optima_warning"] = data.get("local_optima_warning") if isinstance(data, dict) else None
+            _critic_payload["strategic_assessment"] = str(data.get("strategic_assessment", ""))[:300] if isinstance(data, dict) else ""
         log_system_event(
             "pipeline.critic_passed" if advisory_approved else "pipeline.critic_rejected",
             "success" if advisory_approved else "warn",
             f"Critic {'approved' if advisory_approved else 'rejected (advisory)'} v{v} (score={score_num})",
-            {"version": v, "score": score_num, "approved": approved,
-             "advisory_approved": advisory_approved},
+            _critic_payload,
         )
+        # 4b: when critic rejects but is advisory-only (approved stays True), record
+        # the explicit "reject but proceed" decision so it's not mistaken for a bug.
+        if not advisory_approved and approved:
+            log_system_event(
+                "pipeline.critic_advisory_skip", "info",
+                f"Critic rejected v{v} (score={score_num}) but advisory-only — proceeding "
+                f"to precommit (the final regression gate)",
+                {"version": v, "score": score_num,
+                 "guardian_triggered": score_num < 4},
+            )
     except Exception:
         pass
 

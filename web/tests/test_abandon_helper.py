@@ -11,6 +11,10 @@ import tool_bot_management as tbm
 
 
 def _run(coro):
+    # A4 (2026-06-30): reset the abandon rate-limit before each test call so the
+    # 60s cooldown doesn't block consecutive test abandons.
+    tbm._LAST_ABANDON_TS[0] = 0.0
+    tbm._LAST_ABANDON_TS[1] = ""
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
