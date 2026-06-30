@@ -29,6 +29,7 @@ from evolution_core import (
     archive_rotate_files,
     archive_old_logs,
 )
+from evolution_infra import _git, _git_ensure_main_branch
 from tool_helpers import (
     _get_ui, _json_tool_result,
     _matching_checkpoint, _resolve_version_args,
@@ -38,9 +39,6 @@ from tool_helpers import (
     read_pipeline_checkpoint,
 )
 from system_log import log_system_event
-
-from evolution_infra import _git
-
 
 # ──────────────────────────────────────────────
 # Commit Stage
@@ -414,6 +412,8 @@ def _archive_housekeeping_commit(version: int, reap_result: dict | None,
     bot deletions from auto-reap. Those must be explicit, path-scoped commits
     rather than hidden user-facing dirty state.
     """
+    _git_ensure_main_branch()
+
     preexisting_staged = [
         p for p in _git("diff", "--cached", "--name-only", check=False).splitlines()
         if p
@@ -469,13 +469,35 @@ def _archive_housekeeping_commit(version: int, reap_result: dict | None,
             "reason": "no_housekeeping_changes",
             "skipped_preexisting": skipped_preexisting,
         }
+    staged_set = {
+        p for p in _git("diff", "--cached", "--name-only", check=False).splitlines()
+        if p
+    }
+    allowed_set = set(staged_paths)
+    unexpected = sorted(staged_set - allowed_set)
+    if unexpected:
+        for path in staged_paths:
+            _git("restore", "--staged", "--", path, check=False)
+        log_system_event(
+            "pipeline.archivist_housekeeping_skip_unexpected_staged", "warn",
+            f"v{version}: skipped housekeeping commit because unrelated staged files appeared",
+            {"version": version, "unexpected_staged": unexpected[:40],
+             "housekeeping_paths": staged_paths[:40]},
+        )
+        return {
+            "committed": False,
+            "reason": "unexpected_staged_files",
+            "unexpected_staged": unexpected,
+            "staged_files": staged_paths,
+            "skipped_preexisting": skipped_preexisting,
+        }
 
     log_system_event(
         "pipeline.archivist_git_commit_staged", "info",
         f"v{version}: staging {len(staged_paths)} archivist housekeeping file(s)",
         {"version": version, "staged_files": staged_paths[:40]},
     )
-    _git("commit", "-m", f"chore: archive v{version} evolution housekeeping")
+    _git("commit", "-m", f"chore: archive v{version} evolution housekeeping", "--", *staged_paths)
     commit_hash = _git("rev-parse", "--short", "HEAD", check=False).strip()
     push_ok = False
     if os.environ.get("EVOLUTION_GIT_PUSH") == "1":
