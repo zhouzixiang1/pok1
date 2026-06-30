@@ -389,6 +389,17 @@ def load_strength_scores():
     return {name: 0.5 for name in get_active_bots()}
 
 
+def load_selection_scores():
+    """Load confidence-discounted scores for evolution mechanics."""
+    rows = _rating_rows_for_active()
+    if rows:
+        return {
+            row["name"]: row.get("selection_score", row.get("leaderboard_score", 0.5))
+            for row in rows
+        }
+    return {name: 0.5 for name in get_active_bots()}
+
+
 def load_h2h_avg_winrates():
     """Load H2H avg win rates for all active bots from the unified snapshot.
 
@@ -430,8 +441,11 @@ def load_h2h_avg_winrates_with_coverage():
         result[bot_name] = {
             "h2h_avg_wr": row.get("h2h_avg_wr", 0.5),
             "leaderboard_score": row.get("leaderboard_score", 0.5),
+            "selection_score": row.get("selection_score", row.get("leaderboard_score", 0.5)),
+            "selection_penalty": row.get("selection_penalty", 0.0),
             "rank_basis": row.get("rank_basis", ""),
             "strength_confidence": row.get("strength_confidence", "low"),
+            "strength_note": row.get("strength_note", ""),
             "h2h_source": row.get("h2h_source", "head_to_head"),
             "opponent_coverage": row.get("h2h_coverage", 0.0),
             "opponents_evaluated": row.get("h2h_opponents", 0),
@@ -471,9 +485,10 @@ def _select_precommit_opponents(version, source_v, max_top=2, max_weak=1):
     add(parent, "parent")
 
     strength_scores = load_strength_scores()
+    selection_scores = load_selection_scores()
     top = sorted(
         active,
-        key=lambda name: strength_scores.get(name, 0.0),
+        key=lambda name: selection_scores.get(name, strength_scores.get(name, 0.0)),
         reverse=True,
     )
     for name in top[:max_top]:
@@ -535,9 +550,11 @@ def _select_precommit_opponents(version, source_v, max_top=2, max_weak=1):
                 "name": name,
                 "reason": reasons.get(name),
                 "leaderboard_score": round(strength_scores.get(name, 0.0), 4),
+                "selection_score": round(selection_scores.get(name, strength_scores.get(name, 0.0)), 4),
                 "h2h_avg_wr": round(cov.get("h2h_avg_wr", 0.0), 4),
                 "h2h_coverage": round(cov.get("opponent_coverage", 0.0), 4),
                 "h2h_games": cov.get("h2h_games", 0),
+                "strength_confidence": cov.get("strength_confidence", "low"),
                 "h2h_source": cov.get("h2h_source", h2h_selection.get("source", "head_to_head")),
                 "pair_vs_parent": pair_stats,
             })

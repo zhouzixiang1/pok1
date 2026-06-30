@@ -264,7 +264,7 @@ class TestCrossoverParents:
     def test_sorts_by_strength_score(self, monkeypatch, tmp_path):
         from glicko2 import Glicko2Player
 
-        # Setup: mock get_active_bots and load_strength_scores
+        # Setup: mock get_active_bots and load_selection_scores
         active = ["claude_v1", "claude_v2", "claude_v3", "claude_v4"]
         # v3 has highest strength, v1 has second highest
         strength = {"claude_v1": 0.52, "claude_v2": 0.48, "claude_v3": 0.55, "claude_v4": 0.45}
@@ -272,7 +272,7 @@ class TestCrossoverParents:
 
         import generation_scheduler as gs
         monkeypatch.setattr("evolution_infra.get_active_bots", lambda: active)
-        monkeypatch.setattr("tool_helpers.load_strength_scores", lambda: strength)
+        monkeypatch.setattr("tool_helpers.load_selection_scores", lambda: strength)
 
         result = gs._pick_crossover_parents(ratings, 4)
         assert result is not None
@@ -291,7 +291,7 @@ class TestCrossoverParents:
 
         import generation_scheduler as gs
         monkeypatch.setattr("evolution_infra.get_active_bots", lambda: active)
-        monkeypatch.setattr("tool_helpers.load_strength_scores", lambda: strength)
+        monkeypatch.setattr("tool_helpers.load_selection_scores", lambda: strength)
 
         result = gs._pick_crossover_parents(ratings, 5)
         assert result is not None

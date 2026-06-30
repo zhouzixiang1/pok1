@@ -739,8 +739,6 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
                 # already pushes RD well past DEFAULT_RD, so this only bounds abuse.
                 elapsed = max(1, min(elapsed, 50))
                 ratings[b] = decay_rd(p, elapsed)
-    save_ratings(ratings, save_num=save_num)
-
     # Recompute win rates for H2H. Prefer a match_history rebuild when the
     # append-only history covers more active-pool pairs than the in-memory/file
     # matrix. This prevents sparse H2H snapshots from driving the leaderboard
@@ -774,6 +772,11 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
     save_h2h(h2h_out)
 
     save_bot_stats(bot_stats)
+
+    # Write ratings/history after the H2H and bot_stats snapshots so
+    # rating_history.win_rates reflects the same save cycle, not the previous
+    # on-disk matrix.
+    save_ratings(ratings, save_num=save_num)
 
     # Update legacy stats for backward compat
     stats["total_games"] = sum(v["games"] for v in bot_stats.values()) // 2

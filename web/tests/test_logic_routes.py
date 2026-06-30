@@ -11,12 +11,13 @@ import pytest
 
 class TestRatingsRanking:
     @pytest.mark.requires_active_bot
-    def test_sorted_by_leaderboard_score_descending(self, client):
+    def test_sorted_by_selection_score_descending(self, client):
         resp = client.get("/api/ratings")
         assert resp.status_code == 200
         data = resp.json()
-        scores = [r["leaderboard_score"] for r in data]
+        scores = [r["selection_score"] for r in data]
         assert scores == sorted(scores, reverse=True)
+        assert "leaderboard_score" in data[0]
         assert "h2h_avg_wr" in data[0]
         assert "h2h_coverage" in data[0]
 

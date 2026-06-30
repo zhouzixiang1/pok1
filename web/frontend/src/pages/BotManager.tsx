@@ -20,6 +20,10 @@ const DownloadIcon = ({ className }: { className?: string }) => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
 );
 
+const strengthConfidenceText = (value?: string) => (
+  value === "high" ? "强度高置信" : value === "medium" ? "强度中置信" : "强度低置信"
+);
+
 function RatingBadge({ r, rd, h2hWr, games }: { r: number; rd: number; h2hWr?: number; games?: number }) {
   const conf = rd < 50 ? "text-green-600" : rd < 100 ? "text-yellow-600" : "text-orange-500";
   return (
@@ -117,7 +121,7 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
   const displayName = bot.name.replace("claude_", "");
   const conserv = bot.rating ? bot.rating.conservative.toFixed(0) : "—";
   const fallbackStrength = bot.rating ? Math.max(0, Math.min(1, 0.5 + (bot.rating.conservative - 1500) / 800)) : null;
-  const strengthValue = bot.leaderboard_score ?? fallbackStrength;
+  const strengthValue = bot.selection_score ?? bot.leaderboard_score ?? fallbackStrength;
   const strength = strengthValue != null ? strengthValue.toFixed(4) : "—";
 
   return (
@@ -137,7 +141,8 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
           {bot.graveyard && <span className="px-1.5 py-0.5 text-[10px] rounded bg-gray-100 text-gray-400">已归档</span>}
         </div>
         <div className="flex items-center gap-4 text-sm text-gray-500">
-          <span className="text-xs text-gray-500">强度 {strength}</span>
+          <span className="text-xs text-gray-500">选择分 {strength}</span>
+          <span className="text-xs text-gray-400">{strengthConfidenceText(bot.strength_confidence)}</span>
           {bot.rating && <RatingBadge r={bot.rating.r} rd={bot.rating.rd} h2hWr={bot.h2h_avg_wr} games={bot.games} />}
           <span className="text-xs text-gray-400">{bot.total_lines} 行</span>
           <span className="text-xs text-gray-400">保守 {conserv}</span>
@@ -274,8 +279,8 @@ export default function BotManager() {
       sorted.sort((a, b) => (b.h2h_avg_wr ?? 0) - (a.h2h_avg_wr ?? 0));
     } else if (sortMode === "rating") {
       sorted.sort((a, b) => {
-        const aScore = a.leaderboard_score ?? (a.rating ? Math.max(0, Math.min(1, 0.5 + (a.rating.conservative - 1500) / 800)) : 0);
-        const bScore = b.leaderboard_score ?? (b.rating ? Math.max(0, Math.min(1, 0.5 + (b.rating.conservative - 1500) / 800)) : 0);
+        const aScore = a.selection_score ?? a.leaderboard_score ?? (a.rating ? Math.max(0, Math.min(1, 0.5 + (a.rating.conservative - 1500) / 800)) : 0);
+        const bScore = b.selection_score ?? b.leaderboard_score ?? (b.rating ? Math.max(0, Math.min(1, 0.5 + (b.rating.conservative - 1500) / 800)) : 0);
         return bScore - aScore;
       });
     } else {
@@ -361,7 +366,7 @@ export default function BotManager() {
                     : "hover:bg-gray-100 dark:hover:bg-gray-700"
                 }`}
               >
-                {mode === "h2h_wr" ? "H2H 胜率" : mode === "rating" ? "综合强度" : "版本"}
+                {mode === "h2h_wr" ? "H2H 胜率" : mode === "rating" ? "进化选择分" : "版本"}
               </button>
             ))}
           </div>

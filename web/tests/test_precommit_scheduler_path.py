@@ -195,7 +195,7 @@ class TestSchedulerPathUsedWhenCapable:
                     "wins_a": 2,
                     "wins_b": 1,
                     "draws": 0,
-                    "total": 3,
+                    "total": 4,
                     "error": None,
                     "completed_at": time.time(),
                 }
@@ -283,7 +283,7 @@ class TestSchedulerPathUsedWhenCapable:
                     "wins_a": 2,
                     "wins_b": 1,
                     "draws": 0,
-                    "total": 3,
+                    "total": 4,
                     "error": None,
                     "completed_at": time.time(),
                 }
@@ -345,7 +345,7 @@ class TestSchedulerPathUsedWhenCapable:
                     "wins_a": 2,
                     "wins_b": 1,
                     "draws": 0,
-                    "total": 3,
+                    "total": 4,
                     "error": None,
                     "completed_at": time.time(),
                 }
@@ -700,6 +700,31 @@ class TestPrecommitRegressionGates:
         assert data["n_games"] == 10
         assert all(ng == 10 for ng in captured)
         assert data["passed"] is True
+
+    @pytest.mark.asyncio
+    async def test_n_games_clamped_to_min(
+        self, monkeypatch, fake_bots, fake_opponents, mock_checkpoint, mock_ui
+    ):
+        """Tiny manual samples are lifted to PRECOMMIT_MIN_N_GAMES."""
+        monkeypatch.setattr("tool_eval.is_daemon_scheduler_capable", lambda: False)
+        monkeypatch.setattr("tool_eval._matching_checkpoint", lambda _v, _sv: mock_checkpoint)
+        monkeypatch.setattr("tool_eval._get_ui", lambda: mock_ui)
+        monkeypatch.setattr("tool_eval._record_gate", lambda *a, **k: True)
+
+        captured = []
+
+        def fake_mirror(a, b, n_games=1, verbose=False, save_log=False):
+            captured.append(n_games)
+            return ([2, 2], 0, n_games, None)
+
+        _patch_mirror_battle(monkeypatch, fake_mirror)
+
+        result = await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 1})
+        data = json.loads(result["content"][0]["text"])
+
+        import tool_eval
+        assert data["n_games"] == tool_eval.PRECOMMIT_MIN_N_GAMES
+        assert all(ng == tool_eval.PRECOMMIT_MIN_N_GAMES for ng in captured)
 
     @pytest.mark.asyncio
     async def test_n_games_clamped_to_max(

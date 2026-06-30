@@ -212,6 +212,38 @@ def _strength_confidence(coverage: float, h2h_games: int, rd: float, opponents_t
     return "low"
 
 
+def _selection_score(score: float, strength_confidence: str) -> tuple[float, float]:
+    """Score used by evolution mechanics when choosing top opponents/parents.
+
+    Keep the public leaderboard score intact, but discount low-confidence rows so
+    a high point estimate with weak evidence cannot become a mechanical parent or
+    top-opponent pick ahead of a similarly strong, better-established bot.
+    """
+    penalty = 0.03 if strength_confidence == "low" else 0.0
+    return _clamp(score - penalty), penalty
+
+
+def _strength_note(
+    *,
+    confidence: str,
+    coverage: float,
+    h2h_games: int,
+    h2h_opponents: int,
+    opponents_total: int,
+    rd: float,
+    basis: str,
+) -> str:
+    labels = {"high": "高", "medium": "中", "low": "低"}
+    note = (
+        f"强度置信={labels.get(confidence, confidence)}；"
+        f"H2H覆盖 {h2h_opponents}/{opponents_total}，"
+        f"{h2h_games} 局，RD={rd:.1f}，依据={basis}"
+    )
+    if confidence == "low":
+        note += "；进化选择分已降权"
+    return note
+
+
 def _score_components(
     r: float,
     rd: float,
@@ -295,6 +327,8 @@ def build_strength_rows(
             opponents_total=opponents_total,
             stats_wr=stats_wr,
         )
+        strength_conf = _strength_confidence(h2h_coverage_ratio, total_games, rd, opponents_total)
+        selection_score, selection_penalty = _selection_score(score, strength_conf)
         conservative = r - 2 * rd
         row = {
             "name": name,
@@ -315,13 +349,25 @@ def build_strength_rows(
             "h2h_source": selected["source"],
             "h2h_source_coverage": round(float(coverage_meta["coverage"]), 4),
             "leaderboard_score": round(score, 4),
+            "selection_score": round(selection_score, 4),
+            "selection_penalty": round(selection_penalty, 4),
             "rank_basis": basis,
-            "strength_confidence": _strength_confidence(h2h_coverage_ratio, total_games, rd, opponents_total),
+            "strength_confidence": strength_conf,
+            "strength_note": _strength_note(
+                confidence=strength_conf,
+                coverage=h2h_coverage_ratio,
+                h2h_games=total_games,
+                h2h_opponents=h2h_opponents,
+                opponents_total=opponents_total,
+                rd=rd,
+                basis=basis,
+            ),
         }
         rows.append(row)
 
     rows.sort(
         key=lambda row: (
+            row["selection_score"],
             row["leaderboard_score"],
             row["h2h_avg_wr"] if row["h2h_avg_wr"] is not None else -math.inf,
             row["conservative_rating"],
@@ -346,4 +392,3 @@ def strength_score_map(
         row["name"]: float(row["leaderboard_score"])
         for row in build_strength_rows(ratings_data, bot_stats_data, stored_h2h, active_bots, match_history_path)
     }
-

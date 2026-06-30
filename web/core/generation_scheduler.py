@@ -770,12 +770,12 @@ def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
             to maximize crossover diversity (fix-6).
     """
     from evolution_infra import get_active_bots
-    from tool_helpers import load_strength_scores
+    from tool_helpers import load_selection_scores
 
     active = get_active_bots()
     if len(active) < 2:
         return None
-    strength = load_strength_scores()
+    strength = load_selection_scores()
     ranked = sorted(
         active,
         key=lambda b: strength.get(b, 0.0),
