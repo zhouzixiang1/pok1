@@ -209,6 +209,7 @@ alert_events = {
     "orchestrator.crashed",
     "pipeline.quality_failed",
     "pipeline.guard_block",
+    "pipeline.subagent_guard_block",
     "pipeline.redundant_tool_call",
     "pipeline.precommit_eval",
     "pipeline.precommit_infra_timeout",

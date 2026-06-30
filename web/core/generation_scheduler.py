@@ -411,17 +411,19 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     # LOG GAP FIX (2026-06-29): record the final next_v decision with all inputs
     # so the version-number allocation is fully auditable. Previously only the
     # abnormal paths (bare commit, abandoned floor) logged; the normal case left
-    # no trace of how next_v was computed.
+    # no trace of how next_v was computed. This is only a scheduler selection,
+    # not proof that prepare_next_gen/run_crossover has materialized the bot dir.
     _final_next_v = max(current_v, max_committed_v) + 1
     try:
         log_system_event(
-            "pipeline.generation_prepared", "info",
-            f"Prepared v{_final_next_v} from v{source_v} (strategy={strategy[:40]})",
+            "pipeline.generation_selected", "info",
+            f"Selected v{_final_next_v} from v{source_v} (strategy={strategy[:40]})",
             {"next_v": _final_next_v, "current_v": current_v,
              "max_committed_v": max_committed_v,
              "abandoned_floor": _abandoned_floor,
              "source_v": source_v, "strategy": strategy[:80],
-             "stage": "prepared"},
+             "selection_stage": "selected",
+             "next_step": "prepare_next_gen_or_run_crossover"},
         )
     except Exception:
         pass
@@ -444,7 +446,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
 def _log_crossover_decision(trigger, source_v, parents, cons_a=None, cons_b=None):
     """LOG GAP FIX (2026-06-30): record WHY crossover was chosen + which parents,
     so the parent-selection rationale is auditable (previously only the result was
-    logged via pipeline.generation_prepared's strategy field)."""
+    logged via pipeline.generation_selected's strategy field)."""
     try:
         parent_a_metrics = _strength_payload(parents[0])
         parent_b_metrics = _strength_payload(parents[1])
