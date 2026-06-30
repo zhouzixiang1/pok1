@@ -100,6 +100,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         "match_analysis": match_analysis_trimmed,
         "performance_verification": perf_trimmed,
         "source_v": str(source_v),
+        "next_v": str(next_v),
         "replay_spotlight": replay_spotlight_trimmed,
         "bot_action_stats": bot_action_stats_trimmed,
         "opponent_profiles": opponent_profiles_trimmed,
@@ -110,7 +111,8 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
     })
     master_ctx = (
         f"Current evolution: v{source_v} → v{next_v}\n"
-        f"Bot directory: bots/claude_v{source_v}/\n"
+        f"Source bot directory (read-only parent): bots/claude_v{source_v}/\n"
+        f"Target bot directory (workers edit/verify): bots/claude_v{next_v}/\n"
         f"Ratings file: web/core/results/glicko_ratings.json\n"
         f"Rating history: web/core/results/rating_history.jsonl\n"
         f"Head-to-Head data: web/core/results/head_to_head.json\n"
