@@ -12,7 +12,7 @@ from tournament import (
     should_lock_win, fold_gives_opponent_lock, match_risk_adjustment,
     match_pressure_profile, apply_anti_lock_pressure, anti_lock_can_continue,
 )
-from opponent import build_opponent_model, analyze_current_spot
+from opponent import build_opponent_model, analyze_current_spot, classify_archetype, _aggro_bluffcatcher_should_fold, _rock_value_bet_fold, _board_texture_bluff_raise, _turn_float_value_donk, _postflop_response_margin, _multibarrel_line_fold, _river_potodds_equity_margin, _allin_polarized_equity_fold
 from postflop import (
     made_hand_metric, pair_board_profile, pair_domination_margin,
     marginal_pair_under_pressure, board_texture_profile,
@@ -322,11 +322,9 @@ def choose_raise(
             desired_total = int((_base_bb + max(0.0, preflop_strength - 0.48) * 2.2) * BIG_BLIND)
             amount = max(amount, desired_total - my_round_bet)
 
-    # v194 NEW PREFLOP AXIS (crossover from v221): SPR commitment gate -- cap
-    # marginal-hand (0.50-0.62) raise size so projected SPR-if-called stays >= 4
-    # (pot control), capping -20k stack-off exposure. Premium (>0.70)/trash
-    # (<0.45) bypass. Required because the corrected preflop evaluator (also
-    # imported from v221) shifts marginal pairs onto this band.
+    # v194 NEW PREFLOP AXIS: SPR commitment gate -- cap marginal-hand raise
+    # size so projected SPR-if-called stays >= 4 (pot control), capping -20k
+    # stack-off exposure. Premium (>0.70) and trash (<0.45) bypass.
     if round_idx == 0 and preflop_strength is not None:
         _spr_raise_to = amount + my_round_bet
         _spr_capped = _preflop_spr_commitment_gate(
@@ -399,6 +397,12 @@ def _should_4bet_light(my_cards, preflop_strength, opponent_model, state, my_chi
     if not _is_fourbet_light_candidate(my_cards):
         return 0
 
+    # v187 SCALE-SHIFT NOTE: estimate_preflop_strength was recalibrated to real HU
+    # equity (pairs 0.50-0.85, non-pairs 0.33-0.67). On this new scale the band
+    # [0.30, 0.55) admits small pairs 22(0.50)/33(0.53) -- which the function
+    # docstring explicitly lists as suitable 4bet-light set-mine candidates, so
+    # their inclusion is INTENDED. The < 0.30 floor is now inert (non-pair min is
+    # 0.33) and the 0.55 ceiling still excludes true premiums (55+ pair = 0.59+).
     if preflop_strength < 0.30 or preflop_strength >= 0.55:
         return 0
 
@@ -634,9 +638,8 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
     elif spot_info['preflop_spot'] == 'bb_vs_raise':
         pot_odds_pf = to_call / (to_call + state['pot']) if to_call > 0 else 0.0
         hand_cat = classify_preflop_hand(req['my_cards'])
-        # v203 (crossover from v221): shove/4bet defense dispatch. The fn
-        # self-gates internally (fires on opponent_allin OR opp_pf_raises>=2),
-        # so no external allin guard is needed.
+        # v203: removed opponent_allin guard — fn self-gates internally.
+        # Now fires on non-all-in 4bets (bb facing SB 4bet: opp_pf_raises>=2).
         if _preflop_shove_defense_fold(
                 req['my_cards'], preflop_strength, state, spot_info, opponent_model):
             return -1
@@ -692,6 +695,11 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
     elif spot_info['preflop_spot'] == 'sb_vs_iso_raise':
         pot_odds_iso = to_call / (to_call + state['pot']) if to_call > 0 else 0.0
         # Limp-reraise with strong hands
+        # v187 SCALE-SHIFT NOTE: on the recalibrated equity scale (pairs 0.50-0.85,
+        # non-pairs 0.33-0.67), the 0.58 floor puts QJo(~0.585)/KJo(~0.594)/KQo(~0.61)
+        # and pairs 55+(0.59+) on the qualification knife-edge. This is an aggressive
+        # but intentional limp-reraise range (gated by trash_hand + spot detection);
+        # offsuit trash below QJo stays excluded. Behavior shift confirmed acceptable.
         if preflop_strength >= 0.58 and not trash_hand:
             raise_amount = choose_raise(
                 state['min_raise_action'], my_chips, state['my_round_bet'],
@@ -728,8 +736,10 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
         is_aks = (hand_cat_sbr == 'big_cards' and _prof_sbr['suited']
                   and _prof_sbr['high'] == 14 and _prof_sbr['low'] == 13)
         # 4bet/jam with TRUE premiums only: QQ+, KK, AA, and AKs.
-        # NOTE: the old >=0.78 strength gate 4-bet 88+ because estimate_preflop_strength
-        # saturates 88-AA to 1.0. The hand-class gate restricts to QQ+/AKs.
+        # NOTE (v187): estimate_preflop_strength is now CORRECTED -- it no longer
+        # saturates 88-AA to 1.0 (AA=0.85, 88=0.68 on the new equity-matched scale).
+        # The hand-class gate still restricts 4bet/jam to QQ+/AKs, which is the
+        # intended value range; the strength gate is not used here.
         if hand_cat_sbr == 'premium' or is_aks:
             raise_amount = choose_raise(
                 state['min_raise_action'], my_chips, state['my_round_bet'],
@@ -742,8 +752,7 @@ def choose_preflop_spot_action(req, state, spot_info, opponent_model, preflop_st
                 return raise_amount
             # If raise sizing fails (e.g. too many chips needed), call with premiums
             return 0
-        # v203 (crossover from v221): multi-site 4bet/5bet defense dispatch
-        # (was dormant behind allin guard). Self-gates internally.
+        # v203: multi-site 4bet/5bet defense dispatch (was dormant behind allin guard).
         if _preflop_shove_defense_fold(
                 req['my_cards'], preflop_strength, state, spot_info, opponent_model):
             return -1
@@ -1105,6 +1114,107 @@ def _value_lead_upsizing_delta(round_idx, to_call, made_strength, value_profile,
     return delta
 
 
+def _spr_calibrated_value_ship(
+    round_idx, to_call, made_strength, value_profile, board_texture,
+    opponent_model, pot, my_chips, min_raise, my_round_bet, nutted_risk,
+):
+    """v181 NEW OFFENSE: SPR/stack-depth-calibrated value ship.
+
+    Sizes value bets to a STACK-COMMITMENT THRESHOLD instead of a fixed
+    pot-fraction. When SPR (my_chips/pot) is low and the bot holds a
+    nut/strong hand on a safe board, ships or near-ships for maximum
+    extraction rather than betting 0.4x pot and leaving 60% of the stack unbet.
+
+    NEW structural axis: commitment-threshold sizing (geometry-driven), NOT
+    a fold-margin/call_margin delta. Complementary to value_maximizer_overbet
+    (which requires a confirmed calling-station read); this fires on SPR
+    geometry alone regardless of opponent model.
+
+    Returns raise-to-total increment (int, may be >= my_chips for all-in
+    conversion by sanitize_action) or None.
+    """
+    # Street + aggression gate: turn/river, bot has betting lead (to_call==0).
+    if round_idx not in (2, 3) or to_call != 0:
+        return None
+    if my_chips <= 1 or pot <= 1:
+        return None
+
+    spr = my_chips / pot
+    # Only activate in low-SPR regimes where commitment matters.
+    # SPR > 4 means deep stacks relative to pot — normal sizing handles it.
+    if spr > 4.0:
+        return None
+
+    # Hand-strength gate: require nut/strong (safe to commit full stack for value).
+    tier = value_profile.get('tier', 'none') if value_profile else 'none'
+    if tier == 'nut':
+        if made_strength < 0.65:
+            return None
+    elif tier == 'strong':
+        if made_strength < 0.58:
+            return None
+    elif made_strength >= 0.62:
+        pass  # unclassified but strong-made (trips+)
+    else:
+        return None
+
+    # Board safety: don't ship into completed draws (unless we have the nuts).
+    if board_texture is not None and tier != 'nut':
+        flush_p = board_texture.get('flush_pressure', 0.0)
+        straight_p = board_texture.get('straight_pressure', 0.0)
+        if flush_p >= 0.75 or straight_p >= 0.65:
+            return None
+
+    # Nutted risk: don't ship if opponent likely has us beat.
+    if nutted_risk > 0.10:
+        return None
+
+    # Sizing logic: commitment-threshold geometry.
+    if spr <= 2.0:
+        # v182: tier-differentiated — nuts ship 100%, strong ships 75%
+        # (preserves 25% behind when beaten; at SPR<=2.0 pot odds
+        # still favor calling a shove for the remainder if needed).
+        if tier == 'nut':
+            target_chips = my_chips
+        else:
+            target_chips = int(my_chips * 0.75)
+    elif spr <= 3.0:
+        # Near-ship: commit ~75% of remaining stack.
+        target_chips = int(my_chips * 0.75)
+    else:
+        # SPR in (3.0, 4.0]: commit ~55% of remaining stack.
+        target_chips = int(my_chips * 0.55)
+
+    # Convert to raise-to-total increment (amount beyond to_call, which is 0).
+    # opponent_model is intentionally not a hard gate (SPR geometry drives
+    # this path), but confidence modulates the near-ship fraction so that
+    # unconfirmed opponents get slightly more conservative sizing.
+    _opp_conf = (opponent_model.get('confidence', 0.0)
+                 if opponent_model else 0.0)
+    if _opp_conf < 0.15 and tier != 'nut' and spr > 2.0:
+        target_chips = int(target_chips * 0.90)
+
+    amount = max(min_raise, target_chips - my_round_bet)
+    # Allow all-in: amount may equal my_chips; sanitize_action handles -2.
+    amount = min(amount, my_chips)
+
+    if amount < min_raise:
+        return None
+
+    # M5/M6 compliant: unconditional telemetry (NO `!= 0` gate).
+    try:
+        sys.stderr.write(
+            'SPR_VALUE_SHIP spr=%.2f target_chips=%d amount=%d tier=%s '
+            'made=%.2f risk=%.2f round=%d pot=%d chips=%d\n'
+            % (spr, target_chips, amount, tier, made_strength,
+               nutted_risk, round_idx, pot, my_chips)
+        )
+    except Exception:
+        pass
+
+    return amount
+
+
 def _turn_board_danger_margin(round_idx, made_strength, draw_strength,
                                value_profile, board_texture, spot_info, pot_odds):
     """v180: Continuous turn call-margin delta for board-danger stack-off leak.
@@ -1301,6 +1411,13 @@ def get_action(req, requests):
         medium += 0.015
 
     if preflop_strength is not None:
+        # v187 SCALE-SHIFT NOTE: on the recalibrated equity scale, >= 0.72 now
+        # covers only TT+ pairs (TT=0.73, JJ=0.76, QQ=0.79, KK=0.82, AA=0.85) --
+        # big offsuit aces (AKs=0.66/AKo=0.63) and 88/99 no longer trigger this
+        # postflop strong/medium threshold-lowering. The shift is minor (+/-0.03
+        # on strong/medium) and intentional: only genuine premium preflop hands
+        # get the value-protection adjustment. The <= 0.40 branch (weak-trash
+        # threshold-raising) still catches the bottom of the new non-pair range.
         if preflop_strength >= 0.72:
             strong -= 0.03
             medium -= 0.02
@@ -1329,8 +1446,7 @@ def get_action(req, requests):
     medium += 0.30 * nutted_risk["risk"]
 
     if state["opponent_allin"]:
-        # v201 (crossover from v221): preflop shove defense -- fold marginal
-        # hands vs a preflop all-in / 4-bet+ shove.
+        # v201 PREFLOP SHOVE DEFENSE: fold marginal hands vs preflop shove
         if round_idx == 0 and preflop_strength is not None and _preflop_shove_defense_fold(
                 my_cards, preflop_strength, state, spot_info, opponent_model):
             return -1
@@ -1411,8 +1527,27 @@ def get_action(req, requests):
                   f"pot={pot} my_chips={my_chips} win={win_rate:.3f}",
                   file=sys.stderr)
             return -1
+        # v202: calibrated-equity fold for marginal one-pair vs polarized all-in.
+        # No stderr telemetry: daemon reads stdout-only, so a print nested in this
+        # gate triggers the multi-arm telemetry-fidelity shadow (v183 precedent).
+        if round_idx >= 2 and _allin_polarized_equity_fold(
+                round_idx, made_strength, draw_strength, value_profile,
+                jam_odds, opponent_model, anti_lock_pressure):
+            return -1
         jam_buffer = clamp(jam_buffer, -0.05 if anti_lock_pressure else 0.0, 0.14)
         return -2 if win_rate >= jam_odds + jam_buffer or anti_lock_jam_continue else -1
+
+    # v193 gate-mandated behavior-preserving relocation of _river_stackoff_guard
+    # (fix-3 placement_shadow): the call was inside `if to_call > 0:` AFTER this
+    # `if to_call >= my_chips:` all-in block, making it a TRUE SHADOW for stack
+    # all-ins. The all-in case is already covered by _spr_commitment_gate (below)
+    # and _multibarrel_line_fold, so the guard only ever serves 0<to_call<my_chips.
+    # The added `0 < to_call < my_chips` guard restricts to that SAME non-all-in
+    # range -> byte-identical behavior, call-site now before the early-return.
+    if 0 < to_call < my_chips and round_idx == 3:
+        if _river_stackoff_guard(made_strength, value_profile, spot_info,
+                                 opponent_model, my_chips, pot, to_call):
+            return -1
 
     if to_call >= my_chips:
         shove_odds = my_chips / (pot + my_chips)
@@ -1461,17 +1596,68 @@ def get_action(req, requests):
                   f"pot_odds={to_call/(pot+to_call):.3f}",
                   file=sys.stderr)
             return -1
+        # v192: multi-barrel line-evidence fold for COVERING all-in call-downs.
+        # The same gate is dispatched in the to_call>0 block (~L1592), but that
+        # block is UNREACHABLE here (this all-in block returns at L1555 first).
+        # The -20k stack-off leak is exactly all-in call-downs ('calls off
+        # -20000'), so dispatch in BOTH blocks. Two-pair bluff-catchers
+        # (made_strength~0.40, tier='strong') facing a confirmed multi-barrel
+        # all-in from a non-loose opponent fold — overrides the win_rate-based
+        # call that overestimates two-pair equity vs the polarized barrel range.
+        # Function's own round_idx<2 / to_call<=0 / loose_caller / tier / pot_odds
+        # guards make this safe (preflop all-ins excluded; nut/strong-one-pair
+        # protected; loose callers exempted).
+        if round_idx >= 2 and _multibarrel_line_fold(
+                opponent_model, spot_info, round_idx, to_call, pot,
+                made_strength, value_profile, draw_strength, board_texture):
+            return -1
         shove_buffer = clamp(shove_buffer, -0.05 if anti_lock_pressure else 0.0, 0.14)
         return -2 if win_rate >= shove_odds + shove_buffer or anti_lock_shove_continue else -1
 
     if to_call > 0:
-        # NEW v138: River stack-off guard — fold weak hands facing large bets
-        # BEFORE any call_margin/realized_rate computation. Targets -15.5k to
-        # -20k river stack-off leak (~76 pairs v14-v137, 0% postflop fold).
-        # Persistent fixture: `python strategy_helpers.py` must pass all 10 cases.
+        # v183 NEW: Aggro-archetype bluff-catcher fold. Kills -20k turn/river
+        # call-downs vs value-heavy aggressors (G0H3/G2H28 pattern). Fires only
+        # with a confirmed aggro read + bluff-catcher hand + clearly -EV call.
+        # NOTE: firing-rate validated via reachability_test.py (the daemon reads
+        # stdout-only, so stderr telemetry is structurally unreadable — kept out
+        # to avoid the multi-arm telemetry-fidelity shadow at get_action scope).
+        if round_idx >= 2 and _aggro_bluffcatcher_should_fold(
+                opponent_model, round_idx, to_call, pot,
+                made_strength, value_profile, draw_strength):
+            return -1
+
+        # v184: Rock-archetype value-bet fold (sibling of the aggro fold on a
+        # separate archetype axis). Rocks (tight, high fold_to_raise) bet
+        # value-heavy, so weak made bluff-catchers facing their bets are -EV.
+        # Protected by the bluff-awareness guard so it does NOT fire vs bluffy opps.
+        if round_idx >= 2 and _rock_value_bet_fold(
+                opponent_model, round_idx, to_call, pot,
+                made_strength, value_profile, draw_strength):
+            return -1
+
+        # v192 NEW: Multi-barrel line-evidence fold. Keys on DIRECT IN-HAND
+        # HISTORY (opponent bet a prior postflop street AND bets this street),
+        # NOT on classify_archetype (which returns 'standard' for most opps and
+        # leaves the v183/v184 archetype siblings INERT). Protected by the
+        # _opp_bluff_prone carve-out so it does NOT fire vs bluff-heavy barrelers.
+        if round_idx >= 2 and _multibarrel_line_fold(
+                opponent_model, spot_info, round_idx, to_call, pot,
+                made_strength, value_profile, draw_strength, board_texture):
+            return -1
+
+        # v200 CROSSOVER+MUTATION (heuristic from experience_pool): port v196's
+        # DIRECT river pot-odds-vs-equity fold. The margin-additive dispatch
+        # inside _postflop_response_margin is INERT vs polarized value ranges
+        # (monte_carlo realized_rate overestimates equity for weak made hands).
+        # Fold directly when calibrated_equity (made*discount) < pot_odds. The
+        # gate enforces its own conditions: river only, bet>=0.4x pot,
+        # made[0.20,0.50), tier!=strong/nut, draw<0.15, overbettor-exempt.
+        # Targets the 23+gen -20k/0%-fold stack-off leak (#1 priority).
         if round_idx == 3:
-            if _river_stackoff_guard(made_strength, value_profile, spot_info,
-                                     opponent_model, my_chips, pot, to_call):
+            _river_pe_delta = _river_potodds_equity_margin(
+                round_idx, made_strength, draw_strength, value_profile,
+                spot_info, pot_odds, opponent_model)
+            if _river_pe_delta > 0:
                 return -1
 
         if round_idx == 0:
@@ -1480,78 +1666,12 @@ def get_action(req, requests):
                 call_margin += 0.015
             realized_rate = win_rate
         else:
-            call_margin = postflop_call_margin(
-                spot_info,
-                opponent_model,
-                made_strength,
-                draw_strength,
-                round_idx,
-                spot_info["has_position"],
-            )
-            call_margin += pair_domination_margin(
-                pair_profile,
-                spot_info,
-                round_idx,
-            )
-            call_margin += draw_call_margin(
-                draw_info,
-                board_texture,
-                round_idx,
-                spot_info,
-            )
-            if (
-                round_idx == 2
-                and spot_info["facing_postflop_aggression"]
-                and pair_profile is not None
-                and pair_profile["made_class"] == 1
-                and pair_profile["pair_type"] in ("middle_pair", "bottom_pair", "underpair")
-            ):
-                call_margin += 0.035
-            call_margin += line_strength + paired_board_stackoff["line_strength"]
-            call_margin += check_resistance
-            call_margin += 0.50 * nutted_risk["risk"]
-            # Bluff-catch widening vs detected bluff_heavy opponents (CALL path, not fold)
-            call_margin += bluff_heavy_call_widen(
-                line_profile, value_profile, made_strength, draw_strength,
-                round_idx, opponent_model,
-            )
-            if round_idx == 3 and made_strength < 0.40 and not (blocker_profile and blocker_profile["eligible"]):
-                call_margin += 0.04
-            # v167: River large-bet call_margin boost for marginal hands.
-            if round_idx == 3 and made_strength < 0.55 and bet_size_bucket(spot_info["last_raise_pot_ratio"]) in ("medium", "large"):
-                call_margin += 0.10
-            if round_idx == 3 and paired_board_profile is not None and paired_board_profile["fold_to_raise"]:
-                call_margin += 0.05
-            # v169: River re-raise polarization tighten for strong-but-not-nut hands.
-            if round_idx == 3:
-                call_margin += _river_reraise_tighten(
-                    state, spot_info, made_strength, value_profile,
-                    round_idx, board_texture, pair_profile,
-                )
-            # Crossover from v128: Check-raise + barrel pressure tighten call
-            # threshold (more folds). call_margin = required safety margin;
-            # higher = harder to call. Parallel to the jam_buffer gate above.
-            if opponent_model is not None:
-                cr_active, cr_severity = check_raise_pressure(spot_info, opponent_model)
-                if cr_active:
-                    call_margin += cr_severity
-                bp_active, bp_severity = barrel_pressure_profile(spot_info, opponent_model, round_idx)
-                if bp_active:
-                    call_margin += bp_severity
-            # v157 NEW: Multi-street cumulative call-down tax. Raises the
-            # call bar on the LIVE to_call>0 path when opp has bet on >=2
-            # postflop streets. Targets the 0%-fold leak (~620 versions).
-            # NOT a fold-side gate (EXHAUSTED v135-v154) — a margin additive.
-            call_margin += _multi_street_calldown_tax(
-                spot_info, made_strength, draw_strength, value_profile, round_idx,
-            )
-            # v166: Opponent sizing tell — tighten call margin for large-bet-heavy opps
-            call_margin += _opponent_sizing_call_tighten(
-                spot_info, opponent_model, round_idx, spot_info["has_position"],
-            )
-            # v177: Weak one-pair river margin — pot_odds-scaled call-margin for 0.20-0.55 band
-            call_margin += _weak_one_pair_river_margin(
-                round_idx, made_strength, draw_strength, spot_info, pot_odds,
+            call_margin = _postflop_response_margin(
+                round_idx, spot_info, opponent_model, made_strength,
+                draw_strength, value_profile, pair_profile, draw_info,
+                board_texture, paired_board_profile, paired_board_stackoff,
+                nutted_risk, line_profile, line_strength, check_resistance,
+                pot_odds, state, blocker_profile,
             )
             # v180: Turn board-danger margin -- continuous fold-margin for
             # weak-made turn calls on flush/straight-dangerous boards.
@@ -1882,6 +2002,19 @@ def get_action(req, requests):
         if _delayed_bluff is not None:
             return _delayed_bluff
 
+    # v185 NEW OFFENSE: Board-texture-keyed +EV bluff raise on to_call==0.
+    # Keys on BOARD TEXTURE (new signal axis) distinct from delayed-calldown
+    # (needs calldown samples) and blocker bluff (needs ace blockers). Fires
+    # with AIR on A-high/paired/monotone/K-high boards where our perceived range
+    # is strong. Sited BEFORE bad_river_bluff_candidate so air isn't blocked.
+    if to_call == 0 and round_idx in (2, 3):
+        _texture_bluff = _board_texture_bluff_raise(
+            opponent_model, round_idx, to_call, made_strength, draw_strength,
+            board_texture, value_profile, pot, my_chips,
+            state['min_raise_action'], state['my_round_bet'])
+        if _texture_bluff is not None:
+            return _texture_bluff
+
     if opp_double_barrel_then_river_check and weak_pair_river:
         return 0
     if bad_river_bluff_candidate:
@@ -1903,6 +2036,21 @@ def get_action(req, requests):
         opponent_model, anti_lock_pressure, state['min_raise_action'],
     ) if round_idx == 2 and to_call == 0 else None)
     if round_idx == 3 and to_call == 0:
+        # v181 NEW OFFENSE: SPR-calibrated value ship — commitment-threshold sizing.
+        # Fires BEFORE existing value paths so low-SPR nut/strong ships override
+        # the smaller fixed-fraction bets. Passes through _river_bet_commit_guard
+        # for safety (guard allows nut/strong/safe-board ships).
+        _spr_ship = _spr_calibrated_value_ship(
+            round_idx, to_call, made_strength, value_profile, board_texture,
+            opponent_model, pot, my_chips, state['min_raise_action'],
+            state['my_round_bet'], nutted_risk['risk'])
+        if _spr_ship is not None and _spr_ship > 0:
+            _guarded = _river_bet_commit_guard(_spr_ship, round_idx, my_chips,
+                                               made_strength, value_profile,
+                                               board_texture, pair_profile,
+                                               anti_lock_pressure)
+            if _guarded is not None and _guarded > 0:
+                return _guarded
         # v155 NEW: Barrel-abandonment exploit on river. When opponent checked
         # river after barreling turn (or gave up range advantage), they are
         # capped. Bet for value / thin-value before falling to vm_overbet path.
@@ -1974,6 +2122,15 @@ def get_action(req, requests):
     # call_margin). Targets v130's losses vs v111(0.45) / v116(0.50) /
     # v121(0.50) where v129 (with this primitive) wins 0.55 / 0.575 / 0.575.
     if round_idx == 2 and to_call == 0:
+        # v181 NEW OFFENSE: SPR-calibrated value ship — commitment-threshold sizing.
+        # No commit guard on turn (guard is river-only); the function's internal
+        # board-safety + nutted_risk gates are sufficient.
+        _spr_ship = _spr_calibrated_value_ship(
+            round_idx, to_call, made_strength, value_profile, board_texture,
+            opponent_model, pot, my_chips, state['min_raise_action'],
+            state['my_round_bet'], nutted_risk['risk'])
+        if _spr_ship is not None and _spr_ship > 0:
+            return _spr_ship
         if _turn_pot_cap is not None:
             return _turn_pot_cap
         _vm_overbet = value_maximizer_overbet(
@@ -2065,6 +2222,17 @@ def get_action(req, requests):
             if _target_late < my_chips:
                 return _target_late
 
+    # v193 NEW (option c): Turn/river value-donk after BB floats flop bet.
+    # Genuinely new spot: donk is flop-only, probe requires PFR checked prev street.
+    # Fires BEFORE donk/probe so a float-value-donk takes priority on turn/river.
+    if round_idx in (2, 3) and to_call == 0:
+        _float_donk = _turn_float_value_donk(
+            opponent_model, round_idx, to_call, made_strength, value_profile,
+            spot_info, board_texture, pot, my_chips,
+            state['min_raise_action'], state['my_round_bet'])
+        if _float_donk is not None and _float_donk > 0:
+            return _float_donk
+
     # Donk bet: BB leads into PFR on favorable flop textures
     donk = should_donk_bet(
         round_idx, to_call, spot_info, value_profile, board_texture,
@@ -2083,6 +2251,36 @@ def get_action(req, requests):
         _donk_value_upsizing = _value_lead_upsizing_delta(
             round_idx, to_call, made_strength, value_profile,
             board_texture, opponent_model)
+        # v182: SPR ship dispatch for donk path (birth-mandate site #3).
+        # Fires BEFORE donk_probe_sizing so low-SPR nut/strong hands ship
+        # instead of betting a fixed fraction.
+        if round_idx in (2, 3):
+            _donk_spr_ship = _spr_calibrated_value_ship(
+                round_idx, to_call, made_strength, value_profile,
+                board_texture, opponent_model, pot, my_chips,
+                state['min_raise_action'], state['my_round_bet'],
+                nutted_risk['risk'])
+            if _donk_spr_ship is not None and _donk_spr_ship > 0:
+                if round_idx == 3:
+                    _guarded = _river_bet_commit_guard(
+                        _donk_spr_ship, round_idx, my_chips,
+                        made_strength, value_profile, board_texture,
+                        pair_profile, anti_lock_pressure)
+                    if _guarded is not None and _guarded > 0:
+                        return _guarded
+                else:
+                    return _donk_spr_ship
+        # v191: _board_texture_bluff_raise dispatch for donk path (birth-mandate site #2).
+        # NOTE: donk is flop-only (_DONK_ROUND=1) while this bluff needs turn/river,
+        # so the round guard keeps it as a structural hook (currently inert on flop);
+        # the function's own round_idx<2 guard also safely returns None on flop.
+        if round_idx in (2, 3):
+            _donk_texture_bluff = _board_texture_bluff_raise(
+                opponent_model, round_idx, to_call, made_strength, draw_strength,
+                board_texture, value_profile, pot, my_chips,
+                state['min_raise_action'], state['my_round_bet'])
+            if _donk_texture_bluff is not None:
+                return _donk_texture_bluff
         raise_amount = donk_probe_sizing(
             donk["ratio"] + _donk_fold_boost + _donk_station_delta + _donk_value_upsizing, to_call, pot,
             state["min_raise_action"], my_chips, state["my_round_bet"],
@@ -2111,6 +2309,35 @@ def get_action(req, requests):
         _probe_value_upsizing = _value_lead_upsizing_delta(
             round_idx, to_call, made_strength, value_profile,
             board_texture, opponent_model)
+        # v182: SPR ship dispatch for probe path (birth-mandate site #4).
+        # Same logic as donk path — ships low-SPR nut/strong hands.
+        if round_idx in (2, 3):
+            _probe_spr_ship = _spr_calibrated_value_ship(
+                round_idx, to_call, made_strength, value_profile,
+                board_texture, opponent_model, pot, my_chips,
+                state['min_raise_action'], state['my_round_bet'],
+                nutted_risk['risk'])
+            if _probe_spr_ship is not None and _probe_spr_ship > 0:
+                if round_idx == 3:
+                    _guarded = _river_bet_commit_guard(
+                        _probe_spr_ship, round_idx, my_chips,
+                        made_strength, value_profile, board_texture,
+                        pair_profile, anti_lock_pressure)
+                    if _guarded is not None and _guarded > 0:
+                        return _guarded
+                else:
+                    return _probe_spr_ship
+        # v191: _board_texture_bluff_raise dispatch for probe path (birth-mandate site #3).
+        # Probe fires on turn/river (to_call==0 after opp checked) — exactly when the
+        # board-texture bluff is live. Sited BEFORE donk_probe_sizing so a +EV texture
+        # bluff overrides the probe ratio. This is the genuinely new firing site.
+        if round_idx in (2, 3):
+            _probe_texture_bluff = _board_texture_bluff_raise(
+                opponent_model, round_idx, to_call, made_strength, draw_strength,
+                board_texture, value_profile, pot, my_chips,
+                state['min_raise_action'], state['my_round_bet'])
+            if _probe_texture_bluff is not None:
+                return _probe_texture_bluff
         raise_amount = donk_probe_sizing(
             probe["ratio"] + _probe_fold_boost + _tp_delta_probe + _probe_station_delta + _probe_value_upsizing, to_call, pot,
             state["min_raise_action"], my_chips, state["my_round_bet"],

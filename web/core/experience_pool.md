@@ -87,6 +87,9 @@
 - **v207**: Postflop all-in stack-off vs v186 (-19751) NOT closable from offense/sizing — v198/v199/v207 all failed to move it (do NOT inch made≥0.55→0.50 without ≥30g paired WR-lift). Crossover ancestry can SILENTLY drop validated mutations (v200 v194×v190 lost v198 value_hand_skip) — git-inventory sibling-lineage mutations before planning crossovers.
 
 ## EXHAUSTED (cross-gen pivot auto-marks)
+- [EXHAUSTED — cross_gen_pivot auto-mark v227] calibration, ceiling, side
+- [EXHAUSTED — cross_gen_pivot auto-mark v226] calibration, ceiling, line
+- [EXHAUSTED — cross_gen_pivot auto-mark v225] calibration, constant, floor
 - [EXHAUSTED — cross_gen_pivot auto-mark v223] calibration, exhausted, experience
 - [EXHAUSTED — cross_gen_pivot auto-mark v222] defense, gate
 - [EXHAUSTED — cross_gen_pivot auto-mark v215] gate, polarized, shove

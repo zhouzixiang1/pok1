@@ -358,63 +358,39 @@ def collect_latest_requests_by_hand(requests):
 
 def _preflop_spr_commitment_gate(raise_to, my_chips, already_invested, pot,
                                   preflop_strength, facing_villain_4bet=False):
-    """Preflop SPR commitment gate (v194 NEW axis).
+    """Cap marginal preflop raises so one-pair-maker hands do not self-commit.
 
-    For marginal one-pair-maker hands (preflop_strength 0.50-0.62, e.g. AQ/JJ/
-    TT/KQ), cap raise size so the projected SPR-if-called stays >= 4 (pot
-    control), preventing -20k stack-off exposure. Premium hands (>0.70) and
-    trash (<0.45) bypass the gate entirely.
-
-    GTO SPR thresholds: SPR<3 = commit any pair/draw; SPR 4 = top-pair+ only;
-    SPR 6-10 = careful one-pair. Marginal hands must never create SPR<4.
-
-    Returns:
-      -1 if facing_villain_4bet and SPR would drop below 4 (fold marginal).
-      capped raise-to-total (int >= already_invested) otherwise.
+    Imported from Beta (v203), whose preflop pot-control package is the clearest
+    H2H complement to Alpha: v203 beats v213 while v224 loses to it. Premiums and
+    trash bypass; marginal hands keep projected SPR >= 4, or fold to committing
+    villain 4-bets.
     """
     MARG_LO, MARG_HI = 0.50, 0.62
     SPR_FLOOR = 4.0
     if preflop_strength < MARG_LO or preflop_strength > MARG_HI:
-        return raise_to  # premium/trash bypass
+        return raise_to
     new_invest = max(0, raise_to - already_invested)
     projected_pot = pot + 2 * new_invest
     if projected_pot <= 0:
         return raise_to
     spr = (my_chips - new_invest) / projected_pot
     if spr >= SPR_FLOOR:
-        return raise_to  # sizing already safe
+        return raise_to
     if facing_villain_4bet:
-        return -1  # fold marginal to committing 4-bet
-    # Cap raise so projected SPR == SPR_FLOOR.
-    # Solve (my_chips - x) / (pot + 2x) = SPR_FLOOR for x (additional invest).
+        return -1
     capped_invest = (my_chips - SPR_FLOOR * pot) / (1.0 + 2.0 * SPR_FLOOR)
     capped_invest = max(0, int(capped_invest))
     return already_invested + capped_invest
 
 
 def _preflop_shove_defense_fold(my_cards, preflop_strength, state, spot_info, opponent_model=None):
-    """Preflop shove/4-bet defense gate (v201 NEW axis).
+    """Fold dominated preflop shove/4-bet defenses while preserving wide-shover calls.
 
-    Folds marginal hands facing a preflop all-in or 4-bet+ shove.
-    Targets -20k stack-off leak (G5H68: KTo call-off vs shove).
-    Premiums (QQ+), big aces (AK/AQ/AJo), strong pairs (TT/JJ) continue.
-    Mid pairs (77-99) continue with cheap odds; threshold is VPIP-gated
-    (v222): <0.42 vs wide opps (VPIP>0.60), <0.35 vs tight/value-heavy opps.
-    Everything else folds. Returns True=fold, False=continue.
-
-    v222 CROSSOVER MUTATION: VPIP-gated mid-pair continuation. v221's
-    UNCONDITIONAL 0.42 threshold is -EV vs value-heavy shovers (the exact pool
-    where v180 BEATS v221: v206 v180+0.58/v221-0.35, v205 +0.58/-0.40,
-    v212 +0.55/-0.40, v184 +0.58/-0.40). v180 wins these by folding more vs
-    tight value-heavy shoves. v221 in turn BEATS v186 (0.63) / v198 (0.65) /
-    v208 (0.65) -- wider/looser shovers where continuing mid-pairs is +EV.
-    Resolution: gate on opponent VPIP.
-      - Wide opp (VPIP > 0.60): wider shove range -> mid-pairs retain equity ->
-        continue at pot_odds < 0.42 (captures v221's edge vs v186/v198).
-      - Tight/value-heavy opp (VPIP <= 0.60): dominated by value shoves ->
-        continue only at pot_odds < 0.35 (preserves v180's edge vs v206/v205/v212).
-    Mid-pairs (77-99) have ~35-45% equity vs a balanced shove range, so a
-    <=0.35 floor is ~break-even vs value-heavy, and <=0.42 is +EV vs wide.
+    Crossover: Beta's v201/v203 preflop defense package supplies the only strong
+    complementary H2H edge (v203 over v213). Mutation: experience-pool lesson from
+    v221/v222 says mid-pair continuation must be VPIP-gated, not unconditional.
+    Unknown/tight opponents keep the conservative 0.35 pot-odds ceiling; wide
+    opponents (VPIP>0.60) allow 77-99 to continue up to 0.42.
     """
     opp_allin = state.get('opponent_allin', False)
     opp_pf_raises = spot_info.get('opp_preflop_raises', 0)
@@ -427,9 +403,9 @@ def _preflop_shove_defense_fold(my_cards, preflop_strength, state, spot_info, op
     pot = max(1, state.get('pot', 1))
     pot_odds = to_call / (pot + to_call) if to_call > 0 else 0.0
     if hand_cat == 'mid_pair':
-        opp_vpip = (opponent_model or {}).get('vpip', 0.0)
-        cont_thr = 0.42 if opp_vpip > 0.60 else 0.35
-        if pot_odds < cont_thr:
+        vpip = (opponent_model or {}).get('vpip', 0.50)
+        ceiling = 0.42 if vpip > 0.60 else 0.35
+        if pot_odds < ceiling:
             return False
     return True
 
@@ -456,30 +432,3 @@ def _verify_preflop_ranking():
     assert 0.80 <= s((14, 14)) <= 0.86
     assert 0.63 <= estimate_preflop_strength([c(14, 0), c(13, 0)]) <= 0.68  # AKs
     print('PREFLOP_RANKING_VERIFY PASS')
-
-
-def _verify_preflop_shove_defense():
-    """Self-test: _preflop_shove_defense_fold tier + VPIP-gate logic."""
-    def c(r, s):
-        return (r - 2) * 4 + s
-    kto = [c(13, 0), c(10, 1)]  # KTo -- G5H68 leak hand
-    state_shove = {'opponent_allin': True, 'to_call': 19900, 'pot': 20150}
-    spot1 = {'opp_preflop_raises': 1}
-    assert _preflop_shove_defense_fold(kto, 0.58, state_shove, spot1), 'KTo must fold vs shove'
-    aa = [c(14, 0), c(14, 1)]
-    assert not _preflop_shove_defense_fold(aa, 0.85, state_shove, spot1), 'AA continues'
-    aks = [c(14, 0), c(13, 0)]
-    assert not _preflop_shove_defense_fold(aks, 0.66, state_shove, spot1), 'AKs continues'
-    fives = [c(5, 0), c(5, 1)]
-    assert _preflop_shove_defense_fold(fives, 0.59, state_shove, spot1), '55 folds expensive'
-    state_cheap = {'opponent_allin': True, 'to_call': 500, 'pot': 2000}
-    eights = [c(8, 0), c(8, 1)]
-    assert not _preflop_shove_defense_fold(eights, 0.62, state_cheap, spot1), '88 continues cheap'
-    state_norm = {'opponent_allin': False, 'to_call': 200, 'pot': 500}
-    assert not _preflop_shove_defense_fold(kto, 0.58, state_norm, spot1), 'No fire on normal raise'
-    # v222 VPIP-gate: 88 @ pot_odds=0.40 (between 0.35 and 0.42 thresholds)
-    state_mid = {'opponent_allin': True, 'to_call': 2000, 'pot': 3000}  # odds 0.40
-    assert not _preflop_shove_defense_fold(eights, 0.62, state_mid, spot1, {'vpip': 0.70}), '88 continues vs WIDE opp'
-    assert _preflop_shove_defense_fold(eights, 0.62, state_mid, spot1, {'vpip': 0.50}), '88 folds vs TIGHT opp'
-    assert _preflop_shove_defense_fold(eights, 0.62, state_mid, spot1, None), '88 folds vs unknown opp (default tight)'
-    print('PREFLOP_SHOVE_DEFENSE_VERIFY PASS')

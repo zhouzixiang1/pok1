@@ -1,0 +1,105 @@
+{
+  "type": "ladder_report",
+  "timestamp": "20260626_164920",
+  "config": {
+    "games_per_matchup": 2,
+    "bot_numbers": [
+      1,
+      2
+    ],
+    "total_matchups": 2,
+    "total_games_played": 4
+  },
+  "ladder": [
+    {
+      "bot_number": 2,
+      "elo": 1204,
+      "rank_title": "黄金",
+      "wins": 2,
+      "losses": 2,
+      "draws": 0,
+      "win_rate": 0.5,
+      "avg_chip_diff": -12.5,
+      "games_played": 4,
+      "opponents": {
+        "1": {
+          "wins": 2,
+          "losses": 2,
+          "draws": 0,
+          "avg_chip_diff": -12.5
+        }
+      },
+      "rank": 1
+    },
+    {
+      "bot_number": 1,
+      "elo": 1196,
+      "rank_title": "白银",
+      "wins": 2,
+      "losses": 2,
+      "draws": 0,
+      "win_rate": 0.5,
+      "avg_chip_diff": 12.5,
+      "games_played": 4,
+      "opponents": {
+        "2": {
+          "wins": 2,
+          "losses": 2,
+          "draws": 0,
+          "avg_chip_diff": 12.5
+        }
+      },
+      "rank": 2
+    }
+  ],
+  "matchups": [
+    {
+      "bot0": "/home/zzx/project/pok/bots/bot1/main.py",
+      "bot1": "/home/zzx/project/pok/bots/bot2/main.py",
+      "bot0_wins": 1,
+      "bot1_wins": 1,
+      "draws": 0,
+      "bot0_avg_chips": 12.5,
+      "bot1_avg_chips": -12.5,
+      "result_file": "bot_1_vs_bot_2.json",
+      "elo_before": [
+        1200,
+        1200
+      ],
+      "elo_after": [
+        1198,
+        1202
+      ]
+    },
+    {
+      "bot0": "/home/zzx/project/pok/bots/bot2/main.py",
+      "bot1": "/home/zzx/project/pok/bots/bot1/main.py",
+      "bot0_wins": 1,
+      "bot1_wins": 1,
+      "draws": 0,
+      "bot0_avg_chips": 0.0,
+      "bot1_avg_chips": -0.0,
+      "result_file": "bot_2_vs_bot_1.json",
+      "elo_before": [
+        1202,
+        1198
+      ],
+      "elo_after": [
+        1204,
+        1196
+      ]
+    }
+  ],
+  "elo_history": {
+    "1": [
+      1200,
+      1198,
+      1196
+    ],
+    "2": [
+      1200,
+      1202,
+      1204
+    ]
+  }
+}
