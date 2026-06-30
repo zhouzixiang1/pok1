@@ -17,8 +17,11 @@ export interface BotRating {
   h2h_coverage?: number;
   h2h_source?: string;
   leaderboard_score?: number;
+  selection_score?: number;
+  selection_penalty?: number;
   rank_basis?: string;
   strength_confidence?: string;
+  strength_note?: string;
 }
 
 export interface MatchStats {
@@ -143,8 +146,11 @@ export interface BotSummary {
   h2h_coverage?: number;
   h2h_source?: string;
   leaderboard_score?: number;
+  selection_score?: number;
+  selection_penalty?: number;
   rank_basis?: string;
   strength_confidence?: string;
+  strength_note?: string;
   graveyard?: boolean;
 }
 

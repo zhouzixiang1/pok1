@@ -66,3 +66,22 @@ def test_h2h_winrate_counts_draws_as_half():
 
     assert h2h_winrate_for_bot("claude_v1", h2h) == 0.55
     assert h2h_winrate_for_bot("claude_v2", h2h) == 0.45
+
+
+def test_low_confidence_rows_get_selection_penalty():
+    from rating_snapshot import build_strength_rows
+
+    ratings = {
+        "claude_v1": {"r": 1600, "rd": 220, "sigma": 0.06},
+        "claude_v2": {"r": 1500, "rd": 80, "sigma": 0.06},
+    }
+    h2h = {
+        "claude_v1 vs claude_v2": {"games": 100, "a_wins": 50, "b_wins": 50, "draws": 0},
+    }
+
+    rows = {row["name"]: row for row in build_strength_rows(ratings, {}, h2h)}
+
+    assert rows["claude_v1"]["strength_confidence"] == "low"
+    assert rows["claude_v1"]["selection_penalty"] == 0.03
+    assert rows["claude_v1"]["selection_score"] == round(rows["claude_v1"]["leaderboard_score"] - 0.03, 4)
+    assert rows["claude_v2"]["selection_penalty"] == 0.0

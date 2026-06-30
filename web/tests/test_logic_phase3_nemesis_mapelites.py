@@ -141,6 +141,8 @@ class TestNemesisSlot:
                             lambda: {"claude_v98": 0.5, "claude_vA": 0.5, "claude_vB": 0.3, "claude_vTop": 0.7})
         monkeypatch.setattr(tool_helpers, "load_strength_scores",
                             lambda: {"claude_v98": 0.6, "claude_vA": 0.4, "claude_vB": 0.3, "claude_vTop": 0.7})
+        monkeypatch.setattr(tool_helpers, "load_selection_scores",
+                            lambda: {"claude_v98": 0.6, "claude_vA": 0.4, "claude_vB": 0.3, "claude_vTop": 0.7})
         monkeypatch.setattr(tool_helpers, "load_ratings", lambda: {})
         monkeypatch.setattr(tool_helpers, "PRECOMMIT_NEMESIS_SLOT", True)
 

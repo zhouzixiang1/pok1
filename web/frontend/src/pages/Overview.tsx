@@ -10,6 +10,18 @@ import { Skeleton } from "../components/shared/Skeleton";
 import { PipelineStepper } from "../components/evolution/PipelineStatus";
 import { cn } from "../lib/utils";
 
+const strengthConfidenceLabel: Record<string, string> = {
+  high: "强度高置信",
+  medium: "强度中置信",
+  low: "强度低置信",
+};
+
+type StrengthBadgeVariant = "success" | "warning" | "error";
+
+const strengthConfidenceVariant = (value?: string): StrengthBadgeVariant => (
+  value === "high" ? "success" : value === "medium" ? "warning" : "error"
+);
+
 function DaemonToggle() {
   const daemon = useDaemonStatus();
   const [toggling, setToggling] = useState(false);
@@ -177,7 +189,9 @@ export default function Overview() {
     );
   }
 
-  const scoreOf = (b: (typeof ratings)[number]) => b.leaderboard_score ?? Math.max(0, Math.min(1, 0.5 + (b.conservative_rating - 1500) / 800));
+  const scoreOf = (b: (typeof ratings)[number]) => (
+    b.selection_score ?? b.leaderboard_score ?? Math.max(0, Math.min(1, 0.5 + (b.conservative_rating - 1500) / 800))
+  );
   const maxScore = Math.max(...ratings.map(scoreOf));
   const minScore = Math.min(...ratings.map(scoreOf));
   const scoreRange = maxScore - minScore || 1;
@@ -263,11 +277,14 @@ export default function Overview() {
                   </div>
                   <div className="mt-2 flex items-baseline gap-2">
                     <span className="text-3xl font-bold text-gray-900 dark:text-white tabular-nums">{scoreOf(bot).toFixed(4)}</span>
-                    <span className="text-xs text-gray-500">综合强度</span>
+                    <span className="text-xs text-gray-500">进化选择分</span>
                   </div>
                   <div className="mt-2 flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
                     <span>H2H {bot.h2h_avg_wr != null ? `${(bot.h2h_avg_wr * 100).toFixed(1)}%` : "—"}</span>
                     <span>覆盖 {bot.h2h_coverage != null ? `${(bot.h2h_coverage * 100).toFixed(0)}%` : "—"}</span>
+                    <Badge variant={strengthConfidenceVariant(bot.strength_confidence)} size="sm">
+                      {strengthConfidenceLabel[bot.strength_confidence ?? ""] ?? "强度低置信"}
+                    </Badge>
                     {sparkData.length >= 2 && <Sparkline data={sparkData} color={sparkColor} />}
                     {s && (s.wr_trend != null ? (
                       <Badge variant={s.wr_trend > 0 ? "success" : s.wr_trend < 0 ? "error" : "neutral"} size="sm">
@@ -311,6 +328,9 @@ export default function Overview() {
                   <div className="mt-1.5 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
                     <span>H2H {bot.h2h_avg_wr != null ? `${(bot.h2h_avg_wr * 100).toFixed(1)}%` : "—"}</span>
                     <span>覆盖 {bot.h2h_coverage != null ? `${(bot.h2h_coverage * 100).toFixed(0)}%` : "—"}</span>
+                    <Badge variant={strengthConfidenceVariant(bot.strength_confidence)} size="sm">
+                      {bot.strength_confidence === "high" ? "高置信" : bot.strength_confidence === "medium" ? "中置信" : "低置信"}
+                    </Badge>
                     {s && (s.wr_trend != null ? (
                       <Badge variant={s.wr_trend > 0 ? "success" : s.wr_trend < 0 ? "error" : "neutral"} size="sm">
                         {s.wr_trend > 0 ? "↑" : s.wr_trend < 0 ? "↓" : "→"} {(Math.abs(s.wr_trend) * 100).toFixed(1)}pp
@@ -360,12 +380,12 @@ export default function Overview() {
                 <tr className="border-b border-gray-100 dark:border-border-subtle text-left text-xs text-gray-400 dark:text-gray-500">
                   <th className="px-5 py-2 font-medium w-12">#</th>
                   <th className="px-5 py-2 font-medium">Bot</th>
-                  <th className="px-5 py-2 font-medium">强度分</th>
+                  <th className="px-5 py-2 font-medium">选择分</th>
                   <th className="px-5 py-2 font-medium">H2H</th>
                   <th className="px-5 py-2 font-medium">覆盖</th>
                   <th className="px-5 py-2 font-medium">场数</th>
                   <th className="px-5 py-2 font-medium">趋势</th>
-                  <th className="px-5 py-2 font-medium">置信</th>
+                  <th className="px-5 py-2 font-medium">强度置信</th>
                 </tr>
               </thead>
               <tbody>
@@ -410,19 +430,14 @@ export default function Overview() {
                       </td>
                       <td className="px-5 py-2.5">
                         <Badge
-                          variant={
-                            bot.confidence === "very_confident" ? "success" :
-                            bot.confidence === "confident" ? "neutral" :
-                            bot.confidence === "uncertain" ? "warning" : "error"
-                          }
+                          variant={strengthConfidenceVariant(bot.strength_confidence)}
                           size="sm"
                         >
                           {{
-                            very_confident: "高",
-                            confident: "中",
-                            uncertain: "低",
-                            very_uncertain: "极低",
-                          }[bot.confidence] || bot.confidence}
+                            high: "高",
+                            medium: "中",
+                            low: "低",
+                          }[bot.strength_confidence ?? ""] || "低"}
                         </Badge>
                       </td>
                     </tr>

@@ -279,10 +279,18 @@ def append_locked_jsonl(path, entry):
 
 
 def update_h2h(h2h, bot_a, bot_b, wins_a, wins_b, draws=0):
-    """Update H2H dict for a pair of bots. Idempotent — can be called per-game."""
+    """Update H2H dict for a pair of bots.
+
+    Accepts either one-game increments or aggregated match totals. Older callers
+    use it per game; manual inline evaluation passes a whole mirror-battle
+    summary, so games must advance by wins + losses + draws, not by one call.
+    """
     key = pair_key(bot_a, bot_b)
     entry = h2h.setdefault(key, {"games": 0, "a_wins": 0, "b_wins": 0, "draws": 0})
-    entry["games"] += 1
+    total = int(wins_a or 0) + int(wins_b or 0) + int(draws or 0)
+    if total <= 0:
+        return
+    entry["games"] += total
     if bot_a < bot_b:
         entry["a_wins"] += wins_a
         entry["b_wins"] += wins_b
@@ -290,6 +298,7 @@ def update_h2h(h2h, bot_a, bot_b, wins_a, wins_b, draws=0):
         entry["a_wins"] += wins_b
         entry["b_wins"] += wins_a
     entry["draws"] += draws
+    entry["win_rate"] = round((entry["a_wins"] + 0.5 * entry["draws"]) / entry["games"], 4)
 
 
 def update_bot_stats(bot_stats, name, wins, losses, draws=0):

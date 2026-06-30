@@ -113,6 +113,7 @@ def _is_infra_blocker(reason):
 # net-chip observations for the bootstrap gate; 16 is the hard ceiling so
 # precommit eval still fits within the cycle budget.
 PRECOMMIT_DEFAULT_N_GAMES = 8
+PRECOMMIT_MIN_N_GAMES = 4
 PRECOMMIT_MAX_N_GAMES = 16
 
 # Per-opponent parent gate: only block a losing W/L sample when paired net-chip
@@ -365,11 +366,11 @@ async def run_precommit_eval(args):
     v = int(v)
     source_v = int(source_v)
     # Cap n_games: precommit eval is a quick regression check, NOT a full evaluation.
-    # Default is PRECOMMIT_DEFAULT_N_GAMES (8), clamped to [1,
-    # PRECOMMIT_MAX_N_GAMES] (16). The regression gate now uses paired net-chip
+    # Default is PRECOMMIT_DEFAULT_N_GAMES (8), clamped to
+    # [PRECOMMIT_MIN_N_GAMES, PRECOMMIT_MAX_N_GAMES]. The regression gate now uses paired net-chip
     # bootstrap CIs, which are much less noisy than binary W/L at the same n_games.
     requested = int(args.get("n_games", PRECOMMIT_DEFAULT_N_GAMES) or PRECOMMIT_DEFAULT_N_GAMES)
-    n_games = min(max(1, requested), PRECOMMIT_MAX_N_GAMES)
+    n_games = min(max(PRECOMMIT_MIN_N_GAMES, requested), PRECOMMIT_MAX_N_GAMES)
 
     # A4: infra-aware n_games auto-reduction. If the previous precommit attempt
     # for this (v, source_v) timed out (infra blocker), halve n_games this
@@ -1419,7 +1420,7 @@ async def run_inline_eval(args):
     for k, h2h_entry in h2h.items():
         entry = dict(h2h_entry)
         g = entry.get("games", 0)
-        entry["win_rate"] = round(entry.get("a_wins", 0) / g, 4) if g > 0 else 0.5
+        entry["win_rate"] = round((entry.get("a_wins", 0) + 0.5 * entry.get("draws", 0)) / g, 4) if g > 0 else 0.5
         h2h_out[k] = entry
     write_locked_json(H2H_FILE, h2h_out)
 

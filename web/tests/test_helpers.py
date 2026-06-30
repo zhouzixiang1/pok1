@@ -154,6 +154,21 @@ class TestComputeH2HAvgWinrate:
         assert compute_h2h_avg_winrate("a", h2h) is None
 
 
+class TestUpdateH2H:
+    def test_batch_update_preserves_game_totals_and_draw_half_winrate(self):
+        from evolution_infra import update_h2h
+
+        h2h = {}
+        update_h2h(h2h, "bot_a", "bot_b", wins_a=3, wins_b=1, draws=2)
+
+        entry = h2h["bot_a vs bot_b"]
+        assert entry["games"] == 6
+        assert entry["a_wins"] == 3
+        assert entry["b_wins"] == 1
+        assert entry["draws"] == 2
+        assert entry["win_rate"] == round((3 + 0.5 * 2) / 6, 4)
+
+
 class TestBotMain:
     @pytest.mark.requires_active_bot
     def test_valid_version(self, active_bot_version):
