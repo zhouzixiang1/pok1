@@ -326,6 +326,48 @@ def test_P1_guard_hook_git_commit_blocked():
     assert not bash_is_mutation("git log --oneline -5")
 
 
+def test_P1_guard_hook_returns_stage_recovery_and_command_preview():
+    """Denied direct mutations should tell the LLM the next MCP tool and log the command."""
+    import asyncio
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
+    import event_bus
+    import evolution_infra
+    import core.orchestrator_context as oc
+
+    evolution_infra.write_pipeline_checkpoint(232, 224, "direction_audited")
+    hook = oc._make_bot_dir_guard_hook()["PreToolUse"][0].hooks[0]
+    command = (
+        "mkdir -p bots/claude_v232 && "
+        "cp bots/claude_v224/main.py bots/claude_v232/main.py"
+    )
+
+    output = asyncio.run(hook(
+        {"tool_name": "Bash", "tool_input": {"command": command}},
+        "call_test_guard",
+        None,
+    ))
+
+    decision = output["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "deny"
+    reason = decision["permissionDecisionReason"]
+    assert "NEXT MCP TOOL: run_master" in reason
+    assert "Do NOT retry the denied Bash/Edit/Write call" in reason
+
+    events = [
+        json.loads(line)
+        for line in event_bus.EVENTS_FILE.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    guard_event = [e for e in events if e.get("type") == "pipeline.guard_block"][-1]
+    data = guard_event["data"]
+    assert data["command_preview"] == command
+    assert data["command_truncated"] is False
+    assert data["stage"] == "direction_audited"
+    assert data["next_step"] == "run_master"
+
+
 # ──────────────────────────────────────────────
 # P2: abandoned version reuse prevention
 # ──────────────────────────────────────────────
@@ -341,4 +383,3 @@ def test_P2_abandoned_versions_floor_logic():
         max_committed_v = abandoned_floor
     next_v = max(current_v, max_committed_v) + 1
     assert next_v == 219, f"v218 was abandoned, next should be 219, got {next_v}"
-
