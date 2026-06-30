@@ -1435,9 +1435,10 @@ def _plan_repeats_exhausted_direction(plan: dict, exhausted_directions: list[str
         "do not", "don't", "must not", "never", "avoid", "preserve",
         "unchanged", "forbidden", "no retune", "no tuning", "without modifying",
     )
+    sentence_splitter = re.compile(r"[\n;]+|(?<=[A-Za-z0-9_)])\.(?=\s+|$)")
     positive_segments = []
     for chunk in chunks:
-        for segment in re.split(r"[\n.;]+", str(chunk)):
+        for segment in sentence_splitter.split(str(chunk)):
             segment_l = segment.lower()
             if not segment_l.strip():
                 continue
@@ -1447,6 +1448,37 @@ def _plan_repeats_exhausted_direction(plan: dict, exhausted_directions: list[str
     plan_text = "\n".join(positive_segments)
     if not plan_text.strip():
         return False, ""
+    target_files = set()
+    for task in plan.get("tasks", []) or []:
+        if not isinstance(task, dict):
+            continue
+        for f in task.get("target_files", []) or []:
+            target_files.add(str(f).split("/")[-1].lower())
+    fold_axis = any(
+        any(term in str(direction).lower() for term in (
+            "fold-side", "fold-threshold", "fold threshold", "fold gate",
+            "opponent.py", "state.py", "_multibarrel_line_fold",
+            "_estimate_bluff_frequency",
+        ))
+        for direction in exhausted_directions
+    )
+    offense_constructor = any(term in plan_text for term in (
+        "semi-bluff", "semibluff", "raise constructor", "raise_construct",
+        "draw equity", "fold equity", "chip path", "constructs a raise",
+    ))
+    explicit_fold_edit = any(term in plan_text for term in (
+        "_multibarrel_line_fold", "_allin_polarized_equity_fold",
+        "_river_potodds_equity_margin", "_estimate_bluff_frequency",
+        "betsize_polarity", "fold threshold", "fold ceiling", "fold gate",
+        "made_strength cutoff", "bluff frequency",
+    ))
+    if fold_axis and offense_constructor and not explicit_fold_edit:
+        # A structural raise/semi-bluff constructor is the intended escape from
+        # the fold-side axis. Do not treat mentions of "fold equity" or guarded
+        # opponent fold-to-raise signals as fold-threshold calibration unless the
+        # plan explicitly edits the exhausted fold code or targets those files.
+        if not (target_files & {"opponent.py", "state.py"}):
+            return False, ""
     plan_tokens = {
         t for t in re.split(r"[^a-z0-9]+", plan_text)
         if len(t) > 3 and t not in _EXHAUSTED_BLOCKLIST
