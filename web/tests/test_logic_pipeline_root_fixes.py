@@ -33,6 +33,62 @@ def test_smoke_test_fails_before_battle_on_import_contract_error(tmp_path):
     assert "missing_symbol" in errors[0]
 
 
+def test_smoke_test_ignores_successful_battle_cleanup_broken_pipe(monkeypatch, tmp_path):
+    import subprocess
+
+    import code_verification
+
+    bot = tmp_path / "bot"
+    bot.mkdir()
+    (bot / "main.py").write_text("print('ok')\n")
+    cleanup_noise = "\n".join([
+        "Smoke test passed successfully.",
+        "Exception ignored while finalizing file <_io.TextIOWrapper name=6 encoding='UTF-8'>:",
+        "Traceback (most recent call last):",
+        '  File "/home/zzx/project/pok/web/core/engine/battle.py", line 65, in _start',
+        "    self.proc = subprocess.Popen(",
+        "BrokenPipeError: [Errno 32] Broken pipe",
+    ])
+
+    def _fake_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(_args[0], 0, stdout="Smoke test passed successfully.\n", stderr=cleanup_noise)
+
+    monkeypatch.setattr(code_verification.subprocess, "run", _fake_run)
+
+    assert code_verification.run_smoke_test(str(bot)) == []
+
+
+def test_smoke_test_keeps_real_traceback_after_cleanup_filter(monkeypatch, tmp_path):
+    import subprocess
+
+    import code_verification
+
+    bot = tmp_path / "bot"
+    bot.mkdir()
+    (bot / "main.py").write_text("print('ok')\n")
+    stderr = "\n".join([
+        "Exception ignored while finalizing file <_io.TextIOWrapper name=6 encoding='UTF-8'>:",
+        "Traceback (most recent call last):",
+        '  File "/home/zzx/project/pok/web/core/engine/battle.py", line 65, in _start',
+        "    self.proc = subprocess.Popen(",
+        "BrokenPipeError: [Errno 32] Broken pipe",
+        "Traceback (most recent call last):",
+        '  File "/tmp/bot/main.py", line 1, in <module>',
+        "NameError: boom",
+    ])
+
+    def _fake_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            _args[0], 0, stdout="Smoke test passed successfully.\n", stderr=stderr
+        )
+
+    monkeypatch.setattr(code_verification.subprocess, "run", _fake_run)
+
+    errors = code_verification.run_smoke_test(str(bot))
+    assert errors
+    assert "NameError: boom" in errors[0]
+
+
 def test_quality_gate_records_runtime_import_failure_as_quality_failed(monkeypatch):
     import evolution_infra
     import tool_gates
@@ -78,6 +134,52 @@ def test_quality_gate_records_runtime_import_failure_as_quality_failed(monkeypat
     ckpt = evolution_infra.read_pipeline_checkpoint()
     assert ckpt["stage"] == "quality_failed"
     assert ckpt["gate_results"]["quality"]["import_ok"] is False
+    assert "runtime_import" in " ".join(ckpt["gate_results"]["quality"]["failed_gates"])
+
+
+def test_quality_gate_records_smoke_failure_details(monkeypatch):
+    import evolution_infra
+    import tool_gates
+
+    evolution_infra.write_pipeline_checkpoint(3, 2, "workers_done")
+
+    monkeypatch.setattr(tool_gates, "get_bot_dir", lambda v: evolution_infra.BOTS_DIR / f"claude_v{v}")
+    monkeypatch.setattr(tool_gates, "_py_files_changed_between", lambda _src, _dst: ["main.py"])
+    monkeypatch.setattr(tool_gates, "verify_code", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_import_contract_test", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_smoke_test", lambda _bot_dir: ["smoke test emitted failure output despite exit 0: boom"])
+    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda: [])
+    monkeypatch.setattr(tool_gates, "check_code_size", lambda *_a, **_k: (10, []))
+    monkeypatch.setattr(tool_gates, "verify_fixes", lambda _bot_dir: {"mandatory": {"ok": True}})
+    monkeypatch.setattr(tool_gates, "run_decision_test_details", lambda *_a, **_k: {
+        "pass_rate": 1.0,
+        "passed": 1,
+        "total": 1,
+        "critical_passed": 1,
+        "critical_total": 1,
+        "critical_failures": [],
+        "failures": [],
+        "scenarios": [],
+    })
+
+    import audit_agents
+
+    async def _no_dynamic_tests(*_a, **_k):
+        return []
+
+    monkeypatch.setattr(audit_agents, "_generate_dynamic_tests", _no_dynamic_tests)
+
+    result = asyncio.run(tool_gates.run_quality_gates.handler({"version": 3, "source_v": 2}))
+    data = json.loads(result["content"][0]["text"])
+
+    assert data["smoke_ok"] is False
+    assert data["smoke_errors"]
+    assert data["failed_gates"] == ["smoke_test"]
+    ckpt = evolution_infra.read_pipeline_checkpoint()
+    quality = ckpt["gate_results"]["quality"]
+    assert quality["smoke_ok"] is False
+    assert quality["smoke_errors"] == data["smoke_errors"]
+    assert quality["failed_gates"] == ["smoke_test"]
 
 
 def test_run_master_blocks_after_crossover_checkpoint_without_analysis(monkeypatch):
