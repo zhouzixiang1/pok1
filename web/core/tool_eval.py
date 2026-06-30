@@ -287,6 +287,22 @@ def _scheduler_stall_reason(
     return ""
 
 
+def _claimed_job_stall_rounds(n_games: int, poll_interval: float,
+                              per_game_timeout: float,
+                              poll_budget: float) -> int:
+    """Grace window for claimed scheduler jobs before fallback.
+
+    Claimed jobs are actively owned by the daemon, so the precommit caller should
+    not duplicate them before the configured job timeout has a chance to elapse.
+    Use the smaller of per-job timeout and the global poll budget, with a small
+    cushion for file-lock and scheduling jitter.
+    """
+    grace_sec = min(float(per_game_timeout), float(poll_budget)) + max(
+        60.0, float(n_games) * 15.0
+    )
+    return max(1, int(grace_sec / max(float(poll_interval), 0.1)))
+
+
 # ──────────────────────────────────────────────
 # Precommit Eval
 # ──────────────────────────────────────────────
@@ -575,7 +591,9 @@ async def run_precommit_eval(args):
             SCHEDULER_STALL_ROUNDS = max(24, n_games * 3)
             CLAIMED_JOB_STALL_ROUNDS = max(
                 SCHEDULER_STALL_ROUNDS,
-                int(max(600, n_games * 90) / poll_interval),
+                _claimed_job_stall_rounds(
+                    n_games, poll_interval, per_game_timeout, PRECOMMIT_POLL_BUDGET
+                ),
             )
             rounds_since_progress = 0
             pending_stall_rounds = 0

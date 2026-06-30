@@ -464,6 +464,13 @@ def test_battle_scheduler_status_peeks_pending_claimed_completed(tmp_path, monke
 def test_scheduler_stall_reason_treats_claimed_jobs_as_running():
     import tool_eval
 
+    claimed_rounds = tool_eval._claimed_job_stall_rounds(
+        n_games=8,
+        poll_interval=5.0,
+        per_game_timeout=960,
+        poll_budget=1500,
+    )
+    assert claimed_rounds > 120
     assert tool_eval._scheduler_stall_reason(
         collected_count=0,
         submitted_count=4,
@@ -474,19 +481,19 @@ def test_scheduler_stall_reason_treats_claimed_jobs_as_running():
         claimed_count=4,
         completed_count=0,
         scheduler_stall_rounds=24,
-        claimed_job_stall_rounds=120,
+        claimed_job_stall_rounds=claimed_rounds,
     ) == ""
     assert tool_eval._scheduler_stall_reason(
         collected_count=0,
         submitted_count=4,
-        rounds_since_progress=120,
+        rounds_since_progress=claimed_rounds,
         pending_stall_rounds=0,
         missing_stall_rounds=0,
         pending_count=0,
         claimed_count=4,
         completed_count=0,
         scheduler_stall_rounds=24,
-        claimed_job_stall_rounds=120,
+        claimed_job_stall_rounds=claimed_rounds,
     ) == "claimed_jobs_exceeded_grace"
     assert tool_eval._scheduler_stall_reason(
         collected_count=0,
@@ -528,11 +535,12 @@ def test_archivist_housekeeping_commit_stages_only_curated_paths(monkeypatch):
     import tool_commit
 
     calls = []
+    staged_after_add = []
 
     def fake_git(*args, **_kwargs):
         calls.append(args)
         if args[:3] == ("diff", "--cached", "--name-only") and "--" not in args:
-            return ""
+            return "\n".join(staged_after_add) + ("\n" if staged_after_add else "")
         if args[:3] == ("status", "--porcelain", "--"):
             path = args[-1]
             if path == "web/core/experience_pool.md":
@@ -545,6 +553,10 @@ def test_archivist_housekeeping_commit_stages_only_curated_paths(monkeypatch):
         if args[:3] == ("diff", "--cached", "--name-only") and args[-1] == "bots/claude_v204":
             return "bots/claude_v204/main.py\n"
         if args[:1] == ("add",):
+            if args[-1] == "web/core/experience_pool.md":
+                staged_after_add.append("web/core/experience_pool.md")
+            if args[-1] == "bots/claude_v204":
+                staged_after_add.append("bots/claude_v204/main.py")
             return ""
         if args[:1] == ("commit",):
             return ""
@@ -553,6 +565,7 @@ def test_archivist_housekeeping_commit_stages_only_curated_paths(monkeypatch):
         raise AssertionError(args)
 
     monkeypatch.setattr(tool_commit, "_git", fake_git)
+    monkeypatch.setattr(tool_commit, "_git_ensure_main_branch", lambda: None)
     monkeypatch.setattr(tool_commit, "log_system_event", lambda *_a, **_k: None)
 
     result = tool_commit._archive_housekeeping_commit(
@@ -569,4 +582,50 @@ def test_archivist_housekeeping_commit_stages_only_curated_paths(monkeypatch):
     ]
     assert ("add", "--", "web/core/experience_pool.md") in calls
     assert ("add", "-u", "--", "bots/claude_v204") in calls
+    assert any(call[:3] == ("commit", "-m", "chore: archive v234 evolution housekeeping") for call in calls)
+    assert any(
+        call[-3:] == ("--", "web/core/experience_pool.md", "bots/claude_v204/main.py")
+        for call in calls
+    )
     assert not any(call[:2] == ("add", "-A") for call in calls)
+
+
+def test_archivist_housekeeping_skips_if_unexpected_files_are_staged(monkeypatch):
+    import tool_commit
+
+    calls = []
+    staged_after_add = []
+
+    def fake_git(*args, **_kwargs):
+        calls.append(args)
+        if args[:3] == ("diff", "--cached", "--name-only") and "--" not in args:
+            if not staged_after_add:
+                return ""
+            return "web/core/experience_pool.md\nunrelated.py\n"
+        if args[:3] == ("status", "--porcelain", "--"):
+            return " M web/core/experience_pool.md\n" if args[-1] == "web/core/experience_pool.md" else ""
+        if args[:3] == ("diff", "--cached", "--name-only") and args[-1] == "web/core/experience_pool.md":
+            return "web/core/experience_pool.md\n"
+        if args[:1] == ("add",):
+            staged_after_add.append(args[-1])
+            return ""
+        if args[:1] == ("restore",):
+            return ""
+        raise AssertionError(args)
+
+    monkeypatch.setattr(tool_commit, "_git", fake_git)
+    monkeypatch.setattr(tool_commit, "_git_ensure_main_branch", lambda: None)
+    monkeypatch.setattr(tool_commit, "log_system_event", lambda *_a, **_k: None)
+
+    result = tool_commit._archive_housekeeping_commit(
+        235,
+        None,
+        experience_touched=True,
+        preexisting_dirty=set(),
+    )
+
+    assert result["committed"] is False
+    assert result["reason"] == "unexpected_staged_files"
+    assert result["unexpected_staged"] == ["unrelated.py"]
+    assert ("restore", "--staged", "--", "web/core/experience_pool.md") in calls
+    assert not any(call[:1] == ("commit",) for call in calls)
