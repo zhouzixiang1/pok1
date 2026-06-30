@@ -105,23 +105,32 @@ def _subagent_git_tag_is_mutating(command):
     return False
 
 
-def _subagent_bash_is_mutation(command):
-    """Return True when a Bash command appears to write/delete/move files."""
+def _subagent_bash_mutation_detector(command):
+    """Return the detector name when Bash appears to write/delete/move files."""
     text = str(command)
     low = text.lower()
     for match in _SUBAGENT_WRITE_REDIRECT_RE.finditer(text):
         target = match.group(1).strip("'\"")
         if target.startswith("&") or target.lower() in _SAFE_REDIRECT_TARGETS:
             continue
-        return True
+        return f"write_redirect:{target[:120]}"
     if "python" in low:
         if _SUBAGENT_PYTHON_OPEN_WRITE_RE.search(low):
-            return True
-        if any(p in low for p in _SUBAGENT_PYTHON_WRITE_PATTERNS):
-            return True
-    if any(p in low for p in _SUBAGENT_BASH_MUTATION_PATTERNS):
-        return True
-    return _subagent_git_tag_is_mutating(command)
+            return "python_open_write_mode"
+        for pattern in _SUBAGENT_PYTHON_WRITE_PATTERNS:
+            if pattern in low:
+                return f"python_write_pattern:{pattern}"
+    for pattern in _SUBAGENT_BASH_MUTATION_PATTERNS:
+        if pattern in low:
+            return f"bash_pattern:{pattern.strip()}"
+    if _subagent_git_tag_is_mutating(command):
+        return "git_tag_mutation"
+    return None
+
+
+def _subagent_bash_is_mutation(command):
+    """Return True when a Bash command appears to write/delete/move files."""
+    return _subagent_bash_mutation_detector(command) is not None
 
 
 def _subagent_is_outside_allowed(path_or_cmd, allowed_dir):
@@ -175,7 +184,9 @@ def _make_subagent_write_guard(allowed_write_dir):
             blocked = None
             if tool_name == "Bash":
                 cmd = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
-                if _subagent_bash_is_mutation(cmd) and _subagent_is_outside_allowed(cmd, _allowed):
+                mutation_detector = _subagent_bash_mutation_detector(cmd)
+                outside_allowed = _subagent_is_outside_allowed(cmd, _allowed)
+                if mutation_detector and outside_allowed:
                     blocked = ("Bash mutation targets a path outside the allowed bot dir "
                                + _allowed + ". Sub-agents may only edit their assigned "
                                "target bot directory. Command: " + str(cmd)[:100])
@@ -188,10 +199,17 @@ def _make_subagent_write_guard(allowed_write_dir):
             if blocked:
                 try:
                     from system_log import log_system_event
+                    command_text = str(cmd) if tool_name == "Bash" else str(
+                        tool_input.get("file_path", "") or tool_input.get("notebook_path", "")
+                    )
                     log_system_event("pipeline.subagent_guard_block", "error",
                                      "BLOCKED sub-agent " + tool_name + ": " + blocked[:120],
                                      {"tool": tool_name, "reason": blocked[:200],
-                                      "allowed_dir": _allowed})
+                                      "allowed_dir": _allowed,
+                                      "command_preview": command_text[:2000],
+                                      "command_truncated": len(command_text) > 2000,
+                                      "mutation_detector": locals().get("mutation_detector"),
+                                      "outside_allowed": locals().get("outside_allowed")})
                 except Exception:
                     pass
                 return SyncHookJSONOutput(hookSpecificOutput={
