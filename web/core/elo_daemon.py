@@ -193,17 +193,48 @@ def save_ratings(ratings, save_num=None):
         history_file = RESULTS_DIR / "rating_history.jsonl"
         # Compute H2H avg win rates for history snapshot
         h2h = load_h2h()
+        try:
+            from rating_snapshot import choose_h2h_source
+            h2h = choose_h2h_source(list(ratings.keys()), h2h, MATCH_HISTORY_FILE)["h2h"]
+        except Exception:
+            pass
         bot_stats = load_bot_stats()
         from tool_helpers import compute_h2h_avg_winrate
+        try:
+            from rating_snapshot import build_strength_rows
+            strength_rows = {
+                row["name"]: row
+                for row in build_strength_rows(
+                    ratings,
+                    bot_stats,
+                    h2h,
+                    active_bots=list(ratings.keys()),
+                    match_history_path=MATCH_HISTORY_FILE,
+                )
+            }
+        except Exception:
+            strength_rows = {}
         win_rates = {}
         for name in ratings:
             wr = compute_h2h_avg_winrate(name, h2h)
             bs = bot_stats.get(name, {})
             games = bs.get("games", 0)
+            strength = strength_rows.get(name, {})
             if wr is not None:
-                win_rates[name] = {"h2h_avg_wr": round(wr, 4), "games": games}
+                win_rates[name] = {
+                    "h2h_avg_wr": round(wr, 4),
+                    "games": games,
+                    "leaderboard_score": strength.get("leaderboard_score"),
+                    "h2h_coverage": strength.get("h2h_coverage"),
+                    "h2h_source": strength.get("h2h_source"),
+                }
             elif games > 0:
-                win_rates[name] = {"games": games}
+                win_rates[name] = {
+                    "games": games,
+                    "leaderboard_score": strength.get("leaderboard_score"),
+                    "h2h_coverage": strength.get("h2h_coverage"),
+                    "h2h_source": strength.get("h2h_source"),
+                }
         snapshot = {
             "period": save_num,
             "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -232,6 +263,19 @@ def save_h2h(h2h):
     # Prune low-sample entries (games < 2 have no statistical value)
     h2h = {k: v for k, v in h2h.items() if v.get("games", 0) >= 2}
     write_locked_json(H2H_FILE, h2h)
+
+
+def _h2h_with_win_rates(h2h):
+    out = {}
+    for k, v in (h2h or {}).items():
+        entry = dict(v)
+        g = int(entry.get("games", 0) or 0)
+        if g > 0:
+            entry["win_rate"] = round((entry.get("a_wins", 0) + 0.5 * entry.get("draws", 0)) / g, 4)
+        else:
+            entry["win_rate"] = 0.5
+        out[k] = entry
+    return out
 
 
 def load_bot_stats():
@@ -697,13 +741,36 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
                 ratings[b] = decay_rd(p, elapsed)
     save_ratings(ratings, save_num=save_num)
 
-    # Recompute win rates for H2H
-    h2h_out = {}
-    for k, v in h2h.items():
-        entry = dict(v)
-        g = entry["games"]
-        entry["win_rate"] = round(entry["a_wins"] / g, 4) if g > 0 else 0.5
-        h2h_out[k] = entry
+    # Recompute win rates for H2H. Prefer a match_history rebuild when the
+    # append-only history covers more active-pool pairs than the in-memory/file
+    # matrix. This prevents sparse H2H snapshots from driving the leaderboard
+    # and evolution choices after daemon restarts or partial saves.
+    h2h_out = _h2h_with_win_rates(h2h)
+    try:
+        from rating_snapshot import choose_h2h_source
+        h2h_selection = choose_h2h_source(active_bots, h2h_out, MATCH_HISTORY_FILE)
+        if h2h_selection["source"] == "match_history_rebuilt":
+            rebuilt = _h2h_with_win_rates(h2h_selection["h2h"])
+            stored_cov = h2h_selection["stored_coverage"]
+            rebuilt_cov = h2h_selection["rebuilt_coverage"]
+            h2h_out = rebuilt
+            h2h.clear()
+            h2h.update(rebuilt)
+            log_system_event(
+                "rating.h2h_rebuilt_from_history",
+                "warn",
+                "Rebuilt active H2H matrix from match_history because stored coverage was lower",
+                {
+                    "save_num": save_num,
+                    "stored_pairs": stored_cov.get("covered_pairs"),
+                    "rebuilt_pairs": rebuilt_cov.get("covered_pairs"),
+                    "total_pairs": rebuilt_cov.get("total_pairs"),
+                    "stored_coverage": round(stored_cov.get("coverage", 0.0), 4),
+                    "rebuilt_coverage": round(rebuilt_cov.get("coverage", 0.0), 4),
+                },
+            )
+    except Exception as e:
+        log.debug("H2H rebuild check failed (non-fatal): %s", e)
     save_h2h(h2h_out)
 
     save_bot_stats(bot_stats)
@@ -746,9 +813,10 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
 
     if verbose:
         # Compute H2H avg win rates for leaderboard
-        from tool_helpers import compute_h2h_avg_winrate
+        from tool_helpers import compute_h2h_avg_winrate, load_strength_scores
+        strength_scores = load_strength_scores()
         bot_wr_map = {b: compute_h2h_avg_winrate(b, h2h_out) or 0.0 for b in active_bots}
-        sorted_bots = sorted(active_bots, key=lambda b: bot_wr_map.get(b, 0.0), reverse=True)
+        sorted_bots = sorted(active_bots, key=lambda b: strength_scores.get(b, 0.0), reverse=True)
         log.info("Leaderboard (save #%d):", save_num)
         for i, b in enumerate(sorted_bots):
             p = ratings[b]
@@ -756,8 +824,9 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
             wr = bs.get("win_rate", 0.0)
             g = bs.get("games", 0)
             hwr = bot_wr_map.get(b, 0.0)
-            log.info("  %d. %s: h2h_avg_wr=%.2f%% r=%.1f rd=%.1f wr=%.2f%% (%d games)",
-                     i + 1, b, hwr * 100, p.r, p.rd, wr * 100, g)
+            score = strength_scores.get(b, 0.0)
+            log.info("  %d. %s: score=%.4f h2h_avg_wr=%.2f%% r=%.1f rd=%.1f wr=%.2f%% (%d games)",
+                     i + 1, b, score, hwr * 100, p.r, p.rd, wr * 100, g)
 
 
 def _is_external(m):

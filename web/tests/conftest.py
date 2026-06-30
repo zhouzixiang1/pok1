@@ -266,7 +266,7 @@ def isolate_state(tmp_path, monkeypatch):
     real_results = PROJECT_ROOT / "web" / "core" / "results"
     _SYMLINK_FILES = [
         "glicko_ratings.json", "head_to_head.json", "bot_stats.json",
-        "elo_daemon_stats.json", "rating_history.jsonl",
+        "elo_daemon_stats.json", "rating_history.jsonl", "match_history.jsonl",
     ]
     for fname in _SYMLINK_FILES:
         src = real_results / fname
@@ -332,7 +332,7 @@ def isolate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(_ds, "MATCH_HISTORY_FILE", results_dir / "match_history.jsonl")
 
     # ratings: PROJECT_ROOT, RESULTS_DIR, EXPERIENCE_FILE, RATINGS_FILE, STATS_FILE,
-    #          H2H_FILE, BOT_STATS_FILE, HISTORY_FILE
+    #          H2H_FILE, BOT_STATS_FILE, HISTORY_FILE, MATCH_HISTORY_FILE
     import server.routes.ratings as _rt
     monkeypatch.setattr(_rt, "PROJECT_ROOT", iso)
     monkeypatch.setattr(_rt, "RESULTS_DIR", results_dir)
@@ -342,6 +342,7 @@ def isolate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(_rt, "H2H_FILE", results_dir / "head_to_head.json")
     monkeypatch.setattr(_rt, "BOT_STATS_FILE", results_dir / "bot_stats.json")
     monkeypatch.setattr(_rt, "HISTORY_FILE", results_dir / "rating_history.jsonl")
+    monkeypatch.setattr(_rt, "MATCH_HISTORY_FILE", results_dir / "match_history.jsonl")
 
     # matches: PROJECT_ROOT, RESULTS_DIR, STATS_FILE, RATINGS_FILE, H2H_FILE,
     #          REPLAY_DIR, MATCH_HISTORY_FILE
@@ -354,7 +355,7 @@ def isolate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(_mt, "REPLAY_DIR", results_dir / "match_replay")
     monkeypatch.setattr(_mt, "MATCH_HISTORY_FILE", results_dir / "match_history.jsonl")
 
-    # bots: PROJECT_ROOT, BOTS_DIR, RESULTS_DIR, RATINGS_FILE, BOT_STATS_FILE, H2H_FILE
+    # bots: PROJECT_ROOT, BOTS_DIR, RESULTS_DIR, RATINGS_FILE, BOT_STATS_FILE, H2H_FILE, MATCH_HISTORY_FILE
     import server.routes.bots as _bt
     monkeypatch.setattr(_bt, "PROJECT_ROOT", iso)
     monkeypatch.setattr(_bt, "BOTS_DIR", bots_dir)
@@ -362,6 +363,7 @@ def isolate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(_bt, "RATINGS_FILE", results_dir / "glicko_ratings.json")
     monkeypatch.setattr(_bt, "BOT_STATS_FILE", results_dir / "bot_stats.json")
     monkeypatch.setattr(_bt, "H2H_FILE", results_dir / "head_to_head.json")
+    monkeypatch.setattr(_bt, "MATCH_HISTORY_FILE", results_dir / "match_history.jsonl")
 
     # pipeline: PROJECT_ROOT, RESULTS_DIR, PIPELINE_STATE_FILE, WORKER_FAILURES_FILE
     import server.routes.pipeline as _pl

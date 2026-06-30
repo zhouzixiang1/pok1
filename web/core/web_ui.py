@@ -220,25 +220,18 @@ class WebUI(BaseUI):
         self._emit("clear_io", {})
 
     def update_eval_table(self, ratings, active_bots):
-        from server.routes._helpers import confidence
-        from tool_helpers import load_h2h_avg_winrates, compute_h2h_avg_winrate, _load_h2h_data
-        h2h_winrates = load_h2h_avg_winrates()
+        from tool_helpers import _load_h2h_data
+        from rating_snapshot import build_strength_rows
         h2h_raw = _load_h2h_data()
-        rows = []
-        active_list = [(b, ratings.get(b, Glicko2Player())) for b in active_bots]
-        active_list.sort(key=lambda x: h2h_winrates.get(x[0], 0.0), reverse=True)
-        for i, (bot, p) in enumerate(active_list):
-            real_wr = compute_h2h_avg_winrate(bot, h2h_raw)
-            rows.append({
-                "rank": i + 1,
-                "name": bot,
-                "rating": round(p.r, 1),
-                "rd": round(p.rd, 1),
-                "sigma": round(p.sigma, 4),
-                "conservative_rating": round(p.r - 2 * p.rd, 1),
-                "confidence": confidence(p.rd),
-                "h2h_avg_wr": round(real_wr, 4) if real_wr is not None else None,
-            })
+        from evolution_infra import BOT_STATS_FILE, MATCH_HISTORY_FILE, read_locked_json
+        bot_stats = read_locked_json(BOT_STATS_FILE, default={})
+        rows = build_strength_rows(
+            ratings,
+            bot_stats,
+            h2h_raw,
+            active_bots=list(active_bots),
+            match_history_path=MATCH_HISTORY_FILE,
+        )
         self._state["ratings"] = rows
         self._state["active_bots"] = list(active_bots)
         self._emit("eval_table", {"rows": rows})

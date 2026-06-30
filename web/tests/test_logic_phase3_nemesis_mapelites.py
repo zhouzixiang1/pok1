@@ -135,10 +135,12 @@ class TestNemesisSlot:
             ("claude_vTop", 14, 20), # wr 0.7 -> top
         ])
         monkeypatch.setattr(tool_helpers, "_load_h2h_data", lambda: h2h)
-        # load_h2h_avg_winrates + _load_h2h_data both read the file; patch the
-        # public loader too.
+        # Strength ranking + _load_h2h_data both feed opponent selection; patch
+        # the public loaders too.
         monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates",
                             lambda: {"claude_v98": 0.5, "claude_vA": 0.5, "claude_vB": 0.3, "claude_vTop": 0.7})
+        monkeypatch.setattr(tool_helpers, "load_strength_scores",
+                            lambda: {"claude_v98": 0.6, "claude_vA": 0.4, "claude_vB": 0.3, "claude_vTop": 0.7})
         monkeypatch.setattr(tool_helpers, "load_ratings", lambda: {})
         monkeypatch.setattr(tool_helpers, "PRECOMMIT_NEMESIS_SLOT", True)
 
@@ -168,6 +170,8 @@ class TestNemesisSlot:
         monkeypatch.setattr(tool_helpers, "_load_h2h_data", lambda: h2h)
         monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates",
                             lambda: {"claude_v98": 0.5, "claude_vA": 0.5, "claude_vB": 0.3})
+        monkeypatch.setattr(tool_helpers, "load_strength_scores",
+                            lambda: {"claude_v98": 0.6, "claude_vA": 0.5, "claude_vB": 0.3})
         monkeypatch.setattr(tool_helpers, "load_ratings", lambda: {})
         monkeypatch.setattr(tool_helpers, "PRECOMMIT_NEMESIS_SLOT", False)
 
@@ -189,6 +193,8 @@ class TestNemesisSlot:
         monkeypatch.setattr(tool_helpers, "_load_h2h_data", lambda: h2h)
         monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates",
                             lambda: {"claude_v98": 0.5, "claude_vB": 0.3})
+        monkeypatch.setattr(tool_helpers, "load_strength_scores",
+                            lambda: {"claude_v98": 0.6, "claude_vB": 0.3})
         monkeypatch.setattr(tool_helpers, "load_ratings", lambda: {})
         monkeypatch.setattr(tool_helpers, "PRECOMMIT_NEMESIS_SLOT", True)
 
@@ -221,6 +227,9 @@ class TestNemesisSlot:
         monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates",
                             lambda: {"claude_v98": 0.5, "claude_vA": 0.5, "claude_vB": 0.3,
                                      "claude_vTop": 0.7, "claude_vTop2": 0.65})
+        monkeypatch.setattr(tool_helpers, "load_strength_scores",
+                            lambda: {"claude_v98": 0.6, "claude_vA": 0.5, "claude_vB": 0.3,
+                                     "claude_vWeak2": 0.35, "claude_vTop": 0.7, "claude_vTop2": 0.65})
         monkeypatch.setattr(tool_helpers, "load_ratings", lambda: {})
         monkeypatch.setattr(tool_helpers, "PRECOMMIT_NEMESIS_SLOT", True)
 

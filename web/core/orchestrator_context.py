@@ -344,12 +344,14 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         reliable = "RELIABLE" if games >= 100 else f"UNRELIABLE ({games}/100 games — wait for more matches)"
         # Compute H2H avg win rate for the current bot
         try:
-            from tool_helpers import load_h2h_avg_winrates
+            from tool_helpers import load_h2h_avg_winrates, load_strength_scores
             h2h_wrs = load_h2h_avg_winrates()
+            strength_scores = load_strength_scores()
             h2h_wr = h2h_wrs.get(bot_name, 0.5)
-            h2h_str = f"h2h_avg_wr={h2h_wr:.2%}"
+            score = strength_scores.get(bot_name, 0.5)
+            h2h_str = f"leaderboard_score={score:.4f}, h2h_avg_wr={h2h_wr:.2%}"
         except Exception:
-            h2h_str = "h2h_avg_wr=N/A"
+            h2h_str = "leaderboard_score=N/A, h2h_avg_wr=N/A"
         lines.append(f"Current bot {bot_name}: {h2h_str}, r={cur_p.r:.1f}, rd={cur_p.rd:.1f}, wr={wr:.0%} ({games} games) [{reliable}]")
 
     # Incomplete bot detection — previous cycle may have been interrupted

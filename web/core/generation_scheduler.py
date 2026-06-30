@@ -446,6 +446,8 @@ def _log_crossover_decision(trigger, source_v, parents, cons_a=None, cons_b=None
     so the parent-selection rationale is auditable (previously only the result was
     logged via pipeline.generation_prepared's strategy field)."""
     try:
+        parent_a_metrics = _strength_payload(parents[0])
+        parent_b_metrics = _strength_payload(parents[1])
         log_system_event(
             "pipeline.crossover_decided", "info",
             f"Crossover decided (trigger={trigger}): v{parents[0]}×v{parents[1]} "
@@ -454,7 +456,49 @@ def _log_crossover_decision(trigger, source_v, parents, cons_a=None, cons_b=None
              "parent_a": parents[0], "parent_b": parents[1],
              "version_gap": abs(parents[0] - parents[1]),
              "conservative_a": round(cons_a, 0) if cons_a else None,
-             "conservative_b": round(cons_b, 0) if cons_b else None},
+             "conservative_b": round(cons_b, 0) if cons_b else None,
+             "parent_a_metrics": parent_a_metrics,
+             "parent_b_metrics": parent_b_metrics},
+        )
+    except Exception:
+        pass
+
+
+def _strength_payload(version):
+    name = f"claude_v{version}"
+    try:
+        from tool_helpers import load_h2h_avg_winrates_with_coverage, load_strength_scores
+        coverage = load_h2h_avg_winrates_with_coverage().get(name, {})
+        scores = load_strength_scores()
+        return {
+            "bot": name,
+            "leaderboard_score": round(scores.get(name, 0.0), 4),
+            "h2h_avg_wr": round(coverage.get("h2h_avg_wr", 0.0), 4),
+            "h2h_coverage": round(coverage.get("opponent_coverage", 0.0), 4),
+            "h2h_games": coverage.get("h2h_games", 0),
+            "h2h_source": coverage.get("h2h_source", ""),
+            "rank_basis": coverage.get("rank_basis", ""),
+            "strength_confidence": coverage.get("strength_confidence", "low"),
+        }
+    except Exception:
+        return {"bot": name}
+
+
+def _log_source_selection_decision(trigger, selected_v, current_v, combined=None):
+    try:
+        log_system_event(
+            "pipeline.source_selection_decided",
+            "info",
+            f"Source selected by {trigger}: v{selected_v} (latest v{current_v})",
+            {
+                "trigger": trigger,
+                "selected_source_v": selected_v,
+                "current_v": current_v,
+                "llm_recommended_source": (combined or {}).get("recommended_source"),
+                "source_rationale": (combined or {}).get("source_rationale"),
+                "selected_metrics": _strength_payload(selected_v),
+                "current_metrics": _strength_payload(current_v),
+            },
         )
     except Exception:
         pass
@@ -518,6 +562,7 @@ def _decide_strategy(combined, current_v, ratings):
                 "Forcing source_v=%d (Glicko leader) to break the loop.",
                 _source_loop, leader_v,
             )
+            _log_source_selection_decision("source_loop_glicko_leader", leader_v, current_v, combined)
             return "master", leader_v, ()
 
     # Source-v oscillation detection: if recent gens cycle among a small set
@@ -584,12 +629,14 @@ def _decide_strategy(combined, current_v, ratings):
                     rationale = combined.get("source_rationale", "")
                     log.info("LLM recommended source: v%d (instead of latest v%d). %s",
                              rec_v, current_v, rationale[:200])
+                _log_source_selection_decision("llm_recommended_source", rec_v, current_v, combined)
                 return "master", rec_v, ()
 
     # Priority 3: Explicit branch recommendation
     if combined.get("recommendation") == "branch" and combined.get("branch_from"):
         branch_v = _parse_branch_from(combined["branch_from"])
         if branch_v is not None and branch_v >= 1:
+            _log_source_selection_decision("branch_recommendation", branch_v, current_v, combined)
             return "master", branch_v, ()
 
     # Priority 4: Diversity injection
@@ -602,6 +649,7 @@ def _decide_strategy(combined, current_v, ratings):
             return "crossover", parents[0], parents
 
     # Fallback: LLM did not recommend a source, use current_v
+    _log_source_selection_decision("latest_fallback", current_v, current_v, combined)
     return "master", current_v, ()
 
 
@@ -707,10 +755,10 @@ def _get_glicko_leader_v(ratings):
 def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
     """Select two diverse parents for crossover.
 
-    Parent A: highest h2h_avg_wr (strongest bot).
-    Parent B: highest h2h_avg_wr from a different niche than parent A (if
+    Parent A: highest unified strength score.
+    Parent B: highest strength score from a different niche than parent A (if
     archive is available), with version gap >= 3. Falls back to second-highest
-    h2h_avg_wr if no niche-diverse candidate exists.
+    strength score if no niche-diverse candidate exists.
 
     Args:
         ratings: Glicko-2 ratings dict.
@@ -720,15 +768,15 @@ def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
             to maximize crossover diversity (fix-6).
     """
     from evolution_infra import get_active_bots
-    from tool_helpers import load_h2h_avg_winrates
+    from tool_helpers import load_strength_scores
 
     active = get_active_bots()
     if len(active) < 2:
         return None
-    h2h = load_h2h_avg_winrates()
+    strength = load_strength_scores()
     ranked = sorted(
         active,
-        key=lambda b: h2h.get(b, 0.0),
+        key=lambda b: strength.get(b, 0.0),
         reverse=True,
     )
     if len(ranked) < 2:

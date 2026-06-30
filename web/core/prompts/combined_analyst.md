@@ -70,8 +70,9 @@ Output ONLY a JSON block:
 
 **recommended_source**: Which bot should be used as the evolution source for the next generation?
 - Consider ALL active bots, not just the latest version.
-- Prioritize bots with the highest h2h_avg_wr AND adequate opponent coverage (≥80%).
-- A bot with high Glicko rating but low h2h_avg_wr should NOT be preferred — h2h_avg_wr is the canonical skill metric.
-- If multiple bots have similar h2h_avg_wr, prefer the one with more games (more reliable rating).
-- Example: "claude_v6" if v6 has 52.4% h2h_avg_wr vs v8's 46.5%, even though v8 is the latest version.
+- Prioritize bots with the highest `leaderboard_score`, adequate opponent coverage (≥80%), and enough H2H games.
+- Treat `h2h_avg_wr` as matchup evidence, not the canonical skill metric. Low coverage can inflate or deflate it.
+- Use Glicko RD/conservative rating to discount uncertain bots; a high raw rating with high RD is not reliable.
+- If multiple bots have similar `leaderboard_score`, prefer the one with better active-pool H2H coverage and more games.
+- Example: prefer "claude_v6" if it has score=0.532, 95% coverage, and rd=80 over v8 with h2h_avg_wr=53% but only 10 games vs one opponent.
 </output_format>

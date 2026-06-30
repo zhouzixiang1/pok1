@@ -11,12 +11,14 @@ import pytest
 
 class TestRatingsRanking:
     @pytest.mark.requires_active_bot
-    def test_sorted_by_h2h_descending(self, client):
+    def test_sorted_by_leaderboard_score_descending(self, client):
         resp = client.get("/api/ratings")
         assert resp.status_code == 200
         data = resp.json()
-        wr_values = [r["h2h_avg_wr"] if r["h2h_avg_wr"] is not None else 0.0 for r in data]
-        assert wr_values == sorted(wr_values, reverse=True)
+        scores = [r["leaderboard_score"] for r in data]
+        assert scores == sorted(scores, reverse=True)
+        assert "h2h_avg_wr" in data[0]
+        assert "h2h_coverage" in data[0]
 
     def test_ranks_sequential_from_1(self, client):
         resp = client.get("/api/ratings")

@@ -367,6 +367,12 @@ class TestComputeH2HAvgWinrateLogic:
         assert wr is not None
         assert wr == 0.0  # 0 wins / 10 games
 
+    def test_draws_count_as_half_win(self):
+        from tool_helpers import compute_h2h_avg_winrate
+        h2h = {"a vs b": {"games": 10, "a_wins": 4, "b_wins": 3, "draws": 3}}
+        assert compute_h2h_avg_winrate("a", h2h) == 0.55
+        assert compute_h2h_avg_winrate("b", h2h) == 0.45
+
 
 # ── tool_helpers.py: _bot_main() ──
 

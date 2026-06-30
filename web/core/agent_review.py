@@ -295,13 +295,17 @@ async def _run_performance_verification(source_v, ratings, ui):
 
     # ── Top-5 active bots for context ──
     active_bots = get_active_bots()
-    from tool_helpers import load_h2h_avg_winrates
+    from tool_helpers import load_h2h_avg_winrates, load_strength_scores
     h2h_winrates = load_h2h_avg_winrates()
+    strength_scores = load_strength_scores()
     sorted_bots = sorted(
         [(b, ratings.get(b, Glicko2Player())) for b in active_bots],
-        key=lambda x: h2h_winrates.get(x[0], 0.0), reverse=True
+        key=lambda x: strength_scores.get(x[0], 0.0), reverse=True
     )[:5]
-    ratings_lines = [f"  {b}: h2h_avg_wr={h2h_winrates.get(b, 0.0):.2%} (r={p.r:.0f} rd={p.rd:.0f})" for b, p in sorted_bots]
+    ratings_lines = [
+        f"  {b}: score={strength_scores.get(b, 0.0):.4f}, h2h_avg_wr={h2h_winrates.get(b, 0.0):.2%} (r={p.r:.0f} rd={p.rd:.0f})"
+        for b, p in sorted_bots
+    ]
 
     # ── Head-to-Head data ──
     h2h_lines = []

@@ -29,6 +29,10 @@ export interface EvolutionState {
     sigma?: number;
     confidence?: string;
     h2h_avg_wr?: number;
+    h2h_coverage?: number;
+    leaderboard_score?: number;
+    rank_basis?: string;
+    strength_confidence?: string;
   }>;
   pipeline_stage?: string | null;
   current_v?: number;

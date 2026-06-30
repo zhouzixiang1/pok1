@@ -15,7 +15,7 @@ from evolution_core import (
     Glicko2Player,
 )
 from tool_helpers import (
-    _get_ui, load_h2h_avg_winrates, PROJECT_ROOT,
+    _get_ui, load_h2h_avg_winrates, load_strength_scores, PROJECT_ROOT,
 )
 from system_log import log_system_event
 
@@ -39,6 +39,7 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
 
     ratings = load_ratings()
     h2h_winrates = load_h2h_avg_winrates()
+    strength_scores = load_strength_scores()
     current_bot = f"claude_v{find_latest_active_v()}"
 
     # Load bot stats to protect untested bots from reaping
@@ -116,12 +117,22 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
     reap_signal.write_text(str(time.time()))
 
     if not quiet:
-        log_system_event("bot.reaped", "warn", f"Reaped {culled_name} (h2h_wr={h2h_winrates.get(culled_name, 0.0):.2%})",
-                         {"culled": culled_name, "remaining": len(active_bots) - 1})
+        log_system_event(
+            "bot.reaped",
+            "warn",
+            f"Reaped {culled_name} (score={strength_scores.get(culled_name, 0.0):.4f}, h2h_wr={h2h_winrates.get(culled_name, 0.0):.2%})",
+            {
+                "culled": culled_name,
+                "remaining": len(active_bots) - 1,
+                "leaderboard_score": round(strength_scores.get(culled_name, 0.0), 4),
+                "h2h_avg_wr": round(h2h_winrates.get(culled_name, 0.0), 4),
+            },
+        )
 
     return {
         "reaped": True,
         "culled": culled_name,
+        "leaderboard_score": round(strength_scores.get(culled_name, 0.0), 4),
         "h2h_avg_wr": round(h2h_winrates.get(culled_name, 0.0), 4),
         "rating": {"r": round(weakest[1].r, 1), "rd": round(weakest[1].rd, 1)},
         "remaining": len(active_bots) - 1,
@@ -132,7 +143,7 @@ def _mcp_result(data: dict) -> dict:
     return {"content": [{"type": "text", "text": json.dumps(data)}]}
 
 
-@tool("reap_weakest", f"Check if bot pool exceeds MAX_ACTIVE_BOTS and cull the weakest bot by H2H average win rate.", {})
+@tool("reap_weakest", f"Check if bot pool exceeds MAX_ACTIVE_BOTS and cull the weakest bot by conservative rating, reporting unified strength.", {})
 async def reap_weakest(args):
     result = await _do_reap_weakest(quiet=args.get("quiet", False) if isinstance(args, dict) else False)
     return _mcp_result(result)
