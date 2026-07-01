@@ -21,6 +21,9 @@ from system_log import log_system_event, SYSTEM_EVENTS_FILE
 
 log = logging.getLogger("pok.scheduler")
 
+OSCILLATION_BREAKOUT_SCORE_TOLERANCE = 0.02
+OSCILLATION_BREAKOUT_MIN_MARGIN = 0.01
+
 
 # Single-flight guard for the background exploitability probe thread (see the
 # fire-and-forget block in post_generation_cleanup). post_generation_cleanup is
@@ -604,13 +607,72 @@ def _decide_strategy(combined, current_v, ratings):
         # lineage (BUG2). Only force crossover when none of the recurring sources
         # is the current leader, i.e. genuine stuckness on weaker ancestors.
         leader_v = _get_glicko_leader_v(ratings)
+        force_oscillation_crossover = True
         if leader_v is not None and leader_v in osc_ratings:
+            force_oscillation_crossover = False
             log.info(
                 "Source-v oscillation suppressed: leader v%d (%.0f cons) is within the "
                 "recurring set %s — treating as convergence, not oscillation (E2).",
                 leader_v, osc_ratings[leader_v], sorted(oscillating),
             )
-        elif len(osc_ratings) >= 2:
+        elif combined.get("is_stagnant") and combined.get("confidence") != "low":
+            force_oscillation_crossover = False
+            log.info(
+                "Source-v oscillation detected but deferred to the normal stagnation "
+                "crossover selector; recurring set=%s.",
+                sorted(oscillating),
+            )
+            try:
+                log_system_event(
+                    "pipeline.source_oscillation_deferred",
+                    "info",
+                    "Source-v oscillation deferred to stagnation crossover selector",
+                    {
+                        "oscillating_sources": sorted(oscillating),
+                        "current_v": current_v,
+                        "confidence": combined.get("confidence"),
+                    },
+                )
+            except Exception:
+                pass
+        else:
+            breakout = _pick_oscillation_breakout_source(oscillating, current_v)
+            if breakout:
+                selected_v = breakout["version"]
+                log.info(
+                    "Source-v oscillation broken by credible outside source v%d "
+                    "(selection=%.4f, confidence=%s, osc_best=%.4f).",
+                    selected_v,
+                    breakout["selection_score"],
+                    breakout["strength_confidence"],
+                    breakout["osc_best_score"],
+                )
+                try:
+                    log_system_event(
+                        "pipeline.source_oscillation_breakout",
+                        "info",
+                        (
+                            f"Source-v oscillation broken by v{selected_v} "
+                            f"(selection={breakout['selection_score']:.4f})"
+                        ),
+                        {
+                            "selected_source_v": selected_v,
+                            "current_v": current_v,
+                            "oscillating_sources": sorted(oscillating),
+                            "selection_score": round(breakout["selection_score"], 4),
+                            "strength_confidence": breakout["strength_confidence"],
+                            "osc_best_score": round(breakout["osc_best_score"], 4),
+                            "score_margin": round(breakout["score_margin"], 4),
+                            "basis": breakout["basis"],
+                        },
+                    )
+                except Exception:
+                    pass
+                _log_source_selection_decision(
+                    "source_oscillation_breakout", selected_v, current_v, combined
+                )
+                return "master", selected_v, ()
+        if force_oscillation_crossover and len(osc_ratings) >= 2:
             highest_v = max(osc_ratings, key=osc_ratings.get)
             lowest_v = min(osc_ratings, key=osc_ratings.get)
             if highest_v != lowest_v:
@@ -688,25 +750,41 @@ def _parse_branch_from(branch_str: str) -> int | None:
 
 
 def _read_source_v_history():
-    """Read source_v values from pipeline.prepare events in system_events.jsonl.
+    """Read successful lineage source_v values from system_events.jsonl.
+
+    Prefer ``pipeline.committed`` because source oscillation is about the lineage
+    that actually survived gates. ``pipeline.prepare_done`` is only a fallback for
+    very old logs without commit events; prepare attempts can be duplicated by
+    restarts or abandoned before commit and should not dominate lineage analysis.
 
     Returns a list of source_v values in chronological order.
     """
     try:
         if not SYSTEM_EVENTS_FILE.exists():
             return []
-        sources = []
+        committed = []
+        prepared = []
         with open(SYSTEM_EVENTS_FILE, "r") as f:
             for line in f:
                 try:
                     evt = json.loads(line)
-                    if evt.get("type") == "pipeline.prepare_done":
-                        sv = evt.get("data", {}).get("source_v")
+                    data = evt.get("data", {}) or {}
+                    evt_type = evt.get("type")
+                    if evt_type == "pipeline.committed":
+                        sv = data.get("source_v")
                         if sv is not None:
-                            sources.append(sv)
+                            committed.append((evt.get("ts", 0), data.get("version", 0), int(sv)))
+                    elif evt_type == "pipeline.prepare_done":
+                        sv = data.get("source_v")
+                        if sv is not None:
+                            prepared.append((evt.get("ts", 0), data.get("next_v", 0), int(sv)))
                 except (ValueError, KeyError):
                     continue
-        return sources
+        if committed:
+            committed.sort(key=lambda item: (item[0], item[1]))
+            return [sv for _ts, _version, sv in committed]
+        prepared.sort(key=lambda item: (item[0], item[1]))
+        return [sv for _ts, _version, sv in prepared]
     except Exception:
         return []
 
@@ -769,6 +847,75 @@ def _get_glicko_leader_v(ratings):
         return int(best_bot.split("_v")[1])
     except (ValueError, IndexError):
         return None
+
+
+def _pick_oscillation_breakout_source(oscillating: set[int], current_v: int) -> dict | None:
+    """Pick a credible source outside an oscillating ancestor set.
+
+    The oscillation backstop is supposed to break stale source loops, not erase a
+    newly validated elite. Use the same confidence-discounted selection score
+    exposed to the dashboard and evolution mechanics. When several credible bots
+    are effectively tied for first, prefer the newest version so the system keeps
+    moving forward instead of snapping back to an old historical champion.
+    """
+    try:
+        from tool_helpers import load_h2h_avg_winrates_with_coverage
+
+        metrics = load_h2h_avg_winrates_with_coverage()
+    except Exception:
+        return None
+
+    if not metrics:
+        return None
+
+    def _score(data: dict) -> float:
+        raw = data.get("selection_score", data.get("leaderboard_score", 0.0))
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return 0.0
+
+    osc_scores = []
+    for sv in oscillating:
+        osc_metrics = metrics.get(f"claude_v{sv}")
+        if osc_metrics:
+            osc_scores.append(_score(osc_metrics))
+    if not osc_scores:
+        return None
+    osc_best = max(osc_scores)
+
+    candidates = []
+    for name, data in metrics.items():
+        version = _parse_branch_from(name)
+        if version is None or version in oscillating:
+            continue
+        confidence = data.get("strength_confidence", "low")
+        if confidence == "low":
+            continue
+        score = _score(data)
+        if score < osc_best + OSCILLATION_BREAKOUT_MIN_MARGIN:
+            continue
+        candidates.append({
+            "version": version,
+            "selection_score": score,
+            "strength_confidence": confidence,
+            "osc_best_score": osc_best,
+            "score_margin": score - osc_best,
+            "basis": data.get("rank_basis", ""),
+        })
+
+    if not candidates:
+        return None
+
+    best_score = max(c["selection_score"] for c in candidates)
+    near_best = [
+        c for c in candidates
+        if c["selection_score"] >= best_score - OSCILLATION_BREAKOUT_SCORE_TOLERANCE
+    ]
+    for candidate in near_best:
+        if candidate["version"] == current_v:
+            return candidate
+    return max(near_best, key=lambda c: (c["version"], c["selection_score"]))
 
 
 def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
@@ -955,6 +1102,98 @@ def _cleanup_incomplete():
                     shutil.rmtree(d, ignore_errors=True)
 
 
+def _cleanup_dirty_paths() -> set[str]:
+    """Return porcelain dirty paths before cleanup writes."""
+    try:
+        from evolution_infra import _git
+
+        out = _git("status", "--porcelain", check=False)
+    except Exception:
+        return set()
+
+    paths: set[str] = set()
+    for line in out.splitlines():
+        if not line:
+            continue
+        path = line[3:] if len(line) > 3 else line
+        if " -> " in path:
+            old, new = path.split(" -> ", 1)
+            paths.add(old.strip())
+            paths.add(new.strip())
+        else:
+            paths.add(path.strip())
+    return paths
+
+
+def _commit_post_cleanup_experience_change(version: int, preexisting_dirty: set[str]) -> dict:
+    """Commit post-cleanup experience_pool consolidation as scoped housekeeping."""
+    from evolution_infra import EXPERIENCE_FILE, PROJECT_ROOT, _git, _git_ensure_main_branch
+
+    try:
+        rel = str(EXPERIENCE_FILE.relative_to(PROJECT_ROOT))
+    except ValueError:
+        rel = str(EXPERIENCE_FILE)
+
+    if preexisting_dirty:
+        log_system_event(
+            "pipeline.post_cleanup_experience_commit_skipped",
+            "warn",
+            f"v{version}: skipped experience consolidation commit because worktree was already dirty",
+            {"version": version, "preexisting_dirty": sorted(preexisting_dirty)[:40], "path": rel},
+        )
+        return {"committed": False, "reason": "preexisting_dirty", "path": rel}
+
+    dirty_now = _git("status", "--porcelain", "--", rel, check=False).strip()
+    if not dirty_now:
+        return {"committed": False, "reason": "no_change", "path": rel}
+
+    preexisting_staged = [
+        p for p in _git("diff", "--cached", "--name-only", check=False).splitlines()
+        if p
+    ]
+    if preexisting_staged:
+        log_system_event(
+            "pipeline.post_cleanup_experience_commit_skipped",
+            "warn",
+            f"v{version}: skipped experience consolidation commit because staged files already exist",
+            {"version": version, "staged_files": preexisting_staged[:40], "path": rel},
+        )
+        return {"committed": False, "reason": "preexisting_staged", "path": rel}
+
+    _git_ensure_main_branch()
+    _git("add", "--", rel, check=False)
+    staged = [
+        p for p in _git("diff", "--cached", "--name-only", check=False).splitlines()
+        if p
+    ]
+    unexpected = sorted(set(staged) - {rel})
+    if unexpected:
+        _git("restore", "--staged", "--", rel, check=False)
+        log_system_event(
+            "pipeline.post_cleanup_experience_commit_skipped",
+            "warn",
+            f"v{version}: skipped experience consolidation commit because unrelated staged files appeared",
+            {"version": version, "unexpected_staged": unexpected[:40], "path": rel},
+        )
+        return {"committed": False, "reason": "unexpected_staged", "path": rel}
+
+    log_system_event(
+        "pipeline.post_cleanup_experience_commit_staged",
+        "info",
+        f"v{version}: staging post-cleanup experience consolidation",
+        {"version": version, "staged_files": [rel]},
+    )
+    _git("commit", "-m", f"chore: consolidate v{version} experience pool", "--", rel)
+    commit_hash = _git("rev-parse", "--short", "HEAD", check=False).strip()
+    log_system_event(
+        "pipeline.post_cleanup_experience_commit_done",
+        "success",
+        f"v{version}: committed post-cleanup experience consolidation {commit_hash}",
+        {"version": version, "commit": commit_hash, "path": rel},
+    )
+    return {"committed": True, "commit": commit_hash, "path": rel}
+
+
 async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
     """Phase 3: Idempotent post-generation cleanup."""
     from evolution_infra import MAX_ACTIVE_BOTS, get_active_bots
@@ -1013,6 +1252,7 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
                     pass
                 return
             from experience_archivist import _consolidate_experience_pool
+            preexisting_dirty = _cleanup_dirty_paths()
             # Extract exhausted_directions from pipeline checkpoint
             exhausted_dirs = ""
             try:
@@ -1026,6 +1266,15 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
             except Exception:
                 pass
             await _consolidate_experience_pool(ui, exhausted_directions=exhausted_dirs)
+            try:
+                _commit_post_cleanup_experience_change(ctx.next_v, preexisting_dirty)
+            except Exception as e:
+                log_system_event(
+                    "pipeline.post_cleanup_experience_commit_failed",
+                    "error",
+                    f"v{ctx.next_v}: experience consolidation commit failed: {str(e)[:180]}",
+                    {"version": ctx.next_v, "error": str(e)[:500]},
+                )
         except Exception as e:
             if ui:
                 ui.log_history(f"Experience consolidation failed: {e}", "warn")
