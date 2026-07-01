@@ -20,14 +20,50 @@ from pipeline_schema import NationalAcceptanceResult
 
 ROOT = Path(__file__).resolve().parents[2]
 SEVER_DIR = ROOT / "sever"
-if str(SEVER_DIR) not in sys.path:
-    sys.path.insert(0, str(SEVER_DIR))
-if str(ROOT) not in sys.path:
-    sys.path.insert(1, str(ROOT))
 
-from bot_adapter import BotAdapter  # noqa: E402
-from engine.game import GameEngine  # noqa: E402
-from engine.thp_recorder import THPRecorder  # noqa: E402
+
+def _import_sever_acceptance_modules():
+    """Import sever modules without letting top-level package names collide.
+
+    The web backend imports its FastAPI package as top-level ``server``. The
+    national platform also has ``sever/server`` and ``sever/engine`` packages.
+    Python consults ``sys.modules`` before ``sys.path``, so importing
+    ``sever/bot_adapter.py`` inside the web process can otherwise resolve
+    ``from server.protocol`` against ``web/server`` and fail.
+    """
+    prefixes = ("bot_adapter", "server", "engine")
+    saved = {
+        name: module
+        for name, module in list(sys.modules.items())
+        if name in prefixes or name.startswith("server.") or name.startswith("engine.")
+    }
+    for name in saved:
+        sys.modules.pop(name, None)
+
+    inserted: list[str] = []
+    for idx, path in ((0, str(SEVER_DIR)), (1, str(ROOT))):
+        if path not in sys.path:
+            sys.path.insert(idx, path)
+            inserted.append(path)
+
+    try:
+        from bot_adapter import BotAdapter as _BotAdapter  # noqa: E402
+        from engine.game import GameEngine as _GameEngine  # noqa: E402
+        from engine.thp_recorder import THPRecorder as _THPRecorder  # noqa: E402
+        return _BotAdapter, _GameEngine, _THPRecorder
+    finally:
+        for name in list(sys.modules):
+            if name in prefixes or name.startswith("server.") or name.startswith("engine."):
+                sys.modules.pop(name, None)
+        sys.modules.update(saved)
+        for path in inserted:
+            try:
+                sys.path.remove(path)
+            except ValueError:
+                pass
+
+
+BotAdapter, GameEngine, THPRecorder = _import_sever_acceptance_modules()
 
 
 @dataclass(frozen=True)
