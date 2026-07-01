@@ -120,6 +120,28 @@ class TestCheckCitations:
         errors = _check_citations(["See G9H9#abcd1234"], anchor_map)
         assert len(errors) == 1
         assert "NOT in the spotlight manifest" in errors[0]
+
+    def test_h2h_not_treated_as_hand_citation(self):
+        from tool_planning import _check_citations
+        anchor_map = {"G1H1": "abcd1234"}
+        assert _check_citations(["H2H evidence; no replay hand cited"], anchor_map) == []
+
+    def test_sanitizes_unverified_master_context_citations(self):
+        from tool_planning import _sanitize_unverified_replay_citations
+        anchor_map = {"G0H33": "5d1d1b28", "G8H25": "5bc26c67"}
+        text = (
+            "H2H context: stale G4H42, valid G0H33#5d1d1b28, "
+            "wrong anchor G8H25#00000000."
+        )
+        cleaned, count = _sanitize_unverified_replay_citations(text, anchor_map)
+        assert count == 2
+        assert "H2H context" in cleaned
+        assert "G4H42" not in cleaned
+        assert "unverified-replay-ref" in cleaned
+        assert "G0H33#5d1d1b28" in cleaned
+        assert "G8H25#5bc26c67" in cleaned
+
+
 class TestRunMasterIdempotent:
     """run_master idempotency guard (fix-4): returns cached plan when checkpoint
     already has a master_plan at a stage >= master_planned."""

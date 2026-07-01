@@ -458,7 +458,9 @@ _TUNER_STRUCTURAL_PATTERNS = [
 # A4 (evidence_gate, evolution-plan-refresh-jun21): citation patterns the agents use
 # to reference spotlight hands. Anchored form (G3H25#9a3f1c02) is preferred but the
 # bare form (G3H25) is what fabricated citations usually look like.
-_CITATION_RE = re.compile(r"G\d+H\d+(?:#[0-9a-fA-F]{8})?|H\d+(?:#[0-9a-fA-F]{8})?")
+_CITATION_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:G\d+H\d+|H\d+)(?:#[0-9a-fA-F]{8})?(?![A-Za-z0-9_])"
+)
 
 
 def _load_replay_anchor_map():
@@ -521,6 +523,39 @@ def _check_citations(text_list, anchor_map):
                         f"tampering with a real hand id."
                     )
     return errors
+
+
+def _sanitize_unverified_replay_citations(text, anchor_map):
+    """Remove stale replay hand IDs from Master side context.
+
+    The current replay spotlight is the only authoritative citation source for
+    a generation. Direction-audit, match-analysis, research, or experience text
+    can mention historical GxHy IDs from prior generations; if injected as-is,
+    Master tends to repeat them and the evidence gate correctly rejects the
+    plan. Keep valid current IDs, fix stale anchors, and redact invalid IDs
+    before the text reaches Master.
+    """
+    if anchor_map is None or not isinstance(text, str) or not text:
+        return text, 0
+
+    count = 0
+
+    def repl(match):
+        nonlocal count
+        ref = match.group(0)
+        base = ref.split("#", 1)[0] if "#" in ref else ref
+        if base not in anchor_map:
+            count += 1
+            return "unverified-replay-ref"
+        if "#" in ref:
+            cited_anchor = ref.split("#", 1)[1]
+            expected = anchor_map.get(base, "")
+            if expected and cited_anchor.lower() != expected.lower():
+                count += 1
+                return f"{base}#{expected}"
+        return ref
+
+    return _CITATION_RE.sub(repl, text), count
 
 
 def _verify_cited_replays(plan):
@@ -800,6 +835,7 @@ async def run_master(args):
     match_analysis = args.get("match_analysis", "")
     performance_verification = args.get("performance_verification", "")
     direction_audit_str = args.get("direction_audit", "")
+    research_proposals = args.get("research_proposals", "")
 
     _set_pipeline_status(f"Master planning for v{next_v}")
 
@@ -933,6 +969,44 @@ async def run_master(args):
         )
     except Exception:
         pass
+
+    # The Replay Spotlight below is authoritative for current-generation hand
+    # IDs. Side contexts can carry historical GxHy references from old audits,
+    # research proposals, or match summaries; redact those before Master sees
+    # them so the hard fabricated-evidence gate can remain strict.
+    _anchor_map = _load_replay_anchor_map()
+    _citation_sanitized = {}
+    for _name, _value in (
+        ("stagnation_info", stagnation_info),
+        ("match_analysis", match_analysis),
+        ("performance_verification", performance_verification),
+        ("research_proposals", research_proposals),
+    ):
+        _clean, _count = _sanitize_unverified_replay_citations(_value, _anchor_map)
+        if _count:
+            _citation_sanitized[_name] = _count
+        if _name == "stagnation_info":
+            stagnation_info = _clean
+        elif _name == "match_analysis":
+            match_analysis = _clean
+        elif _name == "performance_verification":
+            performance_verification = _clean
+        elif _name == "research_proposals":
+            research_proposals = _clean
+    if _citation_sanitized:
+        try:
+            log_system_event(
+                "pipeline.master_context_citations_sanitized",
+                "warn",
+                f"Master v{next_v} context had stale replay IDs redacted",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "counts": _citation_sanitized,
+                },
+            )
+        except Exception:
+            pass
 
     # --- Read bot_action_stats for Master prompt ---
     bot_action_stats = ""
@@ -1136,7 +1210,7 @@ async def run_master(args):
         battle_experience=battle_experience,
         exploitability_weaknesses=exploitability_weaknesses,
         opponent_profiles=opponent_profiles,
-        research_proposals=args.get("research_proposals", ""),
+        research_proposals=research_proposals,
     )
 
     if data is None:
@@ -1223,6 +1297,23 @@ async def run_master(args):
                 f"Direction assessment: {audit_result.get('direction_novelty', 'unknown')}\n"
                 f"You MUST address these issues in your new plan.\n"
             )
+            performance_verification, _retry_sanitized = _sanitize_unverified_replay_citations(
+                performance_verification, _anchor_map
+            )
+            if _retry_sanitized:
+                try:
+                    log_system_event(
+                        "pipeline.master_retry_context_citations_sanitized",
+                        "warn",
+                        f"Master retry v{next_v} context had stale replay IDs redacted",
+                        {
+                            "next_v": next_v,
+                            "source_v": source_v,
+                            "count": _retry_sanitized,
+                        },
+                    )
+                except Exception:
+                    pass
             data = await _run_master_analysis(
                 source_v, next_v, stagnation_info, ui,
                 match_analysis=match_analysis,
@@ -1232,6 +1323,7 @@ async def run_master(args):
                 battle_experience=battle_experience,
                 exploitability_weaknesses=exploitability_weaknesses,
                 opponent_profiles=opponent_profiles,
+                research_proposals=research_proposals,
             )
             if data is None:
                 _nf = _bump_master_fail_count(next_v, source_v, value=_audit_attempt)
