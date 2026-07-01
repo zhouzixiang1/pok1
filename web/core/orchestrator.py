@@ -826,10 +826,13 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                 if ui:
                     ui.log_history(
                         f"[Orchestrator] LLM infrastructure error ({type(e).__name__}, NOT auth) — "
-                        "session cleared, next cycle starts fresh.", "warn",
+                        "session cleared; next cycle will resume from checkpoint when present.", "warn",
                     )
                 else:
-                    log.warning("LLM infra error (%s), session cleared: %s", type(e).__name__, e)
+                    log.warning(
+                        "LLM infra error (%s), session cleared; checkpoint resume will be attempted: %s",
+                        type(e).__name__, e,
+                    )
                 try:
                     log_system_event("pipeline.sdk_stream_error", "warn",
                         f"Orchestrator LLM infra error ({type(e).__name__}): {e}",
@@ -883,6 +886,61 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
         return ui.gen_cost_total - _cost_at_start
 
     return total_cost
+
+
+def _checkpoint_recovery_context(reason: str, ui=None):
+    """Build a recovery context from an active pipeline checkpoint.
+
+    LLM sessions are disposable after SDK/cost-cap failures; pipeline checkpoints
+    are not. This helper keeps those concepts separate so an infra retry resumes
+    the same generation instead of falling back to Phase 1 source selection.
+    """
+    try:
+        from evolution_core import read_pipeline_checkpoint
+        checkpoint = read_pipeline_checkpoint()
+    except Exception as e:
+        log.debug("checkpoint recovery read failed (%s): %s", reason, e)
+        return None
+
+    if not checkpoint:
+        return None
+
+    stage = checkpoint.get("stage")
+    next_v = checkpoint.get("next_v")
+    source_v = checkpoint.get("source_v")
+    if next_v is None or source_v is None:
+        return None
+
+    dead_stages = {None, "timed_out", "infra_timed_out", "archived", "abandoned"}
+    if stage in dead_stages:
+        return None
+    if stage == "prepared" and not checkpoint.get("master_plan"):
+        return None
+
+    recovery = {
+        "action": "resume",
+        "checkpoint": checkpoint,
+        "session_id": None,  # force a fresh LLM session, but keep pipeline identity
+        "stage": stage,
+        "next_v": next_v,
+        "source_v": source_v,
+    }
+
+    msg = f"[Recovery] Resuming v{next_v} at '{stage}' after {reason} (new LLM session)."
+    if ui:
+        ui.log_history(msg, "warn")
+    else:
+        log.warning(msg)
+    try:
+        log_system_event(
+            "orchestrator.recovery_decision", "warn", msg,
+            {"case": f"resume_after_{reason}",
+             "next_v": next_v, "source_v": source_v,
+             "stage": stage, "session_present": False},
+        )
+    except Exception:
+        pass
+    return recovery
 
 
 async def _watchdog_coroutine(ui, shutdown_mgr, check_interval=60):
@@ -1029,21 +1087,7 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                 _watchdog_triggered = False
                 if ui:
                     ui.log_history("[Watchdog] Restarting cycle from checkpoint stage.", "warn")
-                # Re-read checkpoint to get current stage, construct recovery context
-                from evolution_core import read_pipeline_checkpoint
-                ckpt = read_pipeline_checkpoint()
-                if ckpt and ckpt.get("stage") not in ("archived", "timed_out"):
-                    from generation_scheduler import GenerationContext
-                    parent2_v = ckpt.get("parent2_v")
-                    strategy = "crossover" if parent2_v else "master"
-                    recovery = {
-                        "action": "resume",
-                        "checkpoint": ckpt,
-                        "session_id": None,  # Force new LLM session
-                        "stage": ckpt.get("stage"),
-                        "next_v": ckpt.get("next_v"),
-                        "source_v": ckpt.get("source_v"),
-                    }
+                recovery = _checkpoint_recovery_context("watchdog_recovery", ui)
                 # Restart watchdog for the new cycle
                 if _watchdog_task.done():
                     _watchdog_task = asyncio.create_task(
@@ -1188,7 +1232,11 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                             pass
                     else:
                         await asyncio.sleep(_infra_backoff)
-                    # Session already cleared in _run_one_cycle except handler (infra path)
+                    # Session already cleared in _run_one_cycle except handler (infra path).
+                    # Preserve the generation identity by resuming from the active checkpoint
+                    # on the next loop; otherwise Phase 1 may select a new source/crossover
+                    # while pipeline_state.json still points at the interrupted generation.
+                    recovery = _checkpoint_recovery_context("infra_error", ui)
                     continue
 
                 # cost <= -1.0 lands here. Two distinct causes share this signal:

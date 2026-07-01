@@ -298,3 +298,74 @@ def test_main_loop_sentinel_minus3_skips_cleanup_and_complete(tmp_path, monkeypa
     assert complete_logs == [], "must NOT log 'gen complete' for -99999.0 sentinel"
     assert infra_backoff_logs == [], "must NOT apply infra/auth backoff for -99999.0 sentinel"
     assert state["calls"] == 1, f"loop should process one sentinel cycle then stop; got {state['calls']} calls"
+
+
+def test_main_loop_infra_error_resumes_checkpoint_without_prepare(tmp_path, monkeypatch):
+    """cost == -0.5 must resume the active checkpoint instead of starting Phase 1 again."""
+    import orchestrator
+    from generation_scheduler import GenerationContext
+
+    _write_checkpoint(tmp_path, "reviewed", timeout_extensions=0)
+
+    prepare_calls = []
+    run_contexts = []
+
+    async def _fake_prepare(shutdown_mgr, ui, min_games=None):
+        prepare_calls.append(min_games)
+        return GenerationContext(
+            current_v=999,
+            next_v=1000,
+            strategy="master",
+            source_v=999,
+            gen_count=0,
+        )
+
+    async def _fake_run_one_cycle(**kw):
+        run_contexts.append(kw["gen_ctx"])
+        if len(run_contexts) == 1:
+            return -0.5
+        return -99999.0
+
+    monkeypatch.setattr(orchestrator, "_run_one_cycle", _fake_run_one_cycle)
+    monkeypatch.setattr(orchestrator, "_prepare_or_fail", _fake_prepare)
+    monkeypatch.setattr(orchestrator, "_startup_recovery", lambda ui: None)
+    monkeypatch.setattr(orchestrator, "_watchdog_triggered", False)
+
+    async def _no_watchdog(ui, shutdown_mgr, check_interval=60):
+        return
+
+    monkeypatch.setattr(orchestrator, "_watchdog_coroutine", _no_watchdog)
+
+    import rate_limiter
+    monkeypatch.setattr(rate_limiter.rate_limiter, "is_blocked", lambda: False)
+
+    async def _fast_wait_for(coro, timeout):
+        try:
+            coro.close()
+        except AttributeError:
+            pass
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(asyncio, "wait_for", _fast_wait_for)
+
+    class _ShutdownAfterSecondRun:
+        @property
+        def is_shutting_down(self):
+            return len(run_contexts) >= 2
+
+        async def wait_for_shutdown(self):
+            await asyncio.sleep(999)
+
+    ui = _FakeUI()
+    asyncio.new_event_loop().run_until_complete(
+        orchestrator.orchestrator_loop(
+            ui=ui, shutdown_mgr=_ShutdownAfterSecondRun(), no_daemon=True,
+        )
+    )
+
+    assert len(run_contexts) == 2
+    assert len(prepare_calls) == 1, "infra retry must not run prepare_generation again"
+    resumed = run_contexts[1]
+    assert resumed.next_v == 102
+    assert resumed.source_v == 100
+    assert resumed.strategy == "master"
