@@ -301,17 +301,15 @@ def emit(category, severity, message, *, stage=None, attempt=None, run_id=None,
     if payload_v is None:
         payload_v = fields.get("target_v")
     payload_run_id = None
-    if run_id is None and payload_v is not None:
-        prefix = f"{payload_v}#"
-        if rid is None or not str(rid).startswith(prefix):
-            gen_attempt = fields.get("generation_attempt")
-            if gen_attempt is None and isinstance(ctx_attempt, dict):
-                gen_attempt = ctx_attempt.get("generation", 0)
-            try:
-                gen_attempt = int(gen_attempt or 0)
-            except Exception:
-                gen_attempt = 0
-            payload_run_id = f"{payload_v}#{gen_attempt}"
+    if run_id is None and rid is None and payload_v is not None:
+        gen_attempt = fields.get("generation_attempt")
+        if gen_attempt is None and isinstance(ctx_attempt, dict):
+            gen_attempt = ctx_attempt.get("generation", 0)
+        try:
+            gen_attempt = int(gen_attempt or 0)
+        except Exception:
+            gen_attempt = 0
+        payload_run_id = f"{payload_v}#{gen_attempt}"
 
     emitter_proc = current_proc()
     data = {
