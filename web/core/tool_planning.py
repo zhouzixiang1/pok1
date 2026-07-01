@@ -2126,7 +2126,9 @@ async def execute_workers(args):
 
     # When retrying after workers already ran, actually reset code from source first.
     # Previous claim that code was reset was FALSE — now we actually do it.
-    if reviewer_feedback and ckpt.get("stage") in ("workers_done", "quality_failed", "reviewed", "critic_checked"):
+    if reviewer_feedback and ckpt.get("stage") in (
+        "workers_done", "quality_failed", "quality_passed", "reviewed", "critic_checked"
+    ):
         source_dir_r = get_bot_dir(source_v)
         if source_dir_r.exists() and next_dir.exists():
             _log.info(f"Resetting v{next_v} code from source v{source_v} before worker retry (incremental, preserves NEW files)")

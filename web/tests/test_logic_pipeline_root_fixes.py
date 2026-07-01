@@ -183,6 +183,120 @@ def test_quality_gate_records_smoke_failure_details(monkeypatch):
     assert quality["failed_gates"] == ["smoke_test"]
 
 
+def test_quality_gate_blocks_unreachable_new_function(monkeypatch, tmp_path):
+    import evolution_infra
+    import tool_gates
+
+    source = tmp_path / "claude_v3"
+    child = tmp_path / "claude_v4"
+    source.mkdir()
+    child.mkdir()
+    (source / "postflop.py").write_text("def existing():\n    return 1\n")
+    (child / "postflop.py").write_text(
+        "def existing():\n    return 1\n\n"
+        "def _new_helper():\n    return 2\n"
+    )
+
+    evolution_infra.write_pipeline_checkpoint(4, 3, "workers_done")
+
+    monkeypatch.setattr(tool_gates, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+    monkeypatch.setattr(tool_gates, "_py_files_changed_between", lambda _src, _dst: ["postflop.py"])
+    monkeypatch.setattr(tool_gates, "verify_code", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_import_contract_test", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_smoke_test", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda: [])
+    monkeypatch.setattr(tool_gates, "check_code_size", lambda *_a, **_k: (10, []))
+    monkeypatch.setattr(tool_gates, "verify_fixes", lambda _bot_dir: {"mandatory": {"ok": True}})
+    monkeypatch.setattr(tool_gates, "run_decision_test_details", lambda *_a, **_k: {
+        "pass_rate": 1.0,
+        "passed": 1,
+        "total": 1,
+        "critical_passed": 1,
+        "critical_total": 1,
+        "critical_failures": [],
+        "failures": [],
+        "scenarios": [],
+    })
+
+    import audit_agents
+
+    async def _no_dynamic_tests(*_a, **_k):
+        return []
+
+    monkeypatch.setattr(audit_agents, "_generate_dynamic_tests", _no_dynamic_tests)
+
+    result = asyncio.run(tool_gates.run_quality_gates.handler({"version": 4, "source_v": 3}))
+    data = json.loads(result["content"][0]["text"])
+
+    assert data["reachability_ok"] is False
+    assert any("reachability" in gate for gate in data["failed_gates"])
+    ckpt = evolution_infra.read_pipeline_checkpoint()
+    assert ckpt["stage"] == "quality_failed"
+    assert ckpt["gate_results"]["quality"]["reachability_ok"] is False
+
+
+def test_quality_gate_reruns_when_cached_code_fingerprint_is_stale(monkeypatch, tmp_path):
+    import evolution_infra
+    import tool_gates
+    import tool_helpers
+
+    source = tmp_path / "claude_v4"
+    child = tmp_path / "claude_v5"
+    source.mkdir()
+    child.mkdir()
+    (source / "main.py").write_text("def act():\n    return 0\n")
+    (child / "main.py").write_text("def act():\n    return 1\n")
+
+    evolution_infra.write_pipeline_checkpoint(5, 4, "workers_done")
+    tool_helpers._record_gate(
+        5,
+        4,
+        "quality",
+        {"all_passed": True, "critical_scenarios_passed": True, "code_fingerprint": "stale"},
+        stage="quality_passed",
+    )
+
+    calls = {"verify": 0}
+
+    def _verify(_bot_dir):
+        calls["verify"] += 1
+        return []
+
+    monkeypatch.setattr(tool_gates, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+    monkeypatch.setattr(tool_gates, "_py_files_changed_between", lambda _src, _dst: ["main.py"])
+    monkeypatch.setattr(tool_gates, "verify_code", _verify)
+    monkeypatch.setattr(tool_gates, "run_import_contract_test", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_smoke_test", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda: [])
+    monkeypatch.setattr(tool_gates, "check_code_size", lambda *_a, **_k: (10, []))
+    monkeypatch.setattr(tool_gates, "verify_fixes", lambda _bot_dir: {"mandatory": {"ok": True}})
+    monkeypatch.setattr(tool_gates, "run_decision_test_details", lambda *_a, **_k: {
+        "pass_rate": 1.0,
+        "passed": 1,
+        "total": 1,
+        "critical_passed": 1,
+        "critical_total": 1,
+        "critical_failures": [],
+        "failures": [],
+        "scenarios": [],
+    })
+
+    import audit_agents
+
+    async def _no_dynamic_tests(*_a, **_k):
+        return []
+
+    monkeypatch.setattr(audit_agents, "_generate_dynamic_tests", _no_dynamic_tests)
+
+    result = asyncio.run(tool_gates.run_quality_gates.handler({"version": 5, "source_v": 4}))
+    data = json.loads(result["content"][0]["text"])
+
+    assert calls["verify"] == 1
+    assert data.get("idempotent_cache") is not True
+    assert data["all_passed"] is True
+    assert data["code_fingerprint"] != "stale"
+
+
 def test_log_system_event_is_not_reimported_inside_runtime_functions():
     """Inner imports make log_system_event a local and can crash earlier calls."""
     web_root = Path(__file__).resolve().parents[1]

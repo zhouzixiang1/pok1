@@ -145,6 +145,8 @@ def validate_stage_transition(current_stage, proposed_stage):
     # Same-code re-evaluation and explicit post-precommit rework paths.
     if current_stage == "critic_checked" and proposed_stage == "reviewed":
         return True, "review_recheck"
+    if current_stage == "quality_passed" and proposed_stage == "workers_done":
+        return True, "review_rework_done"
     if current_stage == "critic_checked" and proposed_stage == "workers_done":
         return True, "critic_rework_done"
     if current_stage == "verified" and proposed_stage in {"workers_done", "master_planned"}:
