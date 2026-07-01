@@ -26,6 +26,7 @@ from claude_agent_sdk import (
     ThinkingBlock,
     ClaudeSDKError,
 )
+from llm_failure import is_success_error_result
 
 log = logging.getLogger("pok.infra")
 
@@ -454,9 +455,8 @@ def _usage_metadata(usage):
 
 def _llm_failure_severity(exc: Exception) -> str:
     """Classify known noisy SDK/business failures without hiding hard failures."""
-    text = str(exc).lower()
-    if "returned an error result: success" in text:
-        return "warn"
+    if is_success_error_result(exc):
+        return "info"
     return "error"
 
 

@@ -13,6 +13,14 @@ import asyncio
 from claude_agent_sdk import ClaudeSDKError
 
 
+SUCCESS_ERROR_RESULT_TEXT = "returned an error result: success"
+
+
+def is_success_error_result(exc) -> bool:
+    """True for the Claude Code SDK quirk that raises while reporting success."""
+    return SUCCESS_ERROR_RESULT_TEXT in str(exc).lower()
+
+
 def is_llm_infra_error(exc) -> bool:
     """True = LLM infrastructure error (retry/neutral/mark), not a real business failure.
 
