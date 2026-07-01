@@ -38,6 +38,9 @@
 - Evaluate polarized-aggression fixes by net-chips/blowout-frequency, NOT W-L (v204: 5W-3L yet net -25071 = thin wins masking one blowout).
 
 ## RECENT_LESSONS
+- **v239**: For betsize-polarity/overbettor modeling, recording all-in samples and lowering the sample gate 4→3 is a real activation path; lowering confidence constants alone has previously been inert.
+- **v239**: When targeting v206, prefer preflop defense/4bet-response mechanisms over postflop betsize-polarity ports unless reachability shows the postflop tendency fires.
+- **v239 归档建议**: Next generation should wire `facing_villain_4bet=True` via preflop raise-count detection and test the activated SPR/4bet fold branch specifically against v206.
 - **v238**: AXIS-EXHAUSTION CONFIRMED — 'floor'/constant-only pot_odds threshold nudges in fold gates are pivot-trigger-saturated; v238 reverses v192's documented 0.30→0.33 fix without new evidence. Future Master must use a DIFFERENT mechanism (deal-local opp-signal gating, structural dispatch-wiring port, or board-texture-conditional fold) — NOT another single-literal floor edit.
 - **v238**: SIBLING-GATE ALIGNMENT — when multiple fold gates (_multibarrel_line_fold, _aggro_bluffcatcher_should_fold, _rock_value_bet_fold) share a pot_odds floor, editing ONE creates an inconsistent exploit surface. Lower ALL sibling gates consistently with over-fold evidence, or gate the widened band on opp signals rather than firing unconditionally.
 - **v238 归档建议**: Close v235's real leak vs v208/v205/v184 (value-heavy multi-barrel, 40-50% pot) by porting the FULL v206 fold-gate stack to all 4 strategy.py dispatch sites and aligning all three sibling gates — then validate at ≥30g with bet-sizing telemetry localizing the leak to the target band before committing.
@@ -45,3 +48,4 @@
 - **v237**: INERT-MUTATION TRAP 4th recurrence — betsize_polarity confidence is structurally 0 or ≥0.333, never [0.20,0.25); replace ALL confidence thresholds with sample_count≥6 before further calibration.
 - **v236**: strategy.py=2485/2500 LOC (15-line headroom) — next strategy.py edit MUST reclaim LOC first; binding constraint on offense-axis evolution.
 - **v236**: CROSSOVER FRAGILITY — validated-pending fns silently lost across crossovers (`_semibluff_raise_construct` absent v234/v235, restored v236). Master MUST grep current bot for previously-validated mechanism names before assuming 'new'.
+
