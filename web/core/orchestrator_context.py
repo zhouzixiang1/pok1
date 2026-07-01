@@ -19,6 +19,7 @@ _cycle_start_time = None
 CYCLE_TIMEOUT = 5400  # Must match orchestrator.py (实测 mean cycle 56min，见 orchestrator.py:329 注释)
 
 _SAFE_REDIRECT_TARGETS = {"/dev/null", "nul"}
+_SAFE_REDIRECT_PREFIXES = ("/tmp/", "/var/tmp/", "$tmpdir/", "${tmpdir}/")
 _PYTHON_OPEN_WRITE_RE = re.compile(r"open\([^)]*,\s*['\"][^'\"]*[wax+]")
 _PYTHON_WRITE_PATTERNS = (
     ".write_text(", ".unlink(", ".rename(", ".mkdir(", ".rmdir(",
@@ -200,9 +201,12 @@ def _iter_shell_write_redirect_targets(command: str):
 def _bash_has_file_write_redirect(command: str) -> bool:
     for target in _iter_shell_write_redirect_targets(command):
         target = target.strip("'\"")
+        target_low = target.lower()
         if target.startswith("&"):
             continue
-        if target.lower() in _SAFE_REDIRECT_TARGETS:
+        if target_low in _SAFE_REDIRECT_TARGETS:
+            continue
+        if target_low.startswith(_SAFE_REDIRECT_PREFIXES):
             continue
         return True
     return False

@@ -755,6 +755,13 @@ for wr in [0.20, 0.55]:
         print(wr)
 PYEOF
 """
+    readonly_pipeline_tmp_extract = """cat web/core/results/pipeline_state.json 2>/dev/null | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+plan = d.get('master_plan') or d.get('plan') or {}
+print(json.dumps(plan, default=str))
+" > /tmp/v242_plan.json 2>/dev/null
+wc -c /tmp/v242_plan.json"""
     write_redirect = "echo x > bots/claude_v221/main.py"
     write_heredoc_redirect = """python3 << 'PYEOF' > bots/claude_v221/tmp.txt
 print('x')
@@ -771,6 +778,7 @@ PYEOF
     assert orchestrator_context._orchestrator_bash_is_mutation("git tag --sort=-creatordate | head -5") is False
     assert orchestrator_context._orchestrator_bash_is_mutation(readonly_python) is False
     assert orchestrator_context._orchestrator_bash_is_mutation(readonly_python_comparison) is False
+    assert orchestrator_context._orchestrator_bash_is_mutation(readonly_pipeline_tmp_extract) is False
     assert orchestrator_context._orchestrator_bash_is_mutation(write_redirect) is True
     assert orchestrator_context._orchestrator_bash_is_mutation(write_heredoc_redirect) is True
     assert orchestrator_context._orchestrator_bash_is_mutation(write_python) is True
