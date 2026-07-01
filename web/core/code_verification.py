@@ -100,6 +100,16 @@ def _detect_dead_code_ast(directory, target_files=None):
     return errors
 
 
+def _is_reachability_exempt_function(name):
+    """Return True for local self-test helpers that are not runtime behavior."""
+    return (
+        name.startswith("test_")
+        or name.startswith("_test_")
+        or name.startswith("verify_")
+        or name.startswith("_verify_")
+    )
+
+
 def _top_level_function_defs(path):
     """Return {function_name: (lineno, end_lineno)} for top-level functions."""
     import ast as _ast
@@ -115,7 +125,7 @@ def _top_level_function_defs(path):
             name = node.name
             if name.startswith("__") and name.endswith("__"):
                 continue
-            if name.startswith("test_"):
+            if _is_reachability_exempt_function(name):
                 continue
             defs[name] = (getattr(node, "lineno", 0), getattr(node, "end_lineno", getattr(node, "lineno", 0)))
     return defs

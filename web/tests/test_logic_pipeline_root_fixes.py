@@ -235,6 +235,60 @@ def test_quality_gate_blocks_unreachable_new_function(monkeypatch, tmp_path):
     assert ckpt["gate_results"]["quality"]["reachability_ok"] is False
 
 
+def test_quality_gate_allows_unreachable_verify_helper(monkeypatch, tmp_path):
+    import evolution_infra
+    import tool_gates
+
+    source = tmp_path / "claude_v6"
+    child = tmp_path / "claude_v7"
+    source.mkdir()
+    child.mkdir()
+    (source / "state.py").write_text("def existing():\n    return 1\n")
+    (child / "state.py").write_text(
+        "def existing():\n    return 1\n\n"
+        "def _verify_preflop_shove_defense():\n"
+        "    assert existing() == 1\n"
+    )
+
+    evolution_infra.write_pipeline_checkpoint(7, 6, "workers_done")
+
+    monkeypatch.setattr(tool_gates, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+    monkeypatch.setattr(tool_gates, "_py_files_changed_between", lambda _src, _dst: ["state.py"])
+    monkeypatch.setattr(tool_gates, "verify_code", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_import_contract_test", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_smoke_test", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda: [])
+    monkeypatch.setattr(tool_gates, "check_code_size", lambda *_a, **_k: (10, []))
+    monkeypatch.setattr(tool_gates, "verify_fixes", lambda _bot_dir: {"mandatory": {"ok": True}})
+    monkeypatch.setattr(tool_gates, "run_decision_test_details", lambda *_a, **_k: {
+        "pass_rate": 1.0,
+        "passed": 1,
+        "total": 1,
+        "critical_passed": 1,
+        "critical_total": 1,
+        "critical_failures": [],
+        "failures": [],
+        "scenarios": [],
+    })
+
+    import audit_agents
+
+    async def _no_dynamic_tests(*_a, **_k):
+        return []
+
+    monkeypatch.setattr(audit_agents, "_generate_dynamic_tests", _no_dynamic_tests)
+
+    result = asyncio.run(tool_gates.run_quality_gates.handler({"version": 7, "source_v": 6}))
+    data = json.loads(result["content"][0]["text"])
+
+    assert data["all_passed"] is True
+    assert data["reachability_ok"] is True
+    assert data["reachability_warnings"] == []
+    ckpt = evolution_infra.read_pipeline_checkpoint()
+    assert ckpt["stage"] == "quality_passed"
+    assert ckpt["gate_results"]["quality"]["reachability_ok"] is True
+
+
 def test_quality_gate_reruns_when_cached_code_fingerprint_is_stale(monkeypatch, tmp_path):
     import evolution_infra
     import tool_gates

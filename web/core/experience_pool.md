@@ -22,7 +22,7 @@
 - choose_raise() constant-only nudges [POSSIBLY EXHAUSTED] — saturated ≥6 gens; cross-gen pivot auto-flags calibration/ceiling/constant/floor/side/line/defense/gate/shove/polarized (v215-v227). EXEMPT only structural rewrites adding NEW DEAL-LOCAL opp-signal gating.
 - INERT-MUTATION TRAP: confidence=min(1.0,total/12.0)→0.0 at n<4, ≥0.333 at n≥4, NEVER [0.20,0.25); any confidence≥0.25 gate is a no-op (v219/v221/v235/v237 — 4th recurrence). Use sample-count thresholds (samples≥6) or lower the early-return gate (len>=3 vs >=4) — NOT the constant; REMOVE dead bound constants.
 - Preflop pot_odds windows <10pp rarely fire in 70-hand HU; widen_threshold must target ≥15pp bands.
-- Firing verification: reachability_test + ≥30g paired net-chips is the ROUTINELY-ACHIEVABLE authoritative gate (≥100g to declare success); skipped 4-6+ consecutive gens despite being "binding" — HARD prerequisite. grep counts ≠ H2H proof.
+- Firing verification: reachability_test + ≥30g paired net-chips is the ROUTINELY-ACHIEVABLE authoritative gate (≥100g to declare success); skipped 4-6+ consecutive gens despite being "binding" — HARD prerequisite. RESOLVED (A1): daemon/battle drains bot stderr into telemetry; grep counts ≠ H2H proof.
 
 ## GENERAL
 - Master is RELIABLE at plan-generation but reliability ≠ correctness: validate axis PAYLOAD (≥30g WR-lift), not plan cleanliness. Critic advisory ≤4.0 + local_optima_warning=true on an exhausted axis mandates a direction_audit pivot (advisory, doesn't gate commit; precommit authoritative).
