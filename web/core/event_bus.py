@@ -433,12 +433,15 @@ def capture_context() -> dict:
 
     contextvars do NOT cross ``subprocess.Popen`` / ``ProcessPoolExecutor(spawn)``
     / ``threading.Thread`` boundaries. Pass the captured dict explicitly and call
-    ``apply_context()`` at the worker entry.
+    ``apply_context()`` at the worker entry. Use the same fallback chain as
+    ``emit()`` so role-IO appenders and other non-event logs keep the same
+    checkpoint-derived run_id/stage correlation.
     """
+    run_id, stage, attempt = _resolve_context()
     return {
-        "run_id": _run_id_cv.get() or _last_known["run_id"],
-        "stage": _stage_cv.get() or _last_known["stage"],
-        "attempt": _attempt_cv.get() or _last_known["attempt"],
+        "run_id": run_id,
+        "stage": stage,
+        "attempt": attempt,
     }
 
 

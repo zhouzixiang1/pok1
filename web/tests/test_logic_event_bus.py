@@ -155,6 +155,17 @@ def test_capture_apply_context_across_thread(isolated_files):
         assert seen["rid"] == "77#3"
 
 
+def test_capture_context_falls_back_to_checkpoint(isolated_files, monkeypatch):
+    """Role-IO correlation uses capture_context(), so it must match emit() fallback."""
+    monkeypatch.setattr(event_bus, "_read_ckpt_cached", _ckpt(
+        next_v=243, stage="master_planned",
+        generation_attempt=0, audit_attempt=0, precommit_attempt=0))
+    ctx = event_bus.capture_context()
+    assert ctx["run_id"] == "243#0"
+    assert ctx["stage"] == "master_planned"
+    assert ctx["attempt"]["generation"] == 0
+
+
 def test_thread_without_apply_falls_back_to_checkpoint(isolated_files, monkeypatch):
     """A long-lived worker thread that did NOT apply_context still resolves via checkpoint."""
     monkeypatch.setattr(event_bus, "_read_ckpt_cached", _ckpt(
