@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+from claude_agent_sdk.types import AssistantMessage, ResultMessage, TextBlock
 
 from core import llm_query
 
@@ -116,3 +117,90 @@ def test_run_claude_query_emits_role_failed(monkeypatch, tmp_path):
     assert fields["role"] == "reviewer"
     assert fields["exception_type"] == "RuntimeError"
     assert "boom" in fields["error"]
+
+
+def test_process_stream_emits_periodic_progress(monkeypatch, tmp_path):
+    events = []
+
+    async def fake_stream():
+        yield AssistantMessage(content=[TextBlock(text="alpha")], model="sonnet")
+        await asyncio.sleep(0.02)
+        yield AssistantMessage(content=[TextBlock(text="beta")], model="sonnet")
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=10,
+            duration_api_ms=10,
+            is_error=False,
+            num_turns=1,
+            session_id="session",
+            total_cost_usd=0.1,
+            usage={"input_tokens": 4, "output_tokens": 2},
+        )
+
+    monkeypatch.setattr(llm_query, "_LLM_PROGRESS_INTERVAL_SEC", 0.01)
+    monkeypatch.setattr(
+        llm_query,
+        "_emit_llm_event",
+        lambda category, severity, message, **fields: events.append(
+            (category, severity, message, fields)
+        ),
+    )
+
+    log_file = tmp_path / "v243" / "logs" / "master_io.txt"
+    log_file.parent.mkdir(parents=True)
+
+    texts, cost, usage = asyncio.run(
+        llm_query._process_stream(fake_stream(), str(log_file), _DummyUI(), "master")
+    )
+
+    assert texts == ["alpha", "beta"]
+    assert cost == 0.1
+    assert usage["input_tokens"] == 4
+
+    progress = [
+        event for event in events if event[0] == "pipeline.llm_role_progress"
+    ]
+    assert progress
+    _category, severity, _message, fields = progress[0]
+    assert severity == "info"
+    assert fields["role"] == "master"
+    assert fields["messages_seen"] >= 2
+    assert fields["text_chars"] == len("alphabeta")
+    assert fields["progress_interval_sec"] == 0.01
+
+
+def test_run_claude_query_downgrades_success_error_result_to_warn(monkeypatch, tmp_path):
+    events = []
+
+    async def fake_stream(*_args, **_kwargs):
+        raise Exception("Claude Code returned an error result: success")
+
+    monkeypatch.setattr(llm_query, "_run_stream_with_signature_retry", fake_stream)
+    monkeypatch.setattr(
+        llm_query,
+        "_emit_llm_event",
+        lambda category, severity, message, **fields: events.append(
+            (category, severity, message, fields)
+        ),
+    )
+    monkeypatch.setattr(llm_query.asyncio, "sleep", _no_wait)
+
+    log_file = tmp_path / "battle_exp_llm.txt"
+
+    with pytest.raises(Exception):
+        asyncio.run(
+            llm_query.run_claude_query(
+                "prompt",
+                [],
+                _DummyUI(),
+                "battle_experience",
+                str(log_file),
+            )
+        )
+
+    failed = [event for event in events if event[0] == "pipeline.llm_role_failed"]
+    assert len(failed) == 1
+    _category, severity, _message, fields = failed[0]
+    assert severity == "warn"
+    assert fields["role"] == "battle_experience"
+    assert "error result: success" in fields["error"]

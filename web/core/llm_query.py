@@ -394,6 +394,10 @@ _LLM_FIRST_ACTIVITY_WARN_SEC = float(
     os.environ.get("POK_LLM_FIRST_ACTIVITY_WARN_SEC", "60")
 )
 
+_LLM_PROGRESS_INTERVAL_SEC = float(
+    os.environ.get("POK_LLM_PROGRESS_INTERVAL_SEC", "120")
+)
+
 
 def _emit_llm_event(category, severity, message, **fields):
     """Emit an LLM lifecycle event without letting logging affect execution."""
@@ -440,6 +444,14 @@ def _usage_metadata(usage):
         if key in data:
             summary[key] = data.get(key)
     return summary
+
+
+def _llm_failure_severity(exc: Exception) -> str:
+    """Classify known noisy SDK/business failures without hiding hard failures."""
+    text = str(exc).lower()
+    if "returned an error result: success" in text:
+        return "warn"
+    return "error"
 
 
 def _append_role_io(log_file_path, text):
@@ -569,6 +581,11 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
     stream_started_at = time.time()
     first_activity_logged = False
     message_count = 0
+    last_progress_at = stream_started_at
+    text_chars = 0
+    thinking_chars = 0
+    tool_use_count = 0
+    tool_result_count = 0
 
     def _mark_first_activity(kind):
         nonlocal first_activity_logged
@@ -593,6 +610,29 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             **_role_log_metadata(log_file_path),
         )
 
+    def _emit_progress():
+        nonlocal last_progress_at
+        if _LLM_PROGRESS_INTERVAL_SEC <= 0:
+            return
+        now = time.time()
+        if now - last_progress_at < _LLM_PROGRESS_INTERVAL_SEC:
+            return
+        elapsed = now - stream_started_at
+        last_progress_at = now
+        _emit_llm_event(
+            "pipeline.llm_role_progress", "info",
+            f"{role_name}: LLM stream active for {elapsed:.1f}s",
+            role=role_name,
+            elapsed_sec=round(elapsed, 2),
+            messages_seen=message_count,
+            text_chars=text_chars,
+            thinking_chars=thinking_chars,
+            tool_use_count=tool_use_count,
+            tool_result_count=tool_result_count,
+            progress_interval_sec=_LLM_PROGRESS_INTERVAL_SEC,
+            **_role_log_metadata(log_file_path),
+        )
+
     try:
         async for message in query_gen:
             message_count += 1
@@ -601,29 +641,35 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                 for block in message.content:
                     if isinstance(block, TextBlock):
                         text = block.text
+                        text_chars += len(text or "")
                         texts.append(text)
                         _append_role_io(log_file_path, text + "\n")
                         ui.log_io(text, "claude", role_name)
                     elif isinstance(block, ThinkingBlock):
                         thinking = block.thinking or "[thinking...]"
+                        thinking_chars += len(thinking or "")
                         _append_role_io(log_file_path, f"\n[THINKING] {thinking[:2000]}\n")
                         ui.log_io(thinking, "thinking", role_name)
                     elif isinstance(block, ToolUseBlock):
+                        tool_use_count += 1
                         args_str = json.dumps(block.input, ensure_ascii=False, indent=2)[:2000]
                         _append_role_io(log_file_path, f"\n[TOOL_CALL] {block.name}\n[ARGS] {args_str}\n")
                         ui.log_io(f"\n[tool: {block.name}]", "tool", role_name)
                         ui.emit_tool_call(block.name, block.input, role_name)
                     elif isinstance(block, ToolResultBlock):
+                        tool_result_count += 1
                         content = block.content if isinstance(block.content, str) else (
                             json.dumps(block.content, ensure_ascii=False) if block.content is not None else ""
                         )
                         if content:
                             _append_role_io(log_file_path, f"\n[TOOL_RESULT] {content[:3000]}\n")
                             ui.log_io(content[:3000], "tool_result", role_name)
+                _emit_progress()
             elif isinstance(message, ResultMessage):
                 _mark_first_activity("result")
                 cost_usd = message.total_cost_usd
                 usage = message.usage
+                _emit_progress()
                 # A1 (v125 retry-storm fix): capture ResultMessage diagnostic fields.
                 # Previously this branch read ONLY cost/usage, discarding subtype /
                 # is_error / num_turns / stop_reason. That made every Master-failure
@@ -1045,8 +1091,9 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         )
         raise
     except Exception as e:
+        severity = _llm_failure_severity(e)
         _emit_llm_event(
-            "pipeline.llm_role_failed", "error",
+            "pipeline.llm_role_failed", severity,
             f"{role_name}: LLM call failed after {time.time() - call_started_at:.1f}s: {str(e)[:180]}",
             elapsed_sec=round(time.time() - call_started_at, 2),
             exception_type=type(e).__name__,
