@@ -371,6 +371,75 @@ def test_main_loop_infra_error_resumes_checkpoint_without_prepare(tmp_path, monk
     assert resumed.strategy == "master"
 
 
+def test_main_loop_post_cleanup_timeout_still_marks_cycle_done(monkeypatch):
+    """Post-generation housekeeping timeout should not block the next evolution cycle."""
+    import orchestrator
+    import generation_scheduler
+    from generation_scheduler import GenerationContext
+
+    events = []
+    cleanup_calls = []
+
+    async def _fake_prepare(shutdown_mgr, ui, min_games=None):
+        return GenerationContext(
+            current_v=242,
+            next_v=243,
+            strategy="master",
+            source_v=242,
+            gen_count=1,
+        )
+
+    async def _fake_run_one_cycle(**kw):
+        return 0.25
+
+    async def _hanging_cleanup(shutdown_mgr, ui, gen_ctx):
+        cleanup_calls.append(gen_ctx)
+        await asyncio.Event().wait()
+
+    def _fake_log(event_type, severity, message, data=None):
+        events.append((event_type, severity, message, data or {}))
+
+    monkeypatch.setattr(orchestrator, "_run_one_cycle", _fake_run_one_cycle)
+    monkeypatch.setattr(orchestrator, "_prepare_or_fail", _fake_prepare)
+    monkeypatch.setattr(orchestrator, "_startup_recovery", lambda ui: None)
+    monkeypatch.setattr(orchestrator, "_watchdog_triggered", False)
+    monkeypatch.setattr(orchestrator, "POST_GENERATION_CLEANUP_TIMEOUT", 0.01)
+    monkeypatch.setattr(orchestrator, "log_system_event", _fake_log)
+    monkeypatch.setattr(generation_scheduler, "post_generation_cleanup", _hanging_cleanup)
+
+    async def _no_watchdog(ui, shutdown_mgr, check_interval=60):
+        return
+
+    monkeypatch.setattr(orchestrator, "_watchdog_coroutine", _no_watchdog)
+
+    import rate_limiter
+    monkeypatch.setattr(rate_limiter.rate_limiter, "is_blocked", lambda: False)
+
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(*a, **kw):
+        await real_sleep(0)
+
+    monkeypatch.setattr(orchestrator.asyncio, "sleep", _fast_sleep)
+
+    class _ShutdownAfterCycleDone:
+        @property
+        def is_shutting_down(self):
+            return any(e[0] == "orchestrator.cycle_done" for e in events)
+
+    asyncio.new_event_loop().run_until_complete(
+        orchestrator.orchestrator_loop(
+            ui=_FakeUI(),
+            shutdown_mgr=_ShutdownAfterCycleDone(),
+            no_daemon=True,
+        )
+    )
+
+    assert len(cleanup_calls) == 1
+    assert any(e[0] == "orchestrator.post_cleanup_timeout" for e in events)
+    assert any(e[0] == "orchestrator.cycle_done" for e in events)
+
+
 def test_first_activity_timeout_is_infra_and_preserves_checkpoint(tmp_path, monkeypatch):
     """No first LLM stream message should short-retry as infra, not mark checkpoint timed_out."""
     import orchestrator

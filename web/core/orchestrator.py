@@ -110,6 +110,7 @@ class _OrchFirstActivityTimeout(Exception):
 # a fresh _run_one_cycle (discarding the stale session) when set.
 _watchdog_triggered = False
 ORCH_FIRST_ACTIVITY_TIMEOUT = int(os.environ.get("POK_ORCH_FIRST_ACTIVITY_TIMEOUT", "600"))
+POST_GENERATION_CLEANUP_TIMEOUT = int(os.environ.get("POK_POST_GENERATION_CLEANUP_TIMEOUT", "900"))
 
 ORCHESTRATOR_PROMPT = (Path(__file__).parent / "prompts" / "orchestrator.md").read_text()
 LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
@@ -1000,6 +1001,86 @@ def _checkpoint_recovery_context(reason: str, ui=None):
     return recovery
 
 
+async def _run_post_generation_cleanup_with_timeout(shutdown_mgr, ui, gen_ctx, gen_count=None):
+    """Run post-generation housekeeping without letting it block evolution forever."""
+    from generation_scheduler import post_generation_cleanup
+
+    version = getattr(gen_ctx, "next_v", None)
+    source_v = getattr(gen_ctx, "source_v", None)
+    started = time.time()
+    log_system_event(
+        "orchestrator.post_cleanup_start",
+        "info",
+        f"Post-generation cleanup starting for v{version}",
+        {
+            "version": version,
+            "source_v": source_v,
+            "gen_count": gen_count,
+            "timeout_s": POST_GENERATION_CLEANUP_TIMEOUT,
+        },
+    )
+    try:
+        await asyncio.wait_for(
+            post_generation_cleanup(shutdown_mgr, ui, gen_ctx),
+            timeout=POST_GENERATION_CLEANUP_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        elapsed = time.time() - started
+        msg = (
+            f"Post-generation cleanup timed out for v{version} after "
+            f"{POST_GENERATION_CLEANUP_TIMEOUT}s; continuing evolution."
+        )
+        log.warning(msg)
+        if ui:
+            ui.log_history(msg, "warn")
+        log_system_event(
+            "orchestrator.post_cleanup_timeout",
+            "warn",
+            msg,
+            {
+                "version": version,
+                "source_v": source_v,
+                "gen_count": gen_count,
+                "elapsed_sec": round(elapsed, 2),
+                "timeout_s": POST_GENERATION_CLEANUP_TIMEOUT,
+            },
+        )
+        return False
+    except Exception as e:
+        elapsed = time.time() - started
+        msg = f"Post-generation cleanup failed for v{version}: {str(e)[:180]}"
+        log.exception(msg)
+        if ui:
+            ui.log_history(msg, "warn")
+        log_system_event(
+            "orchestrator.post_cleanup_failed",
+            "error",
+            msg,
+            {
+                "version": version,
+                "source_v": source_v,
+                "gen_count": gen_count,
+                "elapsed_sec": round(elapsed, 2),
+                "error": str(e)[:500],
+            },
+        )
+        return False
+
+    elapsed = time.time() - started
+    log_system_event(
+        "orchestrator.post_cleanup_done",
+        "info",
+        f"Post-generation cleanup finished for v{version} in {elapsed:.1f}s",
+        {
+            "version": version,
+            "source_v": source_v,
+            "gen_count": gen_count,
+            "elapsed_sec": round(elapsed, 2),
+        },
+    )
+    return True
+
+
 async def _watchdog_coroutine(ui, shutdown_mgr, check_interval=60):
     """Background coroutine that monitors pipeline_state.json for stuck stages.
 
@@ -1247,8 +1328,9 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                 # Reset the generic-failure backoff counter — the cycle succeeded.
                 if getattr(orchestrator_loop, "_gen_fail_count", 0):
                     orchestrator_loop._gen_fail_count = 0
-                from generation_scheduler import post_generation_cleanup
-                await post_generation_cleanup(shutdown_mgr, ui, gen_ctx)
+                await _run_post_generation_cleanup_with_timeout(
+                    shutdown_mgr, ui, gen_ctx, gen_count=gen_count
+                )
                 if ui:
                     ui.log_history(f"Orchestrator gen {gen_count} complete. Cost: ${cost:.4f}", "info")
                 log_system_event("orchestrator.cycle_done", "info", f"Cycle {gen_count} done (cost=${cost:.4f})",
@@ -1415,7 +1497,7 @@ async def run_orchestrator_cli(args, shutdown_mgr=None):
                 )
             else:
                 # one-gen mode: use three phases
-                from generation_scheduler import prepare_generation, post_generation_cleanup
+                from generation_scheduler import prepare_generation
                 gen_ctx = await prepare_generation(shutdown_mgr, None)
                 if gen_ctx is None:
                     if shutdown_mgr and shutdown_mgr.is_shutting_down:
@@ -1430,7 +1512,9 @@ async def run_orchestrator_cli(args, shutdown_mgr=None):
                     gen_ctx=gen_ctx,
                 )
                 if cost >= 0:
-                    await post_generation_cleanup(shutdown_mgr, None, gen_ctx)
+                    await _run_post_generation_cleanup_with_timeout(
+                        shutdown_mgr, None, gen_ctx, gen_count=1
+                    )
             log.info("Done. Cost: $%.4f", cost)
         else:
             await orchestrator_loop(
