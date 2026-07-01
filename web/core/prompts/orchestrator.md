@@ -85,11 +85,15 @@ error without a valid plan.
 </advisory_vs_blocking>
 
 <code_change_verification>
-After workers complete and before calling `run_quality_gates`, you MUST verify that code actually changed:
-1. Run: `diff -rq bots/claude_v{source_v}/ bots/claude_v{next_v}/ --exclude='__pycache__' --exclude='.completed'`
-2. If NO .py files differ, workers failed to modify code. Do NOT proceed to quality gates.
-3. Instead, retry workers with feedback: "Workers produced zero code changes. All files are identical to the parent."
-This prevents the zombie loop where quality gates pass on unchanged code.
+After workers complete, call `run_quality_gates` directly. Do NOT use Bash/Edit/Write
+to inspect or modify bot files first. `run_quality_gates` owns the byte-for-byte
+comparison against the source bot and has a blocking `code_changed` gate:
+- If `run_quality_gates` returns `code_changed:false` or fails with
+  `bot code is byte-for-byte identical to source`, retry workers with feedback:
+  "Workers produced zero code changes. All files are identical to the parent."
+- If `run_quality_gates` returns a different blocking failure, follow the normal
+  quality retry rule using that exact gate failure.
+This keeps code-change verification inside the MCP gate rather than in ad hoc Bash.
 </code_change_verification>
 
 <gate_requirements>
