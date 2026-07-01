@@ -100,6 +100,99 @@ def _detect_dead_code_ast(directory, target_files=None):
     return errors
 
 
+def _top_level_function_defs(path):
+    """Return {function_name: (lineno, end_lineno)} for top-level functions."""
+    import ast as _ast
+    try:
+        with open(path) as fh:
+            source = fh.read()
+        tree = _ast.parse(source, filename=path)
+    except Exception:
+        return {}
+    defs = {}
+    for node in getattr(tree, "body", []):
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            name = node.name
+            if name.startswith("__") and name.endswith("__"):
+                continue
+            if name.startswith("test_"):
+                continue
+            defs[name] = (getattr(node, "lineno", 0), getattr(node, "end_lineno", getattr(node, "lineno", 0)))
+    return defs
+
+
+def detect_new_function_reachability_warnings(source_dir, next_dir, changed_files=None):
+    """Flag newly-added top-level functions that are never referenced.
+
+    This targets the common evolution failure where a worker appends a plausible
+    helper in e.g. postflop.py but never wires it into strategy.py. Import aliases
+    alone do not count as reachability; the function must have a non-import Name
+    or Attribute reference outside its own body.
+    """
+    import ast as _ast
+
+    source_dir = os.path.abspath(str(source_dir))
+    next_dir = os.path.abspath(str(next_dir))
+    rel_files = [p for p in (changed_files or []) if str(p).endswith(".py")]
+    if not rel_files:
+        rel_files = []
+        for root, _, files in os.walk(next_dir):
+            for f in files:
+                if f.endswith(".py"):
+                    rel_files.append(os.path.relpath(os.path.join(root, f), next_dir))
+
+    new_defs = {}
+    for rel in rel_files:
+        dst = os.path.join(next_dir, rel)
+        if not os.path.exists(dst):
+            continue
+        src = os.path.join(source_dir, rel)
+        src_defs = _top_level_function_defs(src) if os.path.exists(src) else {}
+        dst_defs = _top_level_function_defs(dst)
+        for name, span in dst_defs.items():
+            if name not in src_defs:
+                new_defs[name] = {"file": rel, "start": span[0], "end": span[1]}
+
+    if not new_defs:
+        return []
+
+    refs = {name: 0 for name in new_defs}
+    for root, _, files in os.walk(next_dir):
+        for f in files:
+            if not f.endswith(".py"):
+                continue
+            path = os.path.join(root, f)
+            rel = os.path.relpath(path, next_dir)
+            try:
+                with open(path) as fh:
+                    tree = _ast.parse(fh.read(), filename=path)
+            except Exception:
+                continue
+            for node in _ast.walk(tree):
+                name = None
+                lineno = getattr(node, "lineno", None)
+                if isinstance(node, _ast.Name) and isinstance(node.ctx, _ast.Load):
+                    name = node.id
+                elif isinstance(node, _ast.Attribute):
+                    name = node.attr
+                if name not in refs or lineno is None:
+                    continue
+                defn = new_defs[name]
+                if rel == defn["file"] and defn["start"] <= lineno <= defn["end"]:
+                    continue
+                refs[name] += 1
+
+    warnings = []
+    for name, meta in sorted(new_defs.items(), key=lambda item: (item[1]["file"], item[1]["start"], item[0])):
+        if refs.get(name, 0) == 0:
+            warnings.append(
+                f"{meta['file']}:L{meta['start']}: reachability — new top-level "
+                f"function '{name}' has no non-import references outside its own body; "
+                "likely dead code. Wire it into the strategy dispatch path or remove it."
+            )
+    return warnings
+
+
 # A3 (evolution-plan-refresh-jun21): detector call-site names that are placement-
 # shadow suspects — if their call appears AFTER a `to_call >= my_chips` early-return,
 # they are structurally unreachable for stack-covering all-ins (the INERTNESS root

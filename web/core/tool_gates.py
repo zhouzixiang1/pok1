@@ -1,6 +1,7 @@
 """Pipeline tools: quality gates, code preparation, review, and critic."""
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -68,7 +69,7 @@ def _record_quality_failure(gen, worker_id, role, error, **extra):
 
 
 def _idempotency_check(v, source_v, stage_set, gate_name, approval_key="approved",
-                       extra_ok_keys=(), directive=""):
+                       extra_ok_keys=(), directive="", cache_validator=None):
     """Check if a pipeline stage has already been completed; return cached result or None.
 
     Args:
@@ -88,11 +89,31 @@ def _idempotency_check(v, source_v, stage_set, gate_name, approval_key="approved
         return None
     gate = ckpt.get("gate_results", {}).get(gate_name, {})
     if gate.get(approval_key) is True or any(gate.get(k) is True for k in extra_ok_keys):
+        if cache_validator is not None and not cache_validator(gate):
+            return None
         gate["idempotent_cache"] = True
         gate["checkpoint_recorded"] = True
         gate["directive"] = directive
         return _json_tool_result(gate)
     return None
+
+
+def _bot_code_fingerprint(bot_dir):
+    """Stable hash of the bot's Python source files for gate cache validity."""
+    root = Path(bot_dir)
+    if not root.exists():
+        return ""
+    h = hashlib.sha256()
+    for path in sorted(p for p in root.rglob("*.py") if "__pycache__" not in p.parts):
+        rel = path.relative_to(root).as_posix()
+        h.update(rel.encode("utf-8"))
+        h.update(b"\0")
+        try:
+            h.update(path.read_bytes())
+        except OSError:
+            continue
+        h.update(b"\0")
+    return h.hexdigest()
 
 
 # ──────────────────────────────────────────────
@@ -111,19 +132,10 @@ async def run_quality_gates(args):
 
     _set_pipeline_status(f"Running quality gates for v{v}")
 
-    # Idempotency guard: skip if quality gates already passed for this version
-    _cached = _idempotency_check(
-        v, source_v,
-        stage_set=("quality_passed", "reviewed", "critic_checked", "verified", "archived"),
-        gate_name="quality",
-        approval_key="all_passed",
-        directive="Quality gates ALREADY PASSED. Call run_review next.",
-    )
-    if _cached:
-        return _cached
-
-    # CRITICAL: Check that code actually changed vs source.
-    # Prevents zombie loop where workers reset code but quality gates pass on unchanged (parent) code.
+    # CRITICAL: Check that code actually changed vs source before considering
+    # quality-gate cache reuse. A reviewer/precommit rejection may re-run workers
+    # while the checkpoint is still at quality_passed; stale quality results must
+    # not be reused for different code.
     code_changed = True
     changed_files_list = []
     source_dir = None
@@ -135,6 +147,35 @@ async def run_quality_gates(args):
             log_system_event("pipeline.quality_no_changes", "error",
                              f"Quality gates: v{v} is byte-for-byte identical to v{source_v} -- workers made zero changes",
                              {"version": v, "source_v": source_v})
+    code_fingerprint = _bot_code_fingerprint(bot_dir)
+
+    def _quality_cache_current(gate):
+        cached_fingerprint = gate.get("code_fingerprint")
+        if cached_fingerprint and cached_fingerprint == code_fingerprint:
+            return True
+        log_system_event(
+            "pipeline.quality_cache_stale", "warn",
+            f"Quality gate cache stale for v{v}; bot code changed since cached gate, rerunning quality gates.",
+            {
+                "version": v,
+                "source_v": source_v,
+                "cached_fingerprint": cached_fingerprint,
+                "current_fingerprint": code_fingerprint,
+            },
+        )
+        return False
+
+    # Idempotency guard: skip if quality gates already passed for this version
+    _cached = _idempotency_check(
+        v, source_v,
+        stage_set=("quality_passed", "reviewed", "critic_checked", "verified", "archived"),
+        gate_name="quality",
+        approval_key="all_passed",
+        directive="Quality gates ALREADY PASSED. Call run_review next.",
+        cache_validator=_quality_cache_current,
+    )
+    if _cached:
+        return _cached
 
     compile_errors = verify_code(bot_dir)
     import_errors = run_import_contract_test(bot_dir)
@@ -194,6 +235,29 @@ async def run_quality_gates(args):
     except Exception as e:
         _log.warning("telemetry_fidelity check error: %s", e)
     telemetry_fidelity_ok = len(telemetry_fidelity_warnings) == 0
+
+    # R1 (2026-07-01): newly-added top-level helpers must be wired into the bot.
+    # This blocks the observed v239 failure mode where a Worker appended a good
+    # postflop helper but never imported/called it; compile, smoke, and decision
+    # scenarios all passed because the change was inert.
+    reachability_warnings = []
+    if source_dir is not None and changed_files_list:
+        try:
+            from code_verification import detect_new_function_reachability_warnings
+            reachability_warnings = detect_new_function_reachability_warnings(
+                source_dir, bot_dir, changed_files_list
+            )
+            if reachability_warnings:
+                log_system_event(
+                    "pipeline.reachability_gate", "error",
+                    f"Reachability violations in v{v}: {len(reachability_warnings)} "
+                    "new function(s) have no non-import references (dead-code risk)",
+                    {"version": v, "warnings": reachability_warnings[:6]},
+                )
+        except Exception as e:
+            _log.warning("reachability check error: %s", e)
+    reachability_ok = len(reachability_warnings) == 0
+
     smoke_errors = run_smoke_test(bot_dir)
     national_protocol_errors = run_national_protocol_tests()
 
@@ -323,6 +387,7 @@ async def run_quality_gates(args):
         and code_changed  # MUST have at least one changed .py file
         and fix_ok  # P1-3: missing mandatory fix blocks the pipeline
         and telemetry_fidelity_ok  # M6: multi-arm detector telemetry must be function-scope (false-INERT prevention)
+        and reachability_ok  # R1: newly-added helper code must be wired/called
     )
 
     result = {
@@ -360,6 +425,9 @@ async def run_quality_gates(args):
         # telemetry → false-INERT on daemon grep (v154 99.98%-delta=+0 artifact).
         "telemetry_fidelity_warnings": telemetry_fidelity_warnings,
         "telemetry_fidelity_ok": telemetry_fidelity_ok,
+        "reachability_warnings": reachability_warnings,
+        "reachability_ok": reachability_ok,
+        "code_fingerprint": code_fingerprint,
     }
 
     # Build list of which specific gates failed (for diagnostics)
@@ -408,6 +476,15 @@ async def run_quality_gates(args):
                 v, "telemetry_fidelity", "multi_arm_detector",
                 f"M6 telemetry-fidelity violation (false-INERT risk): {w[:2000]}",
             )
+    if not reachability_ok:
+        failed_gates_detail.append(
+            f"reachability({'; '.join(w[:120] for w in reachability_warnings[:3])})"
+        )
+        for w in reachability_warnings:
+            _record_quality_failure(
+                v, "reachability", "dead_code",
+                f"R1 reachability violation: {w[:2000]}",
+            )
 
     result["failed_gates"] = failed_gates_detail if not all_passed else []
     quality_detail = {
@@ -430,6 +507,9 @@ async def run_quality_gates(args):
         "changed_files": changed_files_list[:20],
         "fix_ok": fix_ok,
         "telemetry_fidelity_ok": telemetry_fidelity_ok,
+        "reachability_ok": reachability_ok,
+        "reachability_warnings": reachability_warnings[:6],
+        "code_fingerprint": code_fingerprint,
         "critical_failures": critical_failures[:3],
     }
 

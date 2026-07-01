@@ -93,6 +93,12 @@ class TestP2StageTransition:
             assert ok, f"{src} -> master_planned should be valid"
             assert "retry" in reason
 
+    def test_review_rework_to_workers_done_allowed(self):
+        from core.evolution_infra import validate_stage_transition
+        ok, reason = validate_stage_transition("quality_passed", "workers_done")
+        assert ok
+        assert reason == "review_rework_done"
+
     def test_timeout_override_allowed(self):
         from core.evolution_infra import validate_stage_transition
         for src in ["reviewed", "critic_checked", "verified"]:
@@ -148,6 +154,44 @@ class TestP3ASTDeadCode:
         f.write_text("def early_exit():\n    return 42\n    x = 1\n")
         errors = _detect_dead_code_ast(str(tmp_path))
         assert any("unreachable" in e for e in errors)
+
+    def test_new_function_without_call_is_reachability_warning(self, tmp_path):
+        from core.code_verification import detect_new_function_reachability_warnings
+        source = tmp_path / "source"
+        child = tmp_path / "child"
+        source.mkdir()
+        child.mkdir()
+        (source / "postflop.py").write_text("def existing():\n    return 1\n")
+        (child / "postflop.py").write_text(
+            "def existing():\n    return 1\n\n"
+            "def _new_helper():\n    return 2\n"
+        )
+        warnings = detect_new_function_reachability_warnings(
+            source, child, ["postflop.py"]
+        )
+        assert len(warnings) == 1
+        assert "_new_helper" in warnings[0]
+
+    def test_new_function_with_dispatch_call_is_reachable(self, tmp_path):
+        from core.code_verification import detect_new_function_reachability_warnings
+        source = tmp_path / "source"
+        child = tmp_path / "child"
+        source.mkdir()
+        child.mkdir()
+        (source / "postflop.py").write_text("def existing():\n    return 1\n")
+        (source / "strategy.py").write_text("def choose():\n    return 0\n")
+        (child / "postflop.py").write_text(
+            "def existing():\n    return 1\n\n"
+            "def _new_helper():\n    return 2\n"
+        )
+        (child / "strategy.py").write_text(
+            "from postflop import _new_helper\n\n"
+            "def choose():\n    return _new_helper()\n"
+        )
+        warnings = detect_new_function_reachability_warnings(
+            source, child, ["postflop.py", "strategy.py"]
+        )
+        assert warnings == []
 
 
 # ── P4: Exhausted Direction Enforcement ─────────────────────────────
