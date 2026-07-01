@@ -14,6 +14,13 @@ Based on actual code changes made by Workers, generate targeted test scenarios t
 - Use `raise###` in action-history prose for bets/raises. Do not write `bet###`;
   national TCP protocol forbids the `bet` token and represents first bets as
   `raise <amount>`.
+- National legality constraints for generated histories: postflop first action
+  cannot be `call`; postflop after any first action, `check` is illegal. If a
+  postflop player checks first, the second pass must be `call`, so use
+  `check/call`, never `check/check`. Preflop BB cannot `call` after SB
+  limps/calls. Re-raises must be strictly >2x previous raise-to.
+- All-in constraints: use `allin` only for committing the full stack; after one
+  all-in the opponent may only `call` or `fold`; consecutive all-ins are illegal.
 </game_format>
 
 <analysis>

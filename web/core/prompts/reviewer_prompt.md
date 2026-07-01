@@ -29,6 +29,15 @@ with the national TCP adapter. Reject code that emits TCP text on stdout, return
 positive raises that consume the entire remaining stack instead of `-2`, assumes
 wire-level `bet` is legal, or hard-codes postflop TCP `check-check` as a valid
 platform action. The adapter maps JSON `0` to TCP `call` after a postflop check.
+Full national legality checklist from `sever/国赛平台/非法行为说明.docx`:
+- 70 hands, 20000 reset chips, blinds 50/100; SB first preflop, BB first postflop.
+- Wire actions are only `raise <amount>`, `fold`, `call`, `check`, `allin`; `bet` is illegal.
+- First preflop raise-to must be >= 200; first postflop raise-to must be >= 100.
+- Every re-raise must be strictly greater than 2x the previous raise-to, so use `prev * 2 + 1` as the minimum.
+- A raise-to must exceed the player's current street bet, must not exceed available chips, and must not equal all remaining chips.
+- Postflop first action cannot be call; postflop after any first action, check is illegal.
+- Preflop BB cannot call after SB limps/calls; BB should check, raise, or fold.
+- After one all-in, the opponent may only call or fold; consecutive all-ins are illegal.
 </action_semantics>
 
 <your_scope>

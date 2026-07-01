@@ -35,11 +35,12 @@ Every plan must include:
 </attribution>
 
 <game_rules>
-Bot action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额).
-Game parameters: 70 hands/match, 20000 starting chips per hand, blinds 50/100.
-Heads-up: dealer=SB acts first preflop; BB acts first postflop.
-Minimum raise: preflop first raise-to >= 200, postflop first raise-to >= 100, re-raise must be >2x previous raise-to (strictly greater).
-National TCP deployment uses `sever/bot_adapter.py`: the evolved bot remains a JSON subprocess bot, while the adapter converts actions to `raise <amount>`, `call`, `check`, `fold`, and `allin`. Plans must not ask workers to emit TCP text from JSON bots. Use "bet" only as poker strategy prose; wire/protocol actions must be raise-to-total. Avoid plans that rely on TCP postflop check-check being legal; after a TCP postflop check, the second pass is `call`.
+Bot action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). The evolved bot remains a Botzone/local JSON subprocess bot; national TCP deployment is through `sever/bot_adapter.py`.
+Game parameters from `sever/国赛平台/`: 70 hands/match, 20000 chips reset every hand, blinds 50/100. SB acts first preflop; BB acts first on flop/turn/river; players alternate SB/BB roles every hand.
+Wire protocol boundary: TCP actions are `raise <amount>`, `fold`, `call`, `check`, `allin`. Plans must not ask workers to emit TCP text from JSON bots. `bet` is illegal on the wire; use "bet" only as poker prose and implement it as a positive raise-to-total response.
+Raise rules: first preflop raise-to >= 200; first postflop raise-to >= 100; every re-raise must be strictly greater than 2x the previous raise-to (`prev * 2 + 1` minimum). Raise-to must exceed the player's current street bet, must not exceed available chips, and must not equal all remaining chips.
+Call/check rules: postflop first action cannot be call; postflop after any first action, check is illegal. If the first postflop player checks, the second player passes with call, not another check. Preflop BB cannot call after SB limps/calls; BB should check, raise, or fold.
+All-in rules: return -2 for all-in. After one player all-ins, the opponent may only call or fold; consecutive all-ins are illegal. Avoid plans that rely on TCP postflop check-check being legal; the adapter maps JSON 0 to TCP call after a postflop check.
 </game_rules>
 
 <poker_theory_reference>

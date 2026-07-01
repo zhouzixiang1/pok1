@@ -83,6 +83,8 @@ Web 应用仍以本地 JSON 子进程 bot 和 mirror battle 为核心。国赛 T
 - `engine/judge.py` 和 `web/core/engine/judge.py`：Botzone 整数动作仍保持 `0=call/check`，但 postflop 首个玩家 check 后，第二个玩家用 `0` 过街时，history 记录为 `action_type="call"`，与国赛 TCP 协议保持一致。
 - `sever/bot_adapter.py`：增加 adapter telemetry，记录 bot 子进程失败、不可转换动作、实际发送动作数，方便区分“服务器判非法”和“bot/adapter 自身失败”。
 - `scripts/national_acceptance_matrix.py`：新增国赛验收矩阵工具。它不走本地 `engine/battle.py`，而是把 Botzone JSON bot 放进 `sever/bot_adapter.py`，再用 `sever/engine/game.py` 与 `sever/engine/validator.py` 的国赛规则实跑 pairwise match。
+- `web/core/prompts/`：Master、Worker、Reviewer、Crossover、Initial、Dynamic Test 以及相关审计 prompt 已嵌入 `sever/国赛平台/` 的完整非法行为约束，包括 `bet` 禁用、raise-to-total、严格 re-raise、postflop `check/call`、BB 不能在 SB limp 后 call、all-in 后只能 call/fold 等规则。
+- `web/core/decision_tester.py`：旧的 postflop `check/check` 动态场景模板改为 `check/call`，避免质量门继续生成与国赛协议相反的历史样例。
 
 推荐验收命令：
 
