@@ -939,6 +939,15 @@ plan = d.get('master_plan') or d.get('plan') or {}
 print(json.dumps(plan, default=str))
 " > /tmp/v242_plan.json 2>/dev/null
 wc -c /tmp/v242_plan.json"""
+    readonly_worker_probe = """diff -rq bots/claude_v246/ bots/claude_v247/ --exclude='__pycache__' --exclude='.completed' 2>/dev/null
+echo "=== line counts strategy.py / postflop.py ==="
+wc -l bots/claude_v247/strategy.py bots/claude_v247/postflop.py bots/claude_v247/reachability_test.py 2>/dev/null
+echo "=== confirm new fn present, old fn gone (v247) ==="
+grep -n "_paired_board_marginal_allin_fold\\|_marginal_made_river_fold_gate" bots/claude_v247/postflop.py bots/claude_v247/strategy.py 2>/dev/null | head -40"""
+    readonly_functional_probe = """echo "=== Confirm only strategy.py differs (functional) ==="
+diff bots/claude_v246/strategy.py bots/claude_v247/strategy.py | grep -E '^[<>]' | grep -vE '^[<>][[:space:]]*#' | grep -vE '^[<>][[:space:]]*$'
+echo "=== (empty above = zero functional changes) ==="
+ls -la bots/claude_v246/reachability_test.py bots/claude_v247/reachability_test.py 2>&1"""
     write_redirect = "echo x > bots/claude_v221/main.py"
     write_heredoc_redirect = """python3 << 'PYEOF' > bots/claude_v221/tmp.txt
 print('x')
@@ -956,11 +965,22 @@ PYEOF
     assert orchestrator_context._orchestrator_bash_is_mutation(readonly_python) is False
     assert orchestrator_context._orchestrator_bash_is_mutation(readonly_python_comparison) is False
     assert orchestrator_context._orchestrator_bash_is_mutation(readonly_pipeline_tmp_extract) is False
+    assert orchestrator_context._orchestrator_bash_is_mutation(readonly_worker_probe) is False
+    assert orchestrator_context._orchestrator_bash_is_mutation(readonly_functional_probe) is False
     assert orchestrator_context._orchestrator_bash_is_mutation(write_redirect) is True
     assert orchestrator_context._orchestrator_bash_is_mutation(write_heredoc_redirect) is True
     assert orchestrator_context._orchestrator_bash_is_mutation(write_python) is True
+    assert orchestrator_context._orchestrator_bash_is_mutation("echo confirm; rm bots/claude_v221/main.py") is True
     assert orchestrator_context._orchestrator_bash_is_mutation("git tag bot-v999") is True
     assert orchestrator_context._orchestrator_bash_is_mutation("git tag -a bot-v999 -m x") is True
+
+
+def test_orchestrator_prompt_delegates_code_change_check_to_quality_gate():
+    prompt = (Path(__file__).resolve().parents[1] / "core/prompts/orchestrator.md").read_text()
+
+    assert "run_quality_gates` owns the byte-for-byte" in prompt
+    assert "blocking `code_changed` gate" in prompt
+    assert "diff -rq bots/claude_v{source_v}/" not in prompt
 
 
 def test_post_generation_fingerprint_uses_committed_next_v(monkeypatch):

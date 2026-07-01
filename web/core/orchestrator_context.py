@@ -26,22 +26,12 @@ _PYTHON_WRITE_PATTERNS = (
     "shutil.move", "shutil.copy", "shutil.copytree", "shutil.rmtree",
     "os.remove", "os.unlink", "os.rename", "os.replace", "os.makedirs",
 )
-_BASH_MUTATION_PATTERNS = (
-    "sed -i",
-    "tee ",
-    "rm ",
-    "rmdir",
-    "mv ",
-    "cp ",
-    "mkdir",
-    "touch ",
-    "cat > ",
-    "cat >>",
-    "patch ",
-    "git add",
-    "git rm",
-    "git checkout",
-    "git restore",
+_BASH_MUTATION_COMMAND_RE = re.compile(
+    r"(?:^|[;&|]\s*)(?:rm|rmdir|mv|cp|mkdir|touch|tee|patch)(?:\s|$)"
+    r"|(?:^|[;&|]\s*)sed\s+(?:-[^\s;&|]*i[^\s;&|]*|--in-place(?:[=\s]|$))"
+    r"|(?:^|[;&|]\s*)cat\s*(?:>|>>)"
+    r"|\bgit\s+(?:add|rm|checkout|restore)\b",
+    re.IGNORECASE,
 )
 _GIT_TAG_READONLY_OPTIONS_WITH_VALUE = {
     "--sort", "--format", "--points-at", "--contains", "--no-contains",
@@ -221,6 +211,11 @@ def _python_snippet_is_mutating(command: str) -> bool:
     return any(pattern in low for pattern in _PYTHON_WRITE_PATTERNS)
 
 
+def _bash_has_mutation_command(command: str) -> bool:
+    """Detect mutating shell commands without matching harmless prose like 'confirm '."""
+    return bool(_BASH_MUTATION_COMMAND_RE.search(str(command)))
+
+
 def _git_tag_invocation_is_mutating(args: list[str]) -> bool:
     if not args:
         return False
@@ -277,7 +272,7 @@ def _orchestrator_bash_is_mutation(command: str) -> bool:
         return True
     if _python_snippet_is_mutating(command):
         return True
-    if any(p in low for p in _BASH_MUTATION_PATTERNS):
+    if _bash_has_mutation_command(command):
         return True
     if "git commit" in low or "git push" in low:
         return True
