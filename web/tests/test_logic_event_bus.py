@@ -137,6 +137,19 @@ def test_last_known_survives_checkpoint_clear(isolated_files, monkeypatch):
     assert _read_jsonl(isolated_files / "events.jsonl")[-1]["data"]["run_id"] == "55#1"
 
 
+def test_payload_version_does_not_override_existing_run_context(isolated_files, monkeypatch):
+    """A role may analyze v243 while the active pipeline run is v244#0."""
+    monkeypatch.setattr(event_bus, "_read_ckpt_cached", _ckpt())
+    with event_bus.bind(run_id="244#0", stage="preparing",
+                        attempt={"generation": 0, "audit": 0, "precommit": 0}):
+        event_bus.emit("pipeline.llm_role_start", "info", "MATCH ANALYST", version=243)
+
+    data = _read_jsonl(isolated_files / "events.jsonl")[-1]["data"]
+    assert data["run_id"] == "244#0"
+    assert data["stage"] == "preparing"
+    assert data["version"] == 243
+
+
 # ── cross-thread context handoff (RC6 blind spot) ────────────────────────────
 
 def test_capture_apply_context_across_thread(isolated_files):
