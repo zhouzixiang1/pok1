@@ -92,8 +92,10 @@ STALE_GEN_THRESHOLD = 5
 BATTLE_PROMPT_CURRENT_BUDGET = int(os.environ.get("POK_BATTLE_EXP_CURRENT_BUDGET", "10000"))
 BATTLE_PROMPT_NEW_DATA_BUDGET = int(os.environ.get("POK_BATTLE_EXP_NEW_DATA_BUDGET", "12000"))
 BATTLE_PROMPT_MATCH_SECTION_BUDGET = int(os.environ.get("POK_BATTLE_EXP_SECTION_BUDGET", "1000"))
+# Background experience LLM is advisory and noisy under live daemon load. Keep it
+# opt-in; production can run it as an offline task by setting this env var.
 BATTLE_PROMPT_MAX_CHARS = int(os.environ.get("POK_BATTLE_EXP_MAX_PROMPT_CHARS", "30000"))
-BATTLE_EXPERIENCE_LLM_ENABLED = os.environ.get("POK_BATTLE_EXPERIENCE_LLM", "1") != "0"
+BATTLE_EXPERIENCE_LLM_ENABLED = os.environ.get("POK_BATTLE_EXPERIENCE_LLM", "0") == "1"
 _NO_EXPERIENCE_UPDATE = object()
 
 # ──────────────────────────────────────────────

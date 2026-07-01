@@ -29,6 +29,7 @@ def test_battle_experience_prompt_compaction(monkeypatch):
 def test_battle_experience_skips_oversized_llm_prompt(monkeypatch):
     import battle_experience as be
 
+    monkeypatch.setattr(be, "BATTLE_EXPERIENCE_LLM_ENABLED", True)
     monkeypatch.setattr(be, "BATTLE_PROMPT_CURRENT_BUDGET", 1200)
     monkeypatch.setattr(be, "BATTLE_PROMPT_NEW_DATA_BUDGET", 1400)
     monkeypatch.setattr(be, "BATTLE_PROMPT_MATCH_SECTION_BUDGET", 500)
@@ -43,6 +44,22 @@ def test_battle_experience_skips_oversized_llm_prompt(monkeypatch):
         "## OLD\n" + ("old line\n" * 1000),
         "\n\n---\n\n".join("match section " + ("x" * 1000) for _ in range(8)),
     )
+
+    assert result is be._NO_EXPERIENCE_UPDATE
+
+
+def test_battle_experience_llm_is_opt_in(monkeypatch):
+    import battle_experience as be
+
+    monkeypatch.setattr(be, "BATTLE_EXPERIENCE_LLM_ENABLED", False)
+    monkeypatch.setattr(be, "BATTLE_PROMPT_MAX_CHARS", 100000)
+
+    def _should_not_call(_prompt):
+        raise AssertionError("battle_experience LLM should be opt-in")
+
+    monkeypatch.setattr(be, "_run_sync_llm_call", _should_not_call)
+
+    result = be._run_llm_incremental("short", "short match summary")
 
     assert result is be._NO_EXPERIENCE_UPDATE
 
