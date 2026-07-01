@@ -1,4 +1,6 @@
 import asyncio
+import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -28,6 +30,42 @@ def _state(**overrides):
     }
     state.update(overrides)
     return state
+
+
+def _load_module_from_path(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _assert_postflop_pass_is_recorded_as_call(judge_module):
+    holdem = judge_module.Holdem([20000, 20000], dealer_idx=0)
+    holdem.deal_cards_and_blind()
+
+    assert holdem.player_action(0) == []  # SB calls preflop
+    assert holdem.player_action(0) is None  # BB checks; move to flop
+    assert holdem.round == judge_module.Holdem.FLOP
+
+    assert holdem.player_action(0) == []  # BB checks first postflop
+    assert holdem.player_action(0) is None  # SB sends Botzone 0 to pass street
+
+    assert holdem.history[-2]["round"] == judge_module.Holdem.FLOP
+    assert holdem.history[-2]["action_type"] == "check"
+    assert holdem.history[-1]["round"] == judge_module.Holdem.FLOP
+    assert holdem.history[-1]["action"] == 0
+    assert holdem.history[-1]["action_type"] == "call"
+
+
+def _write_call_bot(bot_dir: Path):
+    bot_dir.mkdir(parents=True)
+    (bot_dir / "main.py").write_text(
+        "import json, sys\n"
+        "for line in sys.stdin:\n"
+        "    print(json.dumps({'response': 0}), flush=True)\n",
+        encoding="utf-8",
+    )
 
 
 def test_parse_action_requires_exact_raise_spacing():
@@ -92,6 +130,27 @@ def test_bot_adapter_maps_zero_as_first_postflop_action_to_check():
     assert adapter._convert_action(0) == ("check", "check", None)
 
 
+def test_local_and_web_judges_record_postflop_pass_as_call():
+    root_judge = _load_module_from_path("root_judge_for_national_test", ROOT / "engine" / "judge.py")
+    web_judge = _load_module_from_path(
+        "web_core_judge_for_national_test",
+        ROOT / "web" / "core" / "engine" / "judge.py",
+    )
+
+    _assert_postflop_pass_is_recorded_as_call(root_judge)
+    _assert_postflop_pass_is_recorded_as_call(web_judge)
+
+
+def test_bot_adapter_telemetry_counts_invalid_actions():
+    adapter = BotAdapter("127.0.0.1", 10001, "unused", "Bot")
+
+    assert adapter._convert_action("raise 200") == ("fold", "fold", None)
+    assert adapter.telemetry["invalid_actions"] == 1
+
+    assert adapter._convert_action(-3) == ("fold", "fold", None)
+    assert adapter.telemetry["invalid_actions"] == 2
+
+
 def test_bot_adapter_converts_raise_using_all_chips_to_allin():
     adapter = BotAdapter("127.0.0.1", 10001, "unused", "Bot")
     adapter._stage = "flop"
@@ -99,6 +158,61 @@ def test_bot_adapter_converts_raise_using_all_chips_to_allin():
     adapter._my_chips = 100
 
     assert adapter._convert_action(100) == ("allin", "allin", None)
+
+
+def test_national_acceptance_matrix_skips_incomplete_default_claude_bots(tmp_path, monkeypatch):
+    matrix = _load_module_from_path(
+        "national_acceptance_matrix_default_test",
+        ROOT / "scripts" / "national_acceptance_matrix.py",
+    )
+    completed = tmp_path / "bots" / "claude_v10"
+    incomplete = tmp_path / "bots" / "claude_v11"
+    _write_call_bot(completed)
+    _write_call_bot(incomplete)
+    (completed / ".completed").write_text("", encoding="utf-8")
+
+    ratings_dir = tmp_path / "web" / "core" / "results"
+    ratings_dir.mkdir(parents=True)
+    (ratings_dir / "glicko_ratings.json").write_text(
+        json.dumps({
+            "claude_v11": {"r": 3000, "rd": 30},
+            "claude_v10": {"r": 1200, "rd": 50},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(matrix, "ROOT", tmp_path)
+
+    assert [bot.label for bot in matrix.default_bots(limit=2)] == ["claude_v10"]
+
+
+def test_national_acceptance_matrix_runs_bots_through_adapter_and_game(tmp_path):
+    matrix = _load_module_from_path(
+        "national_acceptance_matrix_run_test",
+        ROOT / "scripts" / "national_acceptance_matrix.py",
+    )
+    bot_a = tmp_path / "CallA"
+    bot_b = tmp_path / "CallB"
+    _write_call_bot(bot_a)
+    _write_call_bot(bot_b)
+
+    report = asyncio.run(matrix.run_matrix(
+        [
+            matrix.BotSpec("CallA", bot_a),
+            matrix.BotSpec("CallB", bot_b),
+        ],
+        hands=2,
+    ))
+
+    assert report["results"][0]["hands_played"] == 2
+    assert report["results"][0]["passed_compliance"]
+    assert report["summary"]["CallA"]["passed_compliance"]
+    assert report["summary"]["CallB"]["passed_compliance"]
+    assert report["summary"]["CallA"]["illegal_actions"] == 0
+    assert report["summary"]["CallB"]["timeouts"] == 0
+
+    markdown = matrix.format_markdown(report)
+    assert "Pairwise Net Chips Per Hand" in markdown
+    assert "PASS" in markdown
 
 
 def test_allin_runout_records_public_cards_in_thp():

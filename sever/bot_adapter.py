@@ -163,6 +163,11 @@ class BotAdapter:
         self._bot_data = None     # bot 返回的 data（跨决策持久化）
         self._total_win_chips = [0, 0]
         self._total_win_games = [0, 0]
+        self.telemetry = {
+            "bot_failures": 0,
+            "invalid_actions": 0,
+            "actions_sent": 0,
+        }
 
     async def connect(self):
         self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
@@ -432,8 +437,10 @@ class BotAdapter:
         result = self.bot.send_and_recv(payload)
 
         if result is None:
+            self.telemetry["bot_failures"] += 1
             logger.warning("Bot returned None, folding")
             await self._send_line("fold")
+            self.telemetry["actions_sent"] += 1
             self._record_my_action("fold", None)
             return
 
@@ -445,6 +452,7 @@ class BotAdapter:
         # 转换行为
         action_str, tcp_type, tcp_amount = self._convert_action(response)
         await self._send_line(action_str)
+        self.telemetry["actions_sent"] += 1
         self._record_my_action(tcp_type, tcp_amount)
         if tcp_type == "call" and self._current_round_has_allin():
             self._in_allin_runout = True
@@ -545,6 +553,7 @@ class BotAdapter:
         try:
             action_int = int(action)
         except (TypeError, ValueError):
+            self.telemetry["invalid_actions"] += 1
             logger.warning(f"Invalid action type: {action!r}, folding")
             return "fold", "fold", None
         if action_int == -1:
@@ -588,6 +597,7 @@ class BotAdapter:
                     return "call", "call", None
             # postflop 首个行动且没有对手行为 → check
             return "check", "check", None
+        self.telemetry["invalid_actions"] += 1
         return "fold", "fold", None
 
 
