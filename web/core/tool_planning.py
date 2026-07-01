@@ -154,6 +154,7 @@ async def run_direction_audit(args):
 # doubles as the counter (reset to 0 on successful master_planned write via
 # reset_audit_attempt=True at line ~657).
 MAX_MASTER_TOTAL_FAILURES = 4
+LITERATURE_PROBE_TIMEOUT = int(os.environ.get("POK_LITERATURE_PROBE_TIMEOUT", "600"))
 
 
 def _bump_master_fail_count(next_v, source_v, value=None):
@@ -1293,13 +1294,59 @@ async def run_literature_probe(args):
     # ── Single research agent run (plan/search/reflect/write in one query, with web tools) ──
     # The agent has web search (Exa MCP, connected) + WebSearch. Domain whitelist is in the prompt.
     try:
+        log_system_event("pipeline.literature_probe_start", "info",
+                         f"literature_probe v{next_v}: research query starting",
+                         {"next_v": next_v, "source_v": source_v,
+                          "timeout_s": LITERATURE_PROBE_TIMEOUT,
+                          "log_file": str(probe_log)})
+    except Exception:
+        pass
+    try:
         ui.clear_io()
-        output, _, _ = await run_claude_query(
-            brief, [], ui,
-            f"LITERATURE_PROBE (v{next_v})", probe_log,
-            tools=["WebSearch"],  # built-in; Exa MCP auto-available (not in _BLOCKED_MCP_TOOLS)
+        output, _, _ = await _asyncio.wait_for(
+            run_claude_query(
+                brief, [], ui,
+                f"LITERATURE_PROBE (v{next_v})", probe_log,
+                tools=["WebSearch"],  # built-in; Exa MCP auto-available (not in _BLOCKED_MCP_TOOLS)
+            ),
+            timeout=LITERATURE_PROBE_TIMEOUT,
         )
+    except _asyncio.TimeoutError:
+        elapsed = round(time.time() - _t0, 1)
+        try:
+            log_system_event("pipeline.literature_probe_timeout", "warn",
+                             f"literature_probe v{next_v}: timed out after {LITERATURE_PROBE_TIMEOUT}s; continuing without web hypothesis",
+                             {"next_v": next_v, "source_v": source_v,
+                              "timeout_s": LITERATURE_PROBE_TIMEOUT,
+                              "elapsed_sec": elapsed,
+                              "log_file": str(probe_log)})
+        except Exception:
+            pass
+        inject_text = (
+            "## Research Proposal\n"
+            "No codable proposal was produced because the web research stage timed out. "
+            "Proceed with run_master using direction audit, H2H, replay, and experience-pool evidence."
+        )
+        return {"content": [{"type": "text", "text": json.dumps({
+            "skipped": True,
+            "reason": "literature_probe_timeout",
+            "next_v": next_v,
+            "source_v": source_v,
+            "elapsed_sec": elapsed,
+            "timeout_s": LITERATURE_PROBE_TIMEOUT,
+            "inject_text": inject_text,
+        }, indent=2, ensure_ascii=False)}]}
     except Exception as e:
+        try:
+            log_system_event("pipeline.literature_probe_failed", "warn",
+                             f"literature_probe v{next_v}: research query failed: {str(e)[:180]}",
+                             {"next_v": next_v, "source_v": source_v,
+                              "elapsed_sec": round(time.time() - _t0, 1),
+                              "exception_type": type(e).__name__,
+                              "error": str(e)[:1000],
+                              "log_file": str(probe_log)})
+        except Exception:
+            pass
         return {"content": [{"type": "text", "text": json.dumps({"error": f"research query failed: {e}"})}]}
 
     # ── Parse the WRITE-step proposal ──
