@@ -21,7 +21,7 @@
 - large_bet_ratio measures opp BET sizing, not calling tendency; for value-overbet gates fold_to_raise is the correct EV signal — a gate omitting it can't distinguish +EV calling stations from -EV folders. (v246, advisory.)
 - Preflop pot-odds windows under ~10pp rarely fire in 70-hand HU; tune only bands ≥15pp wide.
 - Gate DIRECTION is load-bearing: DEFAULT-PERMIT opp-gates preserve status quo for ~90% of matchups; offense-scoping gates need RESTRICTIVE semantics (fire ONLY confidence≥0.10 AND large_bet_ratio≥0.50 AND fold_to_raise<0.50). ⚠ live `_river_value_raise_construct` stayed DEFAULT-PERMIT through v246 — stop re-issuing without resolving. (v246, advisory.)
-- Telemetry/stderr counts are not H2H proof: require reachability + ≥30g paired net-chips to act, ≥100g before declaring success.
+- RESOLVED (A1): bot stderr telemetry is readable/captured; telemetry/stderr counts are still not H2H proof, so require reachability + ≥30g paired net-chips to act, ≥100g before declaring success.
 - LOC caps are version-sensitive — re-measure before edits and reclaim LOC before adding logic.
 
 ## GENERAL
