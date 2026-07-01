@@ -65,6 +65,7 @@ MAX_ACTIVE_BOTS = 30
 # Evaluation & quality thresholds
 DAEMON_EVAL_TIMEOUT = 600
 MIN_GAMES_FOR_EVAL = 100
+EVAL_WAIT_PROGRESS_INTERVAL_SEC = int(os.environ.get("POK_EVAL_WAIT_PROGRESS_INTERVAL_SEC", "30"))
 MAX_LINES_PER_FILE = 2000       # Core strategy files (strategy.py, postflop.py) — base limit
 MAX_LINES_HELPER = 1500         # All other .py files — base limit
 MAX_LINES_HARD_CAP = 2500       # Hard cap: no .py file may exceed this, even with adaptive budget
@@ -811,6 +812,14 @@ def _is_shutdown(event) -> bool:
     return False
 
 
+def _log_eval_wait_event(event_type: str, severity: str, message: str, **data) -> None:
+    try:
+        from system_log import log_system_event
+        log_system_event(event_type, severity, message, data)
+    except Exception:
+        pass
+
+
 async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=MIN_GAMES_FOR_EVAL, ui=None, shutdown_event=None):
     """Wait for daemon to evaluate a new bot (async, non-blocking).
 
@@ -835,9 +844,31 @@ async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=
     ratings_mtime = 0
     cached_rd = None
     last_log = start
+    last_daemon_dead_log = 0.0
+
+    _log_eval_wait_event(
+        "pipeline.eval_wait_start",
+        "info",
+        f"Waiting for {bot_name} evaluation ({min_games} games or low RD)",
+        bot=bot_name,
+        min_games=min_games,
+        timeout_sec=timeout,
+        rd_threshold=EVAL_RD_THRESHOLD,
+        rd_min_games=EVAL_RD_MIN_GAMES,
+    )
 
     while time.time() - start < timeout:
         if _is_shutdown(shutdown_event):
+            games = (cached_bot_stats or {}).get(bot_name, {}).get("games", 0)
+            _log_eval_wait_event(
+                "pipeline.eval_wait_shutdown",
+                "warn",
+                f"Evaluation wait interrupted for {bot_name} during shutdown",
+                bot=bot_name,
+                games=games,
+                min_games=min_games,
+                elapsed_sec=round(time.time() - start, 2),
+            )
             return False
 
         if BOT_STATS_FILE.exists():
@@ -850,6 +881,16 @@ async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=
 
         games = cached_bot_stats.get(bot_name, {}).get("games", 0)
         if games >= min_games:
+            _log_eval_wait_event(
+                "pipeline.eval_wait_ready",
+                "success",
+                f"{bot_name} evaluation ready: {games}/{min_games} games",
+                bot=bot_name,
+                games=games,
+                min_games=min_games,
+                elapsed_sec=round(time.time() - start, 2),
+                reason="min_games",
+            )
             return True
 
         # RD-based early exit
@@ -866,12 +907,36 @@ async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=
             if cached_rd is not None and cached_rd < EVAL_RD_THRESHOLD:
                 if ui:
                     ui.log_history(f"{bot_name} 评估就绪: rd={cached_rd:.1f} (<{EVAL_RD_THRESHOLD}), {games} 场", "success")
+                _log_eval_wait_event(
+                    "pipeline.eval_wait_ready",
+                    "success",
+                    f"{bot_name} evaluation ready: rd={cached_rd:.1f}, games={games}",
+                    bot=bot_name,
+                    games=games,
+                    min_games=min_games,
+                    rd=round(cached_rd, 2),
+                    rd_threshold=EVAL_RD_THRESHOLD,
+                    elapsed_sec=round(time.time() - start, 2),
+                    reason="rd_threshold",
+                )
                 return True
 
-        if ui and time.time() - last_log >= 30:
+        if time.time() - last_log >= EVAL_WAIT_PROGRESS_INTERVAL_SEC:
             elapsed = int(time.time() - start)
             rd_info = f", rd={cached_rd:.1f}" if cached_rd else ""
-            ui.log_history(f"等待 {bot_name} 评估: {games}/{min_games} 场 ({elapsed}s{rd_info})", "info")
+            if ui:
+                ui.log_history(f"等待 {bot_name} 评估: {games}/{min_games} 场 ({elapsed}s{rd_info})", "info")
+            _log_eval_wait_event(
+                "pipeline.eval_wait_progress",
+                "info",
+                f"Waiting for {bot_name} evaluation: {games}/{min_games} games ({elapsed}s{rd_info})",
+                bot=bot_name,
+                games=games,
+                min_games=min_games,
+                rd=round(cached_rd, 2) if cached_rd is not None else None,
+                elapsed_sec=elapsed,
+                progress_interval_sec=EVAL_WAIT_PROGRESS_INTERVAL_SEC,
+            )
             last_log = time.time()
 
         # Check daemon health every iteration — daemon may crash after producing
@@ -883,10 +948,33 @@ async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=
             if games >= min_games:
                 if ui:
                     ui.log_history(f"Daemon 已终止 (rc={proc.returncode})，但已有 {games} 场 (≥{min_games})，继续", "warn")
+                _log_eval_wait_event(
+                    "pipeline.eval_wait_ready",
+                    "success",
+                    f"Daemon exited but {bot_name} already has {games}/{min_games} games",
+                    bot=bot_name,
+                    games=games,
+                    min_games=min_games,
+                    daemon_returncode=proc.returncode,
+                    elapsed_sec=round(time.time() - start, 2),
+                    reason="min_games_after_daemon_exit",
+                )
                 return True
             else:
                 if ui:
                     ui.log_history(f"Daemon 已终止 (rc={proc.returncode})，仅 {games}/{min_games} 场，等待重启...", "error")
+                if time.time() - last_daemon_dead_log >= EVAL_WAIT_PROGRESS_INTERVAL_SEC:
+                    _log_eval_wait_event(
+                        "pipeline.eval_wait_daemon_dead",
+                        "warn",
+                        f"Daemon exited while waiting for {bot_name}: {games}/{min_games} games",
+                        bot=bot_name,
+                        games=games,
+                        min_games=min_games,
+                        daemon_returncode=proc.returncode,
+                        elapsed_sec=round(time.time() - start, 2),
+                    )
+                    last_daemon_dead_log = time.time()
                 # Don't return False — daemon_monitor_thread may restart it.
                 # Continue waiting until timeout expires.
 
@@ -895,6 +983,18 @@ async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=
     if ui:
         games = cached_bot_stats.get(bot_name, {}).get("games", 0)
         ui.log_history(f"评估超时 {bot_name}: 仅 {games}/{min_games} 场 ({int(time.time()-start)}s)", "warn")
+    games = (cached_bot_stats or {}).get(bot_name, {}).get("games", 0)
+    _log_eval_wait_event(
+        "pipeline.eval_wait_timeout",
+        "warn",
+        f"Evaluation wait timed out for {bot_name}: {games}/{min_games} games",
+        bot=bot_name,
+        games=games,
+        min_games=min_games,
+        rd=round(cached_rd, 2) if cached_rd is not None else None,
+        elapsed_sec=round(time.time() - start, 2),
+        timeout_sec=timeout,
+    )
     return False
 
 
