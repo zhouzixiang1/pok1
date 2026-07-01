@@ -172,6 +172,23 @@ class TestP3ASTDeadCode:
         assert len(warnings) == 1
         assert "_new_helper" in warnings[0]
 
+    def test_verify_helper_is_exempt_from_reachability_warning(self, tmp_path):
+        from core.code_verification import detect_new_function_reachability_warnings
+        source = tmp_path / "source"
+        child = tmp_path / "child"
+        source.mkdir()
+        child.mkdir()
+        (source / "state.py").write_text("def existing():\n    return 1\n")
+        (child / "state.py").write_text(
+            "def existing():\n    return 1\n\n"
+            "def _verify_preflop_shove_defense():\n"
+            "    assert existing() == 1\n"
+        )
+        warnings = detect_new_function_reachability_warnings(
+            source, child, ["state.py"]
+        )
+        assert warnings == []
+
     def test_new_function_with_dispatch_call_is_reachable(self, tmp_path):
         from core.code_verification import detect_new_function_reachability_warnings
         source = tmp_path / "source"
