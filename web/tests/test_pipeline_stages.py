@@ -417,6 +417,33 @@ class TestStagnationConfidenceStrategy:
 
         assert generation_scheduler._read_source_v_history() == [235, 206, 235]
 
+    def test_source_loop_uses_unified_selection_leader(self, monkeypatch):
+        """Source-loop repair should follow selection_score, not raw conservative rating."""
+        import generation_scheduler
+        import tool_helpers
+
+        monkeypatch.setattr(generation_scheduler, "_detect_source_loop", lambda n=3: 206)
+        monkeypatch.setattr(generation_scheduler, "_detect_source_oscillation", lambda *a, **k: None)
+        monkeypatch.setattr(generation_scheduler, "_log_source_selection_decision", lambda *a, **k: None)
+        monkeypatch.setattr(tool_helpers, "load_selection_scores", lambda: {
+            "claude_v206": 0.46,
+            "claude_v237": 0.52,
+        })
+        ratings = {
+            "claude_v206": self._Rating(1550.0),
+            "claude_v237": self._Rating(1400.0),
+        }
+
+        strategy, source_v, parents = generation_scheduler._decide_strategy(
+            {"is_stagnant": False, "confidence": "high"},
+            current_v=242,
+            ratings=ratings,
+        )
+
+        assert strategy == "master"
+        assert source_v == 237
+        assert parents == ()
+
     def test_oscillation_breakout_uses_new_credible_near_leader(self, monkeypatch):
         """A high-confidence recent near-leader outside the loop should break source oscillation."""
         import generation_scheduler

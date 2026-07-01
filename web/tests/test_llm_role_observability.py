@@ -169,6 +169,57 @@ def test_process_stream_emits_periodic_progress(monkeypatch, tmp_path):
     assert fields["progress_interval_sec"] == 0.01
 
 
+def test_process_stream_emits_silence_watchdog(monkeypatch, tmp_path):
+    events = []
+
+    async def fake_stream():
+        yield AssistantMessage(content=[TextBlock(text="alpha")], model="sonnet")
+        await asyncio.sleep(0.06)
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=10,
+            duration_api_ms=10,
+            is_error=False,
+            num_turns=1,
+            session_id="session",
+            total_cost_usd=0.1,
+            usage={"input_tokens": 4, "output_tokens": 2},
+        )
+
+    monkeypatch.setattr(llm_query, "_LLM_PROGRESS_INTERVAL_SEC", 999)
+    monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 0.02)
+    monkeypatch.setattr(
+        llm_query,
+        "_emit_llm_event",
+        lambda category, severity, message, **fields: events.append(
+            (category, severity, message, fields)
+        ),
+    )
+
+    log_file = tmp_path / "v243" / "logs" / "master_io.txt"
+    log_file.parent.mkdir(parents=True)
+
+    texts, cost, usage = asyncio.run(
+        llm_query._process_stream(fake_stream(), str(log_file), _DummyUI(), "master")
+    )
+
+    assert texts == ["alpha"]
+    assert cost == 0.1
+    assert usage["output_tokens"] == 2
+
+    silent = [
+        event for event in events if event[0] == "pipeline.llm_role_stream_silent"
+    ]
+    assert silent
+    _category, severity, _message, fields = silent[0]
+    assert severity == "warn"
+    assert fields["role"] == "master"
+    assert fields["messages_seen"] == 1
+    assert fields["text_chars"] == len("alpha")
+    assert fields["silent_for_sec"] >= 0.02
+    assert fields["silence_warn_sec"] == 0.02
+
+
 def test_run_claude_query_downgrades_success_error_result_to_warn(monkeypatch, tmp_path):
     events = []
 

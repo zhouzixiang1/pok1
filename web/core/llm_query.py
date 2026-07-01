@@ -5,6 +5,7 @@ for extracting structured data from LLM responses.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -398,6 +399,10 @@ _LLM_PROGRESS_INTERVAL_SEC = float(
     os.environ.get("POK_LLM_PROGRESS_INTERVAL_SEC", "120")
 )
 
+_LLM_SILENCE_WARN_SEC = float(
+    os.environ.get("POK_LLM_SILENCE_WARN_SEC", "240")
+)
+
 
 def _emit_llm_event(category, severity, message, **fields):
     """Emit an LLM lifecycle event without letting logging affect execution."""
@@ -582,6 +587,9 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
     first_activity_logged = False
     message_count = 0
     last_progress_at = stream_started_at
+    last_message_at = stream_started_at
+    last_silence_event_at = stream_started_at
+    stream_done = False
     text_chars = 0
     thinking_chars = 0
     tool_use_count = 0
@@ -633,8 +641,42 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             **_role_log_metadata(log_file_path),
         )
 
+    async def _silence_watchdog():
+        nonlocal last_silence_event_at
+        if _LLM_SILENCE_WARN_SEC <= 0:
+            return
+        sleep_for = max(0.01, min(_LLM_SILENCE_WARN_SEC / 2.0, 30.0))
+        while not stream_done:
+            await asyncio.sleep(sleep_for)
+            if stream_done:
+                return
+            now = time.time()
+            silent_for = now - last_message_at
+            since_last_event = now - last_silence_event_at
+            if silent_for < _LLM_SILENCE_WARN_SEC:
+                continue
+            if since_last_event < _LLM_SILENCE_WARN_SEC:
+                continue
+            last_silence_event_at = now
+            _emit_llm_event(
+                "pipeline.llm_role_stream_silent", "warn",
+                f"{role_name}: no LLM stream messages for {silent_for:.1f}s",
+                role=role_name,
+                elapsed_sec=round(now - stream_started_at, 2),
+                silent_for_sec=round(silent_for, 2),
+                silence_warn_sec=_LLM_SILENCE_WARN_SEC,
+                messages_seen=message_count,
+                text_chars=text_chars,
+                thinking_chars=thinking_chars,
+                tool_use_count=tool_use_count,
+                tool_result_count=tool_result_count,
+                **_role_log_metadata(log_file_path),
+            )
+
     try:
+        watchdog_task = asyncio.create_task(_silence_watchdog())
         async for message in query_gen:
+            last_message_at = time.time()
             message_count += 1
             if isinstance(message, AssistantMessage):
                 _mark_first_activity("assistant")
@@ -744,6 +786,12 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
         )
         ui.log_io(f"\n[{role_name} CANCELLED]", "error", role_name)
         raise
+    finally:
+        stream_done = True
+        if 'watchdog_task' in locals():
+            watchdog_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watchdog_task
     return texts, cost_usd, usage
 
 

@@ -579,14 +579,14 @@ def _decide_strategy(combined, current_v, ratings):
     # force branching from the Glicko-rated leader instead.
     _source_loop = _detect_source_loop(n=3)
     if _source_loop:
-        leader_v = _get_glicko_leader_v(ratings)
+        leader_v = _get_unified_leader_v(ratings)
         if leader_v is not None and leader_v != _source_loop:
             log.warning(
                 "Source-v loop detected (last 3+ gens from v%d). "
-                "Forcing source_v=%d (Glicko leader) to break the loop.",
+                "Forcing source_v=%d (unified selection leader) to break the loop.",
                 _source_loop, leader_v,
             )
-            _log_source_selection_decision("source_loop_glicko_leader", leader_v, current_v, combined)
+            _log_source_selection_decision("source_loop_unified_leader", leader_v, current_v, combined)
             return "master", leader_v, ()
 
     # Source-v oscillation detection: if recent gens cycle among a small set
@@ -608,7 +608,7 @@ def _decide_strategy(combined, current_v, ratings):
         # without progress — forcing crossover here would blow apart a winning
         # lineage (BUG2). Only force crossover when none of the recurring sources
         # is the current leader, i.e. genuine stuckness on weaker ancestors.
-        leader_v = _get_glicko_leader_v(ratings)
+        leader_v = _get_unified_leader_v(ratings)
         force_oscillation_crossover = True
         if leader_v is not None and leader_v in osc_ratings:
             force_oscillation_crossover = False
@@ -835,16 +835,38 @@ def _detect_source_oscillation(n=8, max_unique=3):
     return None
 
 
-def _get_glicko_leader_v(ratings):
-    """Return the version number of the highest-rated active bot.
+def _get_unified_leader_v(ratings):
+    """Return the version number of the strongest active bot for source repair.
 
-    Uses the conservative rating (r - 2*rd, the 95% lower bound) rather than
-    bare r, so a high-RD bot with an inflated point estimate cannot hijack the
-    leader slot. This is the seed chosen when a source-v loop forces a branch.
+    Prefer the confidence-discounted ``selection_score`` used by the dashboard
+    and crossover/precommit mechanics. Fall back to conservative Glicko
+    (r - 2*rd) if the unified snapshot is unavailable, so source-loop recovery
+    still works during partial data or cache failures.
     """
     if not ratings:
         return None
-    best_bot = max(ratings, key=lambda b: ratings[b].conservative_rating())
+    try:
+        from tool_helpers import load_selection_scores
+        selection_scores = load_selection_scores()
+    except Exception:
+        selection_scores = {}
+
+    def _score(name):
+        raw = selection_scores.get(name)
+        if raw is not None:
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                pass
+        rating = ratings.get(name)
+        if rating is None:
+            return float("-inf")
+        try:
+            return max(0.0, min(1.0, 0.5 + (rating.conservative_rating() - 1500.0) / 800.0))
+        except Exception:
+            return float("-inf")
+
+    best_bot = max(ratings, key=lambda b: (_score(b), _parse_branch_from(b) or -1))
     try:
         return int(best_bot.split("_v")[1])
     except (ValueError, IndexError):
