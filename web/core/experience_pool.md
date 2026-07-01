@@ -35,6 +35,9 @@
 - Evaluate polarized-aggression fixes by net-chips/blowout-frequency, NOT W-L (v204: 5W-3L yet net -25071). Validation thresholds: <30g H2H = noise; ≥30g paired net-chips to act; ≥100g to declare success.
 
 ## RECENT_LESSONS
+- **v241**: v241 anti-lock trash gate (pf_str<0.40→None) MUST add `hands_left > 3 and my_chips > 15*BIG_BLIND` conditions before tournament-safe — unconditional suppression removes the only double-up escape in true must-shove spots, and short-stacked (5-10BB) trash jams are standard +EV.
+- **v241**: strategy.py LOC exhaustion is now critical at 2478/2500 (22 lines headroom); next strategy.py edit MUST reclaim comments before adding logic, or split choose_anti_lock_pressure_action into tournament.py.
+- **v241 归档建议**: Add `hands_left > 3 and my_chips > 15 * BIG_BLIND and fold_to_raise < 0.50` to the ANTI_LOCK_TRASH_GATE condition, then verify via ≥30g daemon grep that the gate fires ≥5% of anti-lock hands without net-chips regression vs v198 and v182 (v240's worst nemeses at 30%/37% WR), where late-game anti-lock scenarios are most frequent and the unconditional gate is most likely to backfire.
 - **v240**: Crossover keeps destroying structural functions (`_semibluff_raise_construct` lost 2nd time, `_preflop_shove_defense_fold` lost once) — crossover source selection MUST verify donor retains key structural additions, or run post-crossover structural-integrity diff vs known-function inventory.
 - **v240**: strategy.py at 2465/2500 LOC is a hard cap on all v240-descendant edits — next Architect task MUST reclaim LOC before adding logic.
 - **v240 归档建议**: post-commit grep 'SEMIBLUFF_RAISE.*reason=fired' ≥5% vs v182/v203/v209 + 'PREFLOP_SHOVE_DEFENSE' ≥3% vs v206 @≥30g; if semibluff inert, widen fold_to_raise 0.45→0.42 OR lower confidence 0.20→0.15 to activate at total_actions≥10 vs ≥12.
@@ -44,3 +47,4 @@
 - **v238**: AXIS-EXHAUSTION CONFIRMED — fold-gate floor/constant pot_odds nudges are pivot-saturated (v238 reverses v192's 0.30→0.33 w/o evidence). Use a DIFFERENT mechanism (deal-local opp-signal gating / structural dispatch-wiring port / board-texture-conditional fold). [STALE — no WR-lift]
 - **v238**: SIBLING-GATE ALIGNMENT — multiple fold gates (`_multibarrel_line_fold`, `_aggro_bluffcatcher_should_fold`, `_rock_value_bet_fold`) sharing a pot_odds floor: editing ONE creates an inconsistent exploit surface. Lower ALL siblings, or gate the widened band on opp signals.
 - **v238 归档建议**: close v235's leak vs v208/v205/v184 (value-heavy multi-barrel, 40-50% pot) by porting the FULL v206 fold-gate stack to all 4 strategy.py dispatch sites + aligning sibling gates; validate ≥30g w/ bet-sizing telemetry localizing the leak before commit.
+
