@@ -35,6 +35,8 @@
 - Evaluate polarized-aggression by paired net-chips and blowout frequency, not W-L alone; <30g is noise, ≥30g is actionable, ≥100g is durable evidence.
 
 ## RECENT_LESSONS
+- **v244**: PLACEMENT-SHADOW RECURRING: v242's fold gate fired 0/96 games despite correct dispatch sites; v244 deliberately wired dispatch BEFORE bad_river_bluff_candidate/thin_static_showdown_control forcing gates — MANDATORY reachability telemetry check (THIN_VALUE_EXTRACTION fire rate >=5%) at >=30g vs passive opponents before adding more offense mechanisms
+- **v244 归档建议**: At >=30 daemon games, verify _thin_value_extraction_sizing fires >=5% specifically vs v233 (v243's worst nemesis at 0.225 WR) and v206/v235 (0.35); if inert, loosen the confidence>=0.15 gate or VPIP>0.55 floor, and resolve the 0.45-0.55 turn overlap with _turn_thin_value_extraction by narrowing the new fn to made<0.45 only to avoid undercutting existing 0.55-0.72x sizing vs true calling stations.
 - **v243**: Before any more marginal-made river-fold tuning, prove `site=gt0_after_margin` or equivalent target telemetry fires meaningfully; if not, fix blocking opp-signal/margin placement, not fold thresholds.
 - **v243**: Placement-shadow fixes must prove execution reaches the intended river facing-bet branch in real samples; function presence and unit return behavior are insufficient.
 - **v243**: Run telemetry-heavy mirror samples versus actual blowout opponents such as v237/v187; if fire-rate stays <5%, loosen value-heavy/margin blockers or move dispatch after realized-rate comparison.
@@ -42,3 +44,4 @@
 - **v242**: Opp-signal gating remains the open path, but non-all-in direct-fold dispatches must preserve `_postflop_response_margin` / pot-odds coherence to avoid mixed-aggression over-fold.
 - **v241**: Anti-lock trash gate must be tournament-safe: require hands_left > 3, my_chips > 15BB, and low fold_to_raise before suppressing trash jams; short-stack trash jams can be necessary double-up escapes.
 - **v241**: strategy.py had very low LOC headroom; next strategy edit should reclaim lines first or split bulky anti-lock/tournament logic out of choose/action code.
+
