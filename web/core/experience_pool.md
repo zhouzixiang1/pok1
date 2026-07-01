@@ -1,47 +1,44 @@
 ## OPPONENT_MODELING
-- Betsize-polarity: re-target to PREFLOP raise magnitude as STRUCTURAL 4bet-response gating — NOT a postflop floor/constant nudge (that fold-side axis is exhausted, see POSTFLOP_STRATEGY). Activation = lower SAMPLE gate 4→3 + record all-in samples; confidence constants alone are inert. To beat preflop nemesis v206, prefer preflop defense/4bet-response.
-- `large_bet_ratio` is RAW (no smooth_rate wrapper) — verify the read site before treating the raw-warning as live.
-- Archetype *axis* CLOSED (saturates to 'standard'); fold-gate ports keep sneaking it back with NO WR-lift — do NOT reopen. [POSSIBLY EXHAUSTED]
-- Deal-local fns can be TRIGGER-inert even when reachable. Verified-current (v242): `_preflop_shove_defense_fold` (3 dispatch sites) + `_facing_v4bet` flag (1 site) are PRESENT/wired; `revealed_shove_density` is still ABSENT — needs re-port + reachability-test before assuming active. [STALE — no WR-lift]
-- `_estimate_bluff_frequency` underbettor floor (opponent.py): LOCK — part of fold-side exhaustion; do NOT select. [STALE — no WR-lift]
+- Betsize-polarity should target PREFLOP raise magnitude / 4bet-response structure, not another postflop floor. Activation comes from lower sample gates + all-in sample recording; confidence constants alone are inert.
+- Deal-local opponent features can be wired yet trigger-inert. Before relying on `_preflop_shove_defense_fold`, `_facing_v4bet`, `revealed_shove_density`, or similar fields, re-grep the current bot and prove target-scenario telemetry fires.
+- `large_bet_ratio` is raw, not smooth-rate wrapped; verify the read site before treating raw-warning logic as live.
+- Archetype-axis ports saturate to `standard` and repeatedly reappear without WR lift; do not reopen as an active direction. [POSSIBLY EXHAUSTED]
+- `_estimate_bluff_frequency` underbettor floors are part of the exhausted fold-side/postflop-floor family; do not select as the main change. [STALE — no WR-lift]
 
 ## POSTFLOP_STRATEGY
-- Made-strength table (authoritative): pair≈0.22, two-pair≈0.40 (foldable), trips≈0.58. pot_odds-vs-raw-made_strength is STRUCTURALLY INERT; use polarized equity (made×discount) or true_equity. Over-call leak band 0.20≤made<0.45.
-- Unconditional gates turn -EV within one gen (v217 floor→v218 gated; v221 mid_pair 0.35→0.42). Gate value/fold aggression on deal-local opp fields (value_maximizer_index>0.40, fold_to_bet_turn<0.40, VPIP>0.60) from the start.
-- PLACEMENT-SHADOW (v214/v242): a guard can be present, unit-tested, even comment-acknowledged-unreachable yet dead for gens. Wire ≥3 LIVE dispatch sites + verify the TRIGGER fires; reachability-test DOWNSTREAM control flow.
-- Fold-side axis EXHAUSTED for floor/constant nudges: edits LANDED v215-v238 with NO ≥30g WR-lift. Open path = opp-signal GATING or FULL fold-gate stack port w/ sibling-gate alignment, GATED on H2H net-chips lift — NOT another floor edit. [STALE — no WR-lift] [POSSIBLY EXHAUSTED]
-- SIBLING-GATE ALIGNMENT: fold gates (`_multibarrel_line_fold`, `_aggro_bluffcatcher_should_fold`, `_rock_value_bet_fold`) share a pot_odds floor — editing ONE makes an inconsistent exploit surface; lower ALL siblings or gate the widened band on opp signals.
-- v234-origin direct fold runs BEFORE `_postflop_response_margin` aggregation, BYPASSING additives — watch over-fold vs v206/v209; re-anchor the drifted line, then grep `RIVER_POTODDS_EQUITY delta_milli=+` target ≥5% @≥30g.
-- CAP CONSTRAINTS (re-measured v242): strategy_helpers.py=2500 EXACT cap (reclamation HARD PREREQ); strategy.py=2475/2500 (25-line headroom — reclaim LOC before adding logic); opponent.py=1610.
+- Made-strength table: pair≈0.22, two-pair≈0.40, trips≈0.58. The over-call leak band is 0.20≤made<0.45; raw made_strength vs pot_odds is structurally weak, prefer polarized equity or true equity.
+- Unconditional gates turn -EV quickly. Value/fold aggression must be gated on live deal-local opp fields from the start, e.g. value_maximizer_index, fold_to_bet_turn, VPIP, or similar proven signals.
+- Placement-shadow class is recurring: a guard can exist, pass unit tests, and still be dead. Require downstream control-flow reachability and target-spot telemetry, not just function presence.
+- Fold gates must respect `_postflop_response_margin` / realized-rate coherence; direct-fold sites that bypass existing continue-guards risk over-folding vs mixed-aggression.
+- Sibling-gate alignment matters: `_multibarrel_line_fold`, `_aggro_bluffcatcher_should_fold`, and `_rock_value_bet_fold` share pot-odds/made-strength surfaces; changing one sibling alone creates inconsistent exploit behavior.
+- LOC caps are version-sensitive. Re-measure current bot before edits; strategy_helpers.py has recently been at exact cap and strategy.py had little headroom, so reclaim LOC before adding logic.
+- Fold-side floor/constant nudges landed repeatedly without ≥30g WR lift. Active path is only opp-signal gated restructuring or full sibling-aligned stack port with net-chip proof. [STALE — no WR-lift] [POSSIBLY EXHAUSTED]
 
 ## BLUFF_CALIBRATION
-- Bluff only with explicit fold-equity evidence + confidence; low aggression/passivity alone may signal a calling-station.
-- `_semibluff_raise_construct`: VERIFIED PRESENT in v242 (opponent.py:1333, dispatched strategy.py:1812) — restored, no longer a re-port TODO. Open task = reachability: grep 'SEMIBLUFF_RAISE.*reason=fired' ≥5% vs v182/v213/v203 @≥30g; tuning knobs (fold_to_raise→0.45, SPR 3→2.5) are post-activation only.
-- Board-texture bluff raise: axis EXHAUSTED (~50 gens), PAUSED pending ≥100g WR-lift — dormant. [POSSIBLY EXHAUSTED]
+- Bluff only with explicit fold-equity evidence plus confidence; low aggression/passivity can mean calling-station, not foldability.
+- `_semibluff_raise_construct` was confirmed present in v242, but ancestry/crossover can drop mechanisms. Re-grep the current bot before relying on it; open work is telemetry fire-rate ≥5% before tuning knobs.
+- Board-texture bluff-raise direction has repeated for many generations without proven lift; pause unless ≥100g WR/net-chip evidence revives it. [POSSIBLY EXHAUSTED]
 
 ## PARAMETER_TUNING
-- choose_raise() constant-only nudges [POSSIBLY EXHAUSTED] — saturated ≥6 gens; cross-gen pivot auto-flags calibration/ceiling/constant/floor/side/line/defense/gate/shove/polarized. EXEMPT only structural rewrites adding NEW DEAL-LOCAL opp-signal gating.
-- CONFIDENCE/SAMPLE-TRAP: confidence=min(1.0,total/12.0)→0.0 at n<4, ≥0.333 at n≥4, NEVER [0.20,0.25); any confidence≥0.25 gate is a no-op. Use sample-count (samples≥6) or lower early-return gate (len≥3 vs ≥4) — NOT the constant; REMOVE dead bound constants.
-- Preflop pot_odds windows <10pp rarely fire in 70-hand HU; widen_threshold must target ≥15pp bands.
-- Firing verification: reachability_test + ≥30g paired net-chips is the authoritative gate (≥100g to declare success); skipped 4-6+ gens despite being "binding" — HARD prerequisite. RESOLVED (A1): daemon drains bot stderr into telemetry; grep counts ≠ H2H proof.
+- Confidence/sample trap: confidence=min(1,total/12) is 0 below n=4 and ≥0.333 at n≥4, so thresholds in [0.20,0.25) are no-ops. Change sample-count gates or early-return gates instead.
+- Preflop pot-odds windows under ~10pp rarely fire in 70-hand HU; tune only bands wide enough to be reachable, preferably ≥15pp.
+- Telemetry is available, but telemetry counts are not H2H proof. Require reachability plus ≥30g paired net-chips to act, and ≥100g before declaring success.
+- choose_raise constant/floor/ceiling nudges are saturated; exempt only structural rewrites adding new live deal-local opponent-signal gating. [POSSIBLY EXHAUSTED]
 
 ## GENERAL
-- Master is RELIABLE at plan-generation but reliability ≠ correctness: validate axis PAYLOAD (≥30g WR-lift), not plan cleanliness. Critic advisory ≤4.0 + local_optima_warning=true on an exhausted axis mandates a direction_audit pivot (advisory; precommit authoritative).
-- Trust git diff / head_to_head.json over commit messages/Master plans; MASTER H2H CLAIMS FABRICATED RECURRINGLY (v215/v219/v220/v221/v224). VERIFY every crossover H2H rationale against head_to_head.json BEFORE dispatch; valid picks = opponents the parent LOSES to that the donor BEATS.
-- Crossover ancestry SILENTLY discards validated mutations on the non-chosen branch; but re-ports DO persist when caught (semibluff present in v242). Master MUST git-inventory + grep current bot for previously-validated mechanism names before assuming 'new'; restoration counts as novelty.
-- PLAN/IMPLEMENTATION DRIFT (v224): a committed DEFENSE tweak can contradict the declared Master OFFENSE port — require post-worker plan-vs-code reconciliation before review.
-- Dead-code/guard removal > adding constants; each action_type discriminator (raise/allin) needs its OWN branch (nesting 'allin' in 'raise' zeroes shove_rate w/ NO test failure). Verify ARITY at the call site (v234: 8 args vs 7-param TypeError'd silently) before commit.
-- Precommit silent 2-attempt retry: first 'FAILED: match_timeout' (n=8→960s) auto-falls-back to n=4 and can PASS — distinguish timeout-failure from data-driven-failure; SIGSTOP daemon before precommit.
-- Evaluate polarized-aggression by net-chips/blowout-frequency, NOT W-L (v204: 5W-3L yet net -25071). <30g H2H=noise; ≥30g paired net-chips to act; ≥100g to declare success.
+- Validate payload results, not plan cleanliness. Master can produce plausible but strategically wrong rationales; critic local-optima warnings on exhausted axes should trigger pivot unless precommit/H2H proves otherwise.
+- Trust git diff and head_to_head.json over commit messages or Master claims. Verify crossover rationale: parent must lose to target opponents that donor actually beats.
+- Crossover ancestry can silently discard non-base mutations. Always inventory current functions/dispatch sites before declaring a mechanism new, missing, or preserved.
+- Post-worker plan-vs-code reconciliation is mandatory; prior generations committed code that contradicted the stated plan direction.
+- Prefer dead-code removal or dispatch repair over adding constants. Verify call-site arity and per-action branches; silent TypeError or nested-action logic can zero whole signal families.
+- Precommit timeout fallback can mask weak evidence: distinguish match_timeout retry/pass from data-driven pass, and pause daemon interference before precommit.
+- Evaluate polarized-aggression by paired net-chips and blowout frequency, not W-L alone; <30g is noise, ≥30g is actionable, ≥100g is durable evidence.
 
 ## RECENT_LESSONS
-- **v243**: Before further marginal-made river fold tuning, require site-level telemetry showing `gt0_after_margin` fires at meaningful frequency; otherwise adjust the blocking opponent-signal or margin dimension, not another fold threshold.
-- **v243**: Placement-shadow fixes should verify execution reachability in target river facing-bet samples, not just function presence or unit-level return behavior.
-- **v243 归档建议**: Run telemetry-heavy mirror samples versus v237/v187 on river facing-bet spots and inspect `site=gt0_after_margin`; if fires remain under 5%, loosen the value-heavy/margin blockers rather than changing the fold ceiling.
-- **v242**: Reachability-before-precommit is mandatory for fold gates: `_marginal_made_river_fold_gate` fired 0/96 precommit games despite correct dispatch sites — repeats the v214 placement-shadow class. Verify telemetry ≥5% fire-rate vs ACTUAL nemeses BEFORE commit, not just code-presence.
-- **v242**: Opp-signal GATING is the open path over another fold-side constant/floor (axis exhausted), but non-all-in direct-fold dispatches MUST respect `_postflop_response_margin`/pot_odds coherence — v242 Site B bypasses the continue-guards other fold gates respect → unchecked over-fold risk vs mixed-aggression (v206/v209).
-- **v242 NEXT**: instrument MARGINAL_MADE_RIVER_FOLD telemetry + run ≥30g daemon paired net-chips vs v237/v187 (the -20k blowout opps); fires <5% → value-heavy opp conditions too strict OR shadowed by an earlier all-in return; fires + blowouts persist → wire dead paired_board_profile param + move Site B dispatch to AFTER the realized_rate comparison.
-- **v241**: anti-lock trash gate (pf_str<0.40→None) MUST add `hands_left > 3 and my_chips > 15*BIG_BLIND` (+`fold_to_raise < 0.50`) before tournament-safe — unconditional suppression removes the only double-up escape; short-stacked (5-10BB) trash jams are standard +EV.
-- **v241**: strategy.py LOC exhaustion: v242=2475/2500 (25-line headroom); next strategy.py edit MUST reclaim LOC before adding logic, or split choose_anti_lock_pressure_action into tournament.py.
-- **v240**: crossover keeps destroying structural functions — crossover source selection MUST verify donor retains key additions, or run post-crossover structural-integrity diff vs known-function inventory. (semibluff + preflop_shove_defense are both PRESENT in v242 — latest re-ports held.)
-
+- **v243**: Before any more marginal-made river-fold tuning, prove `site=gt0_after_margin` or equivalent target telemetry fires meaningfully; if not, fix blocking opp-signal/margin placement, not fold thresholds.
+- **v243**: Placement-shadow fixes must prove execution reaches the intended river facing-bet branch in real samples; function presence and unit return behavior are insufficient.
+- **v243**: Run telemetry-heavy mirror samples versus actual blowout opponents such as v237/v187; if fire-rate stays <5%, loosen value-heavy/margin blockers or move dispatch after realized-rate comparison.
+- **v242**: `_marginal_made_river_fold_gate` fired 0/96 precommit games despite dispatch sites, repeating v214 placement-shadow; reachability-before-precommit is mandatory for fold gates.
+- **v242**: Opp-signal gating remains the open path, but non-all-in direct-fold dispatches must preserve `_postflop_response_margin` / pot-odds coherence to avoid mixed-aggression over-fold.
+- **v241**: Anti-lock trash gate must be tournament-safe: require hands_left > 3, my_chips > 15BB, and low fold_to_raise before suppressing trash jams; short-stack trash jams can be necessary double-up escapes.
+- **v241**: strategy.py had very low LOC headroom; next strategy edit should reclaim lines first or split bulky anti-lock/tournament logic out of choose/action code.
