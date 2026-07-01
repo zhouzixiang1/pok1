@@ -54,6 +54,10 @@ archive/logs/
 archive/forensic/
 archive/clutter/
 
+# Local third-party reference checkouts. Keep these repos on disk for research,
+# but do not stage their nested git histories or vendored source trees.
+ref/llm_evolution/
+
 # OS
 .DS_Store
 Thumbs.db
