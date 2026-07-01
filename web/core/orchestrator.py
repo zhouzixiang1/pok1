@@ -96,10 +96,20 @@ class _CostCapTripped(Exception):
     """
 
 
+class _OrchFirstActivityTimeout(Exception):
+    """Internal signal: orchestrator LLM produced no first stream message quickly.
+
+    This is different from a normal long generation: no AssistantMessage means
+    no session id has been saved yet, so the checkpoint watchdog cannot observe
+    or recover the stuck stream. Treat it like infra and retry from checkpoint.
+    """
+
+
 # Module-level flag set by the watchdog coroutine when it detects a stuck pipeline.
 # The main orchestrator_loop checks this flag at the top of each iteration and forces
 # a fresh _run_one_cycle (discarding the stale session) when set.
 _watchdog_triggered = False
+ORCH_FIRST_ACTIVITY_TIMEOUT = int(os.environ.get("POK_ORCH_FIRST_ACTIVITY_TIMEOUT", "600"))
 
 ORCHESTRATOR_PROMPT = (Path(__file__).parent / "prompts" / "orchestrator.md").read_text()
 LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
@@ -239,7 +249,54 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             try:
                 gen = claude_query(prompt=prompt, options=opts)
                 _gen_ref[0] = gen  # Track for asyncio.wait_for timeout cleanup
-                async for message in gen:
+                _stream_iter = gen.__aiter__()
+                _first_activity_seen = False
+                _stream_started_at = time.time()
+                while True:
+                    try:
+                        if not _first_activity_seen:
+                            message = await asyncio.wait_for(
+                                _stream_iter.__anext__(),
+                                timeout=ORCH_FIRST_ACTIVITY_TIMEOUT,
+                            )
+                            _first_activity_seen = True
+                            _first_latency = time.time() - _stream_started_at
+                            if _first_latency >= 60:
+                                try:
+                                    log_system_event(
+                                        "pipeline.first_activity_delayed", "warn",
+                                        f"Orchestrator first stream activity after {_first_latency:.1f}s",
+                                        {"latency_s": round(_first_latency, 1),
+                                         "timeout_s": ORCH_FIRST_ACTIVITY_TIMEOUT},
+                                    )
+                                except Exception:
+                                    pass
+                        else:
+                            message = await _stream_iter.__anext__()
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.TimeoutError as e:
+                        if not _first_activity_seen:
+                            msg = (
+                                f"Orchestrator LLM produced no first stream message within "
+                                f"{ORCH_FIRST_ACTIVITY_TIMEOUT}s"
+                            )
+                            if ui:
+                                ui.log_history(
+                                    f"[Orchestrator] {msg} — treating as infrastructure stall; "
+                                    "checkpoint will be preserved for retry.",
+                                    "warn",
+                                )
+                            try:
+                                log_system_event(
+                                    "pipeline.first_activity_timeout", "warn", msg,
+                                    {"timeout_s": ORCH_FIRST_ACTIVITY_TIMEOUT,
+                                     "session_present": bool(_load_orchestrator_session())},
+                                )
+                            except Exception:
+                                pass
+                            raise _OrchFirstActivityTimeout(msg) from e
+                        raise
                     if isinstance(message, AssistantMessage):
                         for block in message.content:
                             if isinstance(block, TextBlock):
@@ -812,7 +869,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             # ConnectionError, OSError) — same classifier used by tool_gates/agent_review
             # for critic/reviewer infra short-circuit (commit 5c14d01). Keyword fallback
             # remains for defense-in-depth (older SDK error formats).
-            is_infra = isinstance(e, _CostCapTripped) or _is_cycle_infra_error(e)
+            is_infra = isinstance(e, (_CostCapTripped, _OrchFirstActivityTimeout)) or _is_cycle_infra_error(e)
             # SDK streaming errors (missing 'signature' field on thinking blocks,
             # observed with claude_agent_sdk 0.2.91 + adaptive thinking) leave the
             # session broken — resuming replays into the same crash (the v84

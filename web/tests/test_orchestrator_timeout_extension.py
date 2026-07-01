@@ -369,3 +369,38 @@ def test_main_loop_infra_error_resumes_checkpoint_without_prepare(tmp_path, monk
     assert resumed.next_v == 102
     assert resumed.source_v == 100
     assert resumed.strategy == "master"
+
+
+def test_first_activity_timeout_is_infra_and_preserves_checkpoint(tmp_path, monkeypatch):
+    """No first LLM stream message should short-retry as infra, not mark checkpoint timed_out."""
+    import orchestrator
+    import evolution_core
+
+    _write_checkpoint(tmp_path, "reviewed", timeout_extensions=0)
+    pipe_file = evolution_core.PIPELINE_STATE_FILE
+
+    async def _silent_gen():
+        await asyncio.sleep(999)
+        if False:
+            yield  # pragma: no cover
+
+    monkeypatch.setattr(orchestrator, "claude_query", lambda prompt, options: _silent_gen())
+    monkeypatch.setattr(orchestrator, "ORCH_FIRST_ACTIVITY_TIMEOUT", 0.01)
+
+    ui = _FakeUI()
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=ui,
+            log_file=tmp_path / "orch_log.txt",
+            one_gen=False,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    assert cost == -0.5
+    after = json.loads(pipe_file.read_text())
+    assert after.get("stage") == "reviewed"
+    assert any("no first stream message" in msg for _, msg in ui.events)
