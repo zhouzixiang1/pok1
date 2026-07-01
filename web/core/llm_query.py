@@ -11,6 +11,7 @@ import os
 import re
 import shlex
 import threading
+import time
 
 from claude_agent_sdk import (
     query as claude_query,
@@ -389,6 +390,58 @@ _ROLE_IO_ROTATION_LOCK = threading.Lock()
 _ROLE_IO_MAX_BYTES = 20 * 1024 * 1024
 
 
+_LLM_FIRST_ACTIVITY_WARN_SEC = float(
+    os.environ.get("POK_LLM_FIRST_ACTIVITY_WARN_SEC", "60")
+)
+
+
+def _emit_llm_event(category, severity, message, **fields):
+    """Emit an LLM lifecycle event without letting logging affect execution."""
+    try:
+        import event_bus
+        event_bus.emit(category, severity, message, **fields)
+    except Exception:
+        pass
+
+
+def _role_log_metadata(log_file_path):
+    path = str(log_file_path or "")
+    meta = {"log_file": path}
+    match = re.search(r"/v(\d+)/logs/([^/]+)_io\.txt$", path)
+    if match:
+        meta["version"] = int(match.group(1))
+        meta["role_log"] = match.group(2)
+    return meta
+
+
+def _tools_metadata(tools):
+    if tools is None:
+        return {"tools": []}
+    if isinstance(tools, (list, tuple)):
+        return {"tools": [str(t) for t in tools]}
+    return {"tools": [type(tools).__name__]}
+
+
+def _usage_metadata(usage):
+    if not usage:
+        return {}
+    try:
+        data = usage if isinstance(usage, dict) else usage.model_dump()
+    except Exception:
+        try:
+            data = dict(usage)
+        except Exception:
+            data = {}
+    summary = {}
+    for key in (
+        "input_tokens", "output_tokens", "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    ):
+        if key in data:
+            summary[key] = data.get(key)
+    return summary
+
+
 def _append_role_io(log_file_path, text):
     """Append text to a role-IO log file with fcntl locking + 20MB rotation.
 
@@ -513,9 +566,38 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
     texts = []
     cost_usd = None
     usage = None
+    stream_started_at = time.time()
+    first_activity_logged = False
+    message_count = 0
+
+    def _mark_first_activity(kind):
+        nonlocal first_activity_logged
+        if first_activity_logged:
+            return
+        first_activity_logged = True
+        elapsed = time.time() - stream_started_at
+        delayed = elapsed >= _LLM_FIRST_ACTIVITY_WARN_SEC
+        category = (
+            "pipeline.llm_role_first_activity_delayed"
+            if delayed else
+            "pipeline.llm_role_first_activity"
+        )
+        severity = "warn" if delayed else "info"
+        _emit_llm_event(
+            category, severity,
+            f"{role_name}: first LLM stream activity after {elapsed:.1f}s",
+            role=role_name,
+            elapsed_sec=round(elapsed, 2),
+            first_activity_warn_sec=_LLM_FIRST_ACTIVITY_WARN_SEC,
+            activity_kind=kind,
+            **_role_log_metadata(log_file_path),
+        )
+
     try:
         async for message in query_gen:
+            message_count += 1
             if isinstance(message, AssistantMessage):
+                _mark_first_activity("assistant")
                 for block in message.content:
                     if isinstance(block, TextBlock):
                         text = block.text
@@ -539,6 +621,7 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                             _append_role_io(log_file_path, f"\n[TOOL_RESULT] {content[:3000]}\n")
                             ui.log_io(content[:3000], "tool_result", role_name)
             elif isinstance(message, ResultMessage):
+                _mark_first_activity("result")
                 cost_usd = message.total_cost_usd
                 usage = message.usage
                 # A1 (v125 retry-storm fix): capture ResultMessage diagnostic fields.
@@ -592,9 +675,27 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                 except Exception:
                     pass
     except ClaudeSDKError as e:
+        _emit_llm_event(
+            "pipeline.llm_role_stream_sdk_error", "warn",
+            f"{role_name}: SDK stream error: {str(e)[:180]}",
+            role=role_name,
+            elapsed_sec=round(time.time() - stream_started_at, 2),
+            messages_seen=message_count,
+            exception_type=type(e).__name__,
+            error=str(e)[:500],
+            **_role_log_metadata(log_file_path),
+        )
         ui.log_io(f"[ERROR] {e}", "error", role_name)
         raise   # propagate so callers distinguish a hard SDK error from an empty-but-valid reply
     except asyncio.CancelledError:
+        _emit_llm_event(
+            "pipeline.llm_role_stream_cancelled", "warn",
+            f"{role_name}: LLM stream cancelled",
+            role=role_name,
+            elapsed_sec=round(time.time() - stream_started_at, 2),
+            messages_seen=message_count,
+            **_role_log_metadata(log_file_path),
+        )
         ui.log_io(f"\n[{role_name} CANCELLED]", "error", role_name)
         raise
     return texts, cost_usd, usage
@@ -696,6 +797,17 @@ async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, 
                         f"retrying in {_backoff}s: {e}",
                         "warn",
                     )
+                _emit_llm_event(
+                    "pipeline.llm_role_signature_retry", "warn",
+                    f"{role_name}: SDK signature stream error, retrying in {_backoff}s",
+                    role=role_name,
+                    sdk_attempt=sdk_attempt + 1,
+                    max_attempts=_SIGNATURE_MAX_ATTEMPTS,
+                    backoff_sec=_backoff,
+                    exception_type=type(e).__name__,
+                    error=str(e)[:500],
+                    **_role_log_metadata(log_file_path),
+                )
                 await asyncio.sleep(_backoff)
                 continue
             # 自适应并发:非 signature 的 SDK error(可能含 503 熔断/overloaded/429)上报降并发
@@ -730,9 +842,17 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
            cannot edit web/core/*.py, other bot dirs, or pipeline state (the
            orchestrator-level guard does not cover sub-agents).
     """
+    call_started_at = time.time()
     # Pre-check: if already rate-limited, wait before making any API call
     from rate_limiter import rate_limiter
     if rate_limiter.is_blocked():
+        _emit_llm_event(
+            "pipeline.llm_role_rate_limited_wait", "warn",
+            f"{role_name}: waiting for API quota reset",
+            role=role_name,
+            reset_time=rate_limiter.reset_time_str(),
+            **_role_log_metadata(log_file_path),
+        )
         if ui:
             ui.log_history(
                 f"API 配额受限，等待至 {rate_limiter.reset_time_str()}...",
@@ -744,11 +864,14 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
 
     # Build (path, content) pairs for context files
     context_parts = []
+    context_chars = 0
     if context_files:
         for cf in context_files:
             if os.path.exists(cf):
                 with open(cf, 'r') as f:
-                    context_parts.append((cf, f.read()))
+                    content = f.read()
+                    context_chars += len(content)
+                    context_parts.append((cf, content))
 
     # Assemble prompt with context files, smart-budgeting if needed
     if context_parts:
@@ -805,71 +928,132 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         options_kwargs["hooks"] = _sub_hooks
     options = ClaudeAgentOptions(**options_kwargs)
 
+    lifecycle_fields = {
+        "role": role_name,
+        "model": model,
+        "prompt_chars": len(prompt or ""),
+        "full_prompt_chars": len(full_prompt or ""),
+        "context_file_count": len(context_parts),
+        "context_chars": context_chars,
+        "allowed_write_dir": str(allowed_write_dir) if allowed_write_dir is not None else None,
+        **_tools_metadata(tools),
+        **_role_log_metadata(log_file_path),
+    }
+    _emit_llm_event(
+        "pipeline.llm_role_start", "info",
+        f"{role_name}: LLM call started",
+        startup_elapsed_sec=round(time.time() - call_started_at, 2),
+        **lifecycle_fields,
+    )
+
     # Initial query — retry transient SDK stream errors (signature field missing).
     # claude_agent_sdk 0.2.91 intermittently raises ClaudeSDKError "Missing required
     # field in assistant message: 'signature'"; a fresh query usually succeeds.
     # Without this retry, the error propagates and the calling tool either rejects
     # (critic) or skips (battle_exp), stalling the pipeline.
-    full_text, cost_usd, usage = await _run_stream_with_signature_retry(
-        full_prompt, options, log_file_path, ui, role_name)
+    try:
+        full_text, cost_usd, usage = await _run_stream_with_signature_retry(
+            full_prompt, options, log_file_path, ui, role_name)
 
-    output = "\n".join(full_text)
+        output = "\n".join(full_text)
 
-    # Auto-retry on API rate limit (529) with exponential backoff
-    if _is_rate_limited(output):
-        for backoff in [30, 60, 120]:
-            ui.log_history(f"API rate limited (529). Retrying in {backoff}s...", "warn")
-            await asyncio.sleep(backoff)
-            full_text.clear()
-            retry_texts, retry_cost, retry_usage = await _run_stream_with_signature_retry(
-                full_prompt, options, log_file_path, ui, role_name)
-            if retry_texts:
-                full_text.extend(retry_texts)
-            if retry_cost:
-                cost_usd = (cost_usd or 0) + retry_cost
-            if retry_usage:
-                if usage is None:
-                    usage = retry_usage
-                else:
-                    merged = {}
-                    for k in ("input_tokens", "output_tokens"):
-                        merged[k] = (usage.get(k, 0) or 0) + (retry_usage.get(k, 0) or 0)
-                    usage = merged
+        # Auto-retry on API rate limit (529) with exponential backoff
+        if _is_rate_limited(output):
+            for backoff in [30, 60, 120]:
+                ui.log_history(f"API rate limited (529). Retrying in {backoff}s...", "warn")
+                _emit_llm_event(
+                    "pipeline.llm_role_rate_limit_retry", "warn",
+                    f"{role_name}: API rate limited, retrying in {backoff}s",
+                    role=role_name,
+                    backoff_sec=backoff,
+                    **_role_log_metadata(log_file_path),
+                )
+                await asyncio.sleep(backoff)
+                full_text.clear()
+                retry_texts, retry_cost, retry_usage = await _run_stream_with_signature_retry(
+                    full_prompt, options, log_file_path, ui, role_name)
+                if retry_texts:
+                    full_text.extend(retry_texts)
+                if retry_cost:
+                    cost_usd = (cost_usd or 0) + retry_cost
+                if retry_usage:
+                    if usage is None:
+                        usage = retry_usage
+                    else:
+                        merged = {}
+                        for k in ("input_tokens", "output_tokens"):
+                            merged[k] = (usage.get(k, 0) or 0) + (retry_usage.get(k, 0) or 0)
+                        usage = merged
 
-            output = "\n".join(full_text)
-            if not _is_rate_limited(output):
-                break
+                output = "\n".join(full_text)
+                if not _is_rate_limited(output):
+                    break
 
-    # 429 quota exhaustion — parse reset time, block until reset, then retry once
-    if _is_quota_exceeded(output):
-        if rate_limiter.parse_429(output):
-            wait = rate_limiter.wait_seconds()
-            ui.log_history(
-                f"API 配额耗尽 (429)。等待 {wait:.0f}s 至 {rate_limiter.reset_time_str()}",
-                "error",
-            )
-            await rate_limiter.wait_until_reset()
-            # Retry after reset
-            full_text.clear()
-            retry_texts, retry_cost, retry_usage = await _run_stream_with_signature_retry(
-                full_prompt, options, log_file_path, ui, role_name)
-            if retry_texts:
-                full_text.extend(retry_texts)
-            if retry_cost:
-                cost_usd = (cost_usd or 0) + retry_cost
-            if retry_usage:
-                if usage is None:
-                    usage = retry_usage
-                else:
-                    merged = {}
-                    for k in ("input_tokens", "output_tokens"):
-                        merged[k] = (usage.get(k, 0) or 0) + (retry_usage.get(k, 0) or 0)
-                    usage = merged
-            output = "\n".join(full_text)
+        # 429 quota exhaustion — parse reset time, block until reset, then retry once
+        if _is_quota_exceeded(output):
+            if rate_limiter.parse_429(output):
+                wait = rate_limiter.wait_seconds()
+                ui.log_history(
+                    f"API 配额耗尽 (429)。等待 {wait:.0f}s 至 {rate_limiter.reset_time_str()}",
+                    "error",
+                )
+                _emit_llm_event(
+                    "pipeline.llm_role_quota_wait", "warn",
+                    f"{role_name}: API quota exhausted, waiting {wait:.0f}s",
+                    role=role_name,
+                    wait_sec=round(wait, 2),
+                    reset_time=rate_limiter.reset_time_str(),
+                    **_role_log_metadata(log_file_path),
+                )
+                await rate_limiter.wait_until_reset()
+                # Retry after reset
+                full_text.clear()
+                retry_texts, retry_cost, retry_usage = await _run_stream_with_signature_retry(
+                    full_prompt, options, log_file_path, ui, role_name)
+                if retry_texts:
+                    full_text.extend(retry_texts)
+                if retry_cost:
+                    cost_usd = (cost_usd or 0) + retry_cost
+                if retry_usage:
+                    if usage is None:
+                        usage = retry_usage
+                    else:
+                        merged = {}
+                        for k in ("input_tokens", "output_tokens"):
+                            merged[k] = (usage.get(k, 0) or 0) + (retry_usage.get(k, 0) or 0)
+                        usage = merged
+                output = "\n".join(full_text)
 
-    ui.update_cost(role_name, cost_usd, usage)
-
-    return output, cost_usd, usage
+        ui.update_cost(role_name, cost_usd, usage)
+        _emit_llm_event(
+            "pipeline.llm_role_done", "success",
+            f"{role_name}: LLM call finished in {time.time() - call_started_at:.1f}s",
+            elapsed_sec=round(time.time() - call_started_at, 2),
+            cost_usd=round(cost_usd, 6) if cost_usd is not None else None,
+            output_chars=len(output or ""),
+            text_block_count=len(full_text or []),
+            **_usage_metadata(usage),
+            **lifecycle_fields,
+        )
+        return output, cost_usd, usage
+    except asyncio.CancelledError:
+        _emit_llm_event(
+            "pipeline.llm_role_cancelled", "warn",
+            f"{role_name}: LLM call cancelled after {time.time() - call_started_at:.1f}s",
+            elapsed_sec=round(time.time() - call_started_at, 2),
+            **lifecycle_fields,
+        )
+        raise
+    except Exception as e:
+        _emit_llm_event(
+            "pipeline.llm_role_failed", "error",
+            f"{role_name}: LLM call failed after {time.time() - call_started_at:.1f}s: {str(e)[:180]}",
+            elapsed_sec=round(time.time() - call_started_at, 2),
+            exception_type=type(e).__name__,
+            error=str(e)[:1000],
+            **lifecycle_fields,
+        )
+        raise
 
 
 def parse_json_output(output):
