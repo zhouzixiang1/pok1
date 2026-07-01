@@ -304,7 +304,7 @@ MAX_MASTER_TOTAL_FAILURES = 4
 LITERATURE_PROBE_TIMEOUT = int(os.environ.get("POK_LITERATURE_PROBE_TIMEOUT", "600"))
 
 
-def _bump_master_fail_count(next_v, source_v, value=None):
+def _bump_master_fail_count(next_v, source_v, value=None, audit_context=None):
     """Increment (or set) the Master-stage failure counter in the checkpoint.
 
     Reuses the audit_attempt field: both plan-JSON-collapse (data is None) and
@@ -322,6 +322,7 @@ def _bump_master_fail_count(next_v, source_v, value=None):
         write_pipeline_checkpoint(
             next_v, source_v, ckpt.get("stage") or "direction_audited",
             audit_attempt=new, touch_stage_timestamp=True,
+            audit_context=audit_context,
         )
         return new
     except Exception:
@@ -1332,7 +1333,88 @@ async def run_master(args):
         except Exception:
             pass
     if plan_errors:
-        return {"content": [{"type": "text", "text": json.dumps({"error": "Master plan validation failed", "validation_errors": plan_errors, "validation_warnings": plan_warnings, "plan": data, "logs": ui.get_output()})}]}
+        _validation_ctx = {
+            "master_validation": {
+                "errors": plan_errors,
+                "warnings": plan_warnings,
+                "plan_analysis": data.get("analysis", "")[:1000]
+                if isinstance(data, dict) else "",
+            }
+        }
+        _nf = _bump_master_fail_count(
+            next_v,
+            source_v,
+            audit_context=_validation_ctx,
+        )
+        _severity = "error" if _nf >= MAX_MASTER_TOTAL_FAILURES else "warn"
+        try:
+            log_system_event(
+                "pipeline.master_validation_failed",
+                _severity,
+                f"Master plan validation failed for v{next_v} "
+                f"(fail_count={_nf}): {'; '.join(plan_errors[:3])}",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "fail_count": _nf,
+                    "validation_errors": plan_errors,
+                    "validation_warnings": plan_warnings,
+                },
+            )
+        except Exception:
+            pass
+        try:
+            ui.log_history(
+                "Master plan validation failed: " + "; ".join(plan_errors[:5]),
+                "error",
+            )
+        except Exception:
+            pass
+
+        if _nf >= MAX_MASTER_TOTAL_FAILURES:
+            try:
+                from orchestrator_session import _clear_orchestrator_session
+                _clear_orchestrator_session()
+            except Exception:
+                pass
+            try:
+                from tool_bot_management import _do_abandon_generation
+                _abandon_result = await _do_abandon_generation(
+                    reason=(
+                        f"master_validation_failed v{next_v}: "
+                        f"{'; '.join(plan_errors[:3])[:300]}"
+                    )
+                )
+            except Exception as _ae:
+                _abandon_result = {"abandoned": False, "error": str(_ae)}
+            return _json_tool_result({
+                "error": "MASTER_VALIDATION_EXHAUSTED",
+                "fail_count": _nf,
+                "validation_errors": plan_errors,
+                "validation_warnings": plan_warnings,
+                **_abandon_result,
+                "directive": (
+                    "Master plan validation failed too many times and this "
+                    "generation was abandoned. Start a fresh generation; do "
+                    "not execute workers from the invalid plan."
+                ),
+                "logs": ui.get_output(),
+            })
+
+        return _json_tool_result({
+            "error": "MASTER_VALIDATION_FAILED",
+            "fail_count": _nf,
+            "validation_errors": plan_errors,
+            "validation_warnings": plan_warnings,
+            "plan": data,
+            "directive": (
+                "The Master plan passed schema/audit but failed hard validation. "
+                "Do NOT execute workers from this plan. If retrying Master, "
+                "the next plan must explicitly fix these validation_errors; "
+                "after repeated failures the generation will be abandoned."
+            ),
+            "logs": ui.get_output(),
+        })
 
     # Persist master plan to checkpoint so it survives crashes between master and workers
     _ckpt = _matching_checkpoint(next_v, source_v)

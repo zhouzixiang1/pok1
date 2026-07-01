@@ -235,3 +235,101 @@ class TestRunMasterIdempotent:
         assert result.get("idempotent_cache") is not True
         # _run_master_analysis WAS called (audit retry may call it multiple times)
         assert len(call_log) >= 1
+
+    def test_run_master_validation_failure_bumps_master_budget(self, client, monkeypatch):
+        """A schema/audit-clean plan can still fail hard validation. That path
+        must count against the Master retry budget and emit a structured event,
+        otherwise the orchestrator can repeatedly re-run Master with no
+        checkpoint progress."""
+        import audit_agents
+        import evolution_infra
+        import tool_planning
+
+        checkpoint = {
+            "next_v": 246,
+            "source_v": 245,
+            "stage": "direction_audited",
+            "master_plan": None,
+            "audit_attempt": 1,
+            "direction_audit": {"repetition_detected": False, "llm_failed": False},
+        }
+        plan = {
+            "analysis": "plan analysis",
+            "targeted_failure": "bad citation",
+            "expected_behavior_change": "fold bad spots",
+            "do_not_touch": [],
+            "measurement_plan": "run gates",
+            "tasks": [
+                {
+                    "worker_id": 1,
+                    "role": "Algorithmic Logic Architect",
+                    "target_files": ["strategy.py"],
+                    "worker_prompt": "Fix G6H28 by changing strategy.py.",
+                }
+            ],
+        }
+        writes = []
+        events = []
+
+        class _UI:
+            def clear_io(self):
+                pass
+
+            def log_history(self, *_args, **_kwargs):
+                pass
+
+            def get_output(self):
+                return ""
+
+        async def _fake_master(*_args, **_kwargs):
+            return dict(plan)
+
+        async def _fake_audit(*_args, **_kwargs):
+            return {"overall_pass": True, "feedback": "", "contradictions": []}
+
+        def _fake_write(next_v, source_v, stage, **kwargs):
+            writes.append((next_v, source_v, stage, kwargs))
+            checkpoint["next_v"] = next_v
+            checkpoint["source_v"] = source_v
+            checkpoint["stage"] = stage
+            if "audit_attempt" in kwargs:
+                checkpoint["audit_attempt"] = kwargs["audit_attempt"]
+            if kwargs.get("audit_context"):
+                checkpoint.setdefault("audit_context", {}).update(kwargs["audit_context"])
+            return True
+
+        monkeypatch.setattr(tool_planning, "_matching_checkpoint", lambda *_a, **_k: checkpoint)
+        monkeypatch.setattr(evolution_infra, "read_pipeline_checkpoint", lambda: checkpoint)
+        monkeypatch.setattr(tool_planning, "write_pipeline_checkpoint", _fake_write)
+        monkeypatch.setattr(tool_planning, "_run_master_analysis", _fake_master)
+        monkeypatch.setattr(audit_agents, "_run_master_plan_audit", _fake_audit)
+        monkeypatch.setattr(tool_planning, "_get_ui", lambda: _UI())
+        monkeypatch.setattr(tool_planning, "_extract_exhausted_keywords", lambda: [])
+        monkeypatch.setattr(tool_planning, "_build_cross_gen_constraint_block", lambda _v: "")
+        monkeypatch.setattr(
+            tool_planning,
+            "_validate_master_plan",
+            lambda *_a, **_k: (
+                ["FABRICATED_EVIDENCE: cited hand G6H28 is NOT in the spotlight manifest"],
+                ["advisory warning"],
+            ),
+        )
+        monkeypatch.setattr(
+            tool_planning,
+            "log_system_event",
+            lambda event_type, severity, message, data=None: events.append(
+                (event_type, severity, message, data or {})
+            ),
+        )
+
+        resp = client.post("/api/control/tool/run_master",
+                           json={"args": {"source_v": 245, "next_v": 246}})
+
+        assert resp.status_code == 200
+        result = json.loads(resp.json()["result"])
+        assert result["error"] == "MASTER_VALIDATION_FAILED"
+        assert result["fail_count"] == 2
+        assert "validation_errors" in result
+        assert any(e[0] == "pipeline.master_validation_failed" for e in events)
+        assert writes[-1][3]["audit_attempt"] == 2
+        assert writes[-1][3]["audit_context"]["master_validation"]["errors"] == result["validation_errors"]
