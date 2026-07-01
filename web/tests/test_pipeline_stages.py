@@ -95,6 +95,37 @@ class TestStagnationCriticInsights:
         assert "{critic_insights}" in template
 
 
+def test_prepare_log_context_uses_planned_next_generation(monkeypatch):
+    import event_bus
+    import generation_scheduler
+
+    events = []
+    monkeypatch.setattr(
+        generation_scheduler,
+        "log_system_event",
+        lambda event_type, severity, message, data: events.append(
+            (event_type, severity, message, data)
+        ),
+    )
+    event_bus.reset_for_test()
+
+    try:
+        planned_next_v = generation_scheduler._bind_prepare_log_context(
+            current_v=243,
+            max_committed_v=243,
+        )
+        ctx = event_bus.capture_context()
+    finally:
+        event_bus.reset_for_test()
+
+    assert planned_next_v == 244
+    assert ctx["run_id"] == "244#0"
+    assert ctx["stage"] == "preparing"
+    assert ctx["attempt"] == {"generation": 0, "audit": 0, "precommit": 0}
+    assert events[0][0] == "pipeline.prepare_context_bound"
+    assert events[0][3]["next_v"] == 244
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Stage 2: Critic evidence → experience_pool
 # ══════════════════════════════════════════════════════════════════════

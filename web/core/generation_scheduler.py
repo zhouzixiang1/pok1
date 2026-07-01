@@ -86,6 +86,29 @@ class GenerationContext:
     battle_experience: str = ""
 
 
+def _bind_prepare_log_context(current_v: int, max_committed_v: int) -> int:
+    """Bind structured logs emitted during disposable Phase-1 prepare."""
+    planned_next_v = max(current_v, max_committed_v) + 1
+    attempt = {"generation": 0, "audit": 0, "precommit": 0}
+    try:
+        from event_bus import update_last_known, invalidate_ckpt_cache
+        update_last_known(run_id=f"{planned_next_v}#0", stage="preparing", attempt=attempt)
+        invalidate_ckpt_cache()
+    except Exception:
+        pass
+    try:
+        log_system_event(
+            "pipeline.prepare_context_bound",
+            "info",
+            f"Prepare log context bound for v{planned_next_v}",
+            {"next_v": planned_next_v, "current_v": current_v,
+             "max_committed_v": max_committed_v, "stage": "preparing"},
+        )
+    except Exception:
+        pass
+    return planned_next_v
+
+
 async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> GenerationContext | None:
     """Phase 1: Analyze state, decide strategy. Disposable on interrupt."""
     from evolution_infra import (
@@ -163,6 +186,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                     f"如需保留该版本请用commit_bot补全tag+.completed,否则它将孤立。",
                     "warn",
                 )
+    _planned_next_v = _bind_prepare_log_context(current_v, max_committed_v)
     active_v = find_latest_active_v()  # 活跃 bot（排除 graveyard），用于 eval/分析
     active_bots = get_active_bots()
     ratings = load_ratings()
@@ -435,7 +459,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     # abnormal paths (bare commit, abandoned floor) logged; the normal case left
     # no trace of how next_v was computed. This is only a scheduler selection,
     # not proof that prepare_next_gen/run_crossover has materialized the bot dir.
-    _final_next_v = max(current_v, max_committed_v) + 1
+    _final_next_v = _planned_next_v
     try:
         log_system_event(
             "pipeline.generation_selected", "info",
