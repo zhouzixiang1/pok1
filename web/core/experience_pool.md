@@ -35,9 +35,13 @@
 - Evaluate polarized-aggression by net-chips/blowout-frequency, NOT W-L (v204: 5W-3L yet net -25071). <30g H2H=noise; ≥30g paired net-chips to act; ≥100g to declare success.
 
 ## RECENT_LESSONS
+- **v243**: Before further marginal-made river fold tuning, require site-level telemetry showing `gt0_after_margin` fires at meaningful frequency; otherwise adjust the blocking opponent-signal or margin dimension, not another fold threshold.
+- **v243**: Placement-shadow fixes should verify execution reachability in target river facing-bet samples, not just function presence or unit-level return behavior.
+- **v243 归档建议**: Run telemetry-heavy mirror samples versus v237/v187 on river facing-bet spots and inspect `site=gt0_after_margin`; if fires remain under 5%, loosen the value-heavy/margin blockers rather than changing the fold ceiling.
 - **v242**: Reachability-before-precommit is mandatory for fold gates: `_marginal_made_river_fold_gate` fired 0/96 precommit games despite correct dispatch sites — repeats the v214 placement-shadow class. Verify telemetry ≥5% fire-rate vs ACTUAL nemeses BEFORE commit, not just code-presence.
 - **v242**: Opp-signal GATING is the open path over another fold-side constant/floor (axis exhausted), but non-all-in direct-fold dispatches MUST respect `_postflop_response_margin`/pot_odds coherence — v242 Site B bypasses the continue-guards other fold gates respect → unchecked over-fold risk vs mixed-aggression (v206/v209).
 - **v242 NEXT**: instrument MARGINAL_MADE_RIVER_FOLD telemetry + run ≥30g daemon paired net-chips vs v237/v187 (the -20k blowout opps); fires <5% → value-heavy opp conditions too strict OR shadowed by an earlier all-in return; fires + blowouts persist → wire dead paired_board_profile param + move Site B dispatch to AFTER the realized_rate comparison.
 - **v241**: anti-lock trash gate (pf_str<0.40→None) MUST add `hands_left > 3 and my_chips > 15*BIG_BLIND` (+`fold_to_raise < 0.50`) before tournament-safe — unconditional suppression removes the only double-up escape; short-stacked (5-10BB) trash jams are standard +EV.
 - **v241**: strategy.py LOC exhaustion: v242=2475/2500 (25-line headroom); next strategy.py edit MUST reclaim LOC before adding logic, or split choose_anti_lock_pressure_action into tournament.py.
 - **v240**: crossover keeps destroying structural functions — crossover source selection MUST verify donor retains key additions, or run post-crossover structural-integrity diff vs known-function inventory. (semibluff + preflop_shove_defense are both PRESENT in v242 — latest re-ports held.)
+
