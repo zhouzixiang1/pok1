@@ -184,16 +184,26 @@ fi
 
 log "observing terminal generation events count=$OBSERVE_GENERATIONS timeout=${OBSERVE_TIMEOUT}s"
 if [ "$DRY_RUN" = "0" ]; then
-    python - "$RESULTS_DIR/events.jsonl" "$OBSERVE_GENERATIONS" "$OBSERVE_TIMEOUT" "$RUN_LOG" <<'PY'
+    python - "$RESULTS_DIR/events.jsonl" "$OBSERVE_GENERATIONS" "$OBSERVE_TIMEOUT" "$RUN_LOG" \
+        "$LOG_DIR/.server.pid" "$RESULTS_DIR/.daemon_pid" "$RESULTS_DIR/pipeline_state.json" "$HOST" "$PORT" <<'PY'
 import json
 import pathlib
+import re
 import sys
 import time
+import urllib.request
 
 events_file = pathlib.Path(sys.argv[1])
 target = int(sys.argv[2])
 timeout = int(sys.argv[3])
 log_file = pathlib.Path(sys.argv[4])
+server_pid_file = pathlib.Path(sys.argv[5])
+daemon_pid_file = pathlib.Path(sys.argv[6])
+pipeline_state_file = pathlib.Path(sys.argv[7])
+host = sys.argv[8]
+port = sys.argv[9]
+url_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+status_url = f"http://{url_host}:{port}/api/control/status"
 generation_terminal = {
     "pipeline.commit_done",
     "pipeline.archivist_done",
@@ -206,11 +216,15 @@ generation_terminal = {
 }
 alert_events = {
     "daemon.crashed",
+    "daemon.exited_cleanly",
     "orchestrator.crashed",
     "pipeline.quality_failed",
     "pipeline.guard_block",
     "pipeline.subagent_guard_block",
     "pipeline.redundant_tool_call",
+    "pipeline.sdk_stream_error",
+    "pipeline.llm_role_cancelled",
+    "pipeline.llm_role_stream_cancelled",
     "pipeline.precommit_eval",
     "pipeline.precommit_infra_timeout",
 }
@@ -218,6 +232,118 @@ seen = 0
 seen_generations = set()
 pos = events_file.stat().st_size if events_file.exists() else 0
 deadline = time.time() + timeout
+last_service_check = 0.0
+last_heartbeat = 0.0
+http_fail_count = 0
+service_check_interval = 15
+heartbeat_interval = 60
+http_fail_limit = 3
+
+def write_line(msg):
+    print(msg)
+    with log_file.open("a", encoding="utf-8") as out:
+        out.write(msg + "\n")
+
+def read_pid(path):
+    if not path.exists():
+        return None, "missing"
+    text = path.read_text(encoding="utf-8", errors="replace").strip()
+    if not text:
+        return None, "empty"
+    try:
+        data = json.loads(text)
+        value = data.get("pid") if isinstance(data, dict) else data
+    except Exception:
+        match = re.search(r"\d+", text)
+        value = match.group(0) if match else None
+    try:
+        pid = int(value)
+    except Exception:
+        return None, f"bad:{text[:80]}"
+    if pid <= 1:
+        return None, f"unsafe:{pid}"
+    return pid, "ok"
+
+def pid_alive(pid):
+    return bool(pid and pathlib.Path(f"/proc/{pid}").exists())
+
+def proc_summary(pid):
+    if not pid:
+        return {}
+    proc = pathlib.Path(f"/proc/{pid}")
+    summary = {"pid": pid, "alive": proc.exists()}
+    if not proc.exists():
+        return summary
+    try:
+        stat = (proc / "stat").read_text(encoding="utf-8", errors="replace").split()
+        summary["ppid"] = int(stat[3])
+        summary["pgid"] = int(stat[4])
+        summary["sid"] = int(stat[5])
+    except Exception:
+        pass
+    try:
+        cmdline = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace").strip()
+        summary["cmd"] = cmdline[:240]
+    except Exception:
+        pass
+    return summary
+
+def http_status():
+    try:
+        with urllib.request.urlopen(status_url, timeout=2) as resp:
+            body = resp.read().decode("utf-8", "replace")
+        data = json.loads(body)
+        return {"ok": True, "status": data}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+def pipeline_snapshot():
+    if not pipeline_state_file.exists():
+        return {"checkpoint": "missing"}
+    try:
+        state = json.loads(pipeline_state_file.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"checkpoint": f"bad:{type(exc).__name__}"}
+    keys = ("run_id", "stage", "next_v", "source_v", "generation_attempt", "audit_attempt", "precommit_attempt")
+    return {key: state.get(key) for key in keys if key in state}
+
+def check_service(force_heartbeat=False):
+    global last_service_check, last_heartbeat, http_fail_count
+    now = time.time()
+    if now - last_service_check < service_check_interval and not force_heartbeat:
+        return
+    last_service_check = now
+    server_pid, server_note = read_pid(server_pid_file)
+    daemon_pid, daemon_note = read_pid(daemon_pid_file)
+    server_alive = pid_alive(server_pid)
+    daemon_alive = pid_alive(daemon_pid)
+    status = http_status()
+    snapshot = {
+        "server_pid": server_pid,
+        "server_pid_note": server_note,
+        "server_alive": server_alive,
+        "server_proc": proc_summary(server_pid),
+        "daemon_pid": daemon_pid,
+        "daemon_pid_note": daemon_note,
+        "daemon_alive": daemon_alive,
+        "daemon_proc": proc_summary(daemon_pid),
+        "http": status,
+        "pipeline": pipeline_snapshot(),
+    }
+    if not server_alive:
+        write_line(f"[service-dead] observed web service is unavailable: {snapshot}")
+        raise SystemExit(1)
+    if not status.get("ok"):
+        http_fail_count += 1
+        if http_fail_count >= http_fail_limit:
+            write_line(f"[service-dead] observed web service HTTP status failed {http_fail_count} times: {snapshot}")
+            raise SystemExit(1)
+        write_line(f"[service-http-warning] observed web service HTTP status failed {http_fail_count}/{http_fail_limit}: {snapshot}")
+        return
+    http_fail_count = 0
+    if force_heartbeat or now - last_heartbeat >= heartbeat_interval:
+        last_heartbeat = now
+        write_line(f"[service-heartbeat] {snapshot}")
 
 def generation_key(event):
     data = event.get("data") or {}
@@ -237,6 +363,7 @@ def should_alert(event):
     return etype in alert_events
 
 while time.time() < deadline and seen < target:
+    check_service()
     if not events_file.exists():
         time.sleep(2)
         continue
@@ -253,25 +380,20 @@ while time.time() < deadline and seen < target:
                 continue
             if should_alert(event):
                 msg = f"[alert] {event.get('type')} {event.get('message')} data={event.get('data', {})}"
-                print(msg)
-                with log_file.open("a", encoding="utf-8") as out:
-                    out.write(msg + "\n")
+                write_line(msg)
             if event.get("type") in generation_terminal:
                 key = generation_key(event)
                 if key in seen_generations:
                     msg = f"[observe] duplicate terminal for {key}: {event.get('type')} {event.get('message')}"
-                    print(msg)
-                    with log_file.open("a", encoding="utf-8") as out:
-                        out.write(msg + "\n")
+                    write_line(msg)
                     continue
                 seen_generations.add(key)
                 seen += 1
                 msg = f"[observe] {seen}/{target} {key} {event.get('type')} {event.get('message')} data={event.get('data', {})}"
-                print(msg)
-                with log_file.open("a", encoding="utf-8") as out:
-                    out.write(msg + "\n")
+                write_line(msg)
     time.sleep(3)
 if seen < target:
+    check_service(force_heartbeat=True)
     print(f"observe timeout: saw {seen}/{target} terminal events", file=sys.stderr)
     raise SystemExit(1)
 PY
