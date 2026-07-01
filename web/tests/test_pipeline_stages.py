@@ -374,6 +374,13 @@ class TestDirectionAuditorCheckpointRead:
 class TestStagnationConfidenceStrategy:
     """Verify _decide_strategy respects confidence level."""
 
+    class _Rating:
+        def __init__(self, conservative):
+            self._conservative = conservative
+
+        def conservative_rating(self):
+            return self._conservative
+
     def test_low_confidence_no_crossover(self):
         """is_stagnant=True but confidence=low → no crossover."""
         from generation_scheduler import _decide_strategy
@@ -391,6 +398,109 @@ class TestStagnationConfidenceStrategy:
         )
         strategy, source_v, parents = _decide_strategy(combined, 40, {})
         assert strategy == "crossover"
+
+    def test_source_history_prefers_committed_lineage_over_prepare_noise(self, tmp_path, monkeypatch):
+        """Oscillation history should use successful committed lineage, not restart/prepare noise."""
+        import generation_scheduler
+
+        events_file = tmp_path / "system_events.jsonl"
+        events = [
+            {"ts": 1, "type": "pipeline.prepare_done", "data": {"next_v": 231, "source_v": 224}},
+            {"ts": 2, "type": "pipeline.prepare_done", "data": {"next_v": 231, "source_v": 224}},
+            {"ts": 3, "type": "pipeline.prepare_done", "data": {"next_v": 232, "source_v": 224}},
+            {"ts": 4, "type": "pipeline.committed", "data": {"version": 236, "source_v": 235}},
+            {"ts": 5, "type": "pipeline.committed", "data": {"version": 237, "source_v": 206}},
+            {"ts": 6, "type": "pipeline.committed", "data": {"version": 238, "source_v": 235}},
+        ]
+        events_file.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+        monkeypatch.setattr(generation_scheduler, "SYSTEM_EVENTS_FILE", events_file)
+
+        assert generation_scheduler._read_source_v_history() == [235, 206, 235]
+
+    def test_oscillation_breakout_uses_new_credible_near_leader(self, monkeypatch):
+        """A high-confidence recent near-leader outside the loop should break source oscillation."""
+        import generation_scheduler
+        import tool_helpers
+
+        monkeypatch.setattr(generation_scheduler, "_detect_source_loop", lambda n=3: None)
+        monkeypatch.setattr(
+            generation_scheduler,
+            "_detect_source_oscillation",
+            lambda n=8, max_unique=3: {206, 235},
+        )
+        monkeypatch.setattr(generation_scheduler, "_log_source_selection_decision", lambda *a, **k: None)
+        monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *a, **k: None)
+        monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates_with_coverage", lambda: {
+            "claude_v206": {
+                "selection_score": 0.3886,
+                "leaderboard_score": 0.3886,
+                "strength_confidence": "medium",
+            },
+            "claude_v235": {
+                "selection_score": 0.4304,
+                "leaderboard_score": 0.4304,
+                "strength_confidence": "medium",
+            },
+            "claude_v187": {
+                "selection_score": 0.5045,
+                "leaderboard_score": 0.5045,
+                "strength_confidence": "high",
+            },
+            "claude_v237": {
+                "selection_score": 0.4891,
+                "leaderboard_score": 0.4891,
+                "strength_confidence": "high",
+            },
+            "claude_v238": {
+                "selection_score": 0.0700,
+                "leaderboard_score": 0.1000,
+                "strength_confidence": "low",
+            },
+        })
+        ratings = {
+            "claude_v206": self._Rating(1178.9),
+            "claude_v235": self._Rating(1225.7),
+            "claude_v237": self._Rating(1443.7),
+        }
+
+        strategy, source_v, parents = generation_scheduler._decide_strategy(
+            {"is_stagnant": False, "confidence": "high"},
+            current_v=238,
+            ratings=ratings,
+        )
+
+        assert strategy == "master"
+        assert source_v == 237
+        assert parents == ()
+
+    def test_confident_stagnation_defer_oscillation_to_normal_crossover(self, monkeypatch):
+        """When stagnation is confident, use the general selection-score crossover path."""
+        import generation_scheduler
+
+        monkeypatch.setattr(generation_scheduler, "_detect_source_loop", lambda n=3: None)
+        monkeypatch.setattr(
+            generation_scheduler,
+            "_detect_source_oscillation",
+            lambda n=8, max_unique=3: {206, 235},
+        )
+        monkeypatch.setattr(generation_scheduler, "_pick_crossover_parents", lambda ratings, cv, **kw: (187, 237))
+        monkeypatch.setattr(generation_scheduler, "_log_crossover_decision", lambda *a, **k: None)
+        monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *a, **k: None)
+        ratings = {
+            "claude_v206": self._Rating(1178.9),
+            "claude_v235": self._Rating(1225.7),
+            "claude_v237": self._Rating(1443.7),
+        }
+
+        strategy, source_v, parents = generation_scheduler._decide_strategy(
+            {"is_stagnant": True, "confidence": "medium"},
+            current_v=238,
+            ratings=ratings,
+        )
+
+        assert strategy == "crossover"
+        assert source_v == 187
+        assert parents == (187, 237)
 
     def test_high_confidence_triggers_crossover(self, monkeypatch):
         """is_stagnant=True and confidence=high → crossover."""
@@ -419,6 +529,78 @@ class TestStagnationConfidenceStrategy:
         )
         strategy, source_v, parents = _decide_strategy(combined, 40, {})
         assert strategy == "crossover"
+
+
+class TestPostCleanupExperienceCommit:
+    """Verify post-generation experience consolidation does not leave hidden dirty state."""
+
+    def test_skips_when_worktree_was_already_dirty(self, tmp_path, monkeypatch):
+        import evolution_infra
+        import generation_scheduler
+
+        exp = tmp_path / "web" / "core" / "experience_pool.md"
+        exp.parent.mkdir(parents=True)
+        exp.write_text("## RECENT_LESSONS\n")
+        calls = []
+
+        monkeypatch.setattr(evolution_infra, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(evolution_infra, "EXPERIENCE_FILE", exp)
+        monkeypatch.setattr(evolution_infra, "_git", lambda *a, **k: calls.append(a) or "")
+        monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *a, **k: None)
+
+        result = generation_scheduler._commit_post_cleanup_experience_change(
+            240,
+            {"web/core/generation_scheduler.py"},
+        )
+
+        assert result == {
+            "committed": False,
+            "reason": "preexisting_dirty",
+            "path": "web/core/experience_pool.md",
+        }
+        assert calls == []
+
+    def test_commits_only_experience_pool_when_clean(self, tmp_path, monkeypatch):
+        import evolution_infra
+        import generation_scheduler
+
+        exp = tmp_path / "web" / "core" / "experience_pool.md"
+        exp.parent.mkdir(parents=True)
+        exp.write_text("## RECENT_LESSONS\n- changed\n")
+        state = {"staged": False, "ensured": False}
+        calls = []
+
+        def fake_git(*args, check=True):
+            calls.append(args)
+            if args[:3] == ("status", "--porcelain", "--"):
+                return " M web/core/experience_pool.md"
+            if args[:3] == ("diff", "--cached", "--name-only"):
+                return "web/core/experience_pool.md" if state["staged"] else ""
+            if args[:2] == ("add", "--"):
+                state["staged"] = True
+                return ""
+            if args[0] == "commit":
+                return ""
+            if args[:2] == ("rev-parse", "--short"):
+                return "abc1234"
+            return ""
+
+        monkeypatch.setattr(evolution_infra, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(evolution_infra, "EXPERIENCE_FILE", exp)
+        monkeypatch.setattr(evolution_infra, "_git", fake_git)
+        monkeypatch.setattr(evolution_infra, "_git_ensure_main_branch", lambda: state.update(ensured=True))
+        monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *a, **k: None)
+
+        result = generation_scheduler._commit_post_cleanup_experience_change(240, set())
+
+        assert result == {
+            "committed": True,
+            "commit": "abc1234",
+            "path": "web/core/experience_pool.md",
+        }
+        assert state["ensured"] is True
+        assert ("add", "--", "web/core/experience_pool.md") in calls
+        assert any(call[:2] == ("commit", "-m") for call in calls)
 
 
 # ══════════════════════════════════════════════════════════════════════
