@@ -412,6 +412,8 @@ def _scheduler_status_excluding_collected(
         normalized["missing_count"] = len(merged)
     normalized["collected_count"] = len(collected)
     normalized["raw_missing_count"] = int(status.get("missing_count", 0) or 0)
+    normalized["missing_unaccounted_count"] = normalized["missing_count"]
+    normalized["raw_missing_before_collected_count"] = normalized["raw_missing_count"]
     return normalized
 
 
@@ -845,7 +847,8 @@ async def run_precommit_eval(args):
                         f"v{v}: waiting for scheduler results "
                         f"({len(collected_results)}/{len(submitted_ids)} collected; "
                         f"pending={pending_count}, claimed={claimed_count}, completed_peek={completed_count}, "
-                        f"missing={missing_count}, collected_mem={len(collected_results)})",
+                        f"missing_unaccounted={missing_count}, raw_missing={last_scheduler_status.get('raw_missing_count')}, "
+                        f"collected_mem={len(collected_results)})",
                         {"version": v, "source_v": source_v,
                          "collected": len(collected_results),
                          "submitted": len(submitted_ids),
@@ -853,7 +856,9 @@ async def run_precommit_eval(args):
                          "claimed": claimed_count,
                          "completed_peek": completed_count,
                          "missing": missing_count,
+                         "missing_unaccounted": missing_count,
                          "raw_missing": last_scheduler_status.get("raw_missing_count"),
+                         "raw_missing_before_collected": last_scheduler_status.get("raw_missing_before_collected_count"),
                          "jobs": job_details},
                     )
                     last_status_log = now_for_status

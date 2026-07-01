@@ -437,6 +437,18 @@ summary = {
     "alerts": alert_records[-20:],
     "stage_transitions": stage_transitions[-20:],
 }
+terminal_counts = {}
+for item in terminal_events:
+    terminal_counts[item.get("type", "unknown")] = terminal_counts.get(item.get("type", "unknown"), 0) + 1
+compact = {
+    "observed": seen,
+    "target": target,
+    "terminal_counts": terminal_counts,
+    "alert_count": len(alert_records),
+    "stage_transition_count": len(stage_transitions),
+    "last_stage": stage_transitions[-1]["pipeline"] if stage_transitions else {},
+}
+write_line("[summary-compact] " + json.dumps(compact, ensure_ascii=False, default=str))
 write_line("[summary] " + json.dumps(summary, ensure_ascii=False, default=str))
 PY
 fi

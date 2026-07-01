@@ -162,7 +162,87 @@ def _read_literature_probe_cache(
     return result
 
 
-def _write_literature_probe_cache(next_v: int | str, payload: dict) -> None:
+def _normalize_literature_probe_result(data: dict, next_v: int | str, *, cached: str = "") -> dict | None:
+    if not isinstance(data, dict):
+        return None
+    result = {
+        "next_v": data.get("next_v", int(next_v)),
+        "source_v": data.get("source_v"),
+        "candidate_id": data.get("candidate_id"),
+        "gated_out": bool(data.get("gated_out", False)),
+        "proposal": data.get("proposal"),
+        "elapsed_sec": data.get("elapsed_sec", 0),
+        "weakness": data.get("weakness", ""),
+        "stagnation_info": data.get("stagnation_info", ""),
+        "context_fingerprint": data.get("context_fingerprint", ""),
+        "reason": data.get("reason", "cached"),
+        "skipped": data.get("skipped", False),
+    }
+    if cached:
+        result["cached"] = True
+        result["cache_source"] = cached
+    result["inject_text"] = data.get("inject_text") or _literature_probe_inject_text(result)
+    return result
+
+
+def _read_literature_probe_checkpoint(
+    next_v: int | str,
+    *,
+    source_v: int | str | None = None,
+    h2h_weakness: str = "",
+    stagnation_info: str = "",
+) -> dict | None:
+    """Return this generation's already-completed literature probe from checkpoint.
+
+    The checkpoint is generation-authoritative. If a resumed orchestrator rebuilds
+    slightly different weakness/stagnation text, reusing the existing probe is
+    still safer than launching a second web query and creating a second candidate
+    for the same next_v/source_v.
+    """
+    try:
+        from evolution_infra import read_pipeline_checkpoint
+        ckpt = read_pipeline_checkpoint() or {}
+    except Exception:
+        return None
+    try:
+        if int(ckpt.get("next_v")) != int(next_v):
+            return None
+        if source_v is not None and int(ckpt.get("source_v")) != int(source_v):
+            return None
+    except (TypeError, ValueError):
+        return None
+    payload = ckpt.get("literature_probe")
+    result = _normalize_literature_probe_result(payload, next_v, cached="checkpoint")
+    if not result:
+        return None
+    current_fp = _literature_probe_context_fingerprint(source_v, h2h_weakness, stagnation_info)
+    stored_fp = result.get("context_fingerprint")
+    if stored_fp and stored_fp != current_fp:
+        result["context_mismatch_reused"] = True
+        result["current_context_fingerprint"] = current_fp
+    return result
+
+
+def _persist_literature_probe_result(next_v: int | str, source_v: int | str | None, payload: dict) -> None:
+    try:
+        from evolution_infra import read_pipeline_checkpoint
+        ckpt = read_pipeline_checkpoint() or {}
+        if int(ckpt.get("next_v")) != int(next_v):
+            return
+        if source_v is not None and int(ckpt.get("source_v")) != int(source_v):
+            return
+        stage = ckpt.get("stage") or "direction_audited"
+        write_pipeline_checkpoint(
+            int(next_v),
+            int(ckpt.get("source_v") if source_v is None else source_v),
+            stage,
+            literature_probe=payload,
+        )
+    except Exception:
+        pass
+
+
+def _write_literature_probe_cache(next_v: int | str, payload: dict) -> dict:
     path = _literature_probe_cache_path(next_v)
     path.parent.mkdir(parents=True, exist_ok=True)
     out = dict(payload)
@@ -177,6 +257,7 @@ def _write_literature_probe_cache(next_v: int | str, payload: dict) -> None:
     )
     out.setdefault("inject_text", _literature_probe_inject_text(out))
     path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    return out
 
 
 # ──────────────────────────────────────────────
@@ -1556,6 +1637,28 @@ async def run_literature_probe(args):
     h2h_weakness = args.get("h2h_weakness", "") or ""
     stagnation_info = args.get("stagnation_info", "") or ""
 
+    checkpoint_probe = _read_literature_probe_checkpoint(
+        next_v,
+        source_v=source_v,
+        h2h_weakness=h2h_weakness,
+        stagnation_info=stagnation_info,
+    )
+    if checkpoint_probe:
+        try:
+            event_type = "pipeline.literature_probe_checkpoint_cached"
+            log_system_event(
+                event_type,
+                "info",
+                f"literature_probe v{next_v}: using checkpoint result",
+                {"next_v": next_v, "source_v": checkpoint_probe.get("source_v"),
+                 "reason": checkpoint_probe.get("reason"),
+                 "candidate_id": checkpoint_probe.get("candidate_id"),
+                 "context_mismatch_reused": checkpoint_probe.get("context_mismatch_reused", False)},
+            )
+        except Exception:
+            pass
+        return _json_tool_result(checkpoint_probe)
+
     cached_probe = _read_literature_probe_cache(
         next_v,
         source_v=source_v,
@@ -1574,6 +1677,7 @@ async def run_literature_probe(args):
             )
         except Exception:
             pass
+        _persist_literature_probe_result(next_v, source_v, cached_probe)
         return _json_tool_result(cached_probe)
 
     # ── A6 governance gate: cooldown / blacklist / kill-switch ──
@@ -1595,7 +1699,8 @@ async def run_literature_probe(args):
                 "stagnation_info": stagnation_info,
             }
             try:
-                _write_literature_probe_cache(next_v, payload)
+                payload = _write_literature_probe_cache(next_v, payload)
+                _persist_literature_probe_result(next_v, source_v, payload)
             except Exception:
                 pass
             return _json_tool_result(payload)
@@ -1687,7 +1792,8 @@ async def run_literature_probe(args):
             "inject_text": inject_text,
         }
         try:
-            _write_literature_probe_cache(next_v, payload)
+            payload = _write_literature_probe_cache(next_v, payload)
+            _persist_literature_probe_result(next_v, source_v, payload)
         except Exception:
             pass
         return _json_tool_result(payload)
@@ -1713,7 +1819,8 @@ async def run_literature_probe(args):
             "error": str(e)[:1000],
         }
         try:
-            _write_literature_probe_cache(next_v, payload)
+            payload = _write_literature_probe_cache(next_v, payload)
+            _persist_literature_probe_result(next_v, source_v, payload)
         except Exception:
             pass
         return _json_tool_result(payload)
@@ -1750,7 +1857,7 @@ async def run_literature_probe(args):
     try:
         proposals_dir = _RESULTS_DIR / "research_proposals"
         proposals_dir.mkdir(parents=True, exist_ok=True)
-        _write_literature_probe_cache(next_v, {
+        _payload = {
             "next_v": next_v, "source_v": source_v,
             "weakness": weakness,
             "stagnation_info": stagnation_info,
@@ -1759,7 +1866,9 @@ async def run_literature_probe(args):
             "gated_out": gated_out,
             "elapsed_sec": round(time.time() - _t0, 1),
             "reason": "completed",
-        })
+        }
+        _payload = _write_literature_probe_cache(next_v, _payload)
+        _persist_literature_probe_result(next_v, source_v, _payload)
     except Exception:
         pass
 
@@ -1934,7 +2043,32 @@ _EXHAUSTED_NEGATIVE_CUES = (
     "prohibit", "prohibited", "unchanged", "preserve", "no retune",
     "no tuning", "without modifying", "do n't", "should not",
     "may violate an exhausted", "marks this area as exhausted",
+    "not the current bottleneck", "shelve until",
 )
+
+
+_REFACTOR_AWAY_CLAUSES = (
+    re.compile(
+        r"\b(replace|replaces|replaced|replacing)\s+[^.;:\n]+?\s+\b(with|by)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"[,;]\s*(replace|replaces|replaced|replacing|instead of|rather than)\b[^.;:\n]*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(structural\s+)?replacement\s+for\b[^.;:\n]*",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _strip_refactor_away_clauses(text: str) -> str:
+    """Remove prose describing the obsolete mechanism being replaced."""
+    cleaned = text
+    for pattern in _REFACTOR_AWAY_CLAUSES:
+        cleaned = pattern.sub(" ", cleaned)
+    return cleaned
 
 
 def _positive_execution_text_from_task(task: dict) -> str:
@@ -1961,7 +2095,7 @@ def _positive_execution_text_from_task(task: dict) -> str:
     segments = []
     for chunk in chunks:
         for segment in splitter.split(chunk):
-            text = segment.strip().lower()
+            text = _strip_refactor_away_clauses(segment).strip().lower()
             if not text:
                 continue
             if any(cue in text for cue in _EXHAUSTED_NEGATIVE_CUES):

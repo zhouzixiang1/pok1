@@ -342,7 +342,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                audit_context=None, reset_generation_attempt=False,
                                audit_attempt=None, reset_audit_attempt=False,
                                precommit_attempt=None, reset_precommit_attempt=False,
-                               timeout_extensions=None, touch_stage_timestamp=False):
+                               timeout_extensions=None, touch_stage_timestamp=False,
+                               literature_probe=None):
     """Write pipeline stage checkpoint so a killed process can resume.
 
     Uses atomic tmp+rename under exclusive lock to prevent concurrent
@@ -371,6 +372,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         existing_audit_context = {}
         existing_precommit_attempt = precommit_attempt
         existing_timeout_extensions = 0
+        existing_literature_probe = None
 
         if existing and existing.get("next_v") == next_v and existing.get("source_v") == source_v:
             existing_gate_results = existing.get("gate_results", {}) or {}
@@ -392,6 +394,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 existing_parent2_v = existing.get("parent2_v")
             existing_direction_audit = existing.get("direction_audit")
             existing_audit_context = existing.get("audit_context", {}) or {}
+            existing_literature_probe = existing.get("literature_probe")
         elif existing:
             active_stage = existing.get("stage")
             dead_stages = {None, "timed_out", "infra_timed_out", "archived", "abandoned"}
@@ -441,6 +444,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             existing_direction_audit = direction_audit
         if audit_context is not None:
             existing_audit_context.update(audit_context)
+        if literature_probe is not None:
+            existing_literature_probe = literature_probe
 
         # Merge last_stage_change_ts: take max of existing vs current time.
         # This preserves the most recent genuine stage-change time on partial re-writes
@@ -527,6 +532,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "parent2_v": existing_parent2_v,
             "direction_audit": existing_direction_audit,
             "audit_context": existing_audit_context,
+            "literature_probe": existing_literature_probe,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "last_stage_change_ts": new_stage_ts,
             "last_update_ts": now_ts,  # Always bumps on any checkpoint write

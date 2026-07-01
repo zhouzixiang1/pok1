@@ -126,6 +126,42 @@ def test_literature_probe_cache_rejects_context_mismatch(tmp_path, monkeypatch):
     ) is None
 
 
+def test_literature_probe_checkpoint_reused_on_resume(tmp_path, monkeypatch):
+    import asyncio
+    import evolution_infra
+    import tool_planning
+
+    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", tmp_path / "pipeline_state.json")
+    payload = {
+        "next_v": 300,
+        "source_v": 299,
+        "proposal": {"claim": "c", "target_fn": "f", "numeric_claim": "+1", "source_url": "u"},
+        "candidate_id": "research-1",
+        "reason": "completed",
+        "weakness": "original weakness",
+        "stagnation_info": "original stagnation",
+        "context_fingerprint": tool_planning._literature_probe_context_fingerprint(
+            299, "original weakness", "original stagnation"
+        ),
+    }
+    assert evolution_infra.write_pipeline_checkpoint(
+        300, 299, "direction_audited", literature_probe=payload
+    )
+
+    result = asyncio.run(tool_planning.run_literature_probe.handler({
+        "next_v": 300,
+        "source_v": 299,
+        "h2h_weakness": "slightly different resumed weakness",
+        "stagnation_info": "slightly different resumed stagnation",
+    }))
+    data = json.loads(result["content"][0]["text"])
+
+    assert data["cached"] is True
+    assert data["cache_source"] == "checkpoint"
+    assert data["candidate_id"] == "research-1"
+    assert data["context_mismatch_reused"] is True
+
+
 def test_aggregate_negative_ev_blocks_small_wl_edge():
     import tool_eval
 
@@ -162,7 +198,9 @@ def test_scheduler_status_excludes_collected_from_missing():
     assert normalized["collected_count"] == 2
     assert normalized["missing"] == ["j3"]
     assert normalized["missing_count"] == 1
+    assert normalized["missing_unaccounted_count"] == 1
     assert normalized["raw_missing_count"] == 3
+    assert normalized["raw_missing_before_collected_count"] == 3
 
 
 def test_near_cap_core_file_cannot_grow(tmp_path):
@@ -195,6 +233,24 @@ def test_exhausted_positive_text_ignores_prohibitions():
 
     assert "choose_raise constant tuning" not in text
     assert "blocker telemetry" in text
+
+
+def test_exhausted_positive_text_strips_refactor_away_clause():
+    import tool_planning
+
+    task = {
+        "worker_prompt": (
+            "TASK: Wire _tier_opp_sizing_directive into choose_raise, "
+            "REPLACING rigid plan-label-driven sizing caps. "
+            "CHANGE: use per-street opponent bet-size tendency sizing."
+        )
+    }
+
+    text = tool_planning._positive_execution_text_from_task(task)
+
+    assert "rigid plan-label-driven sizing caps" not in text
+    assert "_tier_opp_sizing_directive" in text
+    assert "opponent bet-size tendency sizing" in text
 
 
 def test_repo_state_snapshot_classifies_dirty_untracked_and_protected(monkeypatch, tmp_path):
