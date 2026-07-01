@@ -329,12 +329,17 @@ class Holdem:
                     action_type = "allin"
                 else:
                     action_type = "call"
-            else:  # inc <= 0 → check
-                # 规则 4：flop/turn/river 非第一个行为 check → 非法（按 fold 处理）
-                # 但 check-check（对手已 check 且下注匹配）是合法的轮结束
-                # inc<=0 且 round_actions>0 = check-check，不应判非法
+            else:  # inc <= 0 -> check, or national-protocol pass after a check
+                # National protocol uses "call" (not a second "check") to pass a
+                # postflop street after the first player checks. The integer
+                # Botzone action is still 0, but history should match the TCP
+                # protocol so evolved bots see the same action_type in both
+                # engines.
                 self.round_player_bet[self.round_idx] = self.round_bet
-                action_type = "check"
+                if self.round != Holdem.PRE_FLOP and round_actions > 0:
+                    action_type = "call"
+                else:
+                    action_type = "check"
         elif bet > 0:  # raise, 加注到指定金额（raise-to-total）
             raise_to = bet  # bet 表示加注到的阶段总额
             current_bet = self.round_player_bet[self.round_idx]

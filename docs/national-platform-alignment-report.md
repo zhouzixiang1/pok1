@@ -76,17 +76,62 @@ Web 应用仍以本地 JSON 子进程 bot 和 mirror battle 为核心。国赛 T
 - `sever/test_client.py`：冒烟客户端在 postflop 对手 check 后发送 `call`，并在 all-in call 后抑制 runout 阶段行动。
 - `sever/tests/test_national_alignment.py`：回归测试覆盖解析严格性、validator 边界、THP 顺序/runout、adapter 行为转换、自动开赛。
 
+## 2026-07-01 更新：国赛验收矩阵
+
+本轮补齐了从本地进化产物到国赛平台的可验收路径：
+
+- `engine/judge.py` 和 `web/core/engine/judge.py`：Botzone 整数动作仍保持 `0=call/check`，但 postflop 首个玩家 check 后，第二个玩家用 `0` 过街时，history 记录为 `action_type="call"`，与国赛 TCP 协议保持一致。
+- `sever/bot_adapter.py`：增加 adapter telemetry，记录 bot 子进程失败、不可转换动作、实际发送动作数，方便区分“服务器判非法”和“bot/adapter 自身失败”。
+- `scripts/national_acceptance_matrix.py`：新增国赛验收矩阵工具。它不走本地 `engine/battle.py`，而是把 Botzone JSON bot 放进 `sever/bot_adapter.py`，再用 `sever/engine/game.py` 与 `sever/engine/validator.py` 的国赛规则实跑 pairwise match。
+
+推荐验收命令：
+
+```bash
+python scripts/national_acceptance_matrix.py --hands 70 --limit 4 \
+  --output results/national_acceptance_matrix.json \
+  --markdown results/national_acceptance_matrix.md
+```
+
+也可以指定候选：
+
+```bash
+python scripts/national_acceptance_matrix.py \
+  --bots claude_v243 claude_v242 bot5 \
+  --hands 70 \
+  --output results/national_acceptance_matrix.json \
+  --markdown results/national_acceptance_matrix.md
+```
+
+矩阵默认选择“最新 `.completed` 进化 bot + Glicko conservative rating 靠前的 `.completed` bot”，不会把未完成的 `claude_v*` 目录当作正式产物。显式传 `--bots` 时可以人工检查任意目录。
+
+合规判定：
+
+- `illegal_actions == 0`：服务器没有按国赛 validator 判任何行为非法。
+- `timeouts == 0`：国赛引擎没有等不到行动。
+- `bot_failures == 0`：adapter 调用 Botzone 子进程没有失败或超时。
+- `invalid_actions == 0`：bot 输出可以被 adapter 转成整数动作。
+- `hands_played == hands_requested`：每组对局完成指定手数。
+
+强度判读：
+
+- `net_chips` 是该 bot 在矩阵所有 pairwise match 中的累计净筹码。
+- `Pairwise Net Chips Per Hand` 表示行 bot 对列 bot 的每手平均净筹码，括号里是该组对局的合规状态。
+- 小手数矩阵只适合做冒烟验收；强度结论至少使用 70 手国赛完整局，并建议多次运行或扩大候选组来降低方差。
+
 ## 验证
 
 当前验证命令：
 
 ```bash
-python -m py_compile sever/main.py sever/server/tcp_server.py sever/server/protocol.py sever/engine/game.py sever/engine/validator.py sever/engine/thp_recorder.py sever/bot_adapter.py sever/test_client.py sever/tests/test_national_alignment.py
+python -m py_compile scripts/national_acceptance_matrix.py sever/bot_adapter.py engine/judge.py web/core/engine/judge.py sever/tests/test_national_alignment.py
+python -m py_compile sever/main.py sever/server/tcp_server.py sever/server/protocol.py sever/engine/game.py sever/engine/validator.py sever/engine/thp_recorder.py sever/test_client.py
 python -m py_compile web/core/code_verification.py web/core/evolution_core.py web/core/evolution_infra.py web/core/tool_gates.py
 python -m pytest sever/tests/test_national_alignment.py -q
+python -m pytest sever/tests -q
+python scripts/national_acceptance_matrix.py --bots claude_v243 claude_v242 --hands 70 --output /tmp/national_acceptance_matrix_v243_v242_70.json --markdown /tmp/national_acceptance_matrix_v243_v242_70.md
 ```
 
-本报告生成时的结果：py_compile 通过，国赛对齐测试文件为 `9 passed`。
+本报告更新时的结果：py_compile 通过，国赛对齐测试文件和 `sever/tests` 均为 `13 passed`；`claude_v243` vs `claude_v242` 的 70 手国赛矩阵合规 PASS，非法/超时/bot 失败/不可转换动作均为 0。
 
 ## 剩余边界
 
