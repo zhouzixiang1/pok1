@@ -1,7 +1,14 @@
 import asyncio
 
 import pytest
-from claude_agent_sdk.types import AssistantMessage, ResultMessage, TextBlock
+from claude_agent_sdk.types import (
+    AssistantMessage,
+    ResultMessage,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
+)
 
 from core import llm_query
 
@@ -14,6 +21,9 @@ class _DummyUI:
         pass
 
     def log_io(self, *_args, **_kwargs):
+        pass
+
+    def emit_tool_call(self, *_args, **_kwargs):
         pass
 
     def update_cost(self, role_name, cost_usd, usage):
@@ -167,6 +177,76 @@ def test_process_stream_emits_periodic_progress(monkeypatch, tmp_path):
     assert fields["messages_seen"] >= 2
     assert fields["text_chars"] == len("alphabeta")
     assert fields["progress_interval_sec"] == 0.01
+
+
+def test_process_stream_logs_user_message_tool_results(monkeypatch, tmp_path):
+    events = []
+
+    async def fake_stream():
+        yield AssistantMessage(
+            content=[
+                ToolUseBlock(
+                    id="toolu_1",
+                    name="Bash",
+                    input={"command": "printf ok"},
+                )
+            ],
+            model="sonnet",
+        )
+        await asyncio.sleep(0.02)
+        yield UserMessage(
+            content=[
+                ToolResultBlock(
+                    tool_use_id="toolu_1",
+                    content="ok\n",
+                    is_error=False,
+                )
+            ]
+        )
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=10,
+            duration_api_ms=10,
+            is_error=False,
+            num_turns=1,
+            session_id="session",
+            total_cost_usd=0.1,
+            usage={"input_tokens": 4, "output_tokens": 2},
+        )
+
+    monkeypatch.setattr(llm_query, "_LLM_PROGRESS_INTERVAL_SEC", 0.01)
+    monkeypatch.setattr(
+        llm_query,
+        "_emit_llm_event",
+        lambda category, severity, message, **fields: events.append(
+            (category, severity, message, fields)
+        ),
+    )
+
+    log_file = tmp_path / "v243" / "logs" / "worker_1_io.txt"
+    log_file.parent.mkdir(parents=True)
+
+    texts, cost, usage = asyncio.run(
+        llm_query._process_stream(fake_stream(), str(log_file), _DummyUI(), "worker")
+    )
+
+    assert texts == []
+    assert cost == 0.1
+    assert usage["output_tokens"] == 2
+
+    role_log = log_file.read_text(encoding="utf-8")
+    assert "[TOOL_CALL] Bash" in role_log
+    assert "[TOOL_RESULT source=ToolResultBlock is_error=False] ok" in role_log
+
+    progress = [
+        event for event in events if event[0] == "pipeline.llm_role_progress"
+    ]
+    assert progress
+    _category, severity, _message, fields = progress[-1]
+    assert severity == "info"
+    assert fields["role"] == "worker"
+    assert fields["tool_use_count"] == 1
+    assert fields["tool_result_count"] == 1
 
 
 def test_process_stream_emits_silence_watchdog(monkeypatch, tmp_path):

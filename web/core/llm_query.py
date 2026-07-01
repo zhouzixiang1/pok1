@@ -18,6 +18,7 @@ from claude_agent_sdk import (
     query as claude_query,
     ClaudeAgentOptions,
     AssistantMessage,
+    UserMessage,
     ResultMessage,
     TextBlock,
     ToolUseBlock,
@@ -577,7 +578,8 @@ def _trim_to_budget(text: str, max_chars: int, tail: bool = False) -> str:
 async def _process_stream(query_gen, log_file_path, ui, role_name):
     """Process a streaming LLM query, returning (texts, cost_usd, usage).
 
-    Handles TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, and ResultMessage.
+    Handles TextBlock, ThinkingBlock, ToolUseBlock, UserMessage ToolResultBlock,
+    and ResultMessage.
     Writes to log file and emits UI events as they arrive.
     """
     texts = []
@@ -594,6 +596,27 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
     thinking_chars = 0
     tool_use_count = 0
     tool_result_count = 0
+
+    def _tool_result_text(content):
+        if isinstance(content, str):
+            return content
+        if content is None:
+            return ""
+        try:
+            return json.dumps(content, ensure_ascii=False, default=str)
+        except Exception:
+            return str(content)
+
+    def _record_tool_result(content, is_error=None, source="ToolResultBlock"):
+        nonlocal tool_result_count
+        tool_result_count += 1
+        result_text = _tool_result_text(content)
+        if not result_text:
+            result_text = "[empty tool result]"
+        result_preview = result_text[:3000]
+        header = f"[TOOL_RESULT source={source} is_error={bool(is_error)}]"
+        _append_role_io(log_file_path, f"\n{header} {result_preview}\n")
+        ui.log_io(result_preview, "tool_result", role_name)
 
     def _mark_first_activity(kind):
         nonlocal first_activity_logged
@@ -699,13 +722,26 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                         ui.log_io(f"\n[tool: {block.name}]", "tool", role_name)
                         ui.emit_tool_call(block.name, block.input, role_name)
                     elif isinstance(block, ToolResultBlock):
-                        tool_result_count += 1
-                        content = block.content if isinstance(block.content, str) else (
-                            json.dumps(block.content, ensure_ascii=False) if block.content is not None else ""
-                        )
-                        if content:
-                            _append_role_io(log_file_path, f"\n[TOOL_RESULT] {content[:3000]}\n")
-                            ui.log_io(content[:3000], "tool_result", role_name)
+                        _record_tool_result(block.content, getattr(block, "is_error", None))
+                _emit_progress()
+            elif isinstance(message, UserMessage):
+                _mark_first_activity("user")
+                saw_tool_result_block = False
+                if isinstance(message.content, list):
+                    for block in message.content:
+                        if isinstance(block, ToolResultBlock):
+                            saw_tool_result_block = True
+                            _record_tool_result(
+                                block.content,
+                                getattr(block, "is_error", None),
+                            )
+                tool_use_result = getattr(message, "tool_use_result", None)
+                if tool_use_result is not None and not saw_tool_result_block:
+                    _record_tool_result(
+                        tool_use_result,
+                        None,
+                        source="UserMessage.tool_use_result",
+                    )
                 _emit_progress()
             elif isinstance(message, ResultMessage):
                 _mark_first_activity("result")
