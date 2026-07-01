@@ -26,6 +26,27 @@ def test_battle_experience_prompt_compaction(monkeypatch):
     assert "omitted" in new_prompt
 
 
+def test_battle_experience_skips_oversized_llm_prompt(monkeypatch):
+    import battle_experience as be
+
+    monkeypatch.setattr(be, "BATTLE_PROMPT_CURRENT_BUDGET", 1200)
+    monkeypatch.setattr(be, "BATTLE_PROMPT_NEW_DATA_BUDGET", 1400)
+    monkeypatch.setattr(be, "BATTLE_PROMPT_MATCH_SECTION_BUDGET", 500)
+    monkeypatch.setattr(be, "BATTLE_PROMPT_MAX_CHARS", 1000)
+
+    def _should_not_call(_prompt):
+        raise AssertionError("oversized battle_experience prompt should not call LLM")
+
+    monkeypatch.setattr(be, "_run_sync_llm_call", _should_not_call)
+
+    result = be._run_llm_incremental(
+        "## OLD\n" + ("old line\n" * 1000),
+        "\n\n---\n\n".join("match section " + ("x" * 1000) for _ in range(8)),
+    )
+
+    assert result is be._NO_EXPERIENCE_UPDATE
+
+
 def test_literature_probe_cache_roundtrip(tmp_path, monkeypatch):
     import evolution_infra
     import tool_planning
@@ -38,14 +59,54 @@ def test_literature_probe_cache_roundtrip(tmp_path, monkeypatch):
         "candidate_id": "research-1",
         "gated_out": False,
         "reason": "completed",
+        "weakness": "vs station",
+        "stagnation_info": "flat WR",
     }
 
     tool_planning._write_literature_probe_cache(300, payload)
-    cached = tool_planning._read_literature_probe_cache(300)
+    cached = tool_planning._read_literature_probe_cache(
+        300,
+        source_v=299,
+        h2h_weakness="vs station",
+        stagnation_info="flat WR",
+    )
 
     assert cached["cached"] is True
     assert cached["candidate_id"] == "research-1"
+    assert cached["context_fingerprint"]
     assert "Research Proposal" in cached["inject_text"]
+
+
+def test_literature_probe_cache_rejects_context_mismatch(tmp_path, monkeypatch):
+    import evolution_infra
+    import tool_planning
+
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
+    payload = {
+        "next_v": 300,
+        "source_v": 299,
+        "proposal": {"claim": "c", "target_fn": "f", "numeric_claim": "+1", "source_url": "u"},
+        "candidate_id": "research-1",
+        "gated_out": False,
+        "reason": "completed",
+        "weakness": "vs station",
+        "stagnation_info": "flat WR",
+    }
+
+    tool_planning._write_literature_probe_cache(300, payload)
+
+    assert tool_planning._read_literature_probe_cache(
+        300,
+        source_v=298,
+        h2h_weakness="vs station",
+        stagnation_info="flat WR",
+    ) is None
+    assert tool_planning._read_literature_probe_cache(
+        300,
+        source_v=299,
+        h2h_weakness="different weakness",
+        stagnation_info="flat WR",
+    ) is None
 
 
 def test_aggregate_negative_ev_blocks_small_wl_edge():
@@ -117,3 +178,51 @@ def test_exhausted_positive_text_ignores_prohibitions():
 
     assert "choose_raise constant tuning" not in text
     assert "blocker telemetry" in text
+
+
+def test_repo_state_snapshot_classifies_dirty_untracked_and_protected(monkeypatch, tmp_path):
+    import subprocess
+    import repo_state
+
+    status = "\n".join([
+        "## codex/test...origin/main",
+        " M web/core/tool_gates.py",
+        "?? bots/claude_v245/",
+        "?? web/logs/restart.log",
+    ])
+
+    def _fake_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(_args[0], 0, stdout=status, stderr="")
+
+    monkeypatch.setattr(repo_state.subprocess, "run", _fake_run)
+
+    snapshot = repo_state.git_worktree_snapshot(tmp_path)
+
+    assert snapshot["ok"] is True
+    assert snapshot["branch"] == "codex/test...origin/main"
+    assert snapshot["dirty_count"] == 1
+    assert snapshot["untracked_count"] == 2
+    assert len(snapshot["protected_entries"]) == 2
+
+
+def test_repo_state_log_emits_structured_event(monkeypatch):
+    import repo_state
+
+    events = []
+    monkeypatch.setattr(repo_state, "git_worktree_snapshot", lambda: {"ok": True, "entries": []})
+
+    import system_log
+
+    def _fake_log(event_type, severity, message, data):
+        events.append((event_type, severity, message, data))
+
+    monkeypatch.setattr(system_log, "log_system_event", _fake_log)
+
+    payload = repo_state.log_git_worktree_snapshot(
+        "repo.worktree_snapshot",
+        "snapshot",
+        next_v=300,
+    )
+
+    assert payload["next_v"] == 300
+    assert events == [("repo.worktree_snapshot", "info", "snapshot", payload)]
