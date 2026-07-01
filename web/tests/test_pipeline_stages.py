@@ -455,6 +455,7 @@ class TestStagnationConfidenceStrategy:
             "_detect_source_oscillation",
             lambda n=8, max_unique=3: {206, 235},
         )
+        monkeypatch.setattr(generation_scheduler, "_get_unified_leader_v", lambda ratings: 237)
         monkeypatch.setattr(generation_scheduler, "_log_source_selection_decision", lambda *a, **k: None)
         monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *a, **k: None)
         monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates_with_coverage", lambda: {
