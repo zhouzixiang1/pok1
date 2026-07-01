@@ -1,0 +1,56 @@
+"""Conservative workflow profiles for the evolution pipeline."""
+
+from __future__ import annotations
+
+import os
+
+from pipeline_schema import WorkflowProfile
+
+
+_PROFILES = {
+    "default": WorkflowProfile(
+        profile_id="default",
+        description="Balanced evolution profile with national acceptance enabled.",
+    ),
+    "national_strict": WorkflowProfile(
+        profile_id="national_strict",
+        description="Prioritize national TCP legality and adapter transparency.",
+        national_acceptance_hands=20,
+        national_acceptance_hard=True,
+        focus_skill_layers=["protocol", "adapter", "action_sanitizer"],
+    ),
+    "postflop_skill": WorkflowProfile(
+        profile_id="postflop_skill",
+        description="Focus worker effort on postflop texture, SPR, blockers, and line templates.",
+        focus_skill_layers=["texture", "spr", "blocker", "line_template"],
+    ),
+    "preflop_range": WorkflowProfile(
+        profile_id="preflop_range",
+        description="Focus worker effort on preflop range and blind-vs-blind spots.",
+        focus_skill_layers=["preflop_range", "bb_vs_limp", "bb_vs_open"],
+    ),
+    "exploration_diversity": WorkflowProfile(
+        profile_id="exploration_diversity",
+        description="Prefer novel behavior niches while keeping hard protocol gates.",
+        hidden_scenarios_enabled=True,
+        focus_skill_layers=["novelty", "map_elites"],
+    ),
+}
+
+
+def get_workflow_profile(profile_id: str | None = None) -> WorkflowProfile:
+    selected = profile_id or os.environ.get("POK_WORKFLOW_PROFILE") or "default"
+    return _PROFILES.get(selected, _PROFILES["default"])
+
+
+def profile_summary(profile: WorkflowProfile | None = None) -> str:
+    p = profile or get_workflow_profile()
+    layers = ", ".join(p.focus_skill_layers) if p.focus_skill_layers else "balanced"
+    return (
+        f"Workflow profile: {p.profile_id}\n"
+        f"- {p.description}\n"
+        f"- max_workers={p.max_workers}\n"
+        f"- national_acceptance_hands={p.national_acceptance_hands}, "
+        f"hard={p.national_acceptance_hard}\n"
+        f"- focus_skill_layers={layers}"
+    )

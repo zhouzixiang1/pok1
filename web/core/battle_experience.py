@@ -80,7 +80,7 @@ POLL_INTERVAL = 20  # seconds between background thread wake-ups
 TARGET_BATCH = 6  # P2: was 16 — smaller batches cut per-call latency + SIGTERM data loss
 MAX_CONCURRENT_LLM = 6  # concurrent replay-summary PARSERS within one batch (pure-data JSON, NO LLM). LLM merge is 1 serial call in _apply_batch_results → this常量不影响 gateway 503 (6→2 是误诊，已还原).
 MAX_ANALYSES_PER_HOUR = 240  # rate-limit defense (non-zero budget ~$5/hr)
-LLM_TIMEOUT = 300  # P2: was 120 — thinking-mode + batch calls steadily exceeded 120s
+LLM_TIMEOUT = int(os.environ.get("POK_BATTLE_EXPERIENCE_LLM_TIMEOUT", "180"))
 _LOG_ROTATION_LOCK = threading.Lock()  # P3: serialize battle_exp_llm.log rotation across the 6 concurrent workers
 # fix-10: accumulation threshold — LLM merge fires only after this many
 # match summaries have been accumulated across multiple poll cycles.
@@ -89,6 +89,9 @@ _LOG_ROTATION_LOCK = threading.Lock()  # P3: serialize battle_exp_llm.log rotati
 MERGE_THRESHOLD = 24  # min accumulated summaries before triggering LLM
 # fix-10: generations without WR improvement to flag an observation as stale
 STALE_GEN_THRESHOLD = 5
+BATTLE_PROMPT_CURRENT_BUDGET = int(os.environ.get("POK_BATTLE_EXP_CURRENT_BUDGET", "30000"))
+BATTLE_PROMPT_NEW_DATA_BUDGET = int(os.environ.get("POK_BATTLE_EXP_NEW_DATA_BUDGET", "36000"))
+BATTLE_PROMPT_MATCH_SECTION_BUDGET = int(os.environ.get("POK_BATTLE_EXP_SECTION_BUDGET", "2500"))
 
 # ──────────────────────────────────────────────
 # SilentUI
@@ -560,9 +563,15 @@ def _run_llm_incremental(current_experience: str, new_match_data: str) -> str | 
         log.warning("Failed to read incremental prompt template: %s", e)
         return _run_llm_update(current_experience, new_match_data)
 
+    current_prompt, new_data_prompt = _prepare_prompt_inputs(
+        current_experience,
+        new_match_data,
+        mode="incremental",
+    )
+
     prompt = substitute_template(template, {
-        "current_experience": current_experience or "(empty — first analysis)",
-        "new_match_data": new_match_data,
+        "current_experience": current_prompt or "(empty — first analysis)",
+        "new_match_data": new_data_prompt,
     })
 
     output = _run_sync_llm_call(prompt)
@@ -595,9 +604,15 @@ def _run_llm_update(current_experience: str, new_match_data: str) -> str | None:
         log.warning("Failed to read prompt template: %s", e)
         return None
 
+    current_prompt, new_data_prompt = _prepare_prompt_inputs(
+        current_experience,
+        new_match_data,
+        mode="full_update",
+    )
+
     prompt = substitute_template(template, {
-        "current_experience": current_experience or "(empty — first analysis)",
-        "new_match_data": new_match_data,
+        "current_experience": current_prompt or "(empty — first analysis)",
+        "new_match_data": new_data_prompt,
     })
 
     output = _run_sync_llm_call(prompt)
@@ -716,6 +731,97 @@ def _write_experience_file(content: str):
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def _trim_middle_for_prompt(text: str, budget: int) -> tuple[str, bool]:
+    """Keep both headline context and the most recent tail under a char budget."""
+    text = text or ""
+    if budget <= 0 or len(text) <= budget:
+        return text, False
+    marker = f"\n\n[... omitted {len(text) - budget} chars for battle_experience prompt budget ...]\n\n"
+    if budget <= len(marker) + 200:
+        return text[-budget:], True
+    keep = budget - len(marker)
+    head = max(200, int(keep * 0.35))
+    tail = max(200, keep - head)
+    return text[:head].rstrip() + marker + text[-tail:].lstrip(), True
+
+
+def _trim_tail_for_prompt(text: str, budget: int) -> tuple[str, bool]:
+    text = text or ""
+    if budget <= 0 or len(text) <= budget:
+        return text, False
+    marker = f"[... omitted older {len(text) - budget} chars for battle_experience prompt budget ...]\n\n"
+    if budget <= len(marker):
+        return text[-budget:], True
+    return marker + text[-(budget - len(marker)):], True
+
+
+def _compact_new_match_data(new_match_data: str) -> tuple[str, dict]:
+    """Bound each replay-summary section before applying a global new-data cap."""
+    raw = new_match_data or ""
+    sections = raw.split("\n\n---\n\n")
+    trimmed_sections = []
+    section_trims = 0
+    for section in sections:
+        compact, trimmed = _trim_tail_for_prompt(section, BATTLE_PROMPT_MATCH_SECTION_BUDGET)
+        trimmed_sections.append(compact)
+        section_trims += int(trimmed)
+    joined = "\n\n---\n\n".join(trimmed_sections)
+    compact_joined, global_trimmed = _trim_tail_for_prompt(joined, BATTLE_PROMPT_NEW_DATA_BUDGET)
+    return compact_joined, {
+        "new_data_chars_before": len(raw),
+        "new_data_chars_after": len(compact_joined),
+        "new_data_sections": len(sections),
+        "section_trims": section_trims,
+        "global_trimmed": bool(global_trimmed),
+    }
+
+
+def _prepare_prompt_inputs(current_experience: str, new_match_data: str, *, mode: str) -> tuple[str, str]:
+    """Prepare bounded LLM inputs for battle-experience updates.
+
+    The background thread is advisory. It should never feed a 700k+ prompt into
+    the LLM or spend the full cycle budget just to append lessons.
+    """
+    current_raw = current_experience or ""
+    try:
+        current_raw = _compress_dup_sections(current_raw)
+    except Exception:
+        pass
+    current_prompt, current_trimmed = _trim_middle_for_prompt(
+        current_raw,
+        BATTLE_PROMPT_CURRENT_BUDGET,
+    )
+    new_prompt, meta = _compact_new_match_data(new_match_data)
+    meta.update({
+        "mode": mode,
+        "current_chars_before": len(current_experience or ""),
+        "current_chars_after": len(current_prompt),
+        "current_trimmed": bool(current_trimmed),
+        "current_budget": BATTLE_PROMPT_CURRENT_BUDGET,
+        "new_data_budget": BATTLE_PROMPT_NEW_DATA_BUDGET,
+        "section_budget": BATTLE_PROMPT_MATCH_SECTION_BUDGET,
+    })
+    if meta["current_trimmed"] or meta["section_trims"] or meta["global_trimmed"]:
+        log.info(
+            "Battle experience prompt compacted: current %d->%d, new %d->%d",
+            meta["current_chars_before"],
+            meta["current_chars_after"],
+            meta["new_data_chars_before"],
+            meta["new_data_chars_after"],
+        )
+        try:
+            from system_log import log_system_event
+            log_system_event(
+                "battle_exp.prompt_compacted",
+                "info",
+                "Battle experience prompt compacted before LLM call",
+                meta,
+            )
+        except Exception:
+            pass
+    return current_prompt, new_prompt
 
 
 # ──────────────────────────────────────────────

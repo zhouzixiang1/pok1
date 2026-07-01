@@ -118,6 +118,7 @@ def test_bot_adapter_maps_zero_after_postflop_check_to_call():
     ]
 
     assert adapter._convert_action(0) == ("call", "call", None)
+    assert adapter.telemetry["postflop_pass_conversions"] == 1
 
 
 def test_bot_adapter_maps_zero_as_first_postflop_action_to_check():
@@ -158,6 +159,18 @@ def test_bot_adapter_converts_raise_using_all_chips_to_allin():
     adapter._my_chips = 100
 
     assert adapter._convert_action(100) == ("allin", "allin", None)
+    assert adapter.telemetry["allin_conversions"] == 1
+
+
+def test_bot_adapter_telemetry_counts_clamped_raise():
+    adapter = BotAdapter("127.0.0.1", 10001, "unused", "Bot")
+    adapter._stage = "flop"
+    adapter._my_stage_bet = 0
+    adapter._my_chips = 20000
+
+    assert adapter._convert_action(50) == ("raise 100", "raise", 100)
+    assert adapter.telemetry["clamped_raises"] == 1
+    assert adapter.telemetry["would_be_illegal_raise"] == 1
 
 
 def test_national_acceptance_matrix_skips_incomplete_default_claude_bots(tmp_path, monkeypatch):

@@ -13,6 +13,8 @@ from evolution_infra import (
     get_bot_dir,
 )
 
+NEAR_HARD_CAP_RATIO = 0.96
+
 
 def _count_file_lines(path):
     """Count lines in a file."""
@@ -38,6 +40,8 @@ def _get_adaptive_limit(filename, base_limit, source_dir=None):
         return base_limit
 
     source_lines = _count_file_lines(source_path)
+    if filename in CORE_STRATEGY_FILES and source_lines >= int(MAX_LINES_HARD_CAP * NEAR_HARD_CAP_RATIO):
+        return min(source_lines, MAX_LINES_HARD_CAP)
     adaptive = max(base_limit, int(source_lines * (1 + LINE_GROWTH_BUDGET)))
     return min(adaptive, MAX_LINES_HARD_CAP)
 

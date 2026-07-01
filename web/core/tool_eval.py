@@ -37,6 +37,12 @@ from tool_helpers import (
 from evolution_infra import write_pipeline_checkpoint, MAX_PRECOMMIT_RETRIES
 from system_log import log_system_event
 from daemon_management import is_daemon_scheduler_capable
+from pipeline_schema import GateResult, ScoreCard
+
+try:
+    from candidate_store import append_candidate_event
+except Exception:  # pragma: no cover
+    append_candidate_event = None
 
 from logging_config import get_logger
 log = get_logger("tool_eval")
@@ -121,6 +127,11 @@ PRECOMMIT_MAX_N_GAMES = 16
 # for bot0 (candidate) per completed mirror pair.
 PARENT_NET_CHIPS_LOSS_THRESHOLD = -2000.0
 AGGREGATE_NET_CHIPS_LOSS_THRESHOLD = -2000.0
+NEGATIVE_EV_MIN_SAMPLES = int(os.environ.get("POK_PRECOMMIT_NEG_EV_MIN_SAMPLES", "24"))
+NEGATIVE_EV_MEAN_THRESHOLD = float(os.environ.get("POK_PRECOMMIT_NEG_EV_MEAN", "-250"))
+NEGATIVE_EV_WIN_MARGIN_TOLERANCE = int(os.environ.get("POK_PRECOMMIT_NEG_EV_WIN_MARGIN", "2"))
+CATASTROPHIC_LOSS_THRESHOLD = float(os.environ.get("POK_PRECOMMIT_CATASTROPHIC_LOSS", "-15000"))
+CATASTROPHIC_LOSS_RATE_THRESHOLD = float(os.environ.get("POK_PRECOMMIT_CATASTROPHIC_RATE", "0.20"))
 
 # ── Phase 2: Confidence Sequence sequential early-stop ──
 # When True, the serial/gather fallback path consumes mirror_battle_generator
@@ -208,6 +219,68 @@ def _maybe_add_mixture_opponent(v: int, source_v: int):
     except Exception as e:
         log.warning("PSRO: mixture opponent setup failed: %s", e)
         return None
+
+
+def _aggregate_ev_risk_blockers(
+    *,
+    total_wins: int,
+    total_losses: int,
+    total_draws: int,
+    aggregate_net_chips: list,
+    agg_ci_lower,
+    agg_ci_upper,
+    severe_regression_already: bool = False,
+) -> tuple[list[dict], dict]:
+    """Detect chip-EV regressions that binary W/L can hide."""
+    samples = [float(x) for x in (aggregate_net_chips or [])]
+    n = len(samples)
+    total_decided = int(total_wins) + int(total_losses)
+    mean = sum(samples) / n if n else None
+    catastrophic = sum(1 for x in samples if x <= CATASTROPHIC_LOSS_THRESHOLD)
+    catastrophic_rate = catastrophic / n if n else 0.0
+    win_margin = int(total_wins) - int(total_losses)
+    payload = {
+        "samples": n,
+        "mean": round(mean, 1) if mean is not None else None,
+        "ci_lower": round(agg_ci_lower, 1) if agg_ci_lower is not None else None,
+        "ci_upper": round(agg_ci_upper, 1) if agg_ci_upper is not None else None,
+        "win_margin": win_margin,
+        "total_decided": total_decided,
+        "negative_ev_mean_threshold": NEGATIVE_EV_MEAN_THRESHOLD,
+        "negative_ev_min_samples": NEGATIVE_EV_MIN_SAMPLES,
+        "negative_ev_win_margin_tolerance": NEGATIVE_EV_WIN_MARGIN_TOLERANCE,
+        "catastrophic_loss_threshold": CATASTROPHIC_LOSS_THRESHOLD,
+        "catastrophic_loss_count": catastrophic,
+        "catastrophic_loss_rate": round(catastrophic_rate, 3),
+        "catastrophic_loss_rate_threshold": CATASTROPHIC_LOSS_RATE_THRESHOLD,
+    }
+    if severe_regression_already or n < NEGATIVE_EV_MIN_SAMPLES or mean is None:
+        return [], payload
+
+    blockers = []
+    if mean < NEGATIVE_EV_MEAN_THRESHOLD and win_margin <= NEGATIVE_EV_WIN_MARGIN_TOLERANCE:
+        ci_text = (
+            f"CI=[{agg_ci_lower:.0f}, {agg_ci_upper:.0f}]"
+            if agg_ci_lower is not None and agg_ci_upper is not None
+            else "CI=unavailable"
+        )
+        blockers.append({
+            "reason": "aggregate_negative_chip_ev",
+            "details": (
+                f"Aggregate W/L {total_wins}-{total_losses}-{total_draws} has only "
+                f"{win_margin:+d} win margin but mean net chips {mean:.0f} per mirror pair "
+                f"over {n} samples ({ci_text})."
+            ),
+        })
+    if catastrophic_rate >= CATASTROPHIC_LOSS_RATE_THRESHOLD and mean < 0 and win_margin <= max(4, NEGATIVE_EV_WIN_MARGIN_TOLERANCE):
+        blockers.append({
+            "reason": "catastrophic_loss_rate",
+            "details": (
+                f"{catastrophic}/{n} mirror pairs ({catastrophic_rate:.0%}) lost "
+                f"<={CATASTROPHIC_LOSS_THRESHOLD:.0f} chips while aggregate chip EV is negative."
+            ),
+        })
+    return blockers, payload
 
 
 # ──────────────────────────────────────────────
@@ -309,6 +382,37 @@ def _precommit_scheduler_job_details(
             })
         details.append(detail)
     return details
+
+
+def _scheduler_status_excluding_collected(
+    submitted_ids: list[str],
+    scheduler_status: dict | None,
+    collected_results: dict | None,
+) -> dict:
+    """Return scheduler status counts for jobs still awaiting collection.
+
+    battle_scheduler.collect_results() removes collected records from
+    battle_results.jsonl. A later get_job_status() therefore sees those job ids
+    as "missing" unless the precommit caller subtracts its in-memory collected
+    set. This normalizer keeps aggregate fields aligned with jobs[] details.
+    """
+    status = dict(scheduler_status or {})
+    collected = {str(job_id) for job_id in (collected_results or {}).keys()}
+    requested = [str(job_id) for job_id in submitted_ids]
+    normalized = {}
+    for state in ("pending", "claimed", "completed", "missing"):
+        ids = [str(job_id) for job_id in (status.get(state, []) or []) if str(job_id) not in collected]
+        normalized[state] = sorted(ids)
+        normalized[f"{state}_count"] = len(ids)
+    accounted = set(normalized["pending"]) | set(normalized["claimed"]) | set(normalized["completed"]) | set(normalized["missing"]) | collected
+    truly_missing = sorted(job_id for job_id in requested if job_id not in accounted)
+    if truly_missing:
+        merged = sorted(set(normalized["missing"]) | set(truly_missing))
+        normalized["missing"] = merged
+        normalized["missing_count"] = len(merged)
+    normalized["collected_count"] = len(collected)
+    normalized["raw_missing_count"] = int(status.get("missing_count", 0) or 0)
+    return normalized
 
 
 def _scheduler_stall_reason(
@@ -466,6 +570,20 @@ async def run_precommit_eval(args):
     candidate_name = f"claude_v{v}"
     parent_name = f"claude_v{source_v}"
     candidate_main = _bot_main(candidate_name)
+    candidate_id = f"{candidate_name}_from_v{source_v}"
+    if append_candidate_event:
+        try:
+            append_candidate_event(
+                "precommit_started",
+                version=v,
+                source_v=source_v,
+                candidate_id=candidate_id,
+                stage="precommit_eval",
+                gate="precommit_eval",
+                metrics={"n_games": n_games},
+            )
+        except Exception as e:
+            log.warning("candidate ledger precommit_started write failed: %s", e)
     blockers = []
     matchups = []
 
@@ -680,9 +798,14 @@ async def run_precommit_eval(args):
                 if len(collected_results) >= len(submitted_ids):
                     break
                 try:
-                    last_scheduler_status = await asyncio.wait_for(
+                    _raw_scheduler_status = await asyncio.wait_for(
                         scheduler_client.status(submitted_ids),
                         timeout=COLLECT_CALL_TIMEOUT,
+                    )
+                    last_scheduler_status = _scheduler_status_excluding_collected(
+                        submitted_ids,
+                        _raw_scheduler_status,
+                        collected_results,
                     )
                 except asyncio.TimeoutError:
                     last_scheduler_status = {}
@@ -722,7 +845,7 @@ async def run_precommit_eval(args):
                         f"v{v}: waiting for scheduler results "
                         f"({len(collected_results)}/{len(submitted_ids)} collected; "
                         f"pending={pending_count}, claimed={claimed_count}, completed_peek={completed_count}, "
-                        f"missing={missing_count})",
+                        f"missing={missing_count}, collected_mem={len(collected_results)})",
                         {"version": v, "source_v": source_v,
                          "collected": len(collected_results),
                          "submitted": len(submitted_ids),
@@ -730,6 +853,7 @@ async def run_precommit_eval(args):
                          "claimed": claimed_count,
                          "completed_peek": completed_count,
                          "missing": missing_count,
+                         "raw_missing": last_scheduler_status.get("raw_missing_count"),
                          "jobs": job_details},
                     )
                     last_status_log = now_for_status
@@ -1209,7 +1333,11 @@ async def run_precommit_eval(args):
     agg_ci_upper = None
     if aggregate_net_chips:
         agg_ci_lower, agg_ci_upper = paired_bootstrap_ci(aggregate_net_chips)
-    if agg_ci_upper is not None and agg_ci_upper < AGGREGATE_NET_CHIPS_LOSS_THRESHOLD:
+    severe_aggregate_regression = (
+        agg_ci_upper is not None
+        and agg_ci_upper < AGGREGATE_NET_CHIPS_LOSS_THRESHOLD
+    )
+    if severe_aggregate_regression:
         blockers.append({
             "reason": "aggregate_precommit_regression",
             "details": (
@@ -1224,6 +1352,16 @@ async def run_precommit_eval(args):
             "reason": "aggregate_precommit_regression",
             "details": f"Aggregate mirror result {total_wins}-{total_losses}-{total_draws}.",
         })
+    ev_blockers, ev_risk_payload = _aggregate_ev_risk_blockers(
+        total_wins=total_wins,
+        total_losses=total_losses,
+        total_draws=total_draws,
+        aggregate_net_chips=aggregate_net_chips,
+        agg_ci_lower=agg_ci_lower,
+        agg_ci_upper=agg_ci_upper,
+        severe_regression_already=severe_aggregate_regression,
+    )
+    blockers.extend(ev_blockers)
 
     paired_bootstrap_payload = {
         "aggregate_ci_lower": round(agg_ci_lower, 1) if agg_ci_lower is not None else None,
@@ -1237,6 +1375,7 @@ async def run_precommit_eval(args):
         "net_chips_std": round(statistics.pstdev(aggregate_net_chips), 1) if len(aggregate_net_chips) > 1 else None,
         "net_chips_min": round(min(aggregate_net_chips), 1) if aggregate_net_chips else None,
         "net_chips_max": round(max(aggregate_net_chips), 1) if aggregate_net_chips else None,
+        "ev_risk": ev_risk_payload,
     }
 
     # P0-4: Semantic blocker — LLM detects regression patterns that numbers miss
@@ -1283,6 +1422,24 @@ async def run_precommit_eval(args):
         "blockers": blockers,
         "paired_bootstrap": paired_bootstrap_payload,
     }
+    scorecard = ScoreCard(
+        name="precommit_eval",
+        primary_score=paired_bootstrap_payload.get("net_chips_mean"),
+        metrics={
+            "total_wins": total_wins,
+            "total_losses": total_losses,
+            "total_draws": total_draws,
+            "n_opponents": len(all_opponents),
+            "n_games": n_games,
+        },
+    )
+    scorecard.add(GateResult.from_bool(
+        "precommit_regression",
+        passed,
+        metrics=paired_bootstrap_payload,
+        failures=[str(b)[:500] for b in blockers],
+    ))
+    result["scorecard"] = scorecard.model_dump()
 
     # A6 (research_governance, evolution-plan-refresh-jun21): feed the precommit
     # outcome back into any web-derived candidates applied to this bot version, and
@@ -1373,6 +1530,28 @@ async def run_precommit_eval(args):
         stage="verified" if passed else None,
     )
     result["checkpoint_recorded"] = checkpoint_recorded
+    if append_candidate_event:
+        try:
+            append_candidate_event(
+                "precommit_finished",
+                version=v,
+                source_v=source_v,
+                candidate_id=candidate_id,
+                stage="verified" if passed else "precommit_failed",
+                gate="precommit_eval",
+                scorecard=scorecard,
+                metrics={
+                    "passed": passed,
+                    "total_wins": total_wins,
+                    "total_losses": total_losses,
+                    "total_draws": total_draws,
+                    "net_chips_mean": paired_bootstrap_payload.get("net_chips_mean"),
+                },
+                failures=[str(b)[:500] for b in blockers],
+                failure_class="" if passed else ("infra_timeout" if infra_only_timeout else "precommit_regression"),
+            )
+        except Exception as e:
+            log.warning("candidate ledger precommit_finished write failed: %s", e)
     return _json_tool_result(result)
 
 

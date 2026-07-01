@@ -167,6 +167,10 @@ class BotAdapter:
             "bot_failures": 0,
             "invalid_actions": 0,
             "actions_sent": 0,
+            "clamped_raises": 0,
+            "allin_conversions": 0,
+            "would_be_illegal_raise": 0,
+            "postflop_pass_conversions": 0,
         }
 
     async def connect(self):
@@ -534,8 +538,12 @@ class BotAdapter:
         else:
             min_raise = MIN_RAISE_POSTFLOP
 
-        # Clamp
+        # Clamp. The adapter keeps the bot alive for compatibility, but records
+        # every correction so national acceptance can reject strategy that only
+        # works because the bridge rewrote an illegal raise.
         if raise_to < min_raise:
+            self.telemetry["clamped_raises"] += 1
+            self.telemetry["would_be_illegal_raise"] += 1
             raise_to = min_raise
 
         return raise_to
@@ -565,6 +573,7 @@ class BotAdapter:
             action_int = self._clamp_raise(action_int)
             needed = action_int - self._my_stage_bet
             if needed >= self._my_chips:
+                self.telemetry["allin_conversions"] += 1
                 return "allin", "allin", None
             return f"raise {action_int}", "raise", action_int
         if action_int == 0:
@@ -594,6 +603,7 @@ class BotAdapter:
                     for h in self._history
                 )
                 if opp_acted:
+                    self.telemetry["postflop_pass_conversions"] += 1
                     return "call", "call", None
             # postflop 首个行动且没有对手行为 → check
             return "check", "check", None

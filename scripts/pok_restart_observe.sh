@@ -100,6 +100,14 @@ if [ -f "$RESULTS_DIR/pipeline_state.json" ]; then
 else
     log "checkpoint=<missing>"
 fi
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    log "git snapshot before restart"
+    if [ "$DRY_RUN" = "0" ]; then
+        git status --short --branch | head -50 | sed 's/^/[git] /' | tee -a "$RUN_LOG"
+    else
+        log "+ git status --short --branch | head -50"
+    fi
+fi
 
 if [ "$CLEAR_CHECKPOINT" = "backup-and-clear" ] && [ -f "$RESULTS_DIR/pipeline_state.json" ]; then
     run cp "$RESULTS_DIR/pipeline_state.json" "$RESULTS_DIR/pipeline_state.${TS}.bak.json"
@@ -238,6 +246,10 @@ http_fail_count = 0
 service_check_interval = 15
 heartbeat_interval = 60
 http_fail_limit = 3
+terminal_events = []
+alert_records = []
+stage_transitions = []
+last_stage_key = None
 
 def write_line(msg):
     print(msg)
@@ -308,7 +320,7 @@ def pipeline_snapshot():
     return {key: state.get(key) for key in keys if key in state}
 
 def check_service(force_heartbeat=False):
-    global last_service_check, last_heartbeat, http_fail_count
+    global last_service_check, last_heartbeat, http_fail_count, last_stage_key
     now = time.time()
     if now - last_service_check < service_check_interval and not force_heartbeat:
         return
@@ -344,6 +356,17 @@ def check_service(force_heartbeat=False):
     if force_heartbeat or now - last_heartbeat >= heartbeat_interval:
         last_heartbeat = now
         write_line(f"[service-heartbeat] {snapshot}")
+    pipeline = snapshot.get("pipeline") or {}
+    stage_key = (
+        pipeline.get("run_id"),
+        pipeline.get("next_v"),
+        pipeline.get("stage"),
+        pipeline.get("precommit_attempt"),
+    )
+    if stage_key != last_stage_key:
+        last_stage_key = stage_key
+        stage_transitions.append({"ts": round(now, 1), "pipeline": pipeline})
+        write_line(f"[stage] {pipeline}")
 
 def generation_key(event):
     data = event.get("data") or {}
@@ -380,6 +403,11 @@ while time.time() < deadline and seen < target:
                 continue
             if should_alert(event):
                 msg = f"[alert] {event.get('type')} {event.get('message')} data={event.get('data', {})}"
+                alert_records.append({
+                    "type": event.get("type"),
+                    "message": event.get("message"),
+                    "data": event.get("data", {}),
+                })
                 write_line(msg)
             if event.get("type") in generation_terminal:
                 key = generation_key(event)
@@ -389,6 +417,12 @@ while time.time() < deadline and seen < target:
                     continue
                 seen_generations.add(key)
                 seen += 1
+                terminal_events.append({
+                    "key": key,
+                    "type": event.get("type"),
+                    "message": event.get("message"),
+                    "data": event.get("data", {}),
+                })
                 msg = f"[observe] {seen}/{target} {key} {event.get('type')} {event.get('message')} data={event.get('data', {})}"
                 write_line(msg)
     time.sleep(3)
@@ -396,5 +430,13 @@ if seen < target:
     check_service(force_heartbeat=True)
     print(f"observe timeout: saw {seen}/{target} terminal events", file=sys.stderr)
     raise SystemExit(1)
+summary = {
+    "observed": seen,
+    "target": target,
+    "terminal_events": terminal_events,
+    "alerts": alert_records[-20:],
+    "stage_transitions": stage_transitions[-20:],
+}
+write_line("[summary] " + json.dumps(summary, ensure_ascii=False, default=str))
 PY
 fi

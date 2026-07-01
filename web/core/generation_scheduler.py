@@ -187,6 +187,17 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                     "warn",
                 )
     _planned_next_v = _bind_prepare_log_context(current_v, max_committed_v)
+    try:
+        from repo_state import log_git_worktree_snapshot
+        log_git_worktree_snapshot(
+            "repo.worktree_snapshot",
+            f"Worktree snapshot before preparing v{_planned_next_v}",
+            next_v=_planned_next_v,
+            current_v=current_v,
+            max_committed_v=max_committed_v,
+        )
+    except Exception:
+        pass
     active_v = find_latest_active_v()  # 活跃 bot（排除 graveyard），用于 eval/分析
     active_bots = get_active_bots()
     ratings = load_ratings()
