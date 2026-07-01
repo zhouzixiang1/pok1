@@ -80,7 +80,7 @@ POLL_INTERVAL = 20  # seconds between background thread wake-ups
 TARGET_BATCH = 6  # P2: was 16 — smaller batches cut per-call latency + SIGTERM data loss
 MAX_CONCURRENT_LLM = 6  # concurrent replay-summary PARSERS within one batch (pure-data JSON, NO LLM). LLM merge is 1 serial call in _apply_batch_results → this常量不影响 gateway 503 (6→2 是误诊，已还原).
 MAX_ANALYSES_PER_HOUR = 240  # rate-limit defense (non-zero budget ~$5/hr)
-LLM_TIMEOUT = int(os.environ.get("POK_BATTLE_EXPERIENCE_LLM_TIMEOUT", "180"))
+LLM_TIMEOUT = int(os.environ.get("POK_BATTLE_EXPERIENCE_LLM_TIMEOUT", "90"))
 _LOG_ROTATION_LOCK = threading.Lock()  # P3: serialize battle_exp_llm.log rotation across the 6 concurrent workers
 # fix-10: accumulation threshold — LLM merge fires only after this many
 # match summaries have been accumulated across multiple poll cycles.
@@ -89,9 +89,12 @@ _LOG_ROTATION_LOCK = threading.Lock()  # P3: serialize battle_exp_llm.log rotati
 MERGE_THRESHOLD = 24  # min accumulated summaries before triggering LLM
 # fix-10: generations without WR improvement to flag an observation as stale
 STALE_GEN_THRESHOLD = 5
-BATTLE_PROMPT_CURRENT_BUDGET = int(os.environ.get("POK_BATTLE_EXP_CURRENT_BUDGET", "30000"))
-BATTLE_PROMPT_NEW_DATA_BUDGET = int(os.environ.get("POK_BATTLE_EXP_NEW_DATA_BUDGET", "36000"))
-BATTLE_PROMPT_MATCH_SECTION_BUDGET = int(os.environ.get("POK_BATTLE_EXP_SECTION_BUDGET", "2500"))
+BATTLE_PROMPT_CURRENT_BUDGET = int(os.environ.get("POK_BATTLE_EXP_CURRENT_BUDGET", "10000"))
+BATTLE_PROMPT_NEW_DATA_BUDGET = int(os.environ.get("POK_BATTLE_EXP_NEW_DATA_BUDGET", "12000"))
+BATTLE_PROMPT_MATCH_SECTION_BUDGET = int(os.environ.get("POK_BATTLE_EXP_SECTION_BUDGET", "1000"))
+BATTLE_PROMPT_MAX_CHARS = int(os.environ.get("POK_BATTLE_EXP_MAX_PROMPT_CHARS", "30000"))
+BATTLE_EXPERIENCE_LLM_ENABLED = os.environ.get("POK_BATTLE_EXPERIENCE_LLM", "1") != "0"
+_NO_EXPERIENCE_UPDATE = object()
 
 # ──────────────────────────────────────────────
 # SilentUI
@@ -452,7 +455,10 @@ def _apply_batch_results(results: list):
     # fix-10: incremental append — LLM outputs ONLY the new section,
     # which is then appended to the existing document rather than replacing it.
     new_section = _run_llm_incremental(current, combined)
-    if new_section is not None:
+    if new_section is _NO_EXPERIENCE_UPDATE:
+        for entry in success_entries:
+            mark_analyzed(entry.get("id", ""), fail_count=0)
+    elif new_section is not None:
         if current.strip():
             # Append new observations after existing content
             updated = current.rstrip() + "\n\n" + new_section + "\n"
@@ -544,7 +550,7 @@ def _process_one_match(entry: dict):
 # ──────────────────────────────────────────────
 
 
-def _run_llm_incremental(current_experience: str, new_match_data: str) -> str | None:
+def _run_llm_incremental(current_experience: str, new_match_data: str):
     """Run LLM in incremental append mode (fix-10).
 
     Instead of rewriting the entire document, asks the LLM to produce ONLY
@@ -573,6 +579,11 @@ def _run_llm_incremental(current_experience: str, new_match_data: str) -> str | 
         "current_experience": current_prompt or "(empty — first analysis)",
         "new_match_data": new_data_prompt,
     })
+
+    skip_reason = _llm_skip_reason(prompt)
+    if skip_reason:
+        _log_llm_skip(skip_reason, prompt_chars=len(prompt), mode="incremental")
+        return _NO_EXPERIENCE_UPDATE
 
     output = _run_sync_llm_call(prompt)
     if output is None:
@@ -615,6 +626,11 @@ def _run_llm_update(current_experience: str, new_match_data: str) -> str | None:
         "new_match_data": new_data_prompt,
     })
 
+    skip_reason = _llm_skip_reason(prompt)
+    if skip_reason:
+        _log_llm_skip(skip_reason, prompt_chars=len(prompt), mode="full_update")
+        return None
+
     output = _run_sync_llm_call(prompt)
     if output is None:
         return None
@@ -627,6 +643,40 @@ def _run_llm_update(current_experience: str, new_match_data: str) -> str | None:
         return None
 
     return stripped
+
+
+def _llm_skip_reason(prompt: str) -> str:
+    if not BATTLE_EXPERIENCE_LLM_ENABLED:
+        return "disabled"
+    if BATTLE_PROMPT_MAX_CHARS > 0 and len(prompt) > BATTLE_PROMPT_MAX_CHARS:
+        return "prompt_too_large"
+    return ""
+
+
+def _log_llm_skip(reason: str, *, prompt_chars: int, mode: str) -> None:
+    log.info(
+        "Battle experience LLM skipped (%s): prompt_chars=%d max=%d mode=%s",
+        reason,
+        prompt_chars,
+        BATTLE_PROMPT_MAX_CHARS,
+        mode,
+    )
+    try:
+        from system_log import log_system_event
+        log_system_event(
+            "battle_exp.llm_skipped",
+            "info",
+            f"Battle experience LLM skipped ({reason})",
+            {
+                "reason": reason,
+                "prompt_chars": prompt_chars,
+                "max_prompt_chars": BATTLE_PROMPT_MAX_CHARS,
+                "mode": mode,
+                "timeout_sec": LLM_TIMEOUT,
+            },
+        )
+    except Exception:
+        pass
 
 
 def _run_sync_llm_call(prompt: str) -> str | None:

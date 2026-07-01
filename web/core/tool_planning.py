@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import hashlib
 import shutil
 import time
 from pathlib import Path
@@ -35,6 +36,53 @@ from system_log import log_system_event
 def _literature_probe_cache_path(next_v: int | str) -> Path:
     from evolution_infra import RESULTS_DIR
     return RESULTS_DIR / "research_proposals" / f"v{int(next_v)}.json"
+
+
+def _literature_probe_context_fingerprint(
+    source_v: int | str | None,
+    h2h_weakness: str = "",
+    stagnation_info: str = "",
+) -> str:
+    payload = {
+        "source_v": int(source_v) if source_v is not None else None,
+        "h2h_weakness": " ".join((h2h_weakness or "").split()),
+        "stagnation_info": " ".join((stagnation_info or "").split()),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _literature_probe_cache_matches(
+    data: dict,
+    *,
+    source_v: int | str | None = None,
+    h2h_weakness: str = "",
+    stagnation_info: str = "",
+) -> bool:
+    if source_v is not None and data.get("source_v") is not None:
+        try:
+            if int(data.get("source_v")) != int(source_v):
+                return False
+        except (TypeError, ValueError):
+            return False
+    expected = _literature_probe_context_fingerprint(
+        source_v,
+        h2h_weakness,
+        stagnation_info,
+    )
+    stored = data.get("context_fingerprint")
+    if stored:
+        return stored == expected
+
+    # Backward-compatible safety for older cache files: only trust them when
+    # their recorded weakness exactly matches the current brief. If the current
+    # caller did not provide a weakness, source_v equality above is the best
+    # available signal.
+    current_weakness = " ".join((h2h_weakness or "").split())
+    stored_weakness = " ".join(str(data.get("weakness", "") or "").split())
+    if current_weakness and current_weakness != stored_weakness:
+        return False
+    return True
 
 
 def _literature_probe_inject_text(payload: dict) -> str:
@@ -74,7 +122,13 @@ def _literature_probe_inject_text(payload: dict) -> str:
     )
 
 
-def _read_literature_probe_cache(next_v: int | str) -> dict | None:
+def _read_literature_probe_cache(
+    next_v: int | str,
+    *,
+    source_v: int | str | None = None,
+    h2h_weakness: str = "",
+    stagnation_info: str = "",
+) -> dict | None:
     path = _literature_probe_cache_path(next_v)
     if not path.exists():
         return None
@@ -84,6 +138,13 @@ def _read_literature_probe_cache(next_v: int | str) -> dict | None:
         return None
     if not isinstance(data, dict):
         return None
+    if not _literature_probe_cache_matches(
+        data,
+        source_v=source_v,
+        h2h_weakness=h2h_weakness,
+        stagnation_info=stagnation_info,
+    ):
+        return None
     result = {
         "next_v": data.get("next_v", int(next_v)),
         "source_v": data.get("source_v"),
@@ -92,6 +153,7 @@ def _read_literature_probe_cache(next_v: int | str) -> dict | None:
         "proposal": data.get("proposal"),
         "elapsed_sec": data.get("elapsed_sec", 0),
         "weakness": data.get("weakness", ""),
+        "context_fingerprint": data.get("context_fingerprint", ""),
         "cached": True,
         "reason": data.get("reason", "cached"),
         "skipped": data.get("skipped", False),
@@ -105,6 +167,14 @@ def _write_literature_probe_cache(next_v: int | str, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     out = dict(payload)
     out.setdefault("next_v", int(next_v))
+    out.setdefault(
+        "context_fingerprint",
+        _literature_probe_context_fingerprint(
+            out.get("source_v"),
+            out.get("weakness", ""),
+            out.get("stagnation_info", ""),
+        ),
+    )
     out.setdefault("inject_text", _literature_probe_inject_text(out))
     path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -1312,7 +1382,12 @@ async def run_literature_probe(args):
     h2h_weakness = args.get("h2h_weakness", "") or ""
     stagnation_info = args.get("stagnation_info", "") or ""
 
-    cached_probe = _read_literature_probe_cache(next_v)
+    cached_probe = _read_literature_probe_cache(
+        next_v,
+        source_v=source_v,
+        h2h_weakness=h2h_weakness,
+        stagnation_info=stagnation_info,
+    )
     if cached_probe:
         try:
             log_system_event(
@@ -1342,6 +1417,8 @@ async def run_literature_probe(args):
                 "reason": "web retrieval in cooldown or disabled by governance",
                 "next_v": next_v,
                 "source_v": source_v,
+                "weakness": h2h_weakness,
+                "stagnation_info": stagnation_info,
             }
             try:
                 _write_literature_probe_cache(next_v, payload)
@@ -1429,6 +1506,8 @@ async def run_literature_probe(args):
             "reason": "literature_probe_timeout",
             "next_v": next_v,
             "source_v": source_v,
+            "weakness": weakness,
+            "stagnation_info": stagnation_info,
             "elapsed_sec": elapsed,
             "timeout_s": LITERATURE_PROBE_TIMEOUT,
             "inject_text": inject_text,
@@ -1454,6 +1533,8 @@ async def run_literature_probe(args):
             "reason": "literature_probe_failed",
             "next_v": next_v,
             "source_v": source_v,
+            "weakness": weakness,
+            "stagnation_info": stagnation_info,
             "elapsed_sec": round(time.time() - _t0, 1),
             "error": str(e)[:1000],
         }
@@ -1498,6 +1579,7 @@ async def run_literature_probe(args):
         _write_literature_probe_cache(next_v, {
             "next_v": next_v, "source_v": source_v,
             "weakness": weakness,
+            "stagnation_info": stagnation_info,
             "proposal": proposal,
             "candidate_id": candidate_id,
             "gated_out": gated_out,
@@ -1522,6 +1604,8 @@ async def run_literature_probe(args):
         "candidate_id": candidate_id,
         "gated_out": gated_out,
         "proposal": proposal,
+        "weakness": weakness,
+        "stagnation_info": stagnation_info,
         "elapsed_sec": round(time.time() - _t0, 1),
         "reason": "completed",
     }

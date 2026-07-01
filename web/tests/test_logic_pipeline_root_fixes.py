@@ -351,6 +351,144 @@ def test_quality_gate_reruns_when_cached_code_fingerprint_is_stale(monkeypatch, 
     assert data["code_fingerprint"] != "stale"
 
 
+def test_quality_gate_skips_dynamic_llm_when_heuristics_sufficient(monkeypatch, tmp_path):
+    import evolution_infra
+    import tool_gates
+    import decision_tester
+
+    source = tmp_path / "claude_v8"
+    child = tmp_path / "claude_v9"
+    source.mkdir()
+    child.mkdir()
+    (source / "strategy.py").write_text("def act():\n    return 0\n")
+    (child / "strategy.py").write_text("def act():\n    if True:\n        return 1\n    return 0\n")
+
+    evolution_infra.write_pipeline_checkpoint(9, 8, "workers_done")
+
+    monkeypatch.setattr(tool_gates, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+    monkeypatch.setattr(tool_gates, "_py_files_changed_between", lambda _src, _dst: ["strategy.py"])
+    monkeypatch.setattr(tool_gates, "verify_code", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_import_contract_test", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_smoke_test", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda: [])
+    monkeypatch.setattr(tool_gates, "check_code_size", lambda *_a, **_k: (10, []))
+    monkeypatch.setattr(tool_gates, "verify_fixes", lambda _bot_dir: {"mandatory": {"ok": True}})
+    monkeypatch.setattr(tool_gates, "DYNAMIC_TEST_HEURISTIC_SUFFICIENT", 1)
+
+    scenario = {
+        "id": "dyn_branch_unit",
+        "description": "branch coverage",
+        "severity": "advisory",
+        "input": {"requests": [], "responses": []},
+        "forbidden_actions": [],
+    }
+    saved = []
+    monkeypatch.setattr(decision_tester, "SCENARIOS_FILE", tmp_path / "dynamic.json")
+    (tmp_path / "dynamic.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(decision_tester, "generate_scenarios_from_diff", lambda *_a, **_k: [scenario])
+    monkeypatch.setattr(decision_tester, "load_dynamic_scenarios", lambda: saved)
+    monkeypatch.setattr(decision_tester, "save_dynamic_scenarios", lambda rows: saved.extend(rows))
+
+    import audit_agents
+
+    async def _should_not_generate(*_a, **_k):
+        raise AssertionError("LLM dynamic test generation should be skipped")
+
+    monkeypatch.setattr(audit_agents, "_generate_dynamic_tests", _should_not_generate)
+
+    captured = {}
+
+    def _decision(_bot_dir, *, extra_scenarios=None):
+        captured["extra_scenarios"] = extra_scenarios
+        return {
+            "pass_rate": 1.0,
+            "passed": 1,
+            "total": 1,
+            "critical_passed": 1,
+            "critical_total": 1,
+            "critical_failures": [],
+            "failures": [],
+            "scenarios": [],
+        }
+
+    monkeypatch.setattr(tool_gates, "run_decision_test_details", _decision)
+
+    ledger_events = []
+
+    def _append_candidate_event(event_type, **kwargs):
+        ledger_events.append({"event_type": event_type, **kwargs})
+
+    monkeypatch.setattr(tool_gates, "append_candidate_event", _append_candidate_event)
+
+    result = asyncio.run(tool_gates.run_quality_gates.handler({"version": 9, "source_v": 8}))
+    data = json.loads(result["content"][0]["text"])
+
+    assert data["all_passed"] is True
+    assert data["dynamic_test_generation"]["heuristic_count"] == 1
+    assert data["dynamic_test_generation"]["llm_status"] == "skipped_heuristic_sufficient"
+    assert data["dynamic_test_generation"]["combined_count"] == 1
+    assert captured["extra_scenarios"] == [scenario]
+    assert [e["event_type"] for e in ledger_events] == ["quality_started", "quality_finished"]
+    assert ledger_events[-1]["stage"] == "quality_passed"
+    assert ledger_events[-1]["scorecard"].name == "quality"
+
+
+def test_quality_gate_records_placement_shadow_review_scorecard(monkeypatch, tmp_path):
+    import evolution_infra
+    import tool_gates
+    import code_verification
+
+    source = tmp_path / "claude_v10"
+    child = tmp_path / "claude_v11"
+    source.mkdir()
+    child.mkdir()
+    (source / "main.py").write_text("def act():\n    return 0\n")
+    (child / "main.py").write_text("def act():\n    return 1\n")
+
+    evolution_infra.write_pipeline_checkpoint(11, 10, "workers_done")
+
+    monkeypatch.setattr(tool_gates, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+    monkeypatch.setattr(tool_gates, "_py_files_changed_between", lambda _src, _dst: ["main.py"])
+    monkeypatch.setattr(tool_gates, "verify_code", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_import_contract_test", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_smoke_test", lambda _bot_dir: [])
+    monkeypatch.setattr(tool_gates, "run_national_protocol_tests", lambda: [])
+    monkeypatch.setattr(tool_gates, "check_code_size", lambda *_a, **_k: (10, []))
+    monkeypatch.setattr(tool_gates, "verify_fixes", lambda _bot_dir: {"mandatory": {"ok": True}})
+    monkeypatch.setattr(code_verification, "detect_placement_shadow_warnings", lambda _bot_dir: [
+        "strategy.py:L10: placement_shadow (review) - advisory call-site",
+    ])
+    monkeypatch.setattr(tool_gates, "run_decision_test_details", lambda *_a, **_k: {
+        "pass_rate": 1.0,
+        "passed": 1,
+        "total": 1,
+        "critical_passed": 1,
+        "critical_total": 1,
+        "critical_failures": [],
+        "failures": [],
+        "scenarios": [],
+    })
+
+    import audit_agents
+
+    async def _no_dynamic_tests(*_a, **_k):
+        return []
+
+    monkeypatch.setattr(audit_agents, "_generate_dynamic_tests", _no_dynamic_tests)
+    monkeypatch.setattr(tool_gates, "append_candidate_event", None)
+
+    result = asyncio.run(tool_gates.run_quality_gates.handler({"version": 11, "source_v": 10}))
+    data = json.loads(result["content"][0]["text"])
+
+    assert data["all_passed"] is True
+    gates = {g["name"]: g for g in data["scorecard"]["gates"]}
+    review_gate = gates["placement_shadow_review"]
+    assert review_gate["status"] == "failed"
+    assert review_gate["blocking"] is False
+    assert review_gate["metrics"]["review_count"] == 1
+    assert all(g["blocking"] is False for g in gates.values() if g["status"] == "failed")
+
+
 def test_log_system_event_is_not_reimported_inside_runtime_functions():
     """Inner imports make log_system_event a local and can crash earlier calls."""
     web_root = Path(__file__).resolve().parents[1]
