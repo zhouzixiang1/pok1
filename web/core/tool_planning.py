@@ -32,6 +32,83 @@ from tool_helpers import (
 from system_log import log_system_event
 
 
+def _literature_probe_cache_path(next_v: int | str) -> Path:
+    from evolution_infra import RESULTS_DIR
+    return RESULTS_DIR / "research_proposals" / f"v{int(next_v)}.json"
+
+
+def _literature_probe_inject_text(payload: dict) -> str:
+    proposal = payload.get("proposal") if isinstance(payload, dict) else None
+    candidate_id = payload.get("candidate_id") if isinstance(payload, dict) else None
+    gated_out = bool(payload.get("gated_out")) if isinstance(payload, dict) else False
+    reason = payload.get("reason", "") if isinstance(payload, dict) else ""
+
+    if proposal and candidate_id:
+        return (
+            "## Research Proposal (web-derived hypothesis, verify before using)\n"
+            f"- claim: {proposal.get('claim','')}\n"
+            f"- target_fn: {proposal.get('target_fn','')}\n"
+            f"- numeric_claim: {proposal.get('numeric_claim','')}\n"
+            f"- firing_tuple: {proposal.get('firing_tuple','')}\n"
+            f"- source: {proposal.get('source_url','')}\n"
+            f"- pseudocode: {proposal.get('pseudocode','')}\n"
+            "NOTE: this is a hypothesis from web research. It must pass all quality gates "
+            "(decision tests >=70%, precommit eval). If precommit fails, this pattern is "
+            "auto-blacklisted by research_governance."
+        )
+    if reason == "literature_probe_timeout":
+        return (
+            "## Research Proposal\n"
+            "No codable proposal was produced because the web research stage timed out. "
+            "Proceed with run_master using direction audit, H2H, replay, and experience-pool evidence."
+        )
+    if reason and reason != "completed":
+        return (
+            "## Research Proposal\n"
+            f"No codable proposal is available for this generation ({reason}). "
+            "Proceed with run_master without a web hypothesis."
+        )
+    return (
+        "## Research Proposal\nNo codable proposal survived the reflect/translation gate "
+        f"this generation (gated_out={gated_out}). Proceed with run_master without a web hypothesis."
+    )
+
+
+def _read_literature_probe_cache(next_v: int | str) -> dict | None:
+    path = _literature_probe_cache_path(next_v)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    result = {
+        "next_v": data.get("next_v", int(next_v)),
+        "source_v": data.get("source_v"),
+        "candidate_id": data.get("candidate_id"),
+        "gated_out": bool(data.get("gated_out", False)),
+        "proposal": data.get("proposal"),
+        "elapsed_sec": data.get("elapsed_sec", 0),
+        "weakness": data.get("weakness", ""),
+        "cached": True,
+        "reason": data.get("reason", "cached"),
+        "skipped": data.get("skipped", False),
+    }
+    result["inject_text"] = data.get("inject_text") or _literature_probe_inject_text(result)
+    return result
+
+
+def _write_literature_probe_cache(next_v: int | str, payload: dict) -> None:
+    path = _literature_probe_cache_path(next_v)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out = dict(payload)
+    out.setdefault("next_v", int(next_v))
+    out.setdefault("inject_text", _literature_probe_inject_text(out))
+    path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 # ──────────────────────────────────────────────
 # Direction Audit Stage (pre-Master)
 # ──────────────────────────────────────────────
@@ -509,16 +586,13 @@ def _validate_master_plan(plan, next_v=None, precomputed_exhausted_keywords=None
             f"Assign constants.py to Tuner only; other files go to Architect."
         )
 
-    # Check worker prompts against exhausted directions from experience pool.
-    # This is a HARD constraint: plans matching exhausted directions are rejected.
+    # Check positive worker intent against exhausted directions from experience pool.
+    # Constraint prose such as "do not reopen EXHAUSTED axis" is intentionally
+    # ignored so safety instructions do not create worker_exhausted false positives.
     exhausted_keywords = precomputed_exhausted_keywords if precomputed_exhausted_keywords is not None else _extract_exhausted_keywords()
     if exhausted_keywords:
         for i, task in enumerate(tasks):
-            prompt_text = (
-                task.get("worker_prompt", "")
-                + " " + task.get("instruction", "")
-                + " " + str(task.get("targeted_failure", ""))
-            ).lower()
+            prompt_text = _positive_execution_text_from_task(task)
             if _fuzzy_match_exhausted(prompt_text, exhausted_keywords, require_direction_token=True):
                 warnings.append(f"Task {i}: worker prompt matches an EXHAUSTED direction from experience pool (advisory). This direction has been repeatedly tried with no measurable improvement; a fundamentally different approach is recommended but not required.")
                 # advisory only — no longer blocks the plan
@@ -1238,6 +1312,21 @@ async def run_literature_probe(args):
     h2h_weakness = args.get("h2h_weakness", "") or ""
     stagnation_info = args.get("stagnation_info", "") or ""
 
+    cached_probe = _read_literature_probe_cache(next_v)
+    if cached_probe:
+        try:
+            log_system_event(
+                "pipeline.literature_probe_cached",
+                "info",
+                f"literature_probe v{next_v}: using cached result",
+                {"next_v": next_v, "source_v": cached_probe.get("source_v"),
+                 "reason": cached_probe.get("reason"),
+                 "candidate_id": cached_probe.get("candidate_id")},
+            )
+        except Exception:
+            pass
+        return _json_tool_result(cached_probe)
+
     # ── A6 governance gate: cooldown / blacklist / kill-switch ──
     try:
         from research_governance import should_trigger_web_retrieval
@@ -1248,9 +1337,17 @@ async def run_literature_probe(args):
                                  {"next_v": next_v})
             except Exception:
                 pass
-            return {"content": [{"type": "text", "text": json.dumps({
-                "skipped": True, "reason": "web retrieval in cooldown or disabled by governance",
-                "next_v": next_v})}]}
+            payload = {
+                "skipped": True,
+                "reason": "web retrieval in cooldown or disabled by governance",
+                "next_v": next_v,
+                "source_v": source_v,
+            }
+            try:
+                _write_literature_probe_cache(next_v, payload)
+            except Exception:
+                pass
+            return _json_tool_result(payload)
     except Exception as e:
         return {"content": [{"type": "text", "text": json.dumps({"error": f"governance gate failed: {e}"})}]}
 
@@ -1327,7 +1424,7 @@ async def run_literature_probe(args):
             "No codable proposal was produced because the web research stage timed out. "
             "Proceed with run_master using direction audit, H2H, replay, and experience-pool evidence."
         )
-        return {"content": [{"type": "text", "text": json.dumps({
+        payload = {
             "skipped": True,
             "reason": "literature_probe_timeout",
             "next_v": next_v,
@@ -1335,7 +1432,12 @@ async def run_literature_probe(args):
             "elapsed_sec": elapsed,
             "timeout_s": LITERATURE_PROBE_TIMEOUT,
             "inject_text": inject_text,
-        }, indent=2, ensure_ascii=False)}]}
+        }
+        try:
+            _write_literature_probe_cache(next_v, payload)
+        except Exception:
+            pass
+        return _json_tool_result(payload)
     except Exception as e:
         try:
             log_system_event("pipeline.literature_probe_failed", "warn",
@@ -1347,7 +1449,19 @@ async def run_literature_probe(args):
                               "log_file": str(probe_log)})
         except Exception:
             pass
-        return {"content": [{"type": "text", "text": json.dumps({"error": f"research query failed: {e}"})}]}
+        payload = {
+            "skipped": True,
+            "reason": "literature_probe_failed",
+            "next_v": next_v,
+            "source_v": source_v,
+            "elapsed_sec": round(time.time() - _t0, 1),
+            "error": str(e)[:1000],
+        }
+        try:
+            _write_literature_probe_cache(next_v, payload)
+        except Exception:
+            pass
+        return _json_tool_result(payload)
 
     # ── Parse the WRITE-step proposal ──
     data, _mode = parse_json_output(output) if False else (None, None)
@@ -1381,15 +1495,15 @@ async def run_literature_probe(args):
     try:
         proposals_dir = _RESULTS_DIR / "research_proposals"
         proposals_dir.mkdir(parents=True, exist_ok=True)
-        with open(proposals_dir / f"v{next_v}.json", "w", encoding="utf-8") as f:
-            json.dump({
-                "next_v": next_v, "source_v": source_v,
-                "weakness": weakness,
-                "proposal": proposal,
-                "candidate_id": candidate_id,
-                "gated_out": gated_out,
-                "elapsed_sec": round(time.time() - _t0, 1),
-            }, f, ensure_ascii=False, indent=2)
+        _write_literature_probe_cache(next_v, {
+            "next_v": next_v, "source_v": source_v,
+            "weakness": weakness,
+            "proposal": proposal,
+            "candidate_id": candidate_id,
+            "gated_out": gated_out,
+            "elapsed_sec": round(time.time() - _t0, 1),
+            "reason": "completed",
+        })
     except Exception:
         pass
 
@@ -1402,34 +1516,17 @@ async def run_literature_probe(args):
         pass
 
     # Text returned to the orchestrator: the proposal (for run_master hypothesis injection)
-    if proposal and candidate_id:
-        inject_text = (
-            "## Research Proposal (web-derived hypothesis, verify before using)\n"
-            f"- claim: {proposal.get('claim','')}\n"
-            f"- target_fn: {proposal.get('target_fn','')}\n"
-            f"- numeric_claim: {proposal.get('numeric_claim','')}\n"
-            f"- firing_tuple: {proposal.get('firing_tuple','')}\n"
-            f"- source: {proposal.get('source_url','')}\n"
-            f"- pseudocode: {proposal.get('pseudocode','')}\n"
-            f"NOTE: this is a hypothesis from web research. It must pass all quality gates "
-            f"(decision tests ≥70%, precommit eval). If precommit fails, this pattern is "
-            f"auto-blacklisted by research_governance."
-        )
-    else:
-        inject_text = (
-            "## Research Proposal\nNo codable proposal survived the reflect/translation gate "
-            f"this generation (gated_out={gated_out}). Proceed with run_master without a web hypothesis."
-        )
-
     result = {
         "next_v": next_v,
+        "source_v": source_v,
         "candidate_id": candidate_id,
         "gated_out": gated_out,
         "proposal": proposal,
         "elapsed_sec": round(time.time() - _t0, 1),
-        "inject_text": inject_text,
+        "reason": "completed",
     }
-    return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
+    result["inject_text"] = _literature_probe_inject_text(result)
+    return _json_tool_result(result)
 
 
 # ──────────────────────────────────────────────
@@ -1574,6 +1671,47 @@ def _fuzzy_match_exhausted(prompt_text: str, keywords: list, require_direction_t
     return False
 
 
+_EXHAUSTED_NEGATIVE_CUES = (
+    "do not", "don't", "must not", "never", "avoid", "forbidden",
+    "prohibit", "prohibited", "unchanged", "preserve", "no retune",
+    "no tuning", "without modifying", "do n't", "should not",
+    "may violate an exhausted", "marks this area as exhausted",
+)
+
+
+def _positive_execution_text_from_task(task: dict) -> str:
+    """Extract the task's positive implementation intent.
+
+    Fields that are explicitly prohibitions (`prohibited_files`, `do_not_touch`)
+    are excluded. Free-form prompts are split into sentences and negative
+    constraint sentences are dropped.
+    """
+    if not isinstance(task, dict):
+        return ""
+    positive_fields = (
+        "behavior_hypothesis",
+        "expected_diff_shape",
+        "targeted_failure",
+        "worker_goal",
+        "implementation_plan",
+        "merge_policy",
+        "worker_prompt",
+        "instruction",
+    )
+    chunks = [str(task.get(field, "")) for field in positive_fields]
+    splitter = re.compile(r"[\n;]+|(?<=[A-Za-z0-9_)])\.(?=\s+|$)")
+    segments = []
+    for chunk in chunks:
+        for segment in splitter.split(chunk):
+            text = segment.strip().lower()
+            if not text:
+                continue
+            if any(cue in text for cue in _EXHAUSTED_NEGATIVE_CUES):
+                continue
+            segments.append(text)
+    return "\n".join(segments)
+
+
 def _plan_repeats_exhausted_direction(plan: dict, exhausted_directions: list[str]) -> tuple[bool, str]:
     """Return whether a Master plan actively repeats a currently exhausted axis.
 
@@ -1592,15 +1730,7 @@ def _plan_repeats_exhausted_direction(plan: dict, exhausted_directions: list[str
     for task in plan.get("tasks", []) or []:
         if not isinstance(task, dict):
             continue
-        chunks.extend([
-            str(task.get("worker_prompt", "")),
-            str(task.get("instruction", "")),
-            str(task.get("targeted_failure", "")),
-        ])
-    negative_cues = (
-        "do not", "don't", "must not", "never", "avoid", "preserve",
-        "unchanged", "forbidden", "no retune", "no tuning", "without modifying",
-    )
+        chunks.append(_positive_execution_text_from_task(task))
     sentence_splitter = re.compile(r"[\n;]+|(?<=[A-Za-z0-9_)])\.(?=\s+|$)")
     positive_segments = []
     for chunk in chunks:
@@ -1608,7 +1738,7 @@ def _plan_repeats_exhausted_direction(plan: dict, exhausted_directions: list[str
             segment_l = segment.lower()
             if not segment_l.strip():
                 continue
-            if any(cue in segment_l for cue in negative_cues):
+            if any(cue in segment_l for cue in _EXHAUSTED_NEGATIVE_CUES):
                 continue
             positive_segments.append(segment_l)
     plan_text = "\n".join(positive_segments)
@@ -2209,15 +2339,14 @@ async def execute_workers(args):
             f"above no longer exist in the code — you must re-implement them from scratch."
         )
 
-    # P2: Validate worker prompts against EXHAUSTED directions from experience pool.
-    # If a worker_prompt contains keywords matching an EXHAUSTED direction, append
-    # a prominent warning. This is a safety net — the primary enforcement is the
-    # <forbidden_directions> block injected by agent_workers.py.
+    # P2: Validate positive worker intent against EXHAUSTED directions from the
+    # experience pool. Negative guardrail prose is ignored to prevent warnings
+    # from firing merely because the prompt quotes a forbidden axis.
     exhausted_keywords = _extract_exhausted_keywords()
     if exhausted_keywords:
         for task in tasks:
-            prompt_text = task.get("worker_prompt", task.get("instruction", "")).lower()
-            if _fuzzy_match_exhausted(prompt_text, exhausted_keywords):
+            prompt_text = _positive_execution_text_from_task(task)
+            if _fuzzy_match_exhausted(prompt_text, exhausted_keywords, require_direction_token=True):
                 original = task.get("worker_prompt", task.get("instruction", ""))
                 task["worker_prompt"] = (
                     original +

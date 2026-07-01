@@ -38,6 +38,13 @@ from fix_verification import verify_fixes
 from system_log import log_system_event
 from llm_failure import is_llm_infra_error, infra_payload
 import spot_analyzer
+from pipeline_schema import GateResult, ScoreCard
+from workflow_profiles import get_workflow_profile
+
+try:
+    from candidate_store import append_candidate_event
+except Exception:  # pragma: no cover - import fallback for unusual test paths
+    append_candidate_event = None
 
 
 # ── Phase 2: AgentAssay SPRT decision-test gate (feature-flagged) ──
@@ -50,6 +57,8 @@ import spot_analyzer
 # Mirrors the PRECOMMIT_SEQUENTIAL_EARLY_STOP flag convention (module constant,
 # not an env var).
 DECISION_TEST_SPRT_ENABLED = False
+DYNAMIC_TEST_LLM_TIMEOUT = int(os.environ.get("POK_DYNAMIC_TEST_LLM_TIMEOUT", "25"))
+DYNAMIC_TEST_HEURISTIC_SUFFICIENT = int(os.environ.get("POK_DYNAMIC_TEST_HEURISTIC_SUFFICIENT", "4"))
 
 
 def _record_quality_failure(gen, worker_id, role, error, **extra):
@@ -129,6 +138,20 @@ async def run_quality_gates(args):
     v = int(v)
     source_v = int(source_v) if source_v is not None else None
     bot_dir = get_bot_dir(v)
+    workflow_profile = get_workflow_profile()
+    candidate_id = f"claude_v{v}_from_v{source_v}" if source_v is not None else f"claude_v{v}"
+    if append_candidate_event:
+        try:
+            append_candidate_event(
+                "quality_started",
+                version=v,
+                source_v=source_v,
+                candidate_id=candidate_id,
+                profile_id=workflow_profile.profile_id,
+                stage="quality",
+            )
+        except Exception as e:
+            _log.warning("candidate ledger quality_started write failed: %s", e)
 
     _set_pipeline_status(f"Running quality gates for v{v}")
 
@@ -179,6 +202,11 @@ async def run_quality_gates(args):
 
     compile_errors = verify_code(bot_dir)
     import_errors = run_import_contract_test(bot_dir)
+    try:
+        from protected_contracts import check_bot_protocol_contract
+        protected_contract_errors = check_bot_protocol_contract(bot_dir)
+    except Exception as e:
+        protected_contract_errors = [f"protected_contract_check_error: {type(e).__name__}: {str(e)[:200]}"]
     if import_errors:
         log_system_event(
             "pipeline.import_contract_failed", "error",
@@ -260,45 +288,93 @@ async def run_quality_gates(args):
 
     smoke_errors = run_smoke_test(bot_dir)
     national_protocol_errors = run_national_protocol_tests()
+    national_acceptance_ok = True
+    national_acceptance_errors = []
+    national_acceptance_payload = {}
+    national_acceptance_enabled = os.environ.get("POK_NATIONAL_ACCEPTANCE_GATE", "1") != "0"
+    national_acceptance_hands = int(
+        os.environ.get(
+            "POK_NATIONAL_ACCEPTANCE_HANDS",
+            str(workflow_profile.national_acceptance_hands),
+        )
+    )
+    if national_acceptance_enabled and source_v is not None:
+        try:
+            _bot_under_project_bots = bot_dir.resolve().is_relative_to((PROJECT_ROOT / "bots").resolve())
+        except AttributeError:
+            _bot_under_project_bots = str(bot_dir.resolve()).startswith(str((PROJECT_ROOT / "bots").resolve()))
+        can_run_national_acceptance = (
+            len(compile_errors) == 0
+            and len(import_errors) == 0
+            and len(protected_contract_errors) == 0
+            and len(smoke_errors) == 0
+            and (bot_dir / "main.py").exists()
+            and _bot_under_project_bots
+        )
+        if can_run_national_acceptance:
+            try:
+                from national_acceptance import run_acceptance_for_candidate
+                _acceptance = await run_acceptance_for_candidate(
+                    bot_dir,
+                    source_v=source_v,
+                    hands=national_acceptance_hands,
+                    max_opponents=2,
+                )
+                national_acceptance_ok = bool(_acceptance.passed)
+                national_acceptance_errors = _acceptance.issues[:5]
+                national_acceptance_payload = _acceptance.model_dump()
+                log_system_event(
+                    "pipeline.national_acceptance_passed" if national_acceptance_ok else "pipeline.national_acceptance_failed",
+                    "success" if national_acceptance_ok else "error",
+                    f"National acceptance {'passed' if national_acceptance_ok else 'failed'} for v{v} "
+                    f"({national_acceptance_hands} hands/pair)",
+                    {
+                        "version": v,
+                        "source_v": source_v,
+                        "hands": national_acceptance_hands,
+                        "opponents": _acceptance.opponents,
+                        "issues": national_acceptance_errors,
+                        "summary": _acceptance.summary,
+                    },
+                )
+            except Exception as e:
+                national_acceptance_ok = False
+                national_acceptance_errors = [f"national_acceptance_exception: {type(e).__name__}: {str(e)[:200]}"]
+                national_acceptance_payload = {"error": national_acceptance_errors[0]}
+                _log.warning("national acceptance gate failed to run for v%s: %s", v, e)
+        else:
+            national_acceptance_ok = True
+            national_acceptance_errors = ["national_acceptance_skipped_due_to_failed_prerequisites"]
+            national_acceptance_payload = {"skipped": True, "reason": national_acceptance_errors[0]}
 
-    # --- P0-3: LLM-Generated Dynamic Decision Tests ---
-    dynamic_scenarios = []
+    # --- B3: Heuristic Dynamic Regression Tests from Diff ---
+    # Deterministic coverage runs first. The LLM generator is now an augmenting
+    # source, not the gatekeeper for dynamic coverage, so a timeout cannot leave
+    # changed branches completely untested.
+    dynamic_test_meta = {
+        "heuristic_count": 0,
+        "llm_count": 0,
+        "llm_status": "not_run",
+        "llm_timeout_sec": DYNAMIC_TEST_LLM_TIMEOUT,
+    }
+    heuristic_scenarios = []
+    existing_ids = []
     if source_v is not None and changed_files_list:
         try:
-            from audit_agents import _generate_dynamic_tests
-            # Get existing scenario IDs to avoid duplicates
-            from decision_tester import SCENARIOS_FILE
-            existing_ids = []
+            import difflib as _difflib
+            from decision_tester import (
+                SCENARIOS_FILE,
+                generate_scenarios_from_diff,
+                save_dynamic_scenarios,
+                load_dynamic_scenarios,
+            )
             if SCENARIOS_FILE.exists():
                 with open(SCENARIOS_FILE) as _f:
                     for s in json.load(_f):
                         existing_ids.append(s.get("id", ""))
-            ckpt_dt = _matching_checkpoint(v, source_v)
-            master_plan_dt = ckpt_dt.get("master_plan", {}) if ckpt_dt else {}
-            ui = _get_ui()
-            # Timeout: LLM call should complete in 60s; if not, skip dynamic tests
-            dynamic_scenarios = await asyncio.wait_for(
-                _generate_dynamic_tests(
-                    v, source_v, changed_files_list, master_plan_dt, existing_ids, ui
-                ),
-                timeout=60,
-            )
-        except asyncio.TimeoutError:
-            pass  # LLM timed out — use only predefined scenarios
-        except Exception as e:
-            _log.warning("Dynamic test generation error: %s", e)
-
-    # --- B3: Heuristic Dynamic Regression Tests from Diff ---
-    heuristic_scenarios = []
-    if source_v is not None and changed_files_list:
-        try:
-            import difflib as _difflib
-            from decision_tester import generate_scenarios_from_diff, save_dynamic_scenarios, load_dynamic_scenarios
-            from decision_tester import DYNAMIC_SCENARIOS_FILE
             _src_dir = get_bot_dir(source_v)
             _dst_dir = get_bot_dir(v)
 
-            # Build diff text from changed files
             _diff_parts = []
             for _rel in changed_files_list:
                 _src_file = _src_dir / _rel
@@ -321,8 +397,8 @@ async def run_quality_gates(args):
                 heuristic_scenarios = generate_scenarios_from_diff(
                     _full_diff, str(_src_dir), str(_dst_dir)
                 )
+                dynamic_test_meta["heuristic_count"] = len(heuristic_scenarios)
                 if heuristic_scenarios:
-                    # Persist to file for future runs
                     _existing = load_dynamic_scenarios()
                     _existing_ids = {s.get("id") for s in _existing}
                     _new_to_save = [s for s in heuristic_scenarios
@@ -333,10 +409,55 @@ async def run_quality_gates(args):
                         len(heuristic_scenarios), v
                     )
         except Exception as e:
+            dynamic_test_meta["heuristic_error"] = str(e)[:300]
             _log.warning("B3 heuristic scenario generation error: %s", e)
+
+    # --- P0-3: LLM-Generated Dynamic Decision Tests (augment only) ---
+    dynamic_scenarios = []
+    if source_v is not None and changed_files_list:
+        try:
+            from audit_agents import _generate_dynamic_tests
+            if len(heuristic_scenarios) >= DYNAMIC_TEST_HEURISTIC_SUFFICIENT:
+                dynamic_test_meta["llm_status"] = "skipped_heuristic_sufficient"
+                log_system_event(
+                    "pipeline.dynamic_test_gen_skipped",
+                    "info",
+                    f"v{v}: skipped LLM dynamic test generation; "
+                    f"{len(heuristic_scenarios)} deterministic scenarios already generated",
+                    {"version": v, "source_v": source_v,
+                     "heuristic_count": len(heuristic_scenarios)},
+                )
+            else:
+                ckpt_dt = _matching_checkpoint(v, source_v)
+                master_plan_dt = ckpt_dt.get("master_plan", {}) if ckpt_dt else {}
+                ui = _get_ui()
+                dynamic_scenarios = await asyncio.wait_for(
+                    _generate_dynamic_tests(
+                        v, source_v, changed_files_list, master_plan_dt, existing_ids, ui
+                    ),
+                    timeout=DYNAMIC_TEST_LLM_TIMEOUT,
+                )
+                dynamic_test_meta["llm_status"] = "ok"
+                dynamic_test_meta["llm_count"] = len(dynamic_scenarios or [])
+        except asyncio.TimeoutError:
+            dynamic_test_meta["llm_status"] = "timeout"
+            log_system_event(
+                "pipeline.dynamic_test_gen_timeout",
+                "warn",
+                f"v{v}: LLM dynamic test generation timed out after "
+                f"{DYNAMIC_TEST_LLM_TIMEOUT}s; using deterministic scenarios",
+                {"version": v, "source_v": source_v,
+                 "timeout_s": DYNAMIC_TEST_LLM_TIMEOUT,
+                 "heuristic_count": len(heuristic_scenarios)},
+            )
+        except Exception as e:
+            dynamic_test_meta["llm_status"] = "error"
+            dynamic_test_meta["llm_error"] = str(e)[:300]
+            _log.warning("Dynamic test generation error: %s", e)
 
     # Combine both dynamic sources
     _all_dynamic = (dynamic_scenarios or []) + heuristic_scenarios
+    dynamic_test_meta["combined_count"] = len(_all_dynamic)
 
     # Decision-test gate: classic single-shot path by default; optional Phase-2
     # per-scenario SPRT aggregation when DECISION_TEST_SPRT_ENABLED. The SPRT
@@ -380,8 +501,10 @@ async def run_quality_gates(args):
     all_passed = (
         len(compile_errors) == 0
         and len(import_errors) == 0
+        and len(protected_contract_errors) == 0
         and len(smoke_errors) == 0
         and len(national_protocol_errors) == 0
+        and national_acceptance_ok
         and decision_ok
         and len(oversized) == 0
         and code_changed  # MUST have at least one changed .py file
@@ -398,10 +521,15 @@ async def run_quality_gates(args):
         "compile_errors": compile_errors[:3] if compile_errors else [],
         "import_ok": len(import_errors) == 0,
         "import_errors": import_errors[:3] if import_errors else [],
+        "protected_contract_ok": len(protected_contract_errors) == 0,
+        "protected_contract_errors": protected_contract_errors[:3] if protected_contract_errors else [],
         "smoke_ok": len(smoke_errors) == 0,
         "smoke_errors": smoke_errors[:3] if smoke_errors else [],
         "national_protocol_ok": len(national_protocol_errors) == 0,
         "national_protocol_errors": national_protocol_errors[:3] if national_protocol_errors else [],
+        "national_acceptance_ok": national_acceptance_ok,
+        "national_acceptance_errors": national_acceptance_errors[:5] if national_acceptance_errors else [],
+        "national_acceptance": national_acceptance_payload,
         "decision_pass_rate": round(decision_rate, 2),
         "decision_ok": decision_ok,
         "critical_scenarios_passed": critical_ok,
@@ -410,6 +538,7 @@ async def run_quality_gates(args):
         "critical_failures": critical_failures,
         "decision_failures": decision_detail.get("failures", []),
         "scenario_results": decision_detail.get("scenarios", []),
+        "dynamic_test_generation": dynamic_test_meta,
         "total_lines": total_lines,
         "oversized_files": {name: lines for name, lines, _ in oversized} if oversized else {},
         "size_ok": len(oversized) == 0,
@@ -440,6 +569,8 @@ async def run_quality_gates(args):
             f"runtime_import({first_import.get('module')}: "
             f"{first_import.get('exception')} {first_import.get('message')})"
         )
+    if protected_contract_errors:
+        failed_gates_detail.append("protected_contract")
     if true_shadows:
         failed_gates_detail.append(
             f"placement_shadow({'; '.join(w[:120] for w in true_shadows[:3])})"
@@ -448,6 +579,8 @@ async def run_quality_gates(args):
         failed_gates_detail.append("smoke_test")
     if national_protocol_errors:
         failed_gates_detail.append("national_protocol_tests")
+    if not national_acceptance_ok:
+        failed_gates_detail.append("national_acceptance")
     if not decision_ok:
         failed_gates_detail.append(f"decision_tests({decision_rate:.0%})")
     if not code_changed:
@@ -497,21 +630,62 @@ async def run_quality_gates(args):
         "compile_errors": result["compile_errors"],
         "import_ok": result["import_ok"],
         "import_errors": result["import_errors"],
+        "protected_contract_ok": result["protected_contract_ok"],
+        "protected_contract_errors": result["protected_contract_errors"],
         "smoke_ok": result["smoke_ok"],
         "smoke_errors": result["smoke_errors"],
         "national_protocol_ok": result["national_protocol_ok"],
         "national_protocol_errors": result["national_protocol_errors"],
+        "national_acceptance_ok": result["national_acceptance_ok"],
+        "national_acceptance_errors": result["national_acceptance_errors"],
+        "national_acceptance": national_acceptance_payload,
+        "dynamic_test_generation": dynamic_test_meta,
         "size_ok": result["size_ok"],
         "oversized_files": result["oversized_files"],
         "code_changed": code_changed,
         "changed_files": changed_files_list[:20],
         "fix_ok": fix_ok,
+        "placement_shadow_warnings": placement_shadow_warnings[:10],
+        "placement_shadow_review_count": len([w for w in placement_shadow_warnings if "TRUE SHADOW" not in w]),
         "telemetry_fidelity_ok": telemetry_fidelity_ok,
         "reachability_ok": reachability_ok,
         "reachability_warnings": reachability_warnings[:6],
         "code_fingerprint": code_fingerprint,
         "critical_failures": critical_failures[:3],
     }
+    scorecard = ScoreCard(name="quality")
+    scorecard.add(GateResult.from_bool("code_changed", code_changed, failures=[] if code_changed else ["bot code is byte-for-byte identical to source"]))
+    scorecard.add(GateResult.from_bool("compile", len(compile_errors) == 0, failures=compile_errors[:3]))
+    scorecard.add(GateResult.from_bool("runtime_import", len(import_errors) == 0, failures=[str(e) for e in import_errors[:3]]))
+    scorecard.add(GateResult.from_bool("protected_contract", len(protected_contract_errors) == 0, failures=protected_contract_errors[:3]))
+    scorecard.add(GateResult.from_bool("smoke", len(smoke_errors) == 0, failures=smoke_errors[:3]))
+    scorecard.add(GateResult.from_bool(
+        "placement_shadow_review",
+        not bool([w for w in placement_shadow_warnings if "TRUE SHADOW" not in w]),
+        blocking=False,
+        failures=[w for w in placement_shadow_warnings if "TRUE SHADOW" not in w][:6],
+        metrics={"review_count": len([w for w in placement_shadow_warnings if "TRUE SHADOW" not in w])},
+    ))
+    scorecard.add(GateResult.from_bool("national_protocol", len(national_protocol_errors) == 0, failures=national_protocol_errors[:3]))
+    scorecard.add(GateResult.from_bool(
+        "national_acceptance",
+        national_acceptance_ok,
+        failures=national_acceptance_errors[:5],
+        metrics=national_acceptance_payload.get("summary", {}) if isinstance(national_acceptance_payload, dict) else {},
+        artifacts={"report": national_acceptance_payload} if national_acceptance_payload else {},
+    ))
+    scorecard.add(GateResult.from_bool(
+        "decision",
+        decision_ok,
+        metrics={"pass_rate": round(decision_rate, 4), "total": decision_total},
+        failures=[str(f)[:300] for f in (decision_detail.get("failures", []) or [])[:5]],
+    ))
+    scorecard.add(GateResult.from_bool("size", len(oversized) == 0, failures=[f"{n}:{l}/{lim}" for n, l, lim in oversized]))
+    scorecard.add(GateResult.from_bool("fix_verification", fix_ok, failures=[f"{fid}: {r.get('reason', '')[:160]}" for fid, r in fix_failed.items()]))
+    scorecard.add(GateResult.from_bool("telemetry_fidelity", telemetry_fidelity_ok, failures=telemetry_fidelity_warnings[:6]))
+    scorecard.add(GateResult.from_bool("reachability", reachability_ok, failures=reachability_warnings[:6]))
+    result["scorecard"] = scorecard.model_dump()
+    quality_detail["scorecard"] = result["scorecard"]
 
     log_system_event(
         "pipeline.quality_passed" if all_passed else "pipeline.quality_failed",
@@ -540,6 +714,30 @@ async def run_quality_gates(args):
         result["source_v"] = source_v
     else:
         result["checkpoint_recorded"] = False
+
+    if append_candidate_event:
+        try:
+            append_candidate_event(
+                "quality_finished",
+                version=v,
+                source_v=source_v,
+                candidate_id=candidate_id,
+                profile_id=workflow_profile.profile_id,
+                stage="quality_passed" if all_passed else "quality_failed",
+                changed_files=changed_files_list,
+                gate="quality",
+                scorecard=scorecard,
+                metrics={
+                    "all_passed": all_passed,
+                    "decision_pass_rate": round(decision_rate, 4),
+                    "national_acceptance_ok": national_acceptance_ok,
+                },
+                failures=failed_gates_detail if not all_passed else [],
+                failure_class="quality_gate" if not all_passed else "",
+                artifacts={"national_acceptance": national_acceptance_payload} if national_acceptance_payload else {},
+            )
+        except Exception as e:
+            _log.warning("candidate ledger quality_finished write failed: %s", e)
 
     try:
         log_system_event("pipeline.quality_gates", "info",

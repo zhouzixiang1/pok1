@@ -20,6 +20,7 @@
 ## PARAMETER_TUNING
 - Confidence/sample trap: confidence=min(1,total/12) is 0 below n=4 and ≥0.333 at n≥4, so thresholds in [0.20,0.25) are no-ops — change sample-count or early-return gates instead.
 - Preflop pot-odds windows under ~10pp rarely fire in 70-hand HU; tune only bands wide enough to be reachable (≥15pp).
+- RESOLVED (A1): battle stderr is captured/readable; telemetry can support reachability diagnosis, but it is not H2H proof by itself.
 - Telemetry/stderr counts are not H2H proof: require reachability + ≥30g paired net-chips to act, ≥100g before declaring success.
 - choose_raise constant/floor/ceiling nudges are saturated; exempt only structural rewrites adding live deal-local opp-signal gating. [POSSIBLY EXHAUSTED]
 

@@ -80,7 +80,11 @@ Use fewer workers when data is uncertain (few games), more workers when the bot 
 | Hyperparameter Tuner | Numeric tuning only | Constants, thresholds, magic numbers | New functions, classes, imports, control flow changes |
 | Opponent Modeler | Opponent tracking only | Per-street stats, bet sizing patterns, exploitative adjustments | Changing overall decision flow or non-opponent-model logic |
 
-**IMPORTANT: File ownership** — Workers execute SEQUENTIALLY (one at a time). This means later workers can build on earlier workers' changes. If Worker 1 modifies strategy.py, Worker 2 can see and use those modifications. However, each worker still has a specific role — do NOT assign overlapping scope to different workers.
+**IMPORTANT: File ownership** — Workers execute in PARALLEL when their `target_files` are disjoint; the executor falls back to sequential execution only when target files overlap. Do NOT assign overlapping scope unless you explicitly need sequential composition. A worker must only edit its declared target files and must respect `files_allowed` / `prohibited_files`.
+
+Every worker task must declare a `skill_layer` so the change can be traced through decision tests, national acceptance, and the candidate ledger. Useful layers include `preflop_range`, `texture`, `spr`, `blocker`, `line_template`, `opponent_model`, `action_sanitizer`, `protocol`, `adapter`, and `telemetry`.
+
+If the injected Line budget section marks `strategy.py` or `postflop.py` as `near_hard_cap`, that file must not grow. Plan cohesive helper-module migration or LOC recovery first, and set `expected_diff_shape` to show which logic moves out or is deleted. A plan that only adds logic to a near-cap core file will fail the size gate.
 </worker_guidance>
 
 <worker_prompt_quality>
@@ -228,6 +232,13 @@ Required schema (emit exactly this structure as raw JSON):
       "worker_id": 1,
       "role": "Algorithmic Logic Architect",
       "target_files": ["strategy.py"],
+      "skill_layer": "spr",
+      "files_allowed": ["strategy.py"],
+      "prohibited_files": ["sever/", "engine/", "web/core/tool_gates.py"],
+      "expected_diff_shape": "Add one helper and wire it into the live decision path.",
+      "behavior_hypothesis": "Low-SPR marginal bluffcatchers fold more often instead of stack-off calling.",
+      "checks_required": ["decision_tests", "national_acceptance", "stderr_telemetry_nonzero"],
+      "merge_policy": "disjoint_target_files",
       "difficulty": "medium",
       "worker_prompt": "Detailed instructions for this worker..."
     }

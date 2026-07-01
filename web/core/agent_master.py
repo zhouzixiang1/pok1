@@ -13,6 +13,7 @@ from evolution_infra import (
     _trim_to_budget, RESULTS_DIR, PROMPTS_DIR,
     MATCH_HISTORY_FILE, REPLAY_DIR,
     MAX_MASTER_RETRIES,
+    get_bot_dir, MAX_LINES_HARD_CAP, CORE_STRATEGY_FILES,
 )
 
 from replay_analysis import summarize_replay_for_analysis  # noqa: F401 — re-exported via evolution_core
@@ -45,6 +46,36 @@ def _render_analysis_section(text: str, default_msg: str) -> str:
     if text.strip() == LLM_INFRA_SENTINEL:
         return LLM_INFRA_SENTINEL_MSG
     return text
+
+
+def _line_budget_summary(source_v: int) -> str:
+    """Summarize core-file LOC pressure for the Master prompt."""
+    try:
+        bot_dir = get_bot_dir(source_v)
+    except Exception:
+        return "Line budget: unavailable."
+    lines = ["Line budget / file-size pressure:"]
+    for filename in sorted(CORE_STRATEGY_FILES):
+        path = bot_dir / filename
+        if not path.exists():
+            continue
+        try:
+            count = sum(1 for _ in path.open(encoding="utf-8"))
+        except Exception:
+            continue
+        remaining = MAX_LINES_HARD_CAP - count
+        status = "ok"
+        if remaining <= 100:
+            status = "near_hard_cap"
+        lines.append(f"- {filename}: {count}/{MAX_LINES_HARD_CAP} lines, remaining={remaining}, status={status}")
+    if len(lines) == 1:
+        return "Line budget: no core strategy files found."
+    if any("near_hard_cap" in line for line in lines):
+        lines.append(
+            "MANDATORY when near_hard_cap: do LOC recovery or move cohesive logic into helper modules; "
+            "do not increase that core file's line count."
+        )
+    return "\n".join(lines)
 
 
 # ──────────────────────────────────────────────
@@ -83,6 +114,19 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         exploitability_weaknesses or "No exploitability probe data available yet.", 6_000)
     research_trimmed = _trim_to_budget(
         research_proposals or "No web-derived research proposals this generation (run_literature_probe not triggered or returned none).", 4_000)
+    try:
+        from frontier import frontier_summary
+        frontier_trimmed = _trim_to_budget(frontier_summary(), 4_000)
+    except Exception:
+        frontier_trimmed = "Frontier/MAP-Elites: unavailable."
+    try:
+        from workflow_profiles import get_workflow_profile, profile_summary
+        workflow_profile = get_workflow_profile()
+        workflow_profile_text = profile_summary(workflow_profile)
+    except Exception:
+        workflow_profile = None
+        workflow_profile_text = "Workflow profile: default"
+    line_budget_text = _line_budget_summary(source_v)
 
     # Build eval round summary BEFORE substitute_template so it's included in one pass
     eval_round_summary = "No eval round data available yet."
@@ -118,6 +162,9 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         f"Head-to-Head data: web/core/results/head_to_head.json\n"
         f"Bot stats: web/core/results/bot_stats.json\n"
         f"Experience pool: web/core/experience_pool.md  ← READ THIS, not evolution_workspace/experience_pool.md\n"
+        f"\n{workflow_profile_text}\n"
+        f"\n{frontier_trimmed}\n"
+        f"\n{line_budget_text}\n"
     )
     master_log_file = get_logs_dir(next_v) / "master_io.txt"
 
