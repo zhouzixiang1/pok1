@@ -216,7 +216,7 @@ TEMPLATE_SCENARIOS = [
                  "bet_amount": 0, "round_bet": 300},
                 {"round": 2, "player_id": 0, "action": 0, "action_type": "check",
                  "bet_amount": 0, "round_bet": 0},
-                {"round": 2, "player_id": 1, "action": 0, "action_type": "check",
+                {"round": 2, "player_id": 1, "action": 0, "action_type": "call",
                  "bet_amount": 0, "round_bet": 0},
                 {"round": 3, "player_id": 0, "action": 600, "action_type": "raise",
                  "bet_amount": 600, "round_bet": 600},

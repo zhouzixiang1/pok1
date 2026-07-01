@@ -13,10 +13,21 @@ unless the Master explicitly assigns a TCP-native bot task. Compatibility rules:
   raise amount that requires all remaining chips.
 - Strategy prose may say "bet", but wire-level national actions must be
   `raise <amount>`; never output or depend on a `bet` action token.
-- National TCP uses 70 hands, 20000 reset chips, blinds 50/100, and strict
-  postflop rule: after the first player checks, the second player passes with
-  `call`, not another `check`. The adapter handles this mapping for JSON `0`;
-  do not add bot logic that assumes TCP `check-check` is legal.
+- National TCP uses 70 hands, 20000 reset chips, blinds 50/100. SB acts first
+  preflop; BB acts first on flop/turn/river; roles alternate every hand.
+- Raise rules from `sever/国赛平台/非法行为说明.docx`: first preflop raise-to
+  must be >= 200, first postflop raise-to must be >= 100, and every re-raise
+  must be strictly greater than 2x the previous raise-to (`prev * 2 + 1`
+  minimum). A raise-to amount must exceed the current street bet and must not
+  exceed available chips.
+- Call/check rules: postflop first action cannot be `call`; postflop after any
+  first action, `check` is illegal. If the first postflop player checks, the
+  second player passes with `call`, not another `check`. Preflop BB cannot
+  `call` after SB limps/calls; BB should check, raise, or fold.
+- All-in rules: if the intended raise uses all remaining chips, return `-2`
+  instead. After one all-in, the opponent can only call or fold; consecutive
+  all-ins are illegal. The adapter handles JSON `0` -> TCP `call` after a
+  postflop check; do not add bot logic that assumes TCP `check-check` is legal.
 </national_tcp_compatibility>
 
 ## MANDATORY ACTIONS — ALL THREE ARE REQUIRED
@@ -133,7 +144,7 @@ After editing:
 4. **Role boundary check**: Review ALL changes. If you are a Tuner, verify every change is a numeric constant. If you are an Architect, verify you did not change well-tuned constants.
 
 5. **Protocol check**: Verify the bot still outputs `{"response": <int>}` via stdout. Action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.
-   National TCP compatibility is validated through `sever/bot_adapter.py`; do not bypass the adapter or introduce TCP-only stdout text in evolved JSON bots.
+   National TCP compatibility is validated through `sever/bot_adapter.py`; do not bypass the adapter, introduce TCP-only stdout text, rely on wire-level `bet`, represent all-in as a positive raise, or assume postflop TCP `check-check` is legal.
 </verification>
 
 <output>
