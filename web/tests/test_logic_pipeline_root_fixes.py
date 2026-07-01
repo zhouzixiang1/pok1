@@ -629,6 +629,45 @@ def test_battle_scheduler_status_peeks_pending_claimed_completed(tmp_path, monke
     assert status["missing"] == ["missing"]
 
 
+def test_precommit_scheduler_job_details_include_state_age_and_matchup():
+    import tool_eval
+    from types import SimpleNamespace
+
+    jobs_by_id = {
+        "j1": SimpleNamespace(submitted_at=100.0, timeout_sec=960, n_pairs=8, bot_b_name="claude_v241"),
+        "j2": SimpleNamespace(submitted_at=90.0, timeout_sec=960, n_pairs=8, bot_b_name="claude_v237"),
+    }
+    job_id_to_opponent = {
+        "j1": {"name": "claude_v241", "reason": "parent"},
+        "j2": {"name": "claude_v237", "reason": "top_strength"},
+    }
+
+    details = tool_eval._precommit_scheduler_job_details(
+        ["j1", "j2"],
+        job_id_to_opponent,
+        jobs_by_id,
+        {"claimed": ["j1"], "completed": ["j2"], "pending": [], "missing": []},
+        {"j2": {"wins_a": 10, "wins_b": 6, "draws": 0, "total": 16, "error": None}},
+        now=115.0,
+    )
+
+    assert details[0] == {
+        "job_id": "j1",
+        "opponent": "claude_v241",
+        "reason": "parent",
+        "state": "claimed",
+        "age_sec": 15.0,
+        "timeout_sec": 960,
+        "n_games": 8,
+    }
+    assert details[1]["opponent"] == "claude_v237"
+    assert details[1]["state"] == "collected"
+    assert details[1]["age_sec"] == 25.0
+    assert details[1]["wins"] == 10
+    assert details[1]["losses"] == 6
+    assert details[1]["total"] == 16
+
+
 def test_scheduler_stall_reason_treats_claimed_jobs_as_running():
     import tool_eval
 

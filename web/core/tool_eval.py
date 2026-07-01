@@ -256,6 +256,61 @@ class BattleSchedulerClient:
         )
 
 
+def _job_attr(job, name: str, default=None):
+    if isinstance(job, dict):
+        return job.get(name, default)
+    return getattr(job, name, default)
+
+
+def _precommit_scheduler_job_details(
+    submitted_ids: list[str],
+    job_id_to_opponent: dict,
+    jobs_by_id: dict,
+    scheduler_status: dict | None,
+    collected_results: dict | None,
+    now: float | None = None,
+) -> list[dict]:
+    """Build per-job diagnostic details for scheduler wait/stall events."""
+    now = time.time() if now is None else now
+    scheduler_status = scheduler_status or {}
+    collected_results = collected_results or {}
+    state_by_id = {}
+    for state in ("pending", "claimed", "completed", "missing"):
+        for job_id in scheduler_status.get(state, []) or []:
+            state_by_id[str(job_id)] = state
+
+    details = []
+    for job_id in submitted_ids:
+        item = job_id_to_opponent.get(job_id, {}) or {}
+        job = jobs_by_id.get(job_id)
+        submitted_at = _job_attr(job, "submitted_at")
+        age_sec = None
+        if isinstance(submitted_at, (int, float)) and submitted_at > 0:
+            age_sec = round(max(0.0, now - float(submitted_at)), 1)
+
+        state = "collected" if job_id in collected_results else state_by_id.get(job_id, "unknown")
+        detail = {
+            "job_id": job_id,
+            "opponent": item.get("name") or _job_attr(job, "bot_b_name"),
+            "reason": item.get("reason"),
+            "state": state,
+            "age_sec": age_sec,
+            "timeout_sec": _job_attr(job, "timeout_sec"),
+            "n_games": _job_attr(job, "n_pairs"),
+        }
+        if job_id in collected_results:
+            result = collected_results.get(job_id) or {}
+            detail.update({
+                "wins": result.get("wins_a"),
+                "losses": result.get("wins_b"),
+                "draws": result.get("draws"),
+                "total": result.get("total"),
+                "error": result.get("error"),
+            })
+        details.append(detail)
+    return details
+
+
 def _scheduler_stall_reason(
     *,
     collected_count: int,
@@ -523,6 +578,7 @@ async def run_precommit_eval(args):
                 timeout_sec=max(300, n_games * 120),
                 update_ratings=False,
             ))
+        jobs_by_id = {job.job_id: job for job in jobs}
 
         try:
             submitted_ids = await scheduler_client.submit(jobs)
@@ -530,17 +586,14 @@ async def run_precommit_eval(args):
                 "pipeline.precommit_eval.scheduler_jobs_submitted", "info",
                 f"v{v}: scheduler accepted {len(submitted_ids)}/{len(jobs)} precommit job(s)",
                 {"version": v, "source_v": source_v,
-                 "jobs": [
-                     {
-                         "job_id": jid,
-                         "opponent": job_id_to_opponent.get(jid, {}).get("name"),
-                         "reason": job_id_to_opponent.get(jid, {}).get("reason"),
-                         "n_games": n_games,
-                         "timeout_sec": max(300, n_games * 120),
-                     }
-                     for jid in submitted_ids
-                 ],
-                 "poll_budget_sec": min(max(300, n_games * 120) * len(opponents), 1500)},
+                         "jobs": _precommit_scheduler_job_details(
+                             submitted_ids,
+                             job_id_to_opponent,
+                             jobs_by_id,
+                             {"pending": submitted_ids},
+                             {},
+                         ),
+                         "poll_budget_sec": min(max(300, n_games * 120) * len(opponents), 1500)},
             )
         except Exception as exc:
             log_system_event(
@@ -656,6 +709,14 @@ async def run_precommit_eval(args):
                     and now_for_status - last_status_log >= 60
                     and len(collected_results) < len(submitted_ids)
                 ):
+                    job_details = _precommit_scheduler_job_details(
+                        submitted_ids,
+                        job_id_to_opponent,
+                        jobs_by_id,
+                        last_scheduler_status,
+                        collected_results,
+                        now=now_for_status,
+                    )
                     log_system_event(
                         "pipeline.precommit_eval.scheduler_waiting", "info",
                         f"v{v}: waiting for scheduler results "
@@ -668,7 +729,8 @@ async def run_precommit_eval(args):
                          "pending": pending_count,
                          "claimed": claimed_count,
                          "completed_peek": completed_count,
-                         "missing": missing_count},
+                         "missing": missing_count,
+                         "jobs": job_details},
                     )
                     last_status_log = now_for_status
 
@@ -691,6 +753,13 @@ async def run_precommit_eval(args):
                     # 8-pair mirror battles often take 7-10 minutes before the
                     # first result appears.
                     scheduler_healthy = await scheduler_client.is_available()
+                    job_details = _precommit_scheduler_job_details(
+                        submitted_ids,
+                        job_id_to_opponent,
+                        jobs_by_id,
+                        last_scheduler_status,
+                        collected_results,
+                    )
                     log_system_event(
                         "pipeline.precommit_eval.scheduler_stall", "warn",
                         f"v{v}: scheduler no progress for {rounds_since_progress} rounds "
@@ -701,7 +770,8 @@ async def run_precommit_eval(args):
                          "collected": len(collected_results),
                          "submitted": len(submitted_ids),
                          "reason": stall_reason,
-                         "scheduler_status": last_scheduler_status},
+                         "scheduler_status": last_scheduler_status,
+                         "jobs": job_details},
                     )
                     break
                 await asyncio.sleep(poll_interval)
@@ -711,6 +781,13 @@ async def run_precommit_eval(args):
             if (time.time() >= poll_budget_deadline
                     and len(collected_results) < len(submitted_ids)):
                 scheduler_healthy = await scheduler_client.is_available()
+                job_details = _precommit_scheduler_job_details(
+                    submitted_ids,
+                    job_id_to_opponent,
+                    jobs_by_id,
+                    last_scheduler_status,
+                    collected_results,
+                )
                 log_system_event(
                     "pipeline.precommit_eval.poll_budget_exceeded", "warn",
                     f"v{v}: precommit scheduler-poll hard budget ({PRECOMMIT_POLL_BUDGET:.0f}s) "
@@ -719,7 +796,8 @@ async def run_precommit_eval(args):
                     {"version": v, "source_v": source_v,
                      "collected": len(collected_results),
                      "submitted": len(submitted_ids),
-                     "scheduler_status": last_scheduler_status},
+                     "scheduler_status": last_scheduler_status,
+                     "jobs": job_details},
                 )
 
             # Build matchups from scheduler results

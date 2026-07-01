@@ -12,6 +12,7 @@ Phase 3 is idempotent (interrupt → re-run safely).
 import asyncio
 import json
 import logging
+import os
 import threading
 import time
 import traceback
@@ -23,6 +24,7 @@ log = logging.getLogger("pok.scheduler")
 
 OSCILLATION_BREAKOUT_SCORE_TOLERANCE = 0.02
 OSCILLATION_BREAKOUT_MIN_MARGIN = 0.01
+POST_CLEANUP_EXPERIENCE_TIMEOUT = int(os.environ.get("POK_POST_CLEANUP_EXPERIENCE_TIMEOUT", "600"))
 
 
 # Single-flight guard for the background exploitability probe thread (see the
@@ -1198,12 +1200,44 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
     """Phase 3: Idempotent post-generation cleanup."""
     from evolution_infra import MAX_ACTIVE_BOTS, get_active_bots
 
+    cleanup_started = time.time()
+
+    def _finish(status: str = "done", reason: str = ""):
+        elapsed = time.time() - cleanup_started
+        severity = "info" if status in {"done", "skipped"} else "warn"
+        log_system_event(
+            "pipeline.post_cleanup_done",
+            severity,
+            f"Post-cleanup {status} for v{ctx.next_v} in {elapsed:.1f}s",
+            {
+                "version": ctx.next_v,
+                "source_v": ctx.source_v,
+                "status": status,
+                "reason": reason,
+                "elapsed_sec": round(elapsed, 2),
+            },
+        )
+
+    log_system_event(
+        "pipeline.post_cleanup_start",
+        "info",
+        f"Post-cleanup starting for v{ctx.next_v}",
+        {"version": ctx.next_v, "source_v": ctx.source_v, "strategy": ctx.strategy},
+    )
+
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
+        _finish("skipped", "shutdown_before_start")
         return
 
     # Auto-reap if pool exceeds limit
     active_bots = get_active_bots()
     if len(active_bots) > MAX_ACTIVE_BOTS:
+        log_system_event(
+            "pipeline.post_cleanup_reap_start",
+            "info",
+            f"Auto-reap starting: {len(active_bots)} active bot(s)",
+            {"version": ctx.next_v, "active_count": len(active_bots), "max_active": MAX_ACTIVE_BOTS},
+        )
         try:
             from tool_bot_management import _do_reap_weakest
             reap_count = 0
@@ -1212,16 +1246,31 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
                 if not result.get("reaped"):
                     break
                 reap_count += 1
+            log_system_event(
+                "pipeline.post_cleanup_reap_done",
+                "info",
+                f"Auto-reap finished: reaped {reap_count} bot(s)",
+                {"version": ctx.next_v, "reap_count": reap_count,
+                 "active_count": len(get_active_bots())},
+            )
         except Exception as e:
             log.warning("Auto-reap failed: %s\n%s", e, traceback.format_exc())
+            log_system_event(
+                "pipeline.post_cleanup_reap_failed",
+                "warn",
+                f"Auto-reap failed: {str(e)[:180]}",
+                {"version": ctx.next_v, "error": str(e)[:500]},
+            )
             if ui:
                 ui.log_history(f"Auto-reap failed: {e}", "warn")
 
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
+        _finish("skipped", "shutdown_after_reap")
         return
 
     # Experience pool consolidation (every 3 generations, or when too many unconsolidated entries)
     should_consolidate = ctx.next_v > 0 and ctx.next_v % 3 == 0
+    consolidation_reason = "multiple_of_3" if should_consolidate else ""
     if not should_consolidate:
         # Also trigger when RECENT_LESSONS has too many entries (prevents stale/contradictory data)
         from evolution_infra import EXPERIENCE_FILE
@@ -1233,6 +1282,7 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
                                   if line.strip().startswith("- **")]
                 if len(recent_entries) >= 4:
                     should_consolidate = True
+                    consolidation_reason = "recent_lessons_threshold"
                     log.info("Triggering experience consolidation: %d RECENT_LESSONS entries (threshold: 4)",
                              len(recent_entries))
             except Exception:
@@ -1250,6 +1300,7 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
                     )
                 except Exception:
                     pass
+                _finish("skipped", "experience_uncommitted")
                 return
             from experience_archivist import _consolidate_experience_pool
             preexisting_dirty = _cleanup_dirty_paths()
@@ -1265,7 +1316,34 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
                         exhausted_dirs = ", ".join(ed)
             except Exception:
                 pass
-            await _consolidate_experience_pool(ui, exhausted_directions=exhausted_dirs)
+            exp_started = time.time()
+            log_system_event(
+                "pipeline.post_cleanup_experience_start",
+                "info",
+                f"v{ctx.next_v}: experience consolidation starting",
+                {
+                    "version": ctx.next_v,
+                    "source_v": ctx.source_v,
+                    "reason": consolidation_reason or "unknown",
+                    "timeout_s": POST_CLEANUP_EXPERIENCE_TIMEOUT,
+                    "preexisting_dirty_count": len(preexisting_dirty),
+                    "exhausted_directions": exhausted_dirs,
+                },
+            )
+            await asyncio.wait_for(
+                _consolidate_experience_pool(ui, exhausted_directions=exhausted_dirs),
+                timeout=POST_CLEANUP_EXPERIENCE_TIMEOUT,
+            )
+            log_system_event(
+                "pipeline.post_cleanup_experience_done",
+                "info",
+                f"v{ctx.next_v}: experience consolidation finished in {time.time() - exp_started:.1f}s",
+                {
+                    "version": ctx.next_v,
+                    "source_v": ctx.source_v,
+                    "elapsed_sec": round(time.time() - exp_started, 2),
+                },
+            )
             try:
                 _commit_post_cleanup_experience_change(ctx.next_v, preexisting_dirty)
             except Exception as e:
@@ -1275,9 +1353,39 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
                     f"v{ctx.next_v}: experience consolidation commit failed: {str(e)[:180]}",
                     {"version": ctx.next_v, "error": str(e)[:500]},
                 )
+        except asyncio.TimeoutError:
+            log_system_event(
+                "pipeline.post_cleanup_experience_timeout",
+                "warn",
+                f"v{ctx.next_v}: experience consolidation exceeded {POST_CLEANUP_EXPERIENCE_TIMEOUT}s; continuing",
+                {
+                    "version": ctx.next_v,
+                    "source_v": ctx.source_v,
+                    "timeout_s": POST_CLEANUP_EXPERIENCE_TIMEOUT,
+                    "reason": consolidation_reason or "unknown",
+                },
+            )
+            if ui:
+                ui.log_history(
+                    f"Experience consolidation timed out after {POST_CLEANUP_EXPERIENCE_TIMEOUT}s; continuing.",
+                    "warn",
+                )
         except Exception as e:
+            log_system_event(
+                "pipeline.post_cleanup_experience_failed",
+                "warn",
+                f"v{ctx.next_v}: experience consolidation failed: {str(e)[:180]}",
+                {"version": ctx.next_v, "source_v": ctx.source_v, "error": str(e)[:500]},
+            )
             if ui:
                 ui.log_history(f"Experience consolidation failed: {e}", "warn")
+    else:
+        log_system_event(
+            "pipeline.post_cleanup_experience_skipped",
+            "info",
+            f"v{ctx.next_v}: experience consolidation skipped",
+            {"version": ctx.next_v, "source_v": ctx.source_v, "reason": "threshold_not_met"},
+        )
 
     # Exploitability probes against the new bot (FIRE-AND-FORGET background).
     #
@@ -1327,6 +1435,7 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
             f"v{ctx.next_v} probe skipped: shutting down",
             {"version": ctx.next_v, "reason": "shutdown"},
         )
+        _finish("skipped", "shutdown_before_exploitability")
         return
 
     try:
@@ -1481,6 +1590,20 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
     # This feeds behavior_diversity fingerprints.jsonl consumed by crossover
     # parent selection and the novelty gate in commit_bot.
     try:
+        log_system_event(
+            "pipeline.post_cleanup_fingerprint_start",
+            "info",
+            f"Behavior fingerprint starting for claude_v{ctx.next_v}",
+            {"version": ctx.next_v, "source_v": ctx.source_v},
+        )
         _save_committed_bot_fingerprint(ctx.next_v)
     except Exception as e:
         log.warning("Fingerprint computation failed (non-fatal): %s", e)
+        log_system_event(
+            "pipeline.post_cleanup_fingerprint_failed",
+            "warn",
+            f"Behavior fingerprint failed for claude_v{ctx.next_v}: {str(e)[:180]}",
+            {"version": ctx.next_v, "source_v": ctx.source_v, "error": str(e)[:500]},
+        )
+
+    _finish("done")
