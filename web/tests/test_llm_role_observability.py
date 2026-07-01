@@ -300,7 +300,7 @@ def test_process_stream_emits_silence_watchdog(monkeypatch, tmp_path):
     assert fields["silence_warn_sec"] == 0.02
 
 
-def test_run_claude_query_downgrades_success_error_result_to_warn(monkeypatch, tmp_path):
+def test_run_claude_query_downgrades_success_error_result_to_info(monkeypatch, tmp_path):
     events = []
 
     async def fake_stream(*_args, **_kwargs):
@@ -332,6 +332,6 @@ def test_run_claude_query_downgrades_success_error_result_to_warn(monkeypatch, t
     failed = [event for event in events if event[0] == "pipeline.llm_role_failed"]
     assert len(failed) == 1
     _category, severity, _message, fields = failed[0]
-    assert severity == "warn"
+    assert severity == "info"
     assert fields["role"] == "battle_experience"
     assert "error result: success" in fields["error"]

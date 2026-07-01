@@ -43,7 +43,7 @@ from evolution_infra import (
     substitute_template,
 )
 import replay_analysis
-from llm_failure import is_llm_infra_error
+from llm_failure import is_llm_infra_error, is_success_error_result
 
 log = logging.getLogger("pok.battle_exp")
 
@@ -51,7 +51,24 @@ log = logging.getLogger("pok.battle_exp")
 def _classify_llm_error(e) -> str:
     """Return "infra" for LLM infrastructure errors (SDK/timeout/connection),
     "business" otherwise. Used for typed battle_exp telemetry."""
+    if is_success_error_result(e):
+        return "sdk_success_result"
     return "infra" if is_llm_infra_error(e) else "business"
+
+
+def _llm_error_event_type(kind: str) -> str:
+    if kind == "sdk_success_result":
+        return "battle_exp.sdk_success_result"
+    return f"battle_exp.{kind}_error"
+
+
+def _llm_error_event_severity(kind: str) -> str:
+    return "warn" if kind == "infra" else "info"
+
+
+def _log_llm_failure(message: str, kind: str, exc) -> None:
+    log_fn = log.info if kind == "sdk_success_result" else log.warning
+    log_fn(message, kind, exc)
 
 # ──────────────────────────────────────────────
 # Constants
@@ -315,12 +332,13 @@ def _experience_loop():
                         batch_results.append((entry, True, summary))
                     except Exception as e:
                         _kind = _classify_llm_error(e)
-                        log.warning("Battle experience summary failed for %s (%s): %s", match_id, _kind, e)
+                        log_fn = log.info if _kind == "sdk_success_result" else log.warning
+                        log_fn("Battle experience summary failed for %s (%s): %s", match_id, _kind, e)
                         try:
                             from system_log import log_system_event
                             log_system_event(
-                                f"battle_exp.{_kind}_error",
-                                "warn" if _kind == "infra" else "info",
+                                _llm_error_event_type(_kind),
+                                _llm_error_event_severity(_kind),
                                 f"Match {match_id} summary failed ({_kind}): {e}",
                                 {"match_id": str(match_id), "kind": _kind, "error": str(e)[:200]},
                             )
@@ -648,12 +666,12 @@ def _run_sync_llm_call(prompt: str) -> str | None:
         return None
     except Exception as e:
         _kind = _classify_llm_error(e)
-        log.warning("Sync LLM call failed (%s): %s", _kind, e)
+        _log_llm_failure("Sync LLM call failed (%s): %s", _kind, e)
         try:
             from system_log import log_system_event
             log_system_event(
-                f"battle_exp.{_kind}_error",
-                "warn" if _kind == "infra" else "info",
+                _llm_error_event_type(_kind),
+                _llm_error_event_severity(_kind),
                 f"Sync LLM call failed ({_kind}): {e}",
                 {"kind": _kind, "error": str(e)[:200]},
             )
