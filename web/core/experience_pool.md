@@ -34,6 +34,9 @@
 - Evaluate polarized-aggression fixes by net-chips/blowout-frequency, NOT W-L (v204: 5W-3L yet net -25071). Validation thresholds: <30g H2H = noise; ≥30g paired net-chips to act; ≥100g to declare success.
 
 ## RECENT_LESSONS
+- **v240**: Crossover (v239) keeps destroying structural functions: _semibluff_raise_construct lost for the 2nd time, _preflop_shove_defense_fold lost once. Future crossover source selection must verify donor parent retains key structural additions, or post-crossover must include a structural-integrity diff check against known-function inventories.
+- **v240**: strategy.py at 2465/2500 LOC is a hard constraint on all future v240-descendant edits — the next Architect task MUST reclaim LOC before adding logic.
+- **v240 归档建议 (improvement)**: MANDATORY post-commit: grep 'SEMIBLUFF_RAISE.*reason=fired' for >=5% fire-rate vs v182/v203/v209 and 'PREFLOP_SHOVE_DEFENSE' for >=3% vs v206 at >=30g; if semibluff is inert, widen fold_to_raise gate from 0.45 to 0.42 OR lower confidence gate from 0.20 to 0.15 to activate at total_actions>=10 instead of >=12.
 - **v239**: betsize-polarity/overbettor activation = lower the SAMPLE gate 4→3 + record all-in samples; lowering confidence constants alone is inert (the confidence trap recurs).
 - **v239**: To beat v206 (PREFLOP nemesis), prefer preflop defense/4bet-response over postflop betsize-polarity ports — reachability must show the postflop tendency fires first.
 - **v239 归档建议**: wire `facing_villain_4bet=True` via preflop raise-count detection, then test the activated SPR/4bet-fold branch specifically vs v206.
@@ -41,3 +44,4 @@
 - **v238**: SIBLING-GATE ALIGNMENT — multiple fold gates (_multibarrel_line_fold, _aggro_bluffcatcher_should_fold, _rock_value_bet_fold) sharing a pot_odds floor: editing ONE creates an inconsistent exploit surface. Lower ALL siblings, or gate the widened band on opp signals.
 - **v238 归档建议**: close v235's leak vs v208/v205/v184 (value-heavy multi-barrel, 40-50% pot) by porting the FULL v206 fold-gate stack to all 4 strategy.py dispatch sites + aligning sibling gates; validate ≥30g with bet-sizing telemetry localizing the leak before commit.
 - **v237**: `_estimate_bluff_frequency` underbettor floor LOCK (attempted v219/v221/v235/v237, ZERO ≥30g WR-lift) — Master MUST NOT select this axis; higher-EV path = port the FULL _multibarrel/_aggro_bluffcatcher/_rock stack (4 sites) from v195/v215.
+
