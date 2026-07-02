@@ -30,6 +30,10 @@ class _DummyUI:
         self.costs.append((role_name, cost_usd, usage))
 
 
+class _DummyShutdown:
+    is_shutting_down = True
+
+
 async def _no_wait(*_args, **_kwargs):
     return None
 
@@ -127,6 +131,50 @@ def test_run_claude_query_emits_role_failed(monkeypatch, tmp_path):
     assert fields["role"] == "reviewer"
     assert fields["exception_type"] == "RuntimeError"
     assert "boom" in fields["error"]
+
+
+def test_run_claude_query_exit143_during_shutdown_is_cancelled(monkeypatch, tmp_path):
+    events = []
+
+    async def fake_stream(*_args, **_kwargs):
+        raise Exception("Command failed with exit code 143 (exit code: 143)")
+
+    monkeypatch.setattr(llm_query, "_run_stream_with_signature_retry", fake_stream)
+    monkeypatch.setattr(
+        llm_query,
+        "_emit_llm_event",
+        lambda category, severity, message, **fields: events.append(
+            (category, severity, message, fields)
+        ),
+    )
+    llm_query.set_shutdown_manager(_DummyShutdown())
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                llm_query.run_claude_query(
+                    "prompt",
+                    [],
+                    _DummyUI(),
+                    "MATCH ANALYST",
+                    str(tmp_path / "match_analyst_io.txt"),
+                )
+            )
+    finally:
+        llm_query.set_shutdown_manager(None)
+
+    failed = [event for event in events if event[0] == "pipeline.llm_role_failed"]
+    cancelled = [
+        event for event in events
+        if event[0] == "pipeline.llm_role_shutdown_cancelled"
+    ]
+    assert failed == []
+    assert len(cancelled) == 1
+    _category, severity, message, fields = cancelled[0]
+    assert severity == "info"
+    assert "stopped during shutdown" in message
+    assert fields["role"] == "MATCH ANALYST"
+    assert "exit code 143" in fields["error"]
 
 
 def test_process_stream_emits_periodic_progress(monkeypatch, tmp_path):

@@ -26,9 +26,10 @@ from claude_agent_sdk import (
     ThinkingBlock,
     ClaudeSDKError,
 )
-from llm_failure import is_success_error_result
+from llm_failure import is_shutdown_cancel_error, is_success_error_result
 
 log = logging.getLogger("pok.infra")
+_shutdown_manager = None
 
 
 _SUBAGENT_BASH_MUTATION_PATTERNS = (
@@ -404,6 +405,19 @@ _LLM_PROGRESS_INTERVAL_SEC = float(
 _LLM_SILENCE_WARN_SEC = float(
     os.environ.get("POK_LLM_SILENCE_WARN_SEC", "240")
 )
+
+
+def set_shutdown_manager(shutdown_mgr):
+    """Share the process shutdown state with all role-level LLM calls."""
+    global _shutdown_manager
+    _shutdown_manager = shutdown_mgr
+
+
+def _is_shutdown_requested() -> bool:
+    try:
+        return bool(_shutdown_manager and _shutdown_manager.is_shutting_down)
+    except Exception:
+        return False
 
 
 def _emit_llm_event(category, severity, message, **fields):
@@ -1167,14 +1181,32 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         )
         return output, cost_usd, usage
     except asyncio.CancelledError:
+        is_shutdown = _is_shutdown_requested()
         _emit_llm_event(
-            "pipeline.llm_role_cancelled", "warn",
-            f"{role_name}: LLM call cancelled after {time.time() - call_started_at:.1f}s",
+            "pipeline.llm_role_shutdown_cancelled" if is_shutdown else "pipeline.llm_role_cancelled",
+            "info" if is_shutdown else "warn",
+            (
+                f"{role_name}: LLM call stopped during shutdown after {time.time() - call_started_at:.1f}s"
+                if is_shutdown
+                else f"{role_name}: LLM call cancelled after {time.time() - call_started_at:.1f}s"
+            ),
             elapsed_sec=round(time.time() - call_started_at, 2),
             **lifecycle_fields,
         )
         raise
     except Exception as e:
+        if _is_shutdown_requested() and is_shutdown_cancel_error(e):
+            _emit_llm_event(
+                "pipeline.llm_role_shutdown_cancelled", "info",
+                f"{role_name}: LLM call stopped during shutdown after {time.time() - call_started_at:.1f}s",
+                elapsed_sec=round(time.time() - call_started_at, 2),
+                exception_type=type(e).__name__,
+                error=str(e)[:1000],
+                **lifecycle_fields,
+            )
+            raise asyncio.CancelledError(
+                f"{role_name}: LLM call stopped during shutdown"
+            ) from e
         severity = _llm_failure_severity(e)
         _emit_llm_event(
             "pipeline.llm_role_failed", severity,
