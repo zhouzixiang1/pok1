@@ -276,6 +276,24 @@ last_stage_key = None
 checkpoint_missing_since = None
 selected_generation_key = None
 quiet_period_sec = 60
+last_event_activity = 0.0
+
+def is_pipeline_activity_event(event):
+    etype = event.get("type") or ""
+    return (
+        etype.startswith("pipeline.llm_role_")
+        or etype.startswith("pipeline.master_")
+        or etype.startswith("pipeline.literature_")
+        or etype.startswith("pipeline.worker")
+        or etype in {
+            "pipeline.workers_done",
+            "pipeline.quality_failed",
+            "pipeline.quality_passed",
+            "pipeline.reviewed",
+            "pipeline.critic_checked",
+            "pipeline.verified",
+        }
+    )
 
 def write_line(msg):
     print(msg)
@@ -445,11 +463,15 @@ def check_service(force_heartbeat=False):
         limit = stage_stale_limits.get(stage, default_stage_stale_limit)
         try:
             activity_limit = min(limit, 900)
-            activity_fresh = update_age is not None and float(update_age) <= activity_limit
+            event_activity_age = (now - last_event_activity) if last_event_activity else None
+            checkpoint_fresh = update_age is not None and float(update_age) <= activity_limit
+            event_fresh = event_activity_age is not None and event_activity_age <= activity_limit
+            activity_fresh = checkpoint_fresh or event_fresh
             if float(stage_age) > limit and activity_fresh:
                 write_line(
                     f"[stage-stale-warning] stage={stage} age={stage_age}s limit={limit}s "
-                    f"but checkpoint activity is recent ({update_age}s <= {activity_limit}s): {snapshot}"
+                    f"but activity is recent (checkpoint_age={update_age}s, "
+                    f"event_age={event_activity_age}s, limit={activity_limit}s): {snapshot}"
                 )
             elif float(stage_age) > limit:
                 write_line(f"[stage-stale] stage={stage} age={stage_age}s limit={limit}s: {snapshot}")
@@ -482,7 +504,7 @@ def generation_key(event):
     return f"{event.get('type')}:{int(event.get('ts') or 0)}"
 
 def process_new_events(count_success=True):
-    global pos, seen, selected_generation_key, checkpoint_missing_since
+    global pos, seen, selected_generation_key, checkpoint_missing_since, last_event_activity
     processed = False
     if not events_file.exists():
         return processed
@@ -499,6 +521,11 @@ def process_new_events(count_success=True):
             except Exception:
                 continue
             etype = event.get("type")
+            if is_pipeline_activity_event(event):
+                try:
+                    last_event_activity = max(last_event_activity, float(event.get("ts") or time.time()))
+                except Exception:
+                    last_event_activity = max(last_event_activity, time.time())
             if etype == "pipeline.generation_selected":
                 selected_generation_key = generation_key(event)
                 checkpoint_missing_since = None

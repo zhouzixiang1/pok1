@@ -412,6 +412,53 @@ def _bump_master_fail_count(next_v, source_v, value=None, audit_context=None):
         return 0
 
 
+def _touch_master_checkpoint(next_v, source_v, *, phase, audit_attempt=None, audit_context=None):
+    """Refresh the active checkpoint while Master/audit LLM work is progressing.
+
+    `run_master` can legitimately spend many minutes inside Master retries and
+    plan-audit loops before it reaches the real `master_planned` stage. Without
+    this heartbeat, watchdogs see the checkpoint parked at `direction_audited`
+    and misclassify an active LLM stream as a stale pipeline.
+    """
+    try:
+        from evolution_infra import read_pipeline_checkpoint
+
+        ckpt = read_pipeline_checkpoint() or {}
+        if ckpt.get("next_v") != next_v:
+            return False
+        stage = ckpt.get("stage") or "direction_audited"
+        if stage in {"timed_out", "infra_timed_out", "archived", "abandoned"}:
+            return False
+        checkpoint_kwargs = {"touch_stage_timestamp": True}
+        if audit_attempt is not None:
+            checkpoint_kwargs["audit_attempt"] = audit_attempt
+        if audit_context is not None:
+            checkpoint_kwargs["audit_context"] = audit_context
+        ok = write_pipeline_checkpoint(
+            next_v,
+            ckpt.get("source_v", source_v),
+            stage,
+            **checkpoint_kwargs,
+        )
+        if ok:
+            log_system_event(
+                "pipeline.master_checkpoint_heartbeat",
+                "info",
+                f"Master checkpoint heartbeat for v{next_v} ({phase})",
+                {
+                    "next_v": next_v,
+                    "source_v": ckpt.get("source_v", source_v),
+                    "stage": stage,
+                    "phase": phase,
+                    "audit_attempt": audit_attempt,
+                },
+            )
+        return bool(ok)
+    except Exception as exc:
+        _log.debug("Master checkpoint heartbeat failed (%s): %s", phase, exc)
+        return False
+
+
 def _normalize_master_plan_paths(plan, source_v, next_v):
     """Rewrite parent bot paths in a Master plan to the target bot path.
 
@@ -927,6 +974,7 @@ async def run_master(args):
     research_proposals = args.get("research_proposals", "")
 
     _set_pipeline_status(f"Master planning for v{next_v}")
+    _touch_master_checkpoint(next_v, source_v, phase="run_master_start")
 
     # Hard cap: refuse to re-burn Master LLM budget if it has already failed
     # (plan-JSON collapse or audit rejection) MAX_MASTER_TOTAL_FAILURES times
@@ -1306,6 +1354,7 @@ async def run_master(args):
         _nf = _bump_master_fail_count(next_v, source_v)
         return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed to produce a valid plan after 3 retries", "fail_count": _nf, "directive": "If run_master keeps failing, do NOT retry indefinitely — call abandon_generation to restart the generation fresh.", "logs": ui.get_output()})}]}
     data = _normalize_and_log_master_plan_paths(data, source_v, next_v)
+    _touch_master_checkpoint(next_v, source_v, phase="master_plan_ready")
 
     # --- P0-1: Post-Master Plan Verification Audit ---
     # Capped retry loop: on audit rejection with retry_recommended, re-plan AND
@@ -1329,6 +1378,12 @@ async def run_master(args):
         _audit_attempt = int(_ckpt0.get("audit_attempt") or 0)
 
         for _audit_iter in range(MAX_MASTER_AUDIT_RETRIES + 1):
+            _touch_master_checkpoint(
+                next_v,
+                source_v,
+                phase="master_plan_audit_start",
+                audit_attempt=_audit_attempt,
+            )
             try:
                 audit_result = await _run_master_plan_audit(data, source_v, ui, next_v=next_v)
             except TypeError as _audit_te:
@@ -1374,6 +1429,13 @@ async def run_master(args):
                 })
             # Re-plan with rejection feedback, then re-audit the new plan
             _audit_attempt += 1
+            _touch_master_checkpoint(
+                next_v,
+                source_v,
+                phase="master_audit_rejected",
+                audit_attempt=_audit_attempt,
+                audit_context={"master_audit_rejection": master_audit_ctx},
+            )
             log_system_event("pipeline.master_audit_blocked", "error",
                              f"Master plan audit blocked v{next_v}; retrying Master attempt {_audit_attempt}",
                              {"next_v": next_v, "source_v": source_v,
@@ -1418,6 +1480,12 @@ async def run_master(args):
                 _nf = _bump_master_fail_count(next_v, source_v, value=_audit_attempt)
                 return {"content": [{"type": "text", "text": json.dumps({"error": "Master failed after audit retry", "fail_count": _nf, "directive": "If run_master keeps failing, call abandon_generation to restart fresh.", "logs": ui.get_output()})}]}
             data = _normalize_and_log_master_plan_paths(data, source_v, next_v)
+            _touch_master_checkpoint(
+                next_v,
+                source_v,
+                phase="master_retry_plan_ready",
+                audit_attempt=_audit_attempt,
+            )
             # Persist audit_attempt so crash-resume resumes at this count (not 0)
             try:
                 _ckpt_retry = read_pipeline_checkpoint() or {}
@@ -1427,6 +1495,7 @@ async def run_master(args):
                     audit_attempt=_audit_attempt,
                     direction_audit=_ckpt_retry.get("direction_audit") or direction_audit,
                     audit_context={"master_audit_rejection": master_audit_ctx},
+                    touch_stage_timestamp=True,
                 )
             except Exception:
                 pass
