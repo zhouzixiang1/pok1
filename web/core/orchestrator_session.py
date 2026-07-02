@@ -174,7 +174,9 @@ def _startup_recovery(ui=None) -> dict:
     # and we're at a recoverable stage, treat as stale session and force new LLM session.
     recoverable_stages = {"selected", "preparing", "prepared", "crossover_running",
                           "direction_audited", "master_planned", "workers_done",
-                          "quality_passed", "reviewed", "critic_checked", "precommit_failed", "verified"}
+                          "quality_failed", "quality_passed", "reviewed",
+                          "critic_checked", "precommit_failed", "repair_planned",
+                          "rework_running", "verified"}
     last_stage_ts = checkpoint.get("last_stage_change_ts", 0.0)
     if stage in recoverable_stages and last_stage_ts > 0:
         from evolution_infra import WATCHDOG_TIMEOUT
@@ -281,7 +283,9 @@ def _startup_recovery(ui=None) -> dict:
         # Stages with real work — don't abort even if old
         recoverable_stages = {"selected", "preparing", "prepared", "crossover_running",
                               "direction_audited", "master_planned", "workers_done",
-                              "quality_passed", "reviewed", "critic_checked", "precommit_failed", "verified"}
+                              "quality_failed", "quality_passed", "reviewed",
+                              "critic_checked", "precommit_failed", "repair_planned",
+                              "rework_running", "verified"}
         if stage in recoverable_stages:
             if ui:
                 ui.log_history(f"[Recovery] v{next_v} at stage '{stage}' — preserving for resume (no 30-min abort).", "warn")
