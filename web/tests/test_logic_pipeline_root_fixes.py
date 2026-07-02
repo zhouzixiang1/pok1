@@ -1059,6 +1059,10 @@ wc -l bots/claude_v234/strategy.py
     assert llm_query._subagent_bash_write_scope_violation(redirect_allowed, allowed) is None
     assert llm_query._subagent_bash_write_scope_violation(rm_allowed, allowed) is None
     file_scope = {"files": ["/home/zzx/project/pok/bots/claude_v234/strategy.py"]}
+    assert llm_query._subagent_is_outside_allowed(
+        "/home/zzx/project/pok/bots/claude_v234/strategy.py",
+        file_scope,
+    ) is False
     assert llm_query._subagent_bash_write_scope_violation(
         "sed -i 's/a/b/' bots/claude_v234/strategy.py",
         file_scope,
@@ -1088,6 +1092,47 @@ wc -l bots/claude_v234/strategy.py
     assert llm_query._subagent_readonly_mutation_violation(
         "Edit", {"file_path": "bots/claude_v234/main.py"}
     ) == "Edit_not_allowed"
+
+
+def test_subagent_write_guard_uses_structured_scope_for_decisions():
+    """The hook's human-readable scope label must not be used as a path."""
+    import asyncio
+    import llm_query
+
+    async def _run():
+        hooks = llm_query._make_subagent_write_guard(
+            "/home/zzx/project/pok/bots/claude_v266"
+        )
+        handler = hooks["PreToolUse"][0].hooks[0]
+        allowed = await handler({
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": (
+                    "ls bots/ | grep claude_v266 || echo missing\n"
+                    "mkdir -p bots/claude_v266\n"
+                    "cp bots/claude_v209/*.py bots/claude_v266/\n"
+                    "ls bots/claude_v266/"
+                ),
+            },
+        }, "tool-use-1", {})
+        denied = await handler({
+            "tool_name": "Bash",
+            "tool_input": {"command": "mkdir -p bots/claude_v267"},
+        }, "tool-use-2", {})
+        edit_allowed = await handler({
+            "tool_name": "Edit",
+            "tool_input": {
+                "file_path": "/home/zzx/project/pok/bots/claude_v266/strategy.py"
+            },
+        }, "tool-use-3", {})
+        return allowed, denied, edit_allowed
+
+    allowed, denied, edit_allowed = asyncio.run(_run())
+    assert allowed == {}
+    assert edit_allowed == {}
+    decision = denied["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "deny"
+    assert "bots/claude_v267" in decision["permissionDecisionReason"]
 
 
 def test_commit_bot_blocks_missing_code_fingerprints(tmp_path, monkeypatch):
