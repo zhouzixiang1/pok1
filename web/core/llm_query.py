@@ -359,6 +359,50 @@ def _command_name(word):
     return os.path.basename(str(word)).lower()
 
 
+def _strip_shell_comments(command):
+    """Remove shell comments while preserving quoted ``#`` characters."""
+    text = str(command or "")
+    out = []
+    quote = None
+    escaped = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if escaped:
+            out.append(ch)
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\":
+            out.append(ch)
+            escaped = True
+            i += 1
+            continue
+        if quote:
+            out.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "#":
+            prev = out[-1] if out else "\n"
+            if prev == "\n" or prev.isspace() or prev in ";&|(":
+                while i < len(text) and text[i] != "\n":
+                    i += 1
+                if i < len(text) and text[i] == "\n":
+                    out.append("\n")
+                    i += 1
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _non_option_args(args, options_with_value=()):
     values = []
     i = 0
@@ -379,7 +423,7 @@ def _non_option_args(args, options_with_value=()):
 
 
 def _iter_shell_write_redirect_targets(command):
-    text = _strip_heredoc_bodies(command)
+    text = _strip_shell_comments(_strip_heredoc_bodies(command))
     quote = None
     escaped = False
     i = 0

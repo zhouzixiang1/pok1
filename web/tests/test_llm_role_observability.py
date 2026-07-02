@@ -581,6 +581,24 @@ done"""
     ]
 
 
+def test_subagent_mutation_guard_ignores_redirect_operators_inside_comments():
+    command = """# Get the full strategy.py diff for the to_call>0 block
+diff bots/claude_v200/strategy.py bots/claude_v249/strategy.py | wc -l
+echo "---"
+# Check the choose_raise changes more carefully
+diff bots/claude_v200/strategy.py bots/claude_v249/strategy.py | tail -200
+"""
+
+    assert llm_query._subagent_bash_mutation_detector(command) is None
+    assert list(llm_query._iter_shell_write_redirect_targets(command)) == []
+    assert (
+        llm_query._subagent_bash_mutation_detector(
+            "printf '# not a comment' > web/core/tmp.txt"
+        )
+        == "write_redirect:web/core/tmp.txt"
+    )
+
+
 def test_subagent_mutation_guard_still_blocks_real_redirect():
     assert (
         llm_query._subagent_bash_mutation_detector("echo x > web/core/tmp.txt")
