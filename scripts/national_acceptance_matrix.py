@@ -37,9 +37,9 @@ def default_bots(limit: int):
     return _na.default_bots(limit)
 
 
-async def run_matrix(bots, hands: int):
+async def run_matrix(bots, hands: int, *, strict: bool = True):
     _sync_root()
-    return await _na.run_matrix(bots, hands)
+    return await _na.run_matrix(bots, hands, strict=strict)
 
 
 def format_markdown(report):
@@ -51,6 +51,7 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--bots", nargs="*", help="Bot labels or paths. Defaults to latest + top conservative ratings.")
     parser.add_argument("--limit", type=int, default=4, help="Default bot discovery limit.")
     parser.add_argument("--hands", type=int, default=70, help="Hands per pair. Use 70 for national acceptance.")
+    parser.add_argument("--lenient", action="store_true", help="Allow adapter compatibility conversions; diagnostic only.")
     parser.add_argument("--output", help="JSON output path. Defaults under results/.")
     parser.add_argument("--markdown", help="Optional Markdown output path.")
     return parser.parse_args(argv)
@@ -64,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.hands <= 0:
         raise SystemExit("--hands must be positive")
 
-    report = asyncio.run(run_matrix(bots, args.hands))
+    report = asyncio.run(run_matrix(bots, args.hands, strict=not args.lenient))
     output = Path(args.output) if args.output else (
         ROOT / "results" / f"national_acceptance_matrix_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     )

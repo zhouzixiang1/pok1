@@ -25,6 +25,16 @@ def test_orchestrator_prompt_does_not_retry_workers_for_critic_alone():
     assert "When retrying workers after critic rejection" not in prompt
 
 
+def test_orchestrator_prompt_treats_master_error_as_blocking():
+    prompt = (PROMPTS / "orchestrator.md").read_text(encoding="utf-8")
+
+    assert 'If the result contains `"error"` → Master FAILED' in prompt
+    assert 'contains `"plan"` key and NO `"error"` key' in prompt
+    assert "worker_prompt` hard-size\nviolations are BLOCKING" in prompt
+    assert 'If the result contains `"plan"` key → Master SUCCEEDED' not in prompt
+    assert "worker_prompt size warnings are ADVISORY" not in prompt
+
+
 def test_orchestrator_prompt_crossover_commit_contract_is_consistent():
     prompt = (PROMPTS / "orchestrator.md").read_text(encoding="utf-8")
 

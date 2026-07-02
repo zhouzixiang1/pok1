@@ -179,6 +179,69 @@ def test_aggregate_negative_ev_blocks_small_wl_edge():
     assert payload["mean"] < 0
 
 
+def test_admission_strength_blocks_negative_chip_ev():
+    import tool_eval
+
+    samples = [-500.0] * 24
+    blockers, payload = tool_eval._admission_strength_blockers(
+        n_games=tool_eval.PRECOMMIT_DEFAULT_N_GAMES,
+        total_wins=12,
+        total_losses=12,
+        total_draws=0,
+        aggregate_net_chips=samples,
+    )
+
+    assert any(b["reason"] == "admission_negative_chip_ev" for b in blockers)
+    assert payload["mean"] == -500.0
+
+
+def test_admission_strength_blocks_low_sample_precommit():
+    import tool_eval
+
+    blockers, payload = tool_eval._admission_strength_blockers(
+        n_games=tool_eval.PRECOMMIT_DEFAULT_N_GAMES - 1,
+        precommit_attempt=2,
+        total_wins=8,
+        total_losses=0,
+        total_draws=0,
+        aggregate_net_chips=[1000.0] * 24,
+    )
+
+    assert any(b["reason"] == "provisional_low_sample_precommit" for b in blockers)
+    assert payload["n_games"] == tool_eval.PRECOMMIT_DEFAULT_N_GAMES - 1
+
+
+def test_plan_compiler_externalizes_oversized_worker_prompt(tmp_path):
+    import plan_compiler
+
+    long_prompt = "Implement this carefully.\n" + ("detail " * 2500)
+    plan = {
+        "tasks": [
+            {
+                "worker_id": 1,
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["strategy.py"],
+                "worker_prompt": long_prompt,
+            }
+        ]
+    }
+
+    compiled, meta = plan_compiler.compile_master_plan(
+        plan,
+        next_v=300,
+        target_dir=tmp_path / "claude_v300",
+        project_root=tmp_path,
+    )
+
+    task = compiled["tasks"][0]
+    assert meta["compiled"] is True
+    assert task["worker_prompt_compiled"] is True
+    assert len(task["worker_prompt"]) < plan_compiler.HARD_WORKER_PROMPT_CHARS
+    assert "task_brief_file" in task
+    assert (tmp_path / task["task_brief_file"]).exists()
+    assert compiled["plan_compiler"]["compiled_tasks"][0]["original_chars"] == len(long_prompt)
+
+
 def test_scheduler_status_excludes_collected_from_missing():
     import tool_eval
 

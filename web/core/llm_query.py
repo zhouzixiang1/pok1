@@ -335,6 +335,113 @@ def _subagent_bash_is_mutation(command):
     return _subagent_bash_mutation_detector(command) is not None
 
 
+def _git_log_has_bounded_scope(rest):
+    """True when git-log arguments are constrained enough for LLM inspection.
+
+    Full-history archaeology was a root cause of v255 Master stalls. The guard
+    allows small bounded history reads and explicit revision ranges, but rejects
+    all-repo pickaxe scans and unbounded repository history walks.
+    """
+    args = [str(a) for a in rest]
+    for i, arg in enumerate(args):
+        low = arg.lower()
+        if low in {"--max-count", "-n"} and i + 1 < len(args):
+            return True
+        if low.startswith("--max-count="):
+            return True
+        if re.fullmatch(r"-\d+", low):
+            return True
+        if ".." in arg and not arg.startswith("-"):
+            return True
+        if arg == "--" and i + 1 < len(args):
+            return True
+    return False
+
+
+def _subagent_bash_cost_detector(command):
+    """Return a reason string for read-only but high-cost Bash commands."""
+    for args in _iter_subagent_git_args(command):
+        subcmd, rest = _subagent_git_subcommand(args)
+        if subcmd != "log":
+            continue
+        args_text = [str(a) for a in rest]
+        lows = [a.lower() for a in args_text]
+        if any(a == "--all" or a.startswith("--all=") for a in lows):
+            return "git_log_all_history"
+        if any(a == "-S" or a.startswith("-S") or a == "-G" or a.startswith("-G")
+               for a in args_text):
+            return "git_log_pickaxe_full_history"
+        if not _git_log_has_bounded_scope(rest):
+            return "git_log_unbounded_history"
+    return None
+
+
+def _make_subagent_cost_guard(role_name):
+    """Build a hook that denies high-cost read-only Bash commands.
+
+    Mutation safety is handled separately. This guard addresses commands that
+    are technically read-only but can monopolize CPU/wall time, such as
+    `git log --all -S...` in Master planning.
+    """
+    async def handler(hook_input, tool_use_id, context):
+        try:
+            from claude_agent_sdk.types import SyncHookJSONOutput
+            tool_name = hook_input.get("tool_name", "") if isinstance(hook_input, dict) else ""
+            tool_input = hook_input.get("tool_input", {}) if isinstance(hook_input, dict) else {}
+            if tool_name != "Bash":
+                return SyncHookJSONOutput()
+            cmd = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
+            reason = _subagent_bash_cost_detector(cmd)
+            if not reason:
+                return SyncHookJSONOutput()
+            blocked = (
+                f"Bash command denied by runtime cost guard ({reason}). Use bounded "
+                "inspection only: rg/sed/head/tail or git log with --max-count <= 20 "
+                "or an explicit revision range. Command: " + str(cmd)[:180]
+            )
+            try:
+                from system_log import log_system_event
+                log_system_event(
+                    "pipeline.subagent_cost_guard_block",
+                    "error",
+                    f"BLOCKED high-cost {role_name} Bash: {reason}",
+                    {
+                        "role": role_name,
+                        "tool": tool_name,
+                        "reason": reason,
+                        "command_preview": str(cmd)[:2000],
+                        "command_truncated": len(str(cmd)) > 2000,
+                    },
+                )
+            except Exception:
+                pass
+            return SyncHookJSONOutput(hookSpecificOutput={
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": blocked,
+            })
+        except Exception:
+            pass
+        from claude_agent_sdk.types import SyncHookJSONOutput
+        return SyncHookJSONOutput()
+
+    try:
+        from claude_agent_sdk.types import HookMatcher
+        return {"PreToolUse": [HookMatcher(matcher="Bash", hooks=[handler])]}
+    except Exception:
+        return None
+
+
+def _merge_hooks(*hook_sets):
+    merged = {}
+    for hooks in hook_sets:
+        if not hooks:
+            continue
+        for event_name, matchers in hooks.items():
+            merged.setdefault(event_name, []).extend(matchers or [])
+    return merged or None
+
+
 def _subagent_is_outside_allowed(path_or_cmd, allowed_dir):
     """True if a target path/command references protected paths outside allowed_dir."""
     text = str(path_or_cmd or "")
@@ -484,6 +591,64 @@ _LLM_PROGRESS_INTERVAL_SEC = float(
 _LLM_SILENCE_WARN_SEC = float(
     os.environ.get("POK_LLM_SILENCE_WARN_SEC", "240")
 )
+
+_ROLE_TIMEOUT_DEFAULTS = {
+    # Master is the highest leverage failure point: it plans, reads evidence,
+    # and can otherwise burn the whole orchestrator cycle before any code exists.
+    "MASTER": (120.0, 240.0, 900.0),
+    # Review/Critic are advisory or gate checks. They should not hold a
+    # generation hostage when the model/backend is slow or silent.
+    "REVIEW": (120.0, 180.0, 600.0),
+    "CRITIC": (120.0, 180.0, 600.0),
+    # Workers already have an outer WORKER_TIMEOUT. Idle timeout catches stalled
+    # streams inside that larger wall-clock budget.
+    "WORKER": (180.0, 360.0, 1000.0),
+}
+
+
+def _role_timeout_policy(role_name: str) -> dict:
+    """Return hard stream timeout policy for a role.
+
+    Values <=0 disable that timeout. Environment overrides are intentionally
+    role-scoped so slow backends can be tuned without changing code.
+    """
+    role = str(role_name or "").upper()
+    key = ""
+    if "MASTER" in role:
+        key = "MASTER"
+    elif "REVIEW" in role:
+        key = "REVIEW"
+    elif "CRITIC" in role:
+        key = "CRITIC"
+    elif "WORKER" in role:
+        key = "WORKER"
+    defaults = _ROLE_TIMEOUT_DEFAULTS.get(key, (0.0, 0.0, 0.0))
+
+    def _env(name, default):
+        try:
+            return float(os.environ.get(name, str(default)))
+        except Exception:
+            return float(default)
+
+    prefix = f"POK_LLM_{key}_" if key else "POK_LLM_DEFAULT_"
+    return {
+        "policy_key": key or "DEFAULT",
+        "first_activity_timeout": _env(prefix + "FIRST_ACTIVITY_TIMEOUT", defaults[0]),
+        "idle_timeout": _env(prefix + "IDLE_TIMEOUT", defaults[1]),
+        "total_timeout": _env(prefix + "TOTAL_TIMEOUT", defaults[2]),
+    }
+
+
+class LLMRoleTimeout(asyncio.TimeoutError):
+    """Raised when a role exceeds first-activity, idle, or total timeout."""
+
+    def __init__(self, role_name, timeout_kind, timeout_sec):
+        self.role_name = role_name
+        self.timeout_kind = timeout_kind
+        self.timeout_sec = timeout_sec
+        super().__init__(
+            f"{role_name}: LLM {timeout_kind} timeout after {timeout_sec:.1f}s"
+        )
 
 
 def set_shutdown_manager(shutdown_mgr):
@@ -689,6 +854,11 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
     thinking_chars = 0
     tool_use_count = 0
     tool_result_count = 0
+    timeout_policy = _role_timeout_policy(role_name)
+    total_timeout = float(timeout_policy.get("total_timeout") or 0)
+    first_activity_timeout = float(timeout_policy.get("first_activity_timeout") or 0)
+    idle_timeout = float(timeout_policy.get("idle_timeout") or 0)
+    total_deadline = (stream_started_at + total_timeout) if total_timeout > 0 else None
 
     def _tool_result_text(content):
         if isinstance(content, str):
@@ -791,7 +961,57 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
 
     try:
         watchdog_task = asyncio.create_task(_silence_watchdog())
-        async for message in query_gen:
+        stream_iter = query_gen.__aiter__()
+        while True:
+            wait_timeout = None
+            timeout_kind = None
+            now = time.time()
+            if message_count == 0 and first_activity_timeout > 0:
+                wait_timeout = first_activity_timeout
+                timeout_kind = "first_activity"
+            elif message_count > 0 and idle_timeout > 0:
+                wait_timeout = idle_timeout
+                timeout_kind = "idle"
+            if total_deadline is not None:
+                remaining_total = max(0.0, total_deadline - now)
+                if wait_timeout is None or remaining_total < wait_timeout:
+                    wait_timeout = remaining_total
+                    timeout_kind = "total"
+            try:
+                if wait_timeout is None:
+                    message = await stream_iter.__anext__()
+                else:
+                    message = await asyncio.wait_for(
+                        stream_iter.__anext__(),
+                        timeout=max(0.001, wait_timeout),
+                    )
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError:
+                elapsed = time.time() - stream_started_at
+                effective_kind = timeout_kind or "stream"
+                effective_limit = (
+                    total_timeout if effective_kind == "total"
+                    else first_activity_timeout if effective_kind == "first_activity"
+                    else idle_timeout if effective_kind == "idle"
+                    else wait_timeout or 0
+                )
+                _emit_llm_event(
+                    f"pipeline.llm_role_{effective_kind}_timeout",
+                    "error",
+                    f"{role_name}: LLM {effective_kind} timeout after {effective_limit:.1f}s",
+                    role=role_name,
+                    elapsed_sec=round(elapsed, 2),
+                    timeout_sec=round(effective_limit, 2),
+                    messages_seen=message_count,
+                    text_chars=text_chars,
+                    thinking_chars=thinking_chars,
+                    tool_use_count=tool_use_count,
+                    tool_result_count=tool_result_count,
+                    **timeout_policy,
+                    **_role_log_metadata(log_file_path),
+                )
+                raise LLMRoleTimeout(role_name, effective_kind, effective_limit)
             last_message_at = time.time()
             message_count += 1
             if isinstance(message, AssistantMessage):
@@ -1132,13 +1352,19 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         + "\n=============================\n[CLAUDE OUTPUT]\n",
     )
 
-    # A1 (2026-06-30): install a write-scoped guard hook when allowed_write_dir is
-    # set, so sub-agents (workers/crossover) can ONLY mutate their target bot dir.
+    # Install runtime hooks:
+    # - cost guard for read-only but unbounded Bash (Master git-log stalls)
+    # - write-scope guard for workers/crossover when allowed_write_dir is set
     _sub_hooks = None
+    _cost_hooks = None
+    if tools and any(t == "Bash" for t in (tools if isinstance(tools, list) else [])):
+        _cost_hooks = _make_subagent_cost_guard(role_name)
+    _write_hooks = None
     if allowed_write_dir is not None and tools and any(
         t in ("Bash", "Edit", "Write", "NotebookEdit") for t in (tools if isinstance(tools, list) else [])
     ):
-        _sub_hooks = _make_subagent_write_guard(allowed_write_dir)
+        _write_hooks = _make_subagent_write_guard(allowed_write_dir)
+    _sub_hooks = _merge_hooks(_cost_hooks, _write_hooks)
     options_kwargs = dict(
         model=model,
         permission_mode="bypassPermissions",
@@ -1160,6 +1386,7 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         "context_chars": context_chars,
         "allowed_write_dir": str(allowed_write_dir) if allowed_write_dir is not None else None,
         **_tools_metadata(tools),
+        **_role_timeout_policy(role_name),
         **_role_log_metadata(log_file_path),
     }
     _emit_llm_event(

@@ -2,8 +2,10 @@
 
 import asyncio
 import json
+import os
 import sys
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,7 @@ from pydantic import BaseModel
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 WEB_DIR = PROJECT_ROOT / "web"
+RESULTS_DIR = WEB_DIR / "core" / "results"
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(WEB_DIR / "core"))
 
@@ -76,6 +79,146 @@ def _git_status_summary(limit: int = 80) -> dict:
         "entries": entries[:limit],
         "truncated": len(entries) > limit,
         "stderr": (proc.stderr or "").strip()[:500],
+    }
+
+
+def _pid_alive(pid: int | None) -> bool:
+    if not pid or pid <= 1:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _read_pid_info(path: Path) -> dict:
+    if not path.exists():
+        return {"exists": False, "pid": None, "alive": False}
+    raw = path.read_text(encoding="utf-8", errors="replace").strip()
+    data: dict[str, Any] = {"exists": True, "raw_format": "json"}
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            data.update(parsed)
+        else:
+            data["pid"] = parsed
+            data["raw_format"] = "scalar"
+    except Exception:
+        data["raw_format"] = "plain"
+        try:
+            data["pid"] = int(raw)
+        except Exception:
+            data["pid"] = None
+            data["parse_error"] = raw[:120]
+    try:
+        data["pid"] = int(data.get("pid")) if data.get("pid") is not None else None
+    except Exception:
+        data["pid"] = None
+    data["alive"] = _pid_alive(data.get("pid"))
+    hb = data.get("last_heartbeat")
+    if hb is not None:
+        try:
+            data["heartbeat_age_sec"] = round(time.time() - float(hb), 2)
+        except Exception:
+            data["heartbeat_age_sec"] = None
+    return data
+
+
+def _read_pipeline_health() -> dict:
+    path = RESULTS_DIR / "pipeline_state.json"
+    if not path.exists():
+        return {"exists": False, "stage": None}
+    try:
+        from evolution_infra import locked_file
+        with locked_file(path, "r") as f:
+            state = json.load(f)
+    except Exception as exc:
+        return {"exists": True, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+    now = time.time()
+    stage_ts = state.get("last_stage_change_ts")
+    update_ts = state.get("last_update_ts")
+    snapshot = {
+        "exists": True,
+        "run_id": state.get("run_id"),
+        "stage": state.get("stage"),
+        "next_v": state.get("next_v"),
+        "source_v": state.get("source_v"),
+        "generation_attempt": state.get("generation_attempt"),
+        "audit_attempt": state.get("audit_attempt"),
+        "precommit_attempt": state.get("precommit_attempt"),
+    }
+    if stage_ts is not None:
+        try:
+            snapshot["last_stage_age_sec"] = round(now - float(stage_ts), 2)
+        except Exception:
+            snapshot["last_stage_age_sec"] = None
+    if update_ts is not None:
+        try:
+            snapshot["last_update_age_sec"] = round(now - float(update_ts), 2)
+        except Exception:
+            snapshot["last_update_age_sec"] = None
+    return snapshot
+
+
+def _daemon_health_snapshot() -> dict:
+    data = _read_pid_info(RESULTS_DIR / ".daemon_pid")
+    try:
+        from elo_daemon import HEARTBEAT_STALE_SEC
+    except Exception:
+        HEARTBEAT_STALE_SEC = 120
+    data["heartbeat_stale_sec"] = HEARTBEAT_STALE_SEC
+    hb_age = data.get("heartbeat_age_sec")
+    data["heartbeat_stale"] = (
+        hb_age is not None and hb_age > HEARTBEAT_STALE_SEC
+    )
+    data["scheduler_capable"] = bool(
+        data.get("alive")
+        and data.get("scheduler_capable")
+        and not data.get("heartbeat_stale")
+    )
+    return data
+
+
+def _health_summary(status: dict) -> dict:
+    task = app_state.task_snapshot()
+    daemon = _daemon_health_snapshot()
+    pipeline = _read_pipeline_health()
+    issues = []
+    if not status.get("running"):
+        issues.append("evolution_not_running")
+    if status.get("running") and (not task.get("present") or task.get("done")):
+        issues.append("orchestrator_task_not_active")
+    if status.get("running") and status.get("daemon_enabled"):
+        if not daemon.get("alive"):
+            issues.append("daemon_dead")
+        elif daemon.get("heartbeat_stale"):
+            issues.append("daemon_heartbeat_stale")
+    if status.get("active_generation") and not pipeline.get("exists"):
+        issues.append("active_generation_without_checkpoint")
+    if pipeline.get("error"):
+        issues.append("pipeline_checkpoint_unreadable")
+
+    if not status.get("running"):
+        overall = "stopped"
+    elif issues:
+        overall = "degraded"
+    else:
+        overall = "healthy"
+    return {
+        "overall": overall,
+        "issues": issues,
+        "status": status,
+        "running": status.get("running"),
+        "active_generation": status.get("active_generation"),
+        "task": task,
+        "daemon": daemon,
+        "pipeline": pipeline,
+        "checked_at": time.time(),
     }
 
 
@@ -229,6 +372,13 @@ async def set_config(req: ConfigRequest):
 @router.get("/status")
 async def control_status():
     return _sync_evolution_fields(app_state.to_dict())
+
+
+@router.get("/health")
+async def control_health():
+    """Return a single read-only health snapshot for observers/supervisors."""
+    status = _sync_evolution_fields(app_state.to_dict())
+    return _health_summary(status)
 
 
 @router.get("/decisions")

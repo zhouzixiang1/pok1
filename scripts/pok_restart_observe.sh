@@ -165,7 +165,7 @@ import urllib.request
 
 host, port, log_file = sys.argv[1], sys.argv[2], sys.argv[3]
 url_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
-url = f"http://{url_host}:{port}/api/control/status"
+url = f"http://{url_host}:{port}/api/control/health"
 deadline = time.time() + 60
 last = ""
 while time.time() < deadline:
@@ -175,7 +175,7 @@ while time.time() < deadline:
             data = json.loads(body)
         with open(log_file, "a", encoding="utf-8") as fh:
             fh.write(f"[health] {url} {data}\n")
-        print(f"health ok: {url}")
+        print(f"health ok: {url} overall={data.get('overall')}")
         raise SystemExit(0)
     except Exception as exc:
         last = str(exc)
@@ -211,7 +211,7 @@ pipeline_state_file = pathlib.Path(sys.argv[7])
 host = sys.argv[8]
 port = sys.argv[9]
 url_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
-status_url = f"http://{url_host}:{port}/api/control/status"
+health_url = f"http://{url_host}:{port}/api/control/health"
 generation_terminal = {
     "pipeline.commit_done",
     "pipeline.archivist_done",
@@ -236,6 +236,22 @@ alert_events = {
     "pipeline.precommit_eval",
     "pipeline.precommit_infra_timeout",
 }
+fatal_events = {
+    "pipeline.llm_role_cancelled",
+    "pipeline.llm_role_stream_cancelled",
+}
+stage_stale_limits = {
+    "prepared": 900,
+    "direction_audited": 1500,
+    "master_planned": 1500,
+    "workers_done": 1500,
+    "quality_failed": 1200,
+    "quality_passed": 1200,
+    "reviewed": 1200,
+    "critic_checked": 2700,
+    "verified": 900,
+}
+default_stage_stale_limit = 3600
 seen = 0
 seen_generations = set()
 pos = events_file.stat().st_size if events_file.exists() else 0
@@ -252,6 +268,7 @@ terminal_events = []
 alert_records = []
 stage_transitions = []
 last_stage_key = None
+checkpoint_missing_since = None
 
 def write_line(msg):
     print(msg)
@@ -319,9 +336,9 @@ def proc_summary(pid):
         pass
     return summary
 
-def http_status():
+def http_health():
     try:
-        with urllib.request.urlopen(status_url, timeout=2) as resp:
+        with urllib.request.urlopen(health_url, timeout=2) as resp:
             body = resp.read().decode("utf-8", "replace")
         data = json.loads(body)
         return {"ok": True, "status": data}
@@ -339,7 +356,7 @@ def pipeline_snapshot():
     return {key: state.get(key) for key in keys if key in state}
 
 def check_service(force_heartbeat=False):
-    global last_service_check, last_heartbeat, http_fail_count, first_http_fail, last_stage_key
+    global last_service_check, last_heartbeat, http_fail_count, first_http_fail, last_stage_key, checkpoint_missing_since
     now = time.time()
     if now - last_service_check < service_check_interval and not force_heartbeat:
         return
@@ -348,7 +365,7 @@ def check_service(force_heartbeat=False):
     daemon_pid, daemon_note = read_pid(daemon_pid_file)
     server_alive = pid_alive(server_pid)
     daemon_alive = pid_alive(daemon_pid)
-    status = http_status()
+    status = http_health()
     snapshot = {
         "server_pid": server_pid,
         "server_pid_note": server_note,
@@ -378,10 +395,50 @@ def check_service(force_heartbeat=False):
         return
     http_fail_count = 0
     first_http_fail = None
+    health = status.get("status") or {}
+    health_issues = set(health.get("issues") or [])
+    if health.get("running") is False or health.get("overall") == "stopped":
+        write_line(f"[service-stopped] evolution is not running: {snapshot}")
+        write_compact_summary("evolution_not_running")
+        raise SystemExit(1)
+    fatal_health = {
+        "orchestrator_task_not_active",
+        "daemon_dead",
+        "daemon_heartbeat_stale",
+        "pipeline_checkpoint_unreadable",
+        "active_generation_without_checkpoint",
+    }
+    matched_health = sorted(health_issues & fatal_health)
+    if matched_health:
+        write_line(f"[service-degraded] fatal health issue(s) {matched_health}: {snapshot}")
+        write_compact_summary("fatal_health_issue")
+        raise SystemExit(1)
     if force_heartbeat or now - last_heartbeat >= heartbeat_interval:
         last_heartbeat = now
         write_line(f"[service-heartbeat] {snapshot}")
-    pipeline = snapshot.get("pipeline") or {}
+    pipeline = (health.get("pipeline") or snapshot.get("pipeline") or {})
+    if not pipeline.get("exists") and health.get("running"):
+        checkpoint_missing_since = checkpoint_missing_since or now
+        missing_age = now - checkpoint_missing_since
+        if missing_age > 900:
+            write_line(f"[checkpoint-missing] pipeline checkpoint missing for {missing_age:.0f}s while running: {snapshot}")
+            write_compact_summary("checkpoint_missing")
+            raise SystemExit(1)
+    else:
+        checkpoint_missing_since = None
+    stage = pipeline.get("stage")
+    stage_age = pipeline.get("last_stage_age_sec")
+    if stage and stage_age is not None:
+        limit = stage_stale_limits.get(stage, default_stage_stale_limit)
+        try:
+            if float(stage_age) > limit:
+                write_line(f"[stage-stale] stage={stage} age={stage_age}s limit={limit}s: {snapshot}")
+                write_compact_summary("stage_stale")
+                raise SystemExit(1)
+        except SystemExit:
+            raise
+        except Exception:
+            pass
     stage_key = (
         pipeline.get("run_id"),
         pipeline.get("next_v"),
@@ -434,6 +491,10 @@ while time.time() < deadline and seen < target:
                     "data": event.get("data", {}),
                 })
                 write_line(msg)
+            if event.get("type") in fatal_events:
+                write_line(f"[fatal-event] {event.get('type')} {event.get('message')} data={event.get('data', {})}")
+                write_compact_summary("fatal_event")
+                raise SystemExit(1)
             if event.get("type") in generation_terminal:
                 key = generation_key(event)
                 if key in seen_generations:

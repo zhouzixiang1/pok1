@@ -8,7 +8,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SEVER = ROOT / "sever"
 sys.path.insert(0, str(SEVER))
 
-from bot_adapter import BotAdapter
+from bot_adapter import BotAdapter, int_to_tcp_card_str, tcp_card_to_int
+from engine.deck import str_to_card
 from engine.game import GameEngine
 from engine.thp_recorder import THPRecorder
 from engine.validator import validate_action
@@ -75,6 +76,12 @@ def test_parse_action_requires_exact_raise_spacing():
     assert parse_action(" raise 200") == ("unknown", None)
     assert parse_action("raise 200 ") == ("unknown", None)
     assert parse_action("bet 100") == ("bet", None)
+
+
+def test_adapter_card_mapping_round_trips_all_52_cards():
+    for card_int in range(52):
+        tcp_text = int_to_tcp_card_str(card_int)
+        assert tcp_card_to_int(str_to_card(tcp_text)) == card_int
 
 
 def test_postflop_after_check_requires_call_not_second_check():
@@ -196,6 +203,20 @@ def test_national_acceptance_matrix_skips_incomplete_default_claude_bots(tmp_pat
     monkeypatch.setattr(matrix, "ROOT", tmp_path)
 
     assert [bot.label for bot in matrix.default_bots(limit=2)] == ["claude_v10"]
+
+
+def test_national_acceptance_strict_blocks_adapter_allin_conversion():
+    matrix = _load_module_from_path(
+        "national_acceptance_matrix_strict_test",
+        ROOT / "scripts" / "national_acceptance_matrix.py",
+    )
+
+    telemetry = {"allin_conversions": 1}
+
+    assert matrix._na._critical_adapter_issues(telemetry, strict=True) == [
+        "allin_conversions=1"
+    ]
+    assert matrix._na._critical_adapter_issues(telemetry, strict=False) == []
 
 
 def test_national_acceptance_matrix_runs_bots_through_adapter_and_game(tmp_path):

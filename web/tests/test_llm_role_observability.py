@@ -444,6 +444,77 @@ def test_process_stream_emits_silence_watchdog(monkeypatch, tmp_path):
     assert fields["silence_warn_sec"] == 0.02
 
 
+def test_process_stream_hard_times_out_idle_role(monkeypatch, tmp_path):
+    events = []
+
+    async def fake_stream():
+        yield AssistantMessage(content=[TextBlock(text="alpha")], model="sonnet")
+        await asyncio.sleep(0.08)
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=10,
+            duration_api_ms=10,
+            is_error=False,
+            num_turns=1,
+            session_id="session",
+            total_cost_usd=0.1,
+            usage={"input_tokens": 4, "output_tokens": 2},
+        )
+
+    monkeypatch.setenv("POK_LLM_MASTER_IDLE_TIMEOUT", "0.02")
+    monkeypatch.setenv("POK_LLM_MASTER_TOTAL_TIMEOUT", "1")
+    monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 999)
+    monkeypatch.setattr(
+        llm_query,
+        "_emit_llm_event",
+        lambda category, severity, message, **fields: events.append(
+            (category, severity, message, fields)
+        ),
+    )
+
+    log_file = tmp_path / "v243" / "logs" / "master_io.txt"
+    log_file.parent.mkdir(parents=True)
+
+    with pytest.raises(llm_query.LLMRoleTimeout) as exc:
+        asyncio.run(
+            llm_query._process_stream(
+                fake_stream(), str(log_file), _DummyUI(), "MASTER (Try 1)"
+            )
+        )
+
+    assert exc.value.timeout_kind == "idle"
+    timeout_events = [
+        event for event in events if event[0] == "pipeline.llm_role_idle_timeout"
+    ]
+    assert timeout_events
+    _category, severity, _message, fields = timeout_events[0]
+    assert severity == "error"
+    assert fields["role"] == "MASTER (Try 1)"
+    assert fields["messages_seen"] == 1
+    assert fields["idle_timeout"] == 0.02
+
+
+def test_subagent_cost_guard_blocks_unbounded_git_history():
+    assert (
+        llm_query._subagent_bash_cost_detector("git log --all -S foo")
+        == "git_log_all_history"
+    )
+    assert (
+        llm_query._subagent_bash_cost_detector("git log -Sfoo -- strategy.py")
+        == "git_log_pickaxe_full_history"
+    )
+    assert (
+        llm_query._subagent_bash_cost_detector("git log --oneline")
+        == "git_log_unbounded_history"
+    )
+    assert llm_query._subagent_bash_cost_detector(
+        "git log --oneline --max-count 20"
+    ) is None
+    assert llm_query._subagent_bash_cost_detector(
+        "git log --oneline bot-v250..HEAD"
+    ) is None
+
+
 def test_run_claude_query_downgrades_success_error_result_to_info(monkeypatch, tmp_path):
     events = []
 

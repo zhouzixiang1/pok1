@@ -146,6 +146,26 @@ class AppState:
         with self._lock:
             self._evolution_task = task
 
+    def task_snapshot(self) -> dict:
+        with self._lock:
+            task = self._evolution_task
+            shutdown_requested = bool(
+                self._shutdown_mgr and self._shutdown_mgr.is_shutting_down
+            )
+            if task is None:
+                return {
+                    "present": False,
+                    "done": None,
+                    "cancelled": None,
+                    "shutdown_requested": shutdown_requested,
+                }
+            return {
+                "present": True,
+                "done": task.done(),
+                "cancelled": task.cancelled() if task.done() else False,
+                "shutdown_requested": shutdown_requested,
+            }
+
     def cancel_task(self):
         with self._lock:
             if self._evolution_task and not self._evolution_task.done():

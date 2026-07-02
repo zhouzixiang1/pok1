@@ -369,6 +369,7 @@ async def run_quality_gates(args):
                     source_v=source_v,
                     hands=national_acceptance_hands,
                     max_opponents=2,
+                    strict=bool(workflow_profile.national_acceptance_hard),
                 )
                 national_acceptance_ok = bool(_acceptance.passed)
                 national_acceptance_errors = _acceptance.issues[:5]
