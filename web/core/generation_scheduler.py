@@ -114,6 +114,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     from evolution_infra import (
         MAX_ACTIVE_BOTS, MIN_GAMES_FOR_EVAL, find_current_v, find_latest_active_v, get_active_bots, load_ratings,
         find_max_committed_v, git_dir_is_committed, git_has_tag,
+        find_abandoned_version_floor, compute_next_generation_v,
         wait_for_daemon_eval,
     )
 
@@ -145,41 +146,9 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     # 用它抬高 next_v 下界，使裸 commit 占用的版本号不会被下一代重生覆盖。
     max_committed_v = find_max_committed_v()
     # P2 (2026-06-29 reboot analysis): also account for abandoned versions.
-    # _do_abandon_generation rmtree's the dir (so it's not git-tracked and
-    # invisible to find_max_committed_v), then logs the version to
-    # abandoned_versions.jsonl. Without this, next_v reuses the just-abandoned
-    # number (find_current_v returns the last TAGGED v, so next_v = tagged+1 ==
-    # the abandoned v), causing a dead-end retry (observed: v218 abandon→re-prepare
-    # as v218). Read the max abandoned v and fold it into the next_v floor.
-    _abandoned_floor = 0
-    try:
-        from evolution_infra import RESULTS_DIR as _ab_results
-        _ab_file = _ab_results / "abandoned_versions.jsonl"
-        if _ab_file.exists():
-            with open(_ab_file, "r", encoding="utf-8") as _af:
-                for _line in _af:
-                    _line = _line.strip()
-                    if not _line:
-                        continue
-                    try:
-                        _av = json.loads(_line).get("v")
-                        if isinstance(_av, int) and _av > _abandoned_floor:
-                            _abandoned_floor = _av
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-    except Exception as _ab_e:
-        # LOG GAP FIX (2026-06-29): if abandoned_versions.jsonl is unreadable,
-        # next_v floor falls back to max_committed_v and may reuse an abandoned
-        # version — the exact bug P2 was written to prevent. Warn so it's visible.
-        try:
-            log_system_event(
-                "pipeline.abandoned_floor_unavailable", "warn",
-                f"abandoned_versions.jsonl unreadable; next_v floor may reuse an "
-                f"abandoned version: {_ab_e}",
-                {"error": str(_ab_e)[:200]},
-            )
-        except Exception:
-            pass
+    # Keep this in evolution_infra so status endpoints and prepare_generation use
+    # the same next_v floor.
+    _abandoned_floor = find_abandoned_version_floor()
     if _abandoned_floor > max_committed_v:
         max_committed_v = _abandoned_floor
         log.info(
@@ -205,7 +174,12 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                     f"如需保留该版本请用commit_bot补全tag+.completed,否则它将孤立。",
                     "warn",
                 )
-    _planned_next_v = _bind_prepare_log_context(current_v, max_committed_v)
+    _planned_next_v = compute_next_generation_v(
+        current_v=current_v,
+        max_committed_v=max_committed_v,
+        abandoned_floor=_abandoned_floor,
+    )
+    _bind_prepare_log_context(current_v, _planned_next_v - 1)
     try:
         from repo_state import log_git_worktree_snapshot
         log_git_worktree_snapshot(

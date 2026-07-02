@@ -56,6 +56,7 @@ MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 ARCHIVE_DIR = RESULTS_DIR / "archive"
 LLM_COSTS_FILE = RESULTS_DIR / "llm_costs.jsonl"
 RATING_HISTORY_FILE = RESULTS_DIR / "rating_history.jsonl"
+ABANDONED_VERSIONS_FILE = RESULTS_DIR / "abandoned_versions.jsonl"
 # fix-5: cross-gen direction pivot — tracks exhausted directions per generation
 # so consecutive same-axis exhaustion can force a structural pivot.
 CROSS_GEN_EXHAUSTED_HISTORY = RESULTS_DIR / "cross_gen_exhausted_history.jsonl"
@@ -1115,6 +1116,50 @@ def find_max_committed_v():
         if v > max_v:
             max_v = v
     return max_v
+
+
+def find_abandoned_version_floor():
+    """Max abandoned bot version that must not be reused for a future generation."""
+    floor = 0
+    try:
+        if ABANDONED_VERSIONS_FILE.exists():
+            with open(ABANDONED_VERSIONS_FILE, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        version = json.loads(line).get("v")
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    if isinstance(version, int) and version > floor:
+                        floor = version
+    except Exception as exc:
+        # If this file is unreadable, next_v may reuse an abandoned version. Make
+        # that visible, but keep status/prepare reads best-effort.
+        log.warning("abandoned_versions.jsonl unreadable; next_v floor may be stale: %s", exc)
+        try:
+            from system_log import log_system_event
+            log_system_event(
+                "pipeline.abandoned_floor_unavailable",
+                "warn",
+                f"abandoned_versions.jsonl unreadable; next_v floor may reuse an abandoned version: {exc}",
+                {"error": str(exc)[:200]},
+            )
+        except Exception:
+            pass
+    return floor
+
+
+def compute_next_generation_v(current_v=None, max_committed_v=None, abandoned_floor=None):
+    """Return the next generation version using the same floors as prepare_generation."""
+    if current_v is None:
+        current_v = find_current_v()
+    if max_committed_v is None:
+        max_committed_v = find_max_committed_v()
+    if abandoned_floor is None:
+        abandoned_floor = find_abandoned_version_floor()
+    return max(int(current_v), int(max_committed_v), int(abandoned_floor)) + 1
 
 
 def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=None):

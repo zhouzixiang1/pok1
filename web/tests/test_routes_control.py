@@ -46,6 +46,10 @@ class TestStatus:
         app_state.bootstrap(224)
         control._last_status_sync_correction = None
         fake_evolution_core = SimpleNamespace(
+            compute_next_generation_v=lambda current_v, max_committed_v, abandoned_floor: max(
+                current_v, max_committed_v, abandoned_floor
+            ) + 1,
+            find_abandoned_version_floor=lambda: 230,
             find_current_v=lambda: 224,
             find_max_committed_v=lambda: 230,
             read_pipeline_checkpoint=lambda: {
@@ -73,6 +77,10 @@ class TestStatus:
         app_state.bootstrap(224)
         control._last_status_sync_correction = None
         fake_evolution_core = SimpleNamespace(
+            compute_next_generation_v=lambda current_v, max_committed_v, abandoned_floor: max(
+                current_v, max_committed_v, abandoned_floor
+            ) + 1,
+            find_abandoned_version_floor=lambda: 230,
             find_current_v=lambda: 224,
             find_max_committed_v=lambda: 230,
             read_pipeline_checkpoint=lambda: {
@@ -92,6 +100,32 @@ class TestStatus:
         active = resp.json()["active_generation"]
         assert active["run_id"] == "231#2"
         assert active["attempt"] == {"generation": 2, "audit": 0, "precommit": 1}
+
+    def test_status_uses_abandoned_floor_without_checkpoint(self, client, monkeypatch):
+        import server.routes.control as control
+        from server.state import app_state
+
+        app_state.bootstrap(254)
+        control._last_status_sync_correction = None
+        fake_evolution_core = SimpleNamespace(
+            compute_next_generation_v=lambda current_v, max_committed_v, abandoned_floor: max(
+                current_v, max_committed_v, abandoned_floor
+            ) + 1,
+            find_abandoned_version_floor=lambda: 255,
+            find_current_v=lambda: 254,
+            find_max_committed_v=lambda: 254,
+            read_pipeline_checkpoint=lambda: {},
+        )
+        monkeypatch.setitem(sys.modules, "evolution_core", fake_evolution_core)
+
+        resp = client.get("/api/control/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["current_v"] == 254
+        assert data["next_v"] == 256
+        assert data["generation_count"] == 254
+        assert data["active_generation"] is None
 
 
 class TestDecisions:

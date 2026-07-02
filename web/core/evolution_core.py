@@ -44,7 +44,9 @@ from evolution_infra import (  # noqa: F401
     # Ratings
     load_ratings, load_daemon_stats, wait_for_daemon_eval,
     # Git
-    _git, _git_ensure_main_branch, git_has_tag, git_dir_is_committed, find_max_committed_v, git_commit_bot, git_get_parent,
+    _git, _git_ensure_main_branch, git_has_tag, git_dir_is_committed,
+    find_max_committed_v, find_abandoned_version_floor, compute_next_generation_v,
+    git_commit_bot, git_get_parent,
     # Archiving
     archive_generation, archive_rotate_files, archive_old_logs,
     # External re-exports

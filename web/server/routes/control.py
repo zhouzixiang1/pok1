@@ -71,6 +71,8 @@ def _sync_evolution_fields(state: dict) -> dict:
     )
     try:
         from evolution_core import (
+            compute_next_generation_v,
+            find_abandoned_version_floor,
             find_current_v,
             find_max_committed_v,
             read_pipeline_checkpoint,
@@ -78,6 +80,7 @@ def _sync_evolution_fields(state: dict) -> dict:
 
         current_v = int(find_current_v())
         max_committed_v = int(find_max_committed_v())
+        abandoned_floor = int(find_abandoned_version_floor())
         checkpoint = read_pipeline_checkpoint() or {}
         active_generation = None
 
@@ -98,7 +101,11 @@ def _sync_evolution_fields(state: dict) -> dict:
                 },
             }
         else:
-            next_v = max(current_v, max_committed_v) + 1
+            next_v = compute_next_generation_v(
+                current_v=current_v,
+                max_committed_v=max_committed_v,
+                abandoned_floor=abandoned_floor,
+            )
 
         state["current_v"] = current_v
         state["next_v"] = next_v
