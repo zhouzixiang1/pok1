@@ -1058,6 +1058,19 @@ wc -l bots/claude_v234/strategy.py
     assert llm_query._subagent_bash_write_scope_violation(copy_parent_files_into_allowed, allowed) is None
     assert llm_query._subagent_bash_write_scope_violation(redirect_allowed, allowed) is None
     assert llm_query._subagent_bash_write_scope_violation(rm_allowed, allowed) is None
+    file_scope = {"files": ["/home/zzx/project/pok/bots/claude_v234/strategy.py"]}
+    assert llm_query._subagent_bash_write_scope_violation(
+        "sed -i 's/a/b/' bots/claude_v234/strategy.py",
+        file_scope,
+    ) is None
+    assert llm_query._subagent_bash_write_scope_violation(
+        "echo x > bots/claude_v234/notes.txt",
+        file_scope,
+    ).startswith("write_redirect:")
+    assert llm_query._subagent_is_outside_allowed(
+        "Path('bots/claude_v234/notes.txt').write_text('x')",
+        file_scope,
+    ) is True
     assert llm_query._subagent_bash_write_scope_violation(copy_into_other_bot, allowed).startswith("cp_dest:")
     assert llm_query._subagent_bash_write_scope_violation(mkdir_other_bot, allowed).startswith("mkdir:")
     assert llm_query._subagent_bash_write_scope_violation(tee_protected, allowed).startswith("tee:")

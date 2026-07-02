@@ -7,6 +7,7 @@ there is only one worker task.
 """
 
 import json
+import os
 import re
 import shutil
 import asyncio
@@ -31,6 +32,47 @@ from worker_boundary import (
 
 # Maximum number of LLM turns for the debug sub-agent (budget cap).
 _DEBUG_AGENT_MAX_TURNS = 5
+QUALITY_REWORK_WORKER_TIMEOUT = int(os.environ.get("POK_WORKER_QUALITY_REWORK_TIMEOUT", "600"))
+
+
+def _worker_timeout_for_task(task, reviewer_feedback):
+    text = " ".join([
+        str(task.get("task_kind", "")),
+        str(task.get("worker_id", "")),
+        str(task.get("role", "")),
+        str(task.get("worker_prompt", task.get("instruction", "")))[:1000],
+        str(reviewer_feedback or "")[:1000],
+    ]).lower()
+    quality_rework_markers = (
+        "quality_repair",
+        "quality gate",
+        "quality gates failed",
+        "file_size(",
+        "position_semantics(",
+        "size_recovery",
+        "loc",
+    )
+    if any(marker in text for marker in quality_rework_markers):
+        return min(WORKER_TIMEOUT, QUALITY_REWORK_WORKER_TIMEOUT)
+    return WORKER_TIMEOUT
+
+
+def _allowed_write_scope_for_task(task, next_dir, next_v):
+    files = []
+    for key in ("target_files", "files_allowed"):
+        for target in task.get(key, []) or []:
+            rel = _target_rel(target, next_v)
+            if rel:
+                files.append(next_dir / rel)
+    # Deduplicate while preserving stable order for logs.
+    seen = set()
+    deduped = []
+    for path in files:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(path)
+    return {"files": deduped}
 
 
 def _record_worker_failure(gen, worker_id, role, error, failure_type="unknown"):
@@ -395,6 +437,8 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
         base_worker_prompt += "\n\n" + "\n".join(failure_lines)
 
     worker_log_file = get_logs_dir(next_v) / f"worker_{w_id}_io.txt"
+    worker_timeout = _worker_timeout_for_task(task, reviewer_feedback)
+    allowed_write_scope = _allowed_write_scope_for_task(task, next_dir, next_v)
 
     compile_errors = []
     _last_reason = "unknown"
@@ -492,18 +536,18 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 worker_prompt, context_files, ui,
                 f"WORKER {w_id} ({role})", worker_log_file,
                 tools=["Bash", "Read", "Edit"],
-                allowed_write_dir=next_dir,  # A1: scope writes to target bot dir only
+                allowed_write_dir=allowed_write_scope,
             ))
-            await asyncio.wait_for(llm_task, timeout=WORKER_TIMEOUT)
+            await asyncio.wait_for(llm_task, timeout=worker_timeout)
         except (asyncio.TimeoutError, Exception) as exc:
             if isinstance(exc, asyncio.TimeoutError):
-                _last_reason = f"timed out after {WORKER_TIMEOUT}s (attempt {attempt+1}/{MAX_WORKER_RETRIES})"
+                _last_reason = f"timed out after {worker_timeout}s (attempt {attempt+1}/{MAX_WORKER_RETRIES})"
                 _last_failure_type = "timeout"
                 # fix-7: capture timeout context for debug agent
-                _last_error_output = f"Worker timed out after {WORKER_TIMEOUT}s"
+                _last_error_output = f"Worker timed out after {worker_timeout}s"
                 _last_changed_diff = "(timeout — partial edits rolled back)"
                 ui.log_history(
-                    f"Worker {w_id} ({role}) timed out after {WORKER_TIMEOUT}s. Retrying with simpler task...",
+                    f"Worker {w_id} ({role}) timed out after {worker_timeout}s. Retrying with simpler task...",
                     "warn",
                 )
             else:
@@ -648,7 +692,8 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
 
 async def _execute_workers(tasks, worker_template, next_dir, next_v,
                             context_files, ui, reviewer_feedback,
-                            source_v=None):
+                            source_v=None, force_sequential=False,
+                            task_skipper=None):
     """Execute worker tasks, capturing per-worker file snapshots.
 
     When all workers have disjoint target_files, executes in parallel via
@@ -707,7 +752,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             break
         seen |= fset
 
-    if all_disjoint:
+    if all_disjoint and not force_sequential:
         # ── Parallel path: all target_files are disjoint ──
         # Pre-snapshot all target files at once — safe because no two workers
         # touch the same file.
@@ -797,6 +842,29 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
     # vs output (which would include all preceding workers' changes).
     ui.log_history(f"Running {len(tasks)} workers SEQUENTIALLY (overlapping files)...", "info")
     for i, task in enumerate(tasks):
+        if task_skipper is not None:
+            try:
+                skip_reason = task_skipper(task)
+            except Exception as e:
+                skip_reason = ""
+                log.warning("Task skipper failed for worker %d: %s", i, e)
+            if skip_reason:
+                ui.log_history(
+                    f"Skipping worker {task.get('worker_id', i + 1)}: {skip_reason}",
+                    "info",
+                )
+                try:
+                    from system_log import log_system_event
+                    log_system_event(
+                        "pipeline.worker_skipped_blocker_cleared",
+                        "info",
+                        f"Skipped worker {task.get('worker_id', i + 1)} for v{next_v}: {skip_reason}",
+                        {"next_v": next_v, "source_v": source_v, "worker_id": task.get("worker_id", i + 1),
+                         "reason": skip_reason},
+                    )
+                except Exception:
+                    pass
+                continue
         # Capture file state before this worker runs
         for target in task.get("target_files", []):
             rel = _target_rel(target, next_v)

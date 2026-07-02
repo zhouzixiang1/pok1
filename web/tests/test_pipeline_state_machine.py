@@ -1,4 +1,9 @@
-from core.pipeline_state import generic_abandon_block, next_tool_for_checkpoint, validate_stage_transition
+from core.pipeline_state import (
+    generic_abandon_block,
+    next_tool_for_checkpoint,
+    route_policy,
+    validate_stage_transition,
+)
 
 
 def test_precommit_failed_is_forward_and_reworkable():
@@ -8,6 +13,16 @@ def test_precommit_failed_is_forward_and_reworkable():
     ok, reason = validate_stage_transition("precommit_failed", "master_planned")
     assert ok, reason
     assert "retry" in reason
+
+    ok, reason = validate_stage_transition("precommit_failed", "repair_planned")
+    assert ok, reason
+    assert "rework" in reason
+
+    ok, reason = validate_stage_transition("repair_planned", "rework_running")
+    assert ok, reason
+
+    ok, reason = validate_stage_transition("rework_running", "workers_done")
+    assert ok, reason
 
 
 def test_old_critic_checked_failed_precommit_routes_to_workers():
@@ -79,3 +94,38 @@ def test_selected_next_tool_distinguishes_master_and_crossover():
         )
         == "run_crossover"
     )
+
+
+def test_route_policy_allows_crossover_quality_repair_workers():
+    checkpoint = {
+        "stage": "master_planned",
+        "next_v": 265,
+        "source_v": 243,
+        "parent2_v": 249,
+        "master_plan": {
+            "strategy": "crossover",
+            "tasks": [
+                {"worker_id": "w1", "target_files": ["state.py"], "worker_prompt": "fix position_semantics"},
+            ],
+        },
+    }
+
+    route = route_policy(checkpoint)
+    assert route["next_tool"] == "execute_workers"
+    assert route["intent"] == "initial_workers"
+    assert "execute_workers" in route["directive"]
+
+
+def test_route_policy_for_explicit_rework_stage():
+    checkpoint = {
+        "stage": "repair_planned",
+        "next_v": 265,
+        "source_v": 243,
+        "parent2_v": 249,
+        "master_plan": {"strategy": "crossover", "work_item": {"kind": "crossover_quality_repair"}},
+    }
+
+    route = route_policy(checkpoint)
+    assert route["next_tool"] == "execute_workers"
+    assert route["intent"] == "quality_rework"
+    assert "Rework" in route["directive"]

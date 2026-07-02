@@ -143,9 +143,15 @@ After editing:
 
 1. **SUBSTANTIVE CHANGE CHECK** (CRITICAL — do this FIRST):
    Run: `diff bots/claude_v{parent_version}/TARGET_FILE bots/claude_v{version}/TARGET_FILE`
-   If the diff shows ONLY formatting changes (whitespace, blank lines, docstrings, comments, collapsed multi-line), your edits FAILED.
-   You MUST see at least ONE of: new function definition, changed numeric constant, new conditional logic, changed return value.
-   If you see only formatting, re-read the file and implement the ACTUAL required changes.
+   For normal strategy/logic tasks, if the diff shows ONLY formatting changes
+   (whitespace, blank lines, docstrings, comments, collapsed multi-line), your
+   edits FAILED. You MUST see at least ONE of: new function definition, changed
+   numeric constant, new conditional logic, changed return value.
+   Exception: if the assigned worker prompt explicitly says this is a
+   `file_size`, LOC, or size-recovery repair and asks for semantic-preserving
+   compression, then formatting/comment/docstring-only reduction is valid only
+   when py_compile and the later quality gates pass. Do not add unrelated
+   executable changes just to satisfy the normal substantive-change rule.
 
 2. **Verify changes**: Use `diff -rq bots/claude_v{parent_version}/ bots/claude_v{version}/` to list changed files, then `diff` each changed file. Ensure no unintended modifications outside `target_files`.
 

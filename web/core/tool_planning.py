@@ -20,6 +20,7 @@ from evolution_core import (
     _execute_workers,
     EXPERIENCE_FILE,
     write_pipeline_checkpoint,
+    check_code_size,
 )
 from tool_helpers import (
     _get_ui, _json_tool_result,
@@ -31,6 +32,7 @@ from tool_helpers import (
     normalize_worker_role,
 )
 from system_log import log_system_event
+from pipeline_state import route_policy
 
 
 def _literature_probe_cache_path(next_v: int | str) -> Path:
@@ -2575,6 +2577,76 @@ def _checkpoint_plan_with_tasks(ckpt, tasks):
     return {"tasks": tasks}
 
 
+def _task_matches_quality_blocker(task, blocker):
+    text = " ".join([
+        str(task.get("worker_id", "")),
+        str(task.get("role", "")),
+        " ".join(str(x) for x in task.get("target_files", []) or []),
+        str(task.get("worker_prompt", task.get("instruction", ""))),
+    ]).lower()
+    if blocker == "size":
+        return any(marker in text for marker in ("file_size", "size", "line", "loc", "strategy.py"))
+    if blocker == "position_semantics":
+        return any(marker in text for marker in ("position_semantics", "dealer", "small blind", "big blind", "sb", "bb"))
+    return False
+
+
+def _quality_rework_skipper(next_dir, source_dir, next_v, source_v):
+    """Return a per-task skip callback for cheap quality-repair rechecks.
+
+    Full quality validation remains owned by run_quality_gates. This callback
+    only avoids wasting LLM calls for blockers that are already cleared by an
+    earlier repair worker in the same rework batch.
+    """
+    def remaining_blockers():
+        blockers = set()
+        try:
+            _total, oversized = check_code_size(next_dir, source_dir=source_dir)
+            if oversized:
+                blockers.add("size")
+        except Exception:
+            blockers.add("size")
+        try:
+            from tool_gates import detect_position_semantics_errors
+            if detect_position_semantics_errors(next_dir):
+                blockers.add("position_semantics")
+        except Exception:
+            blockers.add("position_semantics")
+        return blockers
+
+    def skipper(task):
+        blockers = remaining_blockers()
+        if _task_matches_quality_blocker(task, "size") and "size" not in blockers:
+            return "quality size blocker already cleared by current code"
+        if _task_matches_quality_blocker(task, "position_semantics") and "position_semantics" not in blockers:
+            return "quality position_semantics blocker already cleared by current code"
+        if not blockers and any(_task_matches_quality_blocker(task, b) for b in ("size", "position_semantics")):
+            return "all cheap quality rework blockers already cleared by current code"
+        return ""
+
+    return skipper
+
+
+def _checkpoint_rework_feedback(ckpt):
+    if not isinstance(ckpt, dict):
+        return ""
+    if ckpt.get("reviewer_feedback"):
+        return str(ckpt.get("reviewer_feedback") or "")
+    stage = ckpt.get("stage")
+    gates = ckpt.get("gate_results") or {}
+    if stage in {"quality_failed", "repair_planned", "rework_running"}:
+        quality = gates.get("quality") or {}
+        failed = quality.get("failed_gates") or quality.get("failures") or []
+        if failed:
+            return "Quality gates failed: " + "; ".join(str(item) for item in failed[:10])
+    if stage == "precommit_failed":
+        precommit = gates.get("precommit_eval") or {}
+        blockers = precommit.get("blockers") or precommit.get("failures") or []
+        if blockers:
+            return "Precommit failed: " + json.dumps(blockers[:10], ensure_ascii=False)
+    return ""
+
+
 @tool("execute_workers", "Execute worker tasks to modify bot code. Each task has worker_id, role, target_files, worker_prompt.", {"tasks": list, "next_v": int, "source_v": int, "reviewer_feedback": str})
 async def execute_workers(args):
     _t0 = time.time()
@@ -2623,8 +2695,10 @@ async def execute_workers(args):
                 "source_v": source_v,
             })
 
-    if not reviewer_feedback and ckpt.get("stage") == "precommit_failed":
-        reviewer_feedback = ckpt.get("reviewer_feedback", "")
+    if not reviewer_feedback and ckpt.get("stage") in {
+        "quality_failed", "precommit_failed", "repair_planned", "rework_running"
+    }:
+        reviewer_feedback = _checkpoint_rework_feedback(ckpt)
 
     # B6 (2026-06-30): redundant-call guard. execute_workers is NOT idempotent —
     # a redundant call (no reviewer_feedback) when workers already ran resets code
@@ -2767,9 +2841,18 @@ async def execute_workers(args):
 
     # When retrying after workers already ran, actually reset code from source first.
     # Previous claim that code was reset was FALSE — now we actually do it.
+    force_sequential_rework = False
+    task_skipper = None
+    rework_plan_metadata = None
     if reviewer_feedback and ckpt.get("stage") in (
-        "workers_done", "quality_failed", "quality_passed", "reviewed", "critic_checked", "precommit_failed"
+        "workers_done", "quality_failed", "quality_passed", "reviewed", "critic_checked",
+        "precommit_failed", "repair_planned", "rework_running"
     ):
+        rework_kind = "quality_repair" if ckpt.get("stage") == "quality_failed" else "gate_rework"
+        if ckpt.get("stage") == "precommit_failed":
+            rework_kind = "precommit_repair"
+        elif ckpt.get("parent2_v") is not None:
+            rework_kind = f"crossover_{rework_kind}"
         source_dir_r = get_bot_dir(source_v)
         if source_dir_r.exists() and next_dir.exists():
             _log.info(f"Resetting v{next_v} code from source v{source_v} before worker retry (incremental, preserves NEW files)")
@@ -2793,10 +2876,25 @@ async def execute_workers(args):
         # the checkpoint at a stale stage (e.g. "reviewed" or "critic_checked")
         # while the actual code has been wiped back to source.
         retry_plan = _checkpoint_plan_with_tasks(ckpt, tasks)
-        write_pipeline_checkpoint(next_v, source_v, "master_planned",
+        rework_plan_metadata = {
+            "kind": rework_kind,
+            "source_stage": ckpt.get("stage"),
+            "route": route_policy(ckpt),
+        }
+        retry_plan = {
+            **retry_plan,
+            "work_item": rework_plan_metadata,
+        }
+        for task in tasks:
+            if isinstance(task, dict):
+                task.setdefault("task_kind", rework_kind)
+        write_pipeline_checkpoint(next_v, source_v, "repair_planned",
                                   master_plan=retry_plan,
                                   reviewer_feedback=reviewer_feedback,
                                   worker_failure_count=ckpt.get("worker_failure_count", 0))
+        if ckpt.get("stage") == "quality_failed":
+            force_sequential_rework = True
+            task_skipper = _quality_rework_skipper(next_dir, source_dir_r, next_v, source_v)
 
         reviewer_feedback += (
             f"\n\nNOTE: This is a retry. The code in bots/claude_v{next_v}/ has been ACTUALLY RESET "
@@ -2826,11 +2924,21 @@ async def execute_workers(args):
                 )
                 break  # One warning per task is sufficient
 
+    if reviewer_feedback and rework_plan_metadata:
+        running_plan = _checkpoint_plan_with_tasks(ckpt, tasks) if ckpt else {"tasks": tasks}
+        running_plan = {**running_plan, "work_item": rework_plan_metadata}
+        write_pipeline_checkpoint(next_v, source_v, "rework_running",
+                                  master_plan=running_plan,
+                                  reviewer_feedback=reviewer_feedback,
+                                  worker_failure_count=ckpt.get("worker_failure_count", 0) if ckpt else 0)
+
     ui = _get_ui()
     success, worker_snapshots, audit_focus_areas = await _execute_workers(
         tasks, worker_template, next_dir, next_v,
         [], ui, reviewer_feedback=reviewer_feedback,
         source_v=source_v,
+        force_sequential=force_sequential_rework,
+        task_skipper=task_skipper,
     )
 
     boundary_errors = []
@@ -2886,6 +2994,13 @@ async def execute_workers(args):
         # Preserve the master plan structure (with analysis) from checkpoint,
         # rather than replacing it with the raw tasks list
         plan = _checkpoint_plan_with_tasks(ckpt, tasks) if ckpt else {"tasks": tasks}
+        if ckpt and ckpt.get("stage") in {"quality_failed", "precommit_failed", "repair_planned", "rework_running"}:
+            existing_work = rework_plan_metadata or (
+                (ckpt.get("master_plan") or {}).get("work_item")
+                if isinstance(ckpt.get("master_plan"), dict) else None
+            )
+            if existing_work:
+                plan = {**plan, "work_item": existing_work}
         # Store audit_focus_areas in audit_context so reviewer can read them
         _audit_ctx = None
         if audit_focus_areas:
@@ -2901,8 +3016,21 @@ async def execute_workers(args):
         # that workers need re-execution, rather than preserving a stale stage
         # from before the failure (e.g. "reviewed" or "critic_checked").
         plan = _checkpoint_plan_with_tasks(ckpt, tasks) if ckpt else {"tasks": tasks}
+        if reviewer_feedback:
+            existing_work = rework_plan_metadata or (
+                (ckpt.get("master_plan") or {}).get("work_item")
+                if ckpt and isinstance(ckpt.get("master_plan"), dict) else None
+            )
+            plan = {
+                **plan,
+                "work_item": existing_work or {
+                    "kind": "worker_retry_after_failure",
+                    "source_stage": ckpt.get("stage") if ckpt else None,
+                    "route": route_policy(ckpt) if ckpt else {},
+                },
+            }
         write_pipeline_checkpoint(next_v, source_v,
-                                  "master_planned",
+                                  "repair_planned" if reviewer_feedback else "master_planned",
                                   master_plan=plan, reviewer_feedback=reviewer_feedback,
                                   worker_failure_count=failure_count + 1)
 
