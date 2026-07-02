@@ -84,6 +84,7 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
     candidates.sort(key=lambda x: (x[1].r - 2 * x[1].rd,))
     weakest = candidates[0]
     culled_name = weakest[0]
+    conservative = weakest[1].r - 2 * weakest[1].rd
 
     graveyard = PROJECT_ROOT / "bots" / "graveyard"
     graveyard.mkdir(exist_ok=True)
@@ -120,10 +121,16 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
         log_system_event(
             "bot.reaped",
             "warn",
-            f"Reaped {culled_name} (score={strength_scores.get(culled_name, 0.0):.4f}, h2h_wr={h2h_winrates.get(culled_name, 0.0):.2%})",
+            (
+                f"Reaped {culled_name} by conservative Glicko "
+                f"(r-2rd={conservative:.1f}, leaderboard={strength_scores.get(culled_name, 0.0):.4f}, "
+                f"h2h_wr={h2h_winrates.get(culled_name, 0.0):.2%})"
+            ),
             {
                 "culled": culled_name,
                 "remaining": len(active_bots) - 1,
+                "selection_key": "conservative_glicko",
+                "conservative_rating": round(conservative, 1),
                 "leaderboard_score": round(strength_scores.get(culled_name, 0.0), 4),
                 "h2h_avg_wr": round(h2h_winrates.get(culled_name, 0.0), 4),
             },
@@ -132,6 +139,8 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
     return {
         "reaped": True,
         "culled": culled_name,
+        "selection_key": "conservative_glicko",
+        "conservative_rating": round(conservative, 1),
         "leaderboard_score": round(strength_scores.get(culled_name, 0.0), 4),
         "h2h_avg_wr": round(h2h_winrates.get(culled_name, 0.0), 4),
         "rating": {"r": round(weakest[1].r, 1), "rd": round(weakest[1].rd, 1)},
