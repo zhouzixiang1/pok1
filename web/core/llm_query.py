@@ -1195,17 +1195,23 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         )
         raise
     except Exception as e:
-        if _is_shutdown_requested() and is_shutdown_cancel_error(e):
+        if is_shutdown_cancel_error(e):
+            shutdown_requested = _is_shutdown_requested()
             _emit_llm_event(
                 "pipeline.llm_role_shutdown_cancelled", "info",
-                f"{role_name}: LLM call stopped during shutdown after {time.time() - call_started_at:.1f}s",
+                (
+                    f"{role_name}: LLM call stopped during shutdown after {time.time() - call_started_at:.1f}s"
+                    if shutdown_requested
+                    else f"{role_name}: LLM process received SIGTERM after {time.time() - call_started_at:.1f}s"
+                ),
                 elapsed_sec=round(time.time() - call_started_at, 2),
                 exception_type=type(e).__name__,
                 error=str(e)[:1000],
+                shutdown_requested=shutdown_requested,
                 **lifecycle_fields,
             )
             raise asyncio.CancelledError(
-                f"{role_name}: LLM call stopped during shutdown"
+                f"{role_name}: LLM process received SIGTERM"
             ) from e
         severity = _llm_failure_severity(e)
         _emit_llm_event(
