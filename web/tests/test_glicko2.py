@@ -338,6 +338,41 @@ class TestCrossoverParents:
         assert result is not None
         assert result[0] == 1
 
+    def test_map_elites_niche_guides_parent_b(self, monkeypatch):
+        from glicko2 import Glicko2Player
+
+        active = ["claude_v1", "claude_v4", "claude_v5", "claude_v8"]
+        strength = {
+            "claude_v8": 0.90,
+            "claude_v5": 0.80,  # same MAP niche as v8; would win without niche diversity
+            "claude_v4": 0.70,
+            "claude_v1": 0.60,
+        }
+        ratings = {b: Glicko2Player() for b in active}
+        archive = {
+            "cells": {
+                "agg1_loose1": {"bot": "claude_v8", "fitness": 0.9},
+                "agg3_loose3": {"bot": "claude_v4", "fitness": 0.7},
+                "agg4_loose4": {"bot": "claude_v1", "fitness": 0.6},
+            },
+            "bot_niches": {
+                "claude_v8": {"niche": "agg1_loose1"},
+                "claude_v5": {"niche": "agg1_loose1"},
+                "claude_v4": {"niche": "agg3_loose3"},
+                "claude_v1": {"niche": "agg4_loose4"},
+            },
+        }
+        import generation_scheduler as gs
+
+        monkeypatch.setattr("evolution_infra.get_active_bots", lambda: active)
+        monkeypatch.setattr("tool_helpers.load_selection_scores", lambda: strength)
+        monkeypatch.setattr("candidate_store.count_candidate_children", lambda *_a, **_k: 0)
+        monkeypatch.setattr(gs, "log_system_event", lambda *a, **k: None)
+
+        result = gs._pick_crossover_parents(ratings, 8, archive=archive)
+
+        assert result == (8, 4)
+
     def test_returns_none_single_bot(self, monkeypatch):
         import generation_scheduler as gs
         monkeypatch.setattr("evolution_infra.get_active_bots", lambda: ["claude_v1"])

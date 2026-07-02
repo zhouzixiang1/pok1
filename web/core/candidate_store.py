@@ -25,7 +25,62 @@ CANDIDATE_EVENTS_FILE = _IMPORT_CANDIDATE_EVENTS_FILE
 CANDIDATE_DB_FILE = _IMPORT_RESULTS_DIR / "candidates.sqlite3"
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+
+_CANDIDATE_COLUMNS: tuple[str, ...] = (
+    "candidate_id",
+    "version",
+    "source_v",
+    "event_source",
+    "profile_id",
+    "workflow_profile_id",
+    "prompt_profile_id",
+    "model_id",
+    "run_id",
+    "parent_ids_json",
+    "skill_layers_json",
+    "changed_files_json",
+    "diff_hash",
+    "latest_stage",
+    "latest_event_type",
+    "latest_gate",
+    "latest_status",
+    "latest_scorecard_json",
+    "latest_metrics_json",
+    "latest_failures_json",
+    "failure_class",
+    "artifacts_json",
+    "artifact_refs_json",
+    "created_at",
+    "updated_at",
+)
+
+
+_CANDIDATE_DEFAULTS: dict[str, str] = {
+    "event_source": "'runtime'",
+    "profile_id": "'default'",
+    "workflow_profile_id": "''",
+    "prompt_profile_id": "''",
+    "model_id": "''",
+    "run_id": "''",
+    "parent_ids_json": "'[]'",
+    "skill_layers_json": "'[]'",
+    "changed_files_json": "'[]'",
+    "diff_hash": "''",
+    "latest_stage": "''",
+    "latest_event_type": "''",
+    "latest_gate": "''",
+    "latest_status": "''",
+    "latest_scorecard_json": "'{}'",
+    "latest_metrics_json": "'{}'",
+    "latest_failures_json": "'[]'",
+    "failure_class": "''",
+    "artifacts_json": "'{}'",
+    "artifact_refs_json": "'[]'",
+    "created_at": "0",
+    "updated_at": "0",
+}
 
 
 def _json_default(obj: Any) -> Any:
@@ -88,10 +143,37 @@ def _init_db(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    _ensure_candidates_table(conn)
+    _ensure_event_tables(conn)
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
+        (str(SCHEMA_VERSION),),
+    )
+    conn.commit()
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def _candidate_pk_columns(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute("PRAGMA table_info(candidates)").fetchall()
+    return [
+        row["name"]
+        for row in sorted(rows, key=lambda r: r["pk"])
+        if int(row["pk"] or 0) > 0
+    ]
+
+
+def _create_candidates_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS candidates (
-            candidate_id TEXT PRIMARY KEY,
+            candidate_id TEXT NOT NULL,
             version INTEGER,
             source_v INTEGER,
             event_source TEXT NOT NULL DEFAULT 'runtime',
@@ -115,10 +197,57 @@ def _init_db(conn: sqlite3.Connection) -> None:
             artifacts_json TEXT NOT NULL DEFAULT '{}',
             artifact_refs_json TEXT NOT NULL DEFAULT '[]',
             created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
+            updated_at REAL NOT NULL,
+            PRIMARY KEY (candidate_id, event_source)
         )
         """
     )
+
+
+def _migrate_candidates_v1(conn: sqlite3.Connection) -> None:
+    """Split the old candidate_id entity into per-event-source entities.
+
+    The JSONL ledger has always stored event_source per event, but the first
+    SQLite entity table used candidate_id as the sole primary key. A test or
+    backfill event with the same candidate_id could therefore overwrite the
+    runtime entity. The v2 schema promotes event_source into the entity key.
+    """
+    legacy_name = "candidates_v1_migration"
+    conn.execute(f"DROP TABLE IF EXISTS {legacy_name}")
+    conn.execute(f"ALTER TABLE candidates RENAME TO {legacy_name}")
+    _create_candidates_table(conn)
+
+    old_cols = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({legacy_name})").fetchall()
+    }
+    select_exprs = []
+    for col in _CANDIDATE_COLUMNS:
+        if col in old_cols:
+            select_exprs.append(col)
+        else:
+            select_exprs.append(f"{_CANDIDATE_DEFAULTS.get(col, 'NULL')} AS {col}")
+    order_expr = "updated_at" if "updated_at" in old_cols else "rowid"
+    conn.execute(
+        f"""
+        INSERT OR REPLACE INTO candidates ({", ".join(_CANDIDATE_COLUMNS)})
+        SELECT {", ".join(select_exprs)}
+        FROM {legacy_name}
+        ORDER BY {order_expr} ASC
+        """
+    )
+    conn.execute(f"DROP TABLE {legacy_name}")
+
+
+def _ensure_candidates_table(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "candidates"):
+        _create_candidates_table(conn)
+        return
+    if _candidate_pk_columns(conn) != ["candidate_id", "event_source"]:
+        _migrate_candidates_v1(conn)
+
+
+def _ensure_event_tables(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS candidate_events (
@@ -156,11 +285,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_candidate_events_version ON candidate_events(version)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_candidate_events_source ON candidate_events(event_source)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_candidates_version ON candidates(version)")
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
-        (str(SCHEMA_VERSION),),
-    )
-    conn.commit()
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_candidates_source ON candidates(event_source)")
 
 
 def make_candidate_id(version: int | None, source_v: int | None = None) -> str:
@@ -219,8 +344,8 @@ def _upsert_sqlite_record(record: CandidateRecord, *, path: Path | None = None) 
     with _connect(path) as conn:
         now = float(record.timestamp)
         existing = conn.execute(
-            "SELECT created_at FROM candidates WHERE candidate_id = ?",
-            (record.candidate_id,),
+            "SELECT created_at FROM candidates WHERE candidate_id = ? AND event_source = ?",
+            (record.candidate_id, record.event_source),
         ).fetchone()
         created_at = float(existing["created_at"]) if existing else now
         conn.execute(
@@ -233,10 +358,9 @@ def _upsert_sqlite_record(record: CandidateRecord, *, path: Path | None = None) 
                 latest_scorecard_json, latest_metrics_json, latest_failures_json,
                 failure_class, artifacts_json, artifact_refs_json, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(candidate_id) DO UPDATE SET
+            ON CONFLICT(candidate_id, event_source) DO UPDATE SET
                 version=excluded.version,
                 source_v=excluded.source_v,
-                event_source=excluded.event_source,
                 profile_id=excluded.profile_id,
                 workflow_profile_id=excluded.workflow_profile_id,
                 prompt_profile_id=excluded.prompt_profile_id,
@@ -473,14 +597,31 @@ def read_candidate_entities(
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     sql = "SELECT * FROM candidates" + where + " ORDER BY updated_at ASC"
     if limit is not None and limit >= 0:
-        sql += " LIMIT ?"
+        sql = "SELECT * FROM (" + "SELECT * FROM candidates" + where + " ORDER BY updated_at DESC LIMIT ?" + ") ORDER BY updated_at ASC"
         params.append(limit)
     with _connect(path) as conn:
         return [_candidate_row_to_dict(row) for row in conn.execute(sql, params).fetchall()]
 
 
-def get_candidate_summary(candidate_id: str, *, path: Path | None = None) -> dict[str, Any] | None:
-    rows = read_candidate_entities(candidate_id=candidate_id, event_source=None, limit=1, path=path)
+def get_candidate_summary(
+    candidate_id: str,
+    *,
+    event_source: str | None = "runtime",
+    path: Path | None = None,
+) -> dict[str, Any] | None:
+    rows = read_candidate_entities(
+        candidate_id=candidate_id,
+        event_source=event_source,
+        limit=1,
+        path=path,
+    )
+    if not rows and event_source == "runtime":
+        rows = read_candidate_entities(
+            candidate_id=candidate_id,
+            event_source=None,
+            limit=1,
+            path=path,
+        )
     return rows[0] if rows else None
 
 
