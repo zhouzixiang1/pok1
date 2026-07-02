@@ -2870,13 +2870,33 @@ def _should_reset_before_rework(ckpt, tasks):
     """Return False for crossover quality repair so the fused candidate survives."""
     if not isinstance(ckpt, dict):
         return True
-    if ckpt.get("stage") != "quality_failed":
+    stage = ckpt.get("stage")
+    if stage not in {"quality_failed", "repair_planned", "rework_running"}:
         return True
     master_plan = ckpt.get("master_plan") if isinstance(ckpt.get("master_plan"), dict) else {}
-    is_crossover = bool(ckpt.get("parent2_v")) or master_plan.get("strategy") == "crossover"
+    work_item = master_plan.get("work_item") if isinstance(master_plan.get("work_item"), dict) else {}
+    work_kind = str(work_item.get("kind") or "")
+    task_kinds = {
+        str(task.get("task_kind") or "")
+        for task in tasks or []
+        if isinstance(task, dict)
+    }
+    is_crossover = (
+        bool(ckpt.get("parent2_v"))
+        or master_plan.get("strategy") == "crossover"
+        or work_kind.startswith("crossover_")
+    )
     if not is_crossover:
         return True
-    return False
+    is_quality_repair = (
+        stage == "quality_failed"
+        or "quality_repair" in work_kind
+        or work_kind == "crossover_gate_rework"
+        or any("quality_repair" in kind for kind in task_kinds)
+    )
+    if is_quality_repair and "precommit" not in work_kind:
+        return False
+    return True
 
 
 @tool("execute_workers", "Execute worker tasks to modify bot code. Each task has worker_id, role, target_files, worker_prompt.", {"tasks": list, "next_v": int, "source_v": int, "reviewer_feedback": str})
@@ -3131,6 +3151,16 @@ async def execute_workers(args):
             rework_kind = "precommit_repair"
         elif ckpt.get("parent2_v") is not None:
             rework_kind = f"crossover_{rework_kind}"
+        existing_work_item = (
+            (ckpt.get("master_plan") or {}).get("work_item")
+            if isinstance(ckpt.get("master_plan"), dict) else None
+        )
+        if (
+            ckpt.get("stage") in {"repair_planned", "rework_running"}
+            and isinstance(existing_work_item, dict)
+            and existing_work_item.get("kind")
+        ):
+            rework_kind = str(existing_work_item.get("kind"))
         source_dir_r = get_bot_dir(source_v)
         reset_before_rework = _should_reset_before_rework(ckpt, tasks)
         if reset_before_rework and source_dir_r.exists() and next_dir.exists():

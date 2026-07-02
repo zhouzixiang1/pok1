@@ -1362,6 +1362,67 @@ class TestWorkerFailureCircuitBreaker:
         assert skipper(mixed_task) == ""
         assert "size" in skipper(size_only_task)
 
+    def test_repair_planned_crossover_quality_retry_preserves_candidate(self, tmp_path, monkeypatch):
+        """A planned retry of crossover quality repair must not reset the fused candidate."""
+        import asyncio
+        import fix_injection
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        (source_dir / "strategy.py").write_text("def act():\n    return 0\n")
+        (next_dir / "strategy.py").write_text("def act():\n    return 1\n")
+        (next_dir / "opponent.py").write_text("def opp():\n    return 'bad'\n")
+        (next_dir / "state.py").write_text("def state():\n    return 'bad'\n")
+        (next_dir / "strategy_helpers.py").write_text("def helper():\n    return 'bad'\n")
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, stage="repair_planned")
+        state = json.loads(ckpt_file.read_text())
+        state["parent2_v"] = 9
+        state["reviewer_feedback"] = "Quality gates failed: position_semantics(strategy_helpers.py:1188)"
+        state["master_plan"] = {
+            "strategy": "crossover",
+            "tasks": [{
+                "worker_id": "auto_quality_repair",
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["opponent.py", "state.py", "strategy_helpers.py"],
+                "worker_prompt": "fix quality gates",
+                "task_kind": "quality_repair",
+            }],
+            "work_item": {
+                "kind": "crossover_quality_repair",
+                "source_stage": "quality_failed",
+                "reset_performed": False,
+            },
+        }
+        ckpt_file.write_text(json.dumps(state))
+
+        monkeypatch.setattr(tool_planning, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+
+        def _reset_must_not_run(*_args, **_kwargs):
+            raise AssertionError("crossover quality repair retries must stay in-place")
+
+        monkeypatch.setattr(tool_planning, "_incremental_reset_next_dir", _reset_must_not_run)
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec:
+                mock_exec.return_value = (False, {}, [])
+                return await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
+
+        result = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["success"] is False
+        assert (next_dir / "strategy.py").read_text() == "def act():\n    return 1\n"
+
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["stage"] == "repair_planned"
+        assert ckpt["master_plan"]["work_item"]["kind"] == "crossover_quality_repair"
+        assert ckpt["master_plan"]["work_item"]["reset_performed"] is False
+
     def test_run_quality_gates_blocks_repair_planned_stage(self, tmp_path, monkeypatch):
         """Quality gates must not run again before repair workers execute."""
         import asyncio
