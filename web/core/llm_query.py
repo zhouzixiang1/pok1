@@ -553,15 +553,33 @@ def _subagent_git_command_mutation_detector(command):
     return None
 
 
+def _subagent_bash_command_mutation_detector(command):
+    """Detect write-like shell commands by parsed command name, not substrings."""
+    command_map = {
+        "cp_dest": "bash_pattern:cp",
+        "mkdir": "bash_pattern:mkdir",
+        "mv_dest": "bash_pattern:mv",
+        "mv_source": "bash_pattern:mv",
+        "patch": "bash_pattern:patch",
+        "rm": "bash_pattern:rm",
+        "rmdir": "bash_pattern:rmdir",
+        "sed_i": "bash_pattern:sed -i",
+        "tee": "bash_pattern:tee",
+        "touch": "bash_pattern:touch",
+    }
+    for detector, target in _iter_subagent_bash_write_targets(command):
+        if detector == "write_redirect":
+            return f"write_redirect:{str(target)[:120]}"
+        mapped = command_map.get(detector)
+        if mapped:
+            return mapped
+    return None
+
+
 def _subagent_bash_mutation_detector(command):
     """Return the detector name when Bash appears to write/delete/move files."""
     text = str(command)
     low = text.lower()
-    for target in _iter_shell_write_redirect_targets(text):
-        target = target.strip("'\"")
-        if target.startswith("&") or target.lower() in _SAFE_REDIRECT_TARGETS:
-            continue
-        return f"write_redirect:{target[:120]}"
     if "python" in low:
         if _SUBAGENT_PYTHON_OPEN_WRITE_RE.search(low):
             return "python_open_write_mode"
@@ -571,9 +589,9 @@ def _subagent_bash_mutation_detector(command):
     git_detector = _subagent_git_command_mutation_detector(command)
     if git_detector:
         return git_detector
-    for pattern in _SUBAGENT_BASH_MUTATION_PATTERNS:
-        if pattern in low:
-            return f"bash_pattern:{pattern.strip()}"
+    bash_detector = _subagent_bash_command_mutation_detector(command)
+    if bash_detector:
+        return bash_detector
     if _subagent_git_tag_is_mutating(command):
         return "git_tag_mutation"
     return None
