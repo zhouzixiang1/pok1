@@ -170,7 +170,21 @@ class DynamicTestScenario(BaseModel):
     input: dict
     expected_actions: list[str] = []
     forbidden_actions: list[str] = []
+    legal_actions: list[str] = []
+    raise_min: Optional[int] = None
+    raise_max: Optional[int] = None
+    allin_requires_minus2: bool = False
+    national_legal_expected: bool = False
     rationale: str = ""
+
+    @field_validator("input")
+    @classmethod
+    def _input_is_single_request(cls, value: dict) -> dict:
+        if not isinstance(value, dict):
+            raise ValueError("input must be a single request dict")
+        if "requests" in value or "responses" in value:
+            raise ValueError("input must be a single request dict, not a full bot payload")
+        return value
 
 
 class DynamicTestSuite(BaseModel):

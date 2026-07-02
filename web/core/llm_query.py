@@ -246,45 +246,70 @@ def _split_shell_simple_commands(command):
     text = _strip_heredoc_bodies(command)
     quote = None
     escaped = False
-    start = 0
+    segment = []
     i = 0
+
+    def flush_segment():
+        current = "".join(segment).strip()
+        segment.clear()
+        return current
+
+    def at_comment_start(index):
+        if text[index] != "#":
+            return False
+        if index == 0:
+            return True
+        prev = text[index - 1]
+        return prev.isspace() or prev in ";&|("
+
     while i < len(text):
         ch = text[i]
         if escaped:
+            segment.append(ch)
             escaped = False
             i += 1
             continue
         if ch == "\\":
+            segment.append(ch)
             escaped = True
             i += 1
             continue
         if quote:
             if ch == quote:
                 quote = None
+            segment.append(ch)
             i += 1
             continue
         if ch in ("'", '"'):
             quote = ch
+            segment.append(ch)
             i += 1
             continue
-        if ch in ";&|":
+        if ch == "#" and at_comment_start(i):
+            while i < len(text) and text[i] not in "\r\n":
+                i += 1
+            continue
+        if ch in ";&|\r\n":
             if ch == "&" and (
                 (i > 0 and text[i - 1] == ">") or text.startswith("&>", i)
             ):
+                segment.append(ch)
                 i += 1
                 continue
-            segment = text[start:i].strip()
-            if segment:
-                yield segment
+            current = flush_segment()
+            if current:
+                yield current
             i += 1
-            while i < len(text) and text[i] == ch:
+            while i < len(text) and (
+                text[i] == ch or (ch in "\r\n" and text[i] in "\r\n")
+            ):
                 i += 1
-            start = i
             continue
+        segment.append(ch)
         i += 1
-    segment = text[start:].strip()
-    if segment:
-        yield segment
+    current = flush_segment()
+    if current:
+        yield current
 
 
 def _shell_words(segment):

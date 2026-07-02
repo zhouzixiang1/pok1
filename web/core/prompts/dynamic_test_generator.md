@@ -8,7 +8,12 @@ Based on actual code changes made by Workers, generate targeted test scenarios t
 - Cards: integers 0-51. number = card // 4 + 2 (2-14 = 2-A), suit = card % 4 (0=♥, 1=♦, 2=♠, 3=♣)
 - Bot JSON protocol: input {"requests": [{...}], "responses": []}, output {"response": ACTION}
 - Actions: -1=fold, -2=all-in, 0=check/call, >0=raise-to-total (NOT raise-by amount)
-- Request format: {"public_cards": [int,...], "my_cards": [int,...], "chips": [my_chips, opp_chips], "pot": int, "action_history": "string", "my_bet": int, "opp_bet": int}
+- Scenario `input` format: a single Botzone/local request dict, not a full bot
+  payload. Include fields such as `my_id`, `dealer_id`, `num_players`,
+  `my_chips`, `my_cards`, `public_cards`, `history`, `hand`, `max_hand`,
+  `total_win_chips`, and `total_win_games`.
+- Do NOT put `requests` or `responses` inside a scenario `input`; the decision
+  tester wraps your request as `{"requests": [input], "responses": []}`.
 - Starting chips: 20000, blinds: 50/100
 - For preflop (no public_cards yet): use empty list []
 - Use `raise###` in action-history prose for bets/raises. Do not write `bet###`;
@@ -52,16 +57,26 @@ Output exactly ONE JSON block:
       "id": "dynamic_opp_model_001",
       "description": "Test that opponent modeling doesn't fold top pair to small river bet",
       "input": {
-        "requests": [{
-          "public_cards": [0, 4, 8, 16, 20],
-          "my_cards": [0, 1],
-          "chips": [18000, 18000],
-          "pot": 800,
-          "action_history": "call/check/raise200/call/check/call/raise150",
-          "my_bet": 0,
-          "opp_bet": 150
-        }],
-        "responses": []
+        "my_id": 0,
+        "dealer_id": 0,
+        "num_players": 2,
+        "my_chips": 18000,
+        "my_cards": [0, 1],
+        "public_cards": [0, 4, 8, 16, 20],
+        "history": [
+          {"round": 0, "player_id": 0, "action": 250, "action_type": "raise", "bet_amount": 150, "round_bet": 250},
+          {"round": 0, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 250},
+          {"round": 1, "player_id": 1, "action": 0, "action_type": "check", "bet_amount": 0, "round_bet": 0},
+          {"round": 1, "player_id": 0, "action": 300, "action_type": "raise", "bet_amount": 300, "round_bet": 300},
+          {"round": 1, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 300},
+          {"round": 2, "player_id": 1, "action": 0, "action_type": "check", "bet_amount": 0, "round_bet": 0},
+          {"round": 2, "player_id": 0, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 0},
+          {"round": 3, "player_id": 1, "action": 150, "action_type": "raise", "bet_amount": 150, "round_bet": 150}
+        ],
+        "hand": 0,
+        "max_hand": 70,
+        "total_win_chips": [0, 0],
+        "total_win_games": [0, 0]
       },
       "expected_actions": ["call", "raise"],
       "forbidden_actions": ["fold"],
