@@ -4,6 +4,7 @@
 Pure-logic / data tests — no LLM, no real subprocess battles. Each test
 exercises a NEW branch added by a fix so it is not left uncovered.
 """
+import asyncio
 import json, os, tempfile
 from pathlib import Path
 
@@ -100,6 +101,59 @@ def test_H3_finalize_bare_commit_missing_source_v_returns_false():
     import generation_scheduler as gs
     # No source_v in checkpoint -> cannot finalize -> False (dir preserved).
     assert gs._finalize_bare_commit(999999, ckpt={}) is False
+
+
+def test_H3_finalize_bare_commit_requires_verified_gate_ledger(tmp_path, monkeypatch):
+    """Bare-commit recovery must not tag a directory unless all commit gates passed."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
+    import generation_scheduler as gs
+    import evolution_infra
+    import tool_commit
+
+    bot_dir = tmp_path / "bots" / "claude_v888"
+    bot_dir.mkdir(parents=True)
+    (bot_dir / "main.py").write_text("# code\n")
+
+    monkeypatch.setattr(evolution_infra, "git_has_tag", lambda _v: False)
+    commit_calls = []
+    monkeypatch.setattr(evolution_infra, "git_commit_bot", lambda *a, **k: commit_calls.append((a, k)))
+    monkeypatch.setattr(tool_commit, "get_bot_dir", lambda _v: bot_dir)
+    monkeypatch.setattr(gs, "log_system_event", lambda *_a, **_k: None)
+
+    ckpt = {
+        "next_v": 888,
+        "source_v": 887,
+        "stage": "workers_done",
+        "gate_results": {},
+    }
+
+    assert gs._finalize_bare_commit(888, ckpt=ckpt) is False
+    assert commit_calls == []
+
+
+def test_post_generation_cleanup_skips_uncommitted_before_side_effects(monkeypatch):
+    """Abandoned/uncommitted generations must not run post-commit side effects."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
+    import generation_scheduler as gs
+    import evolution_infra
+
+    events = []
+    monkeypatch.setattr(evolution_infra, "git_has_tag", lambda _v: False)
+    monkeypatch.setattr(
+        evolution_infra,
+        "get_active_bots",
+        lambda: (_ for _ in ()).throw(AssertionError("post-cleanup side effect ran")),
+    )
+    monkeypatch.setattr(gs, "log_system_event", lambda *args: events.append(args))
+
+    ctx = gs.GenerationContext(current_v=887, next_v=888, strategy="master", source_v=887)
+    asyncio.run(gs.post_generation_cleanup(None, None, ctx))
+
+    event_types = [event[0] for event in events]
+    assert "pipeline.post_cleanup_skipped_uncommitted" in event_types
+    assert "pipeline.post_cleanup_done" in event_types
 
 
 def test_H3_cleanup_incomplete_preserves_bare_commit(tmp_path, monkeypatch):

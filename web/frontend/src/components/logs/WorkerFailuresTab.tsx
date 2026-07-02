@@ -4,12 +4,6 @@ import type { WorkerFailure } from "../../api/types";
 import { Badge } from "../shared/Badge";
 import { Skeleton } from "../shared/Skeleton";
 
-// Phase 2+3 log redesign: category filter separates real worker execution
-// failures (category "worker") from critic/reviewer "gate" noise (category
-// "gate") that was polluting the worker-failure stream (root cause 5).
-// The backend reader backfills category on old records, so client-side
-// filtering on the returned category field is the robust path that does not
-// depend on a client.ts query-param extension.
 type CategoryFilter = "all" | "worker" | "gate";
 
 const CATEGORY_OPTIONS: { value: CategoryFilter; label: string }[] = [
@@ -17,15 +11,6 @@ const CATEGORY_OPTIONS: { value: CategoryFilter; label: string }[] = [
   { value: "gate", label: "门禁噪声(critic/reviewer)" },
   { value: "all", label: "全部" },
 ];
-
-function matchesCategory(f: WorkerFailure, cat: CategoryFilter): boolean {
-  if (cat === "all") return true;
-  const fc = (f.category ?? "").toLowerCase();
-  if (cat === "worker") return fc === "worker" || fc === "";
-  // gate: critic/reviewer gate noise
-  if (cat === "gate") return fc === "gate" || fc.includes("critic") || fc.includes("review");
-  return true;
-}
 
 function FailureCard({ failure }: { failure: WorkerFailure }) {
   const [expanded, setExpanded] = useState(false);
@@ -96,14 +81,12 @@ export default function WorkerFailuresTab() {
       const res = await api.workerFailures({
         gen: genFilter || undefined,
         role: roleFilter || undefined,
+        category: categoryFilter === "all" ? undefined : categoryFilter,
         limit: 200,
       }, controller.signal);
       if (controller.signal.aborted) return;
-      // Client-side category filtering on the backfilled category field.
-      // Robust regardless of whether client.ts learns the category query param.
-      const filtered = res.failures.filter((f) => matchesCategory(f, categoryFilter));
-      setFailures(filtered);
-      setTotal(filtered.length);
+      setFailures(res.failures);
+      setTotal(res.total);
     } catch (e) {
       if (controller.signal.aborted) return;
       setFailures([]);

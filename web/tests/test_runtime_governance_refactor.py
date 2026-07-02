@@ -487,29 +487,22 @@ def test_runtime_guard_blocks_head_drift(monkeypatch):
     assert payload["current_head"] == "new456"
 
 
-def test_runtime_guard_corrects_clean_branch_drift(monkeypatch):
-    import subprocess
+def test_runtime_guard_blocks_clean_branch_drift_without_auto_checkout(monkeypatch):
     import tool_runtime_guard
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
-    snapshots = iter([
-        {"ok": True, "branch": "codex/refactor", "head": "abc123", "entries": ["?? bots/claude_v300/"]},
-        {"ok": True, "branch": "main...origin/main", "head": "abc123", "entries": ["?? bots/claude_v300/"]},
-        {"ok": True, "branch": "main...origin/main", "head": "abc123", "entries": ["?? bots/claude_v300/"]},
-    ])
+    snapshot = {"ok": True, "branch": "codex/refactor", "head": "abc123", "entries": ["?? bots/claude_v300/"]}
     commands = []
-    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
-    monkeypatch.setattr(
-        tool_runtime_guard,
-        "_run_git",
-        lambda *args: commands.append(args) or subprocess.CompletedProcess(["git", *args], 0, "", ""),
-    )
+    monkeypatch.setattr(tool_runtime_guard, "_run_git", lambda *args: commands.append(args))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "run_literature_probe",
         {"next_v": 300, "source_v": 299},
     )
 
-    assert ok is True
-    assert commands == [("checkout", "main")]
+    assert ok is False
+    assert payload["reason"] == "branch_drift"
+    assert payload["expected_branch"] == "main"
+    assert commands == []

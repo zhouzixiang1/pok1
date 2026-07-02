@@ -28,6 +28,22 @@ _last_scheduler_capability_log: dict[str, object] = {"key": None, "ts": 0.0}
 _SCHEDULER_CAPABILITY_LOG_INTERVAL = 60.0
 
 
+def _daemon_exit_metadata(returncode):
+    """Classify daemon subprocess exit for structured monitoring logs."""
+    if returncode is None:
+        return {"exit_cause": "unknown", "signal": None, "killer_known": False}
+    if returncode < 0:
+        signum = abs(int(returncode))
+        try:
+            sig_name = signal.Signals(signum).name
+        except (ValueError, AttributeError):
+            sig_name = f"SIG{signum}"
+        return {"exit_cause": "signal", "signal": sig_name, "killer_known": False}
+    if returncode == 0:
+        return {"exit_cause": "clean", "signal": None, "killer_known": True}
+    return {"exit_cause": "process_error", "signal": None, "killer_known": False}
+
+
 def _log_scheduler_capability_false(reason: str, **fields) -> None:
     """Log daemon scheduler unavailability without flooding hot polling paths."""
     now = time.time()
@@ -466,14 +482,16 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
 
                 if restart_count > 5:
                     ui.log_history(f"Daemon failed 5x consecutively, stopping auto-restart (last rc={rc})", "error")
+                    exit_meta = _daemon_exit_metadata(rc)
                     log_system_event("daemon.crashed", "error", f"Daemon failed {restart_count}x, auto-restart stopped",
-                                     {"restart_count": restart_count, "returncode": rc})
+                                     {"restart_count": restart_count, "returncode": rc, **exit_meta})
                     break
                 if restart_count > 0:
                     backoff = min(3 * (2 ** (restart_count - 1)), 120)
                     ui.log_history(f"⚠️ Daemon exited (rc={rc}), restarting in {backoff}s (attempt {restart_count})", "warn")
+                    exit_meta = _daemon_exit_metadata(rc)
                     log_system_event("daemon.crashed", "error", f"Daemon exited rc={rc}, restarting (attempt {restart_count})",
-                                     {"restart_count": restart_count, "returncode": rc})
+                                     {"restart_count": restart_count, "returncode": rc, **exit_meta})
                     if stop_event.wait(backoff):
                         break
                     if _daemon_shutting_down:

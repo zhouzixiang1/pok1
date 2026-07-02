@@ -85,6 +85,7 @@ def fake_bots(tmp_path, monkeypatch):
         return bots_dir / name / "main.py"
 
     monkeypatch.setattr("tool_eval._bot_main", _fake_bot_main)
+    monkeypatch.setattr("tool_eval.get_bot_dir", lambda v: bots_dir / f"claude_v{v}")
     return bots_dir
 
 
@@ -255,6 +256,8 @@ class TestPrecommitAttemptNotIncrementedOnIdempotent:
         """
         # Seed a checkpoint that already passed precommit (stage=verified, gate
         # passed). precommit_attempt starts at 1 (the real eval that passed).
+        from tool_gates import _bot_code_fingerprint
+        code_fingerprint = _bot_code_fingerprint(fake_bots / "claude_v99")
         tool_eval.write_pipeline_checkpoint(
             99,
             98,
@@ -263,7 +266,7 @@ class TestPrecommitAttemptNotIncrementedOnIdempotent:
                 "quality": {"all_passed": True, "critical_scenarios_passed": True},
                 "review": {"approved": True},
                 "critic": {"approved": True, "score": 7},
-                "precommit_eval": {"passed": True},
+                "precommit_eval": {"passed": True, "code_fingerprint": code_fingerprint},
             },
             precommit_attempt=1,
         )

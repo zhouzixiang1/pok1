@@ -30,6 +30,40 @@ def test_pool_break_while_running_uses_recovery_path(monkeypatch):
     assert elo_daemon._handle_pool_break_for_shutdown(RuntimeError("pool gone")) is False
 
 
+def test_daemon_signal_handler_emits_structured_signal_event(monkeypatch):
+    import signal
+    import elo_daemon
+
+    events = []
+    old_running = elo_daemon.running
+    monkeypatch.setattr(
+        elo_daemon,
+        "log_system_event",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    try:
+        elo_daemon.running = True
+        elo_daemon.handle_signal(signal.SIGTERM, None)
+        assert elo_daemon.running is False
+    finally:
+        elo_daemon.running = old_running
+
+    event = next(args for args, _kwargs in events if args[0] == "daemon.signal_received")
+    assert event[1] == "warn"
+    assert event[3]["signal"] == "SIGTERM"
+    assert event[3]["shutdown_requested"] is True
+
+
+def test_daemon_exit_metadata_classifies_signal():
+    import daemon_management
+
+    meta = daemon_management._daemon_exit_metadata(-9)
+
+    assert meta["exit_cause"] == "signal"
+    assert meta["signal"] == "SIGKILL"
+    assert meta["killer_known"] is False
+
+
 def test_daemon_monitor_classifies_stop_sigkill_as_stop_not_crash(monkeypatch):
     import daemon_management
 

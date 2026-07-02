@@ -168,14 +168,63 @@ def test_run_claude_query_exit143_during_shutdown_is_cancelled(monkeypatch, tmp_
         event for event in events
         if event[0] == "pipeline.llm_role_shutdown_cancelled"
     ]
+    terminated = [
+        event for event in events
+        if event[0] == "pipeline.llm_role_process_terminated"
+    ]
     assert failed == []
     assert len(cancelled) == 1
+    assert terminated == []
     _category, severity, message, fields = cancelled[0]
     assert severity == "info"
     assert "stopped during shutdown" in message
     assert fields["role"] == "MATCH ANALYST"
     assert "exit code 143" in fields["error"]
     assert fields["shutdown_requested"] is True
+
+
+def test_run_claude_query_exit143_without_shutdown_is_process_terminated(monkeypatch, tmp_path):
+    events = []
+
+    async def fake_stream(*_args, **_kwargs):
+        raise Exception("Command failed with exit code 143 (exit code: 143)")
+
+    monkeypatch.setattr(llm_query, "_run_stream_with_signature_retry", fake_stream)
+    monkeypatch.setattr(
+        llm_query,
+        "_emit_llm_event",
+        lambda category, severity, message, **fields: events.append(
+            (category, severity, message, fields)
+        ),
+    )
+    llm_query.set_shutdown_manager(None)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            llm_query.run_claude_query(
+                "prompt",
+                [],
+                _DummyUI(),
+                "MATCH ANALYST",
+                str(tmp_path / "match_analyst_io.txt"),
+            )
+        )
+
+    shutdown_cancelled = [
+        event for event in events
+        if event[0] == "pipeline.llm_role_shutdown_cancelled"
+    ]
+    terminated = [
+        event for event in events
+        if event[0] == "pipeline.llm_role_process_terminated"
+    ]
+    assert shutdown_cancelled == []
+    assert len(terminated) == 1
+    _category, severity, message, fields = terminated[0]
+    assert severity == "warn"
+    assert "received SIGTERM" in message
+    assert fields["role"] == "MATCH ANALYST"
+    assert fields["shutdown_requested"] is False
 
 
 def test_run_claude_query_exit143_without_shutdown_manager_is_process_cancelled(monkeypatch, tmp_path):
@@ -210,10 +259,15 @@ def test_run_claude_query_exit143_without_shutdown_manager_is_process_cancelled(
         event for event in events
         if event[0] == "pipeline.llm_role_shutdown_cancelled"
     ]
+    terminated = [
+        event for event in events
+        if event[0] == "pipeline.llm_role_process_terminated"
+    ]
     assert failed == []
-    assert len(cancelled) == 1
-    _category, severity, message, fields = cancelled[0]
-    assert severity == "info"
+    assert cancelled == []
+    assert len(terminated) == 1
+    _category, severity, message, fields = terminated[0]
+    assert severity == "warn"
     assert "received SIGTERM" in message
     assert fields["role"] == "COMBINED ANALYST"
     assert fields["shutdown_requested"] is False

@@ -130,7 +130,7 @@ React frontend:
 - Worker role boundaries enforced by prompts and reviewer: Logic Architects cannot tune constants, Hyperparameter Tuners cannot add functions
 - Max 2000 lines for core strategy files (strategy.py, postflop.py), 1500 lines for other `.py` files — adaptive from source bot size + 15% growth budget, hard cap 2500. Reviewer rejects oversized files.
 - Decision test pass rate ≥70% (prevents catastrophic regressions like folding AA preflop)
-- `commit_bot()` uses checkpoint-based gate ledger: verifies all gates passed in checkpoint, plus `review_approved=true` parameter
+- `commit_bot()` uses checkpoint-based gate ledger: verifies all gates passed in checkpoint, checks quality/precommit code fingerprints still match the candidate code, plus `review_approved=true` parameter
 - Pipeline checkpoint enforces stage ordering via gate ledger — each stage records pass/fail, next stage verifies previous gates
 - Orchestrator session persistence for crash recovery: session file cleared on natural completion, preserved on kill
 - Worker failures recorded to `worker_failures.jsonl` and injected into future worker prompts as memory
