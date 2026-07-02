@@ -2731,10 +2731,9 @@ def _checkpoint_rework_feedback(ckpt):
     stage = ckpt.get("stage")
     gates = ckpt.get("gate_results") or {}
     if stage in {"quality_failed", "repair_planned", "rework_running"}:
-        quality = gates.get("quality") or {}
-        failed = quality.get("failed_gates") or quality.get("failures") or []
+        failed = _quality_failure_items(ckpt)
         if failed:
-            return "Quality gates failed: " + "; ".join(str(item) for item in failed[:10])
+            return "Quality gates failed:\n- " + "\n- ".join(str(item) for item in failed[:20])
     if stage == "precommit_failed":
         precommit = gates.get("precommit_eval") or {}
         blockers = precommit.get("blockers") or precommit.get("failures") or []
@@ -2747,8 +2746,50 @@ def _quality_failure_items(ckpt):
     if not isinstance(ckpt, dict):
         return []
     quality = (ckpt.get("gate_results") or {}).get("quality") or {}
-    failed = quality.get("failed_gates") or quality.get("failures") or []
-    return [str(item) for item in failed if str(item).strip()]
+    items = []
+
+    def add(value):
+        if isinstance(value, dict):
+            for key, val in value.items():
+                if str(key).endswith(".py"):
+                    items.append(f"{key}: {val}")
+                else:
+                    items.append(f"{key}={val}")
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                add(item)
+        elif value is not None:
+            text = str(value).strip()
+            if text:
+                items.append(text)
+
+    add(quality.get("failed_gates"))
+    add(quality.get("failures"))
+    for key in (
+        "compile_errors",
+        "import_errors",
+        "protected_contract_errors",
+        "smoke_errors",
+        "national_protocol_errors",
+        "national_acceptance_errors",
+        "declared_scope_errors",
+        "critical_failures",
+        "position_semantics_errors",
+        "reachability_warnings",
+    ):
+        add(quality.get(key))
+    oversized = quality.get("oversized_files")
+    if isinstance(oversized, dict):
+        for filename, lines in oversized.items():
+            add(f"file_size({filename}:{lines}L)")
+
+    deduped = []
+    seen = set()
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            deduped.append(item)
+    return deduped
 
 
 def _extract_quality_failure_files(failures):
@@ -2792,7 +2833,7 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
     if not target_files:
         return []
 
-    targets = target_files[:3]
+    targets = target_files
     is_crossover = bool(ckpt.get("parent2_v")) or master_plan.get("strategy") == "crossover"
     if is_crossover and stage in {"quality_failed", "repair_planned", "rework_running"}:
         preservation = (
