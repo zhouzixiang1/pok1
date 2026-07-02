@@ -30,6 +30,7 @@
 ## GENERAL
 - Validate payload results, not plan cleanliness; Master produces plausible but strategically wrong rationales — pivot on critic local-optima warnings unless precommit/H2H proves otherwise.
 - Trust git diff and head_to_head.json over commit messages/Master claims; verify crossover rationale (parent must lose to targets donor beats).
+- RESOLVED (A1): `_PersistentBot` drains stderr and stderr telemetry is readable. Use stderr/fire-rate as early reachability evidence, but keep H2H/paired net-chips as final EV proof.
 - Crossover ancestry can silently discard non-base mutations — inventory current functions/dispatch sites before declaring a mechanism new/missing/preserved (see `_completed_board_nut_disadvantage_gate` drop in v254).
 - Master-pivot-off-prescribed-priorities is the project's #1 failure mode (3x-recurrent v247–v249): when the pool names a SPECIFIC fn/leak, Master MUST land THAT fn FIRST before any offense-axis work; offense refinements on a bot with an unfixed documented leak should be REJECTED at direction_audit.
 - Post-worker plan-vs-code reconciliation is mandatory; prior gens committed code contradicting the stated plan.

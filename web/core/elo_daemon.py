@@ -6,7 +6,7 @@ updates and maintains a Head-to-Head win/loss matrix. Continuous scheduling
 eliminates idle cores.
 
 Usage:
-    python web/core/elo_daemon.py --pairs 5 --workers 28 --verbose
+    python web/core/elo_daemon.py --pairs 5 --workers 12 --verbose
 """
 
 import os

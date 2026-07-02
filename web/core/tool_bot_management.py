@@ -117,24 +117,24 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
     reap_signal = RESULTS_DIR / ".reap_signal"
     reap_signal.write_text(str(time.time()))
 
-    if not quiet:
-        log_system_event(
-            "bot.reaped",
-            "warn",
-            (
-                f"Reaped {culled_name} by conservative Glicko "
-                f"(r-2rd={conservative:.1f}, leaderboard={strength_scores.get(culled_name, 0.0):.4f}, "
-                f"h2h_wr={h2h_winrates.get(culled_name, 0.0):.2%})"
-            ),
-            {
-                "culled": culled_name,
-                "remaining": len(active_bots) - 1,
-                "selection_key": "conservative_glicko",
-                "conservative_rating": round(conservative, 1),
-                "leaderboard_score": round(strength_scores.get(culled_name, 0.0), 4),
-                "h2h_avg_wr": round(h2h_winrates.get(culled_name, 0.0), 4),
-            },
-        )
+    log_system_event(
+        "bot.reaped",
+        "info" if quiet else "warn",
+        (
+            f"{'Auto-reaped' if quiet else 'Reaped'} {culled_name} by conservative Glicko "
+            f"(r-2rd={conservative:.1f}, leaderboard={strength_scores.get(culled_name, 0.0):.4f}, "
+            f"h2h_wr={h2h_winrates.get(culled_name, 0.0):.2%})"
+        ),
+        {
+            "culled": culled_name,
+            "remaining": len(active_bots) - 1,
+            "selection_key": "conservative_glicko",
+            "conservative_rating": round(conservative, 1),
+            "leaderboard_score": round(strength_scores.get(culled_name, 0.0), 4),
+            "h2h_avg_wr": round(h2h_winrates.get(culled_name, 0.0), 4),
+            "quiet": quiet,
+        },
+    )
 
     return {
         "reaped": True,

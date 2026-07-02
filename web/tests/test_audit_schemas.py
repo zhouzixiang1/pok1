@@ -117,10 +117,17 @@ class TestPrecommitSemanticResult:
         assert result["recommended_action"] == "proceed"
 
     def test_block(self):
-        data = {"recommended_action": "block", "regression_semantics": "clear_regression"}
+        data = {
+            "recommended_action": "block",
+            "regression_semantics": "clear_regression",
+            "confidence": "high",
+            "data_quality": {"net_chips_available": True},
+            "block_evidence": ["parent claude_v98 net_chips_mean=-450"],
+        }
         result, errors = validate_agent_output("precommit_semantic", data)
         assert not errors
         assert result["recommended_action"] == "block"
+        assert result["block_evidence"]
 
     def test_defaults(self):
         result, errors = validate_agent_output("precommit_semantic", {})
@@ -340,4 +347,3 @@ class TestRunCriticRegressionGuardianInline:
         assert res["action"] == "approve"
         mock_guardian.assert_not_awaited()
         assert "regression_guardian" not in res
-

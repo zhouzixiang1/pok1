@@ -7,8 +7,10 @@ Each audit function follows the same pattern:
 4. Parse + validate output against Pydantic schema
 5. Return validated dict or safe default on failure
 
-Audits are advisory — failures are silently skipped (safe default returned).
-The pipeline never blocks on an audit failure.
+Audit LLM infrastructure/parse failures return safe defaults, but validated audit
+results can be used as hard gates by their callers. For example Master plan
+audit rejection, crossover compatibility rejection, and high-confidence
+precommit semantic regression can block their respective stages.
 """
 
 import json

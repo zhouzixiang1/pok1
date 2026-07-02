@@ -60,7 +60,7 @@ python web/core/orchestrator.py              # Continuous evolution
 python web/core/orchestrator.py --one-gen    # One generation then stop
 
 # Standalone Glicko-2 daemon
-python web/core/elo_daemon.py --workers 28 --pairs 5 -v
+python web/core/elo_daemon.py --workers 12 --pairs 5 -v
 ```
 
 ### Testing
@@ -420,7 +420,7 @@ Defaults: `r=1500`, `rd=350`, `sigma=0.06`, `tau=0.5`. Confidence levels: rd<50 
 
 - **ShutdownManager** (`shutdown_manager.py`): Asyncio-native SIGINT/SIGTERM handler. Double-signal kills process. All three generation phases check `shutdown_mgr.is_shutting_down` between operations.
 - **Orchestrator session persistence**: `orchestrator_session.json` stores the session ID. On restart, the Orchestrator resumes the exact LLM conversation. Cleared on natural cycle completion.
-- **Pipeline checkpoint**: `STAGE_ORDER` in `evolution_infra.py` defines stage flow (`prepared` → `direction_audited` → `master_planned` → `workers_done` → `quality_passed` → `reviewed` → `critic_checked` → `verified` → `archived`). `STAGE_GATE_ALLOWLIST` enforces stage ordering — `run_review` blocks if quality gates haven't passed, `commit_bot` blocks if any gate is missing.
+- **Pipeline checkpoint**: `STAGE_ORDER` in `evolution_infra.py` defines stage flow (`prepared` → `direction_audited` → `master_planned` → `workers_done` → `quality_failed` → `quality_passed` → `reviewed` → `critic_checked` → `verified` → `archived`). `STAGE_GATE_ALLOWLIST` enforces stage ordering — `run_review` blocks if quality gates haven't passed, `commit_bot` blocks if any gate is missing.
 - **Daemon lifecycle**: `start_daemon()` spawns `elo_daemon.py` as subprocess. `daemon_monitor_thread()` watches for crashes and auto-restarts. Daemon auto-exits on parent death via `getppid()==1` check.
 - **Orphan detection**: JSON PID file (`.daemon_pid`) for daemon process tracking. 5s orphan detection interval.
 

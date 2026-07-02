@@ -4,11 +4,12 @@ This module re-exports all tools and registers the MCP server for backward
 compatibility. Tools are organized into:
 
     tool_helpers.py   — Shared helpers, UI injection, checkpoint gates
-    tool_pipeline.py  — Core pipeline tools (Master → Workers → Review → Commit)
-    tool_status.py    — Status queries, daemon control, bot management
+    tool_pipeline.py  — Compatibility re-export facade for pipeline tools
+    tool_status.py    — Status queries and daemon control
+    tool_bot_management.py — Bot cleanup, reaping, and generation abandonment
 
 Tools split into two groups:
-    - MCP tools: registered for the LLM Orchestrator session (~15 tools)
+    - MCP tools: registered for the LLM Orchestrator session (17 tools)
     - Code-layer tools: called directly by generation_scheduler.py (not in MCP)
 """
 

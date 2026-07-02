@@ -2,7 +2,7 @@ import asyncio
 import json
 
 
-def test_reap_event_reports_conservative_glicko_selection_key(tmp_path, monkeypatch):
+def _setup_reap_case(tmp_path, monkeypatch, max_active=1):
     import tool_bot_management as tbm
 
     root = tmp_path
@@ -43,6 +43,12 @@ def test_reap_event_reports_conservative_glicko_selection_key(tmp_path, monkeypa
     })
     monkeypatch.setattr(tbm, "log_system_event", lambda *args: events.append(args))
 
+    return tbm, bots_dir, events
+
+
+def test_reap_event_reports_conservative_glicko_selection_key(tmp_path, monkeypatch):
+    tbm, bots_dir, events = _setup_reap_case(tmp_path, monkeypatch)
+
     result = asyncio.run(tbm._do_reap_weakest())
 
     assert result["reaped"] is True
@@ -61,3 +67,20 @@ def test_reap_event_reports_conservative_glicko_selection_key(tmp_path, monkeypa
     assert data["conservative_rating"] == 1100
     assert data["leaderboard_score"] == 0.9
     assert data["h2h_avg_wr"] == 0.75
+    assert data["quiet"] is False
+
+
+def test_quiet_reap_still_emits_structured_bot_event(tmp_path, monkeypatch):
+    tbm, _bots_dir, events = _setup_reap_case(tmp_path, monkeypatch)
+
+    result = asyncio.run(tbm._do_reap_weakest(quiet=True))
+
+    assert result["reaped"] is True
+    assert result["culled"] == "claude_v1"
+    assert events
+    event_type, level, message, data = events[0]
+    assert event_type == "bot.reaped"
+    assert level == "info"
+    assert message.startswith("Auto-reaped claude_v1")
+    assert data["culled"] == "claude_v1"
+    assert data["quiet"] is True
