@@ -487,6 +487,33 @@ def test_runtime_guard_blocks_head_drift(monkeypatch):
     assert payload["current_head"] == "new456"
 
 
+def test_runtime_guard_uses_persisted_checkpoint_baseline_after_restart(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshots = iter([
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+    ])
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
+        "next_v": 300,
+        "source_v": 299,
+        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "prepared"},
+    })
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_quality_gates",
+        {"version": 300, "source_v": 299},
+    )
+
+    assert ok is False
+    assert payload["reason"] == "head_changed_during_generation"
+    assert payload["baseline_source"] == "checkpoint"
+    assert payload["baseline_head"] == "old123"
+
+
 def test_runtime_guard_blocks_clean_branch_drift_without_auto_checkout(monkeypatch):
     import tool_runtime_guard
 
@@ -506,3 +533,26 @@ def test_runtime_guard_blocks_clean_branch_drift_without_auto_checkout(monkeypat
     assert payload["reason"] == "branch_drift"
     assert payload["expected_branch"] == "main"
     assert commands == []
+
+
+def test_write_pipeline_checkpoint_persists_repo_baseline(tmp_path, monkeypatch):
+    import evolution_infra
+    import repo_state
+
+    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", tmp_path / "pipeline_state.json")
+    monkeypatch.setattr(repo_state, "git_worktree_snapshot", lambda: {
+        "branch": "main...origin/main",
+        "head": "abc123",
+        "entry_count": 1,
+        "dirty_count": 0,
+        "untracked_count": 1,
+        "entries": ["?? bots/claude_v300/"],
+        "truncated": False,
+    })
+
+    assert evolution_infra.write_pipeline_checkpoint(300, 299, "prepared") is True
+    state = evolution_infra.read_pipeline_checkpoint()
+
+    assert state["repo_baseline"]["head"] == "abc123"
+    assert state["repo_baseline"]["branch"] == "main...origin/main"
+    assert state["repo_baseline"]["captured_stage"] == "prepared"

@@ -17,6 +17,9 @@ const CATEGORY_MAP: Record<string, string> = {
   "orchestrator.": "编排器",
   "daemon.": "守护进程",
   "bot.": "Bot 生命周期",
+  "repo.": "Git/工作区",
+  "control.": "控制台",
+  "battle_exp.": "对局经验",
 };
 
 function formatTime(ts: number): string {
@@ -91,6 +94,9 @@ export default function SystemLogTab() {
   const [error, setError] = useState<string | null>(null);
   const [severity, setSeverity] = useState("");
   const [category, setCategory] = useState("");
+  const [eventType, setEventType] = useState("");
+  const [runId, setRunId] = useState("");
+  const [stage, setStage] = useState("");
   const [offset, setOffset] = useState(0);
   const LIMIT = 100;
   const abortRef = useRef<AbortController | null>(null);
@@ -104,8 +110,11 @@ export default function SystemLogTab() {
     try {
       const res = await api.systemEvents({
         source: "structured",
+        type: eventType.trim() || undefined,
         category: category || undefined,
         severity: severity || undefined,
+        run_id: runId.trim() || undefined,
+        stage: stage.trim() || undefined,
         limit: LIMIT,
         offset,
       }, controller.signal);
@@ -119,7 +128,7 @@ export default function SystemLogTab() {
     } finally {
       if (!controller.signal.aborted) setLoading(false);
     }
-  }, [category, severity, offset]);
+  }, [category, eventType, runId, severity, stage, offset]);
 
   useEffect(() => {
     fetchEvents();
@@ -132,7 +141,7 @@ export default function SystemLogTab() {
     <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-white/[0.03]">
       <div className="px-5 py-4 border-b border-gray-100 dark:border-border-subtle flex items-center justify-between gap-4 flex-wrap">
         <h3 className="text-lg font-semibold text-gray-800 dark:text-white">系统日志</h3>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
           <select
             value={severity}
             onChange={(e) => { setSeverity(e.target.value); setOffset(0); }}
@@ -153,6 +162,24 @@ export default function SystemLogTab() {
               <option key={k} value={k}>{v}</option>
             ))}
           </select>
+          <input
+            value={eventType}
+            onChange={(e) => { setEventType(e.target.value); setOffset(0); }}
+            placeholder="type 前缀"
+            className="w-28 text-xs border border-gray-200 dark:border-border-subtle dark:bg-surface-1 rounded px-2 py-1"
+          />
+          <input
+            value={runId}
+            onChange={(e) => { setRunId(e.target.value); setOffset(0); }}
+            placeholder="run_id"
+            className="w-24 text-xs border border-gray-200 dark:border-border-subtle dark:bg-surface-1 rounded px-2 py-1"
+          />
+          <input
+            value={stage}
+            onChange={(e) => { setStage(e.target.value); setOffset(0); }}
+            placeholder="stage"
+            className="w-28 text-xs border border-gray-200 dark:border-border-subtle dark:bg-surface-1 rounded px-2 py-1"
+          />
           <button
             onClick={fetchEvents}
             className="text-xs px-3 py-1 rounded bg-gray-100 dark:bg-surface-1 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"

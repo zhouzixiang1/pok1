@@ -431,7 +431,7 @@ def _format_checkpoint_info(checkpoint, lines):
     non-gen_ctx code paths in ``_build_context``.
     """
     stage = checkpoint.get("stage", "unknown")
-    hint = STAGE_HINTS.get(stage, "call get_status to assess")
+    hint = STAGE_HINTS.get(stage, "inspect checkpoint context and continue with the matching MCP pipeline tool")
     lines.append(
         f"\nPIPELINE CHECKPOINT: v{checkpoint['next_v']} (from v{checkpoint['source_v']}) "
         f"reached stage='{stage}'. Next step: {hint}."
@@ -708,7 +708,7 @@ def _make_precompact_hook():
             checkpoint = read_pipeline_checkpoint()
             if checkpoint:
                 stage = checkpoint.get("stage", "unknown")
-                next_step = STAGE_HINTS_COMPACT.get(stage, "check get_status")
+                next_step = STAGE_HINTS_COMPACT.get(stage, "inspect checkpoint context")
                 lines.append(
                     f"ACTIVE GENERATION: v{checkpoint['next_v']} (from v{checkpoint['source_v']}), "
                     f"stage={stage}. Next tool: {next_step}. "
@@ -806,8 +806,8 @@ def _make_bot_dir_guard_hook():
         next_step = STAGE_HINTS_COMPACT.get(stage) if stage else None
         if not stage or not next_step:
             return (
-                "Recovery: do NOT retry the denied direct mutation. Call get_status, "
-                "then continue using MCP pipeline tools only."
+                "Recovery: do NOT retry the denied direct mutation. Inspect the supplied "
+                "checkpoint context, then continue using MCP pipeline tools only."
             ), {"stage": stage, "next_v": next_v, "source_v": source_v, "next_step": next_step}
         return (
             f"Recovery: current checkpoint is v{next_v} from v{source_v}, "

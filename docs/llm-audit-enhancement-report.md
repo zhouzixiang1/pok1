@@ -51,7 +51,7 @@
 | 文件 | 函数 | 角色 | 强制度 | 输入 | 输出 |
 |------|------|------|--------|------|------|
 | `agent_review.py` (via `tool_gates.py`) | Code Reviewer | 代码审查打分 | mandatory | Git diff + Worker 任务 | 分数 1-10 + 反馈 |
-| `agent_review.py` | `_run_critic` | 策略批判 | mandatory | Diff + Rating + Experience | 分数 1-10（≥6 通过） |
+| `agent_review.py` | `_run_critic` | 策略批判 | mandatory | Diff + Rating + Experience | 分数 1-10（advisory；precommit 是最终回归门） |
 | `agent_review.py` | `_run_performance_verification` | 性能验证 | advisory | Rating/WR 趋势 | 验证报告 |
 | `stagnation_analyzer.py` | `_analyze_stagnation` | 停滞分析（legacy） | advisory | Rating 历史 | 停滞检测报告 |
 

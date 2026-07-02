@@ -54,6 +54,31 @@ def _summarize_tool_args(args: dict | None) -> dict:
     return summary
 
 
+def _git_status_summary(limit: int = 80) -> dict:
+    """Read-only git status summary for destructive control actions."""
+    try:
+        proc = subprocess.run(
+            ["git", "status", "--short"],
+            cwd=str(PROJECT_ROOT),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300], "entries": [], "entry_count": 0, "truncated": False}
+
+    entries = [line for line in (proc.stdout or "").splitlines() if line.strip()]
+    return {
+        "ok": proc.returncode == 0,
+        "returncode": proc.returncode,
+        "entry_count": len(entries),
+        "entries": entries[:limit],
+        "truncated": len(entries) > limit,
+        "stderr": (proc.stderr or "").strip()[:500],
+    }
+
+
 def _sync_evolution_fields(state: dict) -> dict:
     """Overlay cheap authoritative evolution fields for status reads.
 
@@ -398,15 +423,16 @@ async def reset_evolution_endpoint():
     from reset import reset_evolution
     result = await loop.run_in_executor(None, reset_evolution)
 
-    # Git commit
-    try:
-        subprocess.run(["git", "add", "-A"], cwd=str(PROJECT_ROOT), check=True, capture_output=True)
-        subprocess.run(
-            ["git", "commit", "-m", "chore: reset evolution to baseline (v1-v6)"],
-            cwd=str(PROJECT_ROOT), check=True, capture_output=True,
-        )
-    except subprocess.CalledProcessError:
-        pass
+    # Do not auto-stage or commit reset output. This endpoint mutates many
+    # runtime/generated paths, so using `git add -A` would violate repository
+    # hygiene and could capture unrelated user or daemon artifacts.
+    git_status = _git_status_summary()
+    _control_log(
+        "control.reset_git_status",
+        "warn" if git_status.get("entry_count") else "info",
+        "Evolution reset left repository changes for explicit review",
+        {"git_status": git_status},
+    )
 
     # Auto-restart
     config = app_state.get_config()
@@ -428,4 +454,4 @@ async def reset_evolution_endpoint():
     app_state.set_task(task)
     web_ui.log_history("Evolution reset complete. Orchestrator restarted.", "success")
 
-    return {"status": "reset_complete", "details": result}
+    return {"status": "reset_complete", "details": result, "git_status": git_status}

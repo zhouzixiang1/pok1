@@ -201,14 +201,30 @@ def invalidate_ckpt_cache():
 def _resolve_context():
     """Resolve (run_id, stage, attempt), never raising.
 
-    Order: explicit contextvar → _last_known (survives checkpoint clear) →
-    pipeline_state.json (authoritative source, 500ms cached). Callers that pass
-    nothing still get correct correlation — this is what makes RC2/RC6 vanish
-    structurally rather than depending on every call site remembering to pass keys.
+    Order: explicit contextvar → live pipeline_state.json → _last_known
+    (survives checkpoint clear). Long-lived emitters such as daemon/background
+    threads must not pin an old generation forever, so when there is no explicit
+    context we refresh from the live checkpoint before falling back to last-known.
     """
     run_id = _run_id_cv.get()
     stage = _stage_cv.get()
     attempt = _attempt_cv.get()
+
+    if run_id is None and stage is None and attempt is None:
+        ckpt = _read_ckpt_cached()
+        nxt = ckpt.get("next_v")
+        if nxt is not None:
+            gen_a = ckpt.get("generation_attempt", 0)
+            run_id = f"{nxt}#{gen_a}"
+            stage = ckpt.get("stage")
+            attempt = {
+                "generation": gen_a,
+                "audit": ckpt.get("audit_attempt", 0),
+                "precommit": ckpt.get("precommit_attempt", 0),
+            }
+            update_last_known(run_id=run_id, stage=stage, attempt=attempt)
+            return run_id, stage, attempt
+
     if run_id is None:
         run_id = _last_known["run_id"]
     if stage is None:

@@ -283,12 +283,43 @@ else:
 
 ---
 
-### 步骤 7：主架构师规划 📎 `run_master(source_v, next_v, stagnation_info, match_analysis, performance_verification)`
+### 步骤 7：准备下一代 `prepare_next_gen(source_v, next_v)`
+
+- **触发者**: Orchestrator LLM
+- **有无 LLM**: 无
+- **前置**: Phase 1 已决定 `strategy="master"` 且给出 `source_v/next_v`
+- **做什么**:
+  1. 拒绝 `next_v ≤ source_v`
+  2. 拒绝源 bot 不存在或未完成（无 `.completed` 或缺少 `bot-v{source_v}` tag）
+  3. 拒绝 pipeline stage 已超过 `prepared`
+  4. 拒绝覆盖已完成的 bot（有 `.completed`）
+  5. `shutil.copytree()` 将 `bots/claude_v{source_v}/` 复制为 `bots/claude_v{next_v}/`
+  6. 删除 `.completed` 标记文件
+  7. 写入 pipeline checkpoint：`stage="prepared"`、`worker_failure_count=0`
+- **输出**: `{prepared: true, next_v, source_v}`
+
+---
+
+### 步骤 8：方向审计 `run_direction_audit(next_v, source_v, ...)`
+
+- **触发者**: Orchestrator LLM
+- **有无 LLM**: 是（Direction Auditor）
+- **前置**: checkpoint 已到 `prepared`
+- **做什么**:
+  1. 读取近代 commit/message、失败记录、经验池 exhaustion 标记和当前 Phase 1 分析
+  2. 判断是否重复已经证伪或耗尽的方向
+  3. 给 Master 输出 `mandatory_constraints`、`suggested_direction`、`exhausted_directions`
+  4. 写入 checkpoint：`stage="direction_audited"` + `direction_audit`
+- **输出**: 方向审计 JSON；这是 Master prompt 的约束输入，不是最终提交门。
+
+---
+
+### 步骤 9：主架构师规划 📎 `run_master(source_v, next_v, stagnation_info, match_analysis, performance_verification)`
 
 | 项目 | 内容 |
 |---|---|
 | **触发者** | Orchestrator LLM 调用 MCP 工具 `run_master` |
-| **调用链** | `tool_pipeline.py:run_master()` → `agent_master.py:_run_master_analysis()` → `run_claude_query()` |
+| **调用链** | `tool_planning.py:run_master()` → `agent_master.py:_run_master_analysis()` → `run_claude_query()` |
 | **LLM 角色** | MASTER |
 | **模型** | Sonnet |
 | **工具** | Bash, Read |
@@ -351,23 +382,7 @@ else:
 
 ---
 
-### 步骤 8：准备下一代 `prepare_next_gen(source_v, next_v)`
-
-- **触发者**: Orchestrator LLM
-- **有无 LLM**: 无
-- **做什么**:
-  1. 拒绝 `next_v ≤ source_v`
-  2. 拒绝源 bot 不存在或未完成（无 `.completed`）
-  3. 拒绝 pipeline stage 已超过 `prepared`
-  4. 拒绝覆盖已完成的 bot（有 `.completed`）
-  5. `shutil.copytree()` 将 `bots/claude_v{source_v}/` 复制为 `bots/claude_v{next_v}/`
-  6. 删除 `.completed` 标记文件
-  7. 写入 pipeline checkpoint：`stage="prepared"`、`worker_failure_count=0`
-- **输出**: `{prepared: true, next_v, source_v}`
-
----
-
-### 步骤 9：Worker 编码 📎 `execute_workers(tasks, next_v, source_v, reviewer_feedback)`
+### 步骤 10：Worker 编码 📎 `execute_workers(tasks, next_v, source_v, reviewer_feedback)`
 
 | 项目 | 内容 |
 |---|---|
@@ -426,7 +441,7 @@ else:
 
 ---
 
-### 步骤 10：质量门禁 `run_quality_gates(version)`
+### 步骤 11：质量门禁 `run_quality_gates(version)`
 
 - **触发者**: Orchestrator LLM
 - **有无 LLM**: 无
@@ -443,12 +458,12 @@ else:
 
 ---
 
-### 步骤 11：代码审查 📎 `run_review(version, source_v, plan)`
+### 步骤 12：代码审查 📎 `run_review(version, source_v, plan)`
 
 | 项目 | 内容 |
 |---|---|
 | **触发者** | Orchestrator LLM 调用 MCP 工具 `run_review` |
-| **调用链** | `tool_pipeline.py:run_review()` → `run_claude_query()` |
+| **调用链** | `tool_gates.py:run_review()` → `run_claude_query()` |
 | **LLM 角色** | LEAD CODE REVIEWER |
 | **模型** | Sonnet |
 | **工具** | Bash, Read |
@@ -492,12 +507,12 @@ else:
 
 ---
 
-### 步骤 12：策略评审 📎 `run_critic(version, source_v, plan, reviewer_feedback, force_advance)`
+### 步骤 13：策略评审 📎 `run_critic(version, source_v, plan, reviewer_feedback, force_advance)`
 
 | 项目 | 内容 |
 |---|---|
 | **触发者** | Orchestrator LLM 调用 MCP 工具 `run_critic` |
-| **调用链** | `tool_pipeline.py:run_critic()` → `agent_review.py:_run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=None)` → `run_claude_query()` |
+| **调用链** | `tool_gates.py:run_critic()` → `agent_review.py:_run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=None)` → `run_claude_query()` |
 | **LLM 角色** | STRATEGY CRITIC |
 | **模型** | Sonnet |
 | **工具** | Bash, Read |
@@ -520,7 +535,7 @@ else:
 }
 ```
 
-**通过逻辑** (函数 `run_critic` 内): Critic 是策略审计和经验输入，不是最终回归门。`score ≥ 6` 且 `approved == true` 会记为 `advisory_approved=true`；否则记为 `advisory_approved=false` 并写入风险日志/经验材料。无论 advisory 结果如何，`approved` 对编排器返回为 `true`，checkpoint 推进到 `critic_checked`，最终是否能提交由 `run_precommit_eval` 的统计/语义 gate 决定。
+**通过逻辑** (函数 `run_critic` 内): Critic 是策略审计和经验输入，不是最终回归门。Critic 原始输出会折算为 `advisory_approved` 并写入风险日志/经验材料；无论 advisory 结果如何，`approved` 对编排器返回为 `true`，checkpoint 推进到 `critic_checked`，最终是否能提交由 `run_precommit_eval` 的统计/语义 gate 决定。
 
 **⚠️ 重要**: `force_advance` 仅作为历史兼容字段保留。当前正常路径不靠 critic rejection 触发 worker 重试，也不靠 critic 分数阻塞提交；critic 反馈进入后续经验/提示上下文，precommit 才是最终提交许可。
 
@@ -549,7 +564,7 @@ else:
 
 ---
 
-### 步骤 13：提交前验证 `run_precommit_eval(version, source_v, n_games)`
+### 步骤 14：提交前验证 `run_precommit_eval(version, source_v, n_games)`
 
 - **触发者**: Orchestrator LLM
 - **有无 LLM**: 无
@@ -574,7 +589,7 @@ else:
 
 ---
 
-### 步骤 14：提交 `commit_bot(version, source_v, strategy, review_approved=false)`
+### 步骤 15：提交 `commit_bot(version, source_v, strategy, review_approved=false)`
 
 > ⚠️ `review_approved` 默认为 `false`，Orchestrator 必须**显式传递** `review_approved=true`（仅在 `run_review` 返回 `approved:true` 后）。
 
@@ -608,12 +623,12 @@ else:
 
 ---
 
-### 步骤 15：归档审计 `run_archivist(version, source_v)`
+### 步骤 16：归档审计 `run_archivist(version, source_v)`
 
 | 项目 | 内容 |
 |---|---|
 | **触发者** | Orchestrator LLM 调用 MCP 工具 `run_archivist` |
-| **调用链** | `tool_pipeline.py:run_archivist()` → 确定性归档 + 条件性 `agent_master.py:_run_archivist_analysis()` → `run_claude_query()` |
+| **调用链** | `tool_commit.py:run_archivist()` → 确定性归档 + 条件性 `agent_master.py:_run_archivist_analysis()` → `run_claude_query()` |
 | **有无 LLM** | 有（每次 commit 都调用 LLM，无条件触发） |
 | **LLM 角色** | CYCLE ARCHIVIST |
 | **模型** | Sonnet |
@@ -1014,7 +1029,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 | 项目 | 内容 |
 |---|---|
 | **触发者** | Orchestrator LLM 调用 `run_crossover`（停滞严重时替代正常流水线） |
-| **调用链** | `tool_pipeline.py:run_crossover()` → `agent_review.py:_run_crossover()` → `run_claude_query()` |
+| **调用链** | `tool_commit.py:run_crossover()` → `agent_review.py:_run_crossover()` → `run_claude_query()` |
 | **LLM 角色** | CROSSOVER v{A}×v{B}→v{target} |
 | **模型** | Sonnet |
 | **工具** | Bash, Read, Edit |
@@ -1209,7 +1224,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 - **所有 LLM 调用统一使用 Sonnet 模型**，通过 `claude_agent_sdk` 的 `query()` 函数
 - **API 限流 (529)**: `run_claude_query()` 内自动指数退避重试（30s → 60s → 120s）
 - **Prompt 预算**: `MAX_PROMPT_CHARS = 700_000`，超限时按文件均分压缩上下文
-- **MCP 工具**: 17 个工具注册在 `tools.py` 的 `mcp_tools` 列表中，通过 `create_sdk_mcp_server(name='evolution', tools=mcp_tools)` 暴露给 Orchestrator LLM。完整列表：`run_master`、`execute_workers`、`run_quality_gates`、`run_review`、`run_critic`、`run_precommit_eval`、`run_crossover`、`prepare_next_gen`、`run_direction_audit`、`run_literature_probe`、`commit_bot`、`run_archivist`、`abandon_generation`、`get_bot_info`、`get_match_history`、`get_h2h`、`get_bot_stats`。工具来自 `tool_planning.py`（direction_audit, literature_probe, master, workers）、`tool_gates.py`（quality_gates, prepare_next_gen, review, critic）、`tool_eval.py`（precommit_eval）、`tool_commit.py`（commit, archivist, crossover）、`tool_bot_management.py`（abandon_generation）、`tool_status.py`（查询工具）。**注意**: `get_status`、`run_inline_eval`、`consolidate_experience`、`reap_weakest` 等工具仅在 `all_tools`（HTTP 端点 `/api/control/tool/`）中可用，不在 MCP 中。`consolidate_experience` 由 Phase 3 代码层直接调用，不经 MCP。
+- **MCP 工具**: 17 个工具注册在 `tools.py` 的 `mcp_tools` 列表中，通过 `create_sdk_mcp_server(name='evolution', tools=mcp_tools)` 暴露给 Orchestrator LLM。完整列表：`prepare_next_gen`、`run_direction_audit`、`run_literature_probe`、`run_master`、`execute_workers`、`run_quality_gates`、`run_review`、`run_critic`、`run_precommit_eval`、`run_crossover`、`commit_bot`、`run_archivist`、`abandon_generation`、`get_bot_info`、`get_match_history`、`get_h2h`、`get_bot_stats`。工具来自 `tool_planning.py`（direction_audit, literature_probe, master, workers）、`tool_gates.py`（quality_gates, prepare_next_gen, review, critic）、`tool_eval.py`（precommit_eval）、`tool_commit.py`（commit, archivist, crossover）、`tool_bot_management.py`（abandon_generation）、`tool_status.py`（查询工具）。**注意**: `get_status`、`run_inline_eval`、`consolidate_experience`、`reap_weakest` 等工具仅在 `all_tools`（HTTP 端点 `/api/control/tool/`）中可用，不在 MCP 中。`consolidate_experience` 由 Phase 3 代码层直接调用，不经 MCP。
 - **子代理 MCP 屏蔽**: `_BLOCKED_MCP_TOOLS` 屏蔽以下外部工具（防止子代理访问网络）：
   - `mcp__web-reader__webReader`
   - `mcp__web-search-prime__web_search_prime`
@@ -1439,7 +1454,7 @@ Crossover Agent 的保守合并决策：
 | 策略 | Crossover v4×v8（保守合并 + CBet exploitation mutation） |
 | Review score | 8（一次通过） |
 | Critic score | 6（勉强通过，local_optima_warning=true） |
-| Precommit | 超时（n_games=80 超出实际上限 5，CYCLE_TIMEOUT 3600s 先到） |
+| Precommit | 超时（n_games=80 超出当时流程可承受范围；当前实现会 clamp 到 4..16，且由 precommit gate/超时保护处理） |
 | Tag 状态 | 缺失——`find_current_v()` 返回 8 |
 
 ### 相关日志文件

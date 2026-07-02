@@ -335,6 +335,37 @@ def substitute_template(template, replacements):
 # Pipeline Checkpoint (Process Recovery)
 # ──────────────────────────────────────────────
 
+def _capture_repo_baseline(stage):
+    """Capture the git baseline persisted with an active generation checkpoint."""
+    try:
+        from repo_state import git_worktree_snapshot
+        snapshot = git_worktree_snapshot()
+        return {
+            "branch": snapshot.get("branch", ""),
+            "head": snapshot.get("head", ""),
+            "entry_count": snapshot.get("entry_count", 0),
+            "dirty_count": snapshot.get("dirty_count", 0),
+            "untracked_count": snapshot.get("untracked_count", 0),
+            "entries": (snapshot.get("entries") or [])[:40],
+            "truncated": bool(snapshot.get("truncated")),
+            "captured_stage": stage,
+            "captured_ts": time.time(),
+        }
+    except Exception as exc:
+        return {
+            "branch": "",
+            "head": "",
+            "entry_count": 0,
+            "dirty_count": 0,
+            "untracked_count": 0,
+            "entries": [],
+            "truncated": False,
+            "captured_stage": stage,
+            "captured_ts": time.time(),
+            "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+        }
+
+
 def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                reviewer_feedback="", generation_attempt=0,
                                gate_results=None, worker_failure_count=None,
@@ -374,6 +405,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         existing_precommit_attempt = precommit_attempt
         existing_timeout_extensions = 0
         existing_literature_probe = None
+        existing_repo_baseline = None
 
         if existing and existing.get("next_v") == next_v and existing.get("source_v") == source_v:
             existing_gate_results = existing.get("gate_results", {}) or {}
@@ -396,6 +428,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             existing_direction_audit = existing.get("direction_audit")
             existing_audit_context = existing.get("audit_context", {}) or {}
             existing_literature_probe = existing.get("literature_probe")
+            existing_repo_baseline = existing.get("repo_baseline")
         elif existing:
             active_stage = existing.get("stage")
             dead_stages = {None, "timed_out", "infra_timed_out", "archived", "abandoned"}
@@ -519,6 +552,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         if existing_precommit_attempt is None:
             existing_precommit_attempt = 0
         run_id = f"{next_v}#{existing_generation_attempt}"
+        if not existing_repo_baseline:
+            existing_repo_baseline = _capture_repo_baseline(stage)
 
         state = {
             "next_v": next_v, "source_v": source_v, "stage": stage,
@@ -534,6 +569,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "direction_audit": existing_direction_audit,
             "audit_context": existing_audit_context,
             "literature_probe": existing_literature_probe,
+            "repo_baseline": existing_repo_baseline,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "last_stage_change_ts": new_stage_ts,
             "last_update_ts": now_ts,  # Always bumps on any checkpoint write

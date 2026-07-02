@@ -116,6 +116,60 @@ def test_daemon_monitor_classifies_stop_sigkill_as_stop_not_crash(monkeypatch):
     assert "daemon.crashed" not in event_types
 
 
+def test_daemon_monitor_crash_event_includes_exit_metadata(monkeypatch):
+    import daemon_management
+
+    class FakeProc:
+        pid = 23456
+
+        def poll(self):
+            return -9
+
+    class FakeUI:
+        def __init__(self):
+            self.history = []
+
+        def log_history(self, message, level):
+            self.history.append((level, message))
+
+        def update_daemon_status(self, stats, ratings):
+            pass
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return True
+
+    events = []
+    monkeypatch.setattr(
+        daemon_management,
+        "log_system_event",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    old_proc = daemon_management.daemon_proc
+    old_shutdown = daemon_management._daemon_shutting_down
+    try:
+        daemon_management.daemon_proc = FakeProc()
+        daemon_management._daemon_shutting_down = False
+
+        daemon_management.daemon_monitor_thread(
+            FakeUI(), FakeStopEvent(), daemon_workers=1, daemon_pairs=1
+        )
+    finally:
+        daemon_management.daemon_proc = old_proc
+        daemon_management._daemon_shutting_down = old_shutdown
+
+    crashed = [args for args, _kwargs in events if args[0] == "daemon.crashed"]
+    assert len(crashed) == 1
+    payload = crashed[0][3]
+    assert payload["returncode"] == -9
+    assert payload["exit_cause"] == "signal"
+    assert payload["signal"] == "SIGKILL"
+    assert payload["killer_known"] is False
+
+
 def test_daemon_final_save_failure_is_structured_event():
     src = (Path(__file__).resolve().parent.parent / "core" / "elo_daemon.py").read_text()
     assert "daemon.final_save_failed" in src
