@@ -494,6 +494,58 @@ def test_process_stream_hard_times_out_idle_role(monkeypatch, tmp_path):
     assert fields["idle_timeout"] == 0.02
 
 
+def test_default_role_timeout_policy_is_bounded(monkeypatch):
+    monkeypatch.delenv("POK_LLM_DEFAULT_FIRST_ACTIVITY_TIMEOUT", raising=False)
+    monkeypatch.delenv("POK_LLM_DEFAULT_IDLE_TIMEOUT", raising=False)
+    monkeypatch.delenv("POK_LLM_DEFAULT_TOTAL_TIMEOUT", raising=False)
+
+    policy = llm_query._role_timeout_policy("COMBINED ANALYST")
+
+    assert policy["policy_key"] == "DEFAULT"
+    assert policy["first_activity_timeout"] > 0
+    assert policy["idle_timeout"] > 0
+    assert policy["total_timeout"] > 0
+
+
+def test_process_stream_hard_times_out_default_role_first_activity(monkeypatch, tmp_path):
+    events = []
+
+    async def fake_stream():
+        await asyncio.sleep(0.08)
+        yield AssistantMessage(content=[TextBlock(text="late")], model="sonnet")
+
+    monkeypatch.setenv("POK_LLM_DEFAULT_FIRST_ACTIVITY_TIMEOUT", "0.02")
+    monkeypatch.setenv("POK_LLM_DEFAULT_IDLE_TIMEOUT", "1")
+    monkeypatch.setenv("POK_LLM_DEFAULT_TOTAL_TIMEOUT", "1")
+    monkeypatch.setattr(
+        llm_query,
+        "_emit_llm_event",
+        lambda category, severity, message, **fields: events.append(
+            (category, severity, message, fields)
+        ),
+    )
+
+    log_file = tmp_path / "v254" / "logs" / "combined_analysis.txt"
+    log_file.parent.mkdir(parents=True)
+
+    with pytest.raises(llm_query.LLMRoleTimeout) as exc:
+        asyncio.run(
+            llm_query._process_stream(
+                fake_stream(), str(log_file), _DummyUI(), "COMBINED ANALYST"
+            )
+        )
+
+    assert exc.value.timeout_kind == "first_activity"
+    timeout_events = [
+        event for event in events if event[0] == "pipeline.llm_role_first_activity_timeout"
+    ]
+    assert timeout_events
+    _category, severity, _message, fields = timeout_events[0]
+    assert severity == "error"
+    assert fields["role"] == "COMBINED ANALYST"
+    assert fields["first_activity_timeout"] == 0.02
+
+
 def test_subagent_cost_guard_blocks_unbounded_git_history():
     assert (
         llm_query._subagent_bash_cost_detector("git log --all -S foo")
