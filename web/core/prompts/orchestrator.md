@@ -114,6 +114,15 @@ Do NOT call `commit_bot()` unless ALL of these are satisfied:
 6. You pass `review_approved=true` to `commit_bot()`
 </gate_requirements>
 
+<forward_only_guard>
+After a generation reaches `quality_passed`, `reviewed`, `critic_checked`, or
+`verified`, generic `abandon_generation` is invalid. Continue with the next
+state-machine tool instead: `quality_passed -> run_review`,
+`reviewed -> run_critic`, `critic_checked -> run_precommit_eval`,
+`verified -> commit_bot`. If the tool guard refuses abandon, follow its
+`next_tool`/`directive` exactly.
+</forward_only_guard>
+
 <retry_rules>
 - Do NOT keep a private `intra_gen_attempts` counter in your reasoning. The checkpoint
   and tool return fields are authoritative: `generation_attempt`,

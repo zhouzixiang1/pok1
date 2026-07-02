@@ -16,6 +16,7 @@ precommit semantic regression can block their respective stages.
 import json
 import logging
 import difflib
+import asyncio
 from pathlib import Path
 
 from evolution_infra import (
@@ -184,6 +185,8 @@ async def _run_master_plan_audit(master_plan, source_v, ui, next_v=None):
                      data.get("overall_pass"), data.get("feedback", "")[:100])
             return data
 
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         log.warning("Master plan audit failed: %s. Skipping.", e)
         if is_llm_infra_error(e):
@@ -372,6 +375,8 @@ async def _generate_dynamic_tests(next_v, source_v, changed_files, master_plan, 
             log.info("Dynamic test generation: %d scenarios", len(scenarios))
             return scenarios
 
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         log.warning("Dynamic test generation failed: %s. Skipping.", e)
         # Advisory infra telemetry (8th advisory agent): safe_default=[] is non-blocking,

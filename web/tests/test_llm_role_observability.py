@@ -623,3 +623,89 @@ def test_run_claude_query_downgrades_success_error_result_to_info(monkeypatch, t
     assert severity == "info"
     assert fields["role"] == "battle_experience"
     assert "error result: success" in fields["error"]
+
+
+def test_run_claude_query_parent_timeout_cancel_is_typed(monkeypatch, tmp_path):
+    events = []
+
+    async def fake_stream(*_args, **_kwargs):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(llm_query, "_run_stream_with_signature_retry", fake_stream)
+    monkeypatch.setattr(
+        llm_query,
+        "_emit_llm_event",
+        lambda category, severity, message, **fields: events.append(
+            (category, severity, message, fields)
+        ),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        with llm_query.llm_cancel_scope(
+            "dynamic_test_gen", reason="parent_timeout", timeout_sec=25
+        ):
+            asyncio.run(
+                llm_query.run_claude_query(
+                    "prompt",
+                    [],
+                    _DummyUI(),
+                    "DYNAMIC_TEST_GEN",
+                    str(tmp_path / "dynamic_test_gen_io.txt"),
+                )
+            )
+
+    categories = [event[0] for event in events]
+    assert "pipeline.llm_role_parent_timeout_cancelled" in categories
+    assert "pipeline.llm_role_cancelled" not in categories
+    cancelled = next(
+        event for event in events
+        if event[0] == "pipeline.llm_role_parent_timeout_cancelled"
+    )
+    _category, severity, message, fields = cancelled
+    assert severity == "info"
+    assert "parent timeout" in message
+    assert fields["cancel_scope"] == "dynamic_test_gen"
+    assert fields["cancel_reason"] == "parent_timeout"
+    assert fields["timeout_sec"] == 25.0
+
+
+def test_process_stream_parent_timeout_cancel_is_typed(monkeypatch, tmp_path):
+    events = []
+
+    async def fake_stream():
+        yield AssistantMessage(content=[TextBlock(text="partial")], model="sonnet")
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(
+        llm_query,
+        "_emit_llm_event",
+        lambda category, severity, message, **fields: events.append(
+            (category, severity, message, fields)
+        ),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        with llm_query.llm_cancel_scope(
+            "dynamic_test_gen", reason="parent_timeout", timeout_sec=25
+        ):
+            asyncio.run(
+                llm_query._process_stream(
+                    fake_stream(),
+                    str(tmp_path / "dynamic_test_gen_io.txt"),
+                    _DummyUI(),
+                    "DYNAMIC_TEST_GEN",
+                )
+            )
+
+    categories = [event[0] for event in events]
+    assert "pipeline.llm_role_stream_parent_timeout_cancelled" in categories
+    assert "pipeline.llm_role_stream_cancelled" not in categories
+    cancelled = next(
+        event for event in events
+        if event[0] == "pipeline.llm_role_stream_parent_timeout_cancelled"
+    )
+    _category, severity, message, fields = cancelled
+    assert severity == "info"
+    assert "parent timeout" in message
+    assert fields["cancel_scope"] == "dynamic_test_gen"
+    assert fields["cancel_reason"] == "parent_timeout"

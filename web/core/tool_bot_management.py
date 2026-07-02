@@ -26,6 +26,38 @@ from code_verification import seed_initial_bots
 
 # A4 (2026-06-30): rate-limit state for abandon_generation. [timestamp, reason].
 _LAST_ABANDON_TS = [0.0, ""]
+_ABANDON_FORWARD_ONLY_STAGES = {
+    "quality_passed": "run_review",
+    "reviewed": "run_critic",
+    "critic_checked": "run_precommit_eval",
+    "verified": "commit_bot",
+}
+
+
+def _generic_abandon_stage_block(checkpoint, reason):
+    """Return a state-machine refusal payload for unsafe generic abandons."""
+    if not checkpoint or reason != "abandon_generation":
+        return None
+    stage = checkpoint.get("stage")
+    next_tool = _ABANDON_FORWARD_ONLY_STAGES.get(stage)
+    if not next_tool:
+        return None
+    next_v = checkpoint.get("next_v")
+    source_v = checkpoint.get("source_v")
+    directive = (
+        f"Refusing generic abandon_generation for v{next_v} at stage '{stage}'. "
+        f"This generation has passed earlier gates; continue the state machine with {next_tool}."
+    )
+    return {
+        "abandoned": False,
+        "blocked": True,
+        "reason": "forward_only_stage",
+        "stage": stage,
+        "next_v": next_v,
+        "source_v": source_v,
+        "next_tool": next_tool,
+        "directive": directive,
+    }
 
 
 class ReapWeakestInput(TypedDict):
@@ -234,6 +266,21 @@ async def _do_abandon_generation(reason: str = "abandon_generation") -> dict:
     system event). The caller is responsible for clearing the orchestrator
     session BEFORE calling this if a stale session must not be resumed.
     """
+    from evolution_core import PIPELINE_STATE_FILE
+    checkpoint = read_pipeline_checkpoint() if PIPELINE_STATE_FILE.exists() else None
+    blocked = _generic_abandon_stage_block(checkpoint, reason)
+    if blocked:
+        try:
+            log_system_event(
+                "pipeline.abandon_refused_state_guard",
+                "warn",
+                blocked["directive"],
+                blocked,
+            )
+        except Exception:
+            pass
+        return blocked
+
     # A4 (2026-06-30): rate-limit abandons to prevent evolution-DoS / version-space
     # leak. A rogue or stuck LLM could spam abandon_generation, monotonically
     # incrementing next_v via the abandoned_versions floor and never letting any
@@ -253,8 +300,6 @@ async def _do_abandon_generation(reason: str = "abandon_generation") -> dict:
             pass
         return {"abandoned": False, "rate_limited": True,
                 "reason": f"abandon cooldown active ({60 - (now - _LAST_ABANDON_TS[0]):.0f}s remaining)"}
-    from evolution_core import PIPELINE_STATE_FILE
-    checkpoint = read_pipeline_checkpoint() if PIPELINE_STATE_FILE.exists() else None
     cleared_checkpoint = False
     removed_dir = None
     abandoned_v = None

@@ -131,3 +131,66 @@ class TestDoAbandonGeneration:
         assert result["removed_directory"] is None
         assert result["abandoned_v"] == 100
         assert next_dir.exists()
+
+    def test_generic_abandon_refuses_forward_only_reviewed_stage(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(tbm, "read_pipeline_checkpoint",
+                            lambda: {"next_v": 100, "source_v": 99, "stage": "reviewed"})
+        import evolution_core
+        fake_state = tmp_path / "pipeline_state.json"
+        fake_state.write_text("{}")
+        monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", fake_state)
+
+        cleared = []
+        monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", lambda: cleared.append(True))
+
+        next_dir = tmp_path / "claude_v100"
+        next_dir.mkdir()
+        (next_dir / "main.py").write_text("x=1")
+        monkeypatch.setattr(tbm, "get_bot_dir", lambda v: next_dir)
+        monkeypatch.setattr(tbm, "git_dir_is_committed", lambda v: False)
+
+        events = []
+        monkeypatch.setattr(
+            tbm,
+            "log_system_event",
+            lambda event_type, severity, message, data=None: events.append(
+                (event_type, severity, message, data)
+            ),
+        )
+
+        result = _run(tbm._do_abandon_generation(reason="abandon_generation"))
+
+        assert result["abandoned"] is False
+        assert result["blocked"] is True
+        assert result["stage"] == "reviewed"
+        assert result["next_tool"] == "run_critic"
+        assert "run_critic" in result["directive"]
+        assert cleared == []
+        assert next_dir.exists()
+        assert events[0][0] == "pipeline.abandon_refused_state_guard"
+
+    def test_forced_abandon_still_allowed_after_reviewed_stage(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(tbm, "read_pipeline_checkpoint",
+                            lambda: {"next_v": 100, "source_v": 99, "stage": "reviewed"})
+        import evolution_core
+        fake_state = tmp_path / "pipeline_state.json"
+        fake_state.write_text("{}")
+        monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", fake_state)
+
+        cleared = []
+        monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", lambda: cleared.append(True))
+
+        next_dir = tmp_path / "claude_v100"
+        next_dir.mkdir()
+        (next_dir / "main.py").write_text("x=1")
+        monkeypatch.setattr(tbm, "get_bot_dir", lambda v: next_dir)
+        monkeypatch.setattr(tbm, "git_dir_is_committed", lambda v: False)
+        monkeypatch.setattr(tbm, "log_system_event", lambda *a, **k: None)
+
+        result = _run(tbm._do_abandon_generation(reason="cycle_timeout"))
+
+        assert result["abandoned"] is True
+        assert result["cleared_checkpoint"] is True
+        assert result["removed_directory"] == "claude_v100"
+        assert cleared == [True]
+        assert not next_dir.exists()
