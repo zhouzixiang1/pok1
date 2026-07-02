@@ -593,6 +593,11 @@ _LLM_SILENCE_WARN_SEC = float(
 )
 
 _ROLE_TIMEOUT_DEFAULTS = {
+    # Fallback for analysis/probe roles such as MATCH ANALYST, COMBINED
+    # ANALYST, literature probes, and battle-experience synthesis. These can be
+    # slower than gate roles on GLM-backed Claude-compatible endpoints, but must
+    # still have a hard ceiling so the pipeline cannot wait forever.
+    "DEFAULT": (240.0, 360.0, 900.0),
     # Master is the highest leverage failure point: it plans, reads evidence,
     # and can otherwise burn the whole orchestrator cycle before any code exists.
     "MASTER": (120.0, 240.0, 900.0),
@@ -622,7 +627,7 @@ def _role_timeout_policy(role_name: str) -> dict:
         key = "CRITIC"
     elif "WORKER" in role:
         key = "WORKER"
-    defaults = _ROLE_TIMEOUT_DEFAULTS.get(key, (0.0, 0.0, 0.0))
+    defaults = _ROLE_TIMEOUT_DEFAULTS.get(key or "DEFAULT", (0.0, 0.0, 0.0))
 
     def _env(name, default):
         try:
