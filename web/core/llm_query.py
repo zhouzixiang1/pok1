@@ -822,6 +822,10 @@ def _subagent_is_outside_allowed(path_or_cmd, allowed_dir):
         return False
     low = text.lower()
     allowed_scope = _normalize_allowed_write_scope(allowed_dir)
+    stripped = text.strip().strip("'\"")
+    if stripped and not re.search(r"[\s;&|()`$<>]", stripped):
+        if _path_inside_allowed_scope(stripped, allowed_scope):
+            return False
     allowed_values = [*allowed_scope.get("dirs", []), *allowed_scope.get("files", [])]
     allowed_markers = set()
     for allowed in allowed_values:
@@ -877,7 +881,7 @@ def _make_subagent_write_guard(allowed_write_dir):
     mutations outside allowed_write_dir are denied.
     """
     _allowed_scope = _normalize_allowed_write_scope(allowed_write_dir)
-    _allowed = ", ".join(
+    _allowed_label = ", ".join(
         [f"dir:{p}" for p in _allowed_scope.get("dirs", [])]
         + [f"file:{p}" for p in _allowed_scope.get("files", [])]
     ) or str(allowed_write_dir)
@@ -891,18 +895,18 @@ def _make_subagent_write_guard(allowed_write_dir):
             if tool_name == "Bash":
                 cmd = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
                 mutation_detector = _subagent_bash_mutation_detector(cmd)
-                write_scope_violation = _subagent_bash_write_scope_violation(cmd, _allowed)
+                write_scope_violation = _subagent_bash_write_scope_violation(cmd, _allowed_scope)
                 outside_allowed = bool(write_scope_violation)
                 if write_scope_violation:
                     blocked = ("Bash mutation targets a path outside the allowed bot dir "
-                               + _allowed + " (" + write_scope_violation + "). "
+                               + _allowed_label + " (" + write_scope_violation + "). "
                                "Sub-agents may only edit their assigned target bot "
                                "directory. Command: " + str(cmd)[:100])
             elif tool_name in ("Edit", "Write", "NotebookEdit"):
                 fp = tool_input.get("file_path", "") or tool_input.get("notebook_path", "")
-                if _subagent_is_outside_allowed(fp, _allowed):
+                if _subagent_is_outside_allowed(fp, _allowed_scope):
                     blocked = (tool_name + " targets a path outside the allowed bot dir "
-                               + _allowed + " (" + str(fp) + "). Sub-agents may only edit "
+                               + _allowed_label + " (" + str(fp) + "). Sub-agents may only edit "
                                "their assigned target bot directory.")
             if blocked:
                 try:
@@ -913,7 +917,7 @@ def _make_subagent_write_guard(allowed_write_dir):
                     log_system_event("pipeline.subagent_guard_block", "error",
                                      "BLOCKED sub-agent " + tool_name + ": " + blocked[:120],
                                      {"tool": tool_name, "reason": blocked[:200],
-                                      "allowed_dir": _allowed,
+                                      "allowed_dir": _allowed_label,
                                       "command_preview": command_text[:2000],
                                       "command_truncated": len(command_text) > 2000,
                                       "mutation_detector": locals().get("mutation_detector"),
