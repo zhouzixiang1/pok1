@@ -43,6 +43,19 @@ def test_auxiliary_prompts_block_national_protocol_misleading_plans():
     assert "postflop first action" in dynamic_prompt
 
 
+def test_tuner_prompt_contract_matches_planning_hard_gate():
+    master_prompt = _prompt("master_prompt.md")
+    worker_prompt = _prompt("worker_prompt.md")
+
+    assert '`target_files` must be exactly `["constants.py"]`' in master_prompt
+    assert "strategy_helpers.py" in master_prompt
+    assert "do not label that task as Tuner" in master_prompt
+
+    assert "must target constants.py only" in worker_prompt
+    assert "report BLOCKED instead of searching other .py files" in worker_prompt
+    assert "search all .py files" not in worker_prompt
+
+
 def test_decision_templates_use_call_to_pass_after_postflop_check():
     source = (ROOT / "web" / "core" / "decision_tester.py").read_text(encoding="utf-8")
 

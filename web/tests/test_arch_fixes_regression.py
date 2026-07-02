@@ -217,6 +217,23 @@ def test_validate_master_plan_accepts_plan_without_source_override():
     assert not any("source-override" in e.lower() or "branch_from" in e.lower() for e in errors), errors
 
 
+def test_validate_master_plan_rejects_tuner_non_constants_target():
+    plan = {
+        "tasks": [
+            _valid_task(
+                role="Hyperparameter Tuner",
+                target_files=["strategy_helpers.py"],
+                worker_prompt=(
+                    "Tune an existing helper threshold based on match data; "
+                    "this intentionally targets a non-constants module."
+                ),
+            )
+        ]
+    }
+    errors, _ = _validate_master_plan(plan, next_v=106)
+    assert any("non-constants" in e and "strategy_helpers.py" in e for e in errors), errors
+
+
 def _valid_plan(tasks):
     return {
         "analysis": "stagnation detected; pivot to value extraction",
