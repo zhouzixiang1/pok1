@@ -684,6 +684,46 @@ def test_run_master_normalizes_parent_paths_before_audit(monkeypatch):
     assert captured_audit["next_v"] == 232
 
 
+def test_master_checkpoint_heartbeat_touches_active_stage(monkeypatch):
+    import evolution_infra
+    import tool_planning
+
+    calls = []
+
+    monkeypatch.setattr(evolution_infra, "read_pipeline_checkpoint", lambda: {
+        "next_v": 268,
+        "source_v": 250,
+        "stage": "direction_audited",
+        "audit_attempt": 1,
+    })
+
+    def _fake_write(next_v, source_v, stage, **kwargs):
+        calls.append((next_v, source_v, stage, kwargs))
+        return True
+
+    monkeypatch.setattr(tool_planning, "write_pipeline_checkpoint", _fake_write)
+    monkeypatch.setattr(tool_planning, "log_system_event", lambda *a, **k: None)
+
+    assert tool_planning._touch_master_checkpoint(
+        268,
+        250,
+        phase="master_plan_audit_start",
+        audit_attempt=2,
+        audit_context={"master_audit_rejection": {"overall_pass": False}},
+    ) is True
+
+    assert calls == [(
+        268,
+        250,
+        "direction_audited",
+        {
+            "audit_attempt": 2,
+            "audit_context": {"master_audit_rejection": {"overall_pass": False}},
+            "touch_stage_timestamp": True,
+        },
+    )]
+
+
 def test_illegal_stage_regression_is_not_written():
     import evolution_infra
 
