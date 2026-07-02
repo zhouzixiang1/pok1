@@ -8,6 +8,8 @@ heavy `_run_one_cycle`; the helper is sufficient for this fix.
 
 from core.orchestrator import _is_cycle_infra_error, _is_shutdown_cancel_error
 from claude_agent_sdk import ProcessError, CLINotFoundError, ClaudeSDKError
+import inspect
+import core.orchestrator as orchestrator
 
 
 def test_processerror_exit143_is_infra():
@@ -46,3 +48,9 @@ def test_valueerror_exit143_keyword_during_shutdown_is_cancel():
 def test_keyerror_valueerror_business_is_not_infra():
     assert _is_cycle_infra_error(KeyError("missing config key")) is False
     assert _is_cycle_infra_error(ValueError("bad user input")) is False
+
+
+def test_daemon_dead_prepare_log_escalates_after_repeated_failures():
+    source = inspect.getsource(orchestrator.orchestrator_loop)
+
+    assert 'daemon_dead_level = "error" if consecutive_prep_fails >= 3 else "warn"' in source
