@@ -174,7 +174,7 @@ def _shell_heredoc_delimiters(line):
     return delimiters
 
 
-def _read_shell_token(text, start):
+def _read_shell_token(text, start, extra_stop_chars=""):
     token = []
     quote = None
     escaped = False
@@ -201,7 +201,7 @@ def _read_shell_token(text, start):
             quote = ch
             i += 1
             continue
-        if ch.isspace() or ch in ";&|":
+        if ch.isspace() or ch in ";&|" or ch in extra_stop_chars:
             break
         token.append(ch)
         i += 1
@@ -251,7 +251,7 @@ def _iter_shell_write_redirect_targets(command):
         j = op_start
         while j < len(text) and text[j].isspace():
             j += 1
-        target, end = _read_shell_token(text, j)
+        target, end = _read_shell_token(text, j, extra_stop_chars="()")
         if target:
             yield target
         i = max(end, j + 1)
