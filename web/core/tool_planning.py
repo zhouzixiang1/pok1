@@ -2723,6 +2723,129 @@ def _quality_rework_skipper(next_dir, source_dir, next_v, source_v):
     return skipper
 
 
+def _checkpoint_master_plan(ckpt):
+    if not isinstance(ckpt, dict):
+        return {}
+    plan = ckpt.get("master_plan")
+    return plan if isinstance(plan, dict) else {}
+
+
+def _checkpoint_work_item(ckpt):
+    plan = _checkpoint_master_plan(ckpt)
+    work_item = plan.get("work_item")
+    return work_item if isinstance(work_item, dict) else {}
+
+
+def _is_precommit_rework_checkpoint(ckpt):
+    if not isinstance(ckpt, dict):
+        return False
+    if ckpt.get("stage") == "precommit_failed":
+        return True
+    work_item = _checkpoint_work_item(ckpt)
+    route = work_item.get("route") if isinstance(work_item.get("route"), dict) else {}
+    return (
+        work_item.get("kind") == "precommit_repair"
+        or work_item.get("source_stage") == "precommit_failed"
+        or route.get("intent") == "precommit_rework"
+    )
+
+
+def _tasks_look_like_precommit_repair(tasks):
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            continue
+        text = " ".join([
+            str(task.get("worker_id", "")),
+            str(task.get("role", "")),
+            str(task.get("task_kind", "")),
+            str(task.get("worker_prompt", task.get("instruction", ""))),
+        ]).lower()
+        if "precommit" in text or "regression" in text or "semantic_regression" in text:
+            return True
+    return False
+
+
+def _precommit_failure_items(ckpt):
+    if not isinstance(ckpt, dict):
+        return []
+    precommit = (ckpt.get("gate_results") or {}).get("precommit_eval") or {}
+    items = []
+
+    def add(value):
+        if isinstance(value, dict):
+            reason = value.get("reason")
+            details = value.get("details")
+            if reason or details:
+                items.append(": ".join(str(x) for x in (reason, details) if x))
+            evidence = value.get("evidence")
+            if isinstance(evidence, (list, tuple)):
+                for item in evidence[:5]:
+                    add(item)
+            elif evidence:
+                add(evidence)
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                add(item)
+        elif value is not None:
+            text = str(value).strip()
+            if text:
+                items.append(text)
+
+    add(precommit.get("directive"))
+    add(ckpt.get("reviewer_feedback"))
+    add(precommit.get("blockers"))
+    add(precommit.get("failures"))
+
+    for matchup in (precommit.get("matchups") or [])[:6]:
+        if not isinstance(matchup, dict):
+            continue
+        opponent = matchup.get("opponent") or matchup.get("bot_b") or matchup.get("label") or "unknown"
+        wins = matchup.get("wins", matchup.get("wins_a"))
+        losses = matchup.get("losses", matchup.get("wins_b"))
+        draws = matchup.get("draws", 0)
+        reason = matchup.get("reason")
+        net = matchup.get("net_chips")
+        if isinstance(net, list):
+            net = sum(x for x in net if isinstance(x, (int, float)))
+        parts = [f"vs {opponent}"]
+        if reason:
+            parts.append(f"reason={reason}")
+        if wins is not None and losses is not None:
+            parts.append(f"result={wins}W-{losses}L-{draws}D")
+        if net is not None:
+            parts.append(f"net_chips={net}")
+        items.append("; ".join(parts))
+
+    deduped = []
+    seen = set()
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            deduped.append(item)
+    return deduped
+
+
+def _precommit_repair_target_files(ckpt, feedback):
+    failures = _precommit_failure_items(ckpt)
+    files = _extract_quality_failure_files(failures)
+    if not files and feedback:
+        files = _extract_quality_failure_files([feedback])
+    if files:
+        return files
+
+    preferred = ["strategy.py", "postflop.py", "preflop.py", "strategy_helpers.py", "opponent.py"]
+    try:
+        next_v = ckpt.get("next_v") if isinstance(ckpt, dict) else None
+        bot_dir = get_bot_dir(next_v) if next_v is not None else None
+        if bot_dir:
+            existing = [name for name in preferred if (bot_dir / name).exists()]
+            if existing:
+                return existing[:4]
+    except Exception:
+        pass
+    return ["strategy.py"]
+
+
 def _checkpoint_rework_feedback(ckpt):
     if not isinstance(ckpt, dict):
         return ""
@@ -2730,6 +2853,10 @@ def _checkpoint_rework_feedback(ckpt):
         return str(ckpt.get("reviewer_feedback") or "")
     stage = ckpt.get("stage")
     gates = ckpt.get("gate_results") or {}
+    if _is_precommit_rework_checkpoint(ckpt):
+        failed = _precommit_failure_items(ckpt)
+        if failed:
+            return "Precommit failed:\n- " + "\n- ".join(str(item) for item in failed[:20])
     if stage in {"quality_failed", "repair_planned", "rework_running"}:
         failed = _quality_failure_items(ckpt)
         if failed:
@@ -2822,54 +2949,88 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
     if not feedback:
         return []
 
-    master_plan = ckpt.get("master_plan") if isinstance(ckpt.get("master_plan"), dict) else {}
-    failures = _quality_failure_items(ckpt)
-    target_files = _extract_quality_failure_files(failures)
-    if not target_files:
-        target_files = _extract_quality_failure_files([feedback])
-
-    if stage == "precommit_failed" and not target_files:
-        target_files = ["strategy.py"]
+    master_plan = _checkpoint_master_plan(ckpt)
+    is_precommit_rework = _is_precommit_rework_checkpoint(ckpt)
+    if is_precommit_rework:
+        target_files = _precommit_repair_target_files(ckpt, feedback)
+    else:
+        failures = _quality_failure_items(ckpt)
+        target_files = _extract_quality_failure_files(failures)
+        if not target_files:
+            target_files = _extract_quality_failure_files([feedback])
     if not target_files:
         return []
 
     targets = target_files
     is_crossover = bool(ckpt.get("parent2_v")) or master_plan.get("strategy") == "crossover"
-    if is_crossover and stage in {"quality_failed", "repair_planned", "rework_running"}:
+    if is_precommit_rework:
+        preservation = (
+            "This is a precommit regression repair. Preserve the current candidate "
+            "in bots/claude_v{next_v}; fix the EV and matchup regression blockers "
+            "without reverting to the source parent or weakening protocol/quality behavior."
+        )
+        method = (
+            "- Read the listed target files before editing.\n"
+            "- Use the precommit blockers, worst matchups, W/L, and net-chip evidence to identify a concrete strategic leak.\n"
+            "- Make a bounded strategy correction that improves the failing matchup profile; do not retry precommit on unchanged code.\n"
+            "- Preserve national protocol/card mapping and previously passed quality gates.\n"
+            "- Leave stderr telemetry honest if touched."
+        )
+        worker_id = "auto_precommit_repair"
+        role = "Strategic Regression Repair Architect"
+        task_kind = "precommit_repair"
+    elif is_crossover and stage in {"quality_failed", "repair_planned", "rework_running"}:
         preservation = (
             "This is a crossover quality repair. Preserve the current candidate's "
             "crossover behavior in bots/claude_v{next_v}; fix only the blocking "
             "quality-gate issues unless a tiny local cleanup is required."
         )
+        method = (
+            "- Read the listed target files before editing.\n"
+            "- For file_size blockers, remove dead/duplicated code or consolidate helper logic; do not weaken strategy by deleting active decisions blindly.\n"
+            "- For position_semantics blockers, follow the national heads-up position contract exactly: small blind is dealer_id, big blind is 1 - dealer_id.\n"
+            "- Do not change protocol/card mapping behavior outside the named blockers.\n"
+            "- Leave stderr telemetry honest if touched."
+        )
+        worker_id = "auto_quality_repair"
+        role = "Algorithmic Logic Architect"
+        task_kind = "quality_repair"
     else:
         preservation = (
             "This is a gate repair. Make the smallest structural correction that "
             "clears the listed blockers while preserving the intended strategy."
         )
+        method = (
+            "- Read the listed target files before editing.\n"
+            "- For file_size blockers, remove dead/duplicated code or consolidate helper logic; do not weaken strategy by deleting active decisions blindly.\n"
+            "- For position_semantics blockers, follow the national heads-up position contract exactly: small blind is dealer_id, big blind is 1 - dealer_id.\n"
+            "- Do not change protocol/card mapping behavior outside the named blockers.\n"
+            "- Leave stderr telemetry honest if touched."
+        )
+        worker_id = "auto_quality_repair"
+        role = "Algorithmic Logic Architect"
+        task_kind = "quality_repair"
 
     prompt = (
         f"{preservation.format(next_v=ckpt.get('next_v'))}\n\n"
         f"Exact gate feedback:\n{feedback}\n\n"
-        "Required method:\n"
-        "- Read the listed target files before editing.\n"
-        "- For file_size blockers, remove dead/duplicated code or consolidate helper logic; do not weaken strategy by deleting active decisions blindly.\n"
-        "- For position_semantics blockers, follow the national heads-up position contract exactly: small blind is dealer_id, big blind is 1 - dealer_id.\n"
-        "- Do not change protocol/card mapping behavior outside the named blockers.\n"
-        "- Leave stderr telemetry honest if touched."
+        f"Required method:\n{method}"
     )
     return [{
-        "worker_id": "auto_quality_repair",
-        "role": "Algorithmic Logic Architect",
+        "worker_id": worker_id,
+        "role": role,
         "target_files": targets,
         "worker_prompt": prompt,
-        "task_kind": "quality_repair" if stage != "precommit_failed" else "precommit_repair",
+        "task_kind": task_kind,
     }]
 
 
 def _should_reset_before_rework(ckpt, tasks):
-    """Return False for crossover quality repair so the fused candidate survives."""
+    """Return False for in-place repairs that must preserve the current candidate."""
     if not isinstance(ckpt, dict):
         return True
+    if _is_precommit_rework_checkpoint(ckpt):
+        return False
     stage = ckpt.get("stage")
     if stage not in {"quality_failed", "repair_planned", "rework_running"}:
         return True
@@ -2903,6 +3064,7 @@ def _should_reset_before_rework(ckpt, tasks):
 async def execute_workers(args):
     _t0 = time.time()
     tasks = args.get("tasks", [])
+    tasks_provided = bool(tasks)
     next_v = args.get("next_v")
     source_v = args.get("source_v")
     if next_v is None or source_v is None:
@@ -2941,27 +3103,46 @@ async def execute_workers(args):
     # This happens when the orchestrator session is fresh (not resumed) and
     # the LLM doesn't have the task list in its conversation history.
     if not tasks:
-        plan = ckpt.get("master_plan") if isinstance(ckpt.get("master_plan"), dict) else {}
-        tasks = plan.get("tasks", [])
-        if tasks:
-            log_system_event("pipeline.workers_tasks_from_checkpoint", "info",
-                             f"Tasks loaded from checkpoint for v{next_v} (LLM omitted tasks arg)",
-                             {"next_v": next_v, "num_tasks": len(tasks)})
-        elif ckpt.get("stage") in rework_stages:
+        plan = _checkpoint_master_plan(ckpt)
+        checkpoint_tasks = plan.get("tasks", [])
+        if ckpt.get("stage") in rework_stages and (
+            not checkpoint_tasks
+            or (
+                _is_precommit_rework_checkpoint(ckpt)
+                and not _tasks_look_like_precommit_repair(checkpoint_tasks)
+            )
+        ):
             tasks = _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback)
             if tasks:
+                replace_checkpoint_tasks = bool(checkpoint_tasks)
+                event_type = (
+                    "pipeline.workers_tasks_refreshed"
+                    if checkpoint_tasks else "pipeline.workers_tasks_synthesized"
+                )
+                event_message = (
+                    f"Refreshed precommit repair task(s) for v{next_v} from checkpoint blockers"
+                    if checkpoint_tasks and _is_precommit_rework_checkpoint(ckpt)
+                    else f"Synthesized {len(tasks)} rework task(s) for v{next_v} from checkpoint gate feedback"
+                )
                 log_system_event(
-                    "pipeline.workers_tasks_synthesized",
+                    event_type,
                     "warn",
-                    f"Synthesized {len(tasks)} rework task(s) for v{next_v} from checkpoint gate feedback",
+                    event_message,
                     {
                         "next_v": next_v,
                         "source_v": source_v,
                         "stage": ckpt.get("stage"),
                         "parent2_v": ckpt.get("parent2_v"),
-                        "target_files": tasks[0].get("target_files", []),
+                        "old_target_files": sorted(_task_target_filenames(checkpoint_tasks)),
+                        "new_target_files": tasks[0].get("target_files", []),
+                        "task_kind": tasks[0].get("task_kind"),
                     },
                 )
+        elif checkpoint_tasks:
+            tasks = checkpoint_tasks
+            log_system_event("pipeline.workers_tasks_from_checkpoint", "info",
+                             f"Tasks loaded from checkpoint for v{next_v} (LLM omitted tasks arg)",
+                             {"next_v": next_v, "num_tasks": len(tasks)})
         else:
             return _json_tool_result({
                 "error": "No tasks provided and checkpoint has no task plan. Call run_master first.",
@@ -2997,6 +3178,30 @@ async def execute_workers(args):
                         "new_target_files": refreshed_tasks[0].get("target_files", []),
                     },
                 )
+
+    if (
+        tasks
+        and not tasks_provided
+        and _is_precommit_rework_checkpoint(ckpt)
+        and not _tasks_look_like_precommit_repair(tasks)
+    ):
+        refreshed_tasks = _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback)
+        if refreshed_tasks:
+            old_files = sorted(_task_target_filenames(tasks))
+            tasks = refreshed_tasks
+            replace_checkpoint_tasks = True
+            log_system_event(
+                "pipeline.workers_tasks_refreshed",
+                "warn",
+                f"Refreshed precommit repair task(s) for v{next_v}; old tasks did not target precommit blockers",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "old_target_files": old_files,
+                    "new_target_files": refreshed_tasks[0].get("target_files", []),
+                    "task_kind": refreshed_tasks[0].get("task_kind"),
+                },
+            )
 
     # B6 (2026-06-30): redundant-call guard. execute_workers is NOT idempotent —
     # a redundant call (no reviewer_feedback) when workers already ran resets code
@@ -3174,12 +3379,20 @@ async def execute_workers(args):
                 _log.info("Preserved %d worker-created NEW file(s) across reset: %s",
                           len(preserved), preserved)
         elif not reset_before_rework:
-            log_system_event(
-                "pipeline.crossover_quality_repair_in_place",
-                "warn",
-                f"Repairing crossover v{next_v} in place after quality failure; preserving fused candidate code",
-                {"next_v": next_v, "source_v": source_v, "parent2_v": ckpt.get("parent2_v")},
-            )
+            if rework_kind == "precommit_repair" or _is_precommit_rework_checkpoint(ckpt):
+                log_system_event(
+                    "pipeline.precommit_repair_in_place",
+                    "warn",
+                    f"Repairing v{next_v} in place after precommit failure; preserving candidate code",
+                    {"next_v": next_v, "source_v": source_v, "parent2_v": ckpt.get("parent2_v")},
+                )
+            else:
+                log_system_event(
+                    "pipeline.crossover_quality_repair_in_place",
+                    "warn",
+                    f"Repairing crossover v{next_v} in place after quality failure; preserving fused candidate code",
+                    {"next_v": next_v, "source_v": source_v, "parent2_v": ckpt.get("parent2_v")},
+                )
 
         # Re-apply known fixes after resetting from source (source may be older/unfixed)
         from fix_injection import apply_known_fixes, log_fix_application
@@ -3220,6 +3433,12 @@ async def execute_workers(args):
                 f"\n\nNOTE: This is a retry. The code in bots/claude_v{next_v}/ has been ACTUALLY RESET "
                 f"from source bots/claude_v{source_v}/. Any modifications described in the feedback "
                 f"above no longer exist in the code — you must re-implement them from scratch."
+            )
+        elif rework_kind == "precommit_repair" or _is_precommit_rework_checkpoint(ckpt):
+            reviewer_feedback += (
+                f"\n\nNOTE: This is an in-place precommit regression repair. The current code in "
+                f"bots/claude_v{next_v}/ is the candidate that failed precommit; preserve it except "
+                f"for targeted EV/matchup regression fixes."
             )
         else:
             reviewer_feedback += (
