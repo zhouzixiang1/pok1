@@ -162,10 +162,10 @@ TEMPLATE_SCENARIOS = [
     },
     # --- Flop templates ---
     {
-        "id": "tpl_flop_sb_check_or_bet",
-        "description": "Template: Flop, SB first to act with top pair",
+        "id": "tpl_flop_bb_first_to_act",
+        "description": "Template: Flop, BB first to act with top pair",
         "input": _make_base_input(
-            my_id=0, dealer_id=0, my_chips=19700,
+            my_id=1, dealer_id=0, my_chips=19700,
             my_cards=[44, 40],  # KQ
             public_cards=[40, 20, 4],  # Q-7-3 rainbow
             history=[
@@ -176,13 +176,13 @@ TEMPLATE_SCENARIOS = [
             ],
         ),
         "forbidden_actions": ["fold"],
-        "_covers": "flop_sb_act_first",
+        "_covers": "flop_bb_act_first",
     },
     {
-        "id": "tpl_flop_bb_facing_cbet",
-        "description": "Template: Flop, BB facing cbet with middle pair",
+        "id": "tpl_flop_sb_facing_lead",
+        "description": "Template: Flop, SB in position facing BB lead with middle pair",
         "input": _make_base_input(
-            my_id=1, dealer_id=0, my_chips=19700,
+            my_id=0, dealer_id=0, my_chips=19700,
             my_cards=[36, 32],  # JT
             public_cards=[32, 20, 8],  # T-7-4
             history=[
@@ -190,19 +190,19 @@ TEMPLATE_SCENARIOS = [
                  "bet_amount": 150, "round_bet": 250},
                 {"round": 0, "player_id": 1, "action": 0, "action_type": "call",
                  "bet_amount": 0, "round_bet": 250},
-                {"round": 1, "player_id": 0, "action": 400, "action_type": "raise",
+                {"round": 1, "player_id": 1, "action": 400, "action_type": "raise",
                  "bet_amount": 150, "round_bet": 400},
             ],
         ),
         "forbidden_actions": [],
-        "_covers": "flop_bb_vs_cbet",
+        "_covers": "flop_sb_vs_lead",
     },
     # --- Turn templates ---
     {
-        "id": "tpl_turn_act_first",
-        "description": "Template: Turn, first to act with two pair",
+        "id": "tpl_turn_bb_first_to_act",
+        "description": "Template: Turn, BB first to act with two pair",
         "input": _make_base_input(
-            my_id=0, dealer_id=0, my_chips=19400,
+            my_id=1, dealer_id=0, my_chips=19400,
             my_cards=[40, 20],  # Q7
             public_cards=[41, 21, 8, 36],  # Q-7-4-J
             history=[
@@ -210,23 +210,23 @@ TEMPLATE_SCENARIOS = [
                  "bet_amount": 150, "round_bet": 250},
                 {"round": 0, "player_id": 1, "action": 0, "action_type": "call",
                  "bet_amount": 0, "round_bet": 250},
-                {"round": 1, "player_id": 0, "action": 0, "action_type": "check",
+                {"round": 1, "player_id": 1, "action": 0, "action_type": "check",
                  "bet_amount": 0, "round_bet": 0},
-                {"round": 1, "player_id": 1, "action": 300, "action_type": "raise",
+                {"round": 1, "player_id": 0, "action": 300, "action_type": "raise",
                  "bet_amount": 300, "round_bet": 300},
-                {"round": 1, "player_id": 0, "action": 0, "action_type": "call",
+                {"round": 1, "player_id": 1, "action": 0, "action_type": "call",
                  "bet_amount": 0, "round_bet": 300},
             ],
         ),
         "forbidden_actions": ["fold"],
-        "_covers": "turn_act_first_twopair",
+        "_covers": "turn_bb_act_first_twopair",
     },
     # --- River templates ---
     {
         "id": "tpl_river_facing_bet",
-        "description": "Template: River, facing bet with medium strength",
+        "description": "Template: River, SB in position facing BB bet with medium strength",
         "input": _make_base_input(
-            my_id=1, dealer_id=0, my_chips=18500,
+            my_id=0, dealer_id=0, my_chips=18500,
             my_cards=[36, 32],  # JT
             public_cards=[32, 20, 8, 36, 4],  # T-7-4-J-3
             history=[
@@ -234,17 +234,17 @@ TEMPLATE_SCENARIOS = [
                  "bet_amount": 150, "round_bet": 250},
                 {"round": 0, "player_id": 1, "action": 0, "action_type": "call",
                  "bet_amount": 0, "round_bet": 250},
-                {"round": 1, "player_id": 0, "action": 0, "action_type": "check",
+                {"round": 1, "player_id": 1, "action": 0, "action_type": "check",
                  "bet_amount": 0, "round_bet": 0},
-                {"round": 1, "player_id": 1, "action": 300, "action_type": "raise",
+                {"round": 1, "player_id": 0, "action": 300, "action_type": "raise",
                  "bet_amount": 300, "round_bet": 300},
-                {"round": 1, "player_id": 0, "action": 0, "action_type": "call",
+                {"round": 1, "player_id": 1, "action": 0, "action_type": "call",
                  "bet_amount": 0, "round_bet": 300},
-                {"round": 2, "player_id": 0, "action": 0, "action_type": "check",
+                {"round": 2, "player_id": 1, "action": 0, "action_type": "check",
                  "bet_amount": 0, "round_bet": 0},
-                {"round": 2, "player_id": 1, "action": 0, "action_type": "call",
+                {"round": 2, "player_id": 0, "action": 0, "action_type": "call",
                  "bet_amount": 0, "round_bet": 0},
-                {"round": 3, "player_id": 0, "action": 600, "action_type": "raise",
+                {"round": 3, "player_id": 1, "action": 600, "action_type": "raise",
                  "bet_amount": 600, "round_bet": 600},
             ],
         ),
@@ -260,26 +260,26 @@ _CONSTANT_TEMPLATE_MAP = {
     "BB_CALL": "preflop_bb_vs_raise",
     "BB_VALUE_3BET": "preflop_bb_vs_raise",
     "BB_BLUFF_3BET": "preflop_bb_vs_raise",
-    "RAISE_RATIO": "flop_sb_act_first",
-    "FOLD_FLOP": "flop_sb_act_first",
-    "FOLD_TURN": "turn_act_first_twopair",
+    "RAISE_RATIO": "flop_bb_act_first",
+    "FOLD_FLOP": "flop_bb_act_first",
+    "FOLD_TURN": "turn_bb_act_first_twopair",
     "FOLD_RIVER": "river_facing_bet",
-    "CALL_MARGIN": "flop_bb_vs_cbet",
-    "EQR_": "flop_bb_vs_cbet",
-    "ANTI_LOCK": "flop_sb_act_first",
-    "OVERBET": "flop_sb_act_first",
-    "BLOCKER_BLUFF": "flop_sb_vs_3bet",
+    "CALL_MARGIN": "flop_sb_vs_lead",
+    "EQR_": "flop_sb_vs_lead",
+    "ANTI_LOCK": "flop_bb_act_first",
+    "OVERBET": "flop_bb_act_first",
+    "BLOCKER_BLUFF": "flop_sb_vs_lead",
     "SB_VS_RERAISE": "preflop_sb_vs_3bet",
     "LIGHT_4BET": "preflop_sb_vs_3bet",
-    "WETNESS": "flop_sb_act_first",
-    "FLUSH_PRESSURE": "flop_sb_act_first",
-    "STRAIGHT_PRESSURE": "flop_sb_act_first",
-    "TEXTURE": "flop_sb_act_first",
-    "TRAP": "flop_sb_act_first",
-    "PASSIVE": "flop_bb_vs_cbet",
-    "PRIOR_": "flop_bb_vs_cbet",
+    "WETNESS": "flop_bb_act_first",
+    "FLUSH_PRESSURE": "flop_bb_act_first",
+    "STRAIGHT_PRESSURE": "flop_bb_act_first",
+    "TEXTURE": "flop_bb_act_first",
+    "TRAP": "flop_bb_act_first",
+    "PASSIVE": "flop_sb_vs_lead",
+    "PRIOR_": "flop_sb_vs_lead",
     "TOURNAMENT": "preflop_sb_open",
-    "BIG_POT": "flop_sb_act_first",
+    "BIG_POT": "flop_bb_act_first",
 }
 
 
@@ -290,9 +290,9 @@ def _find_template_for_constant(const_name):
             for tpl in TEMPLATE_SCENARIOS:
                 if tpl.get("_covers") == cover_key:
                     return tpl
-    # Default: return the flop template as most generic
+    # Default: return the flop first-to-act template as most generic.
     for tpl in TEMPLATE_SCENARIOS:
-        if tpl.get("_covers") == "flop_sb_act_first":
+        if tpl.get("_covers") == "flop_bb_act_first":
             return tpl
     return TEMPLATE_SCENARIOS[0]
 

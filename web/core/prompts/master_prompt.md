@@ -37,6 +37,7 @@ Every plan must include:
 <game_rules>
 Bot action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). The evolved bot remains a Botzone/local JSON subprocess bot; national TCP deployment is through `sever/bot_adapter.py`.
 Game parameters from `sever/国赛平台/`: 70 hands/match, 20000 chips reset every hand, blinds 50/100. SB acts first preflop; BB acts first on flop/turn/river; players alternate SB/BB roles every hand.
+Heads-up identity: `dealer_id` is SB. Therefore `bb = 1 - dealer_id`; do not use `next_player(dealer_id, 1)` for SB or `next_player(dealer_id, 2)` for BB. Postflop, BB is out of position and acts first; SB/dealer is in position.
 Wire protocol boundary: TCP actions are `raise <amount>`, `fold`, `call`, `check`, `allin`. Plans must not ask workers to emit TCP text from JSON bots. `bet` is illegal on the wire; use "bet" only as poker prose and implement it as a positive raise-to-total response.
 Raise rules: first preflop raise-to >= 200; first postflop raise-to >= 100; every re-raise must be strictly greater than 2x the previous raise-to (`prev * 2 + 1` minimum). Raise-to must exceed the player's current street bet, must not exceed available chips, and must not equal all remaining chips.
 Call/check rules: postflop first action cannot be call; postflop after any first action, check is illegal. If the first postflop player checks, the second player passes with call, not another check. Preflop BB cannot call after SB limps/calls; BB should check, raise, or fold.
@@ -61,7 +62,7 @@ Key Strategic Patterns:
 - Delayed c-bet: Check flop as aggressor, bet turn. Use when flop favors caller's range or when you want to control pot with marginal holdings.
 - Squeeze: Re-raise after a raise and one or more calls. In heads-up, this is a 3-bet; apply with strong value and some bluffs with blockers.
 - Blocker value: Holding cards that reduce opponent's probability of having the nuts. Use to select bluff candidates (e.g., bluff with Ace-high on A-x-x boards).
-- Position: In-position (dealer/SB preflop, BB postflop) allows checking back to realize equity and control pot size. Out-of-position requires more proactive defense.
+- Position: SB/dealer acts first preflop but is in position postflop. BB acts first on flop/turn/river and is out of position postflop; do not describe BB as postflop in-position.
 
 Sizing Principles:
 - Preflop open: 2.5x-3x BB (200-300 total).

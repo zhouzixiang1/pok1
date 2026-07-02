@@ -1195,6 +1195,62 @@ class TestWorkerFailureCircuitBreaker:
         assert ckpt["stage"] == "workers_done"
         assert ckpt["precommit_attempt"] == 0
 
+    def test_precommit_failed_retry_preserves_tasks_for_resume(self, tmp_path, monkeypatch):
+        """Precommit rework from a crossover child must persist retry tasks."""
+        import asyncio
+        import fix_injection
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        (source_dir / "strategy.py").write_text("def act():\n    return 0\n")
+        (next_dir / "strategy.py").write_text("def act():\n    return 1\n")
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, stage="precommit_failed")
+        state = json.loads(ckpt_file.read_text())
+        state["precommit_attempt"] = 1
+        state["master_plan"] = {"strategy": "crossover", "tasks": []}
+        state["reviewer_feedback"] = "Precommit FAILED vs parent; rework stackoff guard"
+        state["gate_results"] = {
+            "quality": {"all_passed": True, "critical_scenarios_passed": True},
+            "review": {"approved": True},
+            "critic": {"approved": True},
+            "precommit_eval": {
+                "passed": False,
+                "blockers": [{"reason": "semantic_regression"}],
+            },
+        }
+        ckpt_file.write_text(json.dumps(state))
+
+        monkeypatch.setattr(tool_planning, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+
+        retry_tasks = [
+            {"worker_id": 1, "role": "arch", "target_files": ["strategy.py"], "worker_prompt": "fix stackoff"},
+        ]
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec:
+                mock_exec.return_value = (False, {}, [])
+                return await tool_planning.execute_workers.handler({
+                    "tasks": retry_tasks,
+                    "next_v": 11,
+                    "source_v": 10,
+                })
+
+        result = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["success"] is False
+
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["stage"] == "master_planned"
+        assert ckpt["precommit_attempt"] == 0
+        assert ckpt["master_plan"]["tasks"] == retry_tasks
+        assert "Precommit FAILED" in ckpt["reviewer_feedback"]
+
     def test_circuit_breaker_trips_at_threshold(self, tmp_path, monkeypatch):
         """Circuit breaker should block when failure_count >= 6."""
         import asyncio

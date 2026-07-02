@@ -20,44 +20,22 @@ from tool_helpers import (
 )
 from system_log import log_system_event
 
-from evolution_infra import read_pipeline_checkpoint
+from evolution_infra import MAX_PRECOMMIT_RETRIES, read_pipeline_checkpoint
 from experience_pool import trim_experience_pool
 from code_verification import seed_initial_bots
+from pipeline_state import generic_abandon_block
 
 # A4 (2026-06-30): rate-limit state for abandon_generation. [timestamp, reason].
 _LAST_ABANDON_TS = [0.0, ""]
-_ABANDON_FORWARD_ONLY_STAGES = {
-    "quality_passed": "run_review",
-    "reviewed": "run_critic",
-    "critic_checked": "run_precommit_eval",
-    "verified": "commit_bot",
-}
 
 
 def _generic_abandon_stage_block(checkpoint, reason):
     """Return a state-machine refusal payload for unsafe generic abandons."""
-    if not checkpoint or reason != "abandon_generation":
-        return None
-    stage = checkpoint.get("stage")
-    next_tool = _ABANDON_FORWARD_ONLY_STAGES.get(stage)
-    if not next_tool:
-        return None
-    next_v = checkpoint.get("next_v")
-    source_v = checkpoint.get("source_v")
-    directive = (
-        f"Refusing generic abandon_generation for v{next_v} at stage '{stage}'. "
-        f"This generation has passed earlier gates; continue the state machine with {next_tool}."
+    return generic_abandon_block(
+        checkpoint,
+        reason=reason,
+        max_precommit_retries=MAX_PRECOMMIT_RETRIES,
     )
-    return {
-        "abandoned": False,
-        "blocked": True,
-        "reason": "forward_only_stage",
-        "stage": stage,
-        "next_v": next_v,
-        "source_v": source_v,
-        "next_tool": next_tool,
-        "directive": directive,
-    }
 
 
 class ReapWeakestInput(TypedDict):

@@ -39,6 +39,8 @@ from system_log import log_system_event
 from daemon_management import is_daemon_scheduler_capable
 from pipeline_schema import GateResult, ScoreCard
 from workflow_profiles import get_workflow_profile
+from failure_classification import INFRA_BLOCKER_REASONS, is_infra_blocker
+from pipeline_intents import make_intent
 
 try:
     from candidate_store import append_candidate_event
@@ -97,20 +99,12 @@ def _is_nonblocking_reason(reason):
 # (which is unchanged and would give the same result) — they trigger an
 # infra-aware retry with lower n_games instead. v147 timed out on attempt 1/2,
 # passed on attempt 3 at n_games=6: the bot was fine, the infra wasn't.
-_INFRA_BLOCKER_REASONS = {
-    "match_timeout",           # mirror battle exceeded per_game_timeout
-    "incomplete_or_timeout",   # n_played < n_games (partial completion)
-    "scheduler_error",         # daemon returned error for this job
-    "match_exception",         # battle raised (subprocess crash etc)
-}
-
-
 def _is_infra_blocker(reason):
     """True if this blocker reason is an infrastructure failure, not a bot
     regression. Infra blockers trigger retry-with-lower-n_games; regression
     blockers (lost_to_parent / aggregate_precommit_regression / semantic_regression)
     still hard-fail the gate."""
-    return reason in _INFRA_BLOCKER_REASONS
+    return is_infra_blocker(reason)
 
 
 # ──────────────────────────────────────────────
@@ -1669,7 +1663,15 @@ async def run_precommit_eval(args):
     #   - at/above the retry limit → hard-stop: abandon the generation.
     # We surface the worst matchup (most losses) so the worker feedback can
     # target the specific losing line.
-    if not passed:
+    if passed:
+        result["failure_class"] = "passed"
+        result["intent"] = make_intent(
+            "continue",
+            next_tool="commit_bot",
+            authority="tool:precommit_eval",
+            safe_to_auto_execute=True,
+        )
+    else:
         worst_opponent = _worst_precommit_opponent(matchups, blockers)
         worst_wins, worst_losses = _worst_wins_losses(matchups, worst_opponent)
         if infra_only_timeout:
@@ -1684,6 +1686,15 @@ async def run_precommit_eval(args):
                 f"Do NOT rework the bot or abandon the generation."
             )
             result["infra_retry"] = True
+            result["failure_class"] = "infra_timeout"
+            result["intent"] = make_intent(
+                "retry_tool",
+                next_tool="run_precommit_eval",
+                failure_class="infra_timeout",
+                authority="tool:precommit_eval",
+                safe_to_auto_execute=True,
+                reason="infra_only_precommit_timeout",
+            )
             log_system_event(
                 "pipeline.precommit_infra_timeout", "warn",
                 f"v{v}: precommit infra timeout (attempt {precommit_attempt}/{MAX_PRECOMMIT_RETRIES}) "
@@ -1697,6 +1708,15 @@ async def run_precommit_eval(args):
                 f"PRECOMMIT HARD LIMIT REACHED ({MAX_PRECOMMIT_RETRIES}/{MAX_PRECOMMIT_RETRIES} attempts). "
                 f"The current bot cannot pass precommit. Do NOT retry precommit or workers. "
                 f"Abandon this generation (the pipeline will reset on the next cycle with a new master plan)."
+            )
+            result["failure_class"] = "regression"
+            result["intent"] = make_intent(
+                "abandon",
+                next_tool="abandon_generation",
+                failure_class="regression",
+                authority="tool:precommit_eval",
+                safe_to_auto_execute=True,
+                reason="precommit_hard_limit",
             )
             log_system_event(
                 "pipeline.precommit_hard_limit",
@@ -1720,9 +1740,22 @@ async def run_precommit_eval(args):
                 f"bot code is UNCHANGED since the last attempt, so retrying precommit will give the SAME result. "
                 f"Do NOT call run_precommit_eval again. You MUST either (a) rework the bot: call execute_workers "
                 f"with reviewer_feedback explaining the loss vs {worst_opponent} "
-                f"({worst_wins}W-{worst_losses}L), targeting that matchup; or (b) abandon this generation "
-                f"and start fresh from a different direction."
+                f"({worst_wins}W-{worst_losses}L), targeting that matchup. Do NOT abandon before "
+                f"the precommit hard limit."
             )
+            result["failure_class"] = "regression"
+            result["intent"] = make_intent(
+                "rework",
+                next_tool="execute_workers",
+                failure_class="regression",
+                authority="tool:precommit_eval",
+                safe_to_auto_execute=True,
+                reason="precommit_regression",
+            )
+    checkpoint_stage = "verified" if passed else ("critic_checked" if infra_only_timeout else "precommit_failed")
+    checkpoint_feedback = None
+    if not passed and not infra_only_timeout:
+        checkpoint_feedback = result.get("directive")
     checkpoint_recorded = _record_gate(
         v,
         source_v,
@@ -1733,7 +1766,8 @@ async def run_precommit_eval(args):
             passed,
             **{k: val for k, val in result.items() if k not in {"version", "source_v", "passed"}},
         ),
-        stage="verified" if passed else None,
+        stage=checkpoint_stage,
+        reviewer_feedback=checkpoint_feedback,
     )
     result["checkpoint_recorded"] = checkpoint_recorded
     if append_candidate_event:

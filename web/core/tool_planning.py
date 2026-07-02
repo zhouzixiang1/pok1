@@ -2565,6 +2565,16 @@ def _incremental_reset_next_dir(next_dir, source_dir):
     return preserved
 
 
+def _checkpoint_plan_with_tasks(ckpt, tasks):
+    """Return a checkpoint master_plan that can resume the given worker tasks."""
+    existing_plan = ckpt.get("master_plan") if ckpt else None
+    if isinstance(existing_plan, dict):
+        if existing_plan.get("tasks"):
+            return existing_plan
+        return {**existing_plan, "tasks": tasks}
+    return {"tasks": tasks}
+
+
 @tool("execute_workers", "Execute worker tasks to modify bot code. Each task has worker_id, role, target_files, worker_prompt.", {"tasks": list, "next_v": int, "source_v": int, "reviewer_feedback": str})
 async def execute_workers(args):
     _t0 = time.time()
@@ -2613,6 +2623,9 @@ async def execute_workers(args):
                 "source_v": source_v,
             })
 
+    if not reviewer_feedback and ckpt.get("stage") == "precommit_failed":
+        reviewer_feedback = ckpt.get("reviewer_feedback", "")
+
     # B6 (2026-06-30): redundant-call guard. execute_workers is NOT idempotent —
     # a redundant call (no reviewer_feedback) when workers already ran resets code
     # from source + re-runs every Worker-LLM (the single most expensive pipeline
@@ -2621,7 +2634,24 @@ async def execute_workers(args):
     # redundant call must be refused so the orchestrator proceeds to the next gate.
     _b6_stage = ckpt.get("stage")
     if (not reviewer_feedback
-            and _b6_stage in ("workers_done", "quality_failed", "quality_passed", "reviewed", "critic_checked", "verified")):
+            and _b6_stage in ("workers_done", "quality_failed", "quality_passed", "reviewed", "critic_checked", "precommit_failed", "verified")):
+        if _b6_stage == "precommit_failed":
+            return _json_tool_result({
+                "error": (
+                    "Precommit failed, but execute_workers was called without reviewer_feedback. "
+                    "Pass the exact precommit_eval directive/blockers as reviewer_feedback."
+                ),
+                "next_v": next_v,
+                "source_v": source_v,
+                "stage": _b6_stage,
+                "intent": {
+                    "kind": "rework",
+                    "next_tool": "execute_workers",
+                    "failure_class": "regression",
+                    "authority": "tool:execute_workers",
+                    "safe_to_auto_execute": False,
+                },
+            })
         try:
             log_system_event(
                 "pipeline.workers_redundant_call_blocked", "warn",
@@ -2738,7 +2768,7 @@ async def execute_workers(args):
     # When retrying after workers already ran, actually reset code from source first.
     # Previous claim that code was reset was FALSE — now we actually do it.
     if reviewer_feedback and ckpt.get("stage") in (
-        "workers_done", "quality_failed", "quality_passed", "reviewed", "critic_checked"
+        "workers_done", "quality_failed", "quality_passed", "reviewed", "critic_checked", "precommit_failed"
     ):
         source_dir_r = get_bot_dir(source_v)
         if source_dir_r.exists() and next_dir.exists():
@@ -2762,8 +2792,9 @@ async def execute_workers(args):
         # Without this, a crash between code reset and worker execution would leave
         # the checkpoint at a stale stage (e.g. "reviewed" or "critic_checked")
         # while the actual code has been wiped back to source.
+        retry_plan = _checkpoint_plan_with_tasks(ckpt, tasks)
         write_pipeline_checkpoint(next_v, source_v, "master_planned",
-                                  master_plan=ckpt.get("master_plan"),
+                                  master_plan=retry_plan,
                                   reviewer_feedback=reviewer_feedback,
                                   worker_failure_count=ckpt.get("worker_failure_count", 0))
 
@@ -2854,7 +2885,7 @@ async def execute_workers(args):
     if success:
         # Preserve the master plan structure (with analysis) from checkpoint,
         # rather than replacing it with the raw tasks list
-        plan = ckpt.get("master_plan", tasks) if ckpt else tasks
+        plan = _checkpoint_plan_with_tasks(ckpt, tasks) if ckpt else {"tasks": tasks}
         # Store audit_focus_areas in audit_context so reviewer can read them
         _audit_ctx = None
         if audit_focus_areas:
@@ -2869,7 +2900,7 @@ async def execute_workers(args):
         # Always set stage to 'master_planned' on failure — this clearly indicates
         # that workers need re-execution, rather than preserving a stale stage
         # from before the failure (e.g. "reviewed" or "critic_checked").
-        plan = ckpt.get("master_plan", tasks) if ckpt else tasks
+        plan = _checkpoint_plan_with_tasks(ckpt, tasks) if ckpt else {"tasks": tasks}
         write_pipeline_checkpoint(next_v, source_v,
                                   "master_planned",
                                   master_plan=plan, reviewer_feedback=reviewer_feedback,

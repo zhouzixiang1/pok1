@@ -40,19 +40,15 @@ from tools import evolution_server, inject_ui
 from llm_failure import is_llm_infra_error, is_shutdown_cancel_error as _is_shutdown_cancel_error
 from shutdown_manager import ShutdownManager
 from system_log import log_system_event, set_ui as set_system_log_ui
+from failure_classification import INFRA_BLOCKER_REASONS
 import logging
 
 log = logging.getLogger("pok.orchestrator")
 SHUTDOWN_CANCEL_COST = -99998.0
 
-# Infra-only blocker reasons (mirrors tool_eval._INFRA_BLOCKER_REASONS). Used by
-# the timed_out handler to decide whether a precommit timeout was caused purely
-# by infrastructure (daemon/scheduler) — in which case the generation is
-# preserved for retry — vs a real bot regression. Duplicated here to avoid a
-# circular import; keep in sync with tool_eval._INFRA_BLOCKER_REASONS.
-_INFRA_BLOCKER_REASONS_SET = frozenset({
-    "match_timeout", "incomplete_or_timeout", "scheduler_error", "match_exception",
-})
+# Infra-only blocker reasons used by the timed_out handler to distinguish
+# scheduler/daemon failures from real bot regressions.
+_INFRA_BLOCKER_REASONS_SET = frozenset(INFRA_BLOCKER_REASONS)
 
 
 def _is_cycle_infra_error(e, *, is_shutting_down: bool = False) -> bool:

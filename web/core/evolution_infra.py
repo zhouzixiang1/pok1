@@ -94,93 +94,14 @@ MAX_PARALLEL_WORKERS = 3      # Hard cap on simultaneous LLM worker calls (Semap
 # Prompt size limits — Sonnet supports 200K tokens (~800K chars); leave generous headroom
 MAX_PROMPT_CHARS = 700_000
 
-# Pipeline stage constants
-STAGE_ORDER = [
-    "selected",
-    "preparing",
-    "prepared",
-    "crossover_running",
-    "direction_audited",
-    "master_planned",
-    "workers_done",
-    "quality_failed",
-    "quality_passed",
-    "reviewed",
-    "critic_checked",
-    "verified",
-    "archived",
-]
-STAGE_GATE_ALLOWLIST = {
-    "selected": set(),
-    "preparing": set(),
-    "prepared": set(),
-    "crossover_running": set(),
-    "direction_audited": set(),
-    "master_planned": set(),
-    "workers_done": set(),
-    "quality_failed": {"quality"},
-    "quality_passed": {"quality"},
-    "reviewed": {"quality", "review"},
-    "critic_checked": {"quality", "review", "critic"},
-    "verified": {"quality", "review", "critic", "precommit_eval"},
-    "archived": {"quality", "review", "critic", "precommit_eval"},
-}
-
-def validate_stage_transition(current_stage, proposed_stage):
-    """Validate that a pipeline stage transition is legal.
-
-    Returns (is_valid, reason).
-    Legal transitions:
-    - Forward progression along STAGE_ORDER
-    - Same stage (re-recording gate data, e.g. idempotent re-calls)
-    - None -> any (first write or checkpoint cleared)
-    - Any -> "timed_out" (watchdog override)
-    - Any -> "infra_timed_out" (v193 fix 2026-06-26: infra-only timeout, preserves
-      gate_results/code so the next cycle can retry precommit instead of
-      discarding the whole generation)
-    - Any -> "selected"/"preparing"/"prepared" (fresh generation restart)
-    - "workers_done"/"quality_failed"/"reviewed"/"critic_checked" -> "master_planned" (intra-gen retry)
-    """
-    if proposed_stage is None or current_stage is None:
-        return True, "no_guard"
-
-    if proposed_stage == current_stage:
-        return True, "same_stage"
-
-    if proposed_stage == "timed_out":
-        return True, "timeout_override"
-
-    if proposed_stage == "infra_timed_out":
-        return True, "infra_timeout_override"
-
-    if proposed_stage in {"selected", "preparing", "prepared"}:
-        return True, "fresh_prepare_restart"
-
-    # Allow retry: from later stages back to master_planned (intra-gen retry)
-    retry_sources = {"workers_done", "quality_failed", "quality_passed", "reviewed", "critic_checked"}
-    if proposed_stage == "master_planned" and current_stage in retry_sources:
-        return True, "retry_reset"
-
-    # Same-code re-evaluation and explicit post-precommit rework paths.
-    if current_stage == "critic_checked" and proposed_stage == "reviewed":
-        return True, "review_recheck"
-    if current_stage == "quality_passed" and proposed_stage == "workers_done":
-        return True, "review_rework_done"
-    if current_stage == "critic_checked" and proposed_stage == "workers_done":
-        return True, "critic_rework_done"
-    if current_stage == "verified" and proposed_stage in {"workers_done", "master_planned"}:
-        return True, "verified_rework_reset"
-
-    # Forward progression check
-    if current_stage in STAGE_ORDER and proposed_stage in STAGE_ORDER:
-        current_idx = STAGE_ORDER.index(current_stage)
-        proposed_idx = STAGE_ORDER.index(proposed_stage)
-        if proposed_idx > current_idx:
-            return True, "forward_progression"
-        return False, f"backward_transition: {current_stage} -> {proposed_stage}"
-
-    # Unknown stages: allow (backward compat)
-    return True, "unknown_stage"
+# Pipeline stage constants. Re-exported here for compatibility; authoritative
+# definitions live in pipeline_state.py.
+from pipeline_state import (
+    STAGE_ORDER,
+    STAGE_GATE_ALLOWLIST,
+    validate_stage_transition,
+    is_rework_reset_transition,
+)
 
 EVOLUTION_BRANCH = "main"
 
@@ -533,33 +454,11 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             new_stage_ts = now_ts if (old_stage != stage) else existing_stage_ts
 
         # AUTO-RESET precommit_attempt and timeout_extensions on true rework.
-        # Precommit failures leave the stage at critic_checked; when the bot is
-        # regenerated, the actual transition is usually critic_checked ->
-        # master_planned/workers_done (not verified -> early). Any regression to
-        # a code-regeneration stage means this is new bot code, so both counters
-        # must restart. Later regressions such as critic_checked -> reviewed are
-        # still the same code being re-evaluated, so they do not reset.
-        _STAGE_RANK = {
-            "selected": 0,
-            "preparing": 1,
-            "prepared": 2,
-            "crossover_running": 3,
-            "direction_audited": 4,
-            "master_planned": 5,
-            "workers_done": 6,
-            "quality_failed": 7,
-            "quality_passed": 8,
-            "reviewed": 9,
-            "critic_checked": 10,
-            "verified": 11,
-            "archived": 12,
-        }
-        if old_stage and stage in _STAGE_RANK and old_stage in _STAGE_RANK:
-            old_rank = _STAGE_RANK[old_stage]
-            new_rank = _STAGE_RANK[stage]
-            if new_rank < old_rank and new_rank <= _STAGE_RANK["workers_done"]:
-                existing_precommit_attempt = 0
-                existing_timeout_extensions = 0
+        # Any regression to a code-regeneration stage means this is new bot code,
+        # so counters against the previous code snapshot must restart.
+        if is_rework_reset_transition(old_stage, stage):
+            existing_precommit_attempt = 0
+            existing_timeout_extensions = 0
 
         # Ensure int type invariants for persisted counters. None arises on a
         # fresh checkpoint when the caller did not pass a counter; defaulting

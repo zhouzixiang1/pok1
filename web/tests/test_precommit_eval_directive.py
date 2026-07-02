@@ -141,7 +141,6 @@ def _patch_mirror_battle(monkeypatch, fn):
 def _common_patches(monkeypatch, mock_ui):
     monkeypatch.setattr("tool_eval.is_daemon_scheduler_capable", lambda: False)
     monkeypatch.setattr("tool_eval._get_ui", lambda: mock_ui)
-    monkeypatch.setattr("tool_eval._record_gate", lambda *a, **k: True)
 
 
 def _decode(result):
@@ -166,11 +165,16 @@ class TestPrecommitFailedDirective:
         assert data["passed"] is False
         assert "directive" in data
         assert "execute_workers" in data["directive"]
+        assert data["failure_class"] == "regression"
+        assert data["intent"]["kind"] == "rework"
+        assert data["intent"]["next_tool"] == "execute_workers"
         # Below the hard limit, so NO "HARD LIMIT" wording.
         assert "HARD LIMIT" not in data["directive"]
         # The directive must name the worst opponent and its W-L.
         assert "claude_v98" in data["directive"]
         assert "2W-6L" in data["directive"]
+        ckpt = tool_eval._matching_checkpoint(99, 98)
+        assert ckpt["stage"] == "precommit_failed"
 
     @pytest.mark.asyncio
     async def test_failed_at_limit_mentions_hard_limit(
@@ -198,6 +202,8 @@ class TestPrecommitFailedDirective:
         assert data["passed"] is False
         assert "directive" in data
         assert "HARD LIMIT" in data["directive"]
+        assert data["intent"]["kind"] == "abandon"
+        assert data["intent"]["next_tool"] == "abandon_generation"
         # At the hard limit the directive must NOT tell it to call execute_workers.
         assert "execute_workers" not in data["directive"]
 
@@ -229,6 +235,7 @@ class TestPrecommitAttemptIncrement:
         # The persisted counter must now read 1.
         ck1 = tool_eval._matching_checkpoint(99, 98)
         assert ck1["precommit_attempt"] == 1
+        assert ck1["stage"] == "precommit_failed"
 
         # Second FAILED call (bot code unchanged) -> counter becomes 2.
         r2 = await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 8})

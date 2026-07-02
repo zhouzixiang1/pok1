@@ -62,6 +62,47 @@ DECISION_TEST_SPRT_ENABLED = False
 DYNAMIC_TEST_LLM_TIMEOUT = int(os.environ.get("POK_DYNAMIC_TEST_LLM_TIMEOUT", "25"))
 DYNAMIC_TEST_HEURISTIC_SUFFICIENT = int(os.environ.get("POK_DYNAMIC_TEST_HEURISTIC_SUFFICIENT", "4"))
 
+_POSITION_SEMANTICS_PATTERNS = {
+    "dealer==bb": "dealer is SB in heads-up; BB is 1 - dealer_id",
+    "dealer == bb": "dealer is SB in heads-up; BB is 1 - dealer_id",
+    "dealer is bb": "dealer is SB in heads-up; BB is 1 - dealer_id",
+    "dealer=bb": "dealer is SB in heads-up; BB is 1 - dealer_id",
+    "sb acts first every street": "SB acts first preflop only; BB acts first postflop",
+    "sb first postflop": "BB acts first postflop",
+    "bb postflop in-position": "SB is in position postflop; BB acts first",
+    "flop_sb_act_first": "decision templates must use BB-first postflop semantics",
+}
+
+
+def detect_position_semantics_errors(bot_dir: Path) -> list[str]:
+    """Detect old heads-up position assumptions in candidate bot code.
+
+    Authoritative convention: dealer_id is SB, BB is ``1 - dealer_id`` in
+    heads-up, BB acts first on flop/turn/river, and SB is in position postflop.
+    """
+    errors = []
+    for path in sorted(Path(bot_dir).rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            continue
+        for lineno, line in enumerate(lines, 1):
+            lowered = line.lower()
+            compact = "".join(lowered.split())
+            for pattern, explanation in _POSITION_SEMANTICS_PATTERNS.items():
+                if pattern in lowered:
+                    rel = path.relative_to(bot_dir)
+                    errors.append(f"{rel}:{lineno}: {explanation} ({pattern})")
+            if "sb=next_player(dealer_id,1)" in compact:
+                rel = path.relative_to(bot_dir)
+                errors.append(f"{rel}:{lineno}: SB must be dealer_id, not next_player(dealer_id, 1)")
+            if "bb=next_player(dealer_id,2)" in compact:
+                rel = path.relative_to(bot_dir)
+                errors.append(f"{rel}:{lineno}: BB must be 1 - dealer_id, not next_player(dealer_id, 2)")
+    return errors[:20]
+
 
 def _record_quality_failure(gen, worker_id, role, error, **extra):
     """Record a quality gate rejection (reviewer/critic) to worker_failures.jsonl.
@@ -337,6 +378,16 @@ async def run_quality_gates(args):
             _log.warning("reachability check error: %s", e)
     reachability_ok = len(reachability_warnings) == 0
 
+    position_semantics_errors = detect_position_semantics_errors(bot_dir)
+    position_semantics_ok = len(position_semantics_errors) == 0
+    if position_semantics_errors:
+        log_system_event(
+            "pipeline.position_semantics_failed",
+            "error",
+            f"Position semantics violations in v{v}: {len(position_semantics_errors)} issue(s)",
+            {"version": v, "errors": position_semantics_errors[:10]},
+        )
+
     smoke_errors = run_smoke_test(bot_dir)
     national_protocol_errors = run_national_protocol_tests()
     national_acceptance_ok = True
@@ -570,6 +621,7 @@ async def run_quality_gates(args):
         and fix_ok  # P1-3: missing mandatory fix blocks the pipeline
         and telemetry_fidelity_ok  # M6: multi-arm detector telemetry must be function-scope (false-INERT prevention)
         and reachability_ok  # R1: newly-added helper code must be wired/called
+        and position_semantics_ok  # National/local heads-up identity: dealer=SB, BB first postflop
     )
 
     result = {
@@ -616,6 +668,8 @@ async def run_quality_gates(args):
         "telemetry_fidelity_ok": telemetry_fidelity_ok,
         "reachability_warnings": reachability_warnings,
         "reachability_ok": reachability_ok,
+        "position_semantics_ok": position_semantics_ok,
+        "position_semantics_errors": position_semantics_errors[:10],
         "code_fingerprint": code_fingerprint,
         "diff_hash": diff_hash,
         "declared_scope_ok": declared_scope_ok,
@@ -685,6 +739,15 @@ async def run_quality_gates(args):
                 v, "reachability", "dead_code",
                 f"R1 reachability violation: {w[:2000]}",
             )
+    if not position_semantics_ok:
+        failed_gates_detail.append(
+            f"position_semantics({'; '.join(e[:120] for e in position_semantics_errors[:3])})"
+        )
+        for err in position_semantics_errors[:6]:
+            _record_quality_failure(
+                v, "position_semantics", "national_rules",
+                f"Position semantics violation: {err}",
+            )
 
     result["failed_gates"] = failed_gates_detail if not all_passed else []
     quality_detail = {
@@ -722,6 +785,8 @@ async def run_quality_gates(args):
         "telemetry_fidelity_ok": telemetry_fidelity_ok,
         "reachability_ok": reachability_ok,
         "reachability_warnings": reachability_warnings[:6],
+        "position_semantics_ok": position_semantics_ok,
+        "position_semantics_errors": position_semantics_errors[:10],
         "code_fingerprint": code_fingerprint,
         "critical_failures": critical_failures[:3],
         "decision_skill_layers": decision_skill_layers,
@@ -764,6 +829,7 @@ async def run_quality_gates(args):
     scorecard.add(GateResult.from_bool("fix_verification", fix_ok, failures=[f"{fid}: {r.get('reason', '')[:160]}" for fid, r in fix_failed.items()]))
     scorecard.add(GateResult.from_bool("telemetry_fidelity", telemetry_fidelity_ok, failures=telemetry_fidelity_warnings[:6]))
     scorecard.add(GateResult.from_bool("reachability", reachability_ok, failures=reachability_warnings[:6]))
+    scorecard.add(GateResult.from_bool("position_semantics", position_semantics_ok, failures=position_semantics_errors[:6]))
     result["scorecard"] = scorecard.model_dump()
     quality_detail["scorecard"] = result["scorecard"]
 

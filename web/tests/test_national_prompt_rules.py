@@ -71,13 +71,17 @@ def test_regression_guardian_prompt_matches_current_trigger_contract():
 
 
 def test_decision_templates_use_call_to_pass_after_postflop_check():
-    source = (ROOT / "web" / "core" / "decision_tester.py").read_text(encoding="utf-8")
+    import sys
 
-    assert not re.search(
-        r'"round": 2,\s*"player_id": 1,\s*"action": 0,\s*"action_type": "check"',
-        source,
-    )
-    assert re.search(
-        r'"round": 2,\s*"player_id": 1,\s*"action": 0,\s*"action_type": "call"',
-        source,
-    )
+    sys.path.insert(0, str(ROOT / "web" / "core"))
+    import decision_tester
+
+    for scenario in decision_tester.TEMPLATE_SCENARIOS:
+        by_round = {}
+        for action in scenario["input"].get("history", []):
+            by_round.setdefault(action.get("round"), []).append(action)
+        for street, actions in by_round.items():
+            if street in (1, 2, 3) and len(actions) >= 2 and actions[0].get("action_type") == "check":
+                assert actions[1].get("action_type") != "check", scenario["id"]
+                if actions[1].get("action") == 0:
+                    assert actions[1].get("action_type") == "call", scenario["id"]
