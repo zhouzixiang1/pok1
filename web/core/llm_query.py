@@ -1103,6 +1103,11 @@ _ROLE_TIMEOUT_DEFAULTS = {
     # repeated 600s retries that keep the generation stuck at quality_passed.
     "REVIEW": (180.0, 360.0, 1200.0),
     "CRITIC": (180.0, 360.0, 900.0),
+    # Crossover synthesizes a whole child bot from two parents and routinely
+    # exceeds the generic analysis/probe budget on GLM-backed Claude-compatible
+    # endpoints. Keep the idle ceiling, but give total wall-clock enough room so
+    # a live stream is not killed and restarted at ~15 minutes.
+    "CROSSOVER": (240.0, 420.0, 2400.0),
     # Workers already have an outer WORKER_TIMEOUT. Idle timeout catches stalled
     # streams inside that larger wall-clock budget.
     "WORKER": (180.0, 360.0, 1000.0),
@@ -1123,6 +1128,8 @@ def _role_timeout_policy(role_name: str) -> dict:
         key = "REVIEW"
     elif "CRITIC" in role:
         key = "CRITIC"
+    elif "CROSSOVER" in role:
+        key = "CROSSOVER"
     elif "WORKER" in role:
         key = "WORKER"
     defaults = _ROLE_TIMEOUT_DEFAULTS.get(key or "DEFAULT", (0.0, 0.0, 0.0))

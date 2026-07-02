@@ -507,6 +507,19 @@ def test_default_role_timeout_policy_is_bounded(monkeypatch):
     assert policy["total_timeout"] > 0
 
 
+def test_crossover_role_timeout_policy_has_extended_total(monkeypatch):
+    monkeypatch.delenv("POK_LLM_CROSSOVER_FIRST_ACTIVITY_TIMEOUT", raising=False)
+    monkeypatch.delenv("POK_LLM_CROSSOVER_IDLE_TIMEOUT", raising=False)
+    monkeypatch.delenv("POK_LLM_CROSSOVER_TOTAL_TIMEOUT", raising=False)
+
+    default_policy = llm_query._role_timeout_policy("COMBINED ANALYST")
+    crossover_policy = llm_query._role_timeout_policy("CROSSOVER v200x254")
+
+    assert crossover_policy["policy_key"] == "CROSSOVER"
+    assert crossover_policy["total_timeout"] > default_policy["total_timeout"]
+    assert crossover_policy["idle_timeout"] > 0
+
+
 def test_process_stream_hard_times_out_default_role_first_activity(monkeypatch, tmp_path):
     events = []
 
