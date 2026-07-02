@@ -6,6 +6,7 @@ for extracting structured data from LLM responses.
 
 import asyncio
 import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -30,6 +31,38 @@ from llm_failure import is_shutdown_cancel_error, is_success_error_result
 
 log = logging.getLogger("pok.infra")
 _shutdown_manager = None
+_LLM_CANCEL_CONTEXT = contextvars.ContextVar("llm_cancel_context", default=None)
+
+
+@contextlib.contextmanager
+def llm_cancel_scope(scope, reason="parent_timeout", timeout_sec=None):
+    """Attach structured context to intentional parent-driven LLM cancellation."""
+    payload = {
+        "cancel_scope": str(scope),
+        "cancel_reason": str(reason),
+    }
+    if timeout_sec is not None:
+        try:
+            payload["timeout_sec"] = float(timeout_sec)
+        except (TypeError, ValueError):
+            payload["timeout_sec"] = timeout_sec
+    token = _LLM_CANCEL_CONTEXT.set(payload)
+    try:
+        yield
+    finally:
+        _LLM_CANCEL_CONTEXT.reset(token)
+
+
+def _current_llm_cancel_context():
+    context = _LLM_CANCEL_CONTEXT.get()
+    return dict(context) if isinstance(context, dict) else {}
+
+
+def _cancelled_event(base_category, parent_category, default_severity="warn"):
+    context = _current_llm_cancel_context()
+    if context.get("cancel_reason") == "parent_timeout":
+        return parent_category, "info", context
+    return base_category, default_severity, context
 
 
 _SUBAGENT_BASH_MUTATION_PATTERNS = (
@@ -1471,12 +1504,28 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
         ui.log_io(f"[ERROR] {e}", "error", role_name)
         raise   # propagate so callers distinguish a hard SDK error from an empty-but-valid reply
     except asyncio.CancelledError:
+        _category, _severity, _cancel_fields = _cancelled_event(
+            "pipeline.llm_role_stream_cancelled",
+            "pipeline.llm_role_stream_parent_timeout_cancelled",
+        )
+        _scope = _cancel_fields.get("cancel_scope")
+        _timeout = _cancel_fields.get("timeout_sec")
+        if _cancel_fields.get("cancel_reason") == "parent_timeout":
+            _msg = (
+                f"{role_name}: LLM stream cancelled by parent timeout"
+                f" ({_scope}, {_timeout:g}s)"
+                if isinstance(_timeout, (int, float))
+                else f"{role_name}: LLM stream cancelled by parent timeout ({_scope})"
+            )
+        else:
+            _msg = f"{role_name}: LLM stream cancelled"
         _emit_llm_event(
-            "pipeline.llm_role_stream_cancelled", "warn",
-            f"{role_name}: LLM stream cancelled",
+            _category, _severity,
+            _msg,
             role=role_name,
             elapsed_sec=round(time.time() - stream_started_at, 2),
             messages_seen=message_count,
+            **_cancel_fields,
             **_role_log_metadata(log_file_path),
         )
         ui.log_io(f"\n[{role_name} CANCELLED]", "error", role_name)
@@ -1839,15 +1888,32 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         return output, cost_usd, usage
     except asyncio.CancelledError:
         is_shutdown = _is_shutdown_requested()
+        _category, _severity, _cancel_fields = _cancelled_event(
+            "pipeline.llm_role_cancelled",
+            "pipeline.llm_role_parent_timeout_cancelled",
+        )
+        if is_shutdown:
+            _category = "pipeline.llm_role_shutdown_cancelled"
+            _severity = "info"
+            _message = f"{role_name}: LLM call stopped during shutdown after {time.time() - call_started_at:.1f}s"
+        elif _cancel_fields.get("cancel_reason") == "parent_timeout":
+            _scope = _cancel_fields.get("cancel_scope")
+            _timeout = _cancel_fields.get("timeout_sec")
+            _message = (
+                f"{role_name}: LLM call cancelled by parent timeout after {time.time() - call_started_at:.1f}s"
+                f" ({_scope}, {_timeout:g}s)"
+                if isinstance(_timeout, (int, float))
+                else f"{role_name}: LLM call cancelled by parent timeout after {time.time() - call_started_at:.1f}s"
+                f" ({_scope})"
+            )
+        else:
+            _message = f"{role_name}: LLM call cancelled after {time.time() - call_started_at:.1f}s"
         _emit_llm_event(
-            "pipeline.llm_role_shutdown_cancelled" if is_shutdown else "pipeline.llm_role_cancelled",
-            "info" if is_shutdown else "warn",
-            (
-                f"{role_name}: LLM call stopped during shutdown after {time.time() - call_started_at:.1f}s"
-                if is_shutdown
-                else f"{role_name}: LLM call cancelled after {time.time() - call_started_at:.1f}s"
-            ),
+            _category,
+            _severity,
+            _message,
             elapsed_sec=round(time.time() - call_started_at, 2),
+            **_cancel_fields,
             **lifecycle_fields,
         )
         raise

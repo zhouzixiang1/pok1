@@ -212,6 +212,8 @@ host = sys.argv[8]
 port = sys.argv[9]
 url_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
 health_url = f"http://{url_host}:{port}/api/control/health"
+sys.path.insert(0, str(pathlib.Path.cwd() / "web" / "core"))
+from observe_policy import is_expected_event, is_fatal_event, should_alert
 success_terminal = {
     "pipeline.archivist_done",
 }
@@ -222,35 +224,6 @@ failure_terminal = {
     "pipeline.cycle_timeout",
     "pipeline.cycle_timeout_abandon",
     "pipeline.precommit_hard_limit",
-}
-alert_events = {
-    "daemon.crashed",
-    "daemon.exited_cleanly",
-    "orchestrator.crashed",
-    "orchestrator.recovery_blocked",
-    "orchestrator.recovery_blocked_stop",
-    "pipeline.quality_failed",
-    "pipeline.guard_block",
-    "pipeline.subagent_guard_block",
-    "pipeline.subagent_readonly_guard_block",
-    "pipeline.redundant_tool_call",
-    "pipeline.sdk_stream_error",
-    "pipeline.llm_role_cancelled",
-    "pipeline.llm_role_stream_cancelled",
-    "pipeline.precommit_eval",
-    "pipeline.precommit_infra_timeout",
-    "pipeline.prepare_blocked_runtime_guard",
-    "repo.runtime_guard_blocked",
-}
-fatal_events = {
-    "orchestrator.recovery_blocked",
-    "orchestrator.recovery_blocked_stop",
-    "pipeline.llm_role_cancelled",
-    "pipeline.llm_role_stream_cancelled",
-    "pipeline.subagent_guard_block",
-    "pipeline.subagent_readonly_guard_block",
-    "pipeline.prepare_blocked_runtime_guard",
-    "repo.runtime_guard_blocked",
 }
 stage_stale_limits = {
     "selected": 900,
@@ -483,12 +456,6 @@ def generation_key(event):
         return f"run:{run_id}"
     return f"{event.get('type')}:{int(event.get('ts') or 0)}"
 
-def should_alert(event):
-    etype = event.get("type")
-    if etype == "pipeline.precommit_eval":
-        return not bool((event.get("data") or {}).get("passed", True))
-    return etype in alert_events
-
 def process_new_events(count_success=True):
     global pos, seen, selected_generation_key, checkpoint_missing_since
     processed = False
@@ -518,7 +485,10 @@ def process_new_events(count_success=True):
                     "data": event.get("data", {}),
                 })
                 write_line(msg)
-            if etype in fatal_events:
+            if is_expected_event(event):
+                write_line(f"[expected] {etype} {event.get('message')} data={event.get('data', {})}")
+                continue
+            if is_fatal_event(event):
                 write_line(f"[fatal-event] {etype} {event.get('message')} data={event.get('data', {})}")
                 write_compact_summary("fatal_event")
                 raise SystemExit(1)

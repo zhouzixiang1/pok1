@@ -37,6 +37,7 @@ from tool_helpers import (
 from fix_verification import verify_fixes
 from system_log import log_system_event
 from llm_failure import is_llm_infra_error, infra_payload
+from llm_query import llm_cancel_scope
 import spot_analyzer
 from pipeline_schema import GateResult, ScoreCard
 from workflow_profiles import get_workflow_profile
@@ -482,12 +483,17 @@ async def run_quality_gates(args):
                 ckpt_dt = _matching_checkpoint(v, source_v)
                 master_plan_dt = ckpt_dt.get("master_plan", {}) if ckpt_dt else {}
                 ui = _get_ui()
-                dynamic_scenarios = await asyncio.wait_for(
-                    _generate_dynamic_tests(
-                        v, source_v, changed_files_list, master_plan_dt, existing_ids, ui
-                    ),
-                    timeout=DYNAMIC_TEST_LLM_TIMEOUT,
-                )
+                with llm_cancel_scope(
+                    "dynamic_test_gen",
+                    reason="parent_timeout",
+                    timeout_sec=DYNAMIC_TEST_LLM_TIMEOUT,
+                ):
+                    dynamic_scenarios = await asyncio.wait_for(
+                        _generate_dynamic_tests(
+                            v, source_v, changed_files_list, master_plan_dt, existing_ids, ui
+                        ),
+                        timeout=DYNAMIC_TEST_LLM_TIMEOUT,
+                    )
                 dynamic_test_meta["llm_status"] = "ok"
                 dynamic_test_meta["llm_count"] = len(dynamic_scenarios or [])
         except asyncio.TimeoutError:
