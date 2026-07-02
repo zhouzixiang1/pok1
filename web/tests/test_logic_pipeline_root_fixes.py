@@ -971,6 +971,8 @@ PYEOF
     readonly_tag = "git tag -l 'bot-v2*' | tail -10"
     readonly_git_status = "git status --short --branch && git diff -- bots/claude_v224/main.py"
     readonly_git_log = "git -C . log --oneline -5 && git show --stat HEAD && git rev-parse HEAD && git ls-files bots/claude_v224"
+    readonly_dispatch_probe = """# Verify dispatch is in opponent_allin block
+grep -n "_allin_polarized_equity_fold" bots/claude_v260/strategy.py"""
     write_redirect = "echo x > bots/claude_v224/strategy.py"
     mixed_allowed_and_protected_write = (
         "python -c \"from pathlib import Path; "
@@ -991,6 +993,7 @@ PYEOF
     write_git_clean = "git clean -fd"
     write_git_merge = "git merge feature"
     write_git_rebase = "git rebase main"
+    write_patch = "patch -p1 < /tmp/change.patch"
     copy_parent_into_allowed = (
         "mkdir -p bots/claude_v234 && "
         "cp bots/claude_v240/*.py bots/claude_v234/ && "
@@ -1016,6 +1019,7 @@ PYEOF
     assert llm_query._subagent_bash_is_mutation(readonly_tag) is False
     assert llm_query._subagent_bash_is_mutation(readonly_git_status) is False
     assert llm_query._subagent_bash_is_mutation(readonly_git_log) is False
+    assert llm_query._subagent_bash_is_mutation(readonly_dispatch_probe) is False
     assert llm_query._subagent_bash_mutation_detector(readonly_ls) is None
     assert llm_query._subagent_bash_mutation_detector(readonly_python) is None
     assert llm_query._subagent_bash_mutation_detector(readonly_python_assignment) is None
@@ -1023,6 +1027,7 @@ PYEOF
     assert llm_query._subagent_bash_mutation_detector(readonly_tag) is None
     assert llm_query._subagent_bash_mutation_detector(readonly_git_status) is None
     assert llm_query._subagent_bash_mutation_detector(readonly_git_log) is None
+    assert llm_query._subagent_bash_mutation_detector(readonly_dispatch_probe) is None
     assert llm_query._subagent_bash_is_mutation(write_redirect) is True
     assert llm_query._subagent_bash_is_mutation(mixed_allowed_and_protected_write) is True
     assert llm_query._subagent_is_outside_allowed(mixed_allowed_and_protected_write, allowed) is True
@@ -1034,11 +1039,13 @@ PYEOF
     assert llm_query._subagent_bash_is_mutation(write_git_clean) is True
     assert llm_query._subagent_bash_is_mutation(write_git_merge) is True
     assert llm_query._subagent_bash_is_mutation(write_git_rebase) is True
+    assert llm_query._subagent_bash_is_mutation(write_patch) is True
     assert llm_query._subagent_bash_mutation_detector(write_redirect).startswith("write_redirect:")
     assert llm_query._subagent_bash_mutation_detector(write_heredoc_redirect).startswith("write_redirect:")
     assert llm_query._subagent_bash_mutation_detector(write_python) == "python_write_pattern:.write_text("
     assert llm_query._subagent_bash_mutation_detector(write_tag) == "git_tag_mutation"
     assert llm_query._subagent_bash_mutation_detector(write_git_reset) == "git_command:reset"
+    assert llm_query._subagent_bash_mutation_detector(write_patch) == "bash_pattern:patch"
     assert llm_query._subagent_bash_is_mutation(copy_parent_into_allowed) is True
     assert llm_query._subagent_bash_write_scope_violation(copy_parent_into_allowed, allowed) is None
     assert llm_query._subagent_bash_write_scope_violation(copy_parent_files_into_allowed, allowed) is None
@@ -1054,7 +1061,7 @@ PYEOF
     ) is None
     assert llm_query._subagent_readonly_mutation_violation(
         "Bash", {"command": copy_parent_into_allowed}
-    ) == "bash_pattern:cp"
+    ) == "bash_pattern:mkdir"
     assert llm_query._subagent_readonly_mutation_violation(
         "Bash", {"command": write_redirect}
     ).startswith("write_redirect:")
