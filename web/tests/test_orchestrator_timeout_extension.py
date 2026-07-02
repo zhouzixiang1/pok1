@@ -653,6 +653,82 @@ def test_actionable_recovery_deterministically_calls_execute_workers(monkeypatch
     assert stage in ui.events[0][1]
 
 
+def test_deterministic_route_abandons_after_worker_circuit_breaker(monkeypatch):
+    """Worker circuit breaker must not loop repair_planned back into execute_workers."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import orchestrator
+
+    events = []
+    abandoned = []
+    fake_execute = SimpleNamespace(
+        handler=AsyncMock(
+            return_value={
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "error": (
+                            "CIRCUIT BREAKER: 6 worker failures already recorded "
+                            "this generation (max 6). Abandon this generation and start a new one."
+                        )
+                    }),
+                }]
+            }
+        )
+    )
+
+    async def _fake_abandon(reason="abandon_generation"):
+        abandoned.append(reason)
+        return {"abandoned": True, "reason": reason, "abandoned_v": 268}
+
+    monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "pipeline_state",
+        SimpleNamespace(route_policy=lambda _ckpt: {"next_tool": "execute_workers"}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_planning",
+        SimpleNamespace(execute_workers=fake_execute),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_bot_management",
+        SimpleNamespace(_do_abandon_generation=_fake_abandon),
+    )
+
+    recovery = {
+        "action": "resume",
+        "checkpoint": {
+            "stage": "repair_planned",
+            "next_v": 268,
+            "source_v": 249,
+            "parent2_v": 205,
+            "worker_failure_count": 6,
+        },
+    }
+    ui = _FakeUI()
+
+    handled = asyncio.new_event_loop().run_until_complete(
+        orchestrator._try_deterministic_checkpoint_route(recovery, ui)
+    )
+
+    assert handled is True
+    fake_execute.handler.assert_awaited_once_with({"next_v": 268, "source_v": 249})
+    assert abandoned == ["worker_circuit_breaker"]
+    assert any(e[0] == "pipeline.deterministic_route_abandoned" for e in events)
+    assert not any(e[0] == "pipeline.deterministic_route_failed" for e in events)
+
+
 def test_actionable_stage_handoff_interrupts_active_stream(tmp_path, monkeypatch):
     """A gate-produced quality_failed checkpoint should hand off before Bash wandering."""
     from claude_agent_sdk import AssistantMessage, TextBlock

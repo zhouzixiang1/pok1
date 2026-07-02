@@ -1220,6 +1220,16 @@ def _extract_tool_result_json(result):
         return {}
 
 
+def _is_worker_circuit_breaker_result(data):
+    if not isinstance(data, dict):
+        return False
+    error = str(data.get("error") or "")
+    return (
+        "CIRCUIT BREAKER" in error
+        or error == "WORKER_CIRCUIT_BREAKER_CROSS_GEN"
+    )
+
+
 async def _try_deterministic_checkpoint_route(recovery, ui=None):
     """Execute safe checkpoint routes without asking the Orchestrator LLM again."""
     if not recovery or recovery.get("action") != "resume":
@@ -1274,6 +1284,36 @@ async def _try_deterministic_checkpoint_route(recovery, ui=None):
     error = data.get("error")
     success = data.get("success")
     if error:
+        if _is_worker_circuit_breaker_result(data):
+            from tool_bot_management import _do_abandon_generation
+
+            abandon_result = await _do_abandon_generation(reason="worker_circuit_breaker")
+            abandoned = bool(abandon_result.get("abandoned"))
+            msg_abandon = (
+                f"Worker circuit breaker reached for v{next_v}; "
+                f"{'abandoned generation' if abandoned else 'abandon did not complete'}."
+            )
+            if ui:
+                ui.log_history(f"[Recovery] {msg_abandon}", "error" if not abandoned else "warn")
+            else:
+                log.warning(msg_abandon)
+            try:
+                log_system_event(
+                    "pipeline.deterministic_route_abandoned",
+                    "warn" if abandoned else "error",
+                    msg_abandon,
+                    {
+                        "next_v": next_v,
+                        "source_v": source_v,
+                        "stage": stage,
+                        "result": data,
+                        "abandon_result": abandon_result,
+                    },
+                )
+            except Exception:
+                pass
+            return abandoned
+
         detail = f"Deterministic execute_workers route failed for v{next_v}: {str(error)[:180]}"
         if ui:
             ui.log_history(f"[Recovery] {detail}", "error")
