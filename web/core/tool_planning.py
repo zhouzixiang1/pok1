@@ -8,7 +8,7 @@ import shutil
 import time
 from pathlib import Path
 
-from claude_agent_sdk import tool
+from tool_runtime_guard import tool
 
 from logging_config import get_logger
 _log = get_logger("planning")

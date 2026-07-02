@@ -1,0 +1,206 @@
+"""Runtime git/worktree guard for mutating pipeline MCP tools."""
+
+from __future__ import annotations
+
+import functools
+import inspect
+import json
+import os
+import re
+import subprocess
+from typing import Any, Callable
+
+from claude_agent_sdk import tool as sdk_tool
+
+from evolution_infra import EVOLUTION_BRANCH, PROJECT_ROOT, read_pipeline_checkpoint
+from repo_state import get_last_snapshot, git_worktree_snapshot, is_generated_bot_dir_entry
+
+_BOT_DIR_RE = re.compile(r"^\?\? bots/claude_v(?P<version>\d+)/$")
+_HEAD_CHANGE_ALLOWED_TOOLS = {"run_archivist"}
+
+
+def _json_tool_result(data: dict[str, Any]) -> dict[str, Any]:
+    return {"content": [{"type": "text", "text": json.dumps(data, indent=2, ensure_ascii=False)}]}
+
+
+def _guard_enabled() -> bool:
+    if os.environ.get("POK_DISABLE_TOOL_RUNTIME_GUARD") == "1":
+        return False
+    if os.environ.get("PYTEST_CURRENT_TEST") and os.environ.get("POK_FORCE_TOOL_RUNTIME_GUARD") != "1":
+        return False
+    return True
+
+
+def _candidate_version(tool_name: str, args: dict[str, Any]) -> int | None:
+    for key in ("next_v", "version", "target_v"):
+        value = args.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    checkpoint = read_pipeline_checkpoint()
+    if checkpoint and isinstance(checkpoint.get("next_v"), int):
+        return int(checkpoint["next_v"])
+    return None
+
+
+def _entry_allowed(line: str, candidate_v: int | None) -> bool:
+    stripped = line.strip()
+    match = _BOT_DIR_RE.match(stripped)
+    if match:
+        return candidate_v is not None and int(match.group("version")) == int(candidate_v)
+    return False
+
+
+def _unexpected_entries(snapshot: dict[str, Any], candidate_v: int | None) -> list[str]:
+    return [
+        line for line in snapshot.get("entries", []) or []
+        if not _entry_allowed(line, candidate_v)
+    ]
+
+
+def _run_git(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(PROJECT_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def _log_guard_event(event_type: str, severity: str, message: str, data: dict[str, Any]) -> None:
+    try:
+        from system_log import log_system_event
+        log_system_event(event_type, severity, message, data)
+    except Exception:
+        pass
+
+
+def _branch_name(branch_status: str) -> str:
+    return (branch_status or "").split("...", 1)[0].split()[0]
+
+
+def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None) -> tuple[bool, dict[str, Any]]:
+    """Ensure mutating pipeline tools run on the canonical branch and clean codebase."""
+    args = args or {}
+    if not _guard_enabled():
+        return True, {"guard": "disabled"}
+
+    candidate_v = _candidate_version(tool_name, args)
+    before = git_worktree_snapshot()
+    current_branch = _branch_name(str(before.get("branch") or ""))
+
+    if current_branch and current_branch != EVOLUTION_BRANCH:
+        unexpected = _unexpected_entries(before, candidate_v)
+        if unexpected:
+            payload = {
+                "blocked": True,
+                "reason": "branch_drift_with_unexpected_worktree_entries",
+                "tool": tool_name,
+                "candidate_v": candidate_v,
+                "branch": before.get("branch"),
+                "head": before.get("head"),
+                "unexpected_entries": unexpected[:40],
+                "directive": "Stop this generation, inspect the unexpected files, then call abandon_generation before restarting.",
+            }
+            _log_guard_event("repo.runtime_guard_blocked", "error", "Runtime git guard blocked branch drift with dirty worktree", payload)
+            return False, payload
+        proc = _run_git("checkout", EVOLUTION_BRANCH)
+        after_checkout = git_worktree_snapshot()
+        payload = {
+            "tool": tool_name,
+            "candidate_v": candidate_v,
+            "from_branch": before.get("branch"),
+            "to_branch": after_checkout.get("branch"),
+            "before_head": before.get("head"),
+            "after_head": after_checkout.get("head"),
+            "returncode": proc.returncode,
+            "stderr": (proc.stderr or "").strip()[:500],
+        }
+        _log_guard_event(
+            "repo.runtime_branch_correction",
+            "warn" if proc.returncode == 0 else "error",
+            f"Runtime guard corrected branch before {tool_name}",
+            payload,
+        )
+        if proc.returncode != 0:
+            payload.update({
+                "blocked": True,
+                "reason": "branch_correction_failed",
+                "directive": "Stop this generation and restore the repository to main before restarting.",
+            })
+            return False, payload
+
+    snapshot = git_worktree_snapshot()
+    baseline = get_last_snapshot() or {}
+    baseline_head = baseline.get("head") or ""
+    current_head = snapshot.get("head") or ""
+    enforce_head_stability = tool_name != "prepare_generation" and candidate_v is not None
+    if (
+        enforce_head_stability
+        and tool_name not in _HEAD_CHANGE_ALLOWED_TOOLS
+        and baseline_head
+        and current_head
+        and baseline_head != current_head
+    ):
+        payload = {
+            "blocked": True,
+            "reason": "head_changed_during_generation",
+            "tool": tool_name,
+            "candidate_v": candidate_v,
+            "baseline_head": baseline_head,
+            "current_head": current_head,
+            "branch": snapshot.get("branch"),
+            "directive": "A git commit changed the runtime code during this generation. Abandon and restart from a fresh baseline.",
+        }
+        _log_guard_event("repo.runtime_guard_blocked", "error", "Runtime git guard blocked HEAD drift", payload)
+        return False, payload
+
+    unexpected = _unexpected_entries(snapshot, candidate_v)
+    if unexpected:
+        payload = {
+            "blocked": True,
+            "reason": "unexpected_worktree_entries",
+            "tool": tool_name,
+            "candidate_v": candidate_v,
+            "branch": snapshot.get("branch"),
+            "head": snapshot.get("head"),
+            "unexpected_entries": unexpected[:40],
+            "generated_bot_dirs": [
+                line for line in snapshot.get("entries", []) or []
+                if is_generated_bot_dir_entry(line)
+            ][:40],
+            "directive": "Unexpected repository changes appeared during evolution. Stop, inspect, then abandon or clean before retrying.",
+        }
+        _log_guard_event("repo.runtime_guard_blocked", "error", "Runtime git guard blocked unexpected worktree entries", payload)
+        return False, payload
+
+    return True, {
+        "guard": "ok",
+        "tool": tool_name,
+        "candidate_v": candidate_v,
+        "branch": snapshot.get("branch"),
+        "head": snapshot.get("head"),
+    }
+
+
+def tool(name: str, description: str, input_schema: dict[str, Any]):
+    """claude_agent_sdk.tool wrapper with runtime git/worktree validation."""
+    def decorator(func: Callable[..., Any]):
+        @functools.wraps(func)
+        async def guarded(args: dict[str, Any]):
+            ok, payload = ensure_runtime_git_guard(name, args)
+            if not ok:
+                return _json_tool_result({
+                    "error": "runtime_git_guard_blocked",
+                    **payload,
+                })
+            result = func(args)
+            if inspect.isawaitable(result):
+                return await result
+            return result
+
+        return sdk_tool(name, description, input_schema)(guarded)
+
+    return decorator
