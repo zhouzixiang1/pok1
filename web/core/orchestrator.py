@@ -1175,6 +1175,102 @@ def _checkpoint_recovery_context(reason: str, ui=None):
     return recovery
 
 
+def _extract_tool_result_json(result):
+    try:
+        content = result.get("content") if isinstance(result, dict) else None
+        if not content:
+            return {}
+        first = content[0] if isinstance(content, list) else content
+        text = first.get("text") if isinstance(first, dict) else None
+        if not text:
+            return {}
+        return json.loads(text)
+    except Exception:
+        return {}
+
+
+async def _try_deterministic_checkpoint_route(recovery, ui=None):
+    """Execute safe checkpoint routes without asking the Orchestrator LLM again."""
+    if not recovery or recovery.get("action") != "resume":
+        return False
+    checkpoint = recovery.get("checkpoint") or {}
+    stage = checkpoint.get("stage")
+    if stage != "quality_failed":
+        return False
+    if _load_orchestrator_session():
+        return False
+
+    try:
+        from pipeline_state import route_policy
+        route = route_policy(checkpoint)
+    except Exception:
+        route = {}
+    if route.get("next_tool") != "execute_workers":
+        return False
+
+    next_v = checkpoint.get("next_v")
+    source_v = checkpoint.get("source_v")
+    if next_v is None or source_v is None:
+        return False
+
+    msg = (
+        f"[Recovery] Deterministically routing v{next_v} at quality_failed "
+        "to execute_workers with checkpoint gate feedback."
+    )
+    if ui:
+        ui.log_history(msg, "warn")
+    else:
+        log.warning(msg)
+    try:
+        log_system_event(
+            "pipeline.deterministic_route_execute_workers",
+            "warn",
+            msg,
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "stage": stage,
+                "parent2_v": checkpoint.get("parent2_v"),
+                "route": route,
+            },
+        )
+    except Exception:
+        pass
+
+    from tool_planning import execute_workers
+    result = await execute_workers.handler({"next_v": next_v, "source_v": source_v})
+    data = _extract_tool_result_json(result)
+    error = data.get("error")
+    success = data.get("success")
+    if error:
+        detail = f"Deterministic execute_workers route failed for v{next_v}: {str(error)[:180]}"
+        if ui:
+            ui.log_history(f"[Recovery] {detail}", "error")
+        else:
+            log.error(detail)
+        try:
+            log_system_event(
+                "pipeline.deterministic_route_failed",
+                "error",
+                detail,
+                {"next_v": next_v, "source_v": source_v, "stage": stage, "result": data},
+            )
+        except Exception:
+            pass
+        return False
+
+    try:
+        log_system_event(
+            "pipeline.deterministic_route_done",
+            "success" if success else "warn",
+            f"Deterministic execute_workers route completed for v{next_v}",
+            {"next_v": next_v, "source_v": source_v, "stage": stage, "success": success},
+        )
+    except Exception:
+        pass
+    return True
+
+
 async def _run_post_generation_cleanup_with_timeout(shutdown_mgr, ui, gen_ctx, gen_count=None):
     """Run post-generation housekeeping without letting it block evolution forever."""
     from generation_scheduler import post_generation_cleanup
@@ -1460,6 +1556,12 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
 
             # If recovering, skip Phase 1 (context already known from checkpoint)
             if recovery and recovery.get("action") == "resume":
+                if await _try_deterministic_checkpoint_route(recovery, ui):
+                    recovery = _checkpoint_recovery_context("deterministic_route", ui)
+                    if ui:
+                        ui.reset_gen_cost()
+                    await asyncio.sleep(1)
+                    continue
                 from generation_scheduler import GenerationContext
                 ckpt = recovery["checkpoint"]
                 parent2_v = ckpt.get("parent2_v")

@@ -930,9 +930,9 @@ async def run_master(args):
                     "parent2_v": _ckpt_idempotent.get("parent2_v"),
                     "stage": _ckpt_idempotent.get("stage"),
                     "directive": (
-                        "Crossover already produced the target bot. Do NOT call run_master "
-                        "and do NOT execute workers. If stage=workers_done call run_quality_gates; "
-                        "if stage=quality_failed call execute_workers with exact gate feedback or abandon_generation."
+                        "Crossover already produced the target bot. Do NOT call run_master. "
+                        "If stage=workers_done call run_quality_gates; if stage=quality_failed "
+                        "call execute_workers with exact gate feedback or abandon_generation."
                     ),
                 })
             log_system_event("pipeline.master_idempotent", "info",
@@ -2723,6 +2723,101 @@ def _checkpoint_rework_feedback(ckpt):
     return ""
 
 
+def _quality_failure_items(ckpt):
+    if not isinstance(ckpt, dict):
+        return []
+    quality = (ckpt.get("gate_results") or {}).get("quality") or {}
+    failed = quality.get("failed_gates") or quality.get("failures") or []
+    return [str(item) for item in failed if str(item).strip()]
+
+
+def _extract_quality_failure_files(failures):
+    files = []
+    seen = set()
+    for failure in failures or []:
+        for match in re.finditer(r"([A-Za-z0-9_./-]+\.py)(?::\d+)?", str(failure)):
+            rel = Path(match.group(1)).name
+            if rel and rel not in seen:
+                seen.add(rel)
+                files.append(rel)
+    return files
+
+
+def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
+    """Build bounded repair tasks when a checkpoint has gate feedback but no plan.
+
+    Crossover output checkpoints intentionally store a synthetic plan with no
+    worker tasks because the code was produced by run_crossover. If quality gates
+    fail at that point, the next action is still a repair worker pass; leaving task
+    creation to the Orchestrator LLM made recovery nondeterministic.
+    """
+    if not isinstance(ckpt, dict):
+        return []
+    stage = ckpt.get("stage")
+    if stage not in {"quality_failed", "repair_planned", "rework_running", "precommit_failed"}:
+        return []
+
+    feedback = str(reviewer_feedback or _checkpoint_rework_feedback(ckpt) or "").strip()
+    if not feedback:
+        return []
+
+    master_plan = ckpt.get("master_plan") if isinstance(ckpt.get("master_plan"), dict) else {}
+    failures = _quality_failure_items(ckpt)
+    target_files = _extract_quality_failure_files(failures)
+    if not target_files:
+        target_files = _extract_quality_failure_files([feedback])
+
+    if stage == "precommit_failed" and not target_files:
+        target_files = ["strategy.py"]
+    if not target_files:
+        return []
+
+    targets = target_files[:3]
+    is_crossover = bool(ckpt.get("parent2_v")) or master_plan.get("strategy") == "crossover"
+    if is_crossover and stage in {"quality_failed", "repair_planned", "rework_running"}:
+        preservation = (
+            "This is a crossover quality repair. Preserve the current candidate's "
+            "crossover behavior in bots/claude_v{next_v}; fix only the blocking "
+            "quality-gate issues unless a tiny local cleanup is required."
+        )
+    else:
+        preservation = (
+            "This is a gate repair. Make the smallest structural correction that "
+            "clears the listed blockers while preserving the intended strategy."
+        )
+
+    prompt = (
+        f"{preservation.format(next_v=ckpt.get('next_v'))}\n\n"
+        f"Exact gate feedback:\n{feedback}\n\n"
+        "Required method:\n"
+        "- Read the listed target files before editing.\n"
+        "- For file_size blockers, remove dead/duplicated code or consolidate helper logic; do not weaken strategy by deleting active decisions blindly.\n"
+        "- For position_semantics blockers, follow the national heads-up position contract exactly: small blind is dealer_id, big blind is 1 - dealer_id.\n"
+        "- Do not change protocol/card mapping behavior outside the named blockers.\n"
+        "- Leave stderr telemetry honest if touched."
+    )
+    return [{
+        "worker_id": "auto_quality_repair",
+        "role": "Algorithmic Logic Architect",
+        "target_files": targets,
+        "worker_prompt": prompt,
+        "task_kind": "quality_repair" if stage != "precommit_failed" else "precommit_repair",
+    }]
+
+
+def _should_reset_before_rework(ckpt, tasks):
+    """Return False for crossover quality repair so the fused candidate survives."""
+    if not isinstance(ckpt, dict):
+        return True
+    if ckpt.get("stage") != "quality_failed":
+        return True
+    master_plan = ckpt.get("master_plan") if isinstance(ckpt.get("master_plan"), dict) else {}
+    is_crossover = bool(ckpt.get("parent2_v")) or master_plan.get("strategy") == "crossover"
+    if not is_crossover:
+        return True
+    return False
+
+
 @tool("execute_workers", "Execute worker tasks to modify bot code. Each task has worker_id, role, target_files, worker_prompt.", {"tasks": list, "next_v": int, "source_v": int, "reviewer_feedback": str})
 async def execute_workers(args):
     _t0 = time.time()
@@ -2748,33 +2843,55 @@ async def execute_workers(args):
             next_v,
             source_v,
         )
-    if not ckpt.get("master_plan"):
+    rework_stages = {"quality_failed", "precommit_failed", "repair_planned", "rework_running"}
+    if not ckpt.get("master_plan") and ckpt.get("stage") not in rework_stages:
         return _json_tool_result({
             "error": "execute_workers requires a master plan. Call run_master first to produce a task plan.",
             "next_v": next_v,
             "source_v": source_v,
         })
 
+    if not reviewer_feedback and ckpt.get("stage") in rework_stages:
+        reviewer_feedback = _checkpoint_rework_feedback(ckpt)
+
     # Fallback: if tasks not provided, load from checkpoint master_plan.
     # This happens when the orchestrator session is fresh (not resumed) and
     # the LLM doesn't have the task list in its conversation history.
     if not tasks:
-        tasks = ckpt["master_plan"].get("tasks", [])
+        plan = ckpt.get("master_plan") if isinstance(ckpt.get("master_plan"), dict) else {}
+        tasks = plan.get("tasks", [])
         if tasks:
             log_system_event("pipeline.workers_tasks_from_checkpoint", "info",
                              f"Tasks loaded from checkpoint for v{next_v} (LLM omitted tasks arg)",
                              {"next_v": next_v, "num_tasks": len(tasks)})
+        elif ckpt.get("stage") in rework_stages:
+            tasks = _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback)
+            if tasks:
+                log_system_event(
+                    "pipeline.workers_tasks_synthesized",
+                    "warn",
+                    f"Synthesized {len(tasks)} rework task(s) for v{next_v} from checkpoint gate feedback",
+                    {
+                        "next_v": next_v,
+                        "source_v": source_v,
+                        "stage": ckpt.get("stage"),
+                        "parent2_v": ckpt.get("parent2_v"),
+                        "target_files": tasks[0].get("target_files", []),
+                    },
+                )
         else:
             return _json_tool_result({
                 "error": "No tasks provided and checkpoint has no task plan. Call run_master first.",
                 "next_v": next_v,
                 "source_v": source_v,
+                })
+        if not tasks:
+            return _json_tool_result({
+                "error": "No tasks provided and checkpoint has no task plan. Call run_master first.",
+                "next_v": next_v,
+                "source_v": source_v,
+                "stage": ckpt.get("stage"),
             })
-
-    if not reviewer_feedback and ckpt.get("stage") in {
-        "quality_failed", "precommit_failed", "repair_planned", "rework_running"
-    }:
-        reviewer_feedback = _checkpoint_rework_feedback(ckpt)
 
     # B6 (2026-06-30): redundant-call guard. execute_workers is NOT idempotent —
     # a redundant call (no reviewer_feedback) when workers already ran resets code
@@ -2930,7 +3047,8 @@ async def execute_workers(args):
         elif ckpt.get("parent2_v") is not None:
             rework_kind = f"crossover_{rework_kind}"
         source_dir_r = get_bot_dir(source_v)
-        if source_dir_r.exists() and next_dir.exists():
+        reset_before_rework = _should_reset_before_rework(ckpt, tasks)
+        if reset_before_rework and source_dir_r.exists() and next_dir.exists():
             _log.info(f"Resetting v{next_v} code from source v{source_v} before worker retry (incremental, preserves NEW files)")
             # Incremental reset: overwrite source files (undo worker edits) but
             # PRESERVE worker-created NEW files absent from source. This avoids
@@ -2940,6 +3058,13 @@ async def execute_workers(args):
             if preserved:
                 _log.info("Preserved %d worker-created NEW file(s) across reset: %s",
                           len(preserved), preserved)
+        elif not reset_before_rework:
+            log_system_event(
+                "pipeline.crossover_quality_repair_in_place",
+                "warn",
+                f"Repairing crossover v{next_v} in place after quality failure; preserving fused candidate code",
+                {"next_v": next_v, "source_v": source_v, "parent2_v": ckpt.get("parent2_v")},
+            )
 
         # Re-apply known fixes after resetting from source (source may be older/unfixed)
         from fix_injection import apply_known_fixes, log_fix_application
@@ -2955,6 +3080,7 @@ async def execute_workers(args):
         rework_plan_metadata = {
             "kind": rework_kind,
             "source_stage": ckpt.get("stage"),
+            "reset_performed": reset_before_rework,
             "route": route_policy(ckpt),
         }
         retry_plan = {
@@ -2972,11 +3098,18 @@ async def execute_workers(args):
             force_sequential_rework = True
             task_skipper = _quality_rework_skipper(next_dir, source_dir_r, next_v, source_v)
 
-        reviewer_feedback += (
-            f"\n\nNOTE: This is a retry. The code in bots/claude_v{next_v}/ has been ACTUALLY RESET "
-            f"from source bots/claude_v{source_v}/. Any modifications described in the feedback "
-            f"above no longer exist in the code — you must re-implement them from scratch."
-        )
+        if reset_before_rework:
+            reviewer_feedback += (
+                f"\n\nNOTE: This is a retry. The code in bots/claude_v{next_v}/ has been ACTUALLY RESET "
+                f"from source bots/claude_v{source_v}/. Any modifications described in the feedback "
+                f"above no longer exist in the code — you must re-implement them from scratch."
+            )
+        else:
+            reviewer_feedback += (
+                f"\n\nNOTE: This is an in-place crossover quality repair. The current code in "
+                f"bots/claude_v{next_v}/ is the generated crossover candidate and must be preserved "
+                f"except for the exact quality-gate blockers above."
+            )
 
     # P2: Validate positive worker intent against EXHAUSTED directions from the
     # experience pool. Negative guardrail prose is ignored to prevent warnings

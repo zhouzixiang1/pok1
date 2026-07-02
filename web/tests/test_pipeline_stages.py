@@ -1175,6 +1175,70 @@ class TestWorkerFailureCircuitBreaker:
         assert ckpt["stage"] == "workers_done"
         assert ckpt["master_plan"]["work_item"]["kind"] == "quality_repair"
 
+    def test_crossover_quality_failed_empty_plan_synthesizes_in_place_repair(self, tmp_path, monkeypatch):
+        """Crossover quality repairs need tasks but must preserve the fused candidate."""
+        import asyncio
+        import fix_injection
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        (source_dir / "strategy.py").write_text("def act():\n    return 0\n")
+        (next_dir / "strategy.py").write_text("def act():\n    return 1\n")
+        (next_dir / "opponent.py").write_text("def pos():\n    return 'bad'\n")
+        (next_dir / "state.py").write_text("def state():\n    return 'bad'\n")
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, stage="quality_failed")
+        state = json.loads(ckpt_file.read_text())
+        state["parent2_v"] = 9
+        state["master_plan"] = {"strategy": "crossover", "tasks": [], "parents": [10, 9]}
+        state["gate_results"] = {
+            "quality": {
+                "all_passed": False,
+                "failed_gates": [
+                    "file_size(strategy.py:2483L/2473L)",
+                    "position_semantics(opponent.py:1322: SB must be dealer_id; state.py:223: SB must be dealer_id)",
+                ],
+            }
+        }
+        ckpt_file.write_text(json.dumps(state))
+
+        monkeypatch.setattr(tool_planning, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+
+        def _reset_must_not_run(*_args, **_kwargs):
+            raise AssertionError("crossover quality repair should be in-place")
+
+        monkeypatch.setattr(tool_planning, "_incremental_reset_next_dir", _reset_must_not_run)
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
+                 patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy.py"]):
+                mock_exec.return_value = (True, {}, [])
+                result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
+                return result, mock_exec
+
+        result, mock_exec = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["success"] is True
+        tasks = mock_exec.call_args.args[0]
+        assert tasks[0]["worker_id"] == "auto_quality_repair"
+        assert tasks[0]["target_files"] == ["strategy.py", "opponent.py", "state.py"]
+        assert "Preserve the current candidate" in tasks[0]["worker_prompt"]
+        assert mock_exec.call_args.kwargs["force_sequential"] is True
+        assert "in-place crossover quality repair" in mock_exec.call_args.kwargs["reviewer_feedback"]
+        assert (next_dir / "strategy.py").read_text() == "def act():\n    return 1\n"
+
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["stage"] == "workers_done"
+        assert ckpt["master_plan"]["tasks"][0]["worker_id"] == "auto_quality_repair"
+        assert ckpt["master_plan"]["work_item"]["kind"] == "crossover_quality_repair"
+        assert ckpt["master_plan"]["work_item"]["reset_performed"] is False
+
     def test_quality_rework_skipper_keeps_mixed_task_when_one_blocker_remains(self, tmp_path, monkeypatch):
         """A position task mentioning size feedback must still run while position blockers remain."""
         import tool_gates

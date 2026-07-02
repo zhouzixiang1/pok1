@@ -398,6 +398,10 @@ def test_main_loop_success_with_active_checkpoint_skips_cleanup_and_resumes(tmp_
     monkeypatch.setattr(orchestrator, "_run_post_generation_cleanup_with_timeout", _fake_cleanup)
     monkeypatch.setattr(orchestrator, "_startup_recovery", lambda ui: None)
     monkeypatch.setattr(orchestrator, "_watchdog_triggered", False)
+    async def _no_deterministic_route(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(orchestrator, "_try_deterministic_checkpoint_route", _no_deterministic_route)
 
     async def _no_watchdog(ui, shutdown_mgr, check_interval=60):
         return
@@ -581,3 +585,61 @@ def test_actionable_stage_idle_timeout_is_infra_and_preserves_checkpoint(tmp_pat
     after = json.loads(pipe_file.read_text())
     assert after.get("stage") == "quality_failed"
     assert any(e[0] == "pipeline.actionable_stage_timeout" for e in events)
+
+
+def test_quality_failed_recovery_deterministically_calls_execute_workers(monkeypatch):
+    """A quality_failed checkpoint should not rely on another Orchestrator LLM turn."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import orchestrator
+
+    events = []
+    fake_execute = SimpleNamespace(
+        handler=AsyncMock(
+            return_value={
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({"success": True}),
+                }]
+            }
+        )
+    )
+    monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "pipeline_state",
+        SimpleNamespace(route_policy=lambda _ckpt: {"next_tool": "execute_workers"}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_planning",
+        SimpleNamespace(execute_workers=fake_execute),
+    )
+
+    recovery = {
+        "action": "resume",
+        "checkpoint": {
+            "stage": "quality_failed",
+            "next_v": 268,
+            "source_v": 249,
+            "parent2_v": 205,
+        },
+    }
+    ui = _FakeUI()
+
+    handled = asyncio.new_event_loop().run_until_complete(
+        orchestrator._try_deterministic_checkpoint_route(recovery, ui)
+    )
+
+    assert handled is True
+    fake_execute.handler.assert_awaited_once_with({"next_v": 268, "source_v": 249})
+    assert any(e[0] == "pipeline.deterministic_route_execute_workers" for e in events)
+    assert any(e[0] == "pipeline.deterministic_route_done" for e in events)
