@@ -1189,6 +1189,7 @@ class TestWorkerFailureCircuitBreaker:
         (next_dir / "strategy.py").write_text("def act():\n    return 1\n")
         (next_dir / "opponent.py").write_text("def pos():\n    return 'bad'\n")
         (next_dir / "state.py").write_text("def state():\n    return 'bad'\n")
+        (next_dir / "strategy_helpers.py").write_text("def helper():\n    return 'bad'\n")
 
         ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, stage="quality_failed")
         state = json.loads(ckpt_file.read_text())
@@ -1200,6 +1201,14 @@ class TestWorkerFailureCircuitBreaker:
                 "failed_gates": [
                     "file_size(strategy.py:2483L/2473L)",
                     "position_semantics(opponent.py:1322: SB must be dealer_id; state.py:223: SB must be dealer_id)",
+                ],
+                "protected_contract_errors": [
+                    "opponent.py: print() emits TCP action text 'allin selftest pass'; output must be JSON response int",
+                ],
+                "position_semantics_errors": [
+                    "opponent.py:1322: SB must be dealer_id",
+                    "state.py:223: SB must be dealer_id",
+                    "strategy_helpers.py:1188: dealer is SB in heads-up",
                 ],
             }
         }
@@ -1227,8 +1236,14 @@ class TestWorkerFailureCircuitBreaker:
         assert data["success"] is True
         tasks = mock_exec.call_args.args[0]
         assert tasks[0]["worker_id"] == "auto_quality_repair"
-        assert tasks[0]["target_files"] == ["strategy.py", "opponent.py", "state.py"]
+        assert tasks[0]["target_files"] == [
+            "strategy.py",
+            "opponent.py",
+            "state.py",
+            "strategy_helpers.py",
+        ]
         assert "Preserve the current candidate" in tasks[0]["worker_prompt"]
+        assert "strategy_helpers.py" in tasks[0]["worker_prompt"]
         assert mock_exec.call_args.kwargs["force_sequential"] is True
         assert "in-place crossover quality repair" in mock_exec.call_args.kwargs["reviewer_feedback"]
         assert (next_dir / "strategy.py").read_text() == "def act():\n    return 1\n"
@@ -1271,7 +1286,12 @@ class TestWorkerFailureCircuitBreaker:
             "quality": {
                 "all_passed": False,
                 "failed_gates": [
-                    "position_semantics(strategy_helpers.py:1188: dealer is SB in heads-up)"
+                    "position_semantics(opponent.py:1329: SB must be dealer_id; state.py:223: SB must be dealer_id)"
+                ],
+                "position_semantics_errors": [
+                    "opponent.py:1329: SB must be dealer_id",
+                    "state.py:223: SB must be dealer_id",
+                    "strategy_helpers.py:1188: dealer is SB in heads-up",
                 ],
             }
         }
@@ -1293,12 +1313,16 @@ class TestWorkerFailureCircuitBreaker:
         data = json.loads(result["content"][0]["text"])
         assert data["success"] is True
         tasks = mock_exec.call_args.args[0]
-        assert tasks[0]["target_files"] == ["strategy_helpers.py"]
+        assert tasks[0]["target_files"] == ["opponent.py", "state.py", "strategy_helpers.py"]
         assert "strategy_helpers.py" in tasks[0]["worker_prompt"]
 
         ckpt = json.loads(ckpt_file.read_text())
         assert ckpt["stage"] == "workers_done"
-        assert ckpt["master_plan"]["tasks"][0]["target_files"] == ["strategy_helpers.py"]
+        assert ckpt["master_plan"]["tasks"][0]["target_files"] == [
+            "opponent.py",
+            "state.py",
+            "strategy_helpers.py",
+        ]
         assert ckpt["master_plan"]["work_item"]["reset_performed"] is False
 
     def test_quality_rework_skipper_keeps_mixed_task_when_one_blocker_remains(self, tmp_path, monkeypatch):
