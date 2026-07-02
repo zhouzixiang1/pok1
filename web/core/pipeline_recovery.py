@@ -22,6 +22,8 @@ TARGET_DIR_STAGES = {
     "reviewed",
     "critic_checked",
     "precommit_failed",
+    "repair_planned",
+    "rework_running",
     "verified",
     "infra_timed_out",
 }

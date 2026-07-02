@@ -104,11 +104,24 @@ class _OrchFirstActivityTimeout(Exception):
     """
 
 
+class _OrchActionableStageTimeout(Exception):
+    """Internal signal: checkpoint is waiting at a deterministic next-tool stage.
+
+    Some SDK sessions keep the stream open after an MCP tool returns a blocking
+    gate result such as ``quality_failed``. Waiting for the full cycle timeout
+    makes recovery effectively unavailable. When the persisted checkpoint has
+    already recorded an actionable route for long enough, cancel the stream and
+    resume from the checkpoint in a fresh cycle.
+    """
+
+
 # Module-level flag set by the watchdog coroutine when it detects a stuck pipeline.
 # The main orchestrator_loop checks this flag at the top of each iteration and forces
 # a fresh _run_one_cycle (discarding the stale session) when set.
 _watchdog_triggered = False
 ORCH_FIRST_ACTIVITY_TIMEOUT = int(os.environ.get("POK_ORCH_FIRST_ACTIVITY_TIMEOUT", "600"))
+ORCH_STREAM_POLL_INTERVAL = float(os.environ.get("POK_ORCH_STREAM_POLL_INTERVAL", "15"))
+ORCH_ACTIONABLE_STAGE_TIMEOUT = float(os.environ.get("POK_ORCH_ACTIONABLE_STAGE_TIMEOUT", "300"))
 POST_GENERATION_CLEANUP_TIMEOUT = int(os.environ.get("POK_POST_GENERATION_CLEANUP_TIMEOUT", "900"))
 
 ORCHESTRATOR_PROMPT = (Path(__file__).parent / "prompts" / "orchestrator.md").read_text()
@@ -137,6 +150,93 @@ from orchestrator_session import (  # noqa: E402
 )
 from evolution_infra import find_current_v  # noqa: E402
 from llm_query import extract_result_error  # noqa: E402
+
+
+_ACTIONABLE_STALL_STAGES = frozenset({
+    "quality_failed",
+    "precommit_failed",
+    "repair_planned",
+})
+
+
+def _detect_actionable_stage_stall():
+    """Return checkpoint route data when a deterministic next-tool stage is stale."""
+    if ORCH_ACTIONABLE_STAGE_TIMEOUT <= 0:
+        return None
+    try:
+        from evolution_core import read_pipeline_checkpoint
+        from pipeline_state import route_policy
+        checkpoint = read_pipeline_checkpoint()
+    except Exception:
+        return None
+    if not checkpoint:
+        return None
+    stage = checkpoint.get("stage")
+    if stage not in _ACTIONABLE_STALL_STAGES:
+        return None
+    last_ts = (
+        float(checkpoint.get("last_stage_change_ts") or 0.0)
+        or float(checkpoint.get("last_update_ts") or 0.0)
+    )
+    if last_ts <= 0:
+        return None
+    elapsed = time.time() - last_ts
+    if elapsed < ORCH_ACTIONABLE_STAGE_TIMEOUT:
+        return None
+    route = route_policy(checkpoint)
+    return {
+        "next_v": checkpoint.get("next_v"),
+        "source_v": checkpoint.get("source_v"),
+        "stage": stage,
+        "elapsed_sec": round(elapsed, 1),
+        "timeout_sec": ORCH_ACTIONABLE_STAGE_TIMEOUT,
+        "next_tool": route.get("next_tool"),
+        "directive": route.get("directive"),
+    }
+
+
+async def _await_next_stream_message(stream_iter):
+    """Wait for the next orchestrator stream message with checkpoint-aware polling."""
+    pending = asyncio.create_task(stream_iter.__anext__())
+    try:
+        while True:
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(pending),
+                    timeout=max(0.1, ORCH_STREAM_POLL_INTERVAL),
+                )
+            except asyncio.TimeoutError:
+                stall = _detect_actionable_stage_stall()
+                if not stall:
+                    continue
+                next_v = stall.get("next_v")
+                stage = stall.get("stage")
+                next_tool = stall.get("next_tool") or "unknown"
+                msg = (
+                    f"Orchestrator stream idle while v{next_v} is at actionable "
+                    f"stage '{stage}' for {stall.get('elapsed_sec')}s; "
+                    f"fresh cycle should call {next_tool}."
+                )
+                try:
+                    log_system_event(
+                        "pipeline.actionable_stage_timeout",
+                        "warn",
+                        msg,
+                        stall,
+                    )
+                except Exception:
+                    pass
+                pending.cancel()
+                try:
+                    await pending
+                except BaseException:
+                    pass
+                raise _OrchActionableStageTimeout(msg)
+    except BaseException:
+        if not pending.done():
+            pending.cancel()
+        raise
+
 async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=None, gen_ctx=None, shutdown_mgr=None):
     """Run one Orchestrator cycle (one LLM agent session). Returns total cost."""
     set_cycle_start_time(time.time())
@@ -273,7 +373,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                                 except Exception:
                                     pass
                         else:
-                            message = await _stream_iter.__anext__()
+                            message = await _await_next_stream_message(_stream_iter)
                     except StopAsyncIteration:
                         break
                     except asyncio.TimeoutError as e:
@@ -878,7 +978,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             is_infra = (
                 not is_shutdown_cancel
                 and (
-                    isinstance(e, (_CostCapTripped, _OrchFirstActivityTimeout))
+                    isinstance(e, (_CostCapTripped, _OrchFirstActivityTimeout, _OrchActionableStageTimeout))
                     or _is_cycle_infra_error(e)
                 )
             )
@@ -1174,7 +1274,9 @@ async def _watchdog_coroutine(ui, shutdown_mgr, check_interval=60):
 
     recoverable_stages = {"selected", "preparing", "prepared", "crossover_running",
                           "direction_audited", "master_planned", "workers_done",
-                          "quality_passed", "reviewed", "critic_checked", "precommit_failed", "verified"}
+                          "quality_failed", "quality_passed", "reviewed",
+                          "critic_checked", "precommit_failed", "repair_planned",
+                          "rework_running", "verified"}
 
     while True:
         if shutdown_mgr and shutdown_mgr.is_shutting_down:
@@ -1326,6 +1428,9 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                 # Do NOT clear session — next _run_one_cycle() will resume via saved session
                 continue
 
+            if recovery is None:
+                recovery = _checkpoint_recovery_context("active_checkpoint", ui)
+
             gen_count += 1
             log_system_event("orchestrator.cycle_start", "info", f"Cycle {gen_count} starting",
                              {"gen_count": gen_count})
@@ -1440,6 +1545,35 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
 
             # Phase 3: Cleanup (idempotent) — after any successful generation
             if cost >= 0:
+                active_recovery = _checkpoint_recovery_context("cycle_completed_with_active_checkpoint", ui)
+                if active_recovery:
+                    recovery = active_recovery
+                    if ui:
+                        ui.log_history(
+                            "Orchestrator cycle ended while checkpoint is still active; "
+                            "continuing from checkpoint instead of marking generation complete.",
+                            "warn",
+                        )
+                    try:
+                        ckpt = active_recovery.get("checkpoint") or {}
+                        log_system_event(
+                            "orchestrator.cycle_yielded_active_checkpoint",
+                            "warn",
+                            "Cycle ended with active checkpoint; skipping post-generation cleanup",
+                            {
+                                "gen_count": gen_count,
+                                "stage": ckpt.get("stage"),
+                                "next_v": ckpt.get("next_v"),
+                                "source_v": ckpt.get("source_v"),
+                                "cost": round(cost, 4),
+                            },
+                        )
+                    except Exception:
+                        pass
+                    if ui:
+                        ui.reset_gen_cost()
+                    await asyncio.sleep(5)
+                    continue
                 # Reset the generic-failure backoff counter — the cycle succeeded.
                 if getattr(orchestrator_loop, "_gen_fail_count", 0):
                     orchestrator_loop._gen_fail_count = 0

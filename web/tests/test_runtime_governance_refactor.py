@@ -668,6 +668,30 @@ def test_checkpoint_recovery_diagnostics_allows_matching_active_checkpoint(tmp_p
     assert diag["issues"] == []
 
 
+def test_checkpoint_recovery_diagnostics_tracks_rework_target_dirs(tmp_path):
+    import pipeline_recovery
+
+    for stage in ("quality_failed", "repair_planned", "rework_running"):
+        (tmp_path / "bots" / "claude_v259").mkdir(parents=True, exist_ok=True)
+        checkpoint = {
+            "next_v": 259,
+            "source_v": 254,
+            "stage": stage,
+            "repo_baseline": {"branch": "main", "head": "same123"},
+        }
+        snapshot = {"ok": True, "branch": "main...origin/main", "head": "same123"}
+
+        diag = pipeline_recovery.checkpoint_recovery_diagnostics(
+            checkpoint,
+            snapshot=snapshot,
+            project_root=tmp_path,
+        )
+
+        assert diag["active"] is True
+        assert diag["recoverable"] is True
+        assert diag["target"]["exists"] is True
+
+
 def test_startup_recovery_blocks_unrecoverable_checkpoint(monkeypatch):
     import sys
     from types import SimpleNamespace
@@ -762,5 +786,54 @@ def test_startup_recovery_resumes_prepared_without_master_plan(monkeypatch):
     assert result["action"] == "resume"
     assert result["stage"] == "prepared"
     assert result["next_v"] == 260
+    assert cleared == []
+    assert any(args[0] == "orchestrator.recovery_decision" for args, _ in events)
+
+
+def test_startup_recovery_resumes_old_quality_failed_checkpoint(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    import evolution_infra
+    import orchestrator_session
+    import pipeline_recovery
+
+    checkpoint = {
+        "next_v": 261,
+        "source_v": 254,
+        "stage": "quality_failed",
+        "timestamp": "2000-01-01T00:00:00",
+        "repo_baseline": {"branch": "main", "head": "same123"},
+    }
+    cleared = []
+    events = []
+    fake_evolution_core = SimpleNamespace(
+        read_pipeline_checkpoint=lambda: checkpoint,
+        clear_pipeline_checkpoint=lambda: cleared.append("checkpoint"),
+    )
+    fake_system_log = SimpleNamespace(
+        log_system_event=lambda *args, **kwargs: events.append((args, kwargs))
+    )
+
+    monkeypatch.setitem(sys.modules, "evolution_core", fake_evolution_core)
+    monkeypatch.setitem(sys.modules, "system_log", fake_system_log)
+    monkeypatch.setattr(orchestrator_session, "_load_orchestrator_session", lambda: None)
+    monkeypatch.setattr(
+        orchestrator_session,
+        "_clear_orchestrator_session",
+        lambda reason="completed_or_reset": cleared.append(reason),
+    )
+    monkeypatch.setattr(evolution_infra, "git_has_tag", lambda _v: False)
+    monkeypatch.setattr(
+        pipeline_recovery,
+        "checkpoint_recovery_diagnostics",
+        lambda _checkpoint: {"active": True, "recoverable": True, "issues": []},
+    )
+
+    result = orchestrator_session._startup_recovery()
+
+    assert result["action"] == "resume"
+    assert result["stage"] == "quality_failed"
+    assert result["next_v"] == 261
     assert cleared == []
     assert any(args[0] == "orchestrator.recovery_decision" for args, _ in events)

@@ -301,7 +301,7 @@ def test_main_loop_sentinel_minus3_skips_cleanup_and_complete(tmp_path, monkeypa
 
 
 def test_main_loop_infra_error_resumes_checkpoint_without_prepare(tmp_path, monkeypatch):
-    """cost == -0.5 must resume the active checkpoint instead of starting Phase 1 again."""
+    """An active checkpoint must resume directly instead of starting Phase 1."""
     import orchestrator
     from generation_scheduler import GenerationContext
 
@@ -364,11 +364,72 @@ def test_main_loop_infra_error_resumes_checkpoint_without_prepare(tmp_path, monk
     )
 
     assert len(run_contexts) == 2
-    assert len(prepare_calls) == 1, "infra retry must not run prepare_generation again"
-    resumed = run_contexts[1]
-    assert resumed.next_v == 102
-    assert resumed.source_v == 100
-    assert resumed.strategy == "master"
+    assert prepare_calls == [], "active checkpoint recovery must not run prepare_generation"
+    for resumed in run_contexts:
+        assert resumed.next_v == 102
+        assert resumed.source_v == 100
+        assert resumed.strategy == "master"
+
+
+def test_main_loop_success_with_active_checkpoint_skips_cleanup_and_resumes(tmp_path, monkeypatch):
+    """A clean LLM cycle is not a completed generation while checkpoint remains active."""
+    import orchestrator
+
+    _write_checkpoint(tmp_path, "quality_failed", timeout_extensions=0)
+
+    cleanup_calls = []
+    run_contexts = []
+
+    async def _fake_prepare(shutdown_mgr, ui, min_games=None):
+        raise AssertionError("prepare_generation must not run for active checkpoint")
+
+    async def _fake_run_one_cycle(**kw):
+        run_contexts.append(kw["gen_ctx"])
+        if len(run_contexts) == 1:
+            return 0.25
+        return -99999.0
+
+    async def _fake_cleanup(*_args, **_kwargs):
+        cleanup_calls.append(True)
+        return True
+
+    monkeypatch.setattr(orchestrator, "_run_one_cycle", _fake_run_one_cycle)
+    monkeypatch.setattr(orchestrator, "_prepare_or_fail", _fake_prepare)
+    monkeypatch.setattr(orchestrator, "_run_post_generation_cleanup_with_timeout", _fake_cleanup)
+    monkeypatch.setattr(orchestrator, "_startup_recovery", lambda ui: None)
+    monkeypatch.setattr(orchestrator, "_watchdog_triggered", False)
+
+    async def _no_watchdog(ui, shutdown_mgr, check_interval=60):
+        return
+
+    monkeypatch.setattr(orchestrator, "_watchdog_coroutine", _no_watchdog)
+
+    import rate_limiter
+    monkeypatch.setattr(rate_limiter.rate_limiter, "is_blocked", lambda: False)
+
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(*a, **kw):
+        await real_sleep(0)
+
+    monkeypatch.setattr(orchestrator.asyncio, "sleep", _fast_sleep)
+
+    class _ShutdownAfterSecondRun:
+        @property
+        def is_shutting_down(self):
+            return len(run_contexts) >= 2
+
+    asyncio.new_event_loop().run_until_complete(
+        orchestrator.orchestrator_loop(
+            ui=_FakeUI(),
+            shutdown_mgr=_ShutdownAfterSecondRun(),
+            no_daemon=True,
+        )
+    )
+
+    assert len(run_contexts) == 2
+    assert cleanup_calls == []
+    assert all(ctx.next_v == 102 and ctx.source_v == 100 for ctx in run_contexts)
 
 
 def test_main_loop_post_cleanup_timeout_still_marks_cycle_done(monkeypatch):
@@ -473,3 +534,50 @@ def test_first_activity_timeout_is_infra_and_preserves_checkpoint(tmp_path, monk
     after = json.loads(pipe_file.read_text())
     assert after.get("stage") == "reviewed"
     assert any("no first stream message" in msg for _, msg in ui.events)
+
+
+def test_actionable_stage_idle_timeout_is_infra_and_preserves_checkpoint(tmp_path, monkeypatch):
+    """After a gate writes quality_failed, a silent stream should short-retry."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    import orchestrator
+    import evolution_core
+
+    _write_checkpoint(tmp_path, "quality_failed", timeout_extensions=0)
+    pipe_file = evolution_core.PIPELINE_STATE_FILE
+    events = []
+
+    async def _stalls_after_first_message():
+        yield AssistantMessage(content=[TextBlock(text="seen")], model="sonnet")
+        await asyncio.sleep(999)
+        if False:
+            yield  # pragma: no cover
+
+    monkeypatch.setattr(orchestrator, "claude_query", lambda prompt, options: _stalls_after_first_message())
+    monkeypatch.setattr(orchestrator, "ORCH_STREAM_POLL_INTERVAL", 0.01)
+    monkeypatch.setattr(orchestrator, "ORCH_ACTIONABLE_STAGE_TIMEOUT", 0.01)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+
+    ui = _FakeUI()
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=ui,
+            log_file=tmp_path / "orch_log.txt",
+            one_gen=False,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    assert cost == -0.5
+    after = json.loads(pipe_file.read_text())
+    assert after.get("stage") == "quality_failed"
+    assert any(e[0] == "pipeline.actionable_stage_timeout" for e in events)
