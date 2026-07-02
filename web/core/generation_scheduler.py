@@ -120,6 +120,25 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         return None
 
+    try:
+        from tool_runtime_guard import ensure_runtime_git_guard
+        guard_ok, guard_payload = ensure_runtime_git_guard("prepare_generation", {})
+        if not guard_ok:
+            log_system_event(
+                "pipeline.prepare_blocked_runtime_guard",
+                "error",
+                "Prepare generation blocked by runtime git guard",
+                guard_payload,
+            )
+            if ui:
+                ui.log_history(
+                    f"Prepare blocked by runtime git guard: {guard_payload.get('reason')}",
+                    "error",
+                )
+            return None
+    except Exception as exc:
+        log.warning("Runtime git guard failed during prepare; continuing cautiously: %s", exc)
+
     current_v = find_current_v()       # 版本编号（含 graveyard），用于 next_v
     # 裸 commit 对账（v117 反复重生循环根因修复, 2026-06-18）：find_max_committed_v()
     # 返回含裸 commit（绕过 commit_bot 直接 git commit、无 tag+.completed）的最大版本号。

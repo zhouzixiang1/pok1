@@ -275,6 +275,7 @@ def test_repo_state_snapshot_classifies_dirty_untracked_and_protected(monkeypatc
     assert snapshot["branch"] == "codex/test...origin/main"
     assert snapshot["dirty_count"] == 1
     assert snapshot["untracked_count"] == 2
+    assert snapshot["generated_bot_dirs"] == ["?? bots/claude_v245/"]
     assert len(snapshot["protected_entries"]) == 2
 
 
@@ -310,6 +311,7 @@ def test_repo_state_delta_emits_branch_and_worktree_events(monkeypatch):
         {
             "ok": True,
             "branch": "main...origin/main",
+            "head": "aaa111",
             "dirty_count": 0,
             "untracked_count": 0,
             "entry_count": 0,
@@ -318,6 +320,7 @@ def test_repo_state_delta_emits_branch_and_worktree_events(monkeypatch):
         {
             "ok": True,
             "branch": "codex/refactor",
+            "head": "bbb222",
             "dirty_count": 1,
             "untracked_count": 1,
             "entry_count": 2,
@@ -340,10 +343,117 @@ def test_repo_state_delta_emits_branch_and_worktree_events(monkeypatch):
     event_types = [event[0] for event in events]
     assert "repo.worktree_baseline" in event_types
     assert "repo.branch_changed" in event_types
+    assert "repo.head_changed" in event_types
     assert "repo.worktree_changed" in event_types
     branch_event = next(event for event in events if event[0] == "repo.branch_changed")
     assert branch_event[3]["previous_branch"] == "main...origin/main"
     assert branch_event[3]["current_branch"] == "codex/refactor"
     worktree_event = next(event for event in events if event[0] == "repo.worktree_changed")
     assert " M web/core/tool_gates.py" in worktree_event[3]["new_dirty_entries"]
-    assert "?? bots/claude_v251/" in worktree_event[3]["new_protected_entries"]
+    assert "?? bots/claude_v251/" in worktree_event[3]["new_generated_bot_dirs"]
+    assert "?? bots/claude_v251/" not in worktree_event[3]["new_protected_entries"]
+
+
+def test_runtime_guard_allows_current_candidate_dir(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshots = iter([
+        {
+            "ok": True,
+            "branch": "main...origin/main",
+            "head": "abc123",
+            "entries": ["?? bots/claude_v300/"],
+        },
+        {
+            "ok": True,
+            "branch": "main...origin/main",
+            "head": "abc123",
+            "entries": ["?? bots/claude_v300/"],
+        },
+    ])
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_master",
+        {"next_v": 300, "source_v": 299},
+    )
+
+    assert ok is True
+    assert payload["guard"] == "ok"
+
+
+def test_runtime_guard_blocks_unexpected_system_dirty(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshot = {
+        "ok": True,
+        "branch": "main...origin/main",
+        "head": "abc123",
+        "entries": [" M web/core/tool_gates.py", "?? bots/claude_v300/"],
+    }
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "execute_workers",
+        {"next_v": 300, "source_v": 299},
+    )
+
+    assert ok is False
+    assert payload["reason"] == "unexpected_worktree_entries"
+    assert " M web/core/tool_gates.py" in payload["unexpected_entries"]
+
+
+def test_runtime_guard_blocks_head_drift(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshot = {
+        "ok": True,
+        "branch": "main...origin/main",
+        "head": "new456",
+        "entries": ["?? bots/claude_v300/"],
+    }
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "old123"})
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_quality_gates",
+        {"version": 300, "source_v": 299},
+    )
+
+    assert ok is False
+    assert payload["reason"] == "head_changed_during_generation"
+    assert payload["baseline_head"] == "old123"
+    assert payload["current_head"] == "new456"
+
+
+def test_runtime_guard_corrects_clean_branch_drift(monkeypatch):
+    import subprocess
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshots = iter([
+        {"ok": True, "branch": "codex/refactor", "head": "abc123", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "abc123", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "abc123", "entries": ["?? bots/claude_v300/"]},
+    ])
+    commands = []
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
+    monkeypatch.setattr(
+        tool_runtime_guard,
+        "_run_git",
+        lambda *args: commands.append(args) or subprocess.CompletedProcess(["git", *args], 0, "", ""),
+    )
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_literature_probe",
+        {"next_v": 300, "source_v": 299},
+    )
+
+    assert ok is True
+    assert commands == [("checkout", "main")]

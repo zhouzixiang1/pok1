@@ -10,7 +10,7 @@ import threading
 import time
 import uuid
 
-from claude_agent_sdk import tool
+from tool_runtime_guard import tool
 
 from evolution_core import (
     get_bot_dir,

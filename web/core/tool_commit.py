@@ -8,7 +8,7 @@ from typing import Annotated, TypedDict
 from logging_config import get_logger
 _log = get_logger("commit")
 
-from claude_agent_sdk import tool
+from tool_runtime_guard import tool
 
 from evolution_core import (
     get_bot_dir,
