@@ -40,6 +40,7 @@ from llm_failure import is_llm_infra_error, infra_payload
 from llm_query import llm_cancel_scope
 import spot_analyzer
 from pipeline_schema import GateResult, ScoreCard
+from pipeline_state import next_tool_for_checkpoint
 from workflow_profiles import get_workflow_profile
 from worker_boundary import audit_changed_files_against_plan, hash_changed_files
 
@@ -912,6 +913,73 @@ async def prepare_next_gen(args):
     _t0 = time.time()
     source_v = args.get("source_v")
     next_v = args.get("next_v")
+    active_ckpt = read_pipeline_checkpoint()
+    using_active_checkpoint = False
+    if active_ckpt and active_ckpt.get("next_v") is not None and active_ckpt.get("source_v") is not None:
+        active_stage = active_ckpt.get("stage")
+        active_next_v = int(active_ckpt.get("next_v"))
+        active_source_v = int(active_ckpt.get("source_v"))
+        active_next_tool = next_tool_for_checkpoint(active_ckpt)
+        if active_stage == "selected" and active_ckpt.get("parent2_v") is not None:
+            return _json_tool_result({
+                "blocked": True,
+                "error": (
+                    f"Active generation v{active_next_v} is a crossover from "
+                    f"v{active_source_v} x v{active_ckpt.get('parent2_v')}; "
+                    "call run_crossover instead of prepare_next_gen."
+                ),
+                "next_v": active_next_v,
+                "source_v": active_source_v,
+                "stage": active_stage,
+                "next_tool": "run_crossover",
+                "required_args": {
+                    "version": active_next_v,
+                    "parent_a": active_source_v,
+                    "parent_b": active_ckpt.get("parent2_v"),
+                },
+            })
+        requested_source = int(source_v) if source_v is not None else None
+        requested_next = int(next_v) if next_v is not None else None
+        if requested_source is None or requested_next is None:
+            source_v = active_source_v
+            next_v = active_next_v
+            using_active_checkpoint = True
+        elif requested_source != active_source_v or requested_next != active_next_v:
+            if active_stage in {"selected", "preparing", "prepared", "timed_out"}:
+                log_system_event(
+                    "pipeline.prepare_args_overridden",
+                    "warn",
+                    (
+                        f"prepare_next_gen ignored stale args v{requested_next}/source v{requested_source}; "
+                        f"using active v{active_next_v}/source v{active_source_v}"
+                    ),
+                    {
+                        "requested_next_v": requested_next,
+                        "requested_source_v": requested_source,
+                        "next_v": active_next_v,
+                        "source_v": active_source_v,
+                        "stage": active_stage,
+                        "next_tool": "prepare_next_gen",
+                    },
+                )
+                source_v = active_source_v
+                next_v = active_next_v
+                using_active_checkpoint = True
+            else:
+                return _json_tool_result({
+                    "blocked": True,
+                    "error": (
+                        f"Active pipeline is v{active_next_v}/source v{active_source_v} "
+                        f"at stage {active_stage}; refusing stale prepare request "
+                        f"v{requested_next}/source v{requested_source}."
+                    ),
+                    "next_v": active_next_v,
+                    "source_v": active_source_v,
+                    "stage": active_stage,
+                    "next_tool": active_next_tool,
+                })
+        else:
+            using_active_checkpoint = True
     if source_v is None or next_v is None:
         _v, source_v = _resolve_version_args(args)
         next_v = next_v or _v
@@ -928,7 +996,7 @@ async def prepare_next_gen(args):
         return _json_tool_result({"error": f"next_v ({next_v}) is invalid. Version numbers must be < 900."})
 
     current_v = find_current_v()
-    if next_v > current_v + 10:
+    if not using_active_checkpoint and next_v > current_v + 10:
         return _json_tool_result({"error": f"next_v ({next_v}) is too far ahead of current_v ({current_v}). Use next_v = {current_v + 1}."})
 
     source_dir = get_bot_dir(source_v)

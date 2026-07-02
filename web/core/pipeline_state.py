@@ -131,6 +131,8 @@ def next_tool_for_checkpoint(checkpoint: dict | None) -> str | None:
     if not checkpoint:
         return None
     stage = checkpoint.get("stage")
+    if stage == "selected":
+        return "run_crossover" if checkpoint.get("parent2_v") is not None else "prepare_next_gen"
     if stage == "critic_checked":
         gate = (checkpoint.get("gate_results") or {}).get("precommit_eval")
         failure_class = classify_precommit_gate(gate)

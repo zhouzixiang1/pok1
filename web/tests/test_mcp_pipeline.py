@@ -55,6 +55,78 @@ class TestPrepareNextGen:
         result = json.loads(resp.json()["result"])
         assert "error" in result
 
+    def test_uses_active_checkpoint_when_llm_passes_stale_next_v(self, client, tmp_path, monkeypatch):
+        import evolution_infra
+        import tool_gates
+
+        fake_bots = tmp_path / "bots"
+        fake_bots.mkdir()
+        src = fake_bots / "claude_v254"
+        src.mkdir()
+        (src / "main.py").write_text("x = 1\n")
+        (src / ".completed").touch()
+        monkeypatch.setattr(evolution_infra, "BOTS_DIR", fake_bots)
+        monkeypatch.setattr(evolution_infra, "GRAVEYARD_DIR", fake_bots / "graveyard")
+        monkeypatch.setattr(tool_gates, "get_bot_dir", evolution_infra.get_bot_dir)
+
+        fake_results = tmp_path / "results"
+        fake_results.mkdir()
+        monkeypatch.setattr(evolution_infra, "RESULTS_DIR", fake_results)
+        monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", fake_results / "pipeline_state.json")
+
+        monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 254)
+        monkeypatch.setattr(tool_gates, "find_current_v", lambda: 254)
+        monkeypatch.setattr(evolution_infra, "git_has_tag", lambda v: True)
+
+        assert evolution_infra.write_pipeline_checkpoint(next_v=265, source_v=254, stage="selected")
+
+        resp = client.post(
+            "/api/control/tool/prepare_next_gen",
+            json={"args": {"source_v": 254, "next_v": 255}},
+        )
+
+        assert resp.status_code == 200
+        result = json.loads(resp.json()["result"])
+        assert result["prepared"] is True
+        assert result["next_v"] == 265
+        assert result["source_v"] == 254
+        assert (fake_bots / "claude_v265").exists()
+        assert not (fake_bots / "claude_v255").exists()
+
+    def test_prepare_refuses_active_crossover_checkpoint(self, client, tmp_path, monkeypatch):
+        import evolution_infra
+        import tool_gates
+
+        fake_bots = tmp_path / "bots"
+        fake_bots.mkdir()
+        monkeypatch.setattr(evolution_infra, "BOTS_DIR", fake_bots)
+        monkeypatch.setattr(evolution_infra, "GRAVEYARD_DIR", fake_bots / "graveyard")
+        monkeypatch.setattr(tool_gates, "get_bot_dir", evolution_infra.get_bot_dir)
+
+        fake_results = tmp_path / "results"
+        fake_results.mkdir()
+        monkeypatch.setattr(evolution_infra, "RESULTS_DIR", fake_results)
+        monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", fake_results / "pipeline_state.json")
+
+        assert evolution_infra.write_pipeline_checkpoint(
+            next_v=266,
+            source_v=254,
+            stage="selected",
+            parent2_v=240,
+        )
+
+        resp = client.post(
+            "/api/control/tool/prepare_next_gen",
+            json={"args": {"source_v": 254, "next_v": 255}},
+        )
+
+        assert resp.status_code == 200
+        result = json.loads(resp.json()["result"])
+        assert result["blocked"] is True
+        assert result["next_tool"] == "run_crossover"
+        assert result["required_args"]["version"] == 266
+        assert not (fake_bots / "claude_v266").exists()
+
 
 class TestRunQualityGates:
     @pytest.mark.timeout(120)

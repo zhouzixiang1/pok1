@@ -69,3 +69,13 @@ def test_precommit_infra_stays_on_precommit_retry():
     assert next_tool_for_checkpoint(checkpoint) == "run_precommit_eval"
     blocked = generic_abandon_block(checkpoint, max_precommit_retries=3)
     assert blocked["next_tool"] == "run_precommit_eval"
+
+
+def test_selected_next_tool_distinguishes_master_and_crossover():
+    assert next_tool_for_checkpoint({"stage": "selected", "next_v": 265, "source_v": 254}) == "prepare_next_gen"
+    assert (
+        next_tool_for_checkpoint(
+            {"stage": "selected", "next_v": 266, "source_v": 254, "parent2_v": 240}
+        )
+        == "run_crossover"
+    )
