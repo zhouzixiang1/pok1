@@ -37,7 +37,7 @@ from claude_agent_sdk import (
     ClaudeSDKError,
 )
 from tools import evolution_server, inject_ui
-from llm_failure import is_llm_infra_error
+from llm_failure import is_llm_infra_error, is_shutdown_cancel_error as _is_shutdown_cancel_error
 from shutdown_manager import ShutdownManager
 from system_log import log_system_event, set_ui as set_system_log_ui
 import logging
@@ -53,16 +53,6 @@ SHUTDOWN_CANCEL_COST = -99998.0
 _INFRA_BLOCKER_REASONS_SET = frozenset({
     "match_timeout", "incomplete_or_timeout", "scheduler_error", "match_exception",
 })
-
-
-def _is_shutdown_cancel_error(e) -> bool:
-    """True when Claude exited because the orchestrator is already shutting down."""
-    err_str = str(e).lower()
-    return (
-        "exit code 143" in err_str
-        or "signal 15" in err_str
-        or "sigterm" in err_str
-    )
 
 
 def _is_cycle_infra_error(e, *, is_shutting_down: bool = False) -> bool:
@@ -1213,6 +1203,11 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
     from tools import inject_ui
     inject_ui(ui)
     set_system_log_ui(ui)
+    try:
+        from llm_query import set_shutdown_manager
+        set_shutdown_manager(shutdown_mgr)
+    except Exception:
+        pass
 
     os.makedirs(LOGS_DIR, exist_ok=True)
     _rotate_orchestrator_logs(LOGS_DIR)
@@ -1539,6 +1534,11 @@ async def run_orchestrator_cli(args, shutdown_mgr=None):
     # In CLI mode, inject None (uses ToolUI fallback)
     inject_ui(None)
     set_system_log_ui(None)
+    try:
+        from llm_query import set_shutdown_manager
+        set_shutdown_manager(shutdown_mgr)
+    except Exception:
+        pass
 
     try:
         if args.one_gen or args.dry_run:

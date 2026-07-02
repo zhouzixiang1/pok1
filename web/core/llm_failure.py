@@ -21,6 +21,16 @@ def is_success_error_result(exc) -> bool:
     return SUCCESS_ERROR_RESULT_TEXT in str(exc).lower()
 
 
+def is_shutdown_cancel_error(exc) -> bool:
+    """True when Claude exited because the host process is already shutting down."""
+    err_str = str(exc).lower()
+    return (
+        "exit code 143" in err_str
+        or "signal 15" in err_str
+        or "sigterm" in err_str
+    )
+
+
 def is_llm_infra_error(exc) -> bool:
     """True = LLM infrastructure error (retry/neutral/mark), not a real business failure.
 

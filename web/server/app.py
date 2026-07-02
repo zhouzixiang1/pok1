@@ -41,6 +41,11 @@ async def lifespan(app: FastAPI):
     from shutdown_manager import ShutdownManager
     shutdown_mgr = ShutdownManager(grace_period=15.0)
     app_state.set_shutdown_mgr(shutdown_mgr)
+    try:
+        from llm_query import set_shutdown_manager
+        set_shutdown_manager(shutdown_mgr)
+    except Exception:
+        pass
 
     if not app_state.try_set_running(True):
         web_ui.log_history("Orchestrator already running", "warn")

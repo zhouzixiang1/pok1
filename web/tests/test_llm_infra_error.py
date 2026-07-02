@@ -53,6 +53,12 @@ class TestIsLlmInfraError:
         from llm_failure import is_llm_infra_error
         assert is_llm_infra_error(KeyError("missing")) is False
 
+    def test_exit143_is_shutdown_cancel(self):
+        from llm_failure import is_shutdown_cancel_error
+        assert is_shutdown_cancel_error(Exception("Command failed with exit code 143")) is True
+        assert is_shutdown_cancel_error(Exception("terminated by signal 15")) is True
+        assert is_shutdown_cancel_error(Exception("bad value")) is False
+
     def test_infra_payload_has_marker_and_fields(self):
         from claude_agent_sdk import ClaudeSDKError
         from llm_failure import infra_payload

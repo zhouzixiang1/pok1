@@ -220,6 +220,11 @@ async def start_evolution():
     from shutdown_manager import ShutdownManager
     shutdown_mgr = ShutdownManager(grace_period=15.0)
     app_state.set_shutdown_mgr(shutdown_mgr)
+    try:
+        from llm_query import set_shutdown_manager
+        set_shutdown_manager(shutdown_mgr)
+    except Exception:
+        pass
 
     from orchestrator import orchestrator_loop
     task = asyncio.create_task(_run_with_cleanup(orchestrator_loop(
