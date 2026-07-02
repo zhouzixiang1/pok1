@@ -2636,11 +2636,11 @@ def _incremental_reset_next_dir(next_dir, source_dir):
     return preserved
 
 
-def _checkpoint_plan_with_tasks(ckpt, tasks):
+def _checkpoint_plan_with_tasks(ckpt, tasks, replace_existing_tasks=False):
     """Return a checkpoint master_plan that can resume the given worker tasks."""
     existing_plan = ckpt.get("master_plan") if ckpt else None
     if isinstance(existing_plan, dict):
-        if existing_plan.get("tasks"):
+        if existing_plan.get("tasks") and not replace_existing_tasks:
             return existing_plan
         return {**existing_plan, "tasks": tasks}
     return {"tasks": tasks}
@@ -2658,6 +2658,26 @@ def _task_matches_quality_blocker(task, blocker):
     if blocker == "position_semantics":
         return any(marker in text for marker in ("position_semantics", "dealer", "small blind", "big blind", "sb", "bb"))
     return False
+
+
+def _task_target_filenames(tasks):
+    files = set()
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            continue
+        for target in task.get("target_files", []) or []:
+            name = Path(str(target)).name
+            if name:
+                files.add(name)
+    return files
+
+
+def _quality_failure_target_files(ckpt, reviewer_feedback=""):
+    failures = _quality_failure_items(ckpt)
+    files = _extract_quality_failure_files(failures)
+    if not files and reviewer_feedback:
+        files = _extract_quality_failure_files([reviewer_feedback])
+    return set(files)
 
 
 def _quality_rework_skipper(next_dir, source_dir, next_v, source_v):
@@ -2854,6 +2874,8 @@ async def execute_workers(args):
     if not reviewer_feedback and ckpt.get("stage") in rework_stages:
         reviewer_feedback = _checkpoint_rework_feedback(ckpt)
 
+    replace_checkpoint_tasks = False
+
     # Fallback: if tasks not provided, load from checkpoint master_plan.
     # This happens when the orchestrator session is fresh (not resumed) and
     # the LLM doesn't have the task list in its conversation history.
@@ -2892,6 +2914,28 @@ async def execute_workers(args):
                 "source_v": source_v,
                 "stage": ckpt.get("stage"),
             })
+
+    if tasks and ckpt.get("stage") == "quality_failed":
+        failure_files = _quality_failure_target_files(ckpt, reviewer_feedback)
+        task_files = _task_target_filenames(tasks)
+        missing_files = sorted(failure_files - task_files)
+        if missing_files:
+            refreshed_tasks = _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback)
+            if refreshed_tasks:
+                tasks = refreshed_tasks
+                replace_checkpoint_tasks = True
+                log_system_event(
+                    "pipeline.workers_tasks_refreshed",
+                    "warn",
+                    f"Refreshed quality repair task(s) for v{next_v}; old task targets missed {missing_files}",
+                    {
+                        "next_v": next_v,
+                        "source_v": source_v,
+                        "missing_files": missing_files,
+                        "old_target_files": sorted(task_files),
+                        "new_target_files": refreshed_tasks[0].get("target_files", []),
+                    },
+                )
 
     # B6 (2026-06-30): redundant-call guard. execute_workers is NOT idempotent —
     # a redundant call (no reviewer_feedback) when workers already ran resets code
@@ -3076,7 +3120,9 @@ async def execute_workers(args):
         # Without this, a crash between code reset and worker execution would leave
         # the checkpoint at a stale stage (e.g. "reviewed" or "critic_checked")
         # while the actual code has been wiped back to source.
-        retry_plan = _checkpoint_plan_with_tasks(ckpt, tasks)
+        retry_plan = _checkpoint_plan_with_tasks(
+            ckpt, tasks, replace_existing_tasks=replace_checkpoint_tasks
+        )
         rework_plan_metadata = {
             "kind": rework_kind,
             "source_stage": ckpt.get("stage"),
@@ -3134,7 +3180,12 @@ async def execute_workers(args):
                 break  # One warning per task is sufficient
 
     if reviewer_feedback and rework_plan_metadata:
-        running_plan = _checkpoint_plan_with_tasks(ckpt, tasks) if ckpt else {"tasks": tasks}
+        running_plan = (
+            _checkpoint_plan_with_tasks(
+                ckpt, tasks, replace_existing_tasks=replace_checkpoint_tasks
+            )
+            if ckpt else {"tasks": tasks}
+        )
         running_plan = {**running_plan, "work_item": rework_plan_metadata}
         write_pipeline_checkpoint(next_v, source_v, "rework_running",
                                   master_plan=running_plan,
@@ -3202,7 +3253,12 @@ async def execute_workers(args):
     if success:
         # Preserve the master plan structure (with analysis) from checkpoint,
         # rather than replacing it with the raw tasks list
-        plan = _checkpoint_plan_with_tasks(ckpt, tasks) if ckpt else {"tasks": tasks}
+        plan = (
+            _checkpoint_plan_with_tasks(
+                ckpt, tasks, replace_existing_tasks=replace_checkpoint_tasks
+            )
+            if ckpt else {"tasks": tasks}
+        )
         if ckpt and ckpt.get("stage") in {"quality_failed", "precommit_failed", "repair_planned", "rework_running"}:
             existing_work = rework_plan_metadata or (
                 (ckpt.get("master_plan") or {}).get("work_item")
@@ -3224,7 +3280,12 @@ async def execute_workers(args):
         # Always set stage to 'master_planned' on failure — this clearly indicates
         # that workers need re-execution, rather than preserving a stale stage
         # from before the failure (e.g. "reviewed" or "critic_checked").
-        plan = _checkpoint_plan_with_tasks(ckpt, tasks) if ckpt else {"tasks": tasks}
+        plan = (
+            _checkpoint_plan_with_tasks(
+                ckpt, tasks, replace_existing_tasks=replace_checkpoint_tasks
+            )
+            if ckpt else {"tasks": tasks}
+        )
         if reviewer_feedback:
             existing_work = rework_plan_metadata or (
                 (ckpt.get("master_plan") or {}).get("work_item")
