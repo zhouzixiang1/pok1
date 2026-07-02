@@ -83,7 +83,22 @@ class TestDynamicTestSuite:
                 {
                     "id": "dynamic_001",
                     "description": "Test bluff doesn't fold nuts",
-                    "input": {"requests": [{"public_cards": [0, 4, 8], "my_cards": [0, 1]}], "responses": []},
+                    "input": {
+                        "my_id": 1,
+                        "dealer_id": 0,
+                        "num_players": 2,
+                        "my_chips": 19700,
+                        "my_cards": [0, 1],
+                        "public_cards": [0, 4, 8],
+                        "history": [
+                            {"round": 0, "player_id": 0, "action": 250, "action_type": "raise", "bet_amount": 150, "round_bet": 250},
+                            {"round": 0, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 250},
+                        ],
+                        "hand": 0,
+                        "max_hand": 70,
+                        "total_win_chips": [0, 0],
+                        "total_win_games": [0, 0],
+                    },
                     "expected_actions": ["call", "raise"],
                     "forbidden_actions": ["fold"],
                     "rationale": "Worker added bluff logic",

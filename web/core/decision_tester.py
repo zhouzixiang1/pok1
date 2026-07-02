@@ -93,6 +93,138 @@ def audit_action_grounding(action, category, scenario):
     return failures
 
 
+def _current_betting_round(public_cards):
+    count = len(public_cards or [])
+    if count >= 5:
+        return 3
+    if count == 4:
+        return 2
+    if count >= 3:
+        return 1
+    return 0
+
+
+def _history_action_type(item):
+    action_type = str(item.get("action_type") or "").lower()
+    if action_type:
+        return action_type
+    action = item.get("action")
+    if action == -1:
+        return "fold"
+    if action == -2:
+        return "allin"
+    if action == 0:
+        return "call"
+    return "raise"
+
+
+def _history_raise_to(item):
+    for key in ("round_bet", "action"):
+        try:
+            value = int(item.get(key))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
+def audit_scenario_legality(scenario):
+    """Validate that a decision-test scenario describes a legal national spot."""
+    failures = []
+    input_data = scenario.get("input")
+    if not isinstance(input_data, dict):
+        return ["Scenario input must be a single request dict"]
+    if "requests" in input_data or "responses" in input_data:
+        return ["Scenario input must be a single request dict, not a full bot payload"]
+
+    try:
+        num_players = int(input_data.get("num_players", 2))
+        dealer_id = int(input_data.get("dealer_id", 0))
+        my_id = int(input_data.get("my_id", 0))
+    except (TypeError, ValueError):
+        return ["Scenario input has non-integer my_id/dealer_id/num_players"]
+    if num_players != 2:
+        return failures
+
+    sb_id = dealer_id
+    bb_id = 1 - dealer_id
+    current_round = _current_betting_round(input_data.get("public_cards") or [])
+    history = input_data.get("history") or []
+    if not isinstance(history, list):
+        return ["Scenario history must be a list"]
+
+    by_round = {}
+    last_raise_to = {}
+    seen_allin = False
+    for index, item in enumerate(history):
+        if not isinstance(item, dict):
+            failures.append(f"History item {index} must be an object")
+            continue
+        try:
+            round_id = int(item.get("round", 0))
+            player_id = int(item.get("player_id"))
+        except (TypeError, ValueError):
+            failures.append(f"History item {index} has invalid round/player_id")
+            continue
+        if round_id > current_round:
+            failures.append(f"History item {index} is from future round {round_id}")
+        action_type = _history_action_type(item)
+        by_round.setdefault(round_id, []).append((index, player_id, action_type, item))
+
+        if seen_allin and action_type not in {"call", "fold"}:
+            failures.append("After all-in, later history actions must be call or fold")
+        if action_type == "allin":
+            if seen_allin:
+                failures.append("Consecutive all-in actions are illegal")
+            seen_allin = True
+
+        if action_type == "raise":
+            raise_to = _history_raise_to(item)
+            previous = last_raise_to.get(round_id)
+            if raise_to is not None and previous is not None and raise_to <= 2 * previous:
+                failures.append(
+                    f"Round {round_id} re-raise-to {raise_to} must be strictly greater than 2x previous {previous}"
+                )
+            if raise_to is not None:
+                last_raise_to[round_id] = raise_to
+        elif round_id not in last_raise_to:
+            last_raise_to.setdefault(round_id, None)
+
+    preflop = by_round.get(0, [])
+    if len(preflop) >= 2:
+        _, first_player, first_action, _ = preflop[0]
+        _, second_player, second_action, _ = preflop[1]
+        if (
+            first_player == sb_id
+            and first_action in {"call", "check"}
+            and second_player == bb_id
+            and second_action == "call"
+        ):
+            failures.append("Preflop BB pass after SB limp must be check, not call")
+
+    if current_round > 0 and not by_round.get(current_round) and my_id != bb_id:
+        failures.append("Postflop first action must belong to BB/OOP")
+
+    for round_id, actions in by_round.items():
+        if round_id <= 0:
+            continue
+        first_index, first_player, first_action, _ = actions[0]
+        if first_player != bb_id:
+            failures.append(
+                f"Round {round_id} first postflop action must be BB/OOP; item {first_index} used player {first_player}"
+            )
+        if first_action == "call":
+            failures.append(f"Round {round_id} first postflop action cannot be call")
+        for item_index, _, action_type, _ in actions[1:]:
+            if action_type == "check":
+                failures.append(
+                    f"Round {round_id} item {item_index} uses check after action started; pass with call"
+                )
+
+    return failures
+
+
 # ──────────────────────────────────────────────
 # Dynamic Regression Test Generation (B3)
 # ──────────────────────────────────────────────
@@ -305,16 +437,38 @@ def load_dynamic_scenarios():
         with locked_file(DYNAMIC_SCENARIOS_FILE, "r") as f:
             data = json.load(f)
         if isinstance(data, list):
-            return data
+            return filter_national_legal_dynamic_scenarios(data, source="load")
     except (json.JSONDecodeError, OSError) as e:
         log.warning("Failed to load dynamic scenarios: %s", e)
     return []
+
+
+def filter_national_legal_dynamic_scenarios(scenarios, source="dynamic"):
+    """Return only dynamic scenarios whose histories match national rules."""
+    valid = []
+    dropped = []
+    for scenario in scenarios or []:
+        errors = audit_scenario_legality(scenario)
+        if errors:
+            dropped.append((scenario.get("id", "<missing-id>"), errors[:2]))
+            continue
+        valid.append(scenario)
+    if dropped:
+        preview = "; ".join(f"{sid}: {', '.join(errors)}" for sid, errors in dropped[:5])
+        log.warning(
+            "Dropped %d invalid %s dynamic scenario(s): %s",
+            len(dropped),
+            source,
+            preview,
+        )
+    return valid
 
 
 def save_dynamic_scenarios(scenarios):
     """Save dynamic scenarios to JSON file. Keeps at most MAX_DYNAMIC_SCENARIOS."""
     if not scenarios:
         return
+    scenarios = filter_national_legal_dynamic_scenarios(scenarios, source="save")
     # Cap at max
     scenarios = scenarios[-MAX_DYNAMIC_SCENARIOS:]
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -331,6 +485,12 @@ def merge_dynamic_scenarios(base_scenarios, dynamic_scenarios):
     Deduplicates by id: if a dynamic scenario has the same id as a base scenario,
     the dynamic one replaces it. Otherwise dynamic are appended.
     """
+    if not dynamic_scenarios:
+        return base_scenarios
+    dynamic_scenarios = filter_national_legal_dynamic_scenarios(
+        dynamic_scenarios,
+        source="merge",
+    )
     if not dynamic_scenarios:
         return base_scenarios
     base_ids = {s.get("id") for s in base_scenarios}
@@ -580,6 +740,10 @@ def _infer_template_from_condition(condition):
 
 def run_single_scenario(bot_path, scenario):
     """Run a bot against a single scenario. Returns (passed, details)."""
+    scenario_failures = audit_scenario_legality(scenario)
+    if scenario_failures:
+        return False, "Invalid scenario: " + "; ".join(scenario_failures)
+
     # Build the payload the bot expects
     payload = {
         "requests": [scenario["input"]],

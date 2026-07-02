@@ -231,6 +231,29 @@ class TestGenerateScenariosFromDiff:
 
 # ── load/save/merge dynamic scenarios ─────────────────────────────────────────
 
+def _valid_dynamic_scenario(scenario_id):
+    return {
+        "id": scenario_id,
+        "description": f"Scenario {scenario_id}",
+        "input": {
+            "my_id": 1,
+            "dealer_id": 0,
+            "num_players": 2,
+            "my_chips": 19700,
+            "my_cards": [44, 40],
+            "public_cards": [40, 20, 4],
+            "history": [
+                {"round": 0, "player_id": 0, "action": 250, "action_type": "raise", "bet_amount": 150, "round_bet": 250},
+                {"round": 0, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 250},
+            ],
+            "hand": 0,
+            "max_hand": 70,
+            "total_win_chips": [0, 0],
+            "total_win_games": [0, 0],
+        },
+    }
+
+
 class TestDynamicScenarioPersistence:
     def test_save_and_load(self, tmp_path, monkeypatch):
         from decision_tester import save_dynamic_scenarios, load_dynamic_scenarios
@@ -238,10 +261,7 @@ class TestDynamicScenarioPersistence:
         monkeypatch.setattr(decision_tester, "DYNAMIC_SCENARIOS_FILE", tmp_path / "dyn.json")
         monkeypatch.setattr(decision_tester, "RESULTS_DIR", tmp_path)
 
-        scenarios = [
-            {"id": "test_1", "description": "Test scenario 1"},
-            {"id": "test_2", "description": "Test scenario 2"},
-        ]
+        scenarios = [_valid_dynamic_scenario("test_1"), _valid_dynamic_scenario("test_2")]
         save_dynamic_scenarios(scenarios)
         loaded = load_dynamic_scenarios()
         assert len(loaded) == 2
@@ -261,6 +281,20 @@ class TestDynamicScenarioPersistence:
         monkeypatch.setattr(decision_tester, "DYNAMIC_SCENARIOS_FILE", f)
         assert load_dynamic_scenarios() == []
 
+    def test_load_filters_invalid_national_scenarios(self, tmp_path, monkeypatch):
+        import decision_tester
+        from decision_tester import load_dynamic_scenarios
+        f = tmp_path / "dyn.json"
+        invalid = _valid_dynamic_scenario("bad_old_order")
+        invalid["input"]["my_id"] = 0
+        invalid["input"]["history"] = invalid["input"]["history"][:2]
+        f.write_text(json.dumps([_valid_dynamic_scenario("ok"), invalid]), encoding="utf-8")
+        monkeypatch.setattr(decision_tester, "DYNAMIC_SCENARIOS_FILE", f)
+
+        loaded = load_dynamic_scenarios()
+
+        assert [row["id"] for row in loaded] == ["ok"]
+
     def test_max_100_scenarios(self, tmp_path, monkeypatch):
         import decision_tester
         from decision_tester import save_dynamic_scenarios, load_dynamic_scenarios
@@ -268,7 +302,7 @@ class TestDynamicScenarioPersistence:
         monkeypatch.setattr(decision_tester, "RESULTS_DIR", tmp_path)
 
         # Create 150 scenarios — should be trimmed to 100
-        scenarios = [{"id": f"s_{i}", "description": f"Scenario {i}"} for i in range(150)]
+        scenarios = [_valid_dynamic_scenario(f"s_{i}") for i in range(150)]
         save_dynamic_scenarios(scenarios)
         loaded = load_dynamic_scenarios()
         assert len(loaded) == 100
@@ -279,7 +313,7 @@ class TestDynamicScenarioPersistence:
     def test_merge_deduplicates(self):
         from decision_tester import merge_dynamic_scenarios
         base = [{"id": "a"}, {"id": "b"}]
-        dynamic = [{"id": "b", "new": True}, {"id": "c"}]
+        dynamic = [_valid_dynamic_scenario("b"), _valid_dynamic_scenario("c")]
         merged = merge_dynamic_scenarios(base, dynamic)
         # "b" is already in base, so dynamic "b" is NOT appended (base wins)
         # "c" is new, so it gets appended
@@ -391,6 +425,17 @@ class TestScenarioCompatibility:
         assert classify_action(0) == "call"
         assert classify_action(-2) == "allin"
         assert classify_action(100) == "raise"
+
+    def test_dynamic_schema_rejects_full_payload_input(self):
+        from pydantic import ValidationError
+        from output_schema import DynamicTestScenario
+
+        with pytest.raises(ValidationError):
+            DynamicTestScenario(
+                id="dynamic_bad_payload",
+                description="Bad dynamic payload shape",
+                input={"requests": [{"my_id": 0}], "responses": []},
+            )
 
     def test_template_scenarios_have_valid_structure(self):
         from decision_tester import TEMPLATE_SCENARIOS

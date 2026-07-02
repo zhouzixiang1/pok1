@@ -999,6 +999,12 @@ PYEOF
         "cp bots/claude_v240/*.py bots/claude_v234/ && "
         "ls bots/claude_v234/ 2>&1"
     )
+    copy_parent_multiline_with_comment = """mkdir -p bots/claude_v234
+# Copy parent code into the allowed child bot directory.
+cp bots/claude_v240/*.py bots/claude_v234/
+ls bots/claude_v234/
+wc -l bots/claude_v234/strategy.py
+"""
     copy_parent_files_into_allowed = (
         "cp bots/claude_v240/main.py bots/claude_v240/strategy.py "
         "bots/claude_v234/"
@@ -1048,6 +1054,7 @@ PYEOF
     assert llm_query._subagent_bash_mutation_detector(write_patch) == "bash_pattern:patch"
     assert llm_query._subagent_bash_is_mutation(copy_parent_into_allowed) is True
     assert llm_query._subagent_bash_write_scope_violation(copy_parent_into_allowed, allowed) is None
+    assert llm_query._subagent_bash_write_scope_violation(copy_parent_multiline_with_comment, allowed) is None
     assert llm_query._subagent_bash_write_scope_violation(copy_parent_files_into_allowed, allowed) is None
     assert llm_query._subagent_bash_write_scope_violation(redirect_allowed, allowed) is None
     assert llm_query._subagent_bash_write_scope_violation(rm_allowed, allowed) is None

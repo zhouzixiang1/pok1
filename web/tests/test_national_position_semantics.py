@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from core import decision_tester
@@ -55,3 +56,48 @@ def test_prompts_do_not_claim_bb_is_postflop_in_position():
     text = "\n".join(path.read_text(encoding="utf-8") for path in root.glob("*.md"))
     assert "BB postflop in-position" not in text
     assert "SB acts first every street" not in text
+
+
+def test_static_decision_scenarios_are_national_legal():
+    scenarios = json.loads(decision_tester.SCENARIOS_FILE.read_text(encoding="utf-8"))
+    invalid = {
+        scenario["id"]: decision_tester.audit_scenario_legality(scenario)
+        for scenario in scenarios
+        if decision_tester.audit_scenario_legality(scenario)
+    }
+    assert invalid == {}
+
+
+def test_scenario_legality_rejects_old_sb_first_postflop_order():
+    scenario = {
+        "id": "old_sb_first",
+        "input": {
+            "my_id": 0,
+            "dealer_id": 0,
+            "num_players": 2,
+            "my_chips": 19700,
+            "my_cards": [48, 49],
+            "public_cards": [50, 4, 12],
+            "history": [
+                {"round": 0, "player_id": 0, "action": 250, "action_type": "raise", "bet_amount": 150, "round_bet": 250},
+                {"round": 0, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 250},
+            ],
+            "hand": 0,
+            "max_hand": 70,
+            "total_win_chips": [0, 0],
+            "total_win_games": [0, 0],
+        },
+    }
+
+    errors = decision_tester.audit_scenario_legality(scenario)
+    assert any("Postflop first action must belong to BB/OOP" in err for err in errors)
+
+
+def test_scenario_legality_rejects_nested_dynamic_payload():
+    scenario = {
+        "id": "bad_dynamic_shape",
+        "input": {"requests": [{"my_id": 0}], "responses": []},
+    }
+
+    errors = decision_tester.audit_scenario_legality(scenario)
+    assert errors == ["Scenario input must be a single request dict, not a full bot payload"]
