@@ -176,6 +176,24 @@ def handle_signal(signum, frame):
     running = False
 
 
+def _handle_pool_break_for_shutdown(exc):
+    """Return True when a pool break is an expected side-effect of shutdown."""
+    if running:
+        return False
+    msg = f"ProcessPool interrupted during daemon shutdown; skipping recovery: {exc}"
+    log.info(msg)
+    try:
+        log_system_event(
+            "daemon.pool_shutdown_interrupt",
+            "info",
+            "ProcessPool interrupted during daemon shutdown; skipping recovery",
+            {"error": str(exc)[:500]},
+        )
+    except Exception:
+        pass
+    return True
+
+
 def bot_path(bot_name):
     return str(BOTS_DIR / bot_name / "main.py")
 
@@ -1544,6 +1562,14 @@ def main():
                 break  # normal exit from inner while
 
             except (BrokenProcessPool, ConnectionRefusedError, OSError) as e:
+                if _handle_pool_break_for_shutdown(e):
+                    for fut in list(in_flight):
+                        try:
+                            fut.cancel()
+                        except Exception:
+                            pass
+                    in_flight.clear()
+                    break
                 recovery_count += 1
                 log.error("ProcessPool broken (recovery %d/%d): %s", recovery_count, MAX_POOL_RECOVERIES, e)
                 # Write error results for any external jobs before clearing
