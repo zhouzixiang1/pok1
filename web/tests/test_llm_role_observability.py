@@ -567,6 +567,27 @@ def test_subagent_cost_guard_blocks_unbounded_git_history():
     ) is None
 
 
+def test_subagent_mutation_guard_allows_dev_null_in_command_substitution():
+    command = """cd bots && for f in main.py strategy.py; do
+  diff_lines=$(diff claude_v239/$f claude_v248/$f 2>/dev/null | wc -l)
+  v239_lines=$(wc -l < claude_v239/$f 2>/dev/null)
+  echo "$f: v239=${v239_lines}L diff=${diff_lines}"
+done"""
+
+    assert llm_query._subagent_bash_mutation_detector(command) is None
+    assert list(llm_query._iter_shell_write_redirect_targets(command)) == [
+        "/dev/null",
+        "/dev/null",
+    ]
+
+
+def test_subagent_mutation_guard_still_blocks_real_redirect():
+    assert (
+        llm_query._subagent_bash_mutation_detector("echo x > web/core/tmp.txt")
+        == "write_redirect:web/core/tmp.txt"
+    )
+
+
 def test_run_claude_query_downgrades_success_error_result_to_info(monkeypatch, tmp_path):
     events = []
 
