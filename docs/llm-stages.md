@@ -518,15 +518,15 @@ else:
 }
 ```
 
-**通过逻辑** (函数 `run_critic` 内): `score ≥ 6` 且 `approved == true`。当 LLM 输出省略 `approved` 字段时，自动推导 `approved = score >= 6`。
+**通过逻辑** (函数 `run_critic` 内): Critic 是策略审计和经验输入，不是最终回归门。`score ≥ 6` 且 `approved == true` 会记为 `advisory_approved=true`；否则记为 `advisory_approved=false` 并写入风险日志/经验材料。无论 advisory 结果如何，`approved` 对编排器返回为 `true`，checkpoint 推进到 `critic_checked`，最终是否能提交由 `run_precommit_eval` 的统计/语义 gate 决定。
 
-**⚠️ 重要**: `force_advance=true` 时，即使 score < 6，也会写入 `critic_checked` checkpoint（用于耗尽重试后推进，避免重启时无限重试）。`commit_bot` 允许 `force_advanced` 状态下的提交（其他 gate 仍须通过）。
+**⚠️ 重要**: `force_advance` 仅作为历史兼容字段保留。当前正常路径不靠 critic rejection 触发 worker 重试，也不靠 critic 分数阻塞提交；critic 反馈进入后续经验/提示上下文，precommit 才是最终提交许可。
 
 **输出去向**:
 - 返回给 Orchestrator LLM
 - `action: "approve"` → 写入 checkpoint `stage="critic_checked"` + gate `critic`
-- `action: "retry_workers"` → Orchestrator 注入 critic feedback 重试 workers（计入 `intra_gen_attempts`，最多 2 次）
-- `action: "force_commit"` → `force_advance=true` 时强制推进 checkpoint（但不是提交许可）
+- `advisory_approved=false` → 记录风险事件和 critic feedback，作为下一代/后续工具的输入信号
+- `run_precommit_eval` → 真正决定提交、重试 worker、重新规划或放弃
 
 > **💡 真实示例 (v10)**: Critic 独立评估 Crossover v4×v8 的策略价值，score=6（勉强通过）：
 > ```json
@@ -674,21 +674,27 @@ Phase 3 `post_generation_cleanup()`（仅在 cost ≥ 0 即成功或非 auth 错
 
 ## 三、重试与恢复流程
 
-### 3.1 代内重试循环（Critic 驱动）
+### 3.1 代内重试循环（Checkpoint/工具指令驱动）
 
-由 Orchestrator LLM 手动管理（非自动），规则来自 `prompts/orchestrator.md`：
+由 Orchestrator LLM 按 checkpoint 和工具返回字段执行，规则来自 `prompts/orchestrator.md`。不要让 LLM 自己维护私有计数器；权威字段是 `generation_attempt`、`worker_failure_count`、`precommit_attempt`、`action`、`directive`、`circuit_breaker`、`require_new_plan`。
 
 ```
-intra_gen_attempts = 0
+Master 失败:
+  └── 按 run_master 返回的 retry/abandon 指令处理
 
-Critic 返回 score < 6:
-  └── intra_gen_attempts < 2 ?
-        ├── 是: intra_gen_attempts++
-        │     注入 critic feedback 到 reviewer_feedback
-        │     重新调用 execute_workers (从源 bot 重新复制)
-        │     → run_quality_gates → run_review → run_critic (再次判断)
-        └── 否: force_advance=true 记录到 checkpoint
-              但不提交。返回 Master 重新规划 或 尝试 crossover
+Quality gates 失败:
+  └── 从 quality_failed checkpoint 按 blocker 反馈重试 workers；
+      只有工具明确要求重新规划/放弃时才回 Master 或 abandon_generation
+
+Review 拒绝:
+  └── 注入 reviewer feedback 重试 workers
+
+Critic 低分:
+  └── 不单独触发 worker 重试；继续 run_precommit_eval，
+      critic feedback 进入经验/后续提示
+
+Precommit 失败:
+  └── 按 blockers 和 tool directive 重试 workers、回 Master、或 abandon_generation
 ```
 
 ### 3.2 Worker 自修复
@@ -1195,7 +1201,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 - **所有 LLM 调用统一使用 Sonnet 模型**，通过 `claude_agent_sdk` 的 `query()` 函数
 - **API 限流 (529)**: `run_claude_query()` 内自动指数退避重试（30s → 60s → 120s）
 - **Prompt 预算**: `MAX_PROMPT_CHARS = 700_000`，超限时按文件均分压缩上下文
-- **MCP 工具**: 15 个工具注册在 `tools.py` 的 `mcp_tools` 列表中，通过 `create_sdk_mcp_server(name='evolution', tools=mcp_tools)` 暴露给 Orchestrator LLM。完整列表：`run_master`、`execute_workers`、`run_quality_gates`、`run_review`、`run_critic`、`run_precommit_eval`、`run_crossover`、`prepare_next_gen`、`run_direction_audit`、`commit_bot`、`run_archivist`、`get_bot_info`、`get_match_history`、`get_h2h`、`get_bot_stats`。工具来自 `tool_planning.py`（direction_audit, master, workers）、`tool_gates.py`（quality_gates, prepare_next_gen, review, critic）、`tool_eval.py`（precommit_eval, inline_eval）、`tool_commit.py`（commit, archivist）、`tool_status.py`（查询工具）。**注意**: `get_status`、`consolidate_experience`、`reap_weakest` 等工具仅在 `all_tools`（HTTP 端点 `/api/control/tool/`）中可用，不在 MCP 中。`consolidate_experience` 由 Phase 3 代码层直接调用，不经 MCP。
+- **MCP 工具**: 17 个工具注册在 `tools.py` 的 `mcp_tools` 列表中，通过 `create_sdk_mcp_server(name='evolution', tools=mcp_tools)` 暴露给 Orchestrator LLM。完整列表：`run_master`、`execute_workers`、`run_quality_gates`、`run_review`、`run_critic`、`run_precommit_eval`、`run_crossover`、`prepare_next_gen`、`run_direction_audit`、`run_literature_probe`、`commit_bot`、`run_archivist`、`abandon_generation`、`get_bot_info`、`get_match_history`、`get_h2h`、`get_bot_stats`。工具来自 `tool_planning.py`（direction_audit, literature_probe, master, workers）、`tool_gates.py`（quality_gates, prepare_next_gen, review, critic）、`tool_eval.py`（precommit_eval, inline_eval）、`tool_commit.py`（commit, archivist, crossover）、`tool_bot_management.py`（abandon_generation）、`tool_status.py`（查询工具）。**注意**: `get_status`、`consolidate_experience`、`reap_weakest` 等工具仅在 `all_tools`（HTTP 端点 `/api/control/tool/`）中可用，不在 MCP 中。`consolidate_experience` 由 Phase 3 代码层直接调用，不经 MCP。
 - **子代理 MCP 屏蔽**: `_BLOCKED_MCP_TOOLS` 屏蔽以下外部工具（防止子代理访问网络）：
   - `mcp__web-reader__webReader`
   - `mcp__web-search-prime__web_search_prime`

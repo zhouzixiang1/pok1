@@ -93,6 +93,11 @@ def hash_changed_files(root: Path, changed_files: list[str]) -> str:
     return h.hexdigest()
 
 
+def _is_tuner_task(task: dict[str, Any]) -> bool:
+    role = str(task.get("role", "")).lower()
+    return "tuner" in role or "hyperparameter" in role
+
+
 def allowed_files_for_task(task: dict[str, Any], next_v: int | None = None) -> list[str]:
     allowed: set[str] = set()
     for key in ("target_files", "files_allowed"):
@@ -100,6 +105,8 @@ def allowed_files_for_task(task: dict[str, Any], next_v: int | None = None) -> l
             rel = _normalize_rel(item, next_v)
             if rel:
                 allowed.add(rel)
+    if _is_tuner_task(task):
+        allowed = {rel for rel in allowed if rel == "constants.py"}
     return sorted(allowed)
 
 

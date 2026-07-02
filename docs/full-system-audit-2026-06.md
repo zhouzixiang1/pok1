@@ -34,7 +34,7 @@
 |------|--------|----------|------|
 | A1 | "下注筹码量不得小于200"中的"下注筹码量"是 raise-to-total 还是增量？非法行为说明用"下注筹码量"措辞，补充说明明确为 raise-to-total。两处措辞不一致 | 非法行为说明 + 补充说明 | 低（补充说明已澄清） |
 | A2 | Preflop BB 在 SB call 后 raise，raise-to >= 200 是否指总阶段下注？根据补充说明示例，确认为 raise-to-total | 非法行为说明 | 低（已明确） |
-| A3 | **"一倍以上"是 >= 2x 还是 > 2x？** 补充说明示例用 raise 400 -> raise 801，暗示 >= 2x（含边界） | 非法行为说明 + 补充说明 | **中**（边界值影响验证逻辑） |
+| A3 | **"一倍以上"是 >= 2x 还是 > 2x？** 当前实现和回归测试按严格 `> 2x` 处理连续 re-raise；示例 `raise 400 -> raise 801` 也落在严格大于边界 | 非法行为说明 + 补充说明 | **中**（边界值影响验证逻辑） |
 | A4 | call 行为的阶段转换时机。补充说明说"call 行为则进入下一阶段"，但 preflop SB call 后 BB 仍需表态 | 补充说明 | 低（标准规则可推断） |
 | A5 | 通信协议中 `bet X` 格式的用途。平台发送 `bet X` 给引擎展示对手行为，但引擎不能发送 bet。协议不对称 | 通信协议 | 低（已理解） |
 | A6 | **allin vs raise 边界：下注量等于筹码量时必须 allin，但"下注量"是总阶段下注还是增量？** | 非法行为说明 | **中**（影响临界情况判定） |
@@ -68,7 +68,7 @@
 | C: Raise-to-total 语义 | bet>0 = raise-to-total | PASS |
 | C: Preflop 首 raise >= 200 | *2=200 | PASS |
 | C: Postflop 首 raise >= 100 | *2=100 | PASS |
-| C: Re-raise >= 2x | 正确 | PASS |
+| C: Re-raise strictly > 2x | 正确 | PASS |
 | D.1-D.13: 13条非法行为规则 | 全部正确实现 | PASS |
 | **Postflop pass after first check** | **按国赛 TCP 协议，postflop 首个玩家 check 后，第二个玩家必须用 `call` 过街；第二个 `check` 是非法 wire action** | **✅ 当前结论覆盖旧审计** |
 

@@ -35,7 +35,7 @@ def test_worker_boundary_rejects_undeclared_file_change(tmp_path):
 def test_candidate_scope_audit_uses_master_plan_targets():
     result = audit_changed_files_against_plan(
         ["strategy.py", "postflop.py"],
-        [{"target_files": ["strategy.py"], "files_allowed": ["postflop.py"]}],
+        [{"role": "Algorithmic Logic Architect", "target_files": ["strategy.py"], "files_allowed": ["postflop.py"]}],
         next_v=250,
     )
 
@@ -52,3 +52,19 @@ def test_candidate_scope_audit_rejects_unplanned_file():
 
     assert not result.passed
     assert result.violations == ["opponent.py: changed outside master plan target_files/files_allowed"]
+
+
+def test_tuner_files_allowed_cannot_expand_scope():
+    result = audit_changed_files_against_plan(
+        ["constants.py", "strategy.py"],
+        [{
+            "role": "Hyperparameter Tuner",
+            "target_files": ["constants.py"],
+            "files_allowed": ["strategy.py"],
+        }],
+        next_v=250,
+    )
+
+    assert not result.passed
+    assert result.allowed_files == ["constants.py"]
+    assert result.violations == ["strategy.py: changed outside master plan target_files/files_allowed"]

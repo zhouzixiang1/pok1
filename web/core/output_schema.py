@@ -185,6 +185,8 @@ class PrecommitSemanticResult(BaseModel):
     regression_semantics: str = "safe"  # clear_regression, marginal, safe, improvement
     recommended_action: str = "proceed"  # proceed, caution, block
     confidence: str = "medium"
+    data_quality: dict[str, object] = Field(default_factory=dict)
+    block_evidence: list[str] = Field(default_factory=list, max_length=5)
 
 
 class DegenerationDiagnosis(BaseModel):

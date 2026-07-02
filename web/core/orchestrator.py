@@ -43,6 +43,7 @@ from system_log import log_system_event, set_ui as set_system_log_ui
 import logging
 
 log = logging.getLogger("pok.orchestrator")
+SHUTDOWN_CANCEL_COST = -99998.0
 
 # Infra-only blocker reasons (mirrors tool_eval._INFRA_BLOCKER_REASONS). Used by
 # the timed_out handler to decide whether a precommit timeout was caused purely
@@ -54,10 +55,22 @@ _INFRA_BLOCKER_REASONS_SET = frozenset({
 })
 
 
-def _is_cycle_infra_error(e) -> bool:
+def _is_shutdown_cancel_error(e) -> bool:
+    """True when Claude exited because the orchestrator is already shutting down."""
+    err_str = str(e).lower()
+    return (
+        "exit code 143" in err_str
+        or "signal 15" in err_str
+        or "sigterm" in err_str
+    )
+
+
+def _is_cycle_infra_error(e, *, is_shutting_down: bool = False) -> bool:
     """Classify an orchestrator exception as LLM-infra (short -0.5 backoff) vs real
     business/auth failure. Type-based via is_llm_infra_error + keyword fallback for
     SDK ProcessError/exit-143 wrapping and signature field errors."""
+    if is_shutting_down and _is_shutdown_cancel_error(e):
+        return False
     err_str = str(e).lower()
     return (is_llm_infra_error(e)
             or "signature" in err_str
@@ -187,6 +200,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
     auth_error = False
     cycle_failed = False  # P1: generic-exception path must not return partial cost (fake success)
     infra_error = False  # P2: SDK signature/timeout/connection — distinct from real auth (-0.5 vs -1.0)
+    shutdown_cancelled = False
     # Snapshot sub-agent costs at start to compute delta on return.
     # ui.gen_cost_total tracks ALL sub-agent costs (Master, Workers, etc.)
     # via ui.update_cost() called from llm_query.py. The orchestrator's own
@@ -870,7 +884,18 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             # ConnectionError, OSError) — same classifier used by tool_gates/agent_review
             # for critic/reviewer infra short-circuit (commit 5c14d01). Keyword fallback
             # remains for defense-in-depth (older SDK error formats).
-            is_infra = isinstance(e, (_CostCapTripped, _OrchFirstActivityTimeout)) or _is_cycle_infra_error(e)
+            is_shutdown_cancel = (
+                shutdown_mgr is not None
+                and shutdown_mgr.is_shutting_down
+                and _is_shutdown_cancel_error(e)
+            )
+            is_infra = (
+                not is_shutdown_cancel
+                and (
+                    isinstance(e, (_CostCapTripped, _OrchFirstActivityTimeout))
+                    or _is_cycle_infra_error(e)
+                )
+            )
             # SDK streaming errors (missing 'signature' field on thinking blocks,
             # observed with claude_agent_sdk 0.2.91 + adaptive thinking) leave the
             # session broken — resuming replays into the same crash (the v84
@@ -878,7 +903,26 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
             # thinking so this no longer fires, but the guard prevents silent
             # recurrence if thinking is ever re-enabled or another SDK stream
             # error appears.
-            if is_infra:
+            if is_shutdown_cancel:
+                shutdown_cancelled = True
+                cycle_failed = False
+                if ui:
+                    ui.log_history(
+                        "[Orchestrator] Claude stream stopped during shutdown; session preserved for resume.",
+                        "warn",
+                    )
+                else:
+                    log.warning("Claude stream stopped during shutdown; session preserved for resume: %s", e)
+                try:
+                    log_system_event(
+                        "orchestrator.shutdown_cancelled",
+                        "info",
+                        "Claude stream stopped during orchestrator shutdown; session preserved",
+                        {"exception_type": type(e).__name__, "error": str(e)[:500]},
+                    )
+                except Exception:
+                    pass
+            elif is_infra:
                 infra_error = True  # ALSO set here — signature path must trigger -0.5 sentinel, not -1.0
                 _clear_orchestrator_session()
                 if ui:
@@ -903,7 +947,7 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                     ui.log_history(f"[Orchestrator] Error: {e}", "error")
                 else:
                     log.error("Error: %s", e)
-            lf.write(f"\n[ERROR] {e}\n")
+            lf.write(f"\n[{'SHUTDOWN_CANCELLED' if is_shutdown_cancel else 'ERROR'}] {e}\n")
 
     # Only clear session file on natural (non-error) cycle completion.
     # If killed, the session file remains so next startup can resume.
@@ -918,6 +962,9 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
     # (infra=-0.5 / generic=-1.0 / auth≤-1.5 三者互斥)。
     if auth_error:
         return -max(abs(total_cost), 1.0) - 0.5
+
+    if shutdown_cancelled:
+        return SHUTDOWN_CANCEL_COST
 
     # P1: a crashed cycle must NOT return partial cost > 0. orchestrator_loop's
     # `if cost >= 0` branch would treat it as success, run cleanup, and log
@@ -1322,6 +1369,14 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                 if ui:
                     ui.reset_gen_cost()
                 continue
+
+            if cost == SHUTDOWN_CANCEL_COST:
+                if ui:
+                    ui.log_history(
+                        "Orchestrator: shutdown cancellation observed; exiting loop without backoff.",
+                        "warn",
+                    )
+                break
 
             # Phase 3: Cleanup (idempotent) — after any successful generation
             if cost >= 0:

@@ -98,7 +98,10 @@ This keeps code-change verification inside the MCP gate rather than in ad hoc Ba
 
 <gate_requirements>
 Do NOT call `commit_bot()` unless ALL of these are satisfied:
-1. `run_direction_audit` was called
+1. Normal generation: `run_direction_audit` was called before `run_master`.
+   Crossover generation: `run_crossover` succeeded and placed the checkpoint at
+   `workers_done`; do NOT call `run_direction_audit`, `run_master`, or
+   `execute_workers` for that crossover child.
 2. `run_quality_gates` returned `all_passed: true` AND `critical_scenarios_passed: true`
 3. `run_review` returned `approved: true`
 4. `run_critic` was called and returned `approved: true` (critic is ADVISORY — score does NOT block; precommit is the final judge)
@@ -107,14 +110,19 @@ Do NOT call `commit_bot()` unless ALL of these are satisfied:
 </gate_requirements>
 
 <retry_rules>
-- Track `intra_gen_attempts` (start at 0)
+- Do NOT keep a private `intra_gen_attempts` counter in your reasoning. The checkpoint
+  and tool return fields are authoritative: `generation_attempt`,
+  `worker_failure_count`, `precommit_attempt`, `action`, `directive`,
+  `circuit_breaker`, and `require_new_plan`. Follow those fields exactly.
 - Master fails → retry at most 2 times total. If still failing, abandon this generation.
 - Quality gates fail → retry workers with the exact failure message; do NOT call `run_master` from `quality_failed` unless the tool explicitly says to abandon and start fresh.
 - Reviewer rejects → inject feedback, retry workers (counts toward attempts)
 - Critic score is ADVISORY ONLY: it does NOT block and does NOT force retry. Critic feedback + local_optima_warning are injected into the NEXT generation's worker prompt as improvement hints. ALWAYS proceed to run_precommit_eval regardless of critic score — precommit paired-bootstrap statistical gate is the sole regression gate.
 - Precommit fails → inject exact blocker, retry workers or return to Master
 - Workers produce zero code changes → retry workers with explicit feedback. If still zero changes after 2 retries, abandon this generation.
-- Total intra_gen_attempts must not exceed 4. If exhausted, abandon and start fresh.
+- Attempt exhaustion is decided by tool results and checkpoint counters, not by a
+  private local count. If a tool returns a hard-limit, circuit-breaker,
+  require-new-plan, or abandon directive, follow it.
 - Critic/Reviewer returning `llm_failed: true` → this is an LLM infrastructure crash, NOT a strategy/code rejection. Strictly follow the returned `action` field (`retry_critic` / `retry_review` / `abandon_cycle`). NEVER call `retry_workers` or `run_master` in response to an infra failure.
 </retry_rules>
 
@@ -130,6 +138,8 @@ Do NOT call `commit_bot()` unless ALL of these are satisfied:
 - Do not commit a bot that fails quality gates or has critical decision scenario failures
 - Do not skip code review or strategy critic
 - If 3 consecutive generations fail, pause and analyze with `get_h2h()` and `get_match_history()`
-- When retrying workers after critic rejection, pass the critic's `feedback` field **verbatim** as `reviewer_feedback` — do NOT paraphrase or summarize
+- Do not retry workers because of critic rejection alone. If a later tool directive
+  explicitly sends critic/precommit feedback into `execute_workers`, pass the exact
+  feedback field **verbatim** as `reviewer_feedback` — do NOT paraphrase or summarize.
 - Be concise in reasoning; briefly note each tool result; summarize outcome at end
 </safety_rules>

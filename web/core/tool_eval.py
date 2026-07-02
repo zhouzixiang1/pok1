@@ -1476,12 +1476,25 @@ async def run_precommit_eval(args):
         "ev_risk": ev_risk_payload,
     }
 
-    # P0-4: Semantic blocker — LLM detects regression patterns that numbers miss
+    # P0-4: Semantic blocker — LLM detects regression patterns that numbers miss.
+    # Because this is a hard commit blocker, require explicit evidence and high
+    # confidence. Otherwise keep the signal as a caution so the paired
+    # net-chips/statistical gate remains the primary final judge.
     if semantic_result and semantic_result.get("recommended_action") == "block":
-        blockers.append({
-            "reason": "semantic_regression",
-            "details": semantic_result.get("regression_semantics", "LLM detected regression pattern"),
-        })
+        block_evidence = semantic_result.get("block_evidence") or []
+        if semantic_result.get("confidence") == "high" and block_evidence:
+            blockers.append({
+                "reason": "semantic_regression",
+                "details": semantic_result.get("regression_semantics", "LLM detected regression pattern"),
+                "evidence": block_evidence[:5],
+            })
+        else:
+            log_system_event(
+                "pipeline.precommit_semantic_block_downgraded",
+                "warn",
+                f"Semantic block downgraded for v{v}: missing high confidence or block_evidence",
+                {"version": v, "semantic": semantic_result},
+            )
     elif semantic_result and semantic_result.get("recommended_action") == "caution":
         log_system_event("pipeline.precommit_caution", "warn",
                          f"Semantic caution for v{v}: {semantic_result.get('win_pattern_analysis', '')[:200]}",

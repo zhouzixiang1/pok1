@@ -682,6 +682,7 @@ def _validate_master_plan(plan, next_v=None, precomputed_exhausted_keywords=None
         errors.append(f"Too many tasks: {len(tasks)} > 3")
     for i, task in enumerate(tasks):
         targets = task.get("target_files", [])
+        files_allowed = task.get("files_allowed", []) or []
         if len(targets) > 3:
             errors.append(f"Task {i}: too many target_files ({len(targets)} > 3)")
         prompt = task.get("worker_prompt", "")
@@ -689,16 +690,21 @@ def _validate_master_plan(plan, next_v=None, precomputed_exhausted_keywords=None
             errors.append(f"Task {i}: worker_prompt too long ({len(prompt)} > 12000 chars)")
         role = str(task.get("role", ""))
         if normalize_worker_role(role) == "tuner":
-            # Tuners MUST only modify constants.py — error if target_files includes other files.
+            # Tuners MUST only modify constants.py — error if target_files or
+            # files_allowed includes other files. files_allowed is an expansion
+            # of the writable boundary, so accepting non-constants there would
+            # bypass the Tuner contract even when target_files is clean.
             # This prevents the shared-file boundary validation false positive (Bug 1)
             # where two workers target the same file, causing all changes to be incorrectly
             # reverted as a Tuner boundary violation.
             tuner_only_files = {"constants.py"}
-            non_tuner_files = [t for t in targets if Path(t).name not in tuner_only_files]
+            declared_files = list(targets) + list(files_allowed)
+            non_tuner_files = [t for t in declared_files if Path(str(t)).name not in tuner_only_files]
             if non_tuner_files:
                 errors.append(
-                    f"Task {i}: Hyperparameter Tuner targets non-constants file(s) {non_tuner_files}. "
-                    f"Tuners MUST only modify constants.py. Assign {non_tuner_files} to a Logic Architect task."
+                    f"Task {i}: Hyperparameter Tuner declares non-constants file(s) {non_tuner_files} "
+                    f"in target_files/files_allowed. Tuners MUST only modify constants.py. "
+                    f"Assign {non_tuner_files} to a Logic Architect task."
                 )
             prompt_lower = prompt.lower()
             # Skip structural keywords that appear in constraint/negative contexts
