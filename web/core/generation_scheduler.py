@@ -583,6 +583,40 @@ def _log_source_selection_decision(trigger, selected_v, current_v, combined=None
         pass
 
 
+def _active_source_versions() -> set[int]:
+    """Return active source versions backed by normal completion discovery."""
+    try:
+        from evolution_infra import get_active_bots
+        versions = set()
+        for bot_name in get_active_bots():
+            version = _parse_branch_from(bot_name)
+            if version is not None:
+                versions.add(version)
+        return versions
+    except Exception:
+        return set()
+
+
+def _log_source_selection_rejected(trigger, requested_v, current_v, reason, combined=None):
+    try:
+        log_system_event(
+            "pipeline.source_selection_rejected",
+            "warn",
+            f"Rejected source selected by {trigger}: v{requested_v} ({reason}); latest v{current_v} remains fallback",
+            {
+                "trigger": trigger,
+                "requested_source_v": requested_v,
+                "current_v": current_v,
+                "reason": reason,
+                "llm_recommended_source": (combined or {}).get("recommended_source"),
+                "branch_from": (combined or {}).get("branch_from"),
+                "source_rationale": (combined or {}).get("source_rationale"),
+            },
+        )
+    except Exception:
+        pass
+
+
 def _decide_strategy(combined, current_v, ratings):
     """Deterministic strategy selection based on combined analysis results.
 
@@ -761,23 +795,29 @@ def _decide_strategy(combined, current_v, ratings):
     if rec_source:
         rec_v = _parse_branch_from(rec_source)
         if rec_v is not None and rec_v >= 1:
-            from evolution_infra import get_active_bots, get_bot_dir
-            # Only accept active bots (not graveyard) as evolution source
-            active = get_active_bots()
-            if f"claude_v{rec_v}" in active:
+            # Only accept active bots (not graveyard and not uncommitted
+            # directories) as an evolution source.
+            if rec_v in _active_source_versions():
                 if rec_v != current_v:
                     rationale = combined.get("source_rationale", "")
                     log.info("LLM recommended source: v%d (instead of latest v%d). %s",
                              rec_v, current_v, rationale[:200])
                 _log_source_selection_decision("llm_recommended_source", rec_v, current_v, combined)
                 return "master", rec_v, ()
+            _log_source_selection_rejected(
+                "llm_recommended_source", rec_v, current_v, "source_not_active", combined
+            )
 
     # Priority 3: Explicit branch recommendation
     if combined.get("recommendation") == "branch" and combined.get("branch_from"):
         branch_v = _parse_branch_from(combined["branch_from"])
         if branch_v is not None and branch_v >= 1:
-            _log_source_selection_decision("branch_recommendation", branch_v, current_v, combined)
-            return "master", branch_v, ()
+            if branch_v in _active_source_versions():
+                _log_source_selection_decision("branch_recommendation", branch_v, current_v, combined)
+                return "master", branch_v, ()
+            _log_source_selection_rejected(
+                "branch_recommendation", branch_v, current_v, "source_not_active", combined
+            )
 
     # Priority 4: Diversity injection
     if combined.get("diversity_needed"):

@@ -40,12 +40,35 @@ class TestDecideStrategy:
         assert strategy == "master"
         assert source_v == 40
 
-    def test_branch_recommendation(self):
+    def test_branch_recommendation(self, monkeypatch):
         from generation_scheduler import _decide_strategy
+        monkeypatch.setattr("generation_scheduler._active_source_versions", lambda: {20})
+        monkeypatch.setattr("generation_scheduler._detect_source_loop", lambda n=3: None)
+        monkeypatch.setattr("generation_scheduler._detect_source_oscillation", lambda *a, **kw: None)
         combined = {"recommendation": "branch", "branch_from": "20"}
         strategy, source_v, parents = _decide_strategy(combined, 30, {})
         assert strategy == "master"
         assert source_v == 20
+
+    def test_branch_recommendation_rejects_inactive_source(self, monkeypatch):
+        import generation_scheduler
+
+        events = []
+        monkeypatch.setattr(generation_scheduler, "_active_source_versions", lambda: {30})
+        monkeypatch.setattr(generation_scheduler, "_detect_source_loop", lambda n=3: None)
+        monkeypatch.setattr(generation_scheduler, "_detect_source_oscillation", lambda *a, **kw: None)
+        monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *args: events.append(args))
+
+        combined = {"recommendation": "branch", "branch_from": "20"}
+        strategy, source_v, parents = generation_scheduler._decide_strategy(combined, 30, {})
+
+        assert strategy == "master"
+        assert source_v == 30
+        assert parents == ()
+        assert events
+        assert events[0][0] == "pipeline.source_selection_rejected"
+        assert events[0][3]["trigger"] == "branch_recommendation"
+        assert events[0][3]["requested_source_v"] == 20
 
     def test_crossover_takes_priority_over_branch(self, monkeypatch):
         from generation_scheduler import _decide_strategy

@@ -306,6 +306,7 @@ Important current thresholds:
 - `run_quality_gates` also runs `sever/tests/test_national_alignment.py` so prompt/adapter/platform regressions are caught before bot commits.
 - Worker concurrency is capped by `MAX_PARALLEL_WORKERS = 3`, with adaptive throttling under API pressure.
 - `run_precommit_eval` is the final regression gate; critic is advisory in the current orchestrator prompt.
+- Source selection is owned by `generation_scheduler._decide_strategy`. LLM `recommended_source` and `branch_from` suggestions are accepted only when they point to an active bot backed by normal completion discovery (`.completed` plus `bot-v{N}` tag); rejected suggestions are logged as `pipeline.source_selection_rejected`.
 
 The daemon writes live data under `web/core/results/`, including Glicko ratings, H2H matrix, match history, replays, scheduler files, costs, and system events. These files are runtime data and are gitignored.
 
@@ -348,6 +349,7 @@ Evolution Glicko-2:
 - Defaults: `r=1500`, `rd=350`, `sigma=0.06`.
 - Conservative rating is `r - 2 * rd`.
 - The daemon maintains H2H and bot statistics in addition to ratings.
+- Reaping sorts by conservative Glicko rating as the primary cull key. Reap events include `selection_key=conservative_glicko`, `conservative_rating`, `leaderboard_score`, and `h2h_avg_wr` so logs show both the actual decision key and contextual matchup metrics.
 
 Quality and regression gates may include:
 

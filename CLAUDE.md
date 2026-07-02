@@ -370,6 +370,8 @@ After `allin` is called, the server runs out remaining public cards, records the
 - Bots: `bots/claude_v{N}/` (N monotonically increasing). Treat active evolved versions as non-continuous: the highest `claude_v*` directory is not necessarily completed, tagged, or committed.
 - Evolution-generated bot versions are complete only when the orchestrator `commit_bot` flow has passed gates, committed the bot, and created the annotated `bot-v{N}` tag.
 - Pool capped at 30 active; weakest culled by conservative Glicko score (`r - 2*rd`) to `bots/graveyard/`, with sample-starved bots protected until the hard overflow rules apply. H2H average win rate is reported as context, not the primary reap key.
+- Source selection is owned by `generation_scheduler._decide_strategy`. LLM `recommended_source` and `branch_from` suggestions are accepted only for active, completion-backed bots (`.completed` plus `bot-v{N}` tag); rejected suggestions emit `pipeline.source_selection_rejected`.
+- Reap logs and tool results include `selection_key=conservative_glicko`, `conservative_rating`, `leaderboard_score`, and `h2h_avg_wr` so the actual cull key is distinguishable from contextual H2H/leaderboard evidence.
 - Botzone game ID: `63dcfaddee1bce5e6c8f4b53`.
 
 ### Key Constants (evolution_infra.py)
