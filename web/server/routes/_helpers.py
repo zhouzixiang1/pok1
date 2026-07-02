@@ -25,16 +25,17 @@ def confidence(rd: float) -> str:
 
 def build_rating_row(name: str, r_data: dict, bot_stats: dict, h2h_data: dict) -> dict:
     r, rd = r_data["r"], r_data["rd"]
+    display_rd = round(rd, 1)
     bs = bot_stats.get(name, {})
     wr = h2h_winrate_for_bot(name, h2h_data)
     conservative = r - 2 * rd
     return {
         "name": name,
         "rating": round(r, 1),
-        "rd": round(rd, 1),
+        "rd": display_rd,
         "sigma": round(r_data.get("sigma", 0.06), 4),
         "conservative_rating": round(conservative, 1),
-        "confidence": confidence(rd),
+        "confidence": confidence(display_rd),
         "last_period": r_data.get("last_period", ""),
         "win_rate": bs.get("win_rate"),
         "games": bs.get("games", 0),
@@ -42,7 +43,7 @@ def build_rating_row(name: str, r_data: dict, bot_stats: dict, h2h_data: dict) -
         "h2h_source": "head_to_head",
         "leaderboard_score": round(max(0.0, min(1.0, 0.5 + (conservative - 1500) / 800)), 4),
         "rank_basis": "single_bot_detail",
-        "strength_confidence": confidence(rd),
+        "strength_confidence": confidence(display_rd),
     }
 
 

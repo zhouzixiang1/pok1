@@ -38,6 +38,7 @@ from evolution_infra import write_pipeline_checkpoint, MAX_PRECOMMIT_RETRIES
 from system_log import log_system_event
 from daemon_management import is_daemon_scheduler_capable
 from pipeline_schema import GateResult, ScoreCard
+from workflow_profiles import get_workflow_profile
 
 try:
     from candidate_store import append_candidate_event
@@ -573,6 +574,7 @@ async def run_precommit_eval(args):
     parent_name = f"claude_v{source_v}"
     candidate_main = _bot_main(candidate_name)
     candidate_id = f"{candidate_name}_from_v{source_v}"
+    workflow_profile = get_workflow_profile()
     if append_candidate_event:
         try:
             append_candidate_event(
@@ -580,7 +582,11 @@ async def run_precommit_eval(args):
                 version=v,
                 source_v=source_v,
                 candidate_id=candidate_id,
+                profile_id=workflow_profile.profile_id,
+                workflow_profile_id=workflow_profile.profile_id,
+                run_id=f"{v}#0",
                 stage="precommit_eval",
+                parent_ids=[f"claude_v{source_v}"],
                 gate="precommit_eval",
                 metrics={"n_games": n_games},
             )
@@ -1542,9 +1548,14 @@ async def run_precommit_eval(args):
                 version=v,
                 source_v=source_v,
                 candidate_id=candidate_id,
+                profile_id=workflow_profile.profile_id,
+                workflow_profile_id=workflow_profile.profile_id,
+                run_id=f"{v}#0",
                 stage="verified" if passed else "precommit_failed",
+                parent_ids=[f"claude_v{source_v}"],
                 gate="precommit_eval",
                 scorecard=scorecard,
+                gate_results=scorecard.gates,
                 metrics={
                     "passed": passed,
                     "total_wins": total_wins,

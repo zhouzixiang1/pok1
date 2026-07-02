@@ -1034,6 +1034,16 @@ def _git_ensure_main_branch():
     current = _git("rev-parse", "--abbrev-ref", "HEAD", check=False).strip()
     if current == EVOLUTION_BRANCH:
         return
+    try:
+        from system_log import log_system_event
+        log_system_event(
+            "repo.branch_correction",
+            "warn",
+            f"Git branch correction before evolution commit: {current} -> {EVOLUTION_BRANCH}",
+            {"current_branch": current, "target_branch": EVOLUTION_BRANCH},
+        )
+    except Exception:
+        pass
     if current == "HEAD":
         # Detached HEAD — reset to main
         log.warning("git: detached HEAD detected, resetting to %s", EVOLUTION_BRANCH)

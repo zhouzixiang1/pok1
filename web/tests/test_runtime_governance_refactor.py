@@ -282,6 +282,7 @@ def test_repo_state_log_emits_structured_event(monkeypatch):
     import repo_state
 
     events = []
+    monkeypatch.setattr(repo_state, "_LAST_SNAPSHOT", None)
     monkeypatch.setattr(repo_state, "git_worktree_snapshot", lambda: {"ok": True, "entries": []})
 
     import system_log
@@ -299,3 +300,50 @@ def test_repo_state_log_emits_structured_event(monkeypatch):
 
     assert payload["next_v"] == 300
     assert events == [("repo.worktree_snapshot", "info", "snapshot", payload)]
+
+
+def test_repo_state_delta_emits_branch_and_worktree_events(monkeypatch):
+    import repo_state
+
+    events = []
+    snapshots = iter([
+        {
+            "ok": True,
+            "branch": "main...origin/main",
+            "dirty_count": 0,
+            "untracked_count": 0,
+            "entry_count": 0,
+            "entries": [],
+        },
+        {
+            "ok": True,
+            "branch": "codex/refactor",
+            "dirty_count": 1,
+            "untracked_count": 1,
+            "entry_count": 2,
+            "entries": [" M web/core/tool_gates.py", "?? bots/claude_v251/"],
+        },
+    ])
+    monkeypatch.setattr(repo_state, "_LAST_SNAPSHOT", None)
+    monkeypatch.setattr(repo_state, "git_worktree_snapshot", lambda: next(snapshots))
+
+    import system_log
+
+    def _fake_log(event_type, severity, message, data):
+        events.append((event_type, severity, message, data))
+
+    monkeypatch.setattr(system_log, "log_system_event", _fake_log)
+
+    repo_state.log_git_worktree_snapshot("repo.worktree_snapshot", "before", emit_delta=True)
+    repo_state.log_git_worktree_snapshot("repo.worktree_snapshot", "after", emit_delta=True)
+
+    event_types = [event[0] for event in events]
+    assert "repo.worktree_baseline" in event_types
+    assert "repo.branch_changed" in event_types
+    assert "repo.worktree_changed" in event_types
+    branch_event = next(event for event in events if event[0] == "repo.branch_changed")
+    assert branch_event[3]["previous_branch"] == "main...origin/main"
+    assert branch_event[3]["current_branch"] == "codex/refactor"
+    worktree_event = next(event for event in events if event[0] == "repo.worktree_changed")
+    assert " M web/core/tool_gates.py" in worktree_event[3]["new_dirty_entries"]
+    assert "?? bots/claude_v251/" in worktree_event[3]["new_protected_entries"]

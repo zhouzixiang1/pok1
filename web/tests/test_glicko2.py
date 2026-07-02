@@ -317,6 +317,27 @@ class TestCrossoverParents:
         assert result is not None
         assert result == (5, 6)
 
+    def test_children_count_penalizes_overused_parent(self, monkeypatch):
+        from glicko2 import Glicko2Player
+
+        active = ["claude_v1", "claude_v2", "claude_v5"]
+        strength = {"claude_v1": 0.50, "claude_v2": 0.49, "claude_v5": 0.90}
+        ratings = {b: Glicko2Player() for b in active}
+
+        import generation_scheduler as gs
+        monkeypatch.setattr("evolution_infra.get_active_bots", lambda: active)
+        monkeypatch.setattr("tool_helpers.load_selection_scores", lambda: strength)
+
+        def _children(parent_id, **kwargs):
+            return 10 if parent_id == "claude_v5" else 0
+
+        monkeypatch.setattr("candidate_store.count_candidate_children", _children)
+
+        result = gs._pick_crossover_parents(ratings, 5)
+
+        assert result is not None
+        assert result[0] == 1
+
     def test_returns_none_single_bot(self, monkeypatch):
         import generation_scheduler as gs
         monkeypatch.setattr("evolution_infra.get_active_bots", lambda: ["claude_v1"])

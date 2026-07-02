@@ -1,7 +1,9 @@
 """Pydantic models for validating structured LLM output from each pipeline agent."""
 
 from typing import Optional
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from skill_library import valid_skill_layers
 
 
 class WorkerTask(BaseModel):
@@ -9,7 +11,7 @@ class WorkerTask(BaseModel):
     role: str = Field(description="Algorithmic Logic Architect, Hyperparameter Tuner, or Opponent Modeler")
     target_files: list[str] = Field(min_length=1)
     difficulty: str = "medium"
-    skill_layer: str = Field(default="", description="Primary strategy/protocol layer: preflop_range, texture, spr, blocker, line_template, protocol, adapter, telemetry, etc.")
+    skill_layer: str = Field(min_length=1, description="Primary strategy/protocol layer: preflop_range, texture, spr, blocker, line_template, protocol, adapter, telemetry, etc.")
     files_allowed: list[str] = Field(default_factory=list)
     prohibited_files: list[str] = Field(default_factory=list)
     expected_diff_shape: str = ""
@@ -17,6 +19,16 @@ class WorkerTask(BaseModel):
     checks_required: list[str] = Field(default_factory=list)
     merge_policy: str = "disjoint_target_files"
     worker_prompt: str = Field(min_length=20, description="Detailed instructions for this worker")
+
+    @field_validator("skill_layer")
+    @classmethod
+    def _known_skill_layer(cls, value: str) -> str:
+        layer = value.strip()
+        if layer not in valid_skill_layers():
+            raise ValueError(
+                f"Unknown skill_layer {value!r}; expected one of {sorted(valid_skill_layers())}"
+            )
+        return layer
 
 
 class MasterPlan(BaseModel):

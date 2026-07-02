@@ -14,6 +14,68 @@ from pydantic import BaseModel, Field
 
 
 GateStatus = Literal["passed", "failed", "skipped", "error"]
+StageStatus = Literal["pending", "running", "passed", "failed", "skipped", "error"]
+ArtifactKind = Literal["log", "json", "jsonl", "diff", "replay", "report", "workspace", "other"]
+EventSource = Literal["runtime", "test", "backfill"]
+
+
+class ArtifactRef(BaseModel):
+    """A durable artifact emitted by a stage or gate."""
+
+    kind: ArtifactKind = "other"
+    path: str
+    label: str = ""
+    sha256: str = ""
+    size_bytes: int | None = None
+    hidden: bool = False
+
+
+class PipelineEnvelope(BaseModel):
+    """Typed message envelope for agent, tool, and gate handoffs."""
+
+    message_type: str
+    stage: str = ""
+    candidate_id: str = ""
+    run_id: str = ""
+    source: str = "system"
+    payload: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[ArtifactRef] = Field(default_factory=list)
+    timestamp: float = Field(default_factory=time.time)
+
+
+class StageContract(BaseModel):
+    """Code-level contract for one pipeline stage."""
+
+    name: str
+    blocking: bool = True
+    retryable: bool = False
+    idempotency_key_fields: list[str] = Field(default_factory=lambda: ["candidate_id", "stage"])
+    required_inputs: list[str] = Field(default_factory=list)
+    expected_outputs: list[str] = Field(default_factory=list)
+    hard_gates: list[str] = Field(default_factory=list)
+    soft_gates: list[str] = Field(default_factory=list)
+
+
+class StageRunRecord(BaseModel):
+    """One execution attempt for a pipeline stage."""
+
+    candidate_id: str
+    stage: str
+    status: StageStatus
+    run_id: str = ""
+    attempt: int = 0
+    profile_id: str = "default"
+    prompt_profile_id: str = ""
+    model_id: str = ""
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    outputs: dict[str, Any] = Field(default_factory=dict)
+    gates: list["GateResult"] = Field(default_factory=list)
+    failure_class: str = ""
+    failures: list[str] = Field(default_factory=list)
+    artifacts: list[ArtifactRef] = Field(default_factory=list)
+    started_at: float = Field(default_factory=time.time)
+    finished_at: float | None = None
+    duration_sec: float = 0.0
 
 
 class GateResult(BaseModel):
@@ -106,18 +168,28 @@ class CandidateRecord(BaseModel):
 
     candidate_id: str
     event_type: str
+    event_source: EventSource = "runtime"
     version: int | None = None
     source_v: int | None = None
     profile_id: str = "default"
+    workflow_profile_id: str = ""
+    prompt_profile_id: str = ""
+    model_id: str = ""
+    run_id: str = ""
+    stage_attempt: int = 0
     stage: str = ""
     parent_ids: list[str] = Field(default_factory=list)
     changed_files: list[str] = Field(default_factory=list)
+    skill_layers: list[str] = Field(default_factory=list)
+    diff_hash: str = ""
     gate: str = ""
     scorecard: dict[str, Any] = Field(default_factory=dict)
+    gate_results: list[dict[str, Any]] = Field(default_factory=list)
     metrics: dict[str, Any] = Field(default_factory=dict)
     failures: list[str] = Field(default_factory=list)
     failure_class: str = ""
     artifacts: dict[str, Any] = Field(default_factory=dict)
+    artifact_refs: list[ArtifactRef] = Field(default_factory=list)
     timestamp: float = Field(default_factory=time.time)
 
 

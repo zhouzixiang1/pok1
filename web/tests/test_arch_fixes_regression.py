@@ -192,6 +192,7 @@ def _valid_task(**over):
         "worker_id": 1,
         "role": "Algorithmic Logic Architect",
         "target_files": ["strategy.py"],
+        "skill_layer": "spr",
         "worker_prompt": "make a focused structural change to strategy.py" * 3,
     }
     base.update(over)

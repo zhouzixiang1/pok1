@@ -330,13 +330,14 @@ def build_strength_rows(
         strength_conf = _strength_confidence(h2h_coverage_ratio, total_games, rd, opponents_total)
         selection_score, selection_penalty = _selection_score(score, strength_conf)
         conservative = r - 2 * rd
+        display_rd = round(rd, 1)
         row = {
             "name": name,
             "rating": round(r, 1),
-            "rd": round(rd, 1),
+            "rd": display_rd,
             "sigma": round(sigma, 4),
             "conservative_rating": round(conservative, 1),
-            "confidence": _confidence_label(rd),
+            "confidence": _confidence_label(display_rd),
             "last_period": last_period,
             "win_rate": stats_wr,
             "games": bs.get("games", 0) if isinstance(bs, dict) else 0,

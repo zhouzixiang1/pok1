@@ -40,6 +40,7 @@ from llm_failure import is_llm_infra_error, infra_payload
 import spot_analyzer
 from pipeline_schema import GateResult, ScoreCard
 from workflow_profiles import get_workflow_profile
+from worker_boundary import audit_changed_files_against_plan, hash_changed_files
 
 try:
     from candidate_store import append_candidate_event
@@ -148,7 +149,10 @@ async def run_quality_gates(args):
                 source_v=source_v,
                 candidate_id=candidate_id,
                 profile_id=workflow_profile.profile_id,
+                workflow_profile_id=workflow_profile.profile_id,
+                run_id=f"{v}#0",
                 stage="quality",
+                parent_ids=[f"claude_v{source_v}"] if source_v is not None else [],
             )
         except Exception as e:
             _log.warning("candidate ledger quality_started write failed: %s", e)
@@ -171,6 +175,52 @@ async def run_quality_gates(args):
                              f"Quality gates: v{v} is byte-for-byte identical to v{source_v} -- workers made zero changes",
                              {"version": v, "source_v": source_v})
     code_fingerprint = _bot_code_fingerprint(bot_dir)
+    diff_hash = hash_changed_files(bot_dir, changed_files_list) if changed_files_list else ""
+
+    declared_scope_ok = True
+    declared_scope_errors = []
+    declared_scope_metrics = {}
+    declared_skill_layers = []
+    _quality_ckpt_for_scope = _matching_checkpoint(v, source_v) if source_v is not None else _matching_checkpoint(v)
+    _master_plan_for_scope = (_quality_ckpt_for_scope or {}).get("master_plan", {})
+    _plan_tasks = _master_plan_for_scope.get("tasks", []) if isinstance(_master_plan_for_scope, dict) else []
+    if _plan_tasks and changed_files_list:
+        try:
+            declared_skill_layers = sorted({
+                str(task.get("skill_layer", "")).strip()
+                for task in _plan_tasks
+                if str(task.get("skill_layer", "")).strip()
+            })
+            _scope_audit = audit_changed_files_against_plan(
+                changed_files_list,
+                _plan_tasks,
+                next_v=v,
+            )
+            declared_scope_ok = _scope_audit.passed
+            declared_scope_errors = _scope_audit.violations
+            declared_scope_metrics = _scope_audit.to_gate_metrics()
+            if not declared_scope_ok:
+                log_system_event(
+                    "pipeline.declared_scope_failed",
+                    "error",
+                    f"Declared scope gate failed for v{v}: {len(declared_scope_errors)} undeclared file change(s)",
+                    {
+                        "version": v,
+                        "source_v": source_v,
+                        "changed_files": changed_files_list[:20],
+                        "allowed_files": _scope_audit.allowed_files[:30],
+                        "violations": declared_scope_errors[:10],
+                    },
+                )
+        except Exception as e:
+            declared_scope_ok = False
+            declared_scope_errors = [f"declared_scope_check_error: {type(e).__name__}: {str(e)[:200]}"]
+    elif changed_files_list:
+        declared_scope_metrics = {
+            "skipped": True,
+            "reason": "master_plan_tasks_unavailable",
+            "changed_files": changed_files_list[:20],
+        }
 
     def _quality_cache_current(gate):
         cached_fingerprint = gate.get("code_fingerprint")
@@ -473,6 +523,7 @@ async def run_quality_gates(args):
         decision_detail = run_decision_test_details(bot_dir, extra_scenarios=_all_dynamic or None)
     decision_rate = decision_detail.get("pass_rate", 0.0)
     decision_total = decision_detail.get("total", 0)
+    decision_skill_layers = decision_detail.get("skill_layers", {})
     critical_failures = decision_detail.get("critical_failures", [])
     critical_ok = len(critical_failures) == 0
     total_lines, oversized = check_code_size(bot_dir, source_dir=source_dir)
@@ -508,6 +559,7 @@ async def run_quality_gates(args):
         and decision_ok
         and len(oversized) == 0
         and code_changed  # MUST have at least one changed .py file
+        and declared_scope_ok  # worker/candidate diff must match declared target files
         and fix_ok  # P1-3: missing mandatory fix blocks the pipeline
         and telemetry_fidelity_ok  # M6: multi-arm detector telemetry must be function-scope (false-INERT prevention)
         and reachability_ok  # R1: newly-added helper code must be wired/called
@@ -538,6 +590,7 @@ async def run_quality_gates(args):
         "critical_failures": critical_failures,
         "decision_failures": decision_detail.get("failures", []),
         "scenario_results": decision_detail.get("scenarios", []),
+        "decision_skill_layers": decision_skill_layers,
         "dynamic_test_generation": dynamic_test_meta,
         "total_lines": total_lines,
         "oversized_files": {name: lines for name, lines, _ in oversized} if oversized else {},
@@ -557,6 +610,11 @@ async def run_quality_gates(args):
         "reachability_warnings": reachability_warnings,
         "reachability_ok": reachability_ok,
         "code_fingerprint": code_fingerprint,
+        "diff_hash": diff_hash,
+        "declared_scope_ok": declared_scope_ok,
+        "declared_scope_errors": declared_scope_errors[:10],
+        "declared_scope": declared_scope_metrics,
+        "skill_layers": declared_skill_layers,
     }
 
     # Build list of which specific gates failed (for diagnostics)
@@ -585,6 +643,8 @@ async def run_quality_gates(args):
         failed_gates_detail.append(f"decision_tests({decision_rate:.0%})")
     if not code_changed:
         failed_gates_detail.append(f"no_code_changes(v{v} identical to v{source_v})")
+    if not declared_scope_ok:
+        failed_gates_detail.append(f"declared_scope({'; '.join(declared_scope_errors[:3])})")
     if oversized:
         failed_gates_detail.append(f"file_size({', '.join(f'{n}:{l}L/{lim}L' for n, l, lim in oversized)})")
     if not fix_ok:
@@ -644,6 +704,11 @@ async def run_quality_gates(args):
         "oversized_files": result["oversized_files"],
         "code_changed": code_changed,
         "changed_files": changed_files_list[:20],
+        "declared_scope_ok": declared_scope_ok,
+        "declared_scope_errors": declared_scope_errors[:6],
+        "declared_scope": declared_scope_metrics,
+        "skill_layers": declared_skill_layers,
+        "diff_hash": diff_hash,
         "fix_ok": fix_ok,
         "placement_shadow_warnings": placement_shadow_warnings[:10],
         "placement_shadow_review_count": len([w for w in placement_shadow_warnings if "TRUE SHADOW" not in w]),
@@ -652,9 +717,16 @@ async def run_quality_gates(args):
         "reachability_warnings": reachability_warnings[:6],
         "code_fingerprint": code_fingerprint,
         "critical_failures": critical_failures[:3],
+        "decision_skill_layers": decision_skill_layers,
     }
     scorecard = ScoreCard(name="quality")
     scorecard.add(GateResult.from_bool("code_changed", code_changed, failures=[] if code_changed else ["bot code is byte-for-byte identical to source"]))
+    scorecard.add(GateResult.from_bool(
+        "declared_scope",
+        declared_scope_ok,
+        metrics=declared_scope_metrics,
+        failures=declared_scope_errors[:6],
+    ))
     scorecard.add(GateResult.from_bool("compile", len(compile_errors) == 0, failures=compile_errors[:3]))
     scorecard.add(GateResult.from_bool("runtime_import", len(import_errors) == 0, failures=[str(e) for e in import_errors[:3]]))
     scorecard.add(GateResult.from_bool("protected_contract", len(protected_contract_errors) == 0, failures=protected_contract_errors[:3]))
@@ -678,6 +750,7 @@ async def run_quality_gates(args):
         "decision",
         decision_ok,
         metrics={"pass_rate": round(decision_rate, 4), "total": decision_total},
+        artifacts={"skill_layers": decision_skill_layers} if decision_skill_layers else {},
         failures=[str(f)[:300] for f in (decision_detail.get("failures", []) or [])[:5]],
     ))
     scorecard.add(GateResult.from_bool("size", len(oversized) == 0, failures=[f"{n}:{l}/{lim}" for n, l, lim in oversized]))
@@ -723,14 +796,22 @@ async def run_quality_gates(args):
                 source_v=source_v,
                 candidate_id=candidate_id,
                 profile_id=workflow_profile.profile_id,
+                workflow_profile_id=workflow_profile.profile_id,
+                run_id=f"{v}#0",
                 stage="quality_passed" if all_passed else "quality_failed",
+                parent_ids=[f"claude_v{source_v}"] if source_v is not None else [],
                 changed_files=changed_files_list,
+                skill_layers=declared_skill_layers,
+                diff_hash=diff_hash,
                 gate="quality",
                 scorecard=scorecard,
+                gate_results=scorecard.gates,
                 metrics={
                     "all_passed": all_passed,
                     "decision_pass_rate": round(decision_rate, 4),
+                    "decision_skill_layers": decision_skill_layers,
                     "national_acceptance_ok": national_acceptance_ok,
+                    "declared_scope_ok": declared_scope_ok,
                 },
                 failures=failed_gates_detail if not all_passed else [],
                 failure_class="quality_gate" if not all_passed else "",
@@ -848,6 +929,18 @@ async def prepare_next_gen(args):
 
     log_system_event("pipeline.prepare_done", "info", f"Prepared v{next_v} from v{source_v}",
                      {"next_v": next_v, "source_v": source_v, "elapsed_sec": round(time.time() - _t0, 2)})
+    try:
+        from repo_state import log_git_worktree_snapshot
+        log_git_worktree_snapshot(
+            "repo.worktree_snapshot",
+            f"Worktree snapshot after preparing v{next_v}",
+            next_v=next_v,
+            source_v=source_v,
+            stage="prepared",
+            emit_delta=True,
+        )
+    except Exception:
+        pass
 
     return _json_tool_result({"prepared": True, "next_v": next_v, "source_v": source_v})
 
