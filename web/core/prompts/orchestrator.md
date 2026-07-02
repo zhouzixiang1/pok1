@@ -115,12 +115,14 @@ Do NOT call `commit_bot()` unless ALL of these are satisfied:
 </gate_requirements>
 
 <forward_only_guard>
-After a generation reaches `quality_passed`, `reviewed`, `critic_checked`, or
-`verified`, generic `abandon_generation` is invalid. Continue with the next
-state-machine tool instead: `quality_passed -> run_review`,
-`reviewed -> run_critic`, `critic_checked -> run_precommit_eval`,
-`verified -> commit_bot`. If the tool guard refuses abandon, follow its
-`next_tool`/`directive` exactly.
+After a generation reaches `quality_passed`, `reviewed`, `critic_checked`,
+`precommit_failed`, or `verified`, generic `abandon_generation` is invalid
+unless the latest tool result explicitly returned a hard-limit abandon intent.
+Continue with the next state-machine tool instead:
+`quality_passed -> run_review`, `reviewed -> run_critic`,
+`critic_checked -> run_precommit_eval`, `precommit_failed -> execute_workers`
+with exact precommit feedback, `verified -> commit_bot`. If the tool guard
+refuses abandon, follow its `next_tool`/`directive` exactly.
 </forward_only_guard>
 
 <retry_rules>
@@ -132,7 +134,10 @@ state-machine tool instead: `quality_passed -> run_review`,
 - Quality gates fail → retry workers with the exact failure message; do NOT call `run_master` from `quality_failed` unless the tool explicitly says to abandon and start fresh.
 - Reviewer rejects → inject feedback, retry workers (counts toward attempts)
 - Critic score is ADVISORY ONLY: it does NOT block and does NOT force retry. Critic feedback + local_optima_warning are injected into the NEXT generation's worker prompt as improvement hints. ALWAYS proceed to run_precommit_eval regardless of critic score — precommit paired-bootstrap statistical gate is the sole regression gate.
-- Precommit fails → inject exact blocker, retry workers or return to Master
+- Precommit regression fails → inject exact blocker and call `execute_workers`.
+  Do NOT retry `run_precommit_eval` on unchanged code, and do NOT abandon before
+  the precommit hard limit. Precommit infra-only timeout is different: follow
+  the tool intent and retry `run_precommit_eval`.
 - Workers produce zero code changes → retry workers with explicit feedback. If still zero changes after 2 retries, abandon this generation.
 - Attempt exhaustion is decided by tool results and checkpoint counters, not by a
   private local count. If a tool returns a hard-limit, circuit-breaker,

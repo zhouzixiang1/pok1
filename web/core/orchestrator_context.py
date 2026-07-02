@@ -12,6 +12,8 @@ import time
 from claude_agent_sdk.types import HookMatcher, SyncHookJSONOutput
 
 from evolution_infra import locked_file, RESULTS_DIR, MAX_PRECOMMIT_RETRIES
+from failure_classification import classify_precommit_gate
+from pipeline_state import NEXT_TOOL_BY_STAGE
 
 # Module-level cycle start time — set by orchestrator._run_one_cycle at cycle start,
 # read by _build_context and PreCompact hook for time-budget awareness.
@@ -407,6 +409,7 @@ STAGE_HINTS = {
     "quality_passed":    "Quality passed → call run_review",
     "reviewed":          "Review passed → call run_critic",
     "critic_checked":    "Critic done → call run_precommit_eval",
+    "precommit_failed":  "Precommit regression failed → call execute_workers with exact precommit feedback. Do NOT retry precommit on unchanged code.",
     "verified":          "Precommit eval passed → call commit_bot",
     "archived":          "Committed & archived — done",
     "timed_out":         "Previous cycle timed out and was discarded. Call prepare_next_gen to start a fresh generation. Do NOT attempt to resume timed-out work.",
@@ -425,6 +428,7 @@ STAGE_HINTS_COMPACT = {
     "quality_passed":    "run_review",
     "reviewed":          "run_critic",
     "critic_checked":    "run_precommit_eval",
+    "precommit_failed":  "execute_workers with exact precommit feedback",
     "verified":          "commit_bot",
     "archived":          "run_archivist",
 }
@@ -438,6 +442,10 @@ def _format_checkpoint_info(checkpoint, lines):
     """
     stage = checkpoint.get("stage", "unknown")
     hint = STAGE_HINTS.get(stage, "inspect checkpoint context and continue with the matching MCP pipeline tool")
+    if stage == "critic_checked":
+        precommit_gate = (checkpoint.get("gate_results") or {}).get("precommit_eval")
+        if classify_precommit_gate(precommit_gate) in {"regression", "failed_unknown"}:
+            hint = STAGE_HINTS["precommit_failed"]
     lines.append(
         f"\nPIPELINE CHECKPOINT: v{checkpoint['next_v']} (from v{checkpoint['source_v']}) "
         f"reached stage='{stage}'. Next step: {hint}."
@@ -455,6 +463,7 @@ def _format_checkpoint_info(checkpoint, lines):
     precommit_attempt = checkpoint.get("precommit_attempt", 0)
     if precommit_attempt > 0:
         precommit_gate = checkpoint.get("gate_results", {}).get("precommit_eval")
+        failure_class = classify_precommit_gate(precommit_gate)
         last_result = ""
         if precommit_gate is not None:
             _pw = precommit_gate.get("total_wins", 0)
@@ -464,12 +473,25 @@ def _format_checkpoint_info(checkpoint, lines):
             if _nopp is None:
                 _nopp = len(precommit_gate.get("opponents", []) or [])
             last_result = f"last: {_pw}W-{_pl}L-{_pd}D vs {_nopp} opps"
-        lines.append(
-            f"PRECOMMIT STATUS: {precommit_attempt}/{MAX_PRECOMMIT_RETRIES} attempts. "
-            f"{last_result}. Bot code is unchanged across attempts — retrying run_precommit_eval "
-            f"gives the SAME result. If failed, rework the bot (execute_workers) or abandon — "
-            f"do NOT loop on precommit."
-        )
+        if failure_class == "infra_timeout":
+            lines.append(
+                f"PRECOMMIT STATUS: {precommit_attempt}/{MAX_PRECOMMIT_RETRIES} attempts. "
+                f"{last_result}. Last failure was INFRASTRUCTURE-only; retry run_precommit_eval "
+                f"on the same code with the tool's reduced n_games policy."
+            )
+        elif failure_class in {"regression", "failed_unknown"}:
+            lines.append(
+                f"PRECOMMIT STATUS: {precommit_attempt}/{MAX_PRECOMMIT_RETRIES} attempts. "
+                f"{last_result}. Bot code is unchanged across attempts — retrying run_precommit_eval "
+                f"gives the SAME result. Rework the bot with execute_workers using the exact "
+                f"precommit feedback; do NOT abandon before the hard limit."
+            )
+        else:
+            lines.append(
+                f"PRECOMMIT STATUS: {precommit_attempt}/{MAX_PRECOMMIT_RETRIES} attempts. "
+                f"{last_result}. Follow the checkpoint stage next tool: "
+                f"{NEXT_TOOL_BY_STAGE.get(stage, 'inspect checkpoint')}."
+            )
         if precommit_attempt >= MAX_PRECOMMIT_RETRIES:
             lines.append("PRECOMMIT HARD LIMIT reached — abandon this generation.")
     last_update = checkpoint.get("last_update_ts")

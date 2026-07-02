@@ -15,6 +15,10 @@ unless the Master explicitly assigns a TCP-native bot task. Compatibility rules:
   `raise <amount>`; never output or depend on a `bet` action token.
 - National TCP uses 70 hands, 20000 reset chips, blinds 50/100. SB acts first
   preflop; BB acts first on flop/turn/river; roles alternate every hand.
+- Heads-up identity: `dealer_id` is SB and `bb = 1 - dealer_id`. Postflop BB is
+  out of position and acts first; SB/dealer is in position. Do not use old
+  formulas such as `sb = next_player(dealer_id, 1)` or
+  `bb = next_player(dealer_id, 2)`.
 - Raise rules from `sever/国赛平台/非法行为说明.docx`: first preflop raise-to
   must be >= 200, first postflop raise-to must be >= 100, and every re-raise
   must be strictly greater than 2x the previous raise-to (`prev * 2 + 1`

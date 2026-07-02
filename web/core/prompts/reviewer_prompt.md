@@ -31,6 +31,7 @@ wire-level `bet` is legal, or hard-codes postflop TCP `check-check` as a valid
 platform action. The adapter maps JSON `0` to TCP `call` after a postflop check.
 Full national legality checklist from `sever/国赛平台/非法行为说明.docx`:
 - 70 hands, 20000 reset chips, blinds 50/100; SB first preflop, BB first postflop.
+- Heads-up identity: dealer_id is SB, BB is 1 - dealer_id. SB/dealer is in position postflop; BB acts first postflop and is out of position.
 - Wire actions are only `raise <amount>`, `fold`, `call`, `check`, `allin`; `bet` is illegal.
 - First preflop raise-to must be >= 200; first postflop raise-to must be >= 100.
 - Every re-raise must be strictly greater than 2x the previous raise-to, so use `prev * 2 + 1` as the minimum.
