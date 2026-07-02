@@ -288,6 +288,19 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         return_exceptions=True,
     )
 
+    if isinstance(combined_result, asyncio.CancelledError) or isinstance(match_result, asyncio.CancelledError):
+        log_system_event(
+            "pipeline.prepare_llm_cancelled",
+            "info",
+            "Prepare-stage LLM analysis cancelled; prepare cycle will retry later",
+            {
+                "version": active_v,
+                "combined_cancelled": isinstance(combined_result, asyncio.CancelledError),
+                "match_cancelled": isinstance(match_result, asyncio.CancelledError),
+            },
+        )
+        return None
+
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         return None
 
