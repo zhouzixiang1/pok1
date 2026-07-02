@@ -6,6 +6,8 @@ def test_skill_library_describes_known_layers():
     layers = valid_skill_layers()
     assert "protocol" in layers
     assert "spr" in layers
+    assert "bb_vs_limp" in layers
+    assert "bb_vs_open" in layers
     text = describe_skill_layers(["protocol"])
     assert "Botzone JSON contract" in text
 
@@ -34,3 +36,19 @@ def test_action_grounding_rejects_illegal_raise_bounds():
 
 def test_action_grounding_allows_legacy_scenario_without_metadata():
     assert audit_action_grounding(0, "call", {}) == []
+
+
+def test_preflop_workflow_skill_layers_are_schema_valid():
+    from output_schema import WorkerTask
+    from workflow_profiles import get_workflow_profile
+
+    profile = get_workflow_profile("preflop_range")
+    for index, layer in enumerate(profile.focus_skill_layers, start=1):
+        task = WorkerTask(
+            worker_id=index,
+            role="Algorithmic Logic Architect",
+            target_files=["strategy.py"],
+            skill_layer=layer,
+            worker_prompt="Implement a focused preflop range change with tests.",
+        )
+        assert task.skill_layer == layer

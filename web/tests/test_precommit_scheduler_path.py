@@ -229,6 +229,12 @@ class TestSchedulerPathUsedWhenCapable:
         monkeypatch.setattr("tool_eval._record_gate", lambda *a, **k: True)
 
         serial_calls = []
+        events = []
+
+        def capture_event(event_type, level, message, extra=None):
+            events.append({"type": event_type, "level": level, "message": message, "extra": extra or {}})
+
+        monkeypatch.setattr("tool_eval.log_system_event", capture_event)
 
         def fake_mirror(a, b, n_games=1, verbose=False, save_log=False):
             serial_calls.append((a, b, n_games))
@@ -243,6 +249,13 @@ class TestSchedulerPathUsedWhenCapable:
         assert data["passed"] is True
         assert len(serial_calls) == 2
         assert len(data["matchups"]) == 2
+        event_types = [e["type"] for e in events]
+        assert event_types.count("pipeline.precommit_eval.fallback_match_start") == 2
+        assert event_types.count("pipeline.precommit_eval.fallback_match_done") == 2
+        assert {e["extra"]["opponent"] for e in events if e["type"].endswith("_match_done")} == {
+            "claude_v98",
+            "claude_v50",
+        }
 
     @pytest.mark.asyncio
     async def test_partial_results_fallback(

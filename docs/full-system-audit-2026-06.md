@@ -70,24 +70,24 @@
 | C: Postflop 首 raise >= 100 | *2=100 | PASS |
 | C: Re-raise >= 2x | 正确 | PASS |
 | D.1-D.13: 13条非法行为规则 | 全部正确实现 | PASS |
-| **Postflop check-check** | **BB check 后 SB 再 check 应正常结束，但被误判为非法 -> fold** | **🔴 FAIL** |
+| **Postflop pass after first check** | **按国赛 TCP 协议，postflop 首个玩家 check 后，第二个玩家必须用 `call` 过街；第二个 `check` 是非法 wire action** | **✅ 当前结论覆盖旧审计** |
 
 ### 2.3 Sever Engine (sever/) 详细结果
 
-> ⚠️ **审计更正**：初始审计报告给 sever 打了 100%，但人工复核发现 validator.py 规则4 同样阻止了合法的 postflop check-check 场景。虽然 game.py 有 check-check 终止逻辑（Fix 1），但该逻辑在 validator 验证之后执行，因此第二个 check 会被 validator 先拦截为非法。
+> ⚠️ **2026-07-02 规范更正**：本节原审计把 postflop 第二个 `check` 当作合法 `check-check`，这是错误的。以 `sever/国赛平台/` 文档和当前实现为准：TCP wire protocol 区分 `check` 与 `call`，postflop 首个玩家 `check` 后，第二个玩家如要过街必须发送 `call`；第二个 `check` 属于非法行为并按 fold 处理。Botzone/local 整数动作 `0` 仍可表示 call/check，但在该场景应映射/记录为 `call`，不是要求 TCP 接受第二个 `check`。
 
-validator.py 规则4（行74）：`if not is_first_in_stage: return False`
-- BB 先 check（is_first_in_stage=True，合法 ✅）
-- SB 再 check（is_first_in_stage=False，**被拒 ❌**）
-- game.py 的 check-check 终止逻辑（行364）不可达
+validator.py 对 postflop 非首个 `check` 的拒绝是当前正确行为：
+- BB 先 `check`（is_first_in_stage=True，合法）
+- SB 如要过街应发送 `call`
+- SB 再发送 `check` 应被拒绝并按非法行动处理
 
-实际合规率：**95.2%**（20/21，1个严重 bug 与 root engine 同根）
+当前应以 `docs/national-platform-alignment-report.md`、`sever/engine/validator.py` 和 `sever/tests/test_national_alignment.py` 为准；本历史审计中的 check-check 修复建议已废弃。
 
 ### 2.4 跨引擎差异分析
 
 | 差异点 | Root Engine | Sever Engine | 严重度 |
 |--------|-------------|--------------|--------|
-| Postflop check-check | bet==0 融合 call/check，第二个 check 被误判为非法 | TCP 区分 call/check，正确处理 | **高** |
+| Postflop pass after first check | Botzone int `0` 需按上下文解释为 call/check | TCP 第二个过街动作用 `call`，第二个 `check` 非法 | **当前已对齐** |
 | 最小 raise 验证逻辑 | 单一检查 raise_to < last_raise_to * 2 | 分离的首 raise 和 re-raise 检查 | 低（结果等价） |
 | 卡牌编码 | int 0-51, suit=card%4 | (suit,rank) 元组 | 信息（bot_adapter 正确转换） |
 
@@ -215,7 +215,7 @@ bot_adapter.py 共执行37项检查：**32项通过，5项失败**。
 
 | 编号 | 组件 | 问题 |
 |------|------|------|
-| **S1** | engine/judge.py (行335) + web/core/engine/judge.py (同) + sever/engine/validator.py (行74) | **Postflop check-check 误判为非法**（影响全部3个引擎）：BB 在 postflop 先 check（合法），SB 再 check 应正常结束本轮，但被判定为非法 → fold。根因：(1) root engine 的 int 协议中 bet==0 融合了 call/check；(2) sever validator.py 规则4 `if not is_first_in_stage` 过于严格，未区分"有注待跟的 check"和"check-check 结束轮"。game.py 的 check-check 终止逻辑（Fix 1）在 validator 之后执行，不可达。 |
+| **S1（已废弃）** | engine/judge.py + web/core/engine/judge.py + sever/engine/validator.py | **旧结论错误**：postflop 第二个 TCP `check` 不是合法动作；正确过街动作为 `call`。当前实现应保持 validator 拒绝第二个 `check`，并确保 adapter/local JSON `0` 在该上下文映射为 `call`。 |
 
 ### 🟡 中等（可能导致策略错误）
 
@@ -244,50 +244,18 @@ bot_adapter.py 共执行37项检查：**32项通过，5项失败**。
 
 ## 六、修复建议
 
-### S1: Postflop check-check 误判 (3个引擎全部受影响)
+### S1: Postflop 第二个 `check` 旧审计结论已废弃
 
-**文件**:
-- `/home/zzx/project/pok/engine/judge.py` 行335
-- `/home/zzx/project/pok/web/core/engine/judge.py` 同步修改
-- `/home/zzx/project/pok/sever/engine/validator.py` 行74
+**当前要求**:
+- 国赛 TCP：postflop 首个玩家可 `check`；第二个玩家若也不下注，必须发送 `call` 过街。
+- 国赛 TCP：第二个玩家发送 `check` 是非法格式/非法行为，应按 fold 处理。
+- Botzone/local：整数动作 `0` 仍按上下文解释为 call/check；在“对手已 check、自己过街”场景中应记录为 call 语义。
+- adapter、decision tests、prompt 都应禁止假设 TCP `check-check` 合法。
 
-**根因**:
-1. Root engine: int 协议中 bet==0 同时表示 call 和 check。Postflop 阶段当 inc==0（无需额外下注）且 round_actions>0 时，代码错误地将合法的"跟注 check"判定为非法。
-2. Sever validator: 规则4 `if not is_first_in_stage` 阻止了所有非首次 check，包括合法的 check-check 终止场景。game.py 的 check-check 终止逻辑（Fix 1）在 validator 之后执行，不可达。
-
-**修复方案 (root engine)**:
-在 `engine/judge.py` 行335 处，postflop check 判定增加条件——当对手已经 check 过（双方下注匹配且对手已行动），这是正常的 check 结束而非非法行为：
-
-```python
-# 当前逻辑（有bug）:
-if self.round != Holdem.PRE_FLOP and round_actions > 0:
-    return self.player_action(Holdem.FOLD)
-
-# 修复为：
-if self.round != Holdem.PRE_FLOP and round_actions > 0:
-    # check-check: 对手已 check（下注匹配且已行动）→ 正常结束本轮
-    # 注意：inc==0 说明无注可跟，对手已行动说明对手 check 了
-    # 此时应结束下注轮而非判定非法
-    pass  # 正常 check，round_action_left 计数器会处理轮次结束
-```
-
-**修复方案 (sever validator)**:
-在 `sever/engine/validator.py` 行74 处，允许 check-check 场景：
-
-```python
-# 当前逻辑（有bug）:
-if not is_first_in_stage:
-    return False, "check is illegal for non-first action in flop/turn/river"
-
-# 修复为：如果双方下注相等（无待跟注额），第二个 check 是合法的 check-check
-if not is_first_in_stage:
-    opponent_bet = game_state["opponent_bet"]
-    player_bet = game_state["player_bet"]
-    if opponent_bet > player_bet:
-        return False, "check is illegal when there is a bet to call"
-    # 对手下注 ≤ 自己下注 → check-check 合法
-    return True, ""
-```
+**不得再执行的旧修复**:
+- 不要放宽 `sever/engine/validator.py` 去接受第二个 postflop `check`。
+- 不要把 TCP wire 行为改回 `check-check` 过街。
+- 若发现 bot 输出 JSON `0`，应由 adapter 按上下文转为 TCP `call`。
 
 ### M1: Preflop SB call 筹码少扣 50 (bot_adapter.py)
 
@@ -315,7 +283,7 @@ if not is_first_in_stage:
 
 | 模块 | 合规率 | 说明 |
 |------|--------|------|
-| Sever 引擎 (TCP 服务器) | **95.2%** (20/21) | ⚠️ validator 规则4 同样阻止 check-check |
+| Sever 引擎 (TCP 服务器) | 以当前国赛对齐测试为准 | validator 拒绝第二个 postflop `check` 是正确行为 |
 | Root 引擎 (engine/judge.py) | **94.4%** (17/18) | 1个严重 bug |
 | Bot 适配器 (bot_adapter.py) | **86.5%** (32/37) | 1个筹码 bug + 2个健壮性 |
 | LLM 提示词 (14个文件) | 0严重 / 3中等 | 核心提示词规则正确 |
@@ -323,6 +291,6 @@ if not is_first_in_stage:
 
 ### 风险评估
 
-- **最高风险**：S1（postflop check-check 误判）在 mirror battle 中对双方影响均等（掩盖问题），但在与外部对手对战时可能导致预期外 fold
+- **已废弃风险**：旧 S1（postflop check-check 误判）不再成立；真正风险是提示词或 adapter 再次假设 TCP 第二个 `check` 合法。
 - **中等风险**：M1（SB call 筹码少扣 50）每局 SB 首次 call 均触发，偏差约 0.25%
 - **系统性风险**：M2+M3 组合形成验证盲区——Worker 有正确规则，但 Reviewer 无法发现语义错误

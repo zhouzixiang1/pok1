@@ -1073,6 +1073,7 @@ async def run_precommit_eval(args):
             opponent = item["name"]
             _is_nemesis = _is_nonblocking_reason(item.get("reason"))
             opponent_main = _bot_main(opponent)
+            started_at = time.time()
             matchup = {
                 "opponent": opponent,
                 "reason": item["reason"],
@@ -1082,6 +1083,22 @@ async def run_precommit_eval(args):
                 "n_played": 0,
             }
             item_blockers = []
+            log_system_event(
+                "pipeline.precommit_eval.fallback_match_start",
+                "info",
+                f"v{v}: fallback mirror battle started vs {opponent}",
+                {
+                    "version": v,
+                    "source_v": source_v,
+                    "opponent": opponent,
+                    "reason": item.get("reason"),
+                    "n_games": n_games,
+                    "timeout_sec": per_game_timeout,
+                    "is_parent": opponent == parent_name,
+                    "is_nonblocking": _is_nemesis,
+                    "sequential_early_stop": PRECOMMIT_SEQUENTIAL_EARLY_STOP,
+                },
+            )
             # H1: if orchestrator signalled shutdown (CYCLE_TIMEOUT/cancel) before
             # this matchup even started, skip it entirely. Avoids spawning fresh
             # subprocesses for an already-aborted precommit round.
@@ -1092,6 +1109,25 @@ async def run_precommit_eval(args):
                     "details": "precommit aborted by orchestrator shutdown signal",
                 })
                 matchup["blockers"] = item_blockers
+                log_system_event(
+                    "pipeline.precommit_eval.fallback_match_done",
+                    "warn",
+                    f"v{v}: fallback mirror battle skipped vs {opponent} (shutdown)",
+                    {
+                        "version": v,
+                        "source_v": source_v,
+                        "opponent": opponent,
+                        "reason": item.get("reason"),
+                        "wins": 0,
+                        "losses": 0,
+                        "draws": 0,
+                        "n_played": 0,
+                        "n_games": n_games,
+                        "blockers": item_blockers,
+                        "elapsed_sec": round(time.time() - started_at, 2),
+                        "is_nonblocking": _is_nemesis,
+                    },
+                )
                 return matchup
             try:
                 async with _battle_sem:
@@ -1278,6 +1314,20 @@ async def run_precommit_eval(args):
                     "opponent": opponent,
                     "details": f"Mirror battle against {opponent} exceeded {per_game_timeout}s timeout",
                 })
+                log_system_event(
+                    "pipeline.precommit_eval.fallback_match_error",
+                    "error",
+                    f"v{v}: fallback mirror battle timed out vs {opponent}",
+                    {
+                        "version": v,
+                        "source_v": source_v,
+                        "opponent": opponent,
+                        "reason": item.get("reason"),
+                        "error_class": "TimeoutError",
+                        "timeout_sec": per_game_timeout,
+                        "elapsed_sec": round(time.time() - started_at, 2),
+                    },
+                )
             except Exception as exc:
                 matchup["error"] = str(exc)[:500]
                 item_blockers.append({
@@ -1285,6 +1335,20 @@ async def run_precommit_eval(args):
                     "opponent": opponent,
                     "details": str(exc)[:500],
                 })
+                log_system_event(
+                    "pipeline.precommit_eval.fallback_match_error",
+                    "error",
+                    f"v{v}: fallback mirror battle failed vs {opponent}: {type(exc).__name__}",
+                    {
+                        "version": v,
+                        "source_v": source_v,
+                        "opponent": opponent,
+                        "reason": item.get("reason"),
+                        "error_class": type(exc).__name__,
+                        "error": str(exc)[:500],
+                        "elapsed_sec": round(time.time() - started_at, 2),
+                    },
+                )
             # Phase 3: nemesis_probe is telemetry-only — downgrade any blockers
             # it produced into a non-blocking note so they cannot flip the commit
             # verdict. The aggregate-net-chips exclusion happens in the loop below
@@ -1295,6 +1359,29 @@ async def run_precommit_eval(args):
                 )[:300]
                 item_blockers = []
             matchup["blockers"] = item_blockers
+            log_system_event(
+                "pipeline.precommit_eval.fallback_match_done",
+                "success" if not matchup.get("error") and not item_blockers else "warn",
+                f"v{v}: fallback mirror battle finished vs {opponent} "
+                f"({matchup['wins']}-{matchup['losses']}-{matchup['draws']}, "
+                f"{matchup['n_played']}/{n_games})",
+                {
+                    "version": v,
+                    "source_v": source_v,
+                    "opponent": opponent,
+                    "reason": item.get("reason"),
+                    "wins": matchup["wins"],
+                    "losses": matchup["losses"],
+                    "draws": matchup["draws"],
+                    "n_played": matchup["n_played"],
+                    "n_games": n_games,
+                    "net_chips_samples": len(matchup.get("net_chips") or []),
+                    "blockers": item_blockers,
+                    "error": matchup.get("error", ""),
+                    "elapsed_sec": round(time.time() - started_at, 2),
+                    "is_nonblocking": _is_nemesis,
+                },
+            )
             return matchup
 
         # Launch all opponents in parallel via gather

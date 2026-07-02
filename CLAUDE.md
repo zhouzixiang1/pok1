@@ -369,7 +369,7 @@ After `allin` is called, the server runs out remaining public cards, records the
 
 - Bots: `bots/claude_v{N}/` (N monotonically increasing). Treat active evolved versions as non-continuous: the highest `claude_v*` directory is not necessarily completed, tagged, or committed.
 - Evolution-generated bot versions are complete only when the orchestrator `commit_bot` flow has passed gates, committed the bot, and created the annotated `bot-v{N}` tag.
-- Pool capped at 30 active; weakest culled by H2H average win rate to `bots/graveyard/`.
+- Pool capped at 30 active; weakest culled by conservative Glicko score (`r - 2*rd`) to `bots/graveyard/`, with sample-starved bots protected until the hard overflow rules apply. H2H average win rate is reported as context, not the primary reap key.
 - Botzone game ID: `63dcfaddee1bce5e6c8f4b53`.
 
 ### Key Constants (evolution_infra.py)

@@ -477,7 +477,7 @@ run_archivist → [post-commit consistency check]
 
 位于 `/home/zzx/project/pok/web/server/routes/ratings.py`（200 行），10 个端点。
 
-`GET /api/ratings`：调用 `build_ranked_ratings()` — 遍历所有 bot，计算保守评分（r - 2*rd）、置信度、H2H 平均胜率，按 `h2h_avg_wr` 降序排序。
+`GET /api/ratings`：调用 `build_ranked_ratings()` — 遍历所有 bot，计算保守评分（r - 2*rd）、置信度、H2H 平均胜率和选择分数。当前 UI/管理面可展示 H2H，但淘汰逻辑以 conservative rating / unified strength 为准。
 
 `GET /api/history`：支持 `bots` 过滤和 `resolution` 降采样（full/medium/low）。
 
@@ -877,9 +877,9 @@ Worker 边界违规时仅重置违规文件而非全部回滚，最大化保留�
 - delta > 20 → 改进中
 - RD > 150 → 统计不可靠，退回 LLM
 
-### 6.6 H2H 加权收割
+### 6.6 保守评分收割
 
-不按 Glicko 评分收割（受初始值影响大），而是按 H2H 平均胜率，并用 `r - 2*rd` 保守评分作为决胜指标。
+当前收割不再以 H2H 平均胜率为主键。`_do_reap_weakest` 按 Glicko conservative rating（`r - 2*rd`）排序，并对样本不足的 bot 做保护；H2H 平均胜率和 unified strength 作为日志/解释字段输出。
 
 ### 6.7 环形缓冲区 + 客户端独立队列
 

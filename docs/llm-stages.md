@@ -602,7 +602,7 @@ else:
 > feat: crossover bot v9 -- v6xv2 hybrid with tighter folding + 3bet logic + CBet exploitation
 > ```
 >
-> **v10 的手动提交**: v10 因 precommit eval 超时（n_games=80，3600s CYCLE_TIMEOUT 先到）未能通过 commit_bot 工具。手动 `git commit` + `git push` 后同样缺少 `bot-v10` tag。
+> **v10 的手动提交（历史反例，不是当前流程）**: v10 因 precommit eval 超时（n_games=80，3600s CYCLE_TIMEOUT 先到）未能通过 commit_bot 工具。手动 `git commit` + `git push` 后同样缺少 `bot-v10` tag。当前规范禁止把这种手动提交当作完成态；bot 版本只有在 `commit_bot` 通过 gate、提交源码、创建 annotated `bot-v{N}` tag 并写入 `.completed` 后才算完成。
 
 ---
 

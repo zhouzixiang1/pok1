@@ -12,9 +12,9 @@ niche_key = f"agg{a}_loose{l}"  (25 cells).
 
 Each niche keeps the SINGLE bot with the highest fitness (h2h avg win_rate,
 fallback 0.5 when no h2h). This is the canonical MAP-Elites archive used as a
-population-diversity signal: a reap/Master can consult it to avoid culling or
-re-proposing strategies that already fill a niche. MVP scope: WRITE only (the
-archive is persisted + logged as telemetry). No reap/gate reads it yet.
+population-diversity signal: Master planning and crossover parent selection
+consult it to avoid repeatedly sampling the same filled niche. It remains
+advisory for gates/reap, but it is no longer write-only.
 
 KNOWN LIMITATION: extract_behavior_fingerprint reads
 `output.display.last_action.action`, which bot_action_stats.py documents as
@@ -82,6 +82,56 @@ def looseness_bucket(vpip):
 
 def niche_key(agg_bucket, loose_bucket):
     return f"agg{int(agg_bucket)}_loose{int(loose_bucket)}"
+
+
+def archive_cells(archive):
+    """Return the canonical MAP-Elites cell dict from any supported schema."""
+    if not isinstance(archive, dict):
+        return {}
+    cells = archive.get("cells")
+    if isinstance(cells, dict):
+        return cells
+    niches = archive.get("niches")
+    if isinstance(niches, dict):
+        return niches
+    if archive and all(isinstance(v, dict) for v in archive.values()):
+        return archive
+    return {}
+
+
+def normalize_behavior_archive(archive):
+    """Return a shallow archive copy with both `cells` and `niches` populated."""
+    if not isinstance(archive, dict):
+        return {}
+    data = dict(archive)
+    cells = archive_cells(data)
+    data["cells"] = cells
+    data["niches"] = cells
+    return data
+
+
+def bot_niche_index(archive):
+    """Map bot name -> MAP-Elites niche key."""
+    if isinstance(archive, dict) and isinstance(archive.get("bot_niches"), dict):
+        return {
+            str(bot): str(entry.get("niche"))
+            for bot, entry in archive["bot_niches"].items()
+            if isinstance(entry, dict) and entry.get("niche")
+        }
+    index = {}
+    for niche, entry in archive_cells(archive).items():
+        if isinstance(entry, dict) and entry.get("bot"):
+            index[str(entry["bot"])] = niche
+    return index
+
+
+def bot_elite_index(archive):
+    """Map bot name -> full MAP-Elites entry."""
+    index = {}
+    for _niche, entry in archive_cells(archive).items():
+        if isinstance(entry, dict) and entry.get("bot"):
+            index[str(entry["bot"])] = entry
+    return index
 
 
 def fingerprint_to_bc(fp):
@@ -283,6 +333,7 @@ def build_behavior_archive(replays_dir, active_bots, h2h_winrates=None):
     agg_edges = _quantile_edges(afs) or list(_AGG_EDGES)
     loose_edges = _quantile_edges(vpips) or list(_LOOSE_EDGES)
     niches = {}
+    bot_niches = {}
     for bot, fp in fingerprints.items():
         af = fp.get("aggression_factor") if isinstance(fp, dict) else None
         vpip = fp.get("vpip") if isinstance(fp, dict) else None
@@ -316,6 +367,12 @@ def build_behavior_archive(replays_dir, active_bots, h2h_winrates=None):
             "fitness_median": None,
             "fitness_samples": None,
         }
+        bot_niches[bot] = {
+            "niche": key,
+            "fitness": round(fitness, 4),
+            "bc": bc,
+            "is_elite": False,
+        }
         existing = niches.get(key)
         if existing is None or _better_niche_occupant(new_entry, existing):
             # Preserve a prior k=3 entry's richer fields if this single-eval entry
@@ -323,6 +380,10 @@ def build_behavior_archive(replays_dir, active_bots, h2h_winrates=None):
             # legitimately overwrites with the fresh fingerprint/fitness. The k=3
             # median survives only if it is still the better occupant.
             niches[key] = new_entry
+    for entry in niches.values():
+        bot = entry.get("bot")
+        if bot in bot_niches:
+            bot_niches[bot]["is_elite"] = True
     return {
         "version": 1,
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -331,6 +392,8 @@ def build_behavior_archive(replays_dir, active_bots, h2h_winrates=None):
             "(last_action-based; known misattribution — advisory only)"
         ),
         "niches": niches,
+        "cells": niches,
+        "bot_niches": bot_niches,
     }
 
 
@@ -376,7 +439,7 @@ def write_behavior_archive(replays_dir, active_bots, h2h_winrates=None):
     """
     try:
         prior = read_behavior_archive()
-        prior_niches = (prior or {}).get("niches", {}) if isinstance(prior, dict) else {}
+        prior_niches = archive_cells(prior)
         # Index prior k3 entries by BOT NAME (not niche key). Dynamic quantile edges
         # (see build_behavior_archive) re-derive niche keys every rebuild from the
         # current active-bot distribution, so a bot's niche_key can shift across
@@ -392,7 +455,7 @@ def write_behavior_archive(replays_dir, active_bots, h2h_winrates=None):
                         and pe.get("bot")):
                     prior_k3_by_bot[pe["bot"]] = pe
         archive = build_behavior_archive(replays_dir, active_bots, h2h_winrates)
-        niches = archive.get("niches", {})
+        niches = archive_cells(archive)
         for key, entry in niches.items():
             prior_entry = prior_k3_by_bot.get(entry.get("bot"))
             if prior_entry is not None:
@@ -408,4 +471,4 @@ def write_behavior_archive(replays_dir, active_bots, h2h_winrates=None):
 
 def read_behavior_archive():
     """Read the behavior archive, returning {} on any failure (advisory)."""
-    return read_locked_json(BEHAVIOR_ARCHIVE_FILE, default={}) or {}
+    return normalize_behavior_archive(read_locked_json(BEHAVIOR_ARCHIVE_FILE, default={}) or {})

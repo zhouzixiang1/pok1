@@ -594,11 +594,13 @@ def _decide_strategy(combined, current_v, ratings):
     if combined is None:
         return "master", current_v, ()
 
-    # Load behavior archive for niche-diverse crossover parent selection (fix-6)
+    # Load MAP-Elites archive for niche-diverse crossover parent selection.
+    # Falls back inside _pick_crossover_parents to the older fingerprint archive
+    # if the MAP-Elites archive is unavailable.
     _archive = None
     try:
-        from behavior_diversity import load_fingerprints
-        _archive = load_fingerprints()
+        from map_elites import read_behavior_archive
+        _archive = read_behavior_archive()
     except Exception:
         pass
 
@@ -1001,9 +1003,9 @@ def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
     """Select two diverse parents for crossover.
 
     Parent A: highest unified strength score.
-    Parent B: highest strength score from a different niche than parent A (if
-    archive is available), with version gap >= 3. Falls back to second-highest
-    strength score if no niche-diverse candidate exists.
+    Parent B: highest strength score from a different MAP-Elites niche than
+    parent A (if archive is available), with version gap >= 3. Falls back to
+    the legacy fingerprint niche, then to version-gap diversity.
 
     Args:
         ratings: Glicko-2 ratings dict.
@@ -1041,6 +1043,30 @@ def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
         children = _child_count(bot_name)
         return base * (1.0 / (1.0 + children))
 
+    map_niches = {}
+    map_elites = {}
+    try:
+        from map_elites import bot_elite_index, bot_niche_index
+        map_niches = bot_niche_index(archive)
+        map_elites = bot_elite_index(archive)
+    except Exception:
+        map_niches = {}
+        map_elites = {}
+
+    legacy_niches = {}
+    if archive and not map_niches:
+        try:
+            from behavior_diversity import get_niche_for_bot
+            legacy_niches = {
+                bot: get_niche_for_bot(bot, archive)
+                for bot in active
+            }
+        except Exception as e:
+            log.warning("Legacy niche lookup failed (falling back): %s", e)
+
+    def _niche(bot_name):
+        return map_niches.get(bot_name) or legacy_niches.get(bot_name)
+
     ranked = sorted(
         active,
         key=lambda b: (_adjusted_strength(b), strength.get(b, 0.0)),
@@ -1055,28 +1081,24 @@ def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
     except (ValueError, IndexError):
         return None
 
-    # fix-6: Prefer niche-diverse parent_b if archive is available
+    # Prefer niche-diverse parent_b if MAP-Elites/fingerprint archive is available.
     parent_b = None
     if archive:
-        try:
-            from behavior_diversity import get_niche_for_bot
-            parent_a_niche = get_niche_for_bot(parent_a, archive)
-            if parent_a_niche is not None:
-                niche_candidates = []
-                for candidate in ranked[1:]:
-                    try:
-                        vc = int(candidate.split("_v")[1])
-                    except (ValueError, IndexError):
-                        continue
-                    if abs(vc - va) < 3:
-                        continue
-                    cand_niche = get_niche_for_bot(candidate, archive)
-                    if cand_niche is not None and cand_niche != parent_a_niche:
-                        niche_candidates.append(candidate)
-                if niche_candidates:
-                    parent_b = niche_candidates[0]  # already sorted by h2h
-        except Exception as e:
-            log.warning("Niche-diverse parent selection failed (falling back): %s", e)
+        parent_a_niche = _niche(parent_a)
+        if parent_a_niche is not None:
+            niche_candidates = []
+            for candidate in ranked[1:]:
+                try:
+                    vc = int(candidate.split("_v")[1])
+                except (ValueError, IndexError):
+                    continue
+                if abs(vc - va) < 3:
+                    continue
+                cand_niche = _niche(candidate)
+                if cand_niche is not None and cand_niche != parent_a_niche:
+                    niche_candidates.append(candidate)
+            if niche_candidates:
+                parent_b = niche_candidates[0]
 
     # Original logic: find diverse parent B with version gap >= 3
     if parent_b is None:
@@ -1095,6 +1117,30 @@ def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
 
     try:
         vb = int(parent_b.split("_v")[1])
+        try:
+            event = {
+                "parent_a": parent_a,
+                "parent_b": parent_b,
+                "parent_a_niche": str(_niche(parent_a)),
+                "parent_b_niche": str(_niche(parent_b)),
+                "parent_a_strength": round(float(strength.get(parent_a, 0.0)), 4),
+                "parent_b_strength": round(float(strength.get(parent_b, 0.0)), 4),
+                "parent_a_adjusted_strength": round(_adjusted_strength(parent_a), 4),
+                "parent_b_adjusted_strength": round(_adjusted_strength(parent_b), 4),
+                "parent_a_children": _child_count(parent_a),
+                "parent_b_children": _child_count(parent_b),
+                "parent_a_elite": map_elites.get(parent_a, {}),
+                "parent_b_elite": map_elites.get(parent_b, {}),
+                "archive_source": "map_elites" if map_niches else ("fingerprints" if legacy_niches else "none"),
+            }
+            log_system_event(
+                "pipeline.crossover_parent_selection",
+                "info",
+                f"Crossover parents selected: {parent_a} x {parent_b}",
+                event,
+            )
+        except Exception:
+            pass
         return (va, vb)
     except (ValueError, IndexError):
         return None

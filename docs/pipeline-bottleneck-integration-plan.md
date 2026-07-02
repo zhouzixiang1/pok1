@@ -344,20 +344,22 @@
 
 ## 七、回滚策略
 
-每个阶段执行前必须确保回滚路径可用：
+每个阶段执行前必须确保回滚路径可用。以下为当前仓库规范；旧式 `git checkout` 直接覆盖运行产物的做法已废弃。
 
 | 回滚点 | 机制 | 触发条件 |
 |--------|------|---------|
-| Bot 代码 | `git checkout bot-v{N-1}` — 每个版本有 annotated tag | 回归测试失败、质量门持续失败 |
-| 流水线代码 | `git revert <commit>` — 每个任务独立提交 | 386 测试套件回归 |
+| Bot 代码 | 通过 orchestrator `commit_bot` 产生的 `bot-v{N}` annotated tag 作为完成态依据；恢复时新开任务分支，显式复制/修复需要的源码并重新跑 gate | 回归测试失败、质量门持续失败 |
+| 流水线代码 | 新开任务分支，使用 `git revert <commit>` 或后续修复提交；不要在脏树里直接 reset/checkout | 测试套件回归 |
 | 决策测试 | 保留原 `CRITICAL_SCENARIO_IDS` 列表注释 | 重新分类后质量下降 |
-| 数据文件 | `git checkout web/core/results/` — 结果文件有锁保护 | 数据损坏 |
+| 数据文件 | `web/core/results/` 是运行产物，默认不纳入 git 回滚；损坏时先停 orchestrator/daemon，备份现场，再用专门恢复脚本或人工导入 | 数据损坏 |
 
 **通用回滚流程**：
 1. `git log --oneline -10` 确认回滚点
-2. `git revert <commit>` 或 `git checkout bot-v{N-1} -- bots/claude_v{N}/`
-3. `cd web && python -m pytest tests/ -v` 确认测试通过
-4. `python engine/battle.py bots/claude_v{N}/main.py bots/bot6/main.py -n 10` 冒烟验证
+2. `git switch main && git pull --ff-only && git switch -c codex/<recovery-task>`
+3. 对流水线代码使用 `git revert <commit>` 或最小修复提交；对 bot 恢复只处理源码，不手动写 `.completed` 或 lineage tag
+4. `cd web && python -m pytest tests/ -v` 或运行与改动边界匹配的测试
+5. `python engine/battle.py bots/claude_v{N}/main.py bots/bot6/main.py -n 10` 冒烟验证
+6. 提交、合并回 `main` 并 push；运行产物和未完成 bot 目录不暂存
 
 ---
 

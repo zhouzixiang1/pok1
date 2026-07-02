@@ -9,13 +9,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from evolution_infra import read_locked_json
-from map_elites import BEHAVIOR_ARCHIVE_FILE
+from map_elites import archive_cells, read_behavior_archive
 
 
 def load_behavior_archive() -> dict[str, Any]:
-    data = read_locked_json(BEHAVIOR_ARCHIVE_FILE, default={})
-    return data if isinstance(data, dict) else {}
+    return read_behavior_archive()
 
 
 def frontier_summary(limit: int = 8) -> str:
@@ -23,7 +21,7 @@ def frontier_summary(limit: int = 8) -> str:
     if not archive:
         return "Frontier/MAP-Elites: no behavior archive available yet."
 
-    cells = archive.get("cells") if isinstance(archive.get("cells"), dict) else archive
+    cells = archive_cells(archive)
     if not isinstance(cells, dict) or not cells:
         return "Frontier/MAP-Elites: archive is empty."
 

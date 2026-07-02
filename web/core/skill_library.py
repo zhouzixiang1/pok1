@@ -46,6 +46,20 @@ SKILL_LAYERS: dict[str, SkillLayer] = {
         required_spot_fields=("position", "to_call", "stack", "line_template"),
         gate_metrics=("preflop_pass_rate", "vpip", "threebet_rate"),
     ),
+    "bb_vs_limp": SkillLayer(
+        layer_id="bb_vs_limp",
+        poker_skill_ref="P2 preflop blind defense",
+        description="Big-blind response after small-blind limp: check, iso-raise, and trap ranges.",
+        required_spot_fields=("position", "to_call", "stack", "preflop_spot", "line_template"),
+        gate_metrics=("preflop_pass_rate", "bb_vs_limp_raise_rate", "bb_vs_limp_ev"),
+    ),
+    "bb_vs_open": SkillLayer(
+        layer_id="bb_vs_open",
+        poker_skill_ref="P2 preflop blind defense",
+        description="Big-blind defense versus small-blind open/raise: fold, call, 3-bet, and shove ranges.",
+        required_spot_fields=("position", "to_call", "stack", "preflop_spot", "raise_size"),
+        gate_metrics=("preflop_pass_rate", "bb_defend_rate", "threebet_rate"),
+    ),
     "texture": SkillLayer(
         layer_id="texture",
         poker_skill_ref="P3 postflop principles",

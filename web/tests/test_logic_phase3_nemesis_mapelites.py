@@ -767,6 +767,39 @@ class TestMapElites:
         entry = next(iter(niches.values()))
         assert entry["bot"] == "claude_vB"  # higher fitness retained
         assert entry["fitness"] == 0.6
+        assert archive["cells"] is archive["niches"]
+        assert archive["bot_niches"]["claude_vA"]["niche"] == archive["bot_niches"]["claude_vB"]["niche"]
+        assert archive["bot_niches"]["claude_vA"]["is_elite"] is False
+        assert archive["bot_niches"]["claude_vB"]["is_elite"] is True
+
+    def test_archive_cells_reads_legacy_and_canonical_shapes(self):
+        legacy = {"niches": {"agg1_loose1": {"bot": "claude_v1", "fitness": 0.6}}}
+        canonical = {"cells": {"agg2_loose2": {"bot": "claude_v2", "fitness": 0.7}}}
+
+        assert map_elites.archive_cells(legacy)["agg1_loose1"]["bot"] == "claude_v1"
+        assert map_elites.archive_cells(canonical)["agg2_loose2"]["bot"] == "claude_v2"
+        assert map_elites.bot_niche_index(legacy) == {"claude_v1": "agg1_loose1"}
+
+    def test_frontier_summary_reads_legacy_niches(self, monkeypatch, tmp_path):
+        import frontier
+
+        archive_file = tmp_path / "behavior_archive.json"
+        archive_file.write_text(json.dumps({
+            "niches": {
+                "agg1_loose1": {
+                    "bot": "claude_v7",
+                    "fitness": 0.67,
+                    "bc": {"aggression_factor": 0.8, "vpip": 0.3},
+                }
+            }
+        }))
+        monkeypatch.setattr(map_elites, "BEHAVIOR_ARCHIVE_FILE", archive_file)
+
+        text = frontier.frontier_summary(limit=2)
+
+        assert "agg1_loose1" in text
+        assert "claude_v7" in text
+        assert "fitness=0.670" in text
 
     def test_build_fitness_fallback(self, tmp_path):
         """No h2h -> fitness=0.5 for everyone; niche still populated."""
