@@ -889,8 +889,14 @@ async def prepare_next_gen(args):
 
     # Guard: refuse to re-prepare if pipeline has already progressed past "prepared"
     _ckpt = _matching_checkpoint(next_v, source_v)
-    if _ckpt and _ckpt.get("stage") not in (None, "prepared", "timed_out"):
+    if _ckpt and _ckpt.get("stage") not in (None, "selected", "preparing", "prepared", "timed_out"):
         return _json_tool_result({"error": f"Pipeline for v{next_v} already at stage '{_ckpt['stage']}'. Refusing to overwrite worker output. Call abandon_generation first if you want to restart."})
+
+    from evolution_infra import write_pipeline_checkpoint
+    if not write_pipeline_checkpoint(next_v, source_v, "preparing", worker_failure_count=0):
+        return _json_tool_result({
+            "error": f"Failed to persist preparing checkpoint for v{next_v}; refusing to mutate bot directory."
+        })
 
     if next_dir.exists():
         # Guard against silent cross-source overwrite. v107 (2026-06-16) was
@@ -924,9 +930,11 @@ async def prepare_next_gen(args):
 
     (next_dir / ".completed").unlink(missing_ok=True)
 
-    # Write "prepared" checkpoint so a kill+restart shows "Workers not yet run → call execute_workers"
-    from evolution_infra import write_pipeline_checkpoint
-    write_pipeline_checkpoint(next_v, source_v, "prepared", worker_failure_count=0)
+    # Write "prepared" checkpoint so a kill+restart shows "Workers not yet run → call run_direction_audit"
+    if not write_pipeline_checkpoint(next_v, source_v, "prepared", worker_failure_count=0):
+        return _json_tool_result({
+            "error": f"Failed to persist prepared checkpoint for v{next_v}; generation recovery remains at preparing."
+        })
 
     log_system_event("pipeline.prepare_done", "info", f"Prepared v{next_v} from v{source_v}",
                      {"next_v": next_v, "source_v": source_v, "elapsed_sec": round(time.time() - _t0, 2)})

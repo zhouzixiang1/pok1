@@ -95,9 +95,26 @@ MAX_PARALLEL_WORKERS = 3      # Hard cap on simultaneous LLM worker calls (Semap
 MAX_PROMPT_CHARS = 700_000
 
 # Pipeline stage constants
-STAGE_ORDER = ["prepared", "direction_audited", "master_planned", "workers_done", "quality_failed", "quality_passed", "reviewed", "critic_checked", "verified", "archived"]
+STAGE_ORDER = [
+    "selected",
+    "preparing",
+    "prepared",
+    "crossover_running",
+    "direction_audited",
+    "master_planned",
+    "workers_done",
+    "quality_failed",
+    "quality_passed",
+    "reviewed",
+    "critic_checked",
+    "verified",
+    "archived",
+]
 STAGE_GATE_ALLOWLIST = {
+    "selected": set(),
+    "preparing": set(),
     "prepared": set(),
+    "crossover_running": set(),
     "direction_audited": set(),
     "master_planned": set(),
     "workers_done": set(),
@@ -121,7 +138,7 @@ def validate_stage_transition(current_stage, proposed_stage):
     - Any -> "infra_timed_out" (v193 fix 2026-06-26: infra-only timeout, preserves
       gate_results/code so the next cycle can retry precommit instead of
       discarding the whole generation)
-    - Any -> "prepared" (fresh generation restart)
+    - Any -> "selected"/"preparing"/"prepared" (fresh generation restart)
     - "workers_done"/"quality_failed"/"reviewed"/"critic_checked" -> "master_planned" (intra-gen retry)
     """
     if proposed_stage is None or current_stage is None:
@@ -136,8 +153,8 @@ def validate_stage_transition(current_stage, proposed_stage):
     if proposed_stage == "infra_timed_out":
         return True, "infra_timeout_override"
 
-    if proposed_stage == "prepared":
-        return True, "fresh_restart"
+    if proposed_stage in {"selected", "preparing", "prepared"}:
+        return True, "fresh_prepare_restart"
 
     # Allow retry: from later stages back to master_planned (intra-gen retry)
     retry_sources = {"workers_done", "quality_failed", "quality_passed", "reviewed", "critic_checked"}
@@ -523,16 +540,19 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         # must restart. Later regressions such as critic_checked -> reviewed are
         # still the same code being re-evaluated, so they do not reset.
         _STAGE_RANK = {
-            "prepared": 0,
-            "direction_audited": 1,
-            "master_planned": 2,
-            "workers_done": 3,
-            "quality_failed": 4,
-            "quality_passed": 5,
-            "reviewed": 6,
-            "critic_checked": 7,
-            "verified": 8,
-            "archived": 9,
+            "selected": 0,
+            "preparing": 1,
+            "prepared": 2,
+            "crossover_running": 3,
+            "direction_audited": 4,
+            "master_planned": 5,
+            "workers_done": 6,
+            "quality_failed": 7,
+            "quality_passed": 8,
+            "reviewed": 9,
+            "critic_checked": 10,
+            "verified": 11,
+            "archived": 12,
         }
         if old_stage and stage in _STAGE_RANK and old_stage in _STAGE_RANK:
             old_rank = _STAGE_RANK[old_stage]

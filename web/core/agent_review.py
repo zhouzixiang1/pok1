@@ -450,6 +450,32 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
     log_file = get_logs_dir(target_v) / "crossover_io.txt"
 
     for attempt in range(MAX_CROSSOVER_RETRIES):
+        try:
+            from evolution_infra import write_pipeline_checkpoint
+            checkpoint_ok = write_pipeline_checkpoint(
+                target_v,
+                parent_a_v,
+                "crossover_running",
+                parent2_v=parent_b_v,
+                touch_stage_timestamp=True,
+                audit_context={
+                    "crossover": {
+                        "parent_a": parent_a_v,
+                        "parent_b": parent_b_v,
+                        "attempt": attempt + 1,
+                    }
+                },
+            )
+        except Exception as exc:
+            ui.log_history(f"Crossover checkpoint write failed: {exc}", "error")
+            return False
+        if not checkpoint_ok:
+            ui.log_history(
+                f"Crossover checkpoint write refused for v{target_v}; refusing to mutate target dir.",
+                "error",
+            )
+            return False
+
         # Reset target dir from parent A baseline to avoid corrupted state from previous attempt
         if target_dir.exists():
             shutil.rmtree(target_dir)

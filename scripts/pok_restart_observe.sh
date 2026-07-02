@@ -212,9 +212,10 @@ host = sys.argv[8]
 port = sys.argv[9]
 url_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
 health_url = f"http://{url_host}:{port}/api/control/health"
-generation_terminal = {
-    "pipeline.commit_done",
+success_terminal = {
     "pipeline.archivist_done",
+}
+failure_terminal = {
     "pipeline.abandoned",
     "pipeline.master_exhausted",
     "pipeline.master_audit_exhausted_abandon",
@@ -231,6 +232,7 @@ alert_events = {
     "pipeline.quality_failed",
     "pipeline.guard_block",
     "pipeline.subagent_guard_block",
+    "pipeline.subagent_readonly_guard_block",
     "pipeline.redundant_tool_call",
     "pipeline.sdk_stream_error",
     "pipeline.llm_role_cancelled",
@@ -245,11 +247,16 @@ fatal_events = {
     "orchestrator.recovery_blocked_stop",
     "pipeline.llm_role_cancelled",
     "pipeline.llm_role_stream_cancelled",
+    "pipeline.subagent_guard_block",
+    "pipeline.subagent_readonly_guard_block",
     "pipeline.prepare_blocked_runtime_guard",
     "repo.runtime_guard_blocked",
 }
 stage_stale_limits = {
+    "selected": 900,
+    "preparing": 900,
     "prepared": 900,
+    "crossover_running": 1500,
     "direction_audited": 1500,
     "master_planned": 1500,
     "workers_done": 1500,
@@ -277,6 +284,8 @@ alert_records = []
 stage_transitions = []
 last_stage_key = None
 checkpoint_missing_since = None
+selected_generation_key = None
+quiet_period_sec = 60
 
 def write_line(msg):
     print(msg)
@@ -430,11 +439,11 @@ def check_service(force_heartbeat=False):
         last_heartbeat = now
         write_line(f"[service-heartbeat] {snapshot}")
     pipeline = (health.get("pipeline") or snapshot.get("pipeline") or {})
-    if not pipeline.get("exists") and health.get("running"):
+    if selected_generation_key and not pipeline.get("exists") and health.get("running"):
         checkpoint_missing_since = checkpoint_missing_since or now
         missing_age = now - checkpoint_missing_since
-        if missing_age > 900:
-            write_line(f"[checkpoint-missing] pipeline checkpoint missing for {missing_age:.0f}s while running: {snapshot}")
+        if missing_age > 120:
+            write_line(f"[checkpoint-missing] pipeline checkpoint missing for {missing_age:.0f}s after {selected_generation_key} was selected: {snapshot}")
             write_compact_summary("checkpoint_missing")
             raise SystemExit(1)
     else:
@@ -480,56 +489,83 @@ def should_alert(event):
         return not bool((event.get("data") or {}).get("passed", True))
     return etype in alert_events
 
-while time.time() < deadline and seen < target:
-    check_service()
+def process_new_events(count_success=True):
+    global pos, seen, selected_generation_key, checkpoint_missing_since
+    processed = False
     if not events_file.exists():
-        time.sleep(2)
-        continue
+        return processed
     with events_file.open("r", encoding="utf-8") as fh:
         fh.seek(pos)
         while True:
             line = fh.readline()
             if not line:
                 break
+            processed = True
             pos = fh.tell()
             try:
                 event = json.loads(line)
             except Exception:
                 continue
+            etype = event.get("type")
+            if etype == "pipeline.generation_selected":
+                selected_generation_key = generation_key(event)
+                checkpoint_missing_since = None
             if should_alert(event):
-                msg = f"[alert] {event.get('type')} {event.get('message')} data={event.get('data', {})}"
+                msg = f"[alert] {etype} {event.get('message')} data={event.get('data', {})}"
                 alert_records.append({
-                    "type": event.get("type"),
+                    "type": etype,
                     "message": event.get("message"),
                     "data": event.get("data", {}),
                 })
                 write_line(msg)
-            if event.get("type") in fatal_events:
-                write_line(f"[fatal-event] {event.get('type')} {event.get('message')} data={event.get('data', {})}")
+            if etype in fatal_events:
+                write_line(f"[fatal-event] {etype} {event.get('message')} data={event.get('data', {})}")
                 write_compact_summary("fatal_event")
                 raise SystemExit(1)
-            if event.get("type") in generation_terminal:
+            if etype in failure_terminal:
                 key = generation_key(event)
+                write_line(f"[failure-terminal] {key} {etype} {event.get('message')} data={event.get('data', {})}")
+                write_compact_summary("failure_terminal")
+                raise SystemExit(1)
+            if count_success and etype in success_terminal:
+                key = generation_key(event)
+                selected_generation_key = None
+                checkpoint_missing_since = None
                 if key in seen_generations:
-                    msg = f"[observe] duplicate terminal for {key}: {event.get('type')} {event.get('message')}"
+                    msg = f"[observe] duplicate success terminal for {key}: {etype} {event.get('message')}"
                     write_line(msg)
                     continue
                 seen_generations.add(key)
                 seen += 1
                 terminal_events.append({
                     "key": key,
-                    "type": event.get("type"),
+                    "type": etype,
                     "message": event.get("message"),
                     "data": event.get("data", {}),
                 })
-                msg = f"[observe] {seen}/{target} {key} {event.get('type')} {event.get('message')} data={event.get('data', {})}"
+                msg = f"[observe] {seen}/{target} {key} {etype} {event.get('message')} data={event.get('data', {})}"
                 write_line(msg)
+    return processed
+
+while time.time() < deadline and seen < target:
+    check_service()
+    if not events_file.exists():
+        time.sleep(2)
+        continue
+    process_new_events(count_success=True)
     time.sleep(3)
 if seen < target:
     check_service(force_heartbeat=True)
     print(f"observe timeout: saw {seen}/{target} terminal events", file=sys.stderr)
     write_compact_summary("observe_timeout")
     raise SystemExit(1)
+quiet_deadline = time.time() + quiet_period_sec
+write_line(f"[quiet] final health quiet period {quiet_period_sec}s")
+while time.time() < quiet_deadline:
+    check_service(force_heartbeat=True)
+    process_new_events(count_success=False)
+    time.sleep(3)
+check_service(force_heartbeat=True)
 summary = {
     "observed": seen,
     "target": target,

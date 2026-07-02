@@ -172,7 +172,8 @@ def _startup_recovery(ui=None) -> dict:
 
     # Watchdog recovery: if checkpoint is stale (no stage change for > WATCHDOG_TIMEOUT)
     # and we're at a recoverable stage, treat as stale session and force new LLM session.
-    recoverable_stages = {"direction_audited", "master_planned", "workers_done",
+    recoverable_stages = {"selected", "preparing", "prepared", "crossover_running",
+                          "direction_audited", "master_planned", "workers_done",
                           "quality_passed", "reviewed", "critic_checked", "precommit_failed", "verified"}
     last_stage_ts = checkpoint.get("last_stage_change_ts", 0.0)
     if stage in recoverable_stages and last_stage_ts > 0:
@@ -195,7 +196,9 @@ def _startup_recovery(ui=None) -> dict:
             session_id = None  # file is gone — force fresh LLM session (Case B below)
             # Fall through to recovery below — session_id is None → Case B
 
-    # archived, prepared with no master_plan, or timed_out = no real work to recover
+    # timed_out and archived are terminal. Early stages such as selected,
+    # preparing, prepared, and crossover_running are recoverable generation
+    # leases and must not be cleared here.
     if stage == "timed_out":
         if ui:
             ui.log_history(f"[Recovery] v{next_v} timed out — clearing stale checkpoint.", "warn")
@@ -248,7 +251,7 @@ def _startup_recovery(ui=None) -> dict:
         # Fall through to the resume path below (stage is now critic_checked).
         stage = "critic_checked"
 
-    if stage == "archived" or (stage == "prepared" and not checkpoint.get("master_plan")):
+    if stage == "archived":
         if ui:
             ui.log_history(f"[Recovery] Pipeline at '{stage}' for v{next_v}. Clearing stale checkpoint.", "warn")
         else:
@@ -276,7 +279,8 @@ def _startup_recovery(ui=None) -> dict:
     if next_v is not None and not git_has_tag(next_v):
         ckpt_ts = checkpoint.get("timestamp")
         # Stages with real work — don't abort even if old
-        recoverable_stages = {"direction_audited", "master_planned", "workers_done",
+        recoverable_stages = {"selected", "preparing", "prepared", "crossover_running",
+                              "direction_audited", "master_planned", "workers_done",
                               "quality_passed", "reviewed", "critic_checked", "precommit_failed", "verified"}
         if stage in recoverable_stages:
             if ui:

@@ -11,7 +11,9 @@ from repo_state import git_worktree_snapshot
 
 INACTIVE_STAGES = {None, "archived", "abandoned", "timed_out"}
 TARGET_DIR_STAGES = {
+    "preparing",
     "prepared",
+    "crossover_running",
     "direction_audited",
     "master_planned",
     "workers_done",
