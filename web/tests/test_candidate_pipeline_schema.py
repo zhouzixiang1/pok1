@@ -77,6 +77,28 @@ def test_candidate_store_records_artifacts_and_children(tmp_path, monkeypatch):
     assert artifacts[0]["kind"] == "report"
 
 
+def test_candidate_store_follows_dynamic_results_dir(tmp_path, monkeypatch):
+    import candidate_store
+    import evolution_infra
+
+    results_dir = tmp_path / "isolated_results"
+    results_dir.mkdir()
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
+    monkeypatch.setattr(
+        candidate_store,
+        "CANDIDATE_EVENTS_FILE",
+        candidate_store._IMPORT_CANDIDATE_EVENTS_FILE,
+    )
+
+    append_candidate_event("quality_started", version=251, source_v=250)
+
+    ledger = results_dir / "candidates.jsonl"
+    assert ledger.exists()
+    assert (results_dir / "candidates.sqlite3").exists()
+    rows = read_candidate_events(path=ledger)
+    assert rows[0]["candidate_id"] == "claude_v251_from_v250"
+
+
 def test_stage_contract_order_and_stage_record():
     assert stage_order()[0] == "prepare"
     assert next_stage_name("quality") == "review"
