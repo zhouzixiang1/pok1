@@ -159,9 +159,10 @@ _ACTIONABLE_STALL_STAGES = frozenset({
 })
 
 
-def _detect_actionable_stage_stall():
+def _detect_actionable_stage_stall(timeout_sec=None):
     """Return checkpoint route data when a deterministic next-tool stage is stale."""
-    if ORCH_ACTIONABLE_STAGE_TIMEOUT <= 0:
+    timeout = ORCH_ACTIONABLE_STAGE_TIMEOUT if timeout_sec is None else float(timeout_sec)
+    if timeout <= 0 and timeout_sec is None:
         return None
     try:
         from evolution_core import read_pipeline_checkpoint
@@ -181,7 +182,7 @@ def _detect_actionable_stage_stall():
     if last_ts <= 0:
         return None
     elapsed = time.time() - last_ts
-    if elapsed < ORCH_ACTIONABLE_STAGE_TIMEOUT:
+    if elapsed < timeout:
         return None
     route = route_policy(checkpoint)
     return {
@@ -189,10 +190,20 @@ def _detect_actionable_stage_stall():
         "source_v": checkpoint.get("source_v"),
         "stage": stage,
         "elapsed_sec": round(elapsed, 1),
-        "timeout_sec": ORCH_ACTIONABLE_STAGE_TIMEOUT,
+        "timeout_sec": timeout,
         "next_tool": route.get("next_tool"),
         "directive": route.get("directive"),
     }
+
+
+def _detect_actionable_stage_handoff():
+    """Return route data when an MCP gate has just produced a deterministic step."""
+    stall = _detect_actionable_stage_stall(timeout_sec=0)
+    if not stall:
+        return None
+    if stall.get("next_tool") != "execute_workers":
+        return None
+    return stall
 
 
 async def _await_next_stream_message(stream_iter):
@@ -456,6 +467,25 @@ async def _run_one_cycle(ui, log_file, one_gen=False, dry_run=False, max_turns=N
                         # sub-agent (Master/Workers/Critic) cost from tools executed
                         # during this turn has settled in ui.gen_cost_total.
                         _check_cost_cap()
+                        handoff = _detect_actionable_stage_handoff()
+                        if handoff:
+                            next_v = handoff.get("next_v")
+                            stage = handoff.get("stage")
+                            next_tool = handoff.get("next_tool") or "unknown"
+                            msg = (
+                                f"Checkpoint reached actionable stage '{stage}' for v{next_v}; "
+                                f"handing off current Orchestrator stream so recovery can call {next_tool} deterministically."
+                            )
+                            try:
+                                log_system_event(
+                                    "pipeline.actionable_stage_handoff",
+                                    "warn",
+                                    msg,
+                                    handoff,
+                                )
+                            except Exception:
+                                pass
+                            raise _OrchActionableStageTimeout(msg)
                     elif isinstance(message, ResultMessage):
                         if message.total_cost_usd:
                             cost += message.total_cost_usd

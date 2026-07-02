@@ -584,7 +584,10 @@ def test_actionable_stage_idle_timeout_is_infra_and_preserves_checkpoint(tmp_pat
     assert cost == -0.5
     after = json.loads(pipe_file.read_text())
     assert after.get("stage") == "quality_failed"
-    assert any(e[0] == "pipeline.actionable_stage_timeout" for e in events)
+    assert any(
+        e[0] in {"pipeline.actionable_stage_handoff", "pipeline.actionable_stage_timeout"}
+        for e in events
+    )
 
 
 def test_quality_failed_recovery_deterministically_calls_execute_workers(monkeypatch):
@@ -643,3 +646,61 @@ def test_quality_failed_recovery_deterministically_calls_execute_workers(monkeyp
     fake_execute.handler.assert_awaited_once_with({"next_v": 268, "source_v": 249})
     assert any(e[0] == "pipeline.deterministic_route_execute_workers" for e in events)
     assert any(e[0] == "pipeline.deterministic_route_done" for e in events)
+
+
+def test_actionable_stage_handoff_interrupts_active_stream(tmp_path, monkeypatch):
+    """A gate-produced quality_failed checkpoint should hand off before Bash wandering."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    import evolution_core
+    import orchestrator
+
+    _write_checkpoint(tmp_path, "workers_done", timeout_extensions=0)
+    pipe_file = evolution_core.PIPELINE_STATE_FILE
+    events = []
+
+    async def _quality_failed_after_message():
+        evolution_core.write_pipeline_checkpoint(
+            102,
+            100,
+            "quality_failed",
+            master_plan={"strategy": "crossover", "tasks": []},
+            parent2_v=99,
+            gate_results={
+                "quality": {
+                    "all_passed": False,
+                    "failed_gates": ["position_semantics(state.py:1)"],
+                }
+            },
+        )
+        yield AssistantMessage(content=[TextBlock(text="quality gate returned")], model="sonnet")
+        await asyncio.sleep(999)
+        if False:
+            yield  # pragma: no cover
+
+    monkeypatch.setattr(orchestrator, "claude_query", lambda prompt, options: _quality_failed_after_message())
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+
+    ui = _FakeUI()
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=ui,
+            log_file=tmp_path / "orch_log.txt",
+            one_gen=False,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    assert cost == -0.5
+    after = json.loads(pipe_file.read_text())
+    assert after.get("stage") == "quality_failed"
+    assert any(e[0] == "pipeline.actionable_stage_handoff" for e in events)

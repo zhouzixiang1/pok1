@@ -738,7 +738,9 @@ def _make_bot_dir_guard_hook():
 
     The fix is structural: bot code AND pipeline-critical state may ONLY be
     written by the designated MCP tools. Read-only Bash (grep/cat/git status) is
-    still permitted — only mutations are blocked.
+    still permitted during open-ended planning. Once the checkpoint is at an
+    actionable route stage, built-in tools are also blocked so the model cannot
+    spend an active cycle inspecting instead of calling the required MCP tool.
     """
     import os
     # Bot code lives under PROJECT_ROOT/bots/claude_v*. Resolve once.
@@ -764,6 +766,12 @@ def _make_bot_dir_guard_hook():
         "cross_gen_exhausted_history.jsonl",
         "abandoned_versions.jsonl",
     )
+    _ACTIONABLE_ROUTE_STAGES = {
+        "quality_failed",
+        "precommit_failed",
+        "repair_planned",
+        "rework_running",
+    }
 
     def _targets_protected(text):
         """True if the command/text references a protected path:
@@ -805,6 +813,38 @@ def _make_bot_dir_guard_hook():
             f"NEXT MCP TOOL: {next_step}. {route.get('directive', '')}"
         ), {"stage": stage, "next_v": next_v, "source_v": source_v, "next_step": next_step}
 
+    def _actionable_route_directive():
+        """Return a hard-route directive when built-in tools would delay recovery."""
+        try:
+            from evolution_core import read_pipeline_checkpoint
+            checkpoint = read_pipeline_checkpoint() or {}
+        except Exception:
+            checkpoint = {}
+        stage = checkpoint.get("stage")
+        if stage not in _ACTIONABLE_ROUTE_STAGES:
+            return None, {}
+        route = route_policy(checkpoint) if checkpoint else {}
+        next_step = route.get("next_tool")
+        if next_step != "execute_workers":
+            return None, {}
+        next_v = checkpoint.get("next_v")
+        source_v = checkpoint.get("source_v")
+        parent2_v = checkpoint.get("parent2_v")
+        return (
+            f"Actionable checkpoint route is locked: v{next_v} from v{source_v}, "
+            f"stage={stage}, next MCP tool={next_step}. Built-in Bash/Edit/Write "
+            f"are disabled at this stage because they delay or bypass deterministic "
+            f"recovery. Call execute_workers with the checkpoint gate feedback now. "
+            f"{route.get('directive', '')}"
+        ), {
+            "stage": stage,
+            "next_v": next_v,
+            "source_v": source_v,
+            "parent2_v": parent2_v,
+            "next_step": next_step,
+            "route_intent": route.get("intent"),
+        }
+
     async def handler(hook_input, tool_use_id, context):
         try:
             tool_name = hook_input.get("tool_name", "") if isinstance(hook_input, dict) else ""
@@ -815,7 +855,12 @@ def _make_bot_dir_guard_hook():
             blocked_data = {}
             if tool_name == "Bash":
                 cmd = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
-                if _targets_protected(cmd) and _orchestrator_bash_is_mutation(cmd):
+                directive, route_data = _actionable_route_directive()
+                if directive:
+                    blocked_command = str(cmd)
+                    blocked_data = route_data
+                    blocked_reason = directive
+                elif _targets_protected(cmd) and _orchestrator_bash_is_mutation(cmd):
                     blocked_command = str(cmd)
                     directive, blocked_data = _current_stage_directive()
                     blocked_reason = (
@@ -827,7 +872,12 @@ def _make_bot_dir_guard_hook():
                     )
             elif tool_name in ("Edit", "Write", "NotebookEdit"):
                 file_path = tool_input.get("file_path", "") or tool_input.get("notebook_path", "")
-                if _targets_protected(file_path):
+                directive, route_data = _actionable_route_directive()
+                if directive:
+                    blocked_command = str(file_path)
+                    blocked_data = route_data
+                    blocked_reason = directive
+                elif _targets_protected(file_path):
                     blocked_command = str(file_path)
                     directive, blocked_data = _current_stage_directive()
                     blocked_reason = (
@@ -852,7 +902,7 @@ def _make_bot_dir_guard_hook():
                     event_data.update(blocked_data)
                     log_system_event(
                         "pipeline.guard_block", "error",
-                        "BLOCKED " + tool_name + " from mutating protected path: "
+                        "BLOCKED " + tool_name + " from bypassing pipeline route: "
                         + blocked_reason[:140],
                         event_data,
                     )
