@@ -6,11 +6,12 @@ import shutil
 import time
 from typing import Annotated, TypedDict
 
-from claude_agent_sdk import tool
+from tool_runtime_guard import tool
 
 from evolution_core import (
     get_active_bots, get_bot_dir, find_current_v, find_latest_active_v, load_ratings,
-    clear_pipeline_checkpoint, git_has_tag,
+    clear_pipeline_checkpoint, git_has_tag, git_dir_is_committed,
+    find_max_committed_v, find_abandoned_version_floor, compute_next_generation_v,
     MAX_ACTIVE_BOTS, RESULTS_DIR, REPLAY_DIR,
     Glicko2Player,
 )
@@ -165,6 +166,7 @@ class CleanupIncompleteInput(TypedDict):
 @tool("cleanup_incomplete", "Remove bot directories without .completed that have no git tag.", {})
 async def cleanup_incomplete(args):
     cleaned = []
+    preserved = []
     bots_dir = PROJECT_ROOT / "bots"
     if bots_dir.exists():
         # Check for active pipeline checkpoint to avoid deleting mid-generation bots
@@ -188,9 +190,26 @@ async def cleanup_incomplete(args):
                     if v == active_next_v:
                         continue
                     if not git_has_tag(v):
+                        if git_dir_is_committed(v):
+                            preserved.append(d.name)
+                            log_system_event(
+                                "bot.cleanup_incomplete_preserved",
+                                "warn",
+                                f"Preserved git-tracked incomplete bot {d.name} (no tag)",
+                                {
+                                    "version": v,
+                                    "bot": d.name,
+                                    "reason": "git_tracked_without_tag",
+                                },
+                            )
+                            continue
                         shutil.rmtree(d)
                         cleaned.append(d.name)
-    return {"content": [{"type": "text", "text": json.dumps({"cleaned": cleaned, "count": len(cleaned)})}]}
+    return {"content": [{"type": "text", "text": json.dumps({
+        "cleaned": cleaned,
+        "preserved_git_tracked": preserved,
+        "count": len(cleaned),
+    })}]}
 
 
 class AbandonGenerationInput(TypedDict):
@@ -248,16 +267,38 @@ async def _do_abandon_generation(reason: str = "abandon_generation") -> dict:
         if next_v is not None:
             next_dir = get_bot_dir(next_v)
             if next_dir.exists() and not (next_dir / ".completed").exists():
+                if git_dir_is_committed(next_v):
+                    log_system_event(
+                        "pipeline.abandon_preserved_git_tracked",
+                        "warn",
+                        f"Preserved git-tracked incomplete v{next_v} during abandon",
+                        {"version": next_v, "reason": "git_tracked_without_tag"},
+                    )
+                else:
+                    shutil.rmtree(next_dir)
+                    removed_dir = f"claude_v{next_v}"
+    else:
+        # No checkpoint — clean up any incomplete dir for authoritative next
+        # version. Do not reuse current_v + 1 after abandoned generations.
+        current_v = find_current_v()
+        next_v = compute_next_generation_v(
+            current_v=current_v,
+            max_committed_v=find_max_committed_v(),
+            abandoned_floor=find_abandoned_version_floor(),
+        )
+        next_dir = get_bot_dir(next_v)
+        if next_dir.exists() and not (next_dir / ".completed").exists():
+            abandoned_v = next_v
+            if git_dir_is_committed(next_v):
+                log_system_event(
+                    "pipeline.abandon_preserved_git_tracked",
+                    "warn",
+                    f"Preserved git-tracked incomplete v{next_v} during abandon",
+                    {"version": next_v, "reason": "git_tracked_without_tag"},
+                )
+            else:
                 shutil.rmtree(next_dir)
                 removed_dir = f"claude_v{next_v}"
-    else:
-        # No checkpoint — clean up any incomplete dir for next version
-        current_v = find_current_v()
-        next_dir = get_bot_dir(current_v + 1)
-        if next_dir.exists() and not (next_dir / ".completed").exists():
-            abandoned_v = current_v + 1
-            shutil.rmtree(next_dir)
-            removed_dir = f"claude_v{current_v + 1}"
 
     # P2 (2026-06-29 reboot analysis): record the abandoned version number so the
     # next prepare_generation skips it. Without this, the same next_v is reused

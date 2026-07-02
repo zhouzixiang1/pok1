@@ -415,11 +415,28 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
                 # Re-check under lock — start_daemon may have replaced daemon_proc
                 with _daemon_lock:
                     current_proc = daemon_proc
+                    shutting_down = _daemon_shutting_down
                 # Determine if this was a crash-recovery restart or intentional stop
                 if current_proc is not None and current_proc is not proc and current_proc.poll() is None:
                     # Daemon was replaced by another actor (web UI, orchestrator, etc.)
                     # Don't count against this monitor's restart budget — it wasn't our restart.
                     restart_count = 0
+                elif shutting_down:
+                    # stop_daemon() owns this exit. It may have had to send the
+                    # SIGKILL backstop after graceful SIGTERM; that is a forced
+                    # stop, not an unexpected daemon crash or auto-restart signal.
+                    restart_count = 0
+                    with _daemon_lock:
+                        if daemon_proc is proc:
+                            daemon_proc = None
+                    severity = "warn" if rc not in (0, None) else "info"
+                    log_system_event(
+                        "daemon.exited_after_stop",
+                        severity,
+                        f"Daemon exited after stop request (rc={rc}, pid={proc.pid})",
+                        {"pid": proc.pid, "returncode": rc, "forced": rc == -signal.SIGKILL},
+                    )
+                    break
                 elif rc == 0:
                     # v193 root-cause-audit (2026-06-26): a clean rc=0 exit is NOT a
                     # crash. With the keep-alive main loop, the daemon now exits rc=0

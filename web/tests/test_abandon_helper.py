@@ -35,6 +35,7 @@ class TestDoAbandonGeneration:
         next_dir.mkdir()
         (next_dir / "main.py").write_text("x=1")
         monkeypatch.setattr(tbm, "get_bot_dir", lambda v: next_dir)
+        monkeypatch.setattr(tbm, "git_dir_is_committed", lambda v: False)
         monkeypatch.setattr(tbm, "log_system_event", lambda *a, **k: None)
 
         result = _run(tbm._do_abandon_generation(reason="master_exhausted (4 fails)"))
@@ -46,27 +47,39 @@ class TestDoAbandonGeneration:
         assert cleared == [True]          # clear_pipeline_checkpoint called
         assert not next_dir.exists()      # incomplete dir removed
 
-    def test_no_checkpoint_falls_back_to_current_v_plus_1(self, tmp_path, monkeypatch):
+    def test_no_checkpoint_uses_authoritative_next_version_floor(self, tmp_path, monkeypatch):
         # No checkpoint -> cleared_checkpoint stays False, but an orphaned
-        # incomplete next dir is still cleaned up.
+        # incomplete authoritative next dir is still cleaned up. Abandoned
+        # version floors mean this is not always current_v + 1.
         monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: None)
         import evolution_core
         monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE",
                             tmp_path / "nonexistent.json")  # .exists() == False
         monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", lambda: None)
         monkeypatch.setattr(tbm, "find_current_v", lambda: 99)
+        monkeypatch.setattr(tbm, "find_max_committed_v", lambda: 99)
+        monkeypatch.setattr(tbm, "find_abandoned_version_floor", lambda: 100)
+        monkeypatch.setattr(
+            tbm,
+            "compute_next_generation_v",
+            lambda current_v, max_committed_v, abandoned_floor: max(
+                current_v, max_committed_v, abandoned_floor
+            ) + 1,
+        )
 
-        next_dir = tmp_path / "claude_v100"
+        next_dir = tmp_path / "claude_v101"
         next_dir.mkdir()
         (next_dir / "main.py").write_text("x=1")
         monkeypatch.setattr(tbm, "get_bot_dir", lambda v: next_dir)
+        monkeypatch.setattr(tbm, "git_dir_is_committed", lambda v: False)
         monkeypatch.setattr(tbm, "log_system_event", lambda *a, **k: None)
 
         result = _run(tbm._do_abandon_generation(reason="no_ckpt"))
 
         assert result["abandoned"] is True
         assert result["cleared_checkpoint"] is False
-        assert result["removed_directory"] == "claude_v100"
+        assert result["removed_directory"] == "claude_v101"
+        assert result["abandoned_v"] == 101
         assert not next_dir.exists()
 
     def test_preserves_completed_dir(self, tmp_path, monkeypatch):
@@ -84,6 +97,7 @@ class TestDoAbandonGeneration:
         (next_dir / "main.py").write_text("x=1")
         (next_dir / ".completed").touch()  # COMPLETED — must be preserved
         monkeypatch.setattr(tbm, "get_bot_dir", lambda v: next_dir)
+        monkeypatch.setattr(tbm, "git_dir_is_committed", lambda v: False)
         monkeypatch.setattr(tbm, "log_system_event", lambda *a, **k: None)
 
         result = _run(tbm._do_abandon_generation(reason="test"))
@@ -91,3 +105,29 @@ class TestDoAbandonGeneration:
         assert result["abandoned"] is True
         assert result["removed_directory"] is None  # not removed (completed)
         assert next_dir.exists()                    # preserved
+
+    def test_preserves_git_tracked_incomplete_dir(self, tmp_path, monkeypatch):
+        # A git-tracked dir without a tag is a bare-commit recovery case, not
+        # disposable scratch. abandon_generation may clear the checkpoint, but
+        # must not rmtree committed code.
+        monkeypatch.setattr(tbm, "read_pipeline_checkpoint",
+                            lambda: {"next_v": 100, "source_v": 99, "stage": "master_planned"})
+        import evolution_core
+        fake_state = tmp_path / "pipeline_state.json"
+        fake_state.write_text("{}")
+        monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", fake_state)
+        monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", lambda: None)
+
+        next_dir = tmp_path / "claude_v100"
+        next_dir.mkdir()
+        (next_dir / "main.py").write_text("x=1")
+        monkeypatch.setattr(tbm, "get_bot_dir", lambda v: next_dir)
+        monkeypatch.setattr(tbm, "git_dir_is_committed", lambda v: True)
+        monkeypatch.setattr(tbm, "log_system_event", lambda *a, **k: None)
+
+        result = _run(tbm._do_abandon_generation(reason="test"))
+
+        assert result["abandoned"] is True
+        assert result["removed_directory"] is None
+        assert result["abandoned_v"] == 100
+        assert next_dir.exists()

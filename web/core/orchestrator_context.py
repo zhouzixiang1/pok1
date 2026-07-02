@@ -481,7 +481,8 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
     from evolution_core import (
         get_active_bots, load_ratings,
         get_bot_dir, git_has_tag, _load_recent_failures, _git,
-        find_current_v,
+        find_current_v, find_max_committed_v, find_abandoned_version_floor,
+        compute_next_generation_v,
     )
     from glicko2 import Glicko2Player
 
@@ -503,8 +504,8 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         lines.append("  prepare_next_gen(source_v, next_v) — copy source bot dir")
         lines.append("  run_direction_audit(source_v, next_v) — detect repetitive evolution directions")
         lines.append("  run_master(source_v, next_v, stagnation_info, match_analysis, performance_verification, direction_audit, research_proposals) — plan worker tasks")
-        lines.append("  execute_workers(tasks, next_v, source_v, reviewer_feedback) — modify bot code sequentially")
-        lines.append("  run_quality_gates(version, source_v) — compile + smoke test + decision tests + file size")
+        lines.append("  execute_workers(tasks, next_v, source_v, reviewer_feedback) — modify bot code in parallel when target_files do not overlap (max 3), otherwise serial")
+        lines.append("  run_quality_gates(version, source_v) — full hard gates: code_changed, declared_scope, compile/runtime import, protected contracts, smoke, national protocol/acceptance, decision, size, fix verification, telemetry fidelity, reachability")
         lines.append("  run_review(version, source_v, plan) — code quality review (boundaries, size, correctness)")
         lines.append("  run_critic(version, source_v, plan, reviewer_feedback, force_advance) — strategic assessment (score >= 6)")
         lines.append("  run_precommit_eval(version, source_v, n_games) — mirror battle regression check")
@@ -553,10 +554,17 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
     active_bots = get_active_bots()
     ratings = load_ratings()
     current_v = find_current_v()
+    max_committed_v = find_max_committed_v()
+    abandoned_floor = find_abandoned_version_floor()
+    next_v = compute_next_generation_v(
+        current_v=current_v,
+        max_committed_v=max_committed_v,
+        abandoned_floor=abandoned_floor,
+    )
 
     lines = [
         f"Current generation: v{current_v}",
-        f"Next generation will be: v{current_v + 1}",
+        f"Next generation will be: v{next_v}",
         f"Active bots: {len(active_bots)}",
         f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}",
     ]
@@ -619,10 +627,10 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         lines.append(f"Current bot {bot_name}: {h2h_str}, r={cur_p.r:.1f}, rd={cur_p.rd:.1f}, wr={wr:.0%} ({games} games) [{reliable}]")
 
     # Incomplete bot detection — previous cycle may have been interrupted
-    next_dir = get_bot_dir(current_v + 1)
+    next_dir = get_bot_dir(next_v)
     if next_dir.exists() and not (next_dir / ".completed").exists():
         lines.append(
-            f"WARNING: claude_v{current_v + 1} directory exists but is NOT completed "
+            f"WARNING: claude_v{next_v} directory exists but is NOT completed "
             f"(previous cycle was interrupted). Decide: resume workers or clean up and restart."
         )
 

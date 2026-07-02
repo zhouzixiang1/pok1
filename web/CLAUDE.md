@@ -43,13 +43,16 @@ Each tool function receives an `args` dict, executes business logic (often spawn
 | Tool | Stage | What it does |
 |---|---|---|
 | `prepare_next_gen` | Setup | Copy source bot dir, write `prepared` checkpoint |
+| `run_direction_audit` | Direction | Detect repetitive evolution directions before Master planning |
+| `run_literature_probe` | Research | Optional/stagnation-triggered web-derived strategy hypothesis before Master |
 | `run_master` | Planning | Call Master LLM → returns JSON task plan with worker assignments |
 | `execute_workers` | Coding | Call Worker LLMs (parallel via semaphore, max 3) to edit bot code |
-| `run_quality_gates` | Validation | Automated checks: compile, smoke test, decision tests, national TCP protocol tests, file size |
+| `run_quality_gates` | Validation | Automated hard gates: code_changed, declared_scope, compile/runtime import, protected contract, smoke, national protocol/acceptance, decision, size, fix verification, telemetry fidelity, reachability |
 | `run_review` | Review | Call Reviewer LLM to score diff quality, enforce role boundaries |
 | `run_critic` | Critique | Call Critic LLM for strategic assessment and risk recording; precommit eval is the final regression gate |
 | `run_precommit_eval` | Pre-commit | Mirror battle regression check vs parent + top opponents |
 | `commit_bot` | Commit | Git commit + tag, enforced by gate ledger (all gates must pass) |
+| `run_archivist` | Archive | Post-commit archive/consistency audit and housekeeping |
 
 ### Pattern 2: Direct LLM Calls (Sub-agents)
 

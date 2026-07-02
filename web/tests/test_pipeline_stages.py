@@ -366,6 +366,27 @@ class TestPrevCriticPersistence:
         assert critic_gate["prev_critic"]["feedback"] == "Not good enough"
         assert critic_gate["score"] == 7  # New value preserved
 
+    def test_record_gate_returns_false_when_checkpoint_rejects_stage(self, tmp_path, monkeypatch):
+        """_record_gate must not report success when checkpoint write is rejected."""
+        import tool_helpers
+        import evolution_infra
+
+        ckpt_file = tmp_path / "pipeline_state.json"
+        monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", ckpt_file)
+        monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
+
+        evolution_infra.write_pipeline_checkpoint(
+            next_v=10, source_v=5, stage="workers_done",
+        )
+        recorded = tool_helpers._record_gate(
+            10, 5, "direction_audit", {"passed": True}, stage="direction_audited"
+        )
+
+        assert recorded is False
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["stage"] == "workers_done"
+        assert "direction_audit" not in ckpt.get("gate_results", {})
+
 
 # ══════════════════════════════════════════════════════════════════════
 # Stage 6: Master analysis from checkpoint (Direction Auditor)

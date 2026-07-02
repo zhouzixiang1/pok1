@@ -39,7 +39,7 @@ Analyze the Master plan systematically:
 - If the plan states, implies, or hardcodes a different target version than v{next_v}, reject it.
 - If the plan targets the parent path `bots/claude_v{source_v}/` for worker edits, reject it.
 - A plan that fixes correctness bugs present in v{source_v} is VALID even if a later lineage already fixed them — evolution branches from v{source_v}.
-- Only reject on grounds of data staleness if the analysis references a version OTHER than v{source_v} or the plan's stated branch_from.
+- Only reject on grounds of data staleness if the analysis references a version OTHER than v{source_v}. Master plans must not contain `branch_from`; source selection is already decided before Master planning.
 </branch_from_semantics>
 
 <output_format>

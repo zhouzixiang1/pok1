@@ -130,7 +130,7 @@ def _bot_code_fingerprint(bot_dir):
 # Quality Gates
 # ──────────────────────────────────────────────
 
-@tool("run_quality_gates", "Run all quality gates on a bot: compile check, smoke test, decision tests, and file size check.", {"version": int, "source_v": int})
+@tool("run_quality_gates", "Run all quality gates on a bot: code_changed, declared_scope, compile/runtime import, protected contracts, smoke, national protocol/acceptance, decision, size, fix verification, telemetry fidelity, and reachability.", {"version": int, "source_v": int})
 async def run_quality_gates(args):
     _t0 = time.time()
     v, source_v = _resolve_version_args(args)

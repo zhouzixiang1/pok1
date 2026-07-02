@@ -29,7 +29,7 @@ from evolution_core import (
     archive_rotate_files,
     archive_old_logs,
 )
-from evolution_infra import _git, _git_ensure_main_branch
+from evolution_infra import _git, _git_ensure_main_branch, git_push_refs
 from tool_helpers import (
     _get_ui, _json_tool_result,
     _matching_checkpoint, _resolve_version_args,
@@ -501,8 +501,7 @@ def _archive_housekeeping_commit(version: int, reap_result: dict | None,
     commit_hash = _git("rev-parse", "--short", "HEAD", check=False).strip()
     push_ok = False
     if os.environ.get("EVOLUTION_GIT_PUSH") == "1":
-        _git("push", "origin", "main", check=False)
-        push_ok = True
+        push_ok = git_push_refs("main")
     log_system_event(
         "pipeline.archivist_git_commit_done", "success",
         f"v{version}: committed archivist housekeeping {commit_hash}",

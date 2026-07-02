@@ -41,7 +41,7 @@ Full national legality checklist from `sever/国赛平台/非法行为说明.doc
 </action_semantics>
 
 <your_scope>
-You check ONLY these four areas:
+You check ONLY these five areas:
 
 1. **Role boundary compliance** — Does each change match the assigned worker role?
    The boundary criterion is: **"does the change add a new function / control flow branch?"**

@@ -745,6 +745,95 @@ def test_get_bot_info_handles_parent_and_oversized_triples(tmp_path, monkeypatch
     assert data["oversized_files"] == {"strategy.py": {"lines": 2501, "limit": 2500}}
 
 
+def test_get_status_uses_abandoned_floor_for_next_v(tmp_path, monkeypatch):
+    import evolution_core
+    import tool_status
+
+    (tmp_path / "claude_v256").mkdir()
+    monkeypatch.setattr(tool_status, "get_active_bots", lambda: [])
+    monkeypatch.setattr(tool_status, "find_current_v", lambda: 254)
+    monkeypatch.setattr(tool_status, "find_max_committed_v", lambda: 254)
+    monkeypatch.setattr(tool_status, "find_abandoned_version_floor", lambda: 255)
+    monkeypatch.setattr(
+        tool_status,
+        "compute_next_generation_v",
+        lambda current_v, max_committed_v, abandoned_floor: max(
+            current_v, max_committed_v, abandoned_floor
+        ) + 1,
+    )
+    monkeypatch.setattr(tool_status, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+    monkeypatch.setattr(tool_status, "load_ratings", lambda: {})
+    monkeypatch.setattr(tool_status, "load_daemon_stats", lambda: {"total_games": 0})
+    monkeypatch.setattr(tool_status, "read_locked_json", lambda *_a, **_k: {})
+    monkeypatch.setattr(tool_status, "load_strength_scores", lambda: {})
+    monkeypatch.setattr(tool_status, "load_h2h_avg_winrates", lambda: {})
+    monkeypatch.setattr(evolution_core, "_load_recent_failures", lambda _n: [])
+
+    result = asyncio.run(tool_status.get_status.handler({}))
+    data = json.loads(result["content"][0]["text"])
+
+    assert data["current_v"] == 254
+    assert data["abandoned_floor"] == 255
+    assert data["next_v"] == 256
+    assert data["incomplete_next_v"] == 256
+
+
+def test_orchestrator_context_uses_abandoned_floor_for_next_v(tmp_path, monkeypatch):
+    import evolution_core
+    import orchestrator_context
+
+    incomplete = tmp_path / "claude_v256"
+    incomplete.mkdir()
+    monkeypatch.setattr(evolution_core, "get_active_bots", lambda: [])
+    monkeypatch.setattr(evolution_core, "load_ratings", lambda: {})
+    monkeypatch.setattr(evolution_core, "find_current_v", lambda: 254)
+    monkeypatch.setattr(evolution_core, "find_max_committed_v", lambda: 254)
+    monkeypatch.setattr(evolution_core, "find_abandoned_version_floor", lambda: 255)
+    monkeypatch.setattr(
+        evolution_core,
+        "compute_next_generation_v",
+        lambda current_v, max_committed_v, abandoned_floor: max(
+            current_v, max_committed_v, abandoned_floor
+        ) + 1,
+    )
+    monkeypatch.setattr(evolution_core, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+    monkeypatch.setattr(orchestrator_context, "_get_time_budget_info", lambda: "")
+
+    text = orchestrator_context._build_context(one_gen=False, dry_run=False, gen_ctx=None)
+
+    assert "Next generation will be: v256" in text
+    assert "claude_v256 directory exists but is NOT completed" in text
+    assert "Next generation will be: v255" not in text
+
+
+def test_cleanup_incomplete_preserves_git_tracked_dirs(tmp_path, monkeypatch):
+    import tool_bot_management as tbm
+
+    bots_dir = tmp_path / "bots"
+    tracked = bots_dir / "claude_v100"
+    scratch = bots_dir / "claude_v101"
+    tracked.mkdir(parents=True)
+    scratch.mkdir()
+    (tracked / "main.py").write_text("x=1\n")
+    (scratch / "main.py").write_text("x=1\n")
+
+    results = tmp_path / "results"
+    results.mkdir()
+    monkeypatch.setattr(tbm, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(tbm, "RESULTS_DIR", results)
+    monkeypatch.setattr(tbm, "git_has_tag", lambda _v: False)
+    monkeypatch.setattr(tbm, "git_dir_is_committed", lambda v: v == 100)
+    monkeypatch.setattr(tbm, "log_system_event", lambda *_a, **_k: None)
+
+    result = asyncio.run(tbm.cleanup_incomplete.handler({}))
+    data = json.loads(result["content"][0]["text"])
+
+    assert tracked.exists()
+    assert not scratch.exists()
+    assert data["cleaned"] == ["claude_v101"]
+    assert data["preserved_git_tracked"] == ["claude_v100"]
+
+
 def test_battle_scheduler_status_peeks_pending_claimed_completed(tmp_path, monkeypatch):
     import battle_scheduler
 
@@ -1112,4 +1201,44 @@ def test_archivist_housekeeping_skips_if_unexpected_files_are_staged(monkeypatch
     assert result["reason"] == "unexpected_staged_files"
     assert result["unexpected_staged"] == ["unrelated.py"]
     assert ("restore", "--staged", "--", "web/core/experience_pool.md") in calls
+    assert not any(call[:1] == ("commit",) for call in calls)
+
+
+def test_git_push_refs_reports_failure(monkeypatch):
+    import evolution_infra
+
+    calls = []
+
+    def fake_git(*args, **_kwargs):
+        calls.append(args)
+        if args == ("push", "origin", "main"):
+            raise RuntimeError("push failed")
+        return ""
+
+    monkeypatch.setattr(evolution_infra, "_git", fake_git)
+
+    assert evolution_infra.git_push_refs("main", "bot-v999") is False
+    assert ("push", "origin", "main") in calls
+    assert ("push", "origin", "bot-v999") in calls
+
+
+def test_git_commit_bot_refuses_preexisting_staged_files(monkeypatch):
+    import evolution_infra
+
+    calls = []
+
+    def fake_git(*args, **_kwargs):
+        calls.append(args)
+        if args == ("rev-parse", "--abbrev-ref", "HEAD"):
+            return "main\n"
+        if args == ("diff", "--cached", "--name-only"):
+            return "unrelated.py\n"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(evolution_infra, "_git", fake_git)
+
+    with __import__("pytest").raises(RuntimeError, match="pre-existing staged"):
+        evolution_infra.git_commit_bot(999, 998, "test")
+
+    assert not any(call[:1] == ("add",) for call in calls)
     assert not any(call[:1] == ("commit",) for call in calls)

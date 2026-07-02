@@ -524,6 +524,24 @@ class TestExploitabilityProbeFix:
         assert "_probe_running.clear()" in src
         assert "finally:" in src
 
+    def test_probe_requires_committed_tag_before_bot_dir_probe(self):
+        # post_generation_cleanup also runs after abandoned/unclean cycles. A
+        # generated candidate directory is not authoritative; only the annotated
+        # bot-vN tag proves commit_bot completed and the probe data is safe for
+        # the next generation to consume.
+        src = self._read_scheduler_source()
+        probe_idx = src.find("Exploitability probe scheduled for")
+        tag_idx = src.find("git_has_tag(ctx.next_v)", probe_idx)
+        bot_missing_idx = src.find("bot_main_missing", probe_idx)
+        start_idx = src.find("probe starting", probe_idx)
+        assert probe_idx != -1, "probe entry nail missing"
+        assert tag_idx != -1, "probe must gate on bot-vN tag"
+        assert bot_missing_idx != -1, "committed-but-broken bot dir warning missing"
+        assert start_idx != -1, "probe start event missing"
+        assert tag_idx < bot_missing_idx
+        assert tag_idx < start_idx
+        assert "uncommitted_or_abandoned" in src
+
     def test_probe_shutdown_is_observable(self):
         # The old bug was a bare `if is_shutting_down: return`. The fix must log
         # before returning. Locate the probe block and assert the shutdown branch

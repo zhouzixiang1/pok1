@@ -227,7 +227,7 @@ def _record_gate(version, source_v, gate_name, gate_data, stage=None,
     # Use provided generation_attempt or preserve existing
     if generation_attempt is None:
         generation_attempt = ckpt.get("generation_attempt", 0)
-    write_pipeline_checkpoint(
+    recorded = write_pipeline_checkpoint(
         version,
         source_v,
         stage or current_stage,
@@ -241,7 +241,28 @@ def _record_gate(version, source_v, gate_name, gate_data, stage=None,
         gate_results={gate_name: gate_data},
         direction_audit=ckpt.get("direction_audit"),
     )
-    return True
+    if not recorded:
+        log.warning(
+            "_record_gate: checkpoint rejected gate '%s' for v%s/v%s at stage '%s'",
+            gate_name, version, source_v, stage or current_stage,
+        )
+        try:
+            from system_log import log_system_event
+            log_system_event(
+                "pipeline.gate_record_rejected",
+                "error",
+                f"Gate '{gate_name}' was rejected by checkpoint state machine for v{version}/source v{source_v}",
+                {
+                    "version": version,
+                    "source_v": source_v,
+                    "gate": gate_name,
+                    "requested_stage": stage or current_stage,
+                    "current_stage": current_stage,
+                },
+            )
+        except Exception:
+            pass
+    return bool(recorded)
 
 
 def _gate_payload(version, source_v, passed, **extra):
