@@ -554,25 +554,45 @@ async def run_precommit_eval(args):
                 v, requested, n_games,
             )
 
-    # Idempotency guard: skip if precommit eval already passed
+    candidate_name = f"claude_v{v}"
+    parent_name = f"claude_v{source_v}"
+    candidate_dir = get_bot_dir(v)
+    candidate_main = _bot_main(candidate_name)
+    try:
+        from tool_gates import _bot_code_fingerprint
+        code_fingerprint = _bot_code_fingerprint(candidate_dir)
+    except Exception:
+        code_fingerprint = ""
+
+    # Idempotency guard: skip if precommit eval already passed for the same code snapshot.
     _precommit_ckpt = _matching_checkpoint(v, source_v)
     if _precommit_ckpt and _precommit_ckpt.get("stage") in (
         "verified", "archived"
     ):
         precommit_gate = _precommit_ckpt.get("gate_results", {}).get("precommit_eval", {})
-        if precommit_gate.get("passed") is True:
+        cached_fingerprint = precommit_gate.get("code_fingerprint")
+        if precommit_gate.get("passed") is True and cached_fingerprint == code_fingerprint:
             precommit_gate["idempotent_cache"] = True
             precommit_gate["directive"] = (
                 "Precommit eval ALREADY PASSED. Do NOT re-run. "
                 "Call commit_bot(version, source_v, strategy, review_approved=true) next."
             )
             return _json_tool_result(precommit_gate)
+        if precommit_gate.get("passed") is True:
+            log_system_event(
+                "pipeline.precommit_cache_stale",
+                "warn",
+                f"Precommit cache stale for v{v}; bot code changed since cached eval.",
+                {
+                    "version": v,
+                    "source_v": source_v,
+                    "cached_fingerprint": cached_fingerprint,
+                    "current_fingerprint": code_fingerprint,
+                },
+            )
 
     _set_pipeline_status(f"Pre-commit eval for v{v}")
 
-    candidate_name = f"claude_v{v}"
-    parent_name = f"claude_v{source_v}"
-    candidate_main = _bot_main(candidate_name)
     candidate_id = f"{candidate_name}_from_v{source_v}"
     workflow_profile = get_workflow_profile()
     if append_candidate_event:
@@ -609,6 +629,7 @@ async def run_precommit_eval(args):
             "version": v,
             "source_v": source_v,
             "n_games": n_games,
+            "code_fingerprint": code_fingerprint,
             "passed": False,
             "blockers": [{"reason": "candidate_missing", "details": str(candidate_main)}],
             "opponents": [],
@@ -1516,6 +1537,7 @@ async def run_precommit_eval(args):
              "total_wins": total_wins, "total_losses": total_losses,
              "total_draws": total_draws, "blockers": blockers,
              "paired_bootstrap": paired_bootstrap_payload,
+             "code_fingerprint": code_fingerprint,
              "n_opponents": len(all_opponents),
              "elapsed_sec": round(time.time() - _t0, 2)})
     except Exception:
@@ -1532,6 +1554,7 @@ async def run_precommit_eval(args):
         "passed": passed,
         "blockers": blockers,
         "paired_bootstrap": paired_bootstrap_payload,
+        "code_fingerprint": code_fingerprint,
     }
     scorecard = ScoreCard(
         name="precommit_eval",

@@ -46,12 +46,13 @@ python web/main.py
                 ├── Phase 2: _run_one_cycle(gen_ctx=ctx) — LLM session
                 │     ├── _build_context(gen_ctx=ctx) 注入预计算分析
                 │     ├── Orchestrator LLM 自主调用 MCP 工具
-                │     └── pipeline: direction_audit → optional literature_probe → master → prepare/crossover → workers → quality → review → critic → precommit_eval → commit → archivist
+                │     └── pipeline: prepare_next_gen(or run_crossover) → direction_audit → optional literature_probe → master → workers → quality → review → critic → precommit_eval → commit → archivist
                 │     → 中断时 session + checkpoint 保留
                 │
                 ├── Phase 3: post_generation_cleanup(shutdown_mgr, ui, ctx) — 代码层
+                │     ├── 仅已 tag 的版本继续执行；未提交/已放弃版本统一跳过
                 │     ├── reap_if_needed()
-                │     ├── consolidate_experience() (每3代 或 RECENT_LESSONS≥4；仅已 tag 的版本)
+                │     ├── consolidate_experience() (每3代 或 RECENT_LESSONS≥4)
                 │     ├── exploitability probe / QD eval（仅已 commit + bot-vN tag 的版本）
                 │     └── behavior fingerprint 等后清理记录
                 │     → 幂等，可安全中断
@@ -328,7 +329,7 @@ else:
 **校验** (函数 `_validate_master_plan`):
 - tasks 数量 ≤ 3
 - 每个 task 的 target_files ≤ 3
-- 每个 task 的 worker_prompt ≤ 5000 字符（prompt 模板建议 ≤ 2000 字符）
+- 每个 task 的 worker_prompt 建议 ≤ 6000 字符，硬上限 12000 字符
 - **Tuner 目标文件限制**: Hyperparameter Tuner 的 `target_files` 必须仅含 `constants.py`，指向其他文件会触发**硬错误**（阻断 plan，非警告）
 - **Architect-Tuner 文件重叠检测**: 若 Architect 和 Tuner 共享任何 target_file，触发硬错误（因为 Tuner 边界检查会看到 Architect 的结构性改动，导致误判为越界）
 - Hyperparameter Tuner prompt 会被 `_TUNER_STRUCTURAL_PATTERNS` 检查，含结构化指令（如 "add parameter"、"new function"）时发出边界警告（非阻断，reviewer/critic 执行实际约束）
@@ -665,9 +666,10 @@ Phase 2 `_run_one_cycle()` 检测到 `cycle_completed`:
 - 清除 `orchestrator_session.json`
 - 返回花费给 `orchestrator_loop()`
 
-Phase 3 `post_generation_cleanup()`（仅在 cost ≥ 0 即成功或非 auth 错误时执行）:
-- `reap_if_needed()` — 活跃 bot > 30 时自动淘汰最弱
-- `consolidate_experience()` — 每 3 代 **或** `RECENT_LESSONS >= 4` 条目时整合经验池（代码层直接调用，非 MCP 工具）
+Phase 3 `post_generation_cleanup()`（仅在 cost ≥ 0 即成功或非 auth 错误时进入）:
+- 若 `bot-v{N}` tag 不存在，直接记录 `pipeline.post_cleanup_skipped_uncommitted` 并跳过所有后清理副作用
+- `reap_if_needed()` — 已提交版本后，活跃 bot > 30 时自动淘汰最弱
+- `consolidate_experience()` — 已提交版本后，每 3 代 **或** `RECENT_LESSONS >= 4` 条目时整合经验池（代码层直接调用，非 MCP 工具）
 
 `orchestrator_loop()` 检查 `shutdown_mgr.is_shutting_down`，若未关闭则 `sleep(5)` 后进入下一代。
 
@@ -863,6 +865,7 @@ orchestrator_loop():
 | `direction_audited` | Direction audited → call `run_master` |
 | `master_planned` | Master done → call `execute_workers` |
 | `workers_done` | Workers done → call `run_quality_gates` |
+| `quality_failed` | Quality failed → retry `execute_workers` with exact gate feedback, or abandon |
 | `quality_passed` | Quality passed → call `run_review` |
 | `reviewed` | Review passed → call `run_critic` |
 | `critic_checked` | Critic done → call `run_precommit_eval` |
@@ -991,7 +994,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 
 | 项目 | 内容 |
 |---|---|
-| **触发者** | Phase 3 `post_generation_cleanup()` 代码层直接调用（每 3 代 **或** `RECENT_LESSONS >= 4` 条目时） |
+| **触发者** | 已提交/tagged 版本的 Phase 3 `post_generation_cleanup()` 代码层直接调用（每 3 代 **或** `RECENT_LESSONS >= 4` 条目时） |
 | **调用链** | `generation_scheduler.py:post_generation_cleanup()` → `experience_archivist.py:_consolidate_experience_pool()` → `run_claude_query()` |
 | **LLM 角色** | EXPERIENCE CONSOLIDATOR |
 | **模型** | Sonnet |
@@ -1042,7 +1045,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 
 以下工具在数据流全景图中未展开，但同样可用：
 
-- **`run_inline_eval(version, n_games)`** — 当守护进程未运行时，手动运行镜像对战并更新 Glicko-2 评分
+- **`run_inline_eval(version, n_games)`** — HTTP/control `all_tools` 可用的手动镜像评估工具，不在 Orchestrator MCP 工具列表中
 - **`get_h2h(bot_name, opponent?)`** — 获取指定 bot 的 Head-to-Head 数据，标注 STRENGTH/WEAKNESS
 - **`get_bot_stats(bot_name)`** — 获取指定 bot 的累计胜负统计
 - **`get_bot_info(version)`** — 获取指定 bot 的详细信息（rating、parent、files、code size）
@@ -1085,9 +1088,9 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
                     │                                            │
                     │   _build_context(gen_ctx) → 注入预计算分析   │
                     │   Orchestrator LLM 自主调用 MCP 工具         │
-                    │   Pipeline: direction_audit → optional       │
-                    │   literature_probe → master → prepare/      │
-                    │   crossover → workers → quality → review →  │
+                    │   Pipeline: prepare/crossover →             │
+                    │   direction_audit → optional literature →   │
+                    │   master → workers → quality → review →     │
                     │   critic → precommit_eval → commit →        │
                     │   archivist                                 │
                     │   中断 → session + checkpoint 保留到磁盘     │
@@ -1098,9 +1101,10 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
                     │   Phase 3: post_generation_cleanup() — 代码层│
                     │   (幂等，可安全中断并重跑)                    │
                     │                                            │
+                    │   未打 bot-vN tag → 跳过全部副作用          │
                     │   reap_if_needed() → 淘汰最弱 bot           │
                     │   consolidate_experience() → 每3代或       │
-│                            RECENT_LESSONS≥4 │
+                    │   RECENT_LESSONS≥4                          │
                     └──────────────────┬──────────────────────────┘
                                        │
                     ┌──────────────────▼──────────────────────────┐
@@ -1121,6 +1125,13 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
     └──────────────────┬──────────────────────────┘
                        │
               ┌────────▼────────────┐
+              │prepare_next_gen      │
+              │(无 LLM)              │
+              │复制 bots/claude_v{N}/│
+              │写入 checkpoint       │
+              └────────┬────────────┘
+                       │
+              ┌────────▼────────────┐
               │run_direction_audit  │
               │📎 DIRECTION AUDITOR │
               │工具: 无（纯JSON输出）│
@@ -1136,13 +1147,6 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
               └────┬────────────────┘
                    │ plan["tasks"]
               ┌────▼────────────────┐
-              │prepare_next_gen      │
-              │(无 LLM)              │
-              │复制 bots/claude_v{N}/│
-              │写入 checkpoint       │
-              └────────┬────────────┘
-                       │
-              ┌────────▼────────────┐
               │execute_workers      │
               │📎 WORKERS (串行)    │
               │工具: Bash, Read, Edit│
@@ -1168,7 +1172,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
               │run_critic           │
               │📎 STRATEGY CRITIC  │
               │工具: Bash, Read      │
-              │阈值: ≥6 通过         │
+              │advisory，precommit最终判断│
               └────────┬────────────┘
                        │
               ┌────────▼────────────┐
@@ -1205,7 +1209,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
 - **所有 LLM 调用统一使用 Sonnet 模型**，通过 `claude_agent_sdk` 的 `query()` 函数
 - **API 限流 (529)**: `run_claude_query()` 内自动指数退避重试（30s → 60s → 120s）
 - **Prompt 预算**: `MAX_PROMPT_CHARS = 700_000`，超限时按文件均分压缩上下文
-- **MCP 工具**: 17 个工具注册在 `tools.py` 的 `mcp_tools` 列表中，通过 `create_sdk_mcp_server(name='evolution', tools=mcp_tools)` 暴露给 Orchestrator LLM。完整列表：`run_master`、`execute_workers`、`run_quality_gates`、`run_review`、`run_critic`、`run_precommit_eval`、`run_crossover`、`prepare_next_gen`、`run_direction_audit`、`run_literature_probe`、`commit_bot`、`run_archivist`、`abandon_generation`、`get_bot_info`、`get_match_history`、`get_h2h`、`get_bot_stats`。工具来自 `tool_planning.py`（direction_audit, literature_probe, master, workers）、`tool_gates.py`（quality_gates, prepare_next_gen, review, critic）、`tool_eval.py`（precommit_eval, inline_eval）、`tool_commit.py`（commit, archivist, crossover）、`tool_bot_management.py`（abandon_generation）、`tool_status.py`（查询工具）。**注意**: `get_status`、`consolidate_experience`、`reap_weakest` 等工具仅在 `all_tools`（HTTP 端点 `/api/control/tool/`）中可用，不在 MCP 中。`consolidate_experience` 由 Phase 3 代码层直接调用，不经 MCP。
+- **MCP 工具**: 17 个工具注册在 `tools.py` 的 `mcp_tools` 列表中，通过 `create_sdk_mcp_server(name='evolution', tools=mcp_tools)` 暴露给 Orchestrator LLM。完整列表：`run_master`、`execute_workers`、`run_quality_gates`、`run_review`、`run_critic`、`run_precommit_eval`、`run_crossover`、`prepare_next_gen`、`run_direction_audit`、`run_literature_probe`、`commit_bot`、`run_archivist`、`abandon_generation`、`get_bot_info`、`get_match_history`、`get_h2h`、`get_bot_stats`。工具来自 `tool_planning.py`（direction_audit, literature_probe, master, workers）、`tool_gates.py`（quality_gates, prepare_next_gen, review, critic）、`tool_eval.py`（precommit_eval）、`tool_commit.py`（commit, archivist, crossover）、`tool_bot_management.py`（abandon_generation）、`tool_status.py`（查询工具）。**注意**: `get_status`、`run_inline_eval`、`consolidate_experience`、`reap_weakest` 等工具仅在 `all_tools`（HTTP 端点 `/api/control/tool/`）中可用，不在 MCP 中。`consolidate_experience` 由 Phase 3 代码层直接调用，不经 MCP。
 - **子代理 MCP 屏蔽**: `_BLOCKED_MCP_TOOLS` 屏蔽以下外部工具（防止子代理访问网络）：
   - `mcp__web-reader__webReader`
   - `mcp__web-search-prime__web_search_prime`
@@ -1214,12 +1218,12 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
   - `mcp__zread__search_doc`
 - **角色边界**: Worker 受 prompt + reviewer 双重约束 — Logic Architect 不改常数，Tuner 不加函数
 - **Gate Ledger**: Pipeline checkpoint 强制阶段顺序 — 每个阶段写入 gate 记录，后续阶段验证前置 gates 完整
-- **阶段常量**: `STAGE_ORDER = [prepared, direction_audited, master_planned, workers_done, quality_passed, reviewed, critic_checked, verified, archived]`
+- **阶段常量**: `STAGE_ORDER = [prepared, direction_audited, master_planned, workers_done, quality_failed, quality_passed, reviewed, critic_checked, verified, archived]`
 - **ShutdownManager**: `loop.add_signal_handler()` 注册 SIGINT/SIGTERM，设置 `is_shutting_down` 标志，Phase 1/3 检查后优雅退出，Phase 2 等待当前 LLM 调用完成
 - **Pipeline checkpoint 原子写入**: `pipeline_state.json` 使用 tmp + `os.replace()` 原子替换，避免中断导致文件损坏
 - **Session 持久化策略**: `orchestrator_session.json` 在自然完成、超时、529 限流、认证错误、Orchestrator crash 时清除；`CancelledError` / 用户中断信号时保留 session 到磁盘，下次启动 `_startup_recovery()` 恢复会话
 - **Daemon 独立生命周期**: `elo_daemon.py` 作为独立子进程运行，orchestrator 停止不影响 daemon 持续评估；daemon 仅通过 `.reap_signal` 文件与 orchestrator 通信
-- **归档阶段**: Phase 3 中 `reap_if_needed()` + `consolidate_experience()` 在 commit 后执行，幂等可安全重跑
+- **归档阶段**: Phase 3 只在 `bot-v{N}` tag 存在时执行后清理副作用；未提交/已放弃版本记录跳过。已提交版本中 `reap_if_needed()` + `consolidate_experience()` 在 commit 后执行，幂等可安全重跑
 
 ## 附录1：标准 Master 路径示例（v5 → v7）
 

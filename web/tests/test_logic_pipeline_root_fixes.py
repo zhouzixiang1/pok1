@@ -970,6 +970,11 @@ PYEOF
     readonly_wc = "wc -l web/core/experience_pool.md 2>/dev/null"
     readonly_tag = "git tag -l 'bot-v2*' | tail -10"
     write_redirect = "echo x > bots/claude_v224/strategy.py"
+    mixed_allowed_and_protected_write = (
+        "python -c \"from pathlib import Path; "
+        "Path('bots/claude_v234/notes.txt').write_text('ok'); "
+        "Path('web/core/tool_gates.py').write_text('bad')\""
+    )
     write_heredoc_redirect = """python3 << 'PYEOF' > bots/claude_v224/notes.txt
 print('x')
 PYEOF
@@ -993,6 +998,8 @@ PYEOF
     assert llm_query._subagent_bash_mutation_detector(readonly_python_heredoc) is None
     assert llm_query._subagent_bash_mutation_detector(readonly_tag) is None
     assert llm_query._subagent_bash_is_mutation(write_redirect) is True
+    assert llm_query._subagent_bash_is_mutation(mixed_allowed_and_protected_write) is True
+    assert llm_query._subagent_is_outside_allowed(mixed_allowed_and_protected_write, allowed) is True
     assert llm_query._subagent_bash_is_mutation(write_heredoc_redirect) is True
     assert llm_query._subagent_bash_is_mutation(write_python) is True
     assert llm_query._subagent_bash_is_mutation(write_tag) is True
@@ -1000,6 +1007,45 @@ PYEOF
     assert llm_query._subagent_bash_mutation_detector(write_heredoc_redirect).startswith("write_redirect:")
     assert llm_query._subagent_bash_mutation_detector(write_python) == "python_write_pattern:.write_text("
     assert llm_query._subagent_bash_mutation_detector(write_tag) == "git_tag_mutation"
+
+
+def test_commit_bot_blocks_missing_code_fingerprints(tmp_path, monkeypatch):
+    import tool_commit
+
+    bot_dir = tmp_path / "bots" / "claude_v444"
+    bot_dir.mkdir(parents=True)
+    (bot_dir / "main.py").write_text("# candidate\n")
+    ckpt = {
+        "next_v": 444,
+        "source_v": 443,
+        "stage": "verified",
+        "gate_results": {
+            "quality": {"all_passed": True, "critical_scenarios_passed": True},
+            "review": {"approved": True},
+            "critic": {"approved": True, "score": 7},
+            "precommit_eval": {"passed": True},
+        },
+    }
+    monkeypatch.setattr(tool_commit, "get_bot_dir", lambda _v: bot_dir)
+    monkeypatch.setattr(tool_commit, "_matching_checkpoint", lambda _v, _source_v: ckpt)
+    monkeypatch.setattr(tool_commit, "log_system_event", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        tool_commit,
+        "git_commit_bot",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("git_commit_bot must not run")),
+    )
+
+    result = asyncio.run(tool_commit.commit_bot.handler({
+        "version": 444,
+        "source_v": 443,
+        "strategy": "test",
+        "review_approved": True,
+    }))
+    data = json.loads(result["content"][0]["text"])
+
+    assert data["error"].startswith("COMMIT BLOCKED")
+    assert "quality_code_fingerprint" in data["missing_gates"]
+    assert "precommit_code_fingerprint" in data["missing_gates"]
 
 
 def test_orchestrator_guard_allows_readonly_redirection_but_blocks_writes():

@@ -103,7 +103,8 @@ export default function SystemLogTab() {
     setError(null);
     try {
       const res = await api.systemEvents({
-        type: category,
+        source: "structured",
+        category: category || undefined,
         severity: severity || undefined,
         limit: LIMIT,
         offset,

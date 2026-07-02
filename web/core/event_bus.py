@@ -234,6 +234,8 @@ def _resolve_context():
                     "audit": ckpt.get("audit_attempt", 0),
                     "precommit": ckpt.get("precommit_attempt", 0),
                 }
+            if run_id is not None or stage is not None or attempt is not None:
+                update_last_known(run_id=run_id, stage=stage, attempt=attempt)
     return run_id, stage, attempt
 
 

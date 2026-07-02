@@ -134,16 +134,16 @@ Each evolution generation follows a three-phase cycle managed by `generation_sch
 
 1. **Phase 1 — `prepare_generation()`**: Code-layer analysis (stagnation + performance verification via `combined_analyst.py`). Decides the source version, target version, and strategy before the Master prompt runs. **Disposable** — safe to re-run on interrupt.
 2. **Phase 2 — `_run_one_cycle()` in `orchestrator.py`**: LLM-driven pipeline execution. Orchestrator Claude agent calls MCP tools in sequence. **Preserves state** on interrupt via session + checkpoint files.
-3. **Phase 3 — `post_generation_cleanup()`**: Reap weakest bot if pool > 30, consolidate experience pool every 3 gens. **Idempotent** — safe to re-run.
+3. **Phase 3 — `post_generation_cleanup()`**: Runs only for committed/tagged generations. Reaps weakest bot if pool > 30, consolidates experience every 3 gens or when `RECENT_LESSONS` is crowded, and launches post-commit probes/fingerprints. **Idempotent** — safe to re-run.
 
 ### Per-Generation Pipeline (inside Phase 2)
 
 The Orchestrator LLM calls these MCP tools in order:
 
-1. **Direction Auditor**: Pre-Master LLM gate that checks git history for repetitive evolution directions. Forces structural alternatives if stuck.
-2. **Optional Literature Probe**: When stagnation or repetition is detected, run `run_literature_probe` before Master so web-derived strategy hypotheses are explicit and governed.
-3. **Master Architect** (`prompts/master_prompt.md`): Analyzes ratings, experience pool, match data, and the pre-selected source version. Produces JSON task plan with worker assignments. It must not set `branch_from` or source-override fields; source selection is handled before Master planning.
-4. **Prepare/Crossover**: Use `prepare_next_gen` for normal Master/Worker generations, or `run_crossover` for crossover generations.
+1. **Prepare/Crossover**: Use `prepare_next_gen` first for normal Master/Worker generations so the target bot dir and `prepared` checkpoint exist. For crossover generations, use `run_crossover` as the alternative setup path.
+2. **Direction Auditor**: Pre-Master LLM gate that checks git history for repetitive evolution directions. Forces structural alternatives if stuck.
+3. **Optional Literature Probe**: When stagnation or repetition is detected, run `run_literature_probe` before Master so web-derived strategy hypotheses are explicit and governed.
+4. **Master Architect** (`prompts/master_prompt.md`): Analyzes ratings, experience pool, match data, and the pre-selected source version. Produces JSON task plan with worker assignments. It must not set `branch_from` or source-override fields; source selection is handled before Master planning.
 5. **Workers** (`prompts/worker_prompt.md`): Execute tasks in parallel (max 3 via semaphore), 4 retries each. Workers directly edit bot source files using Bash/Read/Edit tools.
 6. **Quality Gates** (automated, no LLM): `py_compile`, runtime import contract, smoke test, decision tests (≥70% pass), national TCP protocol/adapter regression tests, declared-scope/protected-contract checks, mandatory fix verification, telemetry/reachability checks, file size ≤2000 lines (core strategy files) / ≤1500 lines (helpers), adaptive limit based on source bot size + 15% growth budget, hard cap 2500.
 7. **Code Reviewer** (`prompts/reviewer_prompt.md`): LLM reviews diff, enforces role boundaries, scores 1-10. Up to 3 retries.
@@ -422,7 +422,7 @@ Defaults: `r=1500`, `rd=350`, `sigma=0.06`, `tau=0.5`. Confidence levels: rd<50 
 
 - **ShutdownManager** (`shutdown_manager.py`): Asyncio-native SIGINT/SIGTERM handler. Double-signal kills process. All three generation phases check `shutdown_mgr.is_shutting_down` between operations.
 - **Orchestrator session persistence**: `orchestrator_session.json` stores the session ID. On restart, the Orchestrator resumes the exact LLM conversation. Cleared on natural cycle completion.
-- **Pipeline checkpoint**: `STAGE_ORDER` in `evolution_infra.py` defines stage flow (`prepared` → `direction_audited` → `master_planned` → `workers_done` → `quality_failed` → `quality_passed` → `reviewed` → `critic_checked` → `verified` → `archived`). `STAGE_GATE_ALLOWLIST` enforces stage ordering — `run_review` blocks if quality gates haven't passed, `commit_bot` blocks if any gate is missing.
+- **Pipeline checkpoint**: `STAGE_ORDER` in `evolution_infra.py` defines stage flow (`prepared` → `direction_audited` → `master_planned` → `workers_done` → `quality_failed` → `quality_passed` → `reviewed` → `critic_checked` → `verified` → `archived`). `STAGE_GATE_ALLOWLIST` enforces stage ordering — `run_review` blocks if quality gates haven't passed, `commit_bot` blocks if any gate is missing or if quality/precommit code fingerprints no longer match the candidate code.
 - **Daemon lifecycle**: `start_daemon()` spawns `elo_daemon.py` as subprocess. `daemon_monitor_thread()` watches for crashes and auto-restarts. Daemon auto-exits on parent death via `getppid()==1` check.
 - **Orphan detection**: JSON PID file (`.daemon_pid`) for daemon process tracking. 5s orphan detection interval.
 
@@ -597,7 +597,7 @@ Algorithms: random baseline, equity-based threshold, genetic self-improvement (p
 - Worker role boundaries enforced by prompts and reviewer: Logic Architects cannot tune constants, Hyperparameter Tuners cannot add functions
 - `_validate_worker_boundaries()` checks edits don't cross role boundaries after each worker run
 - Worker failures recorded to `worker_failures.jsonl` and injected into future worker prompts as memory
-- Experience pool consolidated by LLM every 3 generations
+- Experience pool consolidation is tag-gated and runs after commit every 3 generations or when `RECENT_LESSONS` has at least 4 entries
 - `_BLOCKED_MCP_TOOLS` in `evolution_infra.py` blocks external MCP tools from sub-agents
 - `_WORKER_SEMAPHORE` (asyncio.Semaphore, max 3) limits concurrent LLM worker calls
 - `_PersistentBot` keeps one Popen alive for an entire game (2x battle speedup vs per-decision subprocess)

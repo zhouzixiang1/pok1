@@ -1173,6 +1173,34 @@ def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
         return None
 
 
+def _bare_commit_gate_ledger_ok(v, ckpt):
+    """Return (ok, reason) for recovering an interrupted commit_bot run."""
+    if not ckpt:
+        return False, "missing_checkpoint"
+    if int(ckpt.get("next_v") or -1) != int(v):
+        return False, "checkpoint_version_mismatch"
+    if ckpt.get("stage") not in {"verified", "archived"}:
+        return False, f"stage_not_verified:{ckpt.get('stage')}"
+
+    gate_results = ckpt.get("gate_results", {}) or {}
+    quality = gate_results.get("quality") or {}
+    review = gate_results.get("review") or {}
+    critic = gate_results.get("critic") or {}
+    precommit = gate_results.get("precommit_eval") or {}
+
+    if quality.get("all_passed") is not True:
+        return False, "quality_not_passed"
+    if quality.get("critical_scenarios_passed") is not True:
+        return False, "critical_scenarios_not_passed"
+    if review.get("approved") is not True:
+        return False, "review_not_approved"
+    if critic.get("approved") is not True and critic.get("force_advanced") is not True:
+        return False, "critic_missing_or_not_recorded"
+    if precommit.get("passed") is not True:
+        return False, "precommit_not_passed"
+    return True, ""
+
+
 def _finalize_bare_commit(v, ckpt=None):
     """H3 (2026-06-29): finalize a bare-committed generation.
 
@@ -1197,6 +1225,22 @@ def _finalize_bare_commit(v, ckpt=None):
         return True  # already tagged by a prior finalize or normal commit
     bot_dir = get_bot_dir(v)
     if not bot_dir.exists():
+        return False
+    gate_ok, gate_reason = _bare_commit_gate_ledger_ok(v, ckpt)
+    if not gate_ok:
+        log.warning(
+            "bare-commit v%d is not eligible for finalize: %s — leaving dir intact.",
+            v, gate_reason,
+        )
+        try:
+            log_system_event(
+                "pipeline.bare_commit_finalize_blocked",
+                "warn",
+                f"Bare-commit recovery blocked for v{v}: {gate_reason}",
+                {"version": v, "reason": gate_reason, "checkpoint_stage": (ckpt or {}).get("stage")},
+            )
+        except Exception:
+            pass
         return False
     source_v = (ckpt or {}).get("source_v")
     parent2_v = (ckpt or {}).get("parent2_v")
@@ -1370,7 +1414,7 @@ def _commit_post_cleanup_experience_change(version: int, preexisting_dirty: set[
 
 async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
     """Phase 3: Idempotent post-generation cleanup."""
-    from evolution_infra import MAX_ACTIVE_BOTS, get_active_bots
+    from evolution_infra import MAX_ACTIVE_BOTS, get_active_bots, git_has_tag
 
     cleanup_started = time.time()
 
@@ -1399,6 +1443,26 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
 
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         _finish("skipped", "shutdown_before_start")
+        return
+
+    committed_generation = ctx.next_v > 0 and git_has_tag(ctx.next_v)
+    if not committed_generation:
+        log.info(
+            "Post-cleanup skipped for v%s: no bot-v%s tag (abandoned or uncommitted cycle)",
+            ctx.next_v, ctx.next_v,
+        )
+        log_system_event(
+            "pipeline.post_cleanup_skipped_uncommitted",
+            "info",
+            f"Post-cleanup skipped for v{ctx.next_v}: generation is not committed/tagged",
+            {
+                "version": ctx.next_v,
+                "source_v": ctx.source_v,
+                "strategy": ctx.strategy,
+                "reason": "not_committed_or_abandoned",
+            },
+        )
+        _finish("skipped", "not_committed_or_abandoned")
         return
 
     # Auto-reap if pool exceeds limit

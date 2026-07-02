@@ -108,6 +108,28 @@ def test_resolve_context_from_checkpoint(isolated_files, monkeypatch):
     assert data["attempt"]["audit"] == 1
 
 
+def test_checkpoint_context_updates_last_known_before_checkpoint_clear(isolated_files, monkeypatch):
+    """Checkpoint-derived context becomes last-known for post-clear tail logs."""
+    states = [
+        {
+            "next_v": 127,
+            "stage": "master_planned",
+            "generation_attempt": 2,
+            "audit_attempt": 1,
+            "precommit_attempt": 0,
+        },
+    ]
+    monkeypatch.setattr(event_bus, "_read_ckpt_cached", lambda: states.pop(0) if states else {})
+
+    event_bus.emit("pipeline.from_ckpt", "info", "m1")
+    event_bus.emit("pipeline.after_clear", "info", "m2")
+
+    rows = _read_jsonl(isolated_files / "events.jsonl")
+    assert rows[0]["data"]["run_id"] == "127#2"
+    assert rows[1]["data"]["run_id"] == "127#2"
+    assert rows[1]["data"]["stage"] == "master_planned"
+
+
 def test_logging_correlation_filter_uses_event_bus_capture_context(monkeypatch):
     import logging
     import logging_config

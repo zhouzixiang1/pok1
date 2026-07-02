@@ -46,7 +46,7 @@ unless the Master explicitly assigns a TCP-native bot task. Compatibility rules:
 <role_boundaries>
 | Role | Allowed | Forbidden |
 |---|---|---|
-| Hyperparameter Tuner | EXISTING numeric constants/thresholds/magic numbers in constants.py, AND new constants inside an Architect's new functions when explicitly delegated. No new functions/control flow. | New top-level functions, classes, imports, if/for/while blocks |
+| Hyperparameter Tuner | EXISTING numeric constants/thresholds/magic numbers in constants.py only. No new functions/control flow. | Any non-constants.py file, new top-level functions, classes, imports, if/for/while blocks |
 | Algorithmic Logic Architect | New functions, new branches, new imports, and new LOCAL constants defined inside the new function. | Changing EXISTING constants in constants.py |
 | Opponent Modeler | Per-street tracking (`opp_stats[street]['vpip']`), bet sizing patterns, exploitative adjustments | Changing decision flow or non-opponent-model logic |
 

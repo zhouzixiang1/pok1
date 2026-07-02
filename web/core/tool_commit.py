@@ -65,6 +65,11 @@ async def commit_bot(args):
     _set_pipeline_status(f"Committing v{v}")
 
     bot_dir = get_bot_dir(v)
+    try:
+        from tool_gates import _bot_code_fingerprint
+        current_code_fingerprint = _bot_code_fingerprint(bot_dir)
+    except Exception:
+        current_code_fingerprint = ""
 
     ckpt = _matching_checkpoint(v, source_v)
     missing_gates = []
@@ -74,6 +79,12 @@ async def commit_bot(args):
         missing_gates.append("pipeline_checkpoint")
     else:
         gate_results = ckpt.get("gate_results", {}) or {}
+        if not current_code_fingerprint:
+            failed_gates.append({
+                "gate": "code_fingerprint",
+                "reason": "current candidate code fingerprint is unavailable",
+                "path": str(bot_dir),
+            })
 
         quality = gate_results.get("quality")
         if not quality:
@@ -83,6 +94,16 @@ async def commit_bot(args):
                 failed_gates.append({"gate": "quality", "reason": "all_passed is not true", "value": quality})
             if quality.get("critical_scenarios_passed") is not True:
                 failed_gates.append({"gate": "quality", "reason": "critical_scenarios_passed is not true", "value": quality})
+            quality_fingerprint = quality.get("code_fingerprint")
+            if not quality_fingerprint:
+                missing_gates.append("quality_code_fingerprint")
+            elif current_code_fingerprint and quality_fingerprint != current_code_fingerprint:
+                failed_gates.append({
+                    "gate": "quality",
+                    "reason": "code_fingerprint changed since quality gates",
+                    "expected": quality_fingerprint,
+                    "current": current_code_fingerprint,
+                })
 
         review = gate_results.get("review")
         if not review:
@@ -111,6 +132,17 @@ async def commit_bot(args):
             missing_gates.append("precommit_eval")
         elif precommit.get("passed") is not True:
             failed_gates.append({"gate": "precommit_eval", "reason": "precommit eval did not pass", "value": precommit})
+        else:
+            precommit_fingerprint = precommit.get("code_fingerprint")
+            if not precommit_fingerprint:
+                missing_gates.append("precommit_code_fingerprint")
+            elif current_code_fingerprint and precommit_fingerprint != current_code_fingerprint:
+                failed_gates.append({
+                    "gate": "precommit_eval",
+                    "reason": "code_fingerprint changed since precommit eval",
+                    "expected": precommit_fingerprint,
+                    "current": current_code_fingerprint,
+                })
 
     if missing_gates or failed_gates:
         try:

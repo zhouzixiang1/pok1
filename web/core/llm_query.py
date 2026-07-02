@@ -285,21 +285,43 @@ def _subagent_is_outside_allowed(path_or_cmd, allowed_dir):
         return False
     low = text.lower()
     allowed = str(allowed_dir or "")
-    if allowed and allowed.lower() in low:
-        return False
+    allowed_low = allowed.lower()
+    allowed_markers = set()
     try:
-        marker = allowed.lower().split("bots/")[-1]
-        if marker and marker in low:
-            return False
+        marker = allowed_low.split("bots/")[-1].replace("\\", "/").strip("/")
+        if marker:
+            allowed_markers.add(f"bots/{marker}")
+            marker_win = marker.replace("/", "\\")
+            allowed_markers.add(f"bots\\{marker_win}")
     except Exception:
         pass
+    if allowed_low:
+        allowed_markers.add(allowed_low.rstrip("/\\"))
+
+    protected_markers = (
+        "web/core", "web/server", "web/frontend", "engine/", "sever/",
+        "docs/", "results/pipeline_state", "worker_failures",
+        "pipeline_state.json", ".git", "claude.md", "agents.md",
+    )
+    for protected in protected_markers:
+        if protected in low and not any(protected in marker for marker in allowed_markers):
+            return True
+
+    bot_refs = set(re.findall(r"bots[/\\]claude_v\d+", low))
+    allowed_bot_refs = {
+        marker for marker in allowed_markers
+        if "bots/claude_v" in marker or "bots\\claude_v" in marker
+    }
+    for ref in bot_refs:
+        ref_norm = ref.replace("\\", "/")
+        if not any(ref_norm == marker.replace("\\", "/") for marker in allowed_bot_refs):
+            return True
+
+    if allowed_markers and any(marker and marker in low for marker in allowed_markers):
+        return False
     if "bots/claude_v" in low or "bots\\claude_v" in low:
         return True
-    for protected in ("web/core", "web/server", "results/pipeline_state",
-                      "worker_failures", "pipeline_state.json", ".git"):
-        if protected in low:
-            return True
-    return False
+    return bool(allowed_markers)
 
 
 def _make_subagent_write_guard(allowed_write_dir):
@@ -1197,8 +1219,14 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
     except Exception as e:
         if is_shutdown_cancel_error(e):
             shutdown_requested = _is_shutdown_requested()
+            event_type = (
+                "pipeline.llm_role_shutdown_cancelled"
+                if shutdown_requested
+                else "pipeline.llm_role_process_terminated"
+            )
             _emit_llm_event(
-                "pipeline.llm_role_shutdown_cancelled", "info",
+                event_type,
+                "info" if shutdown_requested else "warn",
                 (
                     f"{role_name}: LLM call stopped during shutdown after {time.time() - call_started_at:.1f}s"
                     if shutdown_requested

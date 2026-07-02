@@ -119,44 +119,29 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
 
     if current_branch and current_branch != EVOLUTION_BRANCH:
         unexpected = _unexpected_entries(before, candidate_v)
-        if unexpected:
-            payload = {
-                "blocked": True,
-                "reason": "branch_drift_with_unexpected_worktree_entries",
-                "tool": tool_name,
-                "candidate_v": candidate_v,
-                "branch": before.get("branch"),
-                "head": before.get("head"),
-                "unexpected_entries": unexpected[:40],
-                "directive": "Stop this generation, inspect the unexpected files, then call abandon_generation before restarting.",
-            }
-            _log_guard_event("repo.runtime_guard_blocked", "error", "Runtime git guard blocked branch drift with dirty worktree", payload)
-            return False, payload
-        proc = _run_git("checkout", EVOLUTION_BRANCH)
-        after_checkout = git_worktree_snapshot()
         payload = {
+            "blocked": True,
+            "reason": "branch_drift",
             "tool": tool_name,
             "candidate_v": candidate_v,
-            "from_branch": before.get("branch"),
-            "to_branch": after_checkout.get("branch"),
-            "before_head": before.get("head"),
-            "after_head": after_checkout.get("head"),
-            "returncode": proc.returncode,
-            "stderr": (proc.stderr or "").strip()[:500],
+            "branch": before.get("branch"),
+            "expected_branch": EVOLUTION_BRANCH,
+            "head": before.get("head"),
+            "unexpected_entries": unexpected[:40],
+            "directive": (
+                "Runtime evolution tools must run from the canonical evolution "
+                "branch. Stop the service, inspect this branch/worktree, and "
+                "switch branches explicitly before restarting; the guard will "
+                "not auto-checkout."
+            ),
         }
         _log_guard_event(
-            "repo.runtime_branch_correction",
-            "warn" if proc.returncode == 0 else "error",
-            f"Runtime guard corrected branch before {tool_name}",
+            "repo.runtime_guard_blocked",
+            "error",
+            f"Runtime git guard blocked branch drift before {tool_name}",
             payload,
         )
-        if proc.returncode != 0:
-            payload.update({
-                "blocked": True,
-                "reason": "branch_correction_failed",
-                "directive": "Stop this generation and restore the repository to main before restarting.",
-            })
-            return False, payload
+        return False, payload
 
     snapshot = git_worktree_snapshot()
     if snapshot.get("truncated"):

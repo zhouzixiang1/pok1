@@ -171,6 +171,18 @@ def handle_signal(signum, frame):
         _threads = threading.active_count()
         log.warning("Received signal %s (%d) — shutting down gracefully. active_threads=%d",
                     _sig_name, signum, _threads)
+        log_system_event(
+            "daemon.signal_received",
+            "warn",
+            f"Daemon received {_sig_name} ({signum}); shutting down gracefully",
+            {
+                "signal": _sig_name,
+                "signum": signum,
+                "active_threads": _threads,
+                "pid": os.getpid(),
+                "shutdown_requested": True,
+            },
+        )
     except Exception:
         log.warning("Received signal %d, shutting down gracefully...", signum)
     running = False

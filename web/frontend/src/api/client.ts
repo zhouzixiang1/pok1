@@ -103,10 +103,24 @@ export const api = {
     fetchText(`${BASE}/logs/orchestrator/${encodeURIComponent(filename)}${tail ? `?tail=${tail}` : ""}`),
 
   // Logs - system events
-  systemEvents: (params?: { type?: string; severity?: string; since?: number; limit?: number; offset?: number }, signal?: AbortSignal) => {
+  systemEvents: (params?: {
+    type?: string;
+    category?: string;
+    severity?: string;
+    source?: "legacy" | "structured";
+    run_id?: string;
+    stage?: string;
+    since?: number;
+    limit?: number;
+    offset?: number;
+  }, signal?: AbortSignal) => {
     const p = new URLSearchParams();
+    p.set("source", params?.source ?? "structured");
     if (params?.type) p.set("type", params.type);
+    if (params?.category) p.set("category", params.category);
     if (params?.severity) p.set("severity", params.severity);
+    if (params?.run_id) p.set("run_id", params.run_id);
+    if (params?.stage) p.set("stage", params.stage);
     if (params?.since !== undefined) p.set("since", String(params.since));
     if (params?.limit !== undefined) p.set("limit", String(params.limit));
     if (params?.offset !== undefined) p.set("offset", String(params.offset));
@@ -114,10 +128,11 @@ export const api = {
   },
 
   // Logs - worker failures
-  workerFailures: (params?: { gen?: number; role?: string; limit?: number; offset?: number }, signal?: AbortSignal) => {
+  workerFailures: (params?: { gen?: number; role?: string; category?: "worker" | "gate"; limit?: number; offset?: number }, signal?: AbortSignal) => {
     const p = new URLSearchParams();
     if (params?.gen !== undefined && params.gen !== null) p.set("gen", String(params.gen));
     if (params?.role) p.set("role", params.role);
+    if (params?.category) p.set("category", params.category);
     if (params?.limit !== undefined) p.set("limit", String(params.limit));
     if (params?.offset !== undefined) p.set("offset", String(params.offset));
     return fetchJSON<WorkerFailuresResponse>(`${BASE}/logs/worker-failures?${p}`, signal);
@@ -178,4 +193,3 @@ export const api = {
   // Evolution reset
   resetEvolution: () => postJSON<{ status: string; details?: Record<string, unknown>; warning?: string }>(`${BASE}/control/reset`),
 };
-
