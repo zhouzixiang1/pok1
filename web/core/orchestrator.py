@@ -156,6 +156,7 @@ _ACTIONABLE_STALL_STAGES = frozenset({
     "quality_failed",
     "precommit_failed",
     "repair_planned",
+    "rework_running",
 })
 
 
@@ -1225,7 +1226,7 @@ async def _try_deterministic_checkpoint_route(recovery, ui=None):
         return False
     checkpoint = recovery.get("checkpoint") or {}
     stage = checkpoint.get("stage")
-    if stage != "quality_failed":
+    if stage not in _ACTIONABLE_STALL_STAGES:
         return False
     if _load_orchestrator_session():
         return False
@@ -1244,7 +1245,7 @@ async def _try_deterministic_checkpoint_route(recovery, ui=None):
         return False
 
     msg = (
-        f"[Recovery] Deterministically routing v{next_v} at quality_failed "
+        f"[Recovery] Deterministically routing v{next_v} at {stage} "
         "to execute_workers with checkpoint gate feedback."
     )
     if ui:

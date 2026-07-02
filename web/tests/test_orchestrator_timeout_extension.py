@@ -590,8 +590,12 @@ def test_actionable_stage_idle_timeout_is_infra_and_preserves_checkpoint(tmp_pat
     )
 
 
-def test_quality_failed_recovery_deterministically_calls_execute_workers(monkeypatch):
-    """A quality_failed checkpoint should not rely on another Orchestrator LLM turn."""
+@pytest.mark.parametrize(
+    "stage",
+    ["quality_failed", "repair_planned", "rework_running", "precommit_failed"],
+)
+def test_actionable_recovery_deterministically_calls_execute_workers(monkeypatch, stage):
+    """Actionable execute_workers checkpoints should not rely on another Orchestrator LLM turn."""
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
@@ -630,7 +634,7 @@ def test_quality_failed_recovery_deterministically_calls_execute_workers(monkeyp
     recovery = {
         "action": "resume",
         "checkpoint": {
-            "stage": "quality_failed",
+            "stage": stage,
             "next_v": 268,
             "source_v": 249,
             "parent2_v": 205,
@@ -646,6 +650,7 @@ def test_quality_failed_recovery_deterministically_calls_execute_workers(monkeyp
     fake_execute.handler.assert_awaited_once_with({"next_v": 268, "source_v": 249})
     assert any(e[0] == "pipeline.deterministic_route_execute_workers" for e in events)
     assert any(e[0] == "pipeline.deterministic_route_done" for e in events)
+    assert stage in ui.events[0][1]
 
 
 def test_actionable_stage_handoff_interrupts_active_stream(tmp_path, monkeypatch):
