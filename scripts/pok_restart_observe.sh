@@ -226,6 +226,8 @@ alert_events = {
     "daemon.crashed",
     "daemon.exited_cleanly",
     "orchestrator.crashed",
+    "orchestrator.recovery_blocked",
+    "orchestrator.recovery_blocked_stop",
     "pipeline.quality_failed",
     "pipeline.guard_block",
     "pipeline.subagent_guard_block",
@@ -235,10 +237,16 @@ alert_events = {
     "pipeline.llm_role_stream_cancelled",
     "pipeline.precommit_eval",
     "pipeline.precommit_infra_timeout",
+    "pipeline.prepare_blocked_runtime_guard",
+    "repo.runtime_guard_blocked",
 }
 fatal_events = {
+    "orchestrator.recovery_blocked",
+    "orchestrator.recovery_blocked_stop",
     "pipeline.llm_role_cancelled",
     "pipeline.llm_role_stream_cancelled",
+    "pipeline.prepare_blocked_runtime_guard",
+    "repo.runtime_guard_blocked",
 }
 stage_stale_limits = {
     "prepared": 900,
@@ -407,6 +415,11 @@ def check_service(force_heartbeat=False):
         "daemon_heartbeat_stale",
         "pipeline_checkpoint_unreadable",
         "active_generation_without_checkpoint",
+        "pipeline_checkpoint_recovery_diagnostic_failed",
+        "pipeline_repo_not_on_evolution_branch",
+        "pipeline_repo_baseline_branch_mismatch",
+        "pipeline_repo_baseline_head_mismatch",
+        "pipeline_worktree_snapshot_truncated",
     }
     matched_health = sorted(health_issues & fatal_health)
     if matched_health:

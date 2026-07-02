@@ -152,6 +152,15 @@ def _read_pipeline_health() -> dict:
         "audit_attempt": state.get("audit_attempt"),
         "precommit_attempt": state.get("precommit_attempt"),
     }
+    try:
+        from pipeline_recovery import checkpoint_recovery_diagnostics
+        snapshot["recovery"] = checkpoint_recovery_diagnostics(state)
+    except Exception as exc:
+        snapshot["recovery"] = {
+            "recoverable": False,
+            "issues": ["checkpoint_recovery_diagnostic_failed"],
+            "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+        }
     if stage_ts is not None:
         try:
             snapshot["last_stage_age_sec"] = round(now - float(stage_ts), 2)
@@ -202,6 +211,9 @@ def _health_summary(status: dict) -> dict:
         issues.append("active_generation_without_checkpoint")
     if pipeline.get("error"):
         issues.append("pipeline_checkpoint_unreadable")
+    recovery = pipeline.get("recovery") if isinstance(pipeline.get("recovery"), dict) else {}
+    for issue in recovery.get("issues") or []:
+        issues.append(f"pipeline_{issue}")
 
     if not status.get("running"):
         overall = "stopped"

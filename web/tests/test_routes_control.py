@@ -232,6 +232,53 @@ class TestStatus:
         assert "daemon_heartbeat_stale" in data["issues"]
         app_state.set_running(False)
 
+    def test_health_degrades_when_checkpoint_recovery_is_unrecoverable(self, client, monkeypatch):
+        import server.routes.control as control
+        from server.state import app_state
+
+        app_state.set_running(True)
+        monkeypatch.setattr(
+            app_state,
+            "task_snapshot",
+            lambda: {
+                "present": True,
+                "done": False,
+                "cancelled": False,
+                "shutdown_requested": False,
+            },
+        )
+        monkeypatch.setattr(
+            control,
+            "_daemon_health_snapshot",
+            lambda: {
+                "exists": True,
+                "pid": 123,
+                "alive": True,
+                "scheduler_capable": True,
+                "heartbeat_stale": False,
+            },
+        )
+        monkeypatch.setattr(
+            control,
+            "_read_pipeline_health",
+            lambda: {
+                "exists": True,
+                "stage": "workers_done",
+                "recovery": {
+                    "recoverable": False,
+                    "issues": ["repo_baseline_head_mismatch"],
+                },
+            },
+        )
+
+        resp = client.get("/api/control/health")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["overall"] == "degraded"
+        assert "pipeline_repo_baseline_head_mismatch" in data["issues"]
+        app_state.set_running(False)
+
 
 class TestDecisions:
     def test_returns_list(self, client):

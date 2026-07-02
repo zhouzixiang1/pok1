@@ -1006,6 +1006,49 @@ def _checkpoint_recovery_context(reason: str, ui=None):
     if next_v is None or source_v is None:
         return None
 
+    try:
+        from pipeline_recovery import checkpoint_recovery_diagnostics
+        recovery_diag = checkpoint_recovery_diagnostics(checkpoint)
+    except Exception as e:
+        recovery_diag = {
+            "active": True,
+            "recoverable": False,
+            "issues": ["checkpoint_recovery_diagnostic_failed"],
+            "error": f"{type(e).__name__}: {str(e)[:200]}",
+        }
+    if recovery_diag.get("active") and not recovery_diag.get("recoverable"):
+        issues = list(recovery_diag.get("issues") or [])
+        msg = (
+            f"[Recovery] Refusing checkpoint resume for v{next_v} at '{stage}' "
+            f"after {reason}: {', '.join(issues)}."
+        )
+        if ui:
+            ui.log_history(msg, "error")
+        else:
+            log.error(msg)
+        try:
+            log_system_event(
+                "orchestrator.recovery_blocked",
+                "error",
+                msg,
+                {
+                    "case": f"blocked_after_{reason}",
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "stage": stage,
+                    "issues": issues,
+                    "diagnostics": recovery_diag,
+                },
+            )
+        except Exception:
+            pass
+        return {
+            "action": "blocked",
+            "reason": "unrecoverable_checkpoint",
+            "checkpoint": checkpoint,
+            "diagnostics": recovery_diag,
+        }
+
     dead_stages = {None, "timed_out", "infra_timed_out", "archived", "abandoned"}
     if stage in dead_stages:
         return None
@@ -1291,6 +1334,29 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
             gen_count += 1
             log_system_event("orchestrator.cycle_start", "info", f"Cycle {gen_count} starting",
                              {"gen_count": gen_count})
+
+            if recovery and recovery.get("action") == "blocked":
+                diag = recovery.get("diagnostics") or {}
+                issues = diag.get("issues") or []
+                msg = (
+                    "Startup recovery is blocked by an unrecoverable pipeline "
+                    f"checkpoint: {', '.join(map(str, issues)) or recovery.get('reason')}"
+                )
+                if ui:
+                    ui.log_history(f"[Orchestrator] {msg}", "error")
+                    ui.set_status("Recovery blocked; manual checkpoint cleanup required", is_working=False)
+                log.error(msg)
+                log_system_event(
+                    "orchestrator.recovery_blocked_stop",
+                    "error",
+                    msg,
+                    {
+                        "reason": recovery.get("reason"),
+                        "issues": issues,
+                        "diagnostics": diag,
+                    },
+                )
+                break
 
             # If recovering, skip Phase 1 (context already known from checkpoint)
             if recovery and recovery.get("action") == "resume":
