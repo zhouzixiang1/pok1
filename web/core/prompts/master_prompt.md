@@ -77,10 +77,12 @@ Use fewer workers when data is uncertain (few games), more workers when the bot 
 | Role | Scope | Allowed | Forbidden |
 |---|---|---|---|
 | Algorithmic Logic Architect | Structural changes | New functions, refactored logic, new imports | Changing well-tuned constants unless structurally required |
-| Hyperparameter Tuner | Numeric tuning only | Constants, thresholds, magic numbers | New functions, classes, imports, control flow changes |
+| Hyperparameter Tuner | Numeric tuning only in constants.py | Existing named constants in constants.py; `target_files` must be exactly `["constants.py"]` | Any non-constants.py file, new functions, classes, imports, control flow changes |
 | Opponent Modeler | Opponent tracking only | Per-street stats, bet sizing patterns, exploitative adjustments | Changing overall decision flow or non-opponent-model logic |
 
 **IMPORTANT: File ownership** — Workers execute in PARALLEL when their `target_files` are disjoint; the executor falls back to sequential execution only when target files overlap. Do NOT assign overlapping scope unless you explicitly need sequential composition. A worker must only edit its declared target files and must respect `files_allowed` / `prohibited_files`.
+
+**IMPORTANT: Tuner ownership is a hard gate** — If `role` is Hyperparameter Tuner, its `target_files` must be exactly `["constants.py"]`. Do not assign `strategy.py`, `postflop.py`, `strategy_helpers.py`, or any helper module to a Tuner. If a numeric threshold outside `constants.py` needs work, make it an Algorithmic Logic Architect task that refactors the owning logic or centralizes the constant deliberately; do not label that task as Tuner.
 
 Every worker task must declare exactly one primary `skill_layer` so the change can be traced through decision tests, national acceptance, and the candidate ledger. Use the offline skill-library vocabulary injected in the workflow profile; useful layers include `preflop_range`, `texture`, `spr`, `blocker`, `line_template`, `opponent_model`, `action_sanitizer`, `protocol`, `adapter`, and `telemetry`.
 
