@@ -39,14 +39,14 @@ def test_generic_llm_cancel_alerts_but_is_not_fatal():
     assert observe_policy.is_fatal_event(event) is False
 
 
-def test_subagent_guard_block_remains_fatal():
+def test_subagent_guard_block_alerts_but_is_not_fatal():
     event = {
         "type": "pipeline.subagent_guard_block",
         "data": {"role": "CROSSOVER", "stage": "crossover_running"},
     }
 
     assert observe_policy.should_alert(event) is True
-    assert observe_policy.is_fatal_event(event) is True
+    assert observe_policy.is_fatal_event(event) is False
 
 
 def test_precommit_eval_only_alerts_when_failed():

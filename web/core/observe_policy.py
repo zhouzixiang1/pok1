@@ -26,8 +26,6 @@ ALERT_EVENTS = {
 FATAL_EVENTS = {
     "orchestrator.recovery_blocked",
     "orchestrator.recovery_blocked_stop",
-    "pipeline.subagent_guard_block",
-    "pipeline.subagent_readonly_guard_block",
     "pipeline.prepare_blocked_runtime_guard",
     "repo.runtime_guard_blocked",
 }
