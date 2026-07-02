@@ -208,6 +208,118 @@ def _read_shell_token(text, start, extra_stop_chars=""):
     return "".join(token), i
 
 
+def _split_shell_simple_commands(command):
+    """Split a shell command into simple command segments for guard analysis."""
+    text = _strip_heredoc_bodies(command)
+    quote = None
+    escaped = False
+    start = 0
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if escaped:
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\":
+            escaped = True
+            i += 1
+            continue
+        if quote:
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch in ";&|":
+            if ch == "&" and (
+                (i > 0 and text[i - 1] == ">") or text.startswith("&>", i)
+            ):
+                i += 1
+                continue
+            segment = text[start:i].strip()
+            if segment:
+                yield segment
+            i += 1
+            while i < len(text) and text[i] == ch:
+                i += 1
+            start = i
+            continue
+        i += 1
+    segment = text[start:].strip()
+    if segment:
+        yield segment
+
+
+def _shell_words(segment):
+    try:
+        return shlex.split(str(segment), posix=True)
+    except ValueError:
+        return str(segment).split()
+
+
+def _is_shell_assignment(word):
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", str(word)))
+
+
+def _strip_shell_redirection_words(words):
+    cleaned = []
+    i = 0
+    while i < len(words):
+        word = str(words[i])
+        if re.fullmatch(r"(?:\d+)?(?:>>?|<<?|&>>?|<>|>\|)", word):
+            i += 2
+            continue
+        if re.fullmatch(r"(?:\d+)?(?:>>?|<<?|&>>?|<>|>\|).+", word):
+            i += 1
+            continue
+        cleaned.append(word)
+        i += 1
+    return cleaned
+
+
+def _simple_command_words(segment):
+    words = _strip_shell_redirection_words(_shell_words(segment))
+    while words and _is_shell_assignment(words[0]):
+        words = words[1:]
+    while words and words[0] in {"command", "builtin"}:
+        words = words[1:]
+    if words and words[0] == "env":
+        words = words[1:]
+        while words and (words[0].startswith("-") or _is_shell_assignment(words[0])):
+            if words[0] in {"-u", "--unset"} and len(words) > 1:
+                words = words[2:]
+            else:
+                words = words[1:]
+    return words
+
+
+def _command_name(word):
+    return os.path.basename(str(word)).lower()
+
+
+def _non_option_args(args, options_with_value=()):
+    values = []
+    i = 0
+    while i < len(args):
+        arg = str(args[i])
+        if arg == "--":
+            values.extend(args[i + 1:])
+            break
+        if arg.startswith("-") and arg != "-":
+            if arg in options_with_value and i + 1 < len(args):
+                i += 2
+                continue
+            i += 1
+            continue
+        values.append(arg)
+        i += 1
+    return values
+
+
 def _iter_shell_write_redirect_targets(command):
     text = _strip_heredoc_bodies(command)
     quote = None
@@ -255,6 +367,143 @@ def _iter_shell_write_redirect_targets(command):
         if target:
             yield target
         i = max(end, j + 1)
+
+
+def _iter_subagent_bash_write_targets(command):
+    for target in _iter_shell_write_redirect_targets(command):
+        target = target.strip("'\"")
+        if target.startswith("&") or target.lower() in _SAFE_REDIRECT_TARGETS:
+            continue
+        yield "write_redirect", target
+
+    for segment in _split_shell_simple_commands(command):
+        words = _simple_command_words(segment)
+        if not words:
+            continue
+        cmd = _command_name(words[0])
+        args = words[1:]
+
+        if cmd in {"mkdir", "touch", "rm", "rmdir"}:
+            for target in _non_option_args(args):
+                yield cmd, target
+            continue
+
+        if cmd == "cp":
+            non_options = _non_option_args(args, options_with_value=("-t", "--target-directory"))
+            target_dir = None
+            for i, arg in enumerate(args):
+                if arg in {"-t", "--target-directory"} and i + 1 < len(args):
+                    target_dir = args[i + 1]
+                    break
+                if arg.startswith("--target-directory="):
+                    target_dir = arg.split("=", 1)[1]
+                    break
+            if target_dir:
+                yield "cp_dest", target_dir
+            elif len(non_options) >= 2:
+                yield "cp_dest", non_options[-1]
+            continue
+
+        if cmd == "mv":
+            non_options = _non_option_args(args, options_with_value=("-t", "--target-directory"))
+            target_dir = None
+            for i, arg in enumerate(args):
+                if arg in {"-t", "--target-directory"} and i + 1 < len(args):
+                    target_dir = args[i + 1]
+                    break
+                if arg.startswith("--target-directory="):
+                    target_dir = arg.split("=", 1)[1]
+                    break
+            if target_dir:
+                yield "mv_dest", target_dir
+                for source in non_options:
+                    yield "mv_source", source
+            elif len(non_options) >= 2:
+                for source in non_options[:-1]:
+                    yield "mv_source", source
+                yield "mv_dest", non_options[-1]
+            continue
+
+        if cmd == "tee":
+            for target in _non_option_args(args):
+                if target != "-":
+                    yield "tee", target
+            continue
+
+        if cmd == "sed" and any(arg == "-i" or str(arg).startswith("-i") for arg in args):
+            non_options = _non_option_args(args, options_with_value=("-e", "-f"))
+            for target in non_options[1:]:
+                yield "sed_i", target
+            continue
+
+        if cmd == "patch":
+            yield "patch", "__unknown_patch_target__"
+
+
+def _subagent_write_target_outside_allowed(target, allowed_dir):
+    text = str(target or "").strip().strip("'\"")
+    if not text:
+        return True
+    low = text.lower()
+    if text.startswith("&") or low in _SAFE_REDIRECT_TARGETS or text == "-":
+        return False
+    if text == "__unknown_patch_target__":
+        return True
+
+    try:
+        from pathlib import Path
+        from evolution_infra import PROJECT_ROOT
+
+        project_root = Path(PROJECT_ROOT).resolve()
+        allowed = Path(allowed_dir).resolve()
+        concrete = re.split(r"[*?\[$`{]", text, maxsplit=1)[0] or text
+        concrete = concrete.rstrip()
+        if not concrete:
+            return True
+        path = Path(concrete)
+        if not path.is_absolute():
+            path = project_root / path
+        resolved = path.resolve(strict=False)
+        try:
+            return os.path.commonpath([str(resolved), str(allowed)]) != str(allowed)
+        except ValueError:
+            return True
+    except Exception:
+        return _subagent_is_outside_allowed(text, allowed_dir)
+
+
+def _subagent_bash_write_scope_violation(command, allowed_dir):
+    """Return a violation reason when a Bash mutation writes outside allowed_dir."""
+    for detector, target in _iter_subagent_bash_write_targets(command):
+        if _subagent_write_target_outside_allowed(target, allowed_dir):
+            return f"{detector}:{str(target)[:120]}"
+
+    mutation_detector = _subagent_bash_mutation_detector(command)
+    if not mutation_detector:
+        return None
+
+    if mutation_detector.startswith("python_"):
+        return mutation_detector if _subagent_is_outside_allowed(command, allowed_dir) else None
+    if mutation_detector.startswith("git_") or mutation_detector == "git_tag_mutation":
+        return mutation_detector
+    if mutation_detector == "bash_pattern:patch":
+        return mutation_detector
+
+    target_aware = {
+        "bash_pattern:cat >",
+        "bash_pattern:cat >>",
+        "bash_pattern:cp",
+        "bash_pattern:mkdir",
+        "bash_pattern:mv",
+        "bash_pattern:rm",
+        "bash_pattern:rmdir",
+        "bash_pattern:sed -i",
+        "bash_pattern:tee",
+        "bash_pattern:touch",
+    }
+    if mutation_detector in target_aware:
+        return None
+    return mutation_detector if _subagent_is_outside_allowed(command, allowed_dir) else None
 
 
 def _iter_subagent_git_args(command):
@@ -516,11 +765,13 @@ def _make_subagent_write_guard(allowed_write_dir):
             if tool_name == "Bash":
                 cmd = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
                 mutation_detector = _subagent_bash_mutation_detector(cmd)
-                outside_allowed = _subagent_is_outside_allowed(cmd, _allowed)
-                if mutation_detector and outside_allowed:
+                write_scope_violation = _subagent_bash_write_scope_violation(cmd, _allowed)
+                outside_allowed = bool(write_scope_violation)
+                if write_scope_violation:
                     blocked = ("Bash mutation targets a path outside the allowed bot dir "
-                               + _allowed + ". Sub-agents may only edit their assigned "
-                               "target bot directory. Command: " + str(cmd)[:100])
+                               + _allowed + " (" + write_scope_violation + "). "
+                               "Sub-agents may only edit their assigned target bot "
+                               "directory. Command: " + str(cmd)[:100])
             elif tool_name in ("Edit", "Write", "NotebookEdit"):
                 fp = tool_input.get("file_path", "") or tool_input.get("notebook_path", "")
                 if _subagent_is_outside_allowed(fp, _allowed):
@@ -540,6 +791,7 @@ def _make_subagent_write_guard(allowed_write_dir):
                                       "command_preview": command_text[:2000],
                                       "command_truncated": len(command_text) > 2000,
                                       "mutation_detector": locals().get("mutation_detector"),
+                                      "write_scope_violation": locals().get("write_scope_violation"),
                                       "outside_allowed": locals().get("outside_allowed")})
                 except Exception:
                     pass
@@ -548,6 +800,77 @@ def _make_subagent_write_guard(allowed_write_dir):
                     "permissionDecision": "deny",
                     "permissionDecisionReason": blocked,
                 })
+        except Exception:
+            pass
+        from claude_agent_sdk.types import SyncHookJSONOutput
+        return SyncHookJSONOutput()
+
+    try:
+        from claude_agent_sdk.types import HookMatcher
+        return {"PreToolUse": [
+            HookMatcher(matcher="Bash", hooks=[handler]),
+            HookMatcher(matcher="Edit", hooks=[handler]),
+            HookMatcher(matcher="Write", hooks=[handler]),
+            HookMatcher(matcher="NotebookEdit", hooks=[handler]),
+        ]}
+    except Exception:
+        return None
+
+
+def _subagent_readonly_mutation_violation(tool_name, tool_input):
+    """Return a violation reason when a read-only role tries to mutate state."""
+    if tool_name == "Bash":
+        cmd = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
+        return _subagent_bash_mutation_detector(cmd)
+    if tool_name in ("Edit", "Write", "NotebookEdit"):
+        return f"{tool_name}_not_allowed"
+    return None
+
+
+def _make_subagent_readonly_guard(role_name):
+    """Build a hook that enforces read-only tools for non-worker LLM roles."""
+    async def handler(hook_input, tool_use_id, context):
+        try:
+            from claude_agent_sdk.types import SyncHookJSONOutput
+            tool_name = hook_input.get("tool_name", "") if isinstance(hook_input, dict) else ""
+            tool_input = hook_input.get("tool_input", {}) if isinstance(hook_input, dict) else {}
+            violation = _subagent_readonly_mutation_violation(tool_name, tool_input)
+            if not violation:
+                return SyncHookJSONOutput()
+            if tool_name == "Bash":
+                command_text = str(tool_input.get("command", "") if isinstance(tool_input, dict) else "")
+            else:
+                if isinstance(tool_input, dict):
+                    command_text = str(
+                        tool_input.get("file_path", "") or tool_input.get("notebook_path", "")
+                    )
+                else:
+                    command_text = ""
+            blocked = (
+                f"{role_name} is a read-only role; {tool_name} mutation is denied "
+                f"({violation}). Use observe/read commands only."
+            )
+            try:
+                from system_log import log_system_event
+                log_system_event(
+                    "pipeline.subagent_readonly_guard_block",
+                    "error",
+                    f"BLOCKED read-only {role_name} {tool_name}: {violation}",
+                    {
+                        "role": role_name,
+                        "tool": tool_name,
+                        "reason": violation,
+                        "command_preview": command_text[:2000],
+                        "command_truncated": len(command_text) > 2000,
+                    },
+                )
+            except Exception:
+                pass
+            return SyncHookJSONOutput(hookSpecificOutput={
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": blocked,
+            })
         except Exception:
             pass
         from claude_agent_sdk.types import SyncHookJSONOutput
@@ -1365,11 +1688,16 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
     if tools and any(t == "Bash" for t in (tools if isinstance(tools, list) else [])):
         _cost_hooks = _make_subagent_cost_guard(role_name)
     _write_hooks = None
+    _readonly_hooks = None
     if allowed_write_dir is not None and tools and any(
         t in ("Bash", "Edit", "Write", "NotebookEdit") for t in (tools if isinstance(tools, list) else [])
     ):
         _write_hooks = _make_subagent_write_guard(allowed_write_dir)
-    _sub_hooks = _merge_hooks(_cost_hooks, _write_hooks)
+    elif allowed_write_dir is None and tools and any(
+        t in ("Bash", "Edit", "Write", "NotebookEdit") for t in (tools if isinstance(tools, list) else [])
+    ):
+        _readonly_hooks = _make_subagent_readonly_guard(role_name)
+    _sub_hooks = _merge_hooks(_cost_hooks, _write_hooks, _readonly_hooks)
     options_kwargs = dict(
         model=model,
         permission_mode="bypassPermissions",

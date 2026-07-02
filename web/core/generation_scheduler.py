@@ -492,6 +492,42 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     except Exception:
         pass
 
+    try:
+        from evolution_infra import write_pipeline_checkpoint
+        parent2_v = parents[1] if parents and len(parents) > 1 else None
+        ok = write_pipeline_checkpoint(
+            _final_next_v,
+            source_v,
+            "selected",
+            parent2_v=parent2_v,
+            audit_context={
+                "selection": {
+                    "strategy": strategy[:80],
+                    "current_v": current_v,
+                    "max_committed_v": max_committed_v,
+                    "abandoned_floor": _abandoned_floor,
+                    "parent_a": parents[0] if parents else None,
+                    "parent_b": parent2_v,
+                }
+            },
+        )
+    except Exception as exc:
+        log_system_event(
+            "pipeline.generation_selection_checkpoint_failed",
+            "error",
+            f"Failed to persist selected checkpoint for v{_final_next_v}: {exc}",
+            {"next_v": _final_next_v, "source_v": source_v, "strategy": strategy[:80]},
+        )
+        raise
+    if not ok:
+        log_system_event(
+            "pipeline.generation_selection_checkpoint_failed",
+            "error",
+            f"Checkpoint write refused after selecting v{_final_next_v}",
+            {"next_v": _final_next_v, "source_v": source_v, "strategy": strategy[:80]},
+        )
+        raise RuntimeError(f"selected checkpoint refused for v{_final_next_v}")
+
     return GenerationContext(
         current_v=current_v,
         next_v=_final_next_v,

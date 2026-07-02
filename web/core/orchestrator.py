@@ -1052,8 +1052,6 @@ def _checkpoint_recovery_context(reason: str, ui=None):
     dead_stages = {None, "timed_out", "infra_timed_out", "archived", "abandoned"}
     if stage in dead_stages:
         return None
-    if stage == "prepared" and not checkpoint.get("master_plan"):
-        return None
 
     recovery = {
         "action": "resume",
@@ -1178,7 +1176,8 @@ async def _watchdog_coroutine(ui, shutdown_mgr, check_interval=60):
     from evolution_infra import WATCHDOG_TIMEOUT
     from evolution_core import read_pipeline_checkpoint
 
-    recoverable_stages = {"direction_audited", "master_planned", "workers_done",
+    recoverable_stages = {"selected", "preparing", "prepared", "crossover_running",
+                          "direction_audited", "master_planned", "workers_done",
                           "quality_passed", "reviewed", "critic_checked", "precommit_failed", "verified"}
 
     while True:

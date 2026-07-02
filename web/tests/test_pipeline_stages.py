@@ -971,6 +971,53 @@ class TestJsonOutputParsing:
 class TestPipelineStateTransitions:
     """Verify pipeline state machine transitions are correct."""
 
+    def test_early_generation_lease_transitions(self, tmp_path, monkeypatch):
+        """Early stages persist selection and materialization before LLM work."""
+        import evolution_infra
+
+        ckpt_file = tmp_path / "pipeline_state.json"
+        monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", ckpt_file)
+        monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
+
+        assert evolution_infra.write_pipeline_checkpoint(
+            next_v=11, source_v=10, stage="selected",
+        )
+        assert evolution_infra.write_pipeline_checkpoint(
+            next_v=11, source_v=10, stage="preparing",
+        )
+        assert evolution_infra.write_pipeline_checkpoint(
+            next_v=11, source_v=10, stage="prepared",
+        )
+        assert evolution_infra.write_pipeline_checkpoint(
+            next_v=11, source_v=10, stage="direction_audited",
+        )
+
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["stage"] == "direction_audited"
+
+    def test_crossover_running_can_advance_to_workers_done(self, tmp_path, monkeypatch):
+        """Crossover has a recoverable running stage before workers_done."""
+        import evolution_infra
+
+        ckpt_file = tmp_path / "pipeline_state.json"
+        monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", ckpt_file)
+        monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
+
+        assert evolution_infra.write_pipeline_checkpoint(
+            next_v=12, source_v=10, stage="selected", parent2_v=9,
+        )
+        assert evolution_infra.write_pipeline_checkpoint(
+            next_v=12, source_v=10, stage="crossover_running", parent2_v=9,
+        )
+        assert evolution_infra.write_pipeline_checkpoint(
+            next_v=12, source_v=10, stage="workers_done", parent2_v=9,
+            master_plan={"strategy": "crossover", "tasks": []},
+        )
+
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["stage"] == "workers_done"
+        assert ckpt["parent2_v"] == 9
+
     def test_prepared_to_master_planned(self, tmp_path, monkeypatch):
         """Stage transitions: prepared → master_planned."""
         import evolution_infra

@@ -396,7 +396,10 @@ def _load_guardian_insights(max_entries=3):
 
 # Unified stage hints — used by _build_context and _format_checkpoint_info.
 STAGE_HINTS = {
+    "selected":          "Generation selected → call prepare_next_gen or run_crossover according to strategy",
+    "preparing":         "Preparation was interrupted → call prepare_next_gen again for the same source/target",
     "prepared":          "Call run_direction_audit first",
+    "crossover_running": "Crossover was interrupted → call run_crossover again for the same parents/target",
     "direction_audited": "Direction audited → call run_master",
     "master_planned":    "Master done → call execute_workers",
     "workers_done":      "Workers done → call run_quality_gates",
@@ -411,7 +414,10 @@ STAGE_HINTS = {
 
 # Short-form hints for PreCompact hook (tool names only).
 STAGE_HINTS_COMPACT = {
+    "selected":          "prepare_next_gen or run_crossover",
+    "preparing":         "prepare_next_gen",
     "prepared":          "run_direction_audit",
+    "crossover_running": "run_crossover",
     "direction_audited": "run_master",
     "master_planned":    "execute_workers",
     "workers_done":      "run_quality_gates",

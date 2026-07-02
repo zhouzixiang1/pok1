@@ -715,3 +715,52 @@ def test_startup_recovery_blocks_unrecoverable_checkpoint(monkeypatch):
     assert result["reason"] == "unrecoverable_checkpoint"
     assert cleared == ["unrecoverable_checkpoint"]
     assert any(args[0] == "orchestrator.recovery_blocked" for args, _ in events)
+
+
+def test_startup_recovery_resumes_prepared_without_master_plan(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    import evolution_infra
+    import orchestrator_session
+    import pipeline_recovery
+
+    checkpoint = {
+        "next_v": 260,
+        "source_v": 254,
+        "stage": "prepared",
+        "master_plan": None,
+        "repo_baseline": {"branch": "main", "head": "same123"},
+    }
+    cleared = []
+    events = []
+    fake_evolution_core = SimpleNamespace(
+        read_pipeline_checkpoint=lambda: checkpoint,
+        clear_pipeline_checkpoint=lambda: cleared.append("checkpoint"),
+    )
+    fake_system_log = SimpleNamespace(
+        log_system_event=lambda *args, **kwargs: events.append((args, kwargs))
+    )
+
+    monkeypatch.setitem(sys.modules, "evolution_core", fake_evolution_core)
+    monkeypatch.setitem(sys.modules, "system_log", fake_system_log)
+    monkeypatch.setattr(orchestrator_session, "_load_orchestrator_session", lambda: None)
+    monkeypatch.setattr(
+        orchestrator_session,
+        "_clear_orchestrator_session",
+        lambda reason="completed_or_reset": cleared.append(reason),
+    )
+    monkeypatch.setattr(evolution_infra, "git_has_tag", lambda _v: False)
+    monkeypatch.setattr(
+        pipeline_recovery,
+        "checkpoint_recovery_diagnostics",
+        lambda _checkpoint: {"active": True, "recoverable": True, "issues": []},
+    )
+
+    result = orchestrator_session._startup_recovery()
+
+    assert result["action"] == "resume"
+    assert result["stage"] == "prepared"
+    assert result["next_v"] == 260
+    assert cleared == []
+    assert any(args[0] == "orchestrator.recovery_decision" for args, _ in events)

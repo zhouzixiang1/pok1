@@ -991,6 +991,21 @@ PYEOF
     write_git_clean = "git clean -fd"
     write_git_merge = "git merge feature"
     write_git_rebase = "git rebase main"
+    copy_parent_into_allowed = (
+        "mkdir -p bots/claude_v234 && "
+        "cp bots/claude_v240/*.py bots/claude_v234/ && "
+        "ls bots/claude_v234/ 2>&1"
+    )
+    copy_parent_files_into_allowed = (
+        "cp bots/claude_v240/main.py bots/claude_v240/strategy.py "
+        "bots/claude_v234/"
+    )
+    copy_into_other_bot = "cp bots/claude_v240/*.py bots/claude_v235/"
+    mkdir_other_bot = "mkdir -p bots/claude_v235"
+    tee_protected = "printf x | tee web/core/tmp.txt"
+    redirect_allowed = "echo x > bots/claude_v234/notes.txt"
+    rm_allowed = "rm bots/claude_v234/tmp.py"
+    rm_other_bot = "rm bots/claude_v240/tmp.py"
 
     assert llm_query._subagent_is_outside_allowed(readonly_ls, allowed) is True
     assert llm_query._subagent_bash_is_mutation(readonly_ls) is False
@@ -1024,6 +1039,28 @@ PYEOF
     assert llm_query._subagent_bash_mutation_detector(write_python) == "python_write_pattern:.write_text("
     assert llm_query._subagent_bash_mutation_detector(write_tag) == "git_tag_mutation"
     assert llm_query._subagent_bash_mutation_detector(write_git_reset) == "git_command:reset"
+    assert llm_query._subagent_bash_is_mutation(copy_parent_into_allowed) is True
+    assert llm_query._subagent_bash_write_scope_violation(copy_parent_into_allowed, allowed) is None
+    assert llm_query._subagent_bash_write_scope_violation(copy_parent_files_into_allowed, allowed) is None
+    assert llm_query._subagent_bash_write_scope_violation(redirect_allowed, allowed) is None
+    assert llm_query._subagent_bash_write_scope_violation(rm_allowed, allowed) is None
+    assert llm_query._subagent_bash_write_scope_violation(copy_into_other_bot, allowed).startswith("cp_dest:")
+    assert llm_query._subagent_bash_write_scope_violation(mkdir_other_bot, allowed).startswith("mkdir:")
+    assert llm_query._subagent_bash_write_scope_violation(tee_protected, allowed).startswith("tee:")
+    assert llm_query._subagent_bash_write_scope_violation(rm_other_bot, allowed).startswith("rm:")
+    assert llm_query._subagent_bash_write_scope_violation(write_git_reset, allowed) == "git_command:reset"
+    assert llm_query._subagent_readonly_mutation_violation(
+        "Bash", {"command": readonly_git_status}
+    ) is None
+    assert llm_query._subagent_readonly_mutation_violation(
+        "Bash", {"command": copy_parent_into_allowed}
+    ) == "bash_pattern:cp"
+    assert llm_query._subagent_readonly_mutation_violation(
+        "Bash", {"command": write_redirect}
+    ).startswith("write_redirect:")
+    assert llm_query._subagent_readonly_mutation_violation(
+        "Edit", {"file_path": "bots/claude_v234/main.py"}
+    ) == "Edit_not_allowed"
 
 
 def test_commit_bot_blocks_missing_code_fingerprints(tmp_path, monkeypatch):
