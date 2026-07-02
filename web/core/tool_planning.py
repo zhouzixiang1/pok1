@@ -2616,12 +2616,19 @@ def _quality_rework_skipper(next_dir, source_dir, next_v, source_v):
 
     def skipper(task):
         blockers = remaining_blockers()
-        if _task_matches_quality_blocker(task, "size") and "size" not in blockers:
-            return "quality size blocker already cleared by current code"
-        if _task_matches_quality_blocker(task, "position_semantics") and "position_semantics" not in blockers:
-            return "quality position_semantics blocker already cleared by current code"
-        if not blockers and any(_task_matches_quality_blocker(task, b) for b in ("size", "position_semantics")):
+        task_blockers = {
+            blocker for blocker in ("size", "position_semantics")
+            if _task_matches_quality_blocker(task, blocker)
+        }
+        if not task_blockers:
+            return ""
+        if not blockers:
             return "all cheap quality rework blockers already cleared by current code"
+        if task_blockers.isdisjoint(blockers):
+            return (
+                "quality blocker(s) already cleared by current code: "
+                + ", ".join(sorted(task_blockers))
+            )
         return ""
 
     return skipper

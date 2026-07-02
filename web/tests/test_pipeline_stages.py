@@ -1175,6 +1175,61 @@ class TestWorkerFailureCircuitBreaker:
         assert ckpt["stage"] == "workers_done"
         assert ckpt["master_plan"]["work_item"]["kind"] == "quality_repair"
 
+    def test_quality_rework_skipper_keeps_mixed_task_when_one_blocker_remains(self, tmp_path, monkeypatch):
+        """A position task mentioning size feedback must still run while position blockers remain."""
+        import tool_gates
+        import tool_planning
+
+        monkeypatch.setattr(tool_planning, "check_code_size", lambda *_a, **_k: (0, []))
+        monkeypatch.setattr(
+            tool_gates,
+            "detect_position_semantics_errors",
+            lambda _dir: ["state.py: SB must be dealer_id"],
+        )
+
+        skipper = tool_planning._quality_rework_skipper(
+            tmp_path / "claude_v11",
+            tmp_path / "claude_v10",
+            11,
+            10,
+        )
+        mixed_task = {
+            "worker_id": "w1_position_contract",
+            "role": "arch",
+            "target_files": ["opponent.py", "state.py", "strategy_helpers.py"],
+            "worker_prompt": (
+                "Quality failed: file_size(strategy.py:2498L/2476L); "
+                "position_semantics(state.py:223); protected_contract"
+            ),
+        }
+        size_only_task = {
+            "worker_id": "w2_size_trim",
+            "role": "arch",
+            "target_files": ["strategy.py"],
+            "worker_prompt": "Fix file_size and LOC only",
+        }
+
+        assert skipper(mixed_task) == ""
+        assert "size" in skipper(size_only_task)
+
+    def test_run_quality_gates_blocks_repair_planned_stage(self, tmp_path, monkeypatch):
+        """Quality gates must not run again before repair workers execute."""
+        import asyncio
+        import tool_gates
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, stage="repair_planned")
+        result = asyncio.run(tool_gates.run_quality_gates.handler({
+            "version": 11,
+            "source_v": 10,
+        }))
+        data = json.loads(result["content"][0]["text"])
+
+        assert "STATE BLOCKED" in data["error"]
+        assert "execute_workers" in data["error"]
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["stage"] == "repair_planned"
+        assert ckpt["gate_results"] == {}
+
     def test_failed_workers_increment_count(self, tmp_path, monkeypatch):
         """Failed worker batches should increase the failure counter by 1 per round."""
         import asyncio

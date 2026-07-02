@@ -181,6 +181,26 @@ async def run_quality_gates(args):
         return _json_tool_result({"error": "Missing version and no active pipeline checkpoint"})
     v = int(v)
     source_v = int(source_v) if source_v is not None else None
+    active_ckpt = _matching_checkpoint(v, source_v) if source_v is not None else _matching_checkpoint(v)
+    if active_ckpt and active_ckpt.get("stage") in {"quality_failed", "repair_planned", "rework_running"}:
+        next_tool = next_tool_for_checkpoint(active_ckpt)
+        message = (
+            f"run_quality_gates is not valid while checkpoint stage is "
+            f"{active_ckpt.get('stage')}; next tool is {next_tool}. "
+            "Call execute_workers with the saved repair tasks and exact quality failures first."
+        )
+        log_system_event(
+            "pipeline.quality_gate_blocked_rework",
+            "warn",
+            message,
+            {
+                "version": v,
+                "source_v": source_v,
+                "stage": active_ckpt.get("stage"),
+                "next_tool": next_tool,
+            },
+        )
+        return _state_blocked(message, v, source_v, checkpoint=active_ckpt)
     bot_dir = get_bot_dir(v)
     workflow_profile = get_workflow_profile()
     candidate_id = f"claude_v{v}_from_v{source_v}" if source_v is not None else f"claude_v{v}"
