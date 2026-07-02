@@ -13,12 +13,16 @@ import time
 from pathlib import Path
 from typing import Any
 
-from evolution_infra import RESULTS_DIR, append_locked_jsonl, locked_file
+import evolution_infra
+from evolution_infra import append_locked_jsonl, locked_file
 from pipeline_schema import ArtifactRef, CandidateRecord, GateResult, ScoreCard
 
 
-CANDIDATE_EVENTS_FILE = RESULTS_DIR / "candidates.jsonl"
-CANDIDATE_DB_FILE = RESULTS_DIR / "candidates.sqlite3"
+_IMPORT_RESULTS_DIR = evolution_infra.RESULTS_DIR
+_IMPORT_CANDIDATE_EVENTS_FILE = _IMPORT_RESULTS_DIR / "candidates.jsonl"
+
+CANDIDATE_EVENTS_FILE = _IMPORT_CANDIDATE_EVENTS_FILE
+CANDIDATE_DB_FILE = _IMPORT_RESULTS_DIR / "candidates.sqlite3"
 
 
 SCHEMA_VERSION = 1
@@ -50,8 +54,18 @@ def _db_path_for_events(path: Path | None = None) -> Path:
     from that event path keeps writes isolated without every test needing to
     patch another module global.
     """
-    event_path = Path(path or CANDIDATE_EVENTS_FILE)
+    event_path = _events_path(path)
     return event_path.with_suffix(".sqlite3")
+
+
+def _events_path(path: Path | None = None) -> Path:
+    if path is not None:
+        return Path(path)
+    configured = Path(CANDIDATE_EVENTS_FILE)
+    dynamic_default = evolution_infra.RESULTS_DIR / "candidates.jsonl"
+    if configured == _IMPORT_CANDIDATE_EVENTS_FILE and dynamic_default != _IMPORT_CANDIDATE_EVENTS_FILE:
+        return dynamic_default
+    return configured
 
 
 def _connect(path: Path | None = None) -> sqlite3.Connection:
@@ -378,7 +392,7 @@ def append_candidate_event(
         artifacts=artifacts or {},
         artifact_refs=refs,
     )
-    events_path = Path(path or CANDIDATE_EVENTS_FILE)
+    events_path = _events_path(path)
     events_path.parent.mkdir(parents=True, exist_ok=True)
     entry = record.model_dump()
     append_locked_jsonl(events_path, entry)
@@ -392,9 +406,10 @@ def read_candidate_events(
     candidate_id: str | None = None,
     event_source: str | None = None,
     limit: int | None = None,
-    path: Path = CANDIDATE_EVENTS_FILE,
+    path: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Read candidate ledger entries, newest-last."""
+    path = _events_path(path)
     if not path.exists():
         return []
     rows: list[dict[str, Any]] = []
