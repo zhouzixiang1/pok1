@@ -68,6 +68,21 @@ def classify_action(action):
         return "raise"
 
 
+def effective_action_category(action, scenario):
+    """Return scenario-aware action category.
+
+    Local Botzone JSON uses response 0 for both call and check. Scenarios that
+    need national protocol grounding can set ``zero_action`` to ``"check"`` or
+    ``"call"`` so legality metadata can distinguish those meanings.
+    """
+    category = classify_action(action)
+    if action == 0:
+        zero_action = str(scenario.get("zero_action") or "").strip().lower()
+        if zero_action in {"check", "call"}:
+            return zero_action
+    return category
+
+
 def audit_action_grounding(action, category, scenario):
     """Validate optional action-grounding metadata on a scenario.
 
@@ -76,6 +91,7 @@ def audit_action_grounding(action, category, scenario):
     protocol mistakes before the national adapter has to clamp them.
     """
     failures = []
+    category = effective_action_category(action, scenario)
     legal_actions = scenario.get("legal_actions") or []
     if legal_actions and category not in legal_actions:
         failures.append(f"Action {category} not legal in spot legal_actions={legal_actions}")
@@ -765,7 +781,7 @@ def run_single_scenario(bot_path, scenario):
 
         result = json.loads(proc.stdout.strip())
         action = int(result.get("response", -1))
-        category = classify_action(action)
+        category = effective_action_category(action, scenario)
         grounding_failures = audit_action_grounding(action, category, scenario)
         if grounding_failures:
             return False, "; ".join(grounding_failures)

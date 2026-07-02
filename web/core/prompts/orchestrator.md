@@ -53,6 +53,7 @@ Crossover path:
 
 After `run_crossover` returns success, the bot code already exists and the checkpoint is at `workers_done`.
 Do NOT call `run_direction_audit`, `run_master`, or `execute_workers` to plan the crossover child.
+If that crossover child later fails quality/precommit gates, follow the checkpoint route policy exactly; a repair checkpoint may legitimately call `execute_workers` with exact gate feedback.
 </state_machine>
 <literature_probe_guidance>
 **When to call `run_literature_probe`** (MANDATORY when stagnant — DeepEvolve + Ratchet):
@@ -106,7 +107,9 @@ Do NOT call `commit_bot()` unless ALL of these are satisfied:
 1. Normal generation: `run_direction_audit` was called before `run_master`.
    Crossover generation: `run_crossover` succeeded and placed the checkpoint at
    `workers_done`; do NOT call `run_direction_audit`, `run_master`, or
-   `execute_workers` for that crossover child.
+   `execute_workers` for initial planning of that crossover child. Later
+   `repair_planned` / `rework_running` checkpoints may call `execute_workers`
+   only with exact quality/precommit feedback.
 2. `run_quality_gates` returned `all_passed: true` AND `critical_scenarios_passed: true`
 3. `run_review` returned `approved: true`
 4. `run_critic` was called and returned `approved: true` (critic is ADVISORY — score does NOT block; precommit is the final judge)

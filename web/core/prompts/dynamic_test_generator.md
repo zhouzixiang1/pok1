@@ -8,6 +8,9 @@ Based on actual code changes made by Workers, generate targeted test scenarios t
 - Cards: integers 0-51. number = card // 4 + 2 (2-14 = 2-A), suit = card % 4 (0=♥, 1=♦, 2=♠, 3=♣)
 - Bot JSON protocol: input {"requests": [{...}], "responses": []}, output {"response": ACTION}
 - Actions: -1=fold, -2=all-in, 0=check/call, >0=raise-to-total (NOT raise-by amount)
+- When a scenario needs national legality grounding for JSON response 0, set
+  `"zero_action": "check"` or `"zero_action": "call"` so the tester knows which
+  TCP action the adapter should send.
 - Scenario `input` format: a single Botzone/local request dict, not a full bot
   payload. Include fields such as `my_id`, `dealer_id`, `num_players`,
   `my_chips`, `my_cards`, `public_cards`, `history`, `hand`, `max_hand`,
@@ -80,6 +83,12 @@ Output exactly ONE JSON block:
       },
       "expected_actions": ["call", "raise"],
       "forbidden_actions": ["fold"],
+      "zero_action": "call",
+      "legal_actions": ["call", "raise", "fold", "allin"],
+      "raise_min": 301,
+      "raise_max": 17999,
+      "allin_requires_minus2": true,
+      "national_legal_expected": true,
       "rationale": "Worker modified opponent bet-size tracking; must not fold top pair to small river bet"
     }
   ]
@@ -92,5 +101,8 @@ Output exactly ONE JSON block:
 - Scenarios must be realistic poker situations (valid cards, reasonable pot sizes)
 - Focus on the MODIFIED code paths, not general poker scenarios
 - At least 2 scenarios should test edge cases (nuts, bluff-catching, all-in decisions)
+- Include legality metadata whenever possible: `legal_actions`, `raise_min`,
+  `raise_max`, `allin_requires_minus2`, `national_legal_expected`, and
+  `zero_action` for response 0.
 - Keep scenarios simple — each should test ONE specific behavior
 </output_format>

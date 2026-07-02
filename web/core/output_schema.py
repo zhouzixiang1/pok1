@@ -170,6 +170,7 @@ class DynamicTestScenario(BaseModel):
     input: dict
     expected_actions: list[str] = []
     forbidden_actions: list[str] = []
+    zero_action: Optional[str] = None
     legal_actions: list[str] = []
     raise_min: Optional[int] = None
     raise_max: Optional[int] = None

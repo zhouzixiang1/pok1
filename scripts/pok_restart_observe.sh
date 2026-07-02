@@ -16,6 +16,7 @@ CLEAR_CHECKPOINT="never"
 OBSERVE_GENERATIONS="3"
 OBSERVE_TIMEOUT="21600"
 DRY_RUN=0
+OBSERVE_ONLY=0
 
 usage() {
     cat <<EOF
@@ -34,6 +35,7 @@ Options:
                                   default keeps pipeline_state.json
   --observe-generations N         terminal generation events to observe after restart (default: 3)
   --observe-timeout SEC           max observation seconds (default: 21600)
+  --observe-only                  do not restart or mutate config; only observe existing service
   --dry-run                       print actions only
 EOF
 }
@@ -50,6 +52,7 @@ while [ $# -gt 0 ]; do
         --clear-checkpoint) CLEAR_CHECKPOINT="$2"; shift 2 ;;
         --observe-generations) OBSERVE_GENERATIONS="$2"; shift 2 ;;
         --observe-timeout) OBSERVE_TIMEOUT="$2"; shift 2 ;;
+        --observe-only) OBSERVE_ONLY=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage; exit 2 ;;
@@ -109,13 +112,17 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     fi
 fi
 
-if [ "$CLEAR_CHECKPOINT" = "backup-and-clear" ] && [ -f "$RESULTS_DIR/pipeline_state.json" ]; then
+if [ "$OBSERVE_ONLY" = "1" ]; then
+    log "observe-only mode: no checkpoint/session/config changes and no restart"
+elif [ "$CLEAR_CHECKPOINT" = "backup-and-clear" ] && [ -f "$RESULTS_DIR/pipeline_state.json" ]; then
     run cp "$RESULTS_DIR/pipeline_state.json" "$RESULTS_DIR/pipeline_state.${TS}.bak.json"
     run rm -f "$RESULTS_DIR/pipeline_state.json"
 fi
 
 SESSION_FILE="$RESULTS_DIR/orchestrator_session.json"
-if [ "$CLEAR_SESSION" = "always" ]; then
+if [ "$OBSERVE_ONLY" = "1" ]; then
+    log "observe-only mode kept existing session file if present"
+elif [ "$CLEAR_SESSION" = "always" ]; then
     run rm -f "$SESSION_FILE"
 elif [ "$CLEAR_SESSION" = "stale" ] && [ ! -f "$RESULTS_DIR/pipeline_state.json" ]; then
     run rm -f "$SESSION_FILE"
@@ -123,8 +130,12 @@ else
     log "session policy kept existing session file if present"
 fi
 
-log "writing daemon config workers=$DAEMON_WORKERS pairs=$DAEMON_PAIRS"
-if [ "$DRY_RUN" = "0" ]; then
+if [ "$OBSERVE_ONLY" = "1" ]; then
+    log "observe-only mode skipped daemon config write"
+else
+    log "writing daemon config workers=$DAEMON_WORKERS pairs=$DAEMON_PAIRS"
+fi
+if [ "$DRY_RUN" = "0" ] && [ "$OBSERVE_ONLY" = "0" ]; then
     python - "$RESULTS_DIR/app_config.json" "$DAEMON_WORKERS" "$DAEMON_PAIRS" <<'PY'
 import json
 import pathlib
@@ -150,10 +161,16 @@ fi
 # Do not let the long-lived web server inherit the restart lock fd. Bash file
 # descriptors are inherited by child processes by default; if web/main.py keeps
 # fd 9 open, every later restart sees restart.lock as permanently held.
-log "releasing restart lock before spawning web service"
-flock -u 9
-exec 9>&-
-run ./pokctl.sh restart "${START_ARGS[@]}"
+if [ "$OBSERVE_ONLY" = "0" ]; then
+    log "releasing restart lock before spawning web service"
+    flock -u 9
+    exec 9>&-
+    run ./pokctl.sh restart "${START_ARGS[@]}"
+else
+    log "releasing restart lock before observe-only loop"
+    flock -u 9
+    exec 9>&-
+fi
 
 if [ "$DRY_RUN" = "0" ]; then
     log "waiting for HTTP health"
@@ -423,10 +440,18 @@ def check_service(force_heartbeat=False):
         checkpoint_missing_since = None
     stage = pipeline.get("stage")
     stage_age = pipeline.get("last_stage_age_sec")
+    update_age = pipeline.get("last_update_age_sec")
     if stage and stage_age is not None:
         limit = stage_stale_limits.get(stage, default_stage_stale_limit)
         try:
-            if float(stage_age) > limit:
+            activity_limit = min(limit, 900)
+            activity_fresh = update_age is not None and float(update_age) <= activity_limit
+            if float(stage_age) > limit and activity_fresh:
+                write_line(
+                    f"[stage-stale-warning] stage={stage} age={stage_age}s limit={limit}s "
+                    f"but checkpoint activity is recent ({update_age}s <= {activity_limit}s): {snapshot}"
+                )
+            elif float(stage_age) > limit:
                 write_line(f"[stage-stale] stage={stage} age={stage_age}s limit={limit}s: {snapshot}")
                 write_compact_summary("stage_stale")
                 raise SystemExit(1)

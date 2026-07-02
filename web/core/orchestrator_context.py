@@ -13,7 +13,7 @@ from claude_agent_sdk.types import HookMatcher, SyncHookJSONOutput
 
 from evolution_infra import locked_file, RESULTS_DIR, MAX_PRECOMMIT_RETRIES
 from failure_classification import classify_precommit_gate
-from pipeline_state import NEXT_TOOL_BY_STAGE
+from pipeline_state import route_policy
 
 # Module-level cycle start time — set by orchestrator._run_one_cycle at cycle start,
 # read by _build_context and PreCompact hook for time-budget awareness.
@@ -314,21 +314,22 @@ def _inject_master_plan_hint(checkpoint, lines):
     can be called correctly.
     """
     plan = checkpoint.get("master_plan")
+    route = route_policy(checkpoint)
     if not plan:
         if checkpoint.get("parent2_v"):
             lines.append(
                 "Crossover checkpoint has no task plan because bot code is already generated. "
-                "Do NOT call run_master or execute_workers for planning; proceed according to stage "
-                "(workers_done -> run_quality_gates, quality_failed -> retry execute_workers with exact gate feedback or abandon)."
+                f"Follow the route policy: next_tool={route.get('next_tool')}, "
+                f"intent={route.get('intent')}. {route.get('directive')}"
             )
             return
         lines.append("WARNING: Master plan NOT in checkpoint — call run_master first, then execute_workers.")
         return
     tasks = plan.get("tasks", [])
-    if plan.get("strategy") == "crossover" and checkpoint.get("parent2_v"):
+    if plan.get("strategy") == "crossover" and checkpoint.get("parent2_v") and not tasks:
         lines.append(
-            "Crossover plan is saved — do NOT call run_master and do NOT execute workers. "
-            "The child bot code already exists; proceed to run_quality_gates unless the stage is quality_failed."
+            "Crossover plan is saved and no rework tasks are present. "
+            f"Follow the route policy: next_tool={route.get('next_tool')}. {route.get('directive')}"
         )
         return
     if tasks:
@@ -396,44 +397,6 @@ def _load_guardian_insights(max_entries=3):
         return ""
 
 
-# Unified stage hints — used by _build_context and _format_checkpoint_info.
-STAGE_HINTS = {
-    "selected":          "Generation selected → call prepare_next_gen or run_crossover according to strategy",
-    "preparing":         "Preparation was interrupted → call prepare_next_gen again for the same source/target",
-    "prepared":          "Call run_direction_audit first",
-    "crossover_running": "Crossover was interrupted → call run_crossover again for the same parents/target",
-    "direction_audited": "Direction audited → call run_master",
-    "master_planned":    "Master done → call execute_workers",
-    "workers_done":      "Workers done → call run_quality_gates",
-    "quality_failed":    "Quality failed → call execute_workers with exact gate failure feedback, or abandon_generation. Do NOT call run_master.",
-    "quality_passed":    "Quality passed → call run_review",
-    "reviewed":          "Review passed → call run_critic",
-    "critic_checked":    "Critic done → call run_precommit_eval",
-    "precommit_failed":  "Precommit regression failed → call execute_workers with exact precommit feedback. Do NOT retry precommit on unchanged code.",
-    "verified":          "Precommit eval passed → call commit_bot",
-    "archived":          "Committed & archived — done",
-    "timed_out":         "Previous cycle timed out and was discarded. Call prepare_next_gen to start a fresh generation. Do NOT attempt to resume timed-out work.",
-}
-
-# Short-form hints for PreCompact hook (tool names only).
-STAGE_HINTS_COMPACT = {
-    "selected":          "prepare_next_gen or run_crossover",
-    "preparing":         "prepare_next_gen",
-    "prepared":          "run_direction_audit",
-    "crossover_running": "run_crossover",
-    "direction_audited": "run_master",
-    "master_planned":    "execute_workers",
-    "workers_done":      "run_quality_gates",
-    "quality_failed":    "execute_workers with quality feedback",
-    "quality_passed":    "run_review",
-    "reviewed":          "run_critic",
-    "critic_checked":    "run_precommit_eval",
-    "precommit_failed":  "execute_workers with exact precommit feedback",
-    "verified":          "commit_bot",
-    "archived":          "run_archivist",
-}
-
-
 def _format_checkpoint_info(checkpoint, lines):
     """Append pipeline checkpoint details to *lines*.
 
@@ -441,14 +404,11 @@ def _format_checkpoint_info(checkpoint, lines):
     non-gen_ctx code paths in ``_build_context``.
     """
     stage = checkpoint.get("stage", "unknown")
-    hint = STAGE_HINTS.get(stage, "inspect checkpoint context and continue with the matching MCP pipeline tool")
-    if stage == "critic_checked":
-        precommit_gate = (checkpoint.get("gate_results") or {}).get("precommit_eval")
-        if classify_precommit_gate(precommit_gate) in {"regression", "failed_unknown"}:
-            hint = STAGE_HINTS["precommit_failed"]
+    route = route_policy(checkpoint)
+    hint = route.get("directive") or "inspect checkpoint context and continue with the matching MCP pipeline tool"
     lines.append(
         f"\nPIPELINE CHECKPOINT: v{checkpoint['next_v']} (from v{checkpoint['source_v']}) "
-        f"reached stage='{stage}'. Next step: {hint}."
+        f"reached stage='{stage}'. Next MCP tool: {route.get('next_tool')}. {hint}"
     )
     gen_attempt = checkpoint.get("generation_attempt", 0)
     if gen_attempt > 0:
@@ -489,8 +449,8 @@ def _format_checkpoint_info(checkpoint, lines):
         else:
             lines.append(
                 f"PRECOMMIT STATUS: {precommit_attempt}/{MAX_PRECOMMIT_RETRIES} attempts. "
-                f"{last_result}. Follow the checkpoint stage next tool: "
-                f"{NEXT_TOOL_BY_STAGE.get(stage, 'inspect checkpoint')}."
+                f"{last_result}. Follow route policy next tool: "
+                f"{route_policy(checkpoint).get('next_tool') or 'inspect checkpoint'}."
             )
         if precommit_attempt >= MAX_PRECOMMIT_RETRIES:
             lines.append("PRECOMMIT HARD LIMIT reached — abandon this generation.")
@@ -736,11 +696,12 @@ def _make_precompact_hook():
             checkpoint = read_pipeline_checkpoint()
             if checkpoint:
                 stage = checkpoint.get("stage", "unknown")
-                next_step = STAGE_HINTS_COMPACT.get(stage, "inspect checkpoint context")
+                route = route_policy(checkpoint)
+                next_step = route.get("next_tool") or "inspect checkpoint context"
                 lines.append(
                     f"ACTIVE GENERATION: v{checkpoint['next_v']} (from v{checkpoint['source_v']}), "
                     f"stage={stage}. Next tool: {next_step}. "
-                    "DO NOT restart this generation — continue from this stage."
+                    f"{route.get('directive')} DO NOT restart this generation — continue from this stage."
                 )
                 _inject_master_plan_hint(checkpoint, lines)
         except Exception:
@@ -831,7 +792,8 @@ def _make_bot_dir_guard_hook():
         stage = checkpoint.get("stage")
         next_v = checkpoint.get("next_v")
         source_v = checkpoint.get("source_v")
-        next_step = STAGE_HINTS_COMPACT.get(stage) if stage else None
+        route = route_policy(checkpoint) if checkpoint else {}
+        next_step = route.get("next_tool") if stage else None
         if not stage or not next_step:
             return (
                 "Recovery: do NOT retry the denied direct mutation. Inspect the supplied "
@@ -840,7 +802,7 @@ def _make_bot_dir_guard_hook():
         return (
             f"Recovery: current checkpoint is v{next_v} from v{source_v}, "
             f"stage={stage}. Do NOT retry the denied Bash/Edit/Write call. "
-            f"NEXT MCP TOOL: {next_step}."
+            f"NEXT MCP TOOL: {next_step}. {route.get('directive', '')}"
         ), {"stage": stage, "next_v": next_v, "source_v": source_v, "next_step": next_step}
 
     async def handler(hook_input, tool_use_id, context):

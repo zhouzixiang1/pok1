@@ -1125,6 +1125,56 @@ class TestWorkerFailureCircuitBreaker:
         ckpt = json.loads(ckpt_file.read_text())
         assert ckpt["worker_failure_count"] == 2
 
+    def test_quality_failed_rework_uses_checkpoint_feedback_and_sequential(self, tmp_path, monkeypatch):
+        """quality_failed checkpoints should not depend on LLM-supplied feedback."""
+        import asyncio
+        import fix_injection
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        (source_dir / "strategy.py").write_text("def act():\n    return 0\n")
+        (next_dir / "strategy.py").write_text("def act():\n    return 1\n")
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, stage="quality_failed")
+        state = json.loads(ckpt_file.read_text())
+        state["gate_results"] = {
+            "quality": {
+                "all_passed": False,
+                "failed_gates": ["file_size(strategy.py:2492L/2474L)", "position_semantics(state.py:1)"],
+            }
+        }
+        ckpt_file.write_text(json.dumps(state))
+
+        monkeypatch.setattr(tool_planning, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
+                 patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy.py"]):
+                mock_exec.return_value = (True, {}, [])
+                result = await tool_planning.execute_workers.handler({
+                    "tasks": [
+                        {"worker_id": 1, "role": "arch", "target_files": ["strategy.py"], "worker_prompt": "recover file_size"},
+                    ],
+                    "next_v": 11,
+                    "source_v": 10,
+                })
+                return result, mock_exec
+
+        result, mock_exec = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["success"] is True
+        assert mock_exec.call_args.kwargs["force_sequential"] is True
+        assert "Quality gates failed" in mock_exec.call_args.kwargs["reviewer_feedback"]
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["stage"] == "workers_done"
+        assert ckpt["master_plan"]["work_item"]["kind"] == "quality_repair"
+
     def test_failed_workers_increment_count(self, tmp_path, monkeypatch):
         """Failed worker batches should increase the failure counter by 1 per round."""
         import asyncio
@@ -1246,9 +1296,10 @@ class TestWorkerFailureCircuitBreaker:
         assert data["success"] is False
 
         ckpt = json.loads(ckpt_file.read_text())
-        assert ckpt["stage"] == "master_planned"
+        assert ckpt["stage"] == "repair_planned"
         assert ckpt["precommit_attempt"] == 0
         assert ckpt["master_plan"]["tasks"] == retry_tasks
+        assert ckpt["master_plan"]["work_item"]["kind"] == "precommit_repair"
         assert "Precommit FAILED" in ckpt["reviewer_feedback"]
 
     def test_circuit_breaker_trips_at_threshold(self, tmp_path, monkeypatch):

@@ -11,6 +11,11 @@
       "total_win_chips": [0, 0], "total_win_games": [0, 0]
     },
     "forbidden_actions": ["fold"],
+    "legal_actions": ["call", "raise", "fold", "allin"],
+    "raise_min": 200,
+    "raise_max": 19999,
+    "allin_requires_minus2": true,
+    "national_legal_expected": true,
     "comment": "AA is the strongest hand; folding is never correct"
   },
   {
@@ -56,6 +61,11 @@
       "total_win_chips": [0, 0], "total_win_games": [0, 0]
     },
     "forbidden_actions": ["allin"],
+    "legal_actions": ["call", "raise", "fold", "allin"],
+    "raise_min": 200,
+    "raise_max": 19999,
+    "allin_requires_minus2": true,
+    "national_legal_expected": true,
     "comment": "7-2 offsuit is the worst hand; going all-in is terrible"
   },
   {
@@ -74,6 +84,12 @@
       "total_win_chips": [0, 0], "total_win_games": [0, 0]
     },
     "forbidden_actions": ["fold"],
+    "zero_action": "call",
+    "legal_actions": ["call", "raise", "fold", "allin"],
+    "raise_min": 100,
+    "raise_max": 19699,
+    "allin_requires_minus2": true,
+    "national_legal_expected": true,
     "comment": "Top set on dry board is near-nut; folding is absurd"
   },
   {
@@ -92,6 +108,11 @@
       "total_win_chips": [0, 0], "total_win_games": [0, 0]
     },
     "forbidden_actions": ["allin"],
+    "legal_actions": ["call", "raise", "fold", "allin"],
+    "raise_min": 1401,
+    "raise_max": 19699,
+    "allin_requires_minus2": true,
+    "national_legal_expected": true,
     "comment": "Middle pair facing big bet; all-in is an overreaction"
   },
   {
@@ -257,7 +278,57 @@
       "total_win_chips": [0, 0], "total_win_games": [0, 0]
     },
     "forbidden_actions": ["fold"],
+    "legal_actions": ["call", "raise", "fold", "allin"],
+    "raise_min": 1401,
+    "raise_max": 19749,
+    "allin_requires_minus2": true,
+    "national_legal_expected": true,
     "comment": "JJ vs 3bet in heads-up; too strong to fold"
+  },
+  {
+    "id": "preflop_bb_vs_limp_zero_is_check",
+    "description": "BB facing SB limp preflop — JSON 0 means check, not TCP call",
+    "input": {
+      "my_id": 1, "dealer_id": 0, "num_players": 2,
+      "my_chips": 19900, "my_cards": [20, 31],
+      "public_cards": [],
+      "history": [
+        {"round": 0, "player_id": 0, "action": 0, "action_type": "call", "bet_amount": 50, "round_bet": 100}
+      ],
+      "hand": 0, "max_hand": 70,
+      "total_win_chips": [0, 0], "total_win_games": [0, 0]
+    },
+    "forbidden_actions": [],
+    "zero_action": "check",
+    "legal_actions": ["check", "raise", "fold", "allin"],
+    "raise_min": 200,
+    "raise_max": 19899,
+    "allin_requires_minus2": true,
+    "national_legal_expected": true,
+    "comment": "National TCP forbids BB using call to pass after SB limp; adapter must map JSON 0 to check"
+  },
+  {
+    "id": "flop_bb_first_zero_is_check",
+    "description": "Postflop BB first to act — JSON 0 means check",
+    "input": {
+      "my_id": 1, "dealer_id": 0, "num_players": 2,
+      "my_chips": 19750, "my_cards": [44, 42],
+      "public_cards": [40, 20, 4],
+      "history": [
+        {"round": 0, "player_id": 0, "action": 250, "action_type": "raise", "bet_amount": 150, "round_bet": 250},
+        {"round": 0, "player_id": 1, "action": 0, "action_type": "call", "bet_amount": 0, "round_bet": 250}
+      ],
+      "hand": 0, "max_hand": 70,
+      "total_win_chips": [0, 0], "total_win_games": [0, 0]
+    },
+    "forbidden_actions": [],
+    "zero_action": "check",
+    "legal_actions": ["check", "raise", "fold", "allin"],
+    "raise_min": 100,
+    "raise_max": 19749,
+    "allin_requires_minus2": true,
+    "national_legal_expected": true,
+    "comment": "BB acts first postflop; a zero response is a legal check in JSON and must not be modeled as TCP call"
   },
   {
     "id": "flop_flush_draw_facing_cbet",

@@ -498,6 +498,65 @@ def _iter_subagent_bash_write_targets(command):
             yield "patch", "__unknown_patch_target__"
 
 
+def _normalize_allowed_write_scope(allowed_write_dir):
+    """Normalize a write scope into resolved directory and exact-file sets.
+
+    Backward compatible input:
+    - Path/str: directory scope, used by crossover and old worker callers.
+    New input:
+    - {"dirs": [...], "files": [...]} or a list/tuple/set: exact file scope.
+    """
+    dirs = []
+    files = []
+    raw = allowed_write_dir
+    if isinstance(raw, dict):
+        dirs.extend(raw.get("dirs") or raw.get("directories") or [])
+        files.extend(raw.get("files") or raw.get("paths") or [])
+    elif isinstance(raw, (list, tuple, set)):
+        files.extend(raw)
+    elif raw is not None:
+        dirs.append(raw)
+
+    resolved_dirs = []
+    resolved_files = []
+    try:
+        from pathlib import Path
+        for item in dirs:
+            if item:
+                resolved_dirs.append(str(Path(item).resolve()))
+        for item in files:
+            if item:
+                resolved_files.append(str(Path(item).resolve()))
+    except Exception:
+        resolved_dirs = [str(item) for item in dirs if item]
+        resolved_files = [str(item) for item in files if item]
+    return {"dirs": resolved_dirs, "files": resolved_files}
+
+
+def _path_inside_allowed_scope(path, allowed_scope):
+    try:
+        from pathlib import Path
+        from evolution_infra import PROJECT_ROOT
+
+        project_root = Path(PROJECT_ROOT).resolve()
+        candidate = Path(path)
+        if not candidate.is_absolute():
+            candidate = project_root / candidate
+        resolved = str(candidate.resolve(strict=False))
+        for allowed_file in allowed_scope.get("files", []):
+            if resolved == str(Path(allowed_file).resolve(strict=False)):
+                return True
+        for allowed_dir in allowed_scope.get("dirs", []):
+            try:
+                if os.path.commonpath([resolved, allowed_dir]) == allowed_dir:
+                    return True
+            except ValueError:
+                continue
+    except Exception:
+        return False
+    return False
+
+
 def _subagent_write_target_outside_allowed(target, allowed_dir):
     text = str(target or "").strip().strip("'\"")
     if not text:
@@ -509,23 +568,12 @@ def _subagent_write_target_outside_allowed(target, allowed_dir):
         return True
 
     try:
-        from pathlib import Path
-        from evolution_infra import PROJECT_ROOT
-
-        project_root = Path(PROJECT_ROOT).resolve()
-        allowed = Path(allowed_dir).resolve()
+        allowed_scope = _normalize_allowed_write_scope(allowed_dir)
         concrete = re.split(r"[*?\[$`{]", text, maxsplit=1)[0] or text
         concrete = concrete.rstrip()
         if not concrete:
             return True
-        path = Path(concrete)
-        if not path.is_absolute():
-            path = project_root / path
-        resolved = path.resolve(strict=False)
-        try:
-            return os.path.commonpath([str(resolved), str(allowed)]) != str(allowed)
-        except ValueError:
-            return True
+        return not _path_inside_allowed_scope(concrete, allowed_scope)
     except Exception:
         return _subagent_is_outside_allowed(text, allowed_dir)
 
@@ -773,19 +821,21 @@ def _subagent_is_outside_allowed(path_or_cmd, allowed_dir):
     if not text:
         return False
     low = text.lower()
-    allowed = str(allowed_dir or "")
-    allowed_low = allowed.lower()
+    allowed_scope = _normalize_allowed_write_scope(allowed_dir)
+    allowed_values = [*allowed_scope.get("dirs", []), *allowed_scope.get("files", [])]
     allowed_markers = set()
-    try:
-        marker = allowed_low.split("bots/")[-1].replace("\\", "/").strip("/")
-        if marker:
-            allowed_markers.add(f"bots/{marker}")
-            marker_win = marker.replace("/", "\\")
-            allowed_markers.add(f"bots\\{marker_win}")
-    except Exception:
-        pass
-    if allowed_low:
-        allowed_markers.add(allowed_low.rstrip("/\\"))
+    for allowed in allowed_values:
+        allowed_low = str(allowed or "").lower()
+        try:
+            marker = allowed_low.split("bots/")[-1].replace("\\", "/").strip("/")
+            if marker:
+                allowed_markers.add(f"bots/{marker}")
+                marker_win = marker.replace("/", "\\")
+                allowed_markers.add(f"bots\\{marker_win}")
+        except Exception:
+            pass
+        if allowed_low:
+            allowed_markers.add(allowed_low.rstrip("/\\"))
 
     protected_markers = (
         "web/core", "web/server", "web/frontend", "engine/", "sever/",
@@ -826,11 +876,11 @@ def _make_subagent_write_guard(allowed_write_dir):
     Read-only operations (grep/cat/git status) are allowed anywhere; only
     mutations outside allowed_write_dir are denied.
     """
-    try:
-        from pathlib import Path
-        _allowed = str(Path(allowed_write_dir).resolve())
-    except Exception:
-        _allowed = str(allowed_write_dir)
+    _allowed_scope = _normalize_allowed_write_scope(allowed_write_dir)
+    _allowed = ", ".join(
+        [f"dir:{p}" for p in _allowed_scope.get("dirs", [])]
+        + [f"file:{p}" for p in _allowed_scope.get("files", [])]
+    ) or str(allowed_write_dir)
 
     async def handler(hook_input, tool_use_id, context):
         try:
@@ -1000,10 +1050,11 @@ _ROLE_TIMEOUT_DEFAULTS = {
     # Master is the highest leverage failure point: it plans, reads evidence,
     # and can otherwise burn the whole orchestrator cycle before any code exists.
     "MASTER": (120.0, 240.0, 900.0),
-    # Review/Critic are advisory or gate checks. They should not hold a
-    # generation hostage when the model/backend is slow or silent.
-    "REVIEW": (120.0, 180.0, 600.0),
-    "CRITIC": (120.0, 180.0, 600.0),
+    # Review/Critic can be slow on GLM-backed Claude-compatible endpoints.
+    # They still have ceilings, but defaults must be long enough to avoid
+    # repeated 600s retries that keep the generation stuck at quality_passed.
+    "REVIEW": (180.0, 360.0, 1200.0),
+    "CRITIC": (180.0, 360.0, 900.0),
     # Workers already have an outer WORKER_TIMEOUT. Idle timeout catches stalled
     # streams inside that larger wall-clock budget.
     "WORKER": (180.0, 360.0, 1000.0),
