@@ -22,6 +22,12 @@ from evolution_infra import (
     WORKER_FAILURES_FILE, MAX_WORKER_RETRIES, WORKER_TIMEOUT,
     EXPERIENCE_FILE, find_current_v,
 )
+from worker_boundary import (
+    audit_worker_boundary,
+    diff_snapshot,
+    restore_python_files,
+    snapshot_python_files,
+)
 
 # Maximum number of LLM turns for the debug sub-agent (budget cap).
 _DEBUG_AGENT_MAX_TURNS = 5
@@ -363,7 +369,8 @@ async def _run_debug_agent(error_output, changed_diff, target_file, next_v, ui):
 
 async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                               context_files, ui, reviewer_feedback,
-                              source_v=None, parallel_mode=False, worker_snapshots=None):
+                              source_v=None, parallel_mode=False, worker_snapshots=None,
+                              boundary_allowed_files=None):
     """Run a single worker task with retries. Returns True on success."""
     w_id = task.get("worker_id", idx + 1)
     role = task.get("role", f"Expert Coder {w_id}")
@@ -418,6 +425,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
     # files absent from the pre-run set are ever removed, so legitimate sibling
     # edits and cross-ancestor files (present pre-run) are always preserved.
     _pre_run_py_files = {p.name for p in next_dir.glob("*.py")} if next_dir.is_dir() else set()
+    _boundary_snapshot = snapshot_python_files(next_dir)
 
     for attempt in range(MAX_WORKER_RETRIES):
         if not parallel_mode:
@@ -513,6 +521,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             )
             # Clear undeclared NEW files the timed-out worker may have created.
             _unlink_undeclared_new_files(next_dir, _pre_run_py_files)
+            restore_python_files(next_dir, _boundary_snapshot, diff_snapshot(next_dir, _boundary_snapshot))
             base_worker_prompt += (
                 "\n\nPREVIOUS ATTEMPT TIMED OUT. Start fresh with a minimal, focused implementation. "
                 "Implement only the single most impactful change — do NOT try to do everything at once."
@@ -563,6 +572,46 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 )
                 ui.log_history(f"Worker {w_id} ({role}) zero changes in: {', '.join(unchanged)}", "warn")
                 continue
+
+        boundary_task = dict(task)
+        if boundary_allowed_files:
+            boundary_task["files_allowed"] = list({
+                *(boundary_task.get("files_allowed", []) or []),
+                *boundary_allowed_files,
+            })
+        boundary = audit_worker_boundary(next_dir, boundary_task, _boundary_snapshot, next_v=next_v)
+        if not boundary.passed:
+            _last_reason = "; ".join(boundary.violations[:3])
+            _last_failure_type = "boundary_violation"
+            restore_python_files(next_dir, _boundary_snapshot, boundary.changed_files)
+            base_worker_prompt += (
+                "\n\nCRITICAL BOUNDARY VIOLATION: You changed files outside your declared "
+                "target_files/files_allowed. Only edit these files: "
+                f"{', '.join(boundary.allowed_files) or '(none declared)'}. "
+                f"Violations: {'; '.join(boundary.violations[:5])}"
+            )
+            try:
+                from system_log import log_system_event
+                log_system_event(
+                    "pipeline.worker_boundary_violation",
+                    "error",
+                    f"Worker {w_id} ({role}) changed undeclared files for v{next_v}",
+                    {
+                        "version": next_v,
+                        "worker_id": w_id,
+                        "role": role,
+                        "changed_files": boundary.changed_files[:20],
+                        "allowed_files": boundary.allowed_files[:20],
+                        "violations": boundary.violations[:10],
+                    },
+                )
+            except Exception:
+                pass
+            ui.log_history(
+                f"Worker {w_id} ({role}) boundary violation: {boundary.violations[0]}",
+                "warn",
+            )
+            continue
 
         if parallel_mode:
             _target_names = [_target_rel(f, next_v) for f in task.get("target_files", [])]
@@ -674,6 +723,8 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                         fpath.read_text() if fpath.exists() else ""
                     )
 
+        parallel_allowed_files = sorted({rel for fset in task_file_sets for rel in fset})
+
         # Wrap each worker call with semaphore gating for concurrency control.
         async def _gated_worker(task, i):
             sem = _get_worker_semaphore()
@@ -683,6 +734,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                     context_files, ui, reviewer_feedback,
                     source_v=source_v, parallel_mode=True,
                     worker_snapshots=worker_snapshots,
+                    boundary_allowed_files=parallel_allowed_files,
                 )
 
         results = await asyncio.gather(

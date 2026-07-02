@@ -195,6 +195,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
             next_v=_planned_next_v,
             current_v=current_v,
             max_committed_v=max_committed_v,
+            emit_delta=True,
         )
     except Exception:
         pass
@@ -999,9 +1000,31 @@ def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
     if len(active) < 2:
         return None
     strength = load_selection_scores()
+    try:
+        from candidate_store import count_candidate_children
+
+        def _child_count(bot_name):
+            try:
+                version = int(bot_name.split("_v")[1])
+            except (ValueError, IndexError):
+                return 0
+            return max(
+                count_candidate_children(bot_name),
+                count_candidate_children(f"v{version}"),
+                count_candidate_children(str(version)),
+            )
+    except Exception:
+        def _child_count(bot_name):
+            return 0
+
+    def _adjusted_strength(bot_name):
+        base = float(strength.get(bot_name, 0.0))
+        children = _child_count(bot_name)
+        return base * (1.0 / (1.0 + children))
+
     ranked = sorted(
         active,
-        key=lambda b: strength.get(b, 0.0),
+        key=lambda b: (_adjusted_strength(b), strength.get(b, 0.0)),
         reverse=True,
     )
     if len(ranked) < 2:

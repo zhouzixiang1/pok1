@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 from pipeline_schema import WorkflowProfile
+from skill_library import describe_skill_layers
 
 
 _PROFILES = {
@@ -52,5 +53,6 @@ def profile_summary(profile: WorkflowProfile | None = None) -> str:
         f"- max_workers={p.max_workers}\n"
         f"- national_acceptance_hands={p.national_acceptance_hands}, "
         f"hard={p.national_acceptance_hard}\n"
-        f"- focus_skill_layers={layers}"
+        f"- focus_skill_layers={layers}\n"
+        f"\nSkill layer contract:\n{describe_skill_layers(p.focus_skill_layers or None)}"
     )

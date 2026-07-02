@@ -31,6 +31,7 @@ VALID_PLAN = {
             "role": "Algorithmic Logic Architect",
             "target_files": ["opponent.py", "strategy.py"],
             "difficulty": "medium",
+            "skill_layer": "spr",
             "worker_prompt": "Add check_raise_trap_severity() to opponent.py and wire into strategy.py fold sites.",
         }
     ],

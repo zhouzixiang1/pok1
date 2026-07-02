@@ -27,6 +27,7 @@ from evolution_infra import locked_file
 
 log = logging.getLogger("pok.scheduler")
 from pathlib import Path
+from skill_library import scenario_skill_metadata
 
 WORKSPACE = Path(__file__).resolve().parent
 SCENARIOS_FILE = WORKSPACE / "test_scenarios.json"
@@ -65,6 +66,31 @@ def classify_action(action):
         return "call"
     else:
         return "raise"
+
+
+def audit_action_grounding(action, category, scenario):
+    """Validate optional action-grounding metadata on a scenario.
+
+    Existing scenarios do not need these fields. New PokerSkill-style scenarios
+    can declare legal action families and raise bounds so the harness catches
+    protocol mistakes before the national adapter has to clamp them.
+    """
+    failures = []
+    legal_actions = scenario.get("legal_actions") or []
+    if legal_actions and category not in legal_actions:
+        failures.append(f"Action {category} not legal in spot legal_actions={legal_actions}")
+    if category == "raise":
+        raise_min = scenario.get("raise_min")
+        raise_max = scenario.get("raise_max")
+        if raise_min is not None and action < int(raise_min):
+            failures.append(f"Raise-to-total {action} below raise_min {raise_min}")
+        if raise_max is not None and action > int(raise_max):
+            failures.append(f"Raise-to-total {action} above raise_max {raise_max}")
+        if scenario.get("allin_requires_minus2") and action >= int(scenario.get("my_chips", scenario.get("input", {}).get("my_chips", 0)) or 0):
+            failures.append("Positive raise appears to consume all remaining chips; use -2 for all-in")
+    if scenario.get("national_legal_expected") is True and failures:
+        failures.insert(0, "National legality expectation failed")
+    return failures
 
 
 # ──────────────────────────────────────────────
@@ -576,6 +602,9 @@ def run_single_scenario(bot_path, scenario):
         result = json.loads(proc.stdout.strip())
         action = int(result.get("response", -1))
         category = classify_action(action)
+        grounding_failures = audit_action_grounding(action, category, scenario)
+        if grounding_failures:
+            return False, "; ".join(grounding_failures)
 
         # Check forbidden actions
         if category in scenario.get("forbidden_actions", []):
@@ -616,6 +645,7 @@ def run_decision_tests_detail(bot_path, verbose=False, extra_scenarios=None):
             "critical_failures": [],
             "failures": [],
             "scenarios": [],
+            "skill_layers": {},
         }
 
     with open(SCENARIOS_FILE) as f:
@@ -640,6 +670,7 @@ def run_decision_tests_detail(bot_path, verbose=False, extra_scenarios=None):
             "critical_failures": [],
             "failures": [],
             "scenarios": [],
+            "skill_layers": {},
         }
 
     passed = 0
@@ -649,9 +680,22 @@ def run_decision_tests_detail(bot_path, verbose=False, extra_scenarios=None):
     scenario_results = []
     failures = []
     critical_failures = []
+    skill_summary = {}
 
     for scenario in scenarios:
         ok, details = run_single_scenario(bot_path, scenario)
+        skill_meta = scenario_skill_metadata(scenario)
+        skill_layer = skill_meta.get("skill_layer", "unspecified")
+        layer_stats = skill_summary.setdefault(
+            skill_layer,
+            {"passed": 0, "total": 0, "critical_passed": 0, "critical_total": 0,
+             "missing_required_fields": set()},
+        )
+        layer_stats["total"] += 1
+        if ok:
+            layer_stats["passed"] += 1
+        for field in skill_meta.get("missing_required_fields", []):
+            layer_stats["missing_required_fields"].add(field)
         severity = scenario.get(
             "severity",
             "critical" if scenario.get("id") in CRITICAL_SCENARIO_IDS else "advisory",
@@ -664,17 +708,37 @@ def run_decision_tests_detail(bot_path, verbose=False, extra_scenarios=None):
             critical_failures.append({"id": scenario["id"], "details": details})
         if severity == "critical":
             critical_total += 1
+            layer_stats["critical_total"] += 1
+            if ok:
+                layer_stats["critical_passed"] += 1
         if not ok:
             failures.append({"id": scenario["id"], "severity": severity, "details": details})
         scenario_results.append({
             "id": scenario["id"],
             "severity": severity,
+            "skill_layer": skill_layer,
             "passed": ok,
             "details": details,
+            "skill_metadata": {
+                **skill_meta,
+                "missing_required_fields": list(skill_meta.get("missing_required_fields", [])),
+            },
         })
         if verbose:
             status = "PASS" if ok else "FAIL"
             log.info("  [%s] %s (%s): %s", status, scenario['id'], severity, details)
+
+    normalized_skill_summary = {}
+    for layer, stats in skill_summary.items():
+        total_layer = stats["total"]
+        normalized_skill_summary[layer] = {
+            "passed": stats["passed"],
+            "total": total_layer,
+            "pass_rate": stats["passed"] / total_layer if total_layer else 1.0,
+            "critical_passed": stats["critical_passed"],
+            "critical_total": stats["critical_total"],
+            "missing_required_fields": sorted(stats["missing_required_fields"]),
+        }
 
     return {
         "pass_rate": passed / total if total > 0 else 1.0,
@@ -685,6 +749,7 @@ def run_decision_tests_detail(bot_path, verbose=False, extra_scenarios=None):
         "critical_failures": critical_failures,
         "failures": failures,
         "scenarios": scenario_results,
+        "skill_layers": normalized_skill_summary,
     }
 
 

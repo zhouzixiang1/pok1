@@ -100,7 +100,9 @@ You have access to `web/core/reference_bots/` (bot1–bot6). You may read them a
 </reference>
 
 <poker_math>
-- pot_odds: to_call / (pot + to_call + to_call)
+- pot_odds: to_call / (pot + to_call) when `pot` is the pot before calling.
+  Do not use `pot + 2*to_call` unless the local code explicitly defines `pot`
+  as excluding the opponent's outstanding bet and documents that convention.
 - EQR (equity realization): 0-1 scalar for how much raw equity converts to actual EV; high on dry boards, low on wet/connected boards
 - SPR (stack-to-pot ratio): my_chips / pot; high = deep-stacked, low = commitment threshold
 - MDF (minimum defense frequency): pot / (pot + to_call); fold less than this vs balanced opponents
@@ -112,6 +114,14 @@ You have access to `web/core/reference_bots/` (bot1–bot6). You may read them a
 - round_idx: 0=preflop, 1=flop, 2=turn, 3=river
 - to_call: chips needed to call; pot: current pot; my_chips: remaining stack
 </poker_math>
+
+<skill_layer_contract>
+Your assigned task has exactly one primary `skill_layer`. Keep changes scoped to
+that layer and its target files. The offline harness groups decision scenarios,
+national acceptance telemetry, and candidate ledger entries by skill layer, so
+unscoped broad edits make the candidate unmeasurable and will be rejected by
+boundary or quality gates.
+</skill_layer_contract>
 
 <scope_contract>
 Before editing, write a short plan:

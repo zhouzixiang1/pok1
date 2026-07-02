@@ -243,9 +243,11 @@ deadline = time.time() + timeout
 last_service_check = 0.0
 last_heartbeat = 0.0
 http_fail_count = 0
+first_http_fail = None
 service_check_interval = 15
 heartbeat_interval = 60
 http_fail_limit = 3
+http_fail_grace_sec = 300
 terminal_events = []
 alert_records = []
 stage_transitions = []
@@ -255,6 +257,23 @@ def write_line(msg):
     print(msg)
     with log_file.open("a", encoding="utf-8") as out:
         out.write(msg + "\n")
+
+def compact_summary(reason):
+    terminal_counts = {}
+    for item in terminal_events:
+        terminal_counts[item.get("type", "unknown")] = terminal_counts.get(item.get("type", "unknown"), 0) + 1
+    return {
+        "observed": seen,
+        "target": target,
+        "reason": reason,
+        "terminal_counts": terminal_counts,
+        "alert_count": len(alert_records),
+        "stage_transition_count": len(stage_transitions),
+        "last_stage": stage_transitions[-1]["pipeline"] if stage_transitions else {},
+    }
+
+def write_compact_summary(reason):
+    write_line("[summary-compact] " + json.dumps(compact_summary(reason), ensure_ascii=False, default=str))
 
 def read_pid(path):
     if not path.exists():
@@ -320,7 +339,7 @@ def pipeline_snapshot():
     return {key: state.get(key) for key in keys if key in state}
 
 def check_service(force_heartbeat=False):
-    global last_service_check, last_heartbeat, http_fail_count, last_stage_key
+    global last_service_check, last_heartbeat, http_fail_count, first_http_fail, last_stage_key
     now = time.time()
     if now - last_service_check < service_check_interval and not force_heartbeat:
         return
@@ -344,15 +363,21 @@ def check_service(force_heartbeat=False):
     }
     if not server_alive:
         write_line(f"[service-dead] observed web service is unavailable: {snapshot}")
+        write_compact_summary("web_pid_dead")
         raise SystemExit(1)
     if not status.get("ok"):
         http_fail_count += 1
-        if http_fail_count >= http_fail_limit:
-            write_line(f"[service-dead] observed web service HTTP status failed {http_fail_count} times: {snapshot}")
+        if first_http_fail is None:
+            first_http_fail = now
+        fail_age = now - first_http_fail
+        if http_fail_count >= http_fail_limit and fail_age >= http_fail_grace_sec:
+            write_line(f"[service-dead] observed web service HTTP status failed {http_fail_count} times over {fail_age:.0f}s: {snapshot}")
+            write_compact_summary("http_status_dead")
             raise SystemExit(1)
-        write_line(f"[service-http-warning] observed web service HTTP status failed {http_fail_count}/{http_fail_limit}: {snapshot}")
+        write_line(f"[service-http-warning] observed web service HTTP status failed {http_fail_count}/{http_fail_limit}, age={fail_age:.0f}/{http_fail_grace_sec}s: {snapshot}")
         return
     http_fail_count = 0
+    first_http_fail = None
     if force_heartbeat or now - last_heartbeat >= heartbeat_interval:
         last_heartbeat = now
         write_line(f"[service-heartbeat] {snapshot}")
@@ -429,6 +454,7 @@ while time.time() < deadline and seen < target:
 if seen < target:
     check_service(force_heartbeat=True)
     print(f"observe timeout: saw {seen}/{target} terminal events", file=sys.stderr)
+    write_compact_summary("observe_timeout")
     raise SystemExit(1)
 summary = {
     "observed": seen,
@@ -437,18 +463,7 @@ summary = {
     "alerts": alert_records[-20:],
     "stage_transitions": stage_transitions[-20:],
 }
-terminal_counts = {}
-for item in terminal_events:
-    terminal_counts[item.get("type", "unknown")] = terminal_counts.get(item.get("type", "unknown"), 0) + 1
-compact = {
-    "observed": seen,
-    "target": target,
-    "terminal_counts": terminal_counts,
-    "alert_count": len(alert_records),
-    "stage_transition_count": len(stage_transitions),
-    "last_stage": stage_transitions[-1]["pipeline"] if stage_transitions else {},
-}
-write_line("[summary-compact] " + json.dumps(compact, ensure_ascii=False, default=str))
+write_compact_summary("target_reached")
 write_line("[summary] " + json.dumps(summary, ensure_ascii=False, default=str))
 PY
 fi
