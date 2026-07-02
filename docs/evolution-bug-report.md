@@ -1,5 +1,8 @@
 {
   "summary": "Deep multi-agent investigation of evolution pipeline logic bugs, stuck states, and daemon crashes",
+  "status": "historical_snapshot",
+  "currentAuthority": "AGENTS.md and CLAUDE.md plus current code/tests/runtime status",
+  "warning": "This report preserves an older investigation. Do not treat its must-fix list, cleanup commands, or current-state claims as current without re-verifying against the repository.",
   "agentCount": 9,
   "logs": [
     "Code audit complete: 4 audit reports",
