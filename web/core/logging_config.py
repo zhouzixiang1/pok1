@@ -147,10 +147,8 @@ class CorrelationFilter(logging.Filter):
 
     def filter(self, record):
         try:
-            from event_bus import _run_id_cv, _last_known
-            rid = _run_id_cv.get()
-            if not rid:
-                rid = _last_known.get("run_id")
+            from event_bus import capture_context
+            rid = capture_context().get("run_id")
             record.run_id = rid or "-"
         except Exception:
             record.run_id = getattr(record, "run_id", "-")

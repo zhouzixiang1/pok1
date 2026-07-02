@@ -1025,12 +1025,42 @@ def _git(*args, check=True):
     return result.stdout.strip()
 
 
-def _git_ensure_main_branch():
-    """Return to the canonical evolution branch (main) if an LLM drifted off it.
+def git_push_refs(*refs: str) -> bool:
+    """Push refs to origin and return the real aggregate result."""
+    if not refs:
+        return True
+    ok = True
+    errors = []
+    for ref in refs:
+        try:
+            _git("push", "origin", ref)
+        except Exception as exc:
+            ok = False
+            errors.append({"ref": ref, "error": str(exc)[:500]})
+    try:
+        from system_log import log_system_event
+        log_system_event(
+            "repo.git_push_done" if ok else "repo.git_push_failed",
+            "success" if ok else "error",
+            (
+                f"Git push succeeded for {', '.join(refs)}"
+                if ok else
+                f"Git push failed for {', '.join(item['ref'] for item in errors)}"
+            ),
+            {"refs": list(refs), "ok": ok, "errors": errors},
+        )
+    except Exception:
+        pass
+    return ok
 
-    LLM agents have Bash tool access and can accidentally run `git checkout -b`
-    during their sessions. This guard detects and silently corrects the drift
-    before any commit lands on the wrong branch.
+
+def _git_ensure_main_branch():
+    """Require the canonical evolution branch before an evolution commit.
+
+    Do not stash/pop changes across branches here. Moving a dirty worktree from
+    an accidental side branch onto main can mix unrelated edits into evolution
+    commits. Runtime guard paths should stop the generation earlier; this is
+    the final mutation boundary.
     """
     current = _git("rev-parse", "--abbrev-ref", "HEAD", check=False).strip()
     if current == EVOLUTION_BRANCH:
@@ -1038,27 +1068,16 @@ def _git_ensure_main_branch():
     try:
         from system_log import log_system_event
         log_system_event(
-            "repo.branch_correction",
-            "warn",
-            f"Git branch correction before evolution commit: {current} -> {EVOLUTION_BRANCH}",
+            "repo.branch_commit_blocked",
+            "error",
+            f"Evolution commit blocked on non-{EVOLUTION_BRANCH} branch: {current}",
             {"current_branch": current, "target_branch": EVOLUTION_BRANCH},
         )
     except Exception:
         pass
-    if current == "HEAD":
-        # Detached HEAD — reset to main
-        log.warning("git: detached HEAD detected, resetting to %s", EVOLUTION_BRANCH)
-        _git("checkout", EVOLUTION_BRANCH, check=False)
-        return
-    log.warning("git: on branch '%s', expected '%s'. Switching back before commit.",
-                current, EVOLUTION_BRANCH)
-    # Stash any uncommitted changes, switch to main, pop stash
-    stash_out = _git("stash", check=False)
-    _git("checkout", EVOLUTION_BRANCH, check=False)
-    if "No local changes to save" not in stash_out:
-        pop_out = _git("stash", "pop", check=False)
-        if "error" in pop_out.lower():
-            log.warning("git: stash pop failed: %s", pop_out[:200])
+    raise RuntimeError(
+        f"Refusing evolution commit on branch '{current}'; expected '{EVOLUTION_BRANCH}'."
+    )
 
 
 def git_has_tag(version):
@@ -1180,15 +1199,66 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
         f"strategy: {strategy_tag}\n"
         f"{rating_info}"
     )
+    preexisting_staged = [
+        p for p in _git("diff", "--cached", "--name-only", check=False).splitlines()
+        if p
+    ]
+    if preexisting_staged:
+        try:
+            from system_log import log_system_event
+            log_system_event(
+                "pipeline.git_commit_blocked_preexisting_staged",
+                "error",
+                f"v{version}: refusing commit because unrelated staged files already exist",
+                {"version": version, "staged_files": preexisting_staged[:40]},
+            )
+        except Exception:
+            pass
+        raise RuntimeError(
+            "Refusing git_commit_bot with pre-existing staged files: "
+            + ", ".join(preexisting_staged[:10])
+        )
+
     # LOG GAP FIX (2026-06-29): record what gets staged so a hand-edit bypass
     # (orchestrator LLM mutating bot code outside execute_workers) is visible.
-    _staged = _git("add", f"bots/claude_v{version}", check=False)
+    bot_path = f"bots/claude_v{version}"
+    _staged = _git("add", "--", bot_path, check=False)
     _exp_added = False
+    allowed_paths = [bot_path]
     if EXPERIENCE_FILE.exists():
-        _git("add", str(EXPERIENCE_FILE.relative_to(PROJECT_ROOT)), check=False)
+        exp_rel = str(EXPERIENCE_FILE.relative_to(PROJECT_ROOT))
+        _git("add", "--", exp_rel, check=False)
         _exp_added = True
+        allowed_paths.append(exp_rel)
     # Capture the staged file list right before commit for auditability.
     _staged_files = _git("diff", "--cached", "--name-only", check=False).strip().splitlines()
+    allowed_exact = set(allowed_paths)
+    allowed_prefixes = [p.rstrip("/") + "/" for p in allowed_paths if p.endswith(f"claude_v{version}")]
+    unexpected_staged = [
+        p for p in _staged_files
+        if p not in allowed_exact and not any(p.startswith(prefix) for prefix in allowed_prefixes)
+    ]
+    if unexpected_staged:
+        for path in allowed_paths:
+            _git("restore", "--staged", "--", path, check=False)
+        try:
+            from system_log import log_system_event
+            log_system_event(
+                "pipeline.git_commit_blocked_unexpected_staged",
+                "error",
+                f"v{version}: refusing commit because unrelated staged files appeared",
+                {
+                    "version": version,
+                    "unexpected_staged": unexpected_staged[:40],
+                    "allowed_paths": allowed_paths,
+                },
+            )
+        except Exception:
+            pass
+        raise RuntimeError(
+            "Refusing git_commit_bot with unexpected staged files: "
+            + ", ".join(unexpected_staged[:10])
+        )
     try:
         from system_log import log_system_event
         log_system_event(
@@ -1200,7 +1270,7 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
         )
     except Exception:
         pass
-    _git("commit", "-m", msg)
+    _git("commit", "-m", msg, "--", *allowed_paths)
     _commit_hash = _git("rev-parse", "HEAD", check=False).strip()[:12]
     tag = f"bot-v{version}"
     _git("tag", "-d", tag, check=False)
@@ -1217,9 +1287,7 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
 
     push_ok = False
     if os.environ.get("EVOLUTION_GIT_PUSH") == "1":
-        _git("push", "origin", "main", check=False)
-        _git("push", "origin", tag, check=False)
-        push_ok = True
+        push_ok = git_push_refs("main", tag)
     return push_ok
 
 

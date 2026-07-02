@@ -74,9 +74,11 @@ When `run_master` returns a JSON result:
 
 <advisory_vs_blocking>
 EXHAUSTED-direction matches and worker_prompt size warnings are ADVISORY, not
-errors. They MUST NOT block `execute_workers`. Runtime import contract failure,
-py_compile failure, smoke failure, decision test < 70%, critical decision failures,
-file size violation, missing mandatory fixes, national protocol regression, and
+errors. They MUST NOT block `execute_workers`. code_changed=false, declared-scope
+violation, runtime import contract failure, py_compile failure, protected-contract
+regression, smoke failure, national protocol/acceptance regression, decision test
+< 70%, critical decision failures, file size violation, missing mandatory fixes,
+fix verification failure, telemetry-fidelity failure, reachability failure, and
 precommit statistical regression BLOCK the pipeline.
 
 Master plan audit rejection is BLOCKING. Critic score and direction_audit

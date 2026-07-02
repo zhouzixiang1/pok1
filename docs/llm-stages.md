@@ -46,12 +46,14 @@ python web/main.py
                 ├── Phase 2: _run_one_cycle(gen_ctx=ctx) — LLM session
                 │     ├── _build_context(gen_ctx=ctx) 注入预计算分析
                 │     ├── Orchestrator LLM 自主调用 MCP 工具
-                │     └── pipeline: direction_audit → master → workers → quality → review → critic → precommit → commit
+                │     └── pipeline: direction_audit → optional literature_probe → master → prepare/crossover → workers → quality → review → critic → precommit_eval → commit → archivist
                 │     → 中断时 session + checkpoint 保留
                 │
                 ├── Phase 3: post_generation_cleanup(shutdown_mgr, ui, ctx) — 代码层
                 │     ├── reap_if_needed()
-                │     └── consolidate_experience() (每3代 或 RECENT_LESSONS≥4)
+                │     ├── consolidate_experience() (每3代 或 RECENT_LESSONS≥4；仅已 tag 的版本)
+                │     ├── exploitability probe / QD eval（仅已 commit + bot-vN tag 的版本）
+                │     └── behavior fingerprint 等后清理记录
                 │     → 幂等，可安全中断
                 │
                 ├── shutdown_mgr.is_shutting_down? → break
@@ -234,11 +236,11 @@ Phase 1 由 `prepare_generation()` 函数编排，每步完成后检查 `shutdow
 ```
 if combined.is_stagnant && confidence != "low" && 有可用 crossover parents:
     → strategy="crossover", source_v=parent_a, parents=(parent_a, parent_b)
-elif combined.recommendation=="branch" && branch_from 有效:
+elif combined.recommendation=="branch" && branch_from 是 active + .completed + bot-vN tag-backed:
     → strategy="master", source_v=branch_from
 elif combined.diversity_needed && 有可用 crossover parents:
     → strategy="crossover", source_v=parent_a, parents=(parent_a, parent_b)  # 强制多样性注入
-elif combined.recommended_source 有效 (bounds check: ≥1 且 bot 目录存在):
+elif combined.recommended_source 是 active + .completed + bot-vN tag-backed:
     → strategy="master", source_v=recommended_source  # LLM 推荐最佳进化源
 else:
     → strategy="master", source_v=current_v  # 回退
@@ -257,7 +259,7 @@ else:
 | 字段 | 类型 | 来源 |
 |------|------|------|
 | `current_v` | int | `find_current_v()` |
-| `next_v` | int | `current_v + 1` |
+| `next_v` | int | `compute_next_generation_v(current_v, max_committed_v, abandoned_floor)` |
 | `strategy` | str | `_decide_strategy()` |
 | `source_v` | int | `_decide_strategy()` |
 | `crossover_parents` | tuple | `_decide_strategy()` |
@@ -319,7 +321,6 @@ else:
       "worker_prompt": "..."
     }
   ],
-  "branch_from": "claude_vN" 或 null,
   "analysis": "..."
 }
 ```
@@ -339,7 +340,6 @@ else:
 > {
 >   "analysis": "v8 H2H avg 46.3% (7 opponents), 3-generation decline from v6 peak (52.7%). Match analysis reveals calling station: 0% postflop fold on every street, avg raise only 0.4x pot. Crossover recommended for structural diversity.",
 >   "targeted_failure": "Zero postflop fold rate across all streets — never folds after seeing flop. Tight-passive preflop (48-55% fold, only 9-19% raise). Underbetting raises at 0.4x pot.",
->   "branch_from": "claude_v6",
 >   "tasks": [
 >     {"worker_id": 1, "role": "Algorithmic Logic Architect", "target_files": ["strategy.py"]},
 >     {"worker_id": 2, "role": "Hyperparameter Tuner", "target_files": ["constants.py"]}
@@ -376,7 +376,7 @@ else:
 | **模型** | Sonnet |
 | **工具** | Bash, Read, Edit |
 | **Prompt 模板** | `prompts/worker_prompt.md` |
-| **执行方式** | **纯串行** — Workers 始终按顺序逐个执行（避免竞态条件） |
+| **执行方式** | 默认并行（最多 3 个 worker）；target_files 重叠、目标不明或 API 压力较高时降级串行 |
 | **重试** | 每个 worker 最多 4 次 (`MAX_WORKER_RETRIES`) |
 | **超时** | 1000 秒 (`WORKER_TIMEOUT`) |
 
@@ -433,8 +433,9 @@ else:
   1. `verify_code()` — 编译检查
   2. `run_smoke_test()` — 冒烟对战
   3. `run_decision_test_details()` — 决策测试（≥70% 通过率 + 关键场景全部通过）
-  4. `check_code_size()` — 文件行数检查（核心策略文件 ≤ 1500 行，辅助文件 ≤ 1200 行）
+  4. `check_code_size()` — 文件行数检查（`strategy.py`/`postflop.py` 基础上限 2000 行，helper 基础上限 1500 行，硬上限 2500 行，并受 source bot +15% growth budget 约束）
   5. `code_changed` — 与 source_v 的 byte-for-byte diff 检查（workers 必须产生至少一个 .py 文件变更，防止零改动僵尸循环）
+  6. declared scope / protected contract / national protocol / national acceptance / fix verification / telemetry fidelity / reachability 等硬门
 - **注意**: 无前置阶段检查 — 质量门禁无条件运行，即使没有 checkpoint 也会执行（此时 `checkpoint_recorded=false`）
 - **输出**: `{compile_ok, smoke_ok, decision_pass_rate, decision_ok, critical_scenarios_passed, size_ok, code_changed, all_passed}` + 详细字段：`compile_errors, smoke_errors, critical_passed, critical_total, critical_failures, decision_failures, scenario_results, total_lines, oversized_files, checkpoint_recorded`
 - **输出去向**: 全部通过 → 写入 checkpoint `stage="quality_passed"` + gate `quality`
@@ -554,7 +555,7 @@ else:
 - **前置**: checkpoint 中 quality + review + critic gate 全部通过
 - **做什么** (函数 `run_precommit_eval` 内):
   1. 选择对手：父版本 bot + 当前 Top 2 H2H 胜率 + H2H 弱点对手（最多 1 个）+ crossover parent_b（若适用）= 最多 4 个
-  2. 与每个对手运行 `mirror_battle(n_games)` — **n_games 硬性上限 5**（`min(max(1, n_games), 5)`），防止 Orchestrator LLM 传入过大值导致超时
+  2. 与每个对手运行 `mirror_battle(n_games)` — 默认 8，参数 clamp 到 4-16；调度器/超时/fallback 逻辑决定是否走 daemon scheduler 或本地并行路径
   3. Per-opponent timeout 随 n_games 缩放: `max(300s, n_games × 120s)`
   4. 阻断条件：输给父版本、**总输≥3 且 总输≥赢+2**、对局超时、无对手可选（`no_opponents`）、对局异常（`match_exception`）
 - **输出**: `{passed, blockers, matchups, total_wins/losses/draws}`
@@ -568,7 +569,7 @@ else:
 > aggregate: 23-11, blockers=[] → PASSED ✅
 > ```
 >
-> **v10 的 precommit eval 超时**: v10 请求 n_games=80（远超上限 5），但 CYCLE_TIMEOUT=3600s 先到，导致整个 cycle 超时。v10 最终被手动提交（无 bot-v10 tag）。
+> **v10 的 precommit eval 超时（历史反例）**: v10 请求 n_games=80（远超当前 4-16 的 clamp 范围；当时流程也缺少足够防护），但 CYCLE_TIMEOUT=3600s 先到，导致整个 cycle 超时。v10 最终被手动提交（无 bot-v10 tag）。
 
 ---
 
@@ -581,7 +582,7 @@ else:
 - **前置**: checkpoint 中所有 gates 必须存在且通过
 - **做什么** (函数 `commit_bot` 内):
   1. 验证 gate ledger 完整性（quality + review + critic + precommit_eval）
-  2. 验证 `review_approved=true`（quality gates 已在 checkpoint 中验证，**不重新运行** compile/smoke/decision/size）
+  2. 验证 `review_approved=true`（quality gates 已在 checkpoint 中验证，**不重新运行**完整质量门）
   3. `git_commit_bot()` — `git add` + `git commit` + `git tag bot-v{N}`
   4. 验证 git tag 确实创建成功
   5. 写入 `.completed` 标记文件
@@ -713,13 +714,14 @@ Precommit 失败:
 全部 4 次失败 → 记录到 worker_failures.jsonl → 返回 False
 ```
 
-### 3.3 Worker 串行执行
+### 3.3 Worker 并行/串行执行
 
-Workers **始终按顺序逐个执行**（`agent_workers.py` 中 `_execute_workers` 使用简单的 for 循环），不使用并行。这避免了多 Worker 同时修改同一文件导致的竞态条件。
+Workers 默认按文件边界并行执行，最大并发由 `MAX_PARALLEL_WORKERS = 3` 控制；当 target_files 重叠、目标不清晰或 API 压力较高时降级串行。这避免了多 Worker 同时修改同一文件导致的竞态条件。
 
 ```
 _execute_workers():
-  for task in tasks:  ← 顺序逐个执行
+  group tasks by non-overlapping target_files
+  run up to MAX_PARALLEL_WORKERS concurrently
       │
       ├── _run_single_worker(task)
       │     ├── 尝试 1-4: run_claude_query + verify_code + run_smoke_test
@@ -940,7 +942,7 @@ Web UI 显式 stop:
 ```json
 {
   "daemon_enabled": true,
-  "daemon_workers": 14,
+  "daemon_workers": 12,
   "daemon_pairs": 5
 }
 ```
@@ -1083,9 +1085,11 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
                     │                                            │
                     │   _build_context(gen_ctx) → 注入预计算分析   │
                     │   Orchestrator LLM 自主调用 MCP 工具         │
-                    │   Pipeline: direction_audit → master →       │
-                    │   prepare → workers → quality → review →    │
-                    │   critic → precommit → commit → archivist   │
+                    │   Pipeline: direction_audit → optional       │
+                    │   literature_probe → master → prepare/      │
+                    │   crossover → workers → quality → review →  │
+                    │   critic → precommit_eval → commit →        │
+                    │   archivist                                 │
                     │   中断 → session + checkpoint 保留到磁盘     │
                     │   下次启动 → _startup_recovery() 恢复        │
                     └──────────────────┬──────────────────────────┘
@@ -1113,7 +1117,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
     │   Orchestrator LLM 会话                      │
     │   输入: _build_context() → combined分析/     │
     │         match分析 + checkpoint 断点           │
-    │   工具: 15 MCP tools (见 tools.py mcp_tools) │
+    │   工具: 17 MCP tools (见 tools.py mcp_tools) │
     └──────────────────┬──────────────────────────┘
                        │
               ┌────────▼────────────┐
@@ -1171,7 +1175,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
               │run_precommit_eval   │
               │(无 LLM)             │
               │镜像对战: vs父+Top    │
-              │n_games上限: 5       │
+              │n_games默认8，范围4-16│
               └────────┬────────────┘
                        │
               ┌────────▼────────────┐
@@ -1189,7 +1193,7 @@ f"ACTIVE GENERATION: v{next_v} (from v{source_v}), stage={stage}. Next tool: {ne
     │    ├── ProcessPoolExecutor 并行对战               │
     │    ├── 每 game 实时更新 Glicko-2 rating           │
     │    ├── 写入: ratings, h2h, bot_stats, history,    │
-    │    │         replay (≤200), daemon_stats          │
+    │    │         replay (≤2000), daemon_stats         │
     │    └── 响应 .reap_signal 刷新 bot 列表            │
     └────────────────────────────────────────────────────┘
 ```
@@ -1400,7 +1404,7 @@ Crossover Agent 分析 v6 和 v2 后的合并决策：
 | 3 | `run_quality_gates` | ALL PASSED ✅ |
 | 4 | `run_review` | APPROVED ✅（score 8，审查 crossover 质量） |
 | 5 | `run_critic` | APPROVED ✅（score 6，**勉强通过**，local_optima_warning=true） |
-| 6 | `run_precommit_eval` | **TIMEOUT** ❌（n_games=80，3600s CYCLE_TIMEOUT 先到） |
+| 6 | `run_precommit_eval` | **TIMEOUT** ❌（历史反例：n_games=80，3600s CYCLE_TIMEOUT 先到；当前参数会 clamp 到 4-16） |
 
 ### Crossover 合并策略
 

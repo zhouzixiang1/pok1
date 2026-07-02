@@ -1559,9 +1559,9 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
             {"version": ctx.next_v, "source_v": ctx.source_v, "reason": "threshold_not_met"},
         )
 
-    # Exploitability probes against the new bot (FIRE-AND-FORGET background).
+    # Exploitability probes against the new committed bot (FIRE-AND-FORGET background).
     #
-    # This block is a post-commit side-effect (bot already committed/tagged),
+    # This block is a post-commit side-effect (bot must already be committed/tagged),
     # code-layer housekeeping driven by post_generation_cleanup — NOT an MCP
     # tool and NOT a commit gate. Result feeds the NEXT generation's Master
     # prompt via exploitability.json (consumed in tool_planning.run_master).
@@ -1612,7 +1612,23 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
 
     try:
         from exploitability_prober import run_exploitability_probes
-        from evolution_infra import get_bot_dir
+        from evolution_infra import get_bot_dir, git_has_tag
+        if ctx.next_v <= 0 or not git_has_tag(ctx.next_v):
+            log.info(
+                "Exploitability probe skipped for v%s (not committed/tagged)",
+                ctx.next_v,
+            )
+            log_system_event(
+                "pipeline.exploitability_probe_skipped", "info",
+                f"v{ctx.next_v} probe skipped: bot not committed/tagged",
+                {
+                    "version": ctx.next_v,
+                    "source_v": ctx.source_v,
+                    "reason": "uncommitted_or_abandoned",
+                },
+            )
+            _finish("skipped", "uncommitted_or_abandoned_before_exploitability")
+            return
         new_bot_dir = get_bot_dir(ctx.next_v)  # P2: pass bare int — get_bot_dir already prefixes "claude_v"
         new_bot_main = new_bot_dir / "main.py"
         if not new_bot_main.exists():

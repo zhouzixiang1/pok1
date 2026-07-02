@@ -108,6 +108,18 @@ def test_resolve_context_from_checkpoint(isolated_files, monkeypatch):
     assert data["attempt"]["audit"] == 1
 
 
+def test_logging_correlation_filter_uses_event_bus_capture_context(monkeypatch):
+    import logging
+    import logging_config
+
+    monkeypatch.setattr(event_bus, "capture_context", lambda: {"run_id": "127#2"})
+    record = logging.LogRecord("pok.test", logging.INFO, __file__, 1, "message", (), None)
+
+    assert logging_config.CorrelationFilter().filter(record) is True
+    assert record.run_id == "127#2"
+    assert record.pid == os.getpid()
+
+
 def test_explicit_overrides_win(isolated_files, monkeypatch):
     monkeypatch.setattr(event_bus, "_read_ckpt_cached", _ckpt(
         next_v=127, stage="master_planned", generation_attempt=2))

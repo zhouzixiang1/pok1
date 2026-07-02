@@ -132,7 +132,7 @@ python -m pytest sever/tests -q               # Protocol regression suite
 
 Each evolution generation follows a three-phase cycle managed by `generation_scheduler.py`:
 
-1. **Phase 1 — `prepare_next_gen` / `run_crossover`**: Code-layer analysis (stagnation + performance verification via `combined_analyst.py`). Decides the source version and strategy before the Master prompt runs. **Disposable** — safe to re-run on interrupt.
+1. **Phase 1 — `prepare_generation()`**: Code-layer analysis (stagnation + performance verification via `combined_analyst.py`). Decides the source version, target version, and strategy before the Master prompt runs. **Disposable** — safe to re-run on interrupt.
 2. **Phase 2 — `_run_one_cycle()` in `orchestrator.py`**: LLM-driven pipeline execution. Orchestrator Claude agent calls MCP tools in sequence. **Preserves state** on interrupt via session + checkpoint files.
 3. **Phase 3 — `post_generation_cleanup()`**: Reap weakest bot if pool > 30, consolidate experience pool every 3 gens. **Idempotent** — safe to re-run.
 
@@ -141,14 +141,16 @@ Each evolution generation follows a three-phase cycle managed by `generation_sch
 The Orchestrator LLM calls these MCP tools in order:
 
 1. **Direction Auditor**: Pre-Master LLM gate that checks git history for repetitive evolution directions. Forces structural alternatives if stuck.
-2. **Master Architect** (`prompts/master_prompt.md`): Analyzes ratings, experience pool, match data, and the pre-selected source version. Produces JSON task plan with worker assignments. It must not set `branch_from` or source-override fields; source selection is handled before Master planning.
-3. **Workers** (`prompts/worker_prompt.md`): Execute tasks in parallel (max 3 via semaphore), 4 retries each. Workers directly edit bot source files using Bash/Read/Edit tools.
-4. **Quality Gates** (automated, no LLM): `py_compile` check, 1 mirror battle smoke test, decision tests (≥70% pass), national TCP protocol/adapter regression tests, file size ≤2000 lines (core strategy files) / ≤1500 lines (helpers), adaptive limit based on source bot size + 15% growth budget, hard cap 2500.
-5. **Code Reviewer** (`prompts/reviewer_prompt.md`): LLM reviews diff, enforces role boundaries, scores 1-10. Up to 3 retries.
-6. **Critic** (`prompts/critic_prompt.md`): Independent strategic review. It records strategic risk and can feed feedback into retries, but the current pipeline treats precommit evaluation as the final regression gate.
-7. **Pre-commit Eval**: Mirror battle regression check vs parent + top opponents.
-8. **Commit**: Git commit + `bot-v{N}` annotated tag. Tags are authoritative completion proof.
-9. **Archivist**: Snapshot, rotate, and verify old generation files.
+2. **Optional Literature Probe**: When stagnation or repetition is detected, run `run_literature_probe` before Master so web-derived strategy hypotheses are explicit and governed.
+3. **Master Architect** (`prompts/master_prompt.md`): Analyzes ratings, experience pool, match data, and the pre-selected source version. Produces JSON task plan with worker assignments. It must not set `branch_from` or source-override fields; source selection is handled before Master planning.
+4. **Prepare/Crossover**: Use `prepare_next_gen` for normal Master/Worker generations, or `run_crossover` for crossover generations.
+5. **Workers** (`prompts/worker_prompt.md`): Execute tasks in parallel (max 3 via semaphore), 4 retries each. Workers directly edit bot source files using Bash/Read/Edit tools.
+6. **Quality Gates** (automated, no LLM): `py_compile`, runtime import contract, smoke test, decision tests (≥70% pass), national TCP protocol/adapter regression tests, declared-scope/protected-contract checks, mandatory fix verification, telemetry/reachability checks, file size ≤2000 lines (core strategy files) / ≤1500 lines (helpers), adaptive limit based on source bot size + 15% growth budget, hard cap 2500.
+7. **Code Reviewer** (`prompts/reviewer_prompt.md`): LLM reviews diff, enforces role boundaries, scores 1-10. Up to 3 retries.
+8. **Critic** (`prompts/critic_prompt.md`): Independent strategic review. It records strategic risk and can feed feedback into retries, but the current pipeline treats precommit evaluation as the final regression gate.
+9. **Pre-commit Eval**: Mirror battle regression check vs parent + top opponents.
+10. **Commit**: Git commit + `bot-v{N}` annotated tag. Tags are authoritative completion proof.
+11. **Archivist**: Snapshot, rotate, and verify old generation files.
 
 ### LLM Integration
 

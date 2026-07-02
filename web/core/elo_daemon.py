@@ -1665,6 +1665,20 @@ def main():
                        played_bots=played_bots_this_cycle, verbose=args.verbose)
         except Exception as e:
             log.warning("Final save failed: %s", e)
+            try:
+                log_system_event(
+                    "daemon.final_save_failed",
+                    "error",
+                    f"Daemon final save failed during shutdown: {str(e)[:180]}",
+                    {
+                        "error": str(e)[:500],
+                        "save_num": save_num + 1,
+                        "active_bot_count": len(active_bots) if active_bots is not None else None,
+                        "total_matches": total_matches,
+                    },
+                )
+            except Exception:
+                pass
         log.info("Shutdown complete. %d matches processed.", total_matches)
 
 

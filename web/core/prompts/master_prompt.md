@@ -46,7 +46,7 @@ All-in rules: return -2 for all-in. After one player all-ins, the opponent may o
 <poker_theory_reference>
 Core concepts workers may reference when designing logic or tuning thresholds. Keep implementations concise and directly tied to decision points.
 
-- Pot Odds: Call if hand equity >= (call amount) / (pot + call amount + opponent bet). Use as a floor, not the sole reason to call.
+- Pot Odds: Call if hand equity >= `to_call / (pot + to_call)` when local `pot` is the current pot before calling. Use as a floor, not the sole reason to call.
 - Implied Odds: Estimate extra chips you can win on later streets if you hit. Required when current pot odds alone don't justify a call with a drawing hand. Be conservative in heads-up; opponent may shut down.
 - Equity Realization (EQR): Actual win rate vs raw equity. EQR drops out of position, on disconnected boards, or when SPR is low. Favor checking/defending more when EQR < 0.7; be more aggressive when EQR > 0.85.
 - Combinatorial Analysis: Count combos for value, bluffs, and draws. In heads-up, ranges are wide — a "strong" range may be only top 15-20% of hands. Use combo counts to size bluff:value ratios on each street.

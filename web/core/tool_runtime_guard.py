@@ -41,6 +41,12 @@ def _candidate_version(tool_name: str, args: dict[str, Any]) -> int | None:
     checkpoint = read_pipeline_checkpoint()
     if checkpoint and isinstance(checkpoint.get("next_v"), int):
         return int(checkpoint["next_v"])
+    if tool_name in {"cleanup_incomplete", "abandon_generation"}:
+        try:
+            from evolution_infra import compute_next_generation_v
+            return int(compute_next_generation_v())
+        except Exception:
+            return None
     return None
 
 
@@ -91,6 +97,26 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
     before = git_worktree_snapshot()
     current_branch = _branch_name(str(before.get("branch") or ""))
 
+    if before.get("truncated"):
+        payload = {
+            "blocked": True,
+            "reason": "worktree_snapshot_truncated",
+            "tool": tool_name,
+            "candidate_v": candidate_v,
+            "branch": before.get("branch"),
+            "head": before.get("head"),
+            "entry_count": before.get("entry_count"),
+            "entries": (before.get("entries") or [])[:40],
+            "directive": "The worktree has too many dirty entries to audit safely. Stop and inspect the full git status before retrying.",
+        }
+        _log_guard_event(
+            "repo.runtime_guard_blocked",
+            "error",
+            "Runtime git guard blocked truncated worktree snapshot",
+            payload,
+        )
+        return False, payload
+
     if current_branch and current_branch != EVOLUTION_BRANCH:
         unexpected = _unexpected_entries(before, candidate_v)
         if unexpected:
@@ -133,6 +159,26 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
             return False, payload
 
     snapshot = git_worktree_snapshot()
+    if snapshot.get("truncated"):
+        payload = {
+            "blocked": True,
+            "reason": "worktree_snapshot_truncated",
+            "tool": tool_name,
+            "candidate_v": candidate_v,
+            "branch": snapshot.get("branch"),
+            "head": snapshot.get("head"),
+            "entry_count": snapshot.get("entry_count"),
+            "entries": (snapshot.get("entries") or [])[:40],
+            "directive": "The worktree has too many dirty entries to audit safely. Stop and inspect the full git status before retrying.",
+        }
+        _log_guard_event(
+            "repo.runtime_guard_blocked",
+            "error",
+            "Runtime git guard blocked truncated worktree snapshot",
+            payload,
+        )
+        return False, payload
+
     baseline = get_last_snapshot() or {}
     baseline_head = baseline.get("head") or ""
     current_head = snapshot.get("head") or ""

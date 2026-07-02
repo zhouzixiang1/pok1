@@ -384,6 +384,37 @@ def test_runtime_guard_allows_current_candidate_dir(monkeypatch):
     assert payload["guard"] == "ok"
 
 
+def test_runtime_guard_cleanup_tools_infer_authoritative_next_v(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshots = iter([
+        {
+            "ok": True,
+            "branch": "main...origin/main",
+            "head": "abc123",
+            "entries": ["?? bots/claude_v301/"],
+        },
+        {
+            "ok": True,
+            "branch": "main...origin/main",
+            "head": "abc123",
+            "entries": ["?? bots/claude_v301/"],
+        },
+    ])
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: None)
+
+    import evolution_infra
+    monkeypatch.setattr(evolution_infra, "compute_next_generation_v", lambda: 301)
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard("cleanup_incomplete", {})
+
+    assert ok is True
+    assert payload["candidate_v"] == 301
+
+
 def test_runtime_guard_blocks_unexpected_system_dirty(monkeypatch):
     import tool_runtime_guard
 
@@ -405,6 +436,31 @@ def test_runtime_guard_blocks_unexpected_system_dirty(monkeypatch):
     assert ok is False
     assert payload["reason"] == "unexpected_worktree_entries"
     assert " M web/core/tool_gates.py" in payload["unexpected_entries"]
+
+
+def test_runtime_guard_blocks_truncated_snapshot(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshot = {
+        "ok": True,
+        "branch": "main...origin/main",
+        "head": "abc123",
+        "entries": ["?? bots/claude_v300/"] * 40,
+        "entry_count": 41,
+        "truncated": True,
+    }
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "execute_workers",
+        {"next_v": 300, "source_v": 299},
+    )
+
+    assert ok is False
+    assert payload["reason"] == "worktree_snapshot_truncated"
+    assert payload["entry_count"] == 41
 
 
 def test_runtime_guard_blocks_head_drift(monkeypatch):

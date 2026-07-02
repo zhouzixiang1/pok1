@@ -29,6 +29,9 @@ from evolution_core import (
     wait_for_daemon_eval,
     read_pipeline_checkpoint,
     find_current_v,
+    find_max_committed_v,
+    find_abandoned_version_floor,
+    compute_next_generation_v,
     _analyze_recent_matches,
     _analyze_stagnation,
     BOT_STATS_FILE, H2H_FILE, MATCH_HISTORY_FILE,
@@ -60,9 +63,19 @@ async def get_status(args):
     ratings = load_ratings()
     daemon_stats = load_daemon_stats()
 
-    # Incomplete next-gen bot detection (in-progress from previous cycle)
-    next_dir = get_bot_dir(current_v + 1)
-    incomplete_next_v = (current_v + 1) if (next_dir.exists() and not (next_dir / ".completed").exists()) else None
+    max_committed_v = find_max_committed_v()
+    abandoned_floor = find_abandoned_version_floor()
+    next_v = compute_next_generation_v(
+        current_v=current_v,
+        max_committed_v=max_committed_v,
+        abandoned_floor=abandoned_floor,
+    )
+
+    # Incomplete next-gen bot detection (in-progress from previous cycle).
+    # Use the same floor as prepare_generation/control.status so MCP tools do
+    # not report a stale current_v + 1 after abandoned generations.
+    next_dir = get_bot_dir(next_v)
+    incomplete_next_v = next_v if (next_dir.exists() and not (next_dir / ".completed").exists()) else None
 
     # Current bot rating reliability
     cur_p = ratings.get(f"claude_v{current_v}")
@@ -80,7 +93,9 @@ async def get_status(args):
 
     result = {
         "current_v": current_v,
-        "next_v": current_v + 1,
+        "next_v": next_v,
+        "max_committed_v": max_committed_v,
+        "abandoned_floor": abandoned_floor,
         "active_bots_count": len(active_bots),
         "top_ratings": _ratings_summary(ratings),
         "daemon_total_games": daemon_stats.get("total_games", 0),
