@@ -352,6 +352,8 @@ class TestRunMasterIdempotent:
         assert result["error"] == "MASTER_VALIDATION_FAILED"
         assert result["fail_count"] == 2
         assert "validation_errors" in result
+        assert "plan" not in result
+        assert "invalid_plan_preview" in result
         assert any(e[0] == "pipeline.master_validation_failed" for e in events)
         assert writes[-1][3]["audit_attempt"] == 2
         assert writes[-1][3]["audit_context"]["master_validation"]["errors"] == result["validation_errors"]

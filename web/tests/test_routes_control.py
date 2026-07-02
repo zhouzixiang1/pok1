@@ -127,6 +127,111 @@ class TestStatus:
         assert data["generation_count"] == 254
         assert data["active_generation"] is None
 
+    def test_health_reports_stopped_state(self, client, monkeypatch):
+        import server.routes.control as control
+        from server.state import app_state
+
+        app_state.set_running(False)
+        monkeypatch.setattr(
+            control,
+            "_daemon_health_snapshot",
+            lambda: {"exists": False, "pid": None, "alive": False},
+        )
+        monkeypatch.setattr(
+            control,
+            "_read_pipeline_health",
+            lambda: {"exists": False, "stage": None},
+        )
+
+        resp = client.get("/api/control/health")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["overall"] == "stopped"
+        assert "evolution_not_running" in data["issues"]
+        assert data["task"]["present"] in (False, True)
+
+    def test_health_degrades_when_running_task_is_done(self, client, monkeypatch):
+        import server.routes.control as control
+        from server.state import app_state
+
+        app_state.set_running(True)
+        monkeypatch.setattr(
+            app_state,
+            "task_snapshot",
+            lambda: {
+                "present": True,
+                "done": True,
+                "cancelled": False,
+                "shutdown_requested": False,
+            },
+        )
+        monkeypatch.setattr(
+            control,
+            "_daemon_health_snapshot",
+            lambda: {
+                "exists": True,
+                "pid": 123,
+                "alive": True,
+                "scheduler_capable": True,
+                "heartbeat_stale": False,
+            },
+        )
+        monkeypatch.setattr(
+            control,
+            "_read_pipeline_health",
+            lambda: {"exists": False, "stage": None},
+        )
+
+        resp = client.get("/api/control/health")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["overall"] == "degraded"
+        assert "orchestrator_task_not_active" in data["issues"]
+        app_state.set_running(False)
+
+    def test_health_degrades_when_daemon_heartbeat_is_stale(self, client, monkeypatch):
+        import server.routes.control as control
+        from server.state import app_state
+
+        app_state.set_running(True)
+        monkeypatch.setattr(
+            app_state,
+            "task_snapshot",
+            lambda: {
+                "present": True,
+                "done": False,
+                "cancelled": False,
+                "shutdown_requested": False,
+            },
+        )
+        monkeypatch.setattr(
+            control,
+            "_daemon_health_snapshot",
+            lambda: {
+                "exists": True,
+                "pid": 123,
+                "alive": True,
+                "scheduler_capable": False,
+                "heartbeat_stale": True,
+                "heartbeat_age_sec": 999,
+            },
+        )
+        monkeypatch.setattr(
+            control,
+            "_read_pipeline_health",
+            lambda: {"exists": True, "stage": "direction_audited"},
+        )
+
+        resp = client.get("/api/control/health")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["overall"] == "degraded"
+        assert "daemon_heartbeat_stale" in data["issues"]
+        app_state.set_running(False)
+
 
 class TestDecisions:
     def test_returns_list(self, client):

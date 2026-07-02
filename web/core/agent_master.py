@@ -103,7 +103,11 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
     match_analysis_trimmed = _trim_to_budget(match_analysis_rendered, 10_000, tail=True)
     perf_trimmed = _trim_to_budget(perf_rendered, 4_000)
 
-    battle_experience_trimmed = battle_experience or "No battle experience data available yet."
+    battle_experience_trimmed = _trim_to_budget(
+        battle_experience or "No battle experience data available yet.",
+        12_000,
+        tail=True,
+    )
     bot_action_stats_trimmed = _trim_to_budget(
         bot_action_stats or "No bot action statistics available.", 12_000)
     opponent_profiles_trimmed = _trim_to_budget(

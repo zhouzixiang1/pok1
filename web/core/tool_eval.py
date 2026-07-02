@@ -133,6 +133,8 @@ NEGATIVE_EV_MEAN_THRESHOLD = float(os.environ.get("POK_PRECOMMIT_NEG_EV_MEAN", "
 NEGATIVE_EV_WIN_MARGIN_TOLERANCE = int(os.environ.get("POK_PRECOMMIT_NEG_EV_WIN_MARGIN", "2"))
 CATASTROPHIC_LOSS_THRESHOLD = float(os.environ.get("POK_PRECOMMIT_CATASTROPHIC_LOSS", "-15000"))
 CATASTROPHIC_LOSS_RATE_THRESHOLD = float(os.environ.get("POK_PRECOMMIT_CATASTROPHIC_RATE", "0.20"))
+ADMISSION_MIN_NET_CHIPS_SAMPLES = int(os.environ.get("POK_PRECOMMIT_ADMISSION_MIN_SAMPLES", "24"))
+ADMISSION_NEGATIVE_MEAN_THRESHOLD = float(os.environ.get("POK_PRECOMMIT_ADMISSION_NEGATIVE_MEAN", "0"))
 
 # ── Phase 2: Confidence Sequence sequential early-stop ──
 # When True, the serial/gather fallback path consumes mirror_battle_generator
@@ -279,6 +281,66 @@ def _aggregate_ev_risk_blockers(
             "details": (
                 f"{catastrophic}/{n} mirror pairs ({catastrophic_rate:.0%}) lost "
                 f"<={CATASTROPHIC_LOSS_THRESHOLD:.0f} chips while aggregate chip EV is negative."
+            ),
+        })
+    return blockers, payload
+
+
+def _admission_strength_blockers(
+    *,
+    n_games: int,
+    precommit_attempt: int = 1,
+    total_wins: int,
+    total_losses: int,
+    total_draws: int,
+    aggregate_net_chips: list,
+) -> tuple[list[dict], dict]:
+    """Promotion/admission layer on top of the severe-regression gate.
+
+    Precommit's statistical gate answers "is this a severe regression?".
+    Admission answers "is the evidence strong enough to promote?". A weak,
+    low-sample, or negative-EV candidate should be reworked/abandoned instead
+    of being committed as an active bot.
+    """
+    samples = [float(x) for x in (aggregate_net_chips or [])]
+    n = len(samples)
+    total_decided = int(total_wins) + int(total_losses)
+    mean = sum(samples) / n if n else None
+    payload = {
+        "samples": n,
+        "min_samples": ADMISSION_MIN_NET_CHIPS_SAMPLES,
+        "negative_mean_threshold": ADMISSION_NEGATIVE_MEAN_THRESHOLD,
+        "mean": round(mean, 1) if mean is not None else None,
+        "n_games": n_games,
+        "default_n_games": PRECOMMIT_DEFAULT_N_GAMES,
+        "precommit_attempt": precommit_attempt,
+        "total_decided": total_decided,
+    }
+    blockers: list[dict] = []
+    if precommit_attempt > 1 and n_games < PRECOMMIT_DEFAULT_N_GAMES:
+        blockers.append({
+            "reason": "provisional_low_sample_precommit",
+            "details": (
+                f"Precommit retry attempt {precommit_attempt} ran with n_games={n_games}, below default "
+                f"{PRECOMMIT_DEFAULT_N_GAMES}; this is provisional evidence and "
+                "cannot promote directly."
+            ),
+        })
+    if n >= ADMISSION_MIN_NET_CHIPS_SAMPLES and mean is not None and mean < ADMISSION_NEGATIVE_MEAN_THRESHOLD:
+        blockers.append({
+            "reason": "admission_negative_chip_ev",
+            "details": (
+                f"Aggregate mean net chips {mean:.0f} per mirror pair over {n} "
+                f"samples is below admission threshold "
+                f"{ADMISSION_NEGATIVE_MEAN_THRESHOLD:.0f}."
+            ),
+        })
+    elif n == 0 and total_decided >= PRECOMMIT_DEFAULT_N_GAMES and total_losses > total_wins:
+        blockers.append({
+            "reason": "admission_negative_wl_without_chip_ev",
+            "details": (
+                f"No paired chip-EV samples were available and aggregate W/L "
+                f"{total_wins}-{total_losses}-{total_draws} is losing."
             ),
         })
     return blockers, payload
@@ -1481,6 +1543,15 @@ async def run_precommit_eval(args):
         severe_regression_already=severe_aggregate_regression,
     )
     blockers.extend(ev_blockers)
+    admission_blockers, admission_payload = _admission_strength_blockers(
+        n_games=n_games,
+        precommit_attempt=precommit_attempt,
+        total_wins=total_wins,
+        total_losses=total_losses,
+        total_draws=total_draws,
+        aggregate_net_chips=aggregate_net_chips,
+    )
+    blockers.extend(admission_blockers)
 
     paired_bootstrap_payload = {
         "aggregate_ci_lower": round(agg_ci_lower, 1) if agg_ci_lower is not None else None,
@@ -1495,6 +1566,7 @@ async def run_precommit_eval(args):
         "net_chips_min": round(min(aggregate_net_chips), 1) if aggregate_net_chips else None,
         "net_chips_max": round(max(aggregate_net_chips), 1) if aggregate_net_chips else None,
         "ev_risk": ev_risk_payload,
+        "admission": admission_payload,
     }
 
     # P0-4: Semantic blocker — LLM detects regression patterns that numbers miss.

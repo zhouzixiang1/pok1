@@ -250,21 +250,24 @@ def _event_counts(events: list[dict[str, Any]], player_idx: int, prefix: str) ->
     )
 
 
-def _critical_adapter_issues(telemetry: dict[str, Any]) -> list[str]:
+def _critical_adapter_issues(telemetry: dict[str, Any], *, strict: bool = True) -> list[str]:
     issues = []
-    for key in (
+    critical_keys = [
         "bot_failures",
         "invalid_actions",
         "would_be_illegal_raise",
         "clamped_raises",
-    ):
+    ]
+    if strict:
+        critical_keys.append("allin_conversions")
+    for key in critical_keys:
         value = int(telemetry.get(key, 0) or 0)
         if value:
             issues.append(f"{key}={value}")
     return issues
 
 
-async def run_pair(bot_a: BotSpec, bot_b: BotSpec, hands: int) -> dict[str, Any]:
+async def run_pair(bot_a: BotSpec, bot_b: BotSpec, hands: int, *, strict: bool = True) -> dict[str, Any]:
     adapters = [MatrixBotAdapter(bot_a), MatrixBotAdapter(bot_b)]
     for adapter in adapters:
         adapter.bot.start()
@@ -293,7 +296,7 @@ async def run_pair(bot_a: BotSpec, bot_b: BotSpec, hands: int) -> dict[str, Any]
             issues.append(f"{spec.label}: illegal_actions={illegal}")
         if timeout:
             issues.append(f"{spec.label}: timeouts={timeout}")
-        for detail in _critical_adapter_issues(telemetry):
+        for detail in _critical_adapter_issues(telemetry, strict=strict):
             issues.append(f"{spec.label}: {detail}")
 
     if engine.hand_num != hands:
@@ -308,16 +311,17 @@ async def run_pair(bot_a: BotSpec, bot_b: BotSpec, hands: int) -> dict[str, Any]
         "net_chips_a": engine.total_earnings[0],
         "net_chips_b": engine.total_earnings[1],
         "net_chips_a_per_hand": round(engine.total_earnings[0] / max(1, engine.hand_num), 3),
+        "strict_adapter": strict,
         "passed_compliance": not issues,
         "issues": issues,
     }
 
 
-async def run_matrix(bots: list[BotSpec], hands: int) -> dict[str, Any]:
+async def run_matrix(bots: list[BotSpec], hands: int, *, strict: bool = True) -> dict[str, Any]:
     results = []
     for i, bot_a in enumerate(bots):
         for bot_b in bots[i + 1:]:
-            results.append(await run_pair(bot_a, bot_b, hands))
+            results.append(await run_pair(bot_a, bot_b, hands, strict=strict))
 
     summary = {
         bot.label: {
@@ -361,7 +365,7 @@ async def run_matrix(bots: list[BotSpec], hands: int) -> dict[str, Any]:
                 and result["passed_compliance"]
                 and pdata["illegal_actions"] == 0
                 and pdata["timeouts"] == 0
-                and not _critical_adapter_issues(adapter)
+                and not _critical_adapter_issues(adapter, strict=strict)
             )
 
         matrix[a][b] = {
@@ -380,6 +384,7 @@ async def run_matrix(bots: list[BotSpec], hands: int) -> dict[str, Any]:
     return {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "hands_per_pair": hands,
+        "strict_adapter": strict,
         "bots": [{"label": bot.label, "path": str(bot.path)} for bot in bots],
         "results": results,
         "summary": summary,
@@ -394,6 +399,7 @@ async def run_acceptance_for_candidate(
     opponent_tokens: list[str | Path] | None = None,
     hands: int = 10,
     max_opponents: int = 2,
+    strict: bool = True,
 ) -> NationalAcceptanceResult:
     candidate = resolve_bot(candidate_token)
     if opponent_tokens:
@@ -409,7 +415,7 @@ async def run_acceptance_for_candidate(
             passed=False,
             issues=["need at least one opponent for national acceptance"],
         )
-    report = await run_matrix(bots, hands)
+    report = await run_matrix(bots, hands, strict=strict)
     candidate_summary = report["summary"].get(candidate.label, {})
     issues = []
     for result in report["results"]:

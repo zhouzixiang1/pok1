@@ -64,8 +64,10 @@ Do NOT call `run_direction_audit`, `run_master`, or `execute_workers` to plan th
 </literature_probe_guidance>
 <validation_handling>
 When `run_master` returns a JSON result:
-- If the result contains `"plan"` key → Master SUCCEEDED. Proceed to `execute_workers`.
-- If the result contains `"error"` key but NO `"plan"` key → Master FAILED. You may retry.
+- If the result contains `"error"` → Master FAILED. Do NOT execute any plan-like
+  preview in that response. Follow the returned directive/retry/abandon fields.
+- If the result contains `"plan"` key and NO `"error"` key → Master SUCCEEDED.
+  Proceed to `execute_workers`.
 - If the error is `MASTER_AUDIT_REJECTED`, the plan is blocked. Do NOT call `execute_workers` with that plan.
 - If the error is `CROSSOVER_ALREADY_DONE`, do NOT call `run_master`; follow the returned directive.
 - `validation_warnings` in a successful result are INFORMATIONAL ONLY — they do NOT block execution.
@@ -73,8 +75,9 @@ When `run_master` returns a JSON result:
 </validation_handling>
 
 <advisory_vs_blocking>
-EXHAUSTED-direction matches and worker_prompt size warnings are ADVISORY, not
-errors. They MUST NOT block `execute_workers`. code_changed=false, declared-scope
+EXHAUSTED-direction matches are ADVISORY, not errors. `worker_prompt` hard-size
+violations are BLOCKING validation errors and must not reach `execute_workers`.
+code_changed=false, declared-scope
 violation, runtime import contract failure, py_compile failure, protected-contract
 regression, smoke failure, national protocol/acceptance regression, decision test
 < 70%, critical decision failures, file size violation, missing mandatory fixes,

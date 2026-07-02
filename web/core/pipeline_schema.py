@@ -203,7 +203,7 @@ class WorkflowProfile(BaseModel):
     profile_id: str
     description: str = ""
     max_workers: int = Field(default=3, ge=1, le=3)
-    national_acceptance_hands: int = Field(default=10, ge=1, le=70)
+    national_acceptance_hands: int = Field(default=20, ge=1, le=70)
     national_acceptance_hard: bool = True
     hidden_scenarios_enabled: bool = False
     allowed_path_prefixes: list[str] = Field(default_factory=lambda: ["bots/"])

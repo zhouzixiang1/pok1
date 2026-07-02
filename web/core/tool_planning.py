@@ -1502,6 +1502,29 @@ async def run_master(args):
                     })}]}
 
     # Pre-compute exhausted keywords once (used by _validate_master_plan and potentially others)
+    try:
+        from plan_compiler import compile_master_plan
+        data, _compile_meta = compile_master_plan(
+            data,
+            next_v=next_v,
+            target_dir=get_bot_dir(next_v),
+            project_root=PROJECT_ROOT,
+        )
+        if _compile_meta.get("compiled"):
+            log_system_event(
+                "pipeline.master_plan_compiled",
+                "info",
+                f"Master plan v{next_v}: compiled {len(_compile_meta.get('compiled_tasks', []))} oversized worker prompt(s)",
+                {"next_v": next_v, "source_v": source_v, "compiler": _compile_meta},
+            )
+    except Exception as _compile_exc:
+        log_system_event(
+            "pipeline.master_plan_compile_failed",
+            "error",
+            f"Master plan compiler failed for v{next_v}: {_compile_exc}",
+            {"next_v": next_v, "source_v": source_v, "error": str(_compile_exc)[:500]},
+        )
+
     _exhausted_kw = _extract_exhausted_keywords()
     plan_errors, plan_warnings = _validate_master_plan(data, next_v=next_v, precomputed_exhausted_keywords=_exhausted_kw)
     if plan_warnings:
@@ -1585,7 +1608,20 @@ async def run_master(args):
             "fail_count": _nf,
             "validation_errors": plan_errors,
             "validation_warnings": plan_warnings,
-            "plan": data,
+            "invalid_plan_preview": {
+                "analysis": str(data.get("analysis", ""))[:1000]
+                if isinstance(data, dict) else "",
+                "tasks": [
+                    {
+                        "worker_id": task.get("worker_id"),
+                        "role": task.get("role"),
+                        "target_files": task.get("target_files", []),
+                        "worker_prompt_chars": len(str(task.get("worker_prompt", ""))),
+                    }
+                    for task in (data.get("tasks", []) if isinstance(data, dict) else [])[:3]
+                    if isinstance(task, dict)
+                ],
+            },
             "directive": (
                 "The Master plan passed schema/audit but failed hard validation. "
                 "Do NOT execute workers from this plan. If retrying Master, "
