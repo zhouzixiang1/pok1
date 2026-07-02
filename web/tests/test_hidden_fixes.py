@@ -385,10 +385,9 @@ def test_P1_guard_hook_blocks_bot_dir_edit():
     assert targets_protected("results/pipeline_state.json")
     assert targets_protected("echo x > worker_failures.jsonl")
     assert targets_protected("cat glicko_ratings.json")
-    # A path match alone does not mean block — the hook ALSO requires a mutation
-    # verb. _targets_protected just detects the path; the gating is two-step.
-    # (grep on bot dir matches the path, but grep is not in MUTATION_PATTERNS,
-    # so the hook allows it. Verified separately in test_P1_guard_hook_git_commit_blocked.)
+    # A path match alone does not mean block during open-ended planning — the hook
+    # also checks mutation verbs. At actionable route stages, even read-only Bash is
+    # blocked by a separate route guard.
     assert targets_protected("grep foo bots/claude_v218/strategy.py")
     assert targets_protected("results/abandoned_versions.jsonl")
 
@@ -452,6 +451,48 @@ def test_P1_guard_hook_returns_stage_recovery_and_command_preview():
     assert data["command_truncated"] is False
     assert data["stage"] == "direction_audited"
     assert data["next_step"] == "run_master"
+
+
+def test_P1_guard_hook_blocks_readonly_bash_at_actionable_stage(tmp_path, monkeypatch):
+    """At quality_failed, even read-only Bash must give way to execute_workers."""
+    import asyncio
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
+    import evolution_infra
+    import event_bus
+    import orchestrator_context as oc
+
+    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", tmp_path / "pipeline_state.json")
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
+    monkeypatch.setattr(event_bus, "EVENTS_FILE", tmp_path / "events.jsonl")
+    evolution_infra.write_pipeline_checkpoint(
+        268,
+        242,
+        "quality_failed",
+        master_plan={"strategy": "crossover", "tasks": []},
+        parent2_v=248,
+        gate_results={
+            "quality": {
+                "all_passed": False,
+                "failed_gates": ["position_semantics(state.py:1)"],
+            }
+        },
+    )
+
+    hook = oc._make_bot_dir_guard_hook()["PreToolUse"][0].hooks[0]
+    output = asyncio.run(hook(
+        {"tool_name": "Bash", "tool_input": {"command": "grep -n dealer bots/claude_v268/state.py"}},
+        "call_test_actionable_guard",
+        None,
+    ))
+
+    decision = output["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "deny"
+    reason = decision["permissionDecisionReason"]
+    assert "Actionable checkpoint route is locked" in reason
+    assert "next MCP tool=execute_workers" in reason
+    assert "Built-in Bash/Edit/Write are disabled" in reason
 
 
 # ──────────────────────────────────────────────
