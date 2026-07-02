@@ -1014,6 +1014,10 @@ wc -l bots/claude_v234/strategy.py
     tee_protected = "printf x | tee web/core/tmp.txt"
     redirect_allowed = "echo x > bots/claude_v234/notes.txt"
     rm_allowed = "rm bots/claude_v234/tmp.py"
+    rm_relative_bare = "rm -rf __pycache__"
+    rm_relative_after_cd = "cd bots/claude_v234 && rm -rf __pycache__ && python -B -c \"import strategy\" 2>&1"
+    redirect_relative_after_cd = "cd bots/claude_v234 && echo x > notes.txt"
+    rm_relative_other_bot_after_cd = "cd bots/claude_v240 && rm -rf __pycache__"
     rm_other_bot = "rm bots/claude_v240/tmp.py"
 
     assert llm_query._subagent_is_outside_allowed(readonly_ls, allowed) is True
@@ -1058,6 +1062,12 @@ wc -l bots/claude_v234/strategy.py
     assert llm_query._subagent_bash_write_scope_violation(copy_parent_files_into_allowed, allowed) is None
     assert llm_query._subagent_bash_write_scope_violation(redirect_allowed, allowed) is None
     assert llm_query._subagent_bash_write_scope_violation(rm_allowed, allowed) is None
+    assert llm_query._subagent_bash_write_scope_violation(rm_relative_after_cd, allowed) is None
+    assert llm_query._subagent_bash_write_scope_violation(redirect_relative_after_cd, allowed) is None
+    assert llm_query._subagent_bash_write_scope_violation(rm_relative_bare, allowed).startswith("rm:")
+    assert llm_query._subagent_bash_write_scope_violation(
+        rm_relative_other_bot_after_cd, allowed
+    ).startswith("rm:")
     file_scope = {"files": ["/home/zzx/project/pok/bots/claude_v234/strategy.py"]}
     assert llm_query._subagent_is_outside_allowed(
         "/home/zzx/project/pok/bots/claude_v234/strategy.py",
@@ -1068,7 +1078,15 @@ wc -l bots/claude_v234/strategy.py
         file_scope,
     ) is None
     assert llm_query._subagent_bash_write_scope_violation(
+        "cd bots/claude_v234 && sed -i 's/a/b/' strategy.py",
+        file_scope,
+    ) is None
+    assert llm_query._subagent_bash_write_scope_violation(
         "echo x > bots/claude_v234/notes.txt",
+        file_scope,
+    ).startswith("write_redirect:")
+    assert llm_query._subagent_bash_write_scope_violation(
+        "cd bots/claude_v234 && echo x > notes.txt",
         file_scope,
     ).startswith("write_redirect:")
     assert llm_query._subagent_is_outside_allowed(

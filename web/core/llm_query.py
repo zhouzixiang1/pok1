@@ -471,75 +471,132 @@ def _iter_shell_write_redirect_targets(command):
         i = max(end, j + 1)
 
 
-def _iter_subagent_bash_write_targets(command):
-    for target in _iter_shell_write_redirect_targets(command):
+def _project_root_for_guard():
+    try:
+        from pathlib import Path
+        from evolution_infra import PROJECT_ROOT
+
+        return Path(PROJECT_ROOT).resolve()
+    except Exception:
+        from pathlib import Path
+
+        return Path.cwd().resolve()
+
+
+def _resolve_guard_path(path, base_dir=None):
+    from pathlib import Path
+
+    candidate = Path(str(path or "").strip().strip("'\""))
+    if not candidate.is_absolute():
+        base = Path(base_dir).resolve(strict=False) if base_dir else _project_root_for_guard()
+        candidate = base / candidate
+    return str(candidate.resolve(strict=False))
+
+
+def _cd_target_from_args(args):
+    for arg in _non_option_args(args, options_with_value=()):
+        text = str(arg or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _iter_subagent_segment_write_targets(segment):
+    for target in _iter_shell_write_redirect_targets(segment):
         target = target.strip("'\"")
         if target.startswith("&") or target.lower() in _SAFE_REDIRECT_TARGETS:
             continue
         yield "write_redirect", target
 
+    words = _simple_command_words(segment)
+    if not words:
+        return
+    cmd = _command_name(words[0])
+    args = words[1:]
+
+    if cmd in {"mkdir", "touch", "rm", "rmdir"}:
+        for target in _non_option_args(args):
+            yield cmd, target
+        return
+
+    if cmd == "cp":
+        non_options = _non_option_args(args, options_with_value=("-t", "--target-directory"))
+        target_dir = None
+        for i, arg in enumerate(args):
+            if arg in {"-t", "--target-directory"} and i + 1 < len(args):
+                target_dir = args[i + 1]
+                break
+            if arg.startswith("--target-directory="):
+                target_dir = arg.split("=", 1)[1]
+                break
+        if target_dir:
+            yield "cp_dest", target_dir
+        elif len(non_options) >= 2:
+            yield "cp_dest", non_options[-1]
+        return
+
+    if cmd == "mv":
+        non_options = _non_option_args(args, options_with_value=("-t", "--target-directory"))
+        target_dir = None
+        for i, arg in enumerate(args):
+            if arg in {"-t", "--target-directory"} and i + 1 < len(args):
+                target_dir = args[i + 1]
+                break
+            if arg.startswith("--target-directory="):
+                target_dir = arg.split("=", 1)[1]
+                break
+        if target_dir:
+            yield "mv_dest", target_dir
+            for source in non_options:
+                yield "mv_source", source
+        elif len(non_options) >= 2:
+            for source in non_options[:-1]:
+                yield "mv_source", source
+            yield "mv_dest", non_options[-1]
+        return
+
+    if cmd == "tee":
+        for target in _non_option_args(args):
+            if target != "-":
+                yield "tee", target
+        return
+
+    if cmd == "sed" and any(arg == "-i" or str(arg).startswith("-i") for arg in args):
+        non_options = _non_option_args(args, options_with_value=("-e", "-f"))
+        for target in non_options[1:]:
+            yield "sed_i", target
+        return
+
+    if cmd == "patch":
+        yield "patch", "__unknown_patch_target__"
+
+
+def _iter_subagent_bash_write_events(command):
+    """Yield ``(detector, target, cwd)`` write events from a shell command.
+
+    Claude sub-agents run Bash from the project root. If they explicitly
+    ``cd`` before a mutation, relative write targets after that point should be
+    resolved against the changed shell cwd; otherwise they remain project-root
+    relative and must not be silently treated as bot-local writes.
+    """
+    current_dir = str(_project_root_for_guard())
     for segment in _split_shell_simple_commands(command):
         words = _simple_command_words(segment)
         if not words:
             continue
         cmd = _command_name(words[0])
         args = words[1:]
+        for detector, target in _iter_subagent_segment_write_targets(segment):
+            yield detector, target, current_dir
+        if cmd == "cd":
+            target = _cd_target_from_args(args)
+            if target:
+                current_dir = _resolve_guard_path(target, base_dir=current_dir)
 
-        if cmd in {"mkdir", "touch", "rm", "rmdir"}:
-            for target in _non_option_args(args):
-                yield cmd, target
-            continue
 
-        if cmd == "cp":
-            non_options = _non_option_args(args, options_with_value=("-t", "--target-directory"))
-            target_dir = None
-            for i, arg in enumerate(args):
-                if arg in {"-t", "--target-directory"} and i + 1 < len(args):
-                    target_dir = args[i + 1]
-                    break
-                if arg.startswith("--target-directory="):
-                    target_dir = arg.split("=", 1)[1]
-                    break
-            if target_dir:
-                yield "cp_dest", target_dir
-            elif len(non_options) >= 2:
-                yield "cp_dest", non_options[-1]
-            continue
-
-        if cmd == "mv":
-            non_options = _non_option_args(args, options_with_value=("-t", "--target-directory"))
-            target_dir = None
-            for i, arg in enumerate(args):
-                if arg in {"-t", "--target-directory"} and i + 1 < len(args):
-                    target_dir = args[i + 1]
-                    break
-                if arg.startswith("--target-directory="):
-                    target_dir = arg.split("=", 1)[1]
-                    break
-            if target_dir:
-                yield "mv_dest", target_dir
-                for source in non_options:
-                    yield "mv_source", source
-            elif len(non_options) >= 2:
-                for source in non_options[:-1]:
-                    yield "mv_source", source
-                yield "mv_dest", non_options[-1]
-            continue
-
-        if cmd == "tee":
-            for target in _non_option_args(args):
-                if target != "-":
-                    yield "tee", target
-            continue
-
-        if cmd == "sed" and any(arg == "-i" or str(arg).startswith("-i") for arg in args):
-            non_options = _non_option_args(args, options_with_value=("-e", "-f"))
-            for target in non_options[1:]:
-                yield "sed_i", target
-            continue
-
-        if cmd == "patch":
-            yield "patch", "__unknown_patch_target__"
+def _iter_subagent_bash_write_targets(command):
+    for detector, target, _cwd in _iter_subagent_bash_write_events(command):
+        yield detector, target
 
 
 def _normalize_allowed_write_scope(allowed_write_dir):
@@ -577,15 +634,14 @@ def _normalize_allowed_write_scope(allowed_write_dir):
     return {"dirs": resolved_dirs, "files": resolved_files}
 
 
-def _path_inside_allowed_scope(path, allowed_scope):
+def _path_inside_allowed_scope(path, allowed_scope, base_dir=None):
     try:
         from pathlib import Path
-        from evolution_infra import PROJECT_ROOT
 
-        project_root = Path(PROJECT_ROOT).resolve()
         candidate = Path(path)
         if not candidate.is_absolute():
-            candidate = project_root / candidate
+            base = Path(base_dir).resolve(strict=False) if base_dir else _project_root_for_guard()
+            candidate = base / candidate
         resolved = str(candidate.resolve(strict=False))
         for allowed_file in allowed_scope.get("files", []):
             if resolved == str(Path(allowed_file).resolve(strict=False)):
@@ -601,7 +657,7 @@ def _path_inside_allowed_scope(path, allowed_scope):
     return False
 
 
-def _subagent_write_target_outside_allowed(target, allowed_dir):
+def _subagent_write_target_outside_allowed(target, allowed_dir, base_dir=None):
     text = str(target or "").strip().strip("'\"")
     if not text:
         return True
@@ -617,15 +673,15 @@ def _subagent_write_target_outside_allowed(target, allowed_dir):
         concrete = concrete.rstrip()
         if not concrete:
             return True
-        return not _path_inside_allowed_scope(concrete, allowed_scope)
+        return not _path_inside_allowed_scope(concrete, allowed_scope, base_dir=base_dir)
     except Exception:
         return _subagent_is_outside_allowed(text, allowed_dir)
 
 
 def _subagent_bash_write_scope_violation(command, allowed_dir):
     """Return a violation reason when a Bash mutation writes outside allowed_dir."""
-    for detector, target in _iter_subagent_bash_write_targets(command):
-        if _subagent_write_target_outside_allowed(target, allowed_dir):
+    for detector, target, cwd in _iter_subagent_bash_write_events(command):
+        if _subagent_write_target_outside_allowed(target, allowed_dir, base_dir=cwd):
             return f"{detector}:{str(target)[:120]}"
 
     mutation_detector = _subagent_bash_mutation_detector(command)

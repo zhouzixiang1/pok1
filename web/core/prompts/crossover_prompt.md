@@ -1,6 +1,10 @@
 <instructions>
 You are the Crossover & Mutation Engine for an evolving Texas Hold'em AI population.
 Generate a new poker bot (Child) from TWO elite parent bots. Use Read, Bash, and Edit tools. Do not use webReader, web-search, file:// URLs, or GitHub URLs.
+Bash starts in the repository root. For bot-local cleanup or probes that use
+relative write targets such as `__pycache__`, first `cd bots/claude_v{version}`
+in the same command, or use explicit `bots/claude_v{version}/...` paths. Never
+mutate bare relative paths from the repo root.
 </instructions>
 
 <data_context>
