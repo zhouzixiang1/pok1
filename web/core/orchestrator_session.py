@@ -125,6 +125,51 @@ def _startup_recovery(ui=None) -> dict:
     stage = checkpoint.get("stage", "unknown")
     next_v = checkpoint.get("next_v")
 
+    try:
+        from pipeline_recovery import checkpoint_recovery_diagnostics
+        recovery_diag = checkpoint_recovery_diagnostics(checkpoint)
+    except Exception as exc:
+        recovery_diag = {
+            "active": True,
+            "recoverable": False,
+            "issues": ["checkpoint_recovery_diagnostic_failed"],
+            "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+        }
+    if recovery_diag.get("active") and not recovery_diag.get("recoverable"):
+        issues = list(recovery_diag.get("issues") or [])
+        msg = (
+            f"[Recovery] Refusing to resume v{next_v} at '{stage}' because the "
+            f"checkpoint is not recoverable on this worktree: {', '.join(issues)}."
+        )
+        if ui:
+            ui.log_history(msg, "error")
+        else:
+            log.error(msg)
+        _clear_orchestrator_session(reason="unrecoverable_checkpoint")
+        try:
+            from system_log import log_system_event
+            log_system_event(
+                "orchestrator.recovery_blocked",
+                "error",
+                msg,
+                {
+                    "case": "unrecoverable_checkpoint",
+                    "next_v": next_v,
+                    "stage": stage,
+                    "issues": issues,
+                    "diagnostics": recovery_diag,
+                    "session_present": bool(session_id),
+                },
+            )
+        except Exception:
+            pass
+        return {
+            "action": "blocked",
+            "reason": "unrecoverable_checkpoint",
+            "checkpoint": checkpoint,
+            "diagnostics": recovery_diag,
+        }
+
     # Watchdog recovery: if checkpoint is stale (no stage change for > WATCHDOG_TIMEOUT)
     # and we're at a recoverable stage, treat as stale session and force new LLM session.
     recoverable_stages = {"direction_audited", "master_planned", "workers_done",
