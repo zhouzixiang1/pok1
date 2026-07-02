@@ -130,6 +130,29 @@ def test_checkpoint_context_updates_last_known_before_checkpoint_clear(isolated_
     assert rows[1]["data"]["stage"] == "master_planned"
 
 
+def test_live_checkpoint_replaces_stale_last_known_for_unbound_emitters(isolated_files, monkeypatch):
+    """Daemon/background emitters must follow the current checkpoint, not stale last-known."""
+    event_bus.update_last_known(
+        run_id="127#0",
+        stage="verified",
+        attempt={"generation": 0, "audit": 0, "precommit": 0},
+    )
+    monkeypatch.setattr(event_bus, "_read_ckpt_cached", _ckpt(
+        next_v=128,
+        stage="workers_done",
+        generation_attempt=1,
+        audit_attempt=2,
+        precommit_attempt=3,
+    ))
+
+    event_bus.emit("daemon.progress", "info", "m")
+    data = _read_jsonl(isolated_files / "events.jsonl")[-1]["data"]
+
+    assert data["run_id"] == "128#1"
+    assert data["stage"] == "workers_done"
+    assert data["attempt"]["audit"] == 2
+
+
 def test_logging_correlation_filter_uses_event_bus_capture_context(monkeypatch):
     import logging
     import logging_config

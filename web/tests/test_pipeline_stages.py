@@ -677,10 +677,49 @@ class TestPostCleanupExperienceCommit:
             "committed": True,
             "commit": "abc1234",
             "path": "web/core/experience_pool.md",
+            "push_ok": False,
         }
         assert state["ensured"] is True
         assert ("add", "--", "web/core/experience_pool.md") in calls
         assert any(call[:2] == ("commit", "-m") for call in calls)
+
+    def test_post_cleanup_experience_commit_honors_push_policy(self, tmp_path, monkeypatch):
+        import evolution_infra
+        import generation_scheduler
+
+        exp = tmp_path / "web" / "core" / "experience_pool.md"
+        exp.parent.mkdir(parents=True)
+        exp.write_text("## RECENT_LESSONS\n- changed\n")
+        state = {"staged": False}
+        pushed = []
+
+        def fake_git(*args, check=True):
+            if args[:3] == ("status", "--porcelain", "--"):
+                return " M web/core/experience_pool.md"
+            if args[:3] == ("diff", "--cached", "--name-only"):
+                return "web/core/experience_pool.md" if state["staged"] else ""
+            if args[:2] == ("add", "--"):
+                state["staged"] = True
+                return ""
+            if args[0] == "commit":
+                return ""
+            if args[:2] == ("rev-parse", "--short"):
+                return "def5678"
+            return ""
+
+        monkeypatch.setenv("EVOLUTION_GIT_PUSH", "1")
+        monkeypatch.setattr(evolution_infra, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(evolution_infra, "EXPERIENCE_FILE", exp)
+        monkeypatch.setattr(evolution_infra, "_git", fake_git)
+        monkeypatch.setattr(evolution_infra, "_git_ensure_main_branch", lambda: None)
+        monkeypatch.setattr(evolution_infra, "git_push_refs", lambda *refs: pushed.append(refs) or True)
+        monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *a, **k: None)
+
+        result = generation_scheduler._commit_post_cleanup_experience_change(241, set())
+
+        assert result["committed"] is True
+        assert result["push_ok"] is True
+        assert pushed == [("main",)]
 
 
 # ══════════════════════════════════════════════════════════════════════

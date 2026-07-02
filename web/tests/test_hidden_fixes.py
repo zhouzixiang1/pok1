@@ -132,6 +132,42 @@ def test_H3_finalize_bare_commit_requires_verified_gate_ledger(tmp_path, monkeyp
     assert commit_calls == []
 
 
+def test_H3_bare_commit_recovery_blocks_stale_code_fingerprint(tmp_path, monkeypatch):
+    """Bare-commit recovery must bind the tag to the exact code that passed gates."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
+    import generation_scheduler as gs
+    import tool_commit
+    from tool_gates import _bot_code_fingerprint
+
+    bot_dir = tmp_path / "bots" / "claude_v889"
+    bot_dir.mkdir(parents=True)
+    (bot_dir / "main.py").write_text("# changed after gates\n")
+    current_fp = _bot_code_fingerprint(bot_dir)
+
+    monkeypatch.setattr(tool_commit, "get_bot_dir", lambda _v: bot_dir)
+    ckpt = {
+        "next_v": 889,
+        "source_v": 888,
+        "stage": "verified",
+        "gate_results": {
+            "quality": {
+                "all_passed": True,
+                "critical_scenarios_passed": True,
+                "code_fingerprint": "stale-fingerprint",
+            },
+            "review": {"approved": True},
+            "critic": {"approved": True},
+            "precommit_eval": {"passed": True, "code_fingerprint": current_fp},
+        },
+    }
+
+    ok, reason = gs._bare_commit_gate_ledger_ok(889, ckpt)
+
+    assert ok is False
+    assert "code_fingerprint changed since quality gates" in reason
+
+
 def test_post_generation_cleanup_skips_uncommitted_before_side_effects(monkeypatch):
     """Abandoned/uncommitted generations must not run post-commit side effects."""
     import sys

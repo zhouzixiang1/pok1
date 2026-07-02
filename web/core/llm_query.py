@@ -39,6 +39,13 @@ _SUBAGENT_BASH_MUTATION_PATTERNS = (
     "git push",
 )
 _SAFE_REDIRECT_TARGETS = {"/dev/null", "nul"}
+_SUBAGENT_GIT_READONLY_COMMANDS = {
+    "status", "diff", "log", "show", "rev-parse", "ls-files",
+}
+_SUBAGENT_GIT_GLOBAL_OPTIONS_WITH_VALUE = {
+    "-C", "-c", "--git-dir", "--work-tree", "--namespace",
+    "--exec-path", "--config-env",
+}
 _SUBAGENT_GIT_TAG_RE = re.compile(r"\bgit\s+tag\b([^;&|]*)", re.IGNORECASE)
 _SUBAGENT_GIT_TAG_READONLY_OPTIONS_WITH_VALUE = {
     "--sort", "--format", "--points-at", "--contains", "--no-contains",
@@ -250,6 +257,53 @@ def _iter_shell_write_redirect_targets(command):
         i = max(end, j + 1)
 
 
+def _iter_subagent_git_args(command):
+    text = _strip_heredoc_bodies(command)
+    for match in re.finditer(r"(?:(?<=^)|(?<=[\s;&|()]))git\b([^;&|()]*)", text, re.IGNORECASE):
+        rest = match.group(1).strip()
+        try:
+            yield shlex.split(rest)
+        except ValueError:
+            yield rest.split()
+
+
+def _subagent_git_subcommand(args):
+    i = 0
+    while i < len(args):
+        arg = str(args[i])
+        low = arg.lower()
+        if low in {"--version", "version", "--help", "help"}:
+            return low.lstrip("-"), args[i + 1:]
+        if low in _SUBAGENT_GIT_GLOBAL_OPTIONS_WITH_VALUE:
+            i += 2
+            continue
+        if any(low.startswith(opt + "=") for opt in _SUBAGENT_GIT_GLOBAL_OPTIONS_WITH_VALUE):
+            i += 1
+            continue
+        if low in {"--no-pager", "--paginate"}:
+            i += 1
+            continue
+        if low.startswith("-"):
+            i += 1
+            continue
+        return low, args[i + 1:]
+    return "", []
+
+
+def _subagent_git_command_mutation_detector(command):
+    for args in _iter_subagent_git_args(command):
+        subcmd, rest = _subagent_git_subcommand(args)
+        if subcmd in {"", "version", "help"}:
+            continue
+        if subcmd == "tag":
+            if _subagent_git_tag_invocation_is_mutating(rest):
+                return "git_tag_mutation"
+            continue
+        if subcmd not in _SUBAGENT_GIT_READONLY_COMMANDS:
+            return f"git_command:{subcmd}"
+    return None
+
+
 def _subagent_bash_mutation_detector(command):
     """Return the detector name when Bash appears to write/delete/move files."""
     text = str(command)
@@ -265,6 +319,9 @@ def _subagent_bash_mutation_detector(command):
         for pattern in _SUBAGENT_PYTHON_WRITE_PATTERNS:
             if pattern in low:
                 return f"python_write_pattern:{pattern}"
+    git_detector = _subagent_git_command_mutation_detector(command)
+    if git_detector:
+        return git_detector
     for pattern in _SUBAGENT_BASH_MUTATION_PATTERNS:
         if pattern in low:
             return f"bash_pattern:{pattern.strip()}"

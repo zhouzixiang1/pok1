@@ -1182,22 +1182,23 @@ def _bare_commit_gate_ledger_ok(v, ckpt):
     if ckpt.get("stage") not in {"verified", "archived"}:
         return False, f"stage_not_verified:{ckpt.get('stage')}"
 
-    gate_results = ckpt.get("gate_results", {}) or {}
-    quality = gate_results.get("quality") or {}
-    review = gate_results.get("review") or {}
-    critic = gate_results.get("critic") or {}
-    precommit = gate_results.get("precommit_eval") or {}
+    source_v = ckpt.get("source_v")
+    if source_v is None:
+        return False, "missing_source_v"
 
-    if quality.get("all_passed") is not True:
-        return False, "quality_not_passed"
-    if quality.get("critical_scenarios_passed") is not True:
-        return False, "critical_scenarios_not_passed"
-    if review.get("approved") is not True:
-        return False, "review_not_approved"
-    if critic.get("approved") is not True and critic.get("force_advanced") is not True:
-        return False, "critic_missing_or_not_recorded"
-    if precommit.get("passed") is not True:
-        return False, "precommit_not_passed"
+    try:
+        from tool_commit import get_bot_dir, validate_commit_gate_ledger
+        ledger = validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=get_bot_dir(v))
+    except Exception as exc:
+        return False, f"gate_ledger_validation_error:{type(exc).__name__}:{str(exc)[:120]}"
+
+    if not ledger.get("ok"):
+        missing = ",".join(ledger.get("missing_gates") or [])
+        failed = ",".join(
+            f"{item.get('gate')}:{item.get('reason')}" if isinstance(item, dict) else str(item)
+            for item in (ledger.get("failed_gates") or [])
+        )
+        return False, f"gate_ledger_failed:missing={missing};failed={failed}"
     return True, ""
 
 
@@ -1345,7 +1346,7 @@ def _cleanup_dirty_paths() -> set[str]:
 
 def _commit_post_cleanup_experience_change(version: int, preexisting_dirty: set[str]) -> dict:
     """Commit post-cleanup experience_pool consolidation as scoped housekeeping."""
-    from evolution_infra import EXPERIENCE_FILE, PROJECT_ROOT, _git, _git_ensure_main_branch
+    from evolution_infra import EXPERIENCE_FILE, PROJECT_ROOT, _git, _git_ensure_main_branch, git_push_refs
 
     try:
         rel = str(EXPERIENCE_FILE.relative_to(PROJECT_ROOT))
@@ -1403,13 +1404,20 @@ def _commit_post_cleanup_experience_change(version: int, preexisting_dirty: set[
     )
     _git("commit", "-m", f"chore: consolidate v{version} experience pool", "--", rel)
     commit_hash = _git("rev-parse", "--short", "HEAD", check=False).strip()
+    push_ok = False
+    if os.environ.get("EVOLUTION_GIT_PUSH") == "1":
+        push_ok = git_push_refs("main")
     log_system_event(
         "pipeline.post_cleanup_experience_commit_done",
-        "success",
-        f"v{version}: committed post-cleanup experience consolidation {commit_hash}",
-        {"version": version, "commit": commit_hash, "path": rel},
+        "success" if push_ok or os.environ.get("EVOLUTION_GIT_PUSH") != "1" else "warn",
+        (
+            f"v{version}: committed post-cleanup experience consolidation {commit_hash}"
+            if os.environ.get("EVOLUTION_GIT_PUSH") != "1" or push_ok
+            else f"v{version}: committed post-cleanup experience consolidation {commit_hash}, push failed"
+        ),
+        {"version": version, "commit": commit_hash, "path": rel, "push_ok": push_ok},
     )
-    return {"committed": True, "commit": commit_hash, "path": rel}
+    return {"committed": True, "commit": commit_hash, "path": rel, "push_ok": push_ok}
 
 
 async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):

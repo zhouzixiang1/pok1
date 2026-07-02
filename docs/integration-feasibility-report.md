@@ -199,7 +199,7 @@ Direction Auditor → Master Architect → Workers (1-2) → Quality Gates → R
 | Master | Bash, Read | 分析状态、规划任务 | `master_prompt.md` (6.8KB) |
 | Workers | Bash, Read, Edit | 修改 bot 源代码 | `worker_prompt.md` (5.5KB) |
 | Reviewer | Bash, Read | 审查 diff、评分 | `reviewer_prompt.md` (3.6KB) |
-| Critic | Bash, Read | 战略评估、≥6 分通过 | `critic_prompt.md` (5.0KB) |
+| Critic | Bash, Read | 战略评估、advisory 风险输入；precommit 是最终回归门 | `critic_prompt.md` (5.0KB) |
 | Combined Analyst | 无 | 停滞+性能分析 | `combined_analyst.md` |
 
 **Glicko-2 守护进程** (`elo_daemon.py`, 738 行):

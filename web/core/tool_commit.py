@@ -51,27 +51,22 @@ class CommitBotInput(TypedDict):
     review_approved: Annotated[bool, "Must be true — confirms run_review() returned approved:true"]
 
 
-@tool("commit_bot", "Commit a bot generation with git commit and tag. review_approved must be true (set after run_review returns approved:true).", {"version": int, "source_v": int, "strategy": str, "review_approved": bool})
-async def commit_bot(args):
-    _t0 = time.time()
-    v, source_v = _resolve_version_args(args)
-    if v is None or source_v is None:
-        return _json_tool_result({"error": "Missing version/source_v and no active pipeline checkpoint"})
+def validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=None):
+    """Validate the gate ledger and code fingerprint for finalizing a bot.
+
+    This is intentionally shared by normal ``commit_bot`` and bare-commit
+    recovery. Recovery must not tag code unless the current files still match
+    the exact code that passed quality and precommit.
+    """
     v = int(v)
-    source_v = int(source_v)
-    strategy = args.get("strategy", "")
-    review_approved = args.get("review_approved", False)
-
-    _set_pipeline_status(f"Committing v{v}")
-
-    bot_dir = get_bot_dir(v)
+    source_v = int(source_v) if source_v is not None else None
+    bot_dir = bot_dir or get_bot_dir(v)
     try:
         from tool_gates import _bot_code_fingerprint
         current_code_fingerprint = _bot_code_fingerprint(bot_dir)
     except Exception:
         current_code_fingerprint = ""
 
-    ckpt = _matching_checkpoint(v, source_v)
     missing_gates = []
     failed_gates = []
     gate_results = {}
@@ -79,6 +74,20 @@ async def commit_bot(args):
         missing_gates.append("pipeline_checkpoint")
     else:
         gate_results = ckpt.get("gate_results", {}) or {}
+        if source_v is not None and int(ckpt.get("source_v") or -1) != source_v:
+            failed_gates.append({
+                "gate": "pipeline_checkpoint",
+                "reason": "source_v mismatch",
+                "expected": source_v,
+                "current": ckpt.get("source_v"),
+            })
+        if int(ckpt.get("next_v") or -1) != v:
+            failed_gates.append({
+                "gate": "pipeline_checkpoint",
+                "reason": "next_v mismatch",
+                "expected": v,
+                "current": ckpt.get("next_v"),
+            })
         if not current_code_fingerprint:
             failed_gates.append({
                 "gate": "code_fingerprint",
@@ -115,11 +124,10 @@ async def commit_bot(args):
         if not critic:
             missing_gates.append("critic")
         elif critic.get("approved") is not True:
-            # Critic is ADVISORY (Step 5): score no longer blocks (precommit is
-            # the final judge). We still require the critic gate to have run and
-            # returned approved=True (run_critic always sets approved=True now).
+            # Critic is advisory; require the tool to have run and recorded the
+            # advisory gate, while preserving force_advanced compatibility.
             if critic.get("force_advanced") is True:
-                pass  # Force-advanced: allow despite advisory rejection
+                pass
             else:
                 failed_gates.append({
                     "gate": "critic",
@@ -144,6 +152,36 @@ async def commit_bot(args):
                     "current": current_code_fingerprint,
                 })
 
+    return {
+        "ok": not missing_gates and not failed_gates,
+        "missing_gates": missing_gates,
+        "failed_gates": failed_gates,
+        "gate_results": gate_results,
+        "current_code_fingerprint": current_code_fingerprint,
+        "checkpoint_stage": ckpt.get("stage") if ckpt else None,
+    }
+
+
+@tool("commit_bot", "Commit a bot generation with git commit and tag. review_approved must be true (set after run_review returns approved:true).", {"version": int, "source_v": int, "strategy": str, "review_approved": bool})
+async def commit_bot(args):
+    _t0 = time.time()
+    v, source_v = _resolve_version_args(args)
+    if v is None or source_v is None:
+        return _json_tool_result({"error": "Missing version/source_v and no active pipeline checkpoint"})
+    v = int(v)
+    source_v = int(source_v)
+    strategy = args.get("strategy", "")
+    review_approved = args.get("review_approved", False)
+
+    _set_pipeline_status(f"Committing v{v}")
+
+    bot_dir = get_bot_dir(v)
+    ckpt = _matching_checkpoint(v, source_v)
+    ledger = validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=bot_dir)
+    missing_gates = ledger["missing_gates"]
+    failed_gates = ledger["failed_gates"]
+    gate_results = ledger["gate_results"]
+
     if missing_gates or failed_gates:
         try:
             log_system_event('pipeline.commit_blocked', 'error',
@@ -156,7 +194,7 @@ async def commit_bot(args):
             "error": "COMMIT BLOCKED: gate ledger incomplete or failed.",
             "version": v,
             "source_v": source_v,
-            "checkpoint_stage": ckpt.get("stage") if ckpt else None,
+            "checkpoint_stage": ledger["checkpoint_stage"],
             "missing_gates": missing_gates,
             "failed_gates": failed_gates,
             "gate_results": gate_results,

@@ -121,6 +121,40 @@ class TestSystemEvents:
         assert data["total"] == 1
         assert data["events"][0]["type"] == "pipeline.master_done"
 
+    def test_structured_source_normalizes_legacy_sigterm_misclassification(self, client, tmp_path, monkeypatch):
+        from server.routes import logs
+
+        events_file = tmp_path / "events.jsonl"
+        events_file.write_text(
+            json.dumps({
+                "ts": 1.0,
+                "type": "pipeline.llm_role_shutdown_cancelled",
+                "severity": "info",
+                "message": "LLM process received SIGTERM",
+                "data": {
+                    "category": "pipeline.llm_role_shutdown_cancelled",
+                    "shutdown_requested": False,
+                    "run_id": "257#0",
+                    "stage": "reviewed",
+                },
+            }) + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(logs, "RESULTS_DIR", tmp_path)
+
+        resp = client.get(
+            "/api/logs/system-events?source=structured&type=pipeline.llm_role_process_terminated"
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        event = data["events"][0]
+        assert event["type"] == "pipeline.llm_role_process_terminated"
+        assert event["severity"] == "error"
+        assert event["data"]["original_type"] == "pipeline.llm_role_shutdown_cancelled"
+        assert event["data"]["legacy_misclassified"] is True
+
     def test_system_events_rejects_unknown_source(self, client):
         resp = client.get("/api/logs/system-events?source=unknown")
         assert resp.status_code == 400

@@ -969,6 +969,8 @@ PYEOF
 """
     readonly_wc = "wc -l web/core/experience_pool.md 2>/dev/null"
     readonly_tag = "git tag -l 'bot-v2*' | tail -10"
+    readonly_git_status = "git status --short --branch && git diff -- bots/claude_v224/main.py"
+    readonly_git_log = "git -C . log --oneline -5 && git show --stat HEAD && git rev-parse HEAD && git ls-files bots/claude_v224"
     write_redirect = "echo x > bots/claude_v224/strategy.py"
     mixed_allowed_and_protected_write = (
         "python -c \"from pathlib import Path; "
@@ -984,6 +986,11 @@ PYEOF
         "Path('bots/claude_v221/strategy.py').write_text('x')\""
     )
     write_tag = "git tag bot-v999"
+    write_git_reset = "git reset --hard HEAD"
+    write_git_switch = "git switch main"
+    write_git_clean = "git clean -fd"
+    write_git_merge = "git merge feature"
+    write_git_rebase = "git rebase main"
 
     assert llm_query._subagent_is_outside_allowed(readonly_ls, allowed) is True
     assert llm_query._subagent_bash_is_mutation(readonly_ls) is False
@@ -992,21 +999,31 @@ PYEOF
     assert llm_query._subagent_bash_is_mutation(readonly_python_heredoc) is False
     assert llm_query._subagent_bash_is_mutation(readonly_wc) is False
     assert llm_query._subagent_bash_is_mutation(readonly_tag) is False
+    assert llm_query._subagent_bash_is_mutation(readonly_git_status) is False
+    assert llm_query._subagent_bash_is_mutation(readonly_git_log) is False
     assert llm_query._subagent_bash_mutation_detector(readonly_ls) is None
     assert llm_query._subagent_bash_mutation_detector(readonly_python) is None
     assert llm_query._subagent_bash_mutation_detector(readonly_python_assignment) is None
     assert llm_query._subagent_bash_mutation_detector(readonly_python_heredoc) is None
     assert llm_query._subagent_bash_mutation_detector(readonly_tag) is None
+    assert llm_query._subagent_bash_mutation_detector(readonly_git_status) is None
+    assert llm_query._subagent_bash_mutation_detector(readonly_git_log) is None
     assert llm_query._subagent_bash_is_mutation(write_redirect) is True
     assert llm_query._subagent_bash_is_mutation(mixed_allowed_and_protected_write) is True
     assert llm_query._subagent_is_outside_allowed(mixed_allowed_and_protected_write, allowed) is True
     assert llm_query._subagent_bash_is_mutation(write_heredoc_redirect) is True
     assert llm_query._subagent_bash_is_mutation(write_python) is True
     assert llm_query._subagent_bash_is_mutation(write_tag) is True
+    assert llm_query._subagent_bash_is_mutation(write_git_reset) is True
+    assert llm_query._subagent_bash_is_mutation(write_git_switch) is True
+    assert llm_query._subagent_bash_is_mutation(write_git_clean) is True
+    assert llm_query._subagent_bash_is_mutation(write_git_merge) is True
+    assert llm_query._subagent_bash_is_mutation(write_git_rebase) is True
     assert llm_query._subagent_bash_mutation_detector(write_redirect).startswith("write_redirect:")
     assert llm_query._subagent_bash_mutation_detector(write_heredoc_redirect).startswith("write_redirect:")
     assert llm_query._subagent_bash_mutation_detector(write_python) == "python_write_pattern:.write_text("
     assert llm_query._subagent_bash_mutation_detector(write_tag) == "git_tag_mutation"
+    assert llm_query._subagent_bash_mutation_detector(write_git_reset) == "git_command:reset"
 
 
 def test_commit_bot_blocks_missing_code_fingerprints(tmp_path, monkeypatch):

@@ -193,6 +193,49 @@ class TestStop:
         assert resp.json()["status"] == "stopped"
 
 
+class TestReset:
+    def test_reset_does_not_auto_stage_or_commit(self, client, monkeypatch):
+        import server.routes.control as control
+        import orchestrator
+
+        client.post("/api/control/stop")
+        calls = []
+        events = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(tuple(cmd))
+            if tuple(cmd) == ("git", "status", "--short"):
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=" M web/core/experience_pool.md\n?? web/core/results/tmp.json\n",
+                    stderr="",
+                )
+            raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+        async def fake_loop(*_args, **_kwargs):
+            return None
+
+        fake_reset_module = SimpleNamespace(
+            reset_evolution=lambda: {"reset_files": ["experience_pool.md"], "deleted_bot_dirs": []}
+        )
+        monkeypatch.setitem(sys.modules, "reset", fake_reset_module)
+        monkeypatch.setattr(orchestrator, "orchestrator_loop", fake_loop)
+        monkeypatch.setattr(control.subprocess, "run", fake_run)
+        monkeypatch.setattr(control, "_control_log", lambda *event: events.append(event))
+
+        resp = client.post("/api/control/reset")
+        data = resp.json()
+
+        assert resp.status_code == 200
+        assert data["status"] == "reset_complete"
+        assert data["git_status"]["entry_count"] == 2
+        assert ("git", "status", "--short") in calls
+        assert not any(call[:2] == ("git", "add") for call in calls)
+        assert not any(call[:2] == ("git", "commit") for call in calls)
+        assert any(event[0] == "control.reset_git_status" for event in events)
+        client.post("/api/control/stop")
+
+
 class TestStartConflict:
     def test_start_when_not_running(self, client, monkeypatch):
         client.post("/api/control/stop")

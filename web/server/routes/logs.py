@@ -90,6 +90,26 @@ def _infer_category_from_type(event_type: str) -> str:
     return event_type + "."
 
 
+def _normalise_structured_event(entry: dict) -> dict:
+    """Return an in-memory compatibility-normalised structured event row."""
+    data = entry.get("data") if isinstance(entry.get("data"), dict) else {}
+    if (
+        entry.get("type") == "pipeline.llm_role_shutdown_cancelled"
+        and data.get("shutdown_requested") is False
+    ):
+        data = dict(data)
+        data.setdefault("original_type", entry.get("type"))
+        data.setdefault("original_category", data.get("category"))
+        data["legacy_misclassified"] = True
+        data["corrected_type"] = "pipeline.llm_role_process_terminated"
+        data["category"] = "pipeline.llm_role_process_terminated"
+        entry = dict(entry)
+        entry["type"] = "pipeline.llm_role_process_terminated"
+        entry["severity"] = "error"
+        entry["data"] = data
+    return entry
+
+
 @router.get("/logs/system-events")
 async def get_system_events(
     type: str = Query("", description="Filter by event type prefix (e.g. pipeline.)"),
@@ -118,6 +138,8 @@ async def get_system_events(
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if source == "structured":
+                entry = _normalise_structured_event(entry)
             if type and not entry.get("type", "").startswith(type):
                 continue
             if severity and entry.get("severity") != severity:

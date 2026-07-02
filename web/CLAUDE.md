@@ -36,7 +36,7 @@ python -m pytest sever/tests -q                   # National TCP adapter/protoco
 
 ### Pattern 1: MCP Tool Server (Orchestrator)
 
-The Orchestrator (`core/orchestrator.py`) runs as a Claude agent with registered MCP tools. It receives an `evolution` MCP server created by `create_sdk_mcp_server()` from `tools.py`, which aggregates `@tool()`-decorated functions from `tool_pipeline.py` (pipeline stages) and `tool_status.py` (queries/analysis). The Orchestrator agent decides autonomously which tools to call and in what order.
+The Orchestrator (`core/orchestrator.py`) runs as a Claude agent with registered MCP tools. It receives an `evolution` MCP server created by `create_sdk_mcp_server()` from `tools.py`, which aggregates Orchestrator-visible tools from `tool_planning.py`, `tool_gates.py`, `tool_eval.py`, `tool_commit.py`, `tool_bot_management.py`, and query helpers from `tool_status.py`. HTTP/control-only helpers such as `get_status` stay in `all_tools` and are not callable by the Orchestrator MCP session.
 
 Each tool function receives an `args` dict, executes business logic (often spawning sub-agent LLM calls via `run_claude_query()`), and returns MCP-formatted results. Key pipeline tools:
 
@@ -108,8 +108,8 @@ React frontend:
 | `core/orchestrator.py` | LLM-driven orchestrator: spawns Claude agent with MCP tools, streams output, logs to file |
 | `core/tools.py` | Re-export shell — registers MCP server from tool sub-modules |
 | `core/tool_helpers.py` | Shared tool helpers: UI injection, checkpoint gates, boundary validation |
-| `core/tool_pipeline.py` | Core pipeline MCP tools (prepare → master → workers → quality → review → critic → commit) |
-| `core/tool_status.py` | Non-pipeline MCP tools (status queries, daemon control, bot management, analysis) |
+| `core/tool_pipeline.py` | Backward-compatible re-export shim for split pipeline tool modules |
+| `core/tool_status.py` | Query/status helpers; only selected query helpers are exposed to Orchestrator MCP, while status/daemon/control helpers are HTTP-only |
 | `core/web_ui.py` | `EventBroadcaster` (ring buffer 500) + `WebUI` adapter (dual output: terminal + SSE broadcast) |
 | `core/elo_daemon.py` | Background subprocess: continuous mirror battles, per-game Glicko-2 updates, `.reap_signal` listener |
 | `core/glicko2.py` | Glicko-2 rating system implementation |

@@ -65,6 +65,21 @@ def _unexpected_entries(snapshot: dict[str, Any], candidate_v: int | None) -> li
     ]
 
 
+def _checkpoint_repo_baseline(candidate_v: int | None) -> dict[str, Any] | None:
+    if candidate_v is None:
+        return None
+    checkpoint = read_pipeline_checkpoint()
+    if not checkpoint:
+        return None
+    try:
+        if int(checkpoint.get("next_v") or -1) != int(candidate_v):
+            return None
+    except Exception:
+        return None
+    baseline = checkpoint.get("repo_baseline")
+    return dict(baseline) if isinstance(baseline, dict) else None
+
+
 def _run_git(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args],
@@ -164,7 +179,7 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
         )
         return False, payload
 
-    baseline = get_last_snapshot() or {}
+    baseline = _checkpoint_repo_baseline(candidate_v) or get_last_snapshot() or {}
     baseline_head = baseline.get("head") or ""
     current_head = snapshot.get("head") or ""
     enforce_head_stability = tool_name != "prepare_generation" and candidate_v is not None
@@ -182,6 +197,7 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
             "candidate_v": candidate_v,
             "baseline_head": baseline_head,
             "current_head": current_head,
+            "baseline_source": "checkpoint" if baseline.get("captured_stage") else "process_snapshot",
             "branch": snapshot.get("branch"),
             "directive": "A git commit changed the runtime code during this generation. Abandon and restart from a fresh baseline.",
         }
