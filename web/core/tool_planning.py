@@ -2659,10 +2659,30 @@ def _task_matches_quality_blocker(task, blocker):
         str(task.get("worker_prompt", task.get("instruction", ""))),
     ]).lower()
     if blocker == "size":
-        return any(marker in text for marker in ("file_size", "size", "line", "loc", "strategy.py"))
+        return (
+            "file_size" in text
+            or "line_count" in text
+            or "line count" in text
+            or "loc limit" in text
+            or "oversized" in text
+            or "wc -l" in text
+            or re.search(r"\bsize\b", text) is not None
+            or re.search(r"\d+L/\d+L", text) is not None
+        )
     if blocker == "position_semantics":
         return any(marker in text for marker in ("position_semantics", "dealer", "small blind", "big blind", "sb", "bb"))
     return False
+
+
+def _normalize_repair_blocker(value):
+    text = str(value or "").strip().lower()
+    if text in {"size", "file_size", "line_count", "loc"}:
+        return "file_size"
+    if text in {"position", "position_semantics"}:
+        return "position_semantics"
+    if text in {"quality", "quality_gate", "protected_contract", "compile", "smoke_test"}:
+        return "quality_gate"
+    return text
 
 
 def _task_target_filenames(tasks):
@@ -2675,6 +2695,66 @@ def _task_target_filenames(tasks):
             if name:
                 files.add(name)
     return files
+
+
+def _quality_contract_signatures(ckpt, reviewer_feedback=""):
+    return {
+        (_normalize_repair_blocker(contract.get("blocker")), Path(str(contract.get("file", ""))).name)
+        for contract in _quality_repair_contracts(ckpt, reviewer_feedback)
+        if contract.get("blocker") and Path(str(contract.get("file", ""))).name
+    }
+
+
+def _task_quality_contract_signatures(tasks):
+    signatures = set()
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            continue
+        files = _task_must_change_filenames(task)
+        contract = task.get("repair_contract") if isinstance(task.get("repair_contract"), dict) else {}
+        blocker = _normalize_repair_blocker(
+            contract.get("blocker")
+            or task.get("repair_blocker")
+        )
+        contract_file = Path(str(contract.get("file", ""))).name
+        if contract_file:
+            files.add(contract_file)
+        if blocker:
+            for filename in files:
+                signatures.add((blocker, filename))
+            continue
+        if _task_matches_quality_blocker(task, "size"):
+            for filename in files:
+                signatures.add(("file_size", filename))
+        if _task_matches_quality_blocker(task, "position_semantics"):
+            for filename in files:
+                signatures.add(("position_semantics", filename))
+        text = " ".join([
+            str(task.get("worker_id", "")),
+            str(task.get("role", "")),
+            str(task.get("task_kind", "")),
+            str(task.get("worker_prompt", task.get("instruction", ""))),
+        ]).lower()
+        if "quality_gate" in text or "protected_contract" in text:
+            for filename in files:
+                signatures.add(("quality_gate", filename))
+    return signatures
+
+
+def _stale_quality_task_reason(tasks, ckpt, reviewer_feedback=""):
+    """Return a refresh reason when saved quality tasks no longer match gate blockers."""
+    if not isinstance(ckpt, dict) or ckpt.get("stage") != "quality_failed":
+        return ""
+    current = _quality_contract_signatures(ckpt, reviewer_feedback)
+    if not current:
+        return ""
+    task_signatures = _task_quality_contract_signatures(tasks)
+    missing = sorted(current - task_signatures)
+    if not missing:
+        return ""
+    return "missing current quality repair contract(s): " + ", ".join(
+        f"{blocker}:{filename}" for blocker, filename in missing
+    )
 
 
 def _task_must_change_filenames(task):
@@ -3423,8 +3503,13 @@ async def execute_workers(args):
     if not tasks:
         plan = _checkpoint_master_plan(ckpt)
         checkpoint_tasks = plan.get("tasks", [])
+        quality_stale_reason = (
+            _stale_quality_task_reason(checkpoint_tasks, ckpt, reviewer_feedback)
+            if checkpoint_tasks else ""
+        )
         if ckpt.get("stage") in rework_stages and (
             not checkpoint_tasks
+            or quality_stale_reason
             or (
                 _is_precommit_rework_checkpoint(ckpt)
                 and not _tasks_look_like_precommit_repair(checkpoint_tasks)
@@ -3437,11 +3522,18 @@ async def execute_workers(args):
                     "pipeline.workers_tasks_refreshed"
                     if checkpoint_tasks else "pipeline.workers_tasks_synthesized"
                 )
-                event_message = (
-                    f"Refreshed precommit repair task(s) for v{next_v} from checkpoint blockers"
-                    if checkpoint_tasks and _is_precommit_rework_checkpoint(ckpt)
-                    else f"Synthesized {len(tasks)} rework task(s) for v{next_v} from checkpoint gate feedback"
-                )
+                if checkpoint_tasks and _is_precommit_rework_checkpoint(ckpt):
+                    event_message = (
+                        f"Refreshed precommit repair task(s) for v{next_v} from checkpoint blockers"
+                    )
+                elif quality_stale_reason:
+                    event_message = (
+                        f"Refreshed quality repair task(s) for v{next_v}: {quality_stale_reason}"
+                    )
+                else:
+                    event_message = (
+                        f"Synthesized {len(tasks)} rework task(s) for v{next_v} from checkpoint gate feedback"
+                    )
                 log_system_event(
                     event_type,
                     "warn",
@@ -3453,6 +3545,7 @@ async def execute_workers(args):
                         "parent2_v": ckpt.get("parent2_v"),
                         "old_target_files": sorted(_task_target_filenames(checkpoint_tasks)),
                         "new_target_files": sorted(_task_target_filenames(tasks)),
+                        "refresh_reason": quality_stale_reason,
                         "num_tasks": len(tasks),
                         "task_kind": tasks[0].get("task_kind") if tasks else None,
                     },
@@ -3480,19 +3573,24 @@ async def execute_workers(args):
         failure_files = _quality_failure_target_files(ckpt, reviewer_feedback)
         task_files = _task_target_filenames(tasks)
         missing_files = sorted(failure_files - task_files)
-        if missing_files:
+        quality_stale_reason = _stale_quality_task_reason(tasks, ckpt, reviewer_feedback)
+        if missing_files or quality_stale_reason:
             refreshed_tasks = _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback)
             if refreshed_tasks:
                 tasks = refreshed_tasks
                 replace_checkpoint_tasks = True
+                refresh_reason = (
+                    f"old task targets missed {missing_files}" if missing_files else quality_stale_reason
+                )
                 log_system_event(
                     "pipeline.workers_tasks_refreshed",
                     "warn",
-                    f"Refreshed quality repair task(s) for v{next_v}; old task targets missed {missing_files}",
+                    f"Refreshed quality repair task(s) for v{next_v}; {refresh_reason}",
                     {
                         "next_v": next_v,
                         "source_v": source_v,
                         "missing_files": missing_files,
+                        "refresh_reason": quality_stale_reason,
                         "old_target_files": sorted(task_files),
                         "new_target_files": sorted(_task_target_filenames(refreshed_tasks)),
                         "num_tasks": len(refreshed_tasks),
