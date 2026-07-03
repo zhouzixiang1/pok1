@@ -1152,6 +1152,11 @@ class TestWorkerFailureCircuitBreaker:
         monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
         monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
 
+        def _reset_must_not_run(*_args, **_kwargs):
+            raise AssertionError("quality repair should be in-place")
+
+        monkeypatch.setattr(tool_planning, "_incremental_reset_next_dir", _reset_must_not_run)
+
         async def _run():
             with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
                  patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
@@ -1171,9 +1176,13 @@ class TestWorkerFailureCircuitBreaker:
         assert data["success"] is True
         assert mock_exec.call_args.kwargs["force_sequential"] is True
         assert "Quality gates failed" in mock_exec.call_args.kwargs["reviewer_feedback"]
+        assert "in-place quality repair" in mock_exec.call_args.kwargs["reviewer_feedback"]
+        assert "in-place crossover quality repair" not in mock_exec.call_args.kwargs["reviewer_feedback"]
+        assert (next_dir / "strategy.py").read_text() == "def act():\n    return 1\n"
         ckpt = json.loads(ckpt_file.read_text())
         assert ckpt["stage"] == "workers_done"
         assert ckpt["master_plan"]["work_item"]["kind"] == "quality_repair"
+        assert ckpt["master_plan"]["work_item"]["reset_performed"] is False
 
     def test_crossover_quality_failed_empty_plan_synthesizes_in_place_repair(self, tmp_path, monkeypatch):
         """Crossover quality repairs need tasks but must preserve the fused candidate."""
