@@ -57,6 +57,37 @@ def _worker_timeout_for_task(task, reviewer_feedback):
     return WORKER_TIMEOUT
 
 
+def _is_file_scoped_quality_repair_task(task):
+    if not isinstance(task, dict):
+        return False
+    task_kind = str(task.get("task_kind", "")).lower()
+    if "quality_repair" not in task_kind:
+        return False
+    contract = task.get("repair_contract") if isinstance(task.get("repair_contract"), dict) else {}
+    blocker = str(contract.get("blocker") or task.get("repair_blocker") or "").lower()
+    if blocker not in {"file_size", "position_semantics", "quality_gate"}:
+        return False
+    targets = task.get("must_change_files") or task.get("target_files") or []
+    contract_file = contract.get("file")
+    return bool(targets or contract_file)
+
+
+def _compose_worker_task_prompt(task, reviewer_feedback):
+    base_prompt = task.get("worker_prompt", task.get("instruction", ""))
+    if not reviewer_feedback:
+        return base_prompt
+    if _is_file_scoped_quality_repair_task(task):
+        return (
+            base_prompt
+            + "\n\n# Scope Isolation\n"
+            + "This worker is one file-scoped quality repair from a larger gate "
+              "failure. Other blockers may exist, but they are assigned to other "
+              "workers. Do not inspect, edit, or attempt to fix files outside this "
+              "task's target_files/must_change_files."
+        )
+    return f"CRITICAL REVISION NEEDED:\n{reviewer_feedback}\n\nORIGINAL:\n{base_prompt}"
+
+
 def _allowed_write_scope_for_task(task, next_dir, next_v):
     files = []
     for key in ("target_files", "files_allowed"):
@@ -485,10 +516,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
     """Run a single worker task with retries. Returns True on success."""
     w_id = task.get("worker_id", idx + 1)
     role = task.get("role", f"Expert Coder {w_id}")
-    base_worker_prompt = task.get("worker_prompt", task.get("instruction", ""))
-
-    if reviewer_feedback:
-        base_worker_prompt = f"CRITICAL REVISION NEEDED:\n{reviewer_feedback}\n\nORIGINAL:\n{base_worker_prompt}"
+    base_worker_prompt = _compose_worker_task_prompt(task, reviewer_feedback)
 
     # Inject EXHAUSTED constraint block from experience pool.
     # Prepended (not appended) so it appears before the worker's task instructions
