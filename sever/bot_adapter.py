@@ -158,6 +158,9 @@ class BotAdapter:
         self._my_action_count = 0  # 本阶段已行动次数
         self._my_chips = self.INITIAL_CHIPS  # 当前剩余筹码
         self._my_stage_bet = 0    # 本阶段已下注额
+        self._opponent_chips = self.INITIAL_CHIPS
+        self._opponent_stage_bet = 0
+        self._pot = 0
         self._in_allin_runout = False  # allin+call 后只接收公共牌/结算，不再行动
 
         # 持久化状态
@@ -232,13 +235,19 @@ class BotAdapter:
             self._history = []
             self._my_action_count = 0
             self._my_chips = self.INITIAL_CHIPS  # 一局一复位
+            self._opponent_chips = self.INITIAL_CHIPS
+            self._pot = SMALL_BLIND + BIG_BLIND
             self._in_allin_runout = False
             if self._is_sb:
                 self._my_chips -= SMALL_BLIND
                 self._my_stage_bet = SMALL_BLIND
+                self._opponent_chips -= BIG_BLIND
+                self._opponent_stage_bet = BIG_BLIND
             else:
                 self._my_chips -= BIG_BLIND
                 self._my_stage_bet = BIG_BLIND
+                self._opponent_chips -= SMALL_BLIND
+                self._opponent_stage_bet = SMALL_BLIND
 
             # 对每个 bot 使用稳定视角：自己始终是 player 0，对手始终是 1。
             # dealer_id 仍表示 SB，因此它会随盲位在 0/1 间切换。
@@ -259,6 +268,7 @@ class BotAdapter:
             self._stage = msg.split("|")[0]
             self._my_action_count = 0  # 新阶段重置
             self._my_stage_bet = 0     # 新阶段下注归零
+            self._opponent_stage_bet = 0
             logger.info(f"Stage: {self._stage}, public count: {len(self._public_cards)}")
 
             if self._in_allin_runout:
@@ -301,9 +311,13 @@ class BotAdapter:
         # ── 对手行为 → 判断是否需要响应 ──
         action_type, amount = parse_action(msg)
 
-        # 记录到 history
-        self._record_opponent_action(action_type, amount)
-        if action_type == "call" and self._current_round_has_allin():
+        committed = self._apply_opponent_action(action_type, amount)
+        self._record_opponent_action(action_type, amount, committed=committed)
+        if action_type == "call" and (
+            self._current_round_has_allin()
+            or self._my_chips == 0
+            or self._opponent_chips == 0
+        ):
             self._in_allin_runout = True
 
         # 判断是否需要响应
@@ -364,7 +378,44 @@ class BotAdapter:
             for h in self._history
         )
 
-    def _record_opponent_action(self, action_type, amount):
+    def _apply_opponent_action(self, action_type, amount):
+        """Update reconstructed opponent stack, street bet, and pot.
+
+        The TCP protocol forwards ``allin`` without an amount. Because each hand
+        resets to 20000 chips and every prior action is visible, the adapter can
+        reconstruct the exact all-in total from opponent_chips/stage_bet instead
+        of guessing from history.
+        """
+        committed = 0
+        if action_type == "call":
+            diff = max(0, self._my_stage_bet - self._opponent_stage_bet)
+            committed = min(diff, self._opponent_chips)
+        elif action_type == "raise" and amount is not None:
+            diff = max(0, amount - self._opponent_stage_bet)
+            committed = min(diff, self._opponent_chips)
+        elif action_type == "allin":
+            committed = self._opponent_chips
+
+        if committed > 0:
+            self._opponent_chips -= committed
+            self._opponent_stage_bet += committed
+            self._pot += committed
+        return committed
+
+    def _betting_snapshot(self):
+        """Return adapter-only betting fields for bots that can use them."""
+        to_call = max(0, self._opponent_stage_bet - self._my_stage_bet)
+        opponent_allin = self._opponent_chips == 0 and self._opponent_stage_bet > 0
+        return {
+            "opponent_chips": self._opponent_chips,
+            "my_stage_bet": self._my_stage_bet,
+            "opponent_stage_bet": self._opponent_stage_bet,
+            "pot": self._pot,
+            "to_call": to_call,
+            "opponent_allin": opponent_allin,
+        }
+
+    def _record_opponent_action(self, action_type, amount, committed=0):
         """将对手行为记录到 judge.py 格式的 history。"""
         stage_map = {"preflop": 0, "flop": 1, "turn": 2, "river": 3}
         round_num = stage_map.get(self._stage, 0)
@@ -390,12 +441,17 @@ class BotAdapter:
         else:
             return
 
-        self._history.append({
+        entry = {
             "round": round_num,
             "player_id": opp_id,
             "action": action_val,
             "action_type": action_name,
-        })
+        }
+        if action_name in ("call", "raise", "allin"):
+            entry["stage_bet"] = self._opponent_stage_bet
+            entry["committed"] = committed
+            entry["chips_after"] = self._opponent_chips
+        self._history.append(entry)
 
     def _record_my_action(self, action_type, amount):
         """将自己的行为记录到 history。"""
@@ -420,12 +476,16 @@ class BotAdapter:
         else:
             return
 
-        self._history.append({
+        entry = {
             "round": round_num,
             "player_id": self._my_id,
             "action": action_val,
             "action_type": action_name,
-        })
+        }
+        if action_name in ("call", "raise", "allin"):
+            entry["stage_bet"] = self._my_stage_bet
+            entry["chips_after"] = self._my_chips
+        self._history.append(entry)
 
     async def _bot_decide(self):
         """构建完整的 judge.py 格式请求，发送给 bot，转换回复为 TCP 协议。"""
@@ -443,6 +503,7 @@ class BotAdapter:
             "total_win_chips": list(self._total_win_chips),
             "total_win_games": list(self._total_win_games),
             "opponent_showdowns": list(self._showdown_observations),
+            **self._betting_snapshot(),
         }
 
         # 构建完整 payload。与 engine/battle.py 对齐：先追加当前 request，
@@ -480,10 +541,14 @@ class BotAdapter:
         action_str, tcp_type, tcp_amount = self._convert_action(response)
         await self._send_line(action_str)
         self.telemetry["actions_sent"] += 1
-        self._record_my_action(tcp_type, tcp_amount)
-        if tcp_type == "call" and self._current_round_has_allin():
-            self._in_allin_runout = True
         self._update_chips(tcp_type, tcp_amount)
+        self._record_my_action(tcp_type, tcp_amount)
+        if tcp_type == "call" and (
+            self._current_round_has_allin()
+            or self._my_chips == 0
+            or self._opponent_chips == 0
+        ):
+            self._in_allin_runout = True
         self._my_action_count += 1
 
     def _update_chips(self, action_type, amount):
@@ -495,37 +560,20 @@ class BotAdapter:
         fold/check: 不扣减
         """
         if action_type == "call":
-            # 特殊处理：preflop SB 首次 call（无对手 action 记录）
-            # 此时对手 BB 的盲注 100 是隐式下注，history 中无记录
-            if self._stage == "preflop" and self._is_sb and self._my_action_count == 0:
-                diff = BIG_BLIND - self._my_stage_bet  # 100 - 50 = 50
-                actual = min(diff, self._my_chips)
-                self._my_chips -= actual
-                self._my_stage_bet += actual
-            else:
-                # 计算对手当前阶段下注额
-                opp_id = self._opponent_id
-                stage_map = {"preflop": 0, "flop": 1, "turn": 2, "river": 3}
-                round_num = stage_map.get(self._stage, 0)
-                opp_bet = self._my_stage_bet  # 默认与己方相同
-                for h in reversed(self._history):
-                    if h["round"] == round_num and h["player_id"] == opp_id:
-                        a = h["action"]
-                        if h["action_type"] == "raise":
-                            opp_bet = a
-                        elif h["action_type"] == "allin":
-                            opp_bet = self._my_stage_bet + self._my_chips + opp_bet  # 无法精确，用全部
-                        break
-                diff = opp_bet - self._my_stage_bet
-                actual = min(diff, self._my_chips)
-                self._my_chips -= actual
-                self._my_stage_bet += actual
+            diff = max(0, self._opponent_stage_bet - self._my_stage_bet)
+            actual = min(diff, self._my_chips)
+            self._my_chips -= actual
+            self._my_stage_bet += actual
+            self._pot += actual
         elif action_type == "raise":
             needed = amount - self._my_stage_bet
             self._my_chips -= needed
             self._my_stage_bet = amount
+            self._pot += needed
         elif action_type == "allin":
-            self._my_stage_bet += self._my_chips
+            committed = self._my_chips
+            self._my_stage_bet += committed
+            self._pot += committed
             self._my_chips = 0
 
     def _clamp_raise(self, raise_to):
