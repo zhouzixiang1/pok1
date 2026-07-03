@@ -2794,6 +2794,37 @@ def _task_quality_contract_signatures(tasks):
     return signatures
 
 
+def _is_file_size_repair_task(task):
+    if not isinstance(task, dict):
+        return False
+    contract = task.get("repair_contract") if isinstance(task.get("repair_contract"), dict) else {}
+    blocker = _normalize_repair_blocker(
+        contract.get("blocker")
+        or task.get("repair_blocker")
+    )
+    if blocker == "file_size":
+        return True
+    return _task_matches_quality_blocker(task, "size")
+
+
+def _order_quality_repair_tasks(tasks):
+    """Run semantic/protocol repairs before final file-size cleanup.
+
+    Multiple quality blockers can target the same file. If a file-size cleanup
+    runs first, a later semantic repair can add a line or two and re-break the
+    size gate. Keep ordering stable except for moving file-size repairs to the
+    end of the quality-rework batch.
+    """
+    indexed = list(enumerate(tasks or []))
+    ordered = [
+        task for _idx, task in sorted(
+            indexed,
+            key=lambda item: (1 if _is_file_size_repair_task(item[1]) else 0, item[0]),
+        )
+    ]
+    return ordered
+
+
 def _stale_quality_task_reason(tasks, ckpt, reviewer_feedback=""):
     """Return a refresh reason when saved quality tasks no longer match gate blockers."""
     if not isinstance(ckpt, dict) or ckpt.get("stage") != "quality_failed":
@@ -3572,10 +3603,10 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
         task_kind = "quality_repair"
 
     if quality_contracts:
-        return [
+        return _order_quality_repair_tasks([
             _quality_contract_task(contract, ckpt, preservation, task_kind)
             for contract in quality_contracts
-        ]
+        ])
 
     prompt = (
         f"{preservation.format(next_v=ckpt.get('next_v'))}\n\n"
@@ -3866,6 +3897,25 @@ async def execute_workers(args):
                     "new_target_files": sorted(_task_target_filenames(refreshed_tasks)),
                     "num_tasks": len(refreshed_tasks),
                     "task_kind": refreshed_tasks[0].get("task_kind") if refreshed_tasks else None,
+                },
+            )
+
+    if tasks and ckpt.get("stage") in rework_stages and not _is_precommit_rework_checkpoint(ckpt):
+        ordered_tasks = _order_quality_repair_tasks(tasks)
+        old_order = [str(task.get("worker_id", idx + 1)) for idx, task in enumerate(tasks)]
+        new_order = [str(task.get("worker_id", idx + 1)) for idx, task in enumerate(ordered_tasks)]
+        if new_order != old_order:
+            tasks = ordered_tasks
+            replace_checkpoint_tasks = True
+            log_system_event(
+                "pipeline.quality_repair_tasks_reordered",
+                "info",
+                f"Reordered quality repair tasks for v{next_v}; file_size cleanup will run last",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "old_order": old_order,
+                    "new_order": new_order,
                 },
             )
 
