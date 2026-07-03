@@ -2647,9 +2647,14 @@ def _checkpoint_plan_with_tasks(ckpt, tasks, replace_existing_tasks=False):
 
 
 def _task_matches_quality_blocker(task, blocker):
+    if str(task.get("repair_blocker") or "") == blocker:
+        return True
+    if blocker == "size" and str(task.get("repair_blocker") or "") == "file_size":
+        return True
     text = " ".join([
         str(task.get("worker_id", "")),
         str(task.get("role", "")),
+        str(task.get("repair_blocker", "")),
         " ".join(str(x) for x in task.get("target_files", []) or []),
         str(task.get("worker_prompt", task.get("instruction", ""))),
     ]).lower()
@@ -2672,6 +2677,20 @@ def _task_target_filenames(tasks):
     return files
 
 
+def _task_must_change_filenames(task):
+    files = set()
+    if not isinstance(task, dict):
+        return files
+    for key in ("must_change_files", "target_files"):
+        for target in task.get(key, []) or []:
+            name = Path(str(target)).name
+            if name:
+                files.add(name)
+        if files:
+            break
+    return files
+
+
 def _quality_failure_target_files(ckpt, reviewer_feedback=""):
     failures = _quality_failure_items(ckpt)
     files = _extract_quality_failure_files(failures)
@@ -2688,19 +2707,21 @@ def _quality_rework_skipper(next_dir, source_dir, next_v, source_v):
     earlier repair worker in the same rework batch.
     """
     def remaining_blockers():
-        blockers = set()
+        blockers = {}
         try:
             _total, oversized = check_code_size(next_dir, source_dir=source_dir)
             if oversized:
-                blockers.add("size")
+                blockers["size"] = {Path(name).name for name, _lines, _limit in oversized}
         except Exception:
-            blockers.add("size")
+            blockers["size"] = set()
         try:
             from tool_gates import detect_position_semantics_errors
-            if detect_position_semantics_errors(next_dir):
-                blockers.add("position_semantics")
+            position_errors = detect_position_semantics_errors(next_dir)
+            if position_errors:
+                files = _extract_quality_failure_files(position_errors)
+                blockers["position_semantics"] = set(files)
         except Exception:
-            blockers.add("position_semantics")
+            blockers["position_semantics"] = set()
         return blockers
 
     def skipper(task):
@@ -2713,11 +2734,25 @@ def _quality_rework_skipper(next_dir, source_dir, next_v, source_v):
             return ""
         if not blockers:
             return "all cheap quality rework blockers already cleared by current code"
-        if task_blockers.isdisjoint(blockers):
+        task_files = _task_must_change_filenames(task)
+        active_task_blockers = set(task_blockers) & set(blockers)
+        if not active_task_blockers:
             return (
                 "quality blocker(s) already cleared by current code: "
                 + ", ".join(sorted(task_blockers))
             )
+        if task_files:
+            still_relevant = False
+            for blocker in active_task_blockers:
+                remaining_files = blockers.get(blocker) or set()
+                if not remaining_files or task_files & remaining_files:
+                    still_relevant = True
+                    break
+            if not still_relevant:
+                return (
+                    "quality blocker file(s) already cleared by current code: "
+                    + ", ".join(sorted(task_files))
+                )
         return ""
 
     return skipper
@@ -2931,6 +2966,279 @@ def _extract_quality_failure_files(failures):
     return files
 
 
+def _flatten_text_items(value):
+    items = []
+
+    def add(item):
+        if isinstance(item, dict):
+            for key, val in item.items():
+                add(f"{key}: {val}")
+        elif isinstance(item, (list, tuple, set)):
+            for sub in item:
+                add(sub)
+        elif item is not None:
+            text = str(item).strip()
+            if text:
+                items.append(text)
+
+    add(value)
+    return items
+
+
+def _task_id_suffix(filename):
+    return re.sub(r"[^a-z0-9]+", "_", Path(str(filename)).name.lower()).strip("_")
+
+
+def _line_count_contracts(quality, failures):
+    """Return structured file_size blocker contracts from quality gate output."""
+    by_file = {}
+
+    def add(filename, current=None, limit=None, evidence=""):
+        rel = Path(str(filename)).name
+        if not rel:
+            return
+        existing = by_file.get(rel, {})
+        evidences = []
+        if existing.get("evidence"):
+            evidences.append(str(existing["evidence"]))
+        if evidence and evidence not in evidences:
+            evidences.append(evidence)
+        by_file[rel] = {
+            "blocker": "file_size",
+            "file": rel,
+            "current_lines": current if current is not None else existing.get("current_lines"),
+            "line_limit": limit if limit is not None else existing.get("line_limit"),
+            "evidence": "; ".join(evidences),
+        }
+
+    oversized = quality.get("oversized_files")
+    if isinstance(oversized, dict):
+        for filename, lines in oversized.items():
+            try:
+                current = int(lines)
+            except (TypeError, ValueError):
+                current = None
+            add(filename, current=current, evidence=f"oversized_files[{filename}]={lines}")
+
+    text = "\n".join(str(item) for item in failures or [])
+    for group in re.finditer(r"file_size\(([^)]*)\)", text):
+        body = group.group(1)
+        for match in re.finditer(
+            r"([A-Za-z0-9_./-]+\.py):(\d+)L(?:/(\d+)L)?",
+            body,
+        ):
+            current = int(match.group(2))
+            limit = int(match.group(3)) if match.group(3) else None
+            add(match.group(1), current=current, limit=limit, evidence=f"file_size({body})")
+    return [by_file[name] for name in sorted(by_file)]
+
+
+def _position_contracts(quality):
+    """Return structured position_semantics contracts grouped by file."""
+    source_items = []
+    source_items.extend(_flatten_text_items(quality.get("position_semantics_errors")))
+    for item in _flatten_text_items(quality.get("failed_gates")):
+        if "position_semantics(" in item:
+            source_items.append(item)
+
+    by_file = {}
+    for item in source_items:
+        text = str(item)
+        for match in re.finditer(
+            r"([A-Za-z0-9_./-]+\.py):(\d+):?\s*([^;\n)]*)",
+            text,
+        ):
+            rel = Path(match.group(1)).name
+            if not rel:
+                continue
+            detail = {
+                "line": int(match.group(2)),
+                "message": match.group(3).strip() or text.strip(),
+                "evidence": text.strip(),
+            }
+            by_file.setdefault(rel, []).append(detail)
+
+    contracts = []
+    for rel, details in by_file.items():
+        deduped = []
+        seen = set()
+        for detail in details:
+            key = (detail["line"], detail["message"])
+            if key not in seen:
+                seen.add(key)
+                deduped.append(detail)
+        contracts.append({
+            "blocker": "position_semantics",
+            "file": rel,
+            "details": deduped,
+            "evidence": "; ".join(d["evidence"] for d in deduped[:4]),
+        })
+    return sorted(contracts, key=lambda c: c["file"])
+
+
+def _generic_quality_contracts(quality, failures, claimed_files):
+    """Build file-scoped fallback contracts for non-mechanical quality blockers."""
+    evidence_items = []
+    for key in (
+        "compile_errors",
+        "import_errors",
+        "protected_contract_errors",
+        "smoke_errors",
+        "national_protocol_errors",
+        "national_acceptance_errors",
+        "declared_scope_errors",
+        "critical_failures",
+        "reachability_warnings",
+    ):
+        evidence_items.extend(_flatten_text_items(quality.get(key)))
+    if not evidence_items:
+        evidence_items = [
+            item for item in failures
+            if not str(item).startswith("file_size(")
+            and "position_semantics(" not in str(item)
+            and "SB must be dealer_id" not in str(item)
+            and "BB must be 1 - dealer_id" not in str(item)
+            and "dealer is SB" not in str(item)
+            and "BB acts first postflop" not in str(item)
+        ]
+    evidence_files = _extract_quality_failure_files(evidence_items)
+    mechanical_files = {c["file"] for c in _line_count_contracts(quality, failures)}
+    mechanical_files.update(c["file"] for c in _position_contracts(quality))
+    generic_files = evidence_files or [f for f in claimed_files if f not in mechanical_files]
+    if not generic_files:
+        return []
+
+    contracts = []
+    for rel in generic_files:
+        matching = [item for item in evidence_items if rel in str(item)]
+        contracts.append({
+            "blocker": "quality_gate",
+            "file": rel,
+            "evidence": "\n".join(str(item) for item in (matching or evidence_items)[:8]),
+        })
+    return contracts
+
+
+def _quality_repair_contracts(ckpt, feedback=""):
+    if not isinstance(ckpt, dict):
+        return []
+    quality = (ckpt.get("gate_results") or {}).get("quality") or {}
+    failures = _quality_failure_items(ckpt)
+    claimed_files = _extract_quality_failure_files(failures)
+    if not claimed_files and feedback:
+        claimed_files = _extract_quality_failure_files([feedback])
+    contracts = []
+    contracts.extend(_line_count_contracts(quality, failures))
+    contracts.extend(_position_contracts(quality))
+    contracts.extend(_generic_quality_contracts(quality, failures, claimed_files))
+
+    ordered = []
+    seen = set()
+    for contract in contracts:
+        key = (contract.get("blocker"), contract.get("file"))
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(contract)
+    return ordered
+
+
+def _format_position_details(details):
+    lines = []
+    for detail in details or []:
+        line = detail.get("line")
+        message = detail.get("message") or detail.get("evidence") or ""
+        lines.append(f"- line {line}: {message}" if line else f"- {message}")
+    return "\n".join(lines) if lines else "- gate reported a position_semantics violation in this file"
+
+
+def _quality_contract_task(contract, ckpt, preservation, task_kind):
+    next_v = ckpt.get("next_v")
+    filename = contract["file"]
+    suffix = _task_id_suffix(filename)
+    blocker = contract.get("blocker")
+    if blocker == "file_size":
+        current = contract.get("current_lines")
+        limit = contract.get("line_limit")
+        required = (
+            f"Reduce `{filename}` to <= {limit} lines."
+            if limit else f"Reduce `{filename}` enough to clear the file_size gate."
+        )
+        if current is not None and limit is not None:
+            required += f" Current gate reading: {current}L/{limit}L."
+        prompt = (
+            f"{preservation.format(next_v=next_v)}\n\n"
+            f"Repair contract: file_size\n"
+            f"- Target file: `{filename}`\n"
+            f"- Evidence: {contract.get('evidence') or 'file_size gate failed'}\n"
+            f"- Required outcome: {required}\n\n"
+            "Required method:\n"
+            f"- Edit `{filename}`. This file is listed in `must_change_files`; a no-op or editing only other files is failure.\n"
+            "- Prefer deleting duplicated/dead comments, stale historical notes, or redundant helper wrappers before touching active decisions.\n"
+            "- Do not remove active strategy branches just to save lines.\n"
+            f"- Verify with `wc -l bots/claude_v{next_v}/{filename}` before finishing.\n"
+            "- End your output with the exact line count you observed."
+        )
+        return {
+            "worker_id": f"auto_quality_repair_file_size_{suffix}",
+            "role": "Algorithmic Logic Architect",
+            "target_files": [filename],
+            "must_change_files": [filename],
+            "worker_prompt": prompt,
+            "task_kind": task_kind,
+            "repair_blocker": "file_size",
+            "repair_contract": contract,
+        }
+    if blocker == "position_semantics":
+        prompt = (
+            f"{preservation.format(next_v=next_v)}\n\n"
+            f"Repair contract: position_semantics\n"
+            f"- Target file: `{filename}`\n"
+            f"- Flagged locations:\n{_format_position_details(contract.get('details'))}\n\n"
+            "Authoritative heads-up contract:\n"
+            "- dealer_id is the small blind.\n"
+            "- big blind is `1 - dealer_id`.\n"
+            "- small blind acts first preflop; big blind acts first postflop.\n\n"
+            "Required method:\n"
+            f"- Edit `{filename}`. This file is listed in `must_change_files`; a no-op or editing only another file is failure.\n"
+            "- Replace code patterns exactly when present: `sb = next_player(dealer_id, 1)` -> `sb = dealer_id`; `bb = next_player(dealer_id, 2)` -> `bb = 1 - dealer_id`.\n"
+            "- If the flagged line is prose/comment/test text, update that text to the authoritative contract above.\n"
+            "- Do not change card mapping, action protocol, or unrelated strategy behavior.\n"
+            "- Before finishing, grep the file to confirm the flagged old pattern/text is gone."
+        )
+        return {
+            "worker_id": f"auto_quality_repair_position_{suffix}",
+            "role": "Algorithmic Logic Architect",
+            "target_files": [filename],
+            "must_change_files": [filename],
+            "worker_prompt": prompt,
+            "task_kind": task_kind,
+            "repair_blocker": "position_semantics",
+            "repair_contract": contract,
+        }
+    prompt = (
+        f"{preservation.format(next_v=next_v)}\n\n"
+        f"Repair contract: quality_gate\n"
+        f"- Target file: `{filename}`\n"
+        f"- Evidence:\n{contract.get('evidence') or 'quality gate failed'}\n\n"
+        "Required method:\n"
+        f"- Edit `{filename}`. This file is listed in `must_change_files`; a no-op or editing only another file is failure.\n"
+        "- Fix only the listed gate blocker.\n"
+        "- Preserve national protocol/card mapping and previously passing behavior.\n"
+        "- Run the smallest relevant compile/import check before finishing."
+    )
+    return {
+        "worker_id": f"auto_quality_repair_gate_{suffix}",
+        "role": "Algorithmic Logic Architect",
+        "target_files": [filename],
+        "must_change_files": [filename],
+        "worker_prompt": prompt,
+        "task_kind": task_kind,
+        "repair_blocker": "quality_gate",
+        "repair_contract": contract,
+    }
+
+
 def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
     """Build bounded repair tasks when a checkpoint has gate feedback but no plan.
 
@@ -2951,8 +3259,11 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
 
     master_plan = _checkpoint_master_plan(ckpt)
     is_precommit_rework = _is_precommit_rework_checkpoint(ckpt)
+    quality_contracts = [] if is_precommit_rework else _quality_repair_contracts(ckpt, feedback)
     if is_precommit_rework:
         target_files = _precommit_repair_target_files(ckpt, feedback)
+    elif quality_contracts:
+        target_files = [contract["file"] for contract in quality_contracts]
     else:
         failures = _quality_failure_items(ckpt)
         target_files = _extract_quality_failure_files(failures)
@@ -3011,6 +3322,12 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
         role = "Algorithmic Logic Architect"
         task_kind = "quality_repair"
 
+    if quality_contracts:
+        return [
+            _quality_contract_task(contract, ckpt, preservation, task_kind)
+            for contract in quality_contracts
+        ]
+
     prompt = (
         f"{preservation.format(next_v=ckpt.get('next_v'))}\n\n"
         f"Exact gate feedback:\n{feedback}\n\n"
@@ -3020,6 +3337,7 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
         "worker_id": worker_id,
         "role": role,
         "target_files": targets,
+        "must_change_files": targets,
         "worker_prompt": prompt,
         "task_kind": task_kind,
     }]
@@ -3134,8 +3452,9 @@ async def execute_workers(args):
                         "stage": ckpt.get("stage"),
                         "parent2_v": ckpt.get("parent2_v"),
                         "old_target_files": sorted(_task_target_filenames(checkpoint_tasks)),
-                        "new_target_files": tasks[0].get("target_files", []),
-                        "task_kind": tasks[0].get("task_kind"),
+                        "new_target_files": sorted(_task_target_filenames(tasks)),
+                        "num_tasks": len(tasks),
+                        "task_kind": tasks[0].get("task_kind") if tasks else None,
                     },
                 )
         elif checkpoint_tasks:
@@ -3175,7 +3494,8 @@ async def execute_workers(args):
                         "source_v": source_v,
                         "missing_files": missing_files,
                         "old_target_files": sorted(task_files),
-                        "new_target_files": refreshed_tasks[0].get("target_files", []),
+                        "new_target_files": sorted(_task_target_filenames(refreshed_tasks)),
+                        "num_tasks": len(refreshed_tasks),
                     },
                 )
 
@@ -3198,8 +3518,9 @@ async def execute_workers(args):
                     "next_v": next_v,
                     "source_v": source_v,
                     "old_target_files": old_files,
-                    "new_target_files": refreshed_tasks[0].get("target_files", []),
-                    "task_kind": refreshed_tasks[0].get("task_kind"),
+                    "new_target_files": sorted(_task_target_filenames(refreshed_tasks)),
+                    "num_tasks": len(refreshed_tasks),
+                    "task_kind": refreshed_tasks[0].get("task_kind") if refreshed_tasks else None,
                 },
             )
 
