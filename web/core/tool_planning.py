@@ -2646,6 +2646,58 @@ def _checkpoint_plan_with_tasks(ckpt, tasks, replace_existing_tasks=False):
     return {"tasks": tasks}
 
 
+def _task_declared_scope_files(task, next_v):
+    files = set()
+    if not isinstance(task, dict):
+        return files
+    for key in ("target_files", "files_allowed", "must_change_files"):
+        for target in task.get(key, []) or []:
+            rel = _target_rel(target, next_v)
+            if rel:
+                files.add(rel)
+    return files
+
+
+def _plan_repair_scope_files(plan, next_v):
+    files = set()
+    if not isinstance(plan, dict):
+        return files
+    raw_scope = plan.get("repair_scope_files", []) or []
+    if not isinstance(raw_scope, list):
+        raw_scope = []
+    for item in raw_scope:
+        rel = _target_rel(item, next_v)
+        if rel:
+            files.add(rel)
+    raw_tasks = plan.get("tasks", []) or []
+    if not isinstance(raw_tasks, list):
+        raw_tasks = []
+    for task in raw_tasks:
+        files.update(_task_declared_scope_files(task, next_v))
+    return files
+
+
+def _plan_with_accumulated_repair_scope(ckpt, plan, tasks, next_v):
+    """Preserve final declared-scope coverage across in-place repair rounds.
+
+    Rework execution may refresh ``tasks`` to only the newest blocker, but the
+    candidate diff is cumulative from the source bot. Store a separate scope
+    ledger so quality gates still recognize earlier successful repair edits
+    without re-running those old workers.
+    """
+    if not isinstance(plan, dict):
+        return plan
+    existing_plan = ckpt.get("master_plan") if isinstance(ckpt, dict) else {}
+    scope = set()
+    scope.update(_plan_repair_scope_files(existing_plan, next_v))
+    scope.update(_plan_repair_scope_files(plan, next_v))
+    for task in tasks or []:
+        scope.update(_task_declared_scope_files(task, next_v))
+    if not scope:
+        return plan
+    return {**plan, "repair_scope_files": sorted(scope)}
+
+
 def _task_matches_quality_blocker(task, blocker):
     if str(task.get("repair_blocker") or "") == blocker:
         return True
@@ -3910,6 +3962,7 @@ async def execute_workers(args):
             if ckpt else {"tasks": tasks}
         )
         running_plan = {**running_plan, "work_item": rework_plan_metadata}
+        running_plan = _plan_with_accumulated_repair_scope(ckpt, running_plan, tasks, next_v)
         write_pipeline_checkpoint(next_v, source_v, "rework_running",
                                   master_plan=running_plan,
                                   reviewer_feedback=reviewer_feedback,
@@ -3989,6 +4042,7 @@ async def execute_workers(args):
             )
             if existing_work:
                 plan = {**plan, "work_item": existing_work}
+            plan = _plan_with_accumulated_repair_scope(ckpt, plan, tasks, next_v)
         # Store audit_focus_areas in audit_context so reviewer can read them
         _audit_ctx = None
         if audit_focus_areas:
@@ -4022,6 +4076,7 @@ async def execute_workers(args):
                     "route": route_policy(ckpt) if ckpt else {},
                 },
             }
+            plan = _plan_with_accumulated_repair_scope(ckpt, plan, tasks, next_v)
         write_pipeline_checkpoint(next_v, source_v,
                                   "repair_planned" if reviewer_feedback else "master_planned",
                                   master_plan=plan, reviewer_feedback=reviewer_feedback,

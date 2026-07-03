@@ -1406,6 +1406,125 @@ class TestWorkerFailureCircuitBreaker:
         assert ckpt["master_plan"]["tasks"][0]["repair_blocker"] == "file_size"
         assert ckpt["master_plan"]["work_item"]["reset_performed"] is False
 
+    def test_refreshed_quality_repair_preserves_accumulated_declared_scope(self, tmp_path, monkeypatch):
+        """Refreshing to one new blocker must not forget earlier in-place repair files."""
+        import asyncio
+        import fix_injection
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        for directory in (source_dir, next_dir):
+            (directory / "opponent.py").write_text("sb = 'old'\n")
+            (directory / "state.py").write_text("sb = 'old'\n")
+            (directory / "strategy_helpers.py").write_text("# helper\n")
+        (next_dir / "opponent.py").write_text("sb = dealer_id\n")
+        (next_dir / "state.py").write_text("sb = dealer_id\n")
+        (next_dir / "strategy_helpers.py").write_text("# helper fixed\n")
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, stage="quality_failed")
+        state = json.loads(ckpt_file.read_text())
+        state["parent2_v"] = 9
+        state["master_plan"] = {
+            "strategy": "crossover",
+            "tasks": [
+                {
+                    "worker_id": "auto_quality_repair_position_opponent_py",
+                    "role": "Algorithmic Logic Architect",
+                    "target_files": ["opponent.py"],
+                    "must_change_files": ["opponent.py"],
+                    "worker_prompt": "old position repair",
+                    "task_kind": "quality_repair",
+                    "repair_blocker": "position_semantics",
+                },
+                {
+                    "worker_id": "auto_quality_repair_position_state_py",
+                    "role": "Algorithmic Logic Architect",
+                    "target_files": ["state.py"],
+                    "must_change_files": ["state.py"],
+                    "worker_prompt": "old position repair",
+                    "task_kind": "quality_repair",
+                    "repair_blocker": "position_semantics",
+                },
+                {
+                    "worker_id": "auto_quality_repair_position_strategy_helpers_py",
+                    "role": "Algorithmic Logic Architect",
+                    "target_files": ["strategy_helpers.py"],
+                    "must_change_files": ["strategy_helpers.py"],
+                    "worker_prompt": "old position repair",
+                    "task_kind": "quality_repair",
+                    "repair_blocker": "position_semantics",
+                },
+            ],
+        }
+        state["gate_results"] = {
+            "quality": {
+                "all_passed": False,
+                "failed_gates": ["file_size(strategy_helpers.py:2501L/2500L)"],
+            }
+        }
+        ckpt_file.write_text(json.dumps(state))
+
+        monkeypatch.setattr(tool_planning, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+        monkeypatch.setattr(tool_planning, "_incremental_reset_next_dir", lambda *_a, **_k: None)
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
+                 patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
+                 patch.object(
+                     tool_planning,
+                     "_py_files_changed_between",
+                     return_value=["opponent.py", "state.py", "strategy_helpers.py"],
+                 ):
+                mock_exec.return_value = (True, {}, [])
+                result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
+                return result, mock_exec
+
+        result, mock_exec = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["success"] is True
+        tasks = mock_exec.call_args.args[0]
+        assert [task["target_files"] for task in tasks] == [["strategy_helpers.py"]]
+        assert tasks[0]["repair_blocker"] == "file_size"
+
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["stage"] == "workers_done"
+        assert ckpt["master_plan"]["tasks"][0]["repair_blocker"] == "file_size"
+        assert ckpt["master_plan"]["repair_scope_files"] == [
+            "opponent.py",
+            "state.py",
+            "strategy_helpers.py",
+        ]
+
+    def test_declared_scope_uses_accumulated_repair_scope_files(self):
+        """Quality declared-scope should audit cumulative repair scope, not only current task."""
+        import tool_gates
+        from worker_boundary import audit_changed_files_against_plan
+
+        plan = {
+            "tasks": [{
+                "worker_id": "auto_quality_repair_file_size_strategy_helpers_py",
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["strategy_helpers.py"],
+                "worker_prompt": "fix size",
+            }],
+            "repair_scope_files": ["opponent.py", "state.py", "strategy_helpers.py"],
+        }
+
+        tasks = tool_gates._declared_scope_tasks_from_plan(plan)
+        result = audit_changed_files_against_plan(
+            ["opponent.py", "state.py", "strategy_helpers.py"],
+            tasks,
+            next_v=11,
+        )
+
+        assert result.passed is True
+        assert result.allowed_files == ["opponent.py", "state.py", "strategy_helpers.py"]
+
     def test_quality_rework_skipper_keeps_mixed_task_when_one_blocker_remains(self, tmp_path, monkeypatch):
         """A position task mentioning size feedback must still run while position blockers remain."""
         import tool_gates

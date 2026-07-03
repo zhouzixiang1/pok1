@@ -63,6 +63,30 @@ DECISION_TEST_SPRT_ENABLED = False
 DYNAMIC_TEST_LLM_TIMEOUT = int(os.environ.get("POK_DYNAMIC_TEST_LLM_TIMEOUT", "25"))
 DYNAMIC_TEST_HEURISTIC_SUFFICIENT = int(os.environ.get("POK_DYNAMIC_TEST_HEURISTIC_SUFFICIENT", "4"))
 
+
+def _declared_scope_tasks_from_plan(master_plan):
+    tasks = []
+    if isinstance(master_plan, dict):
+        raw_tasks = master_plan.get("tasks", []) or []
+        if isinstance(raw_tasks, list):
+            tasks.extend(raw_tasks)
+        raw_repair_scope = master_plan.get("repair_scope_files", []) or []
+        if not isinstance(raw_repair_scope, list):
+            raw_repair_scope = []
+        repair_scope_files = [
+            str(item).strip()
+            for item in raw_repair_scope
+            if str(item).strip()
+        ]
+        if repair_scope_files:
+            tasks.append({
+                "worker_id": "repair_scope_history",
+                "role": "Scope Ledger",
+                "target_files": [],
+                "files_allowed": sorted(set(repair_scope_files)),
+            })
+    return tasks
+
 _POSITION_SEMANTICS_PATTERNS = {
     "dealer==bb": "dealer is SB in heads-up; BB is 1 - dealer_id",
     "dealer == bb": "dealer is SB in heads-up; BB is 1 - dealer_id",
@@ -246,7 +270,7 @@ async def run_quality_gates(args):
     declared_skill_layers = []
     _quality_ckpt_for_scope = _matching_checkpoint(v, source_v) if source_v is not None else _matching_checkpoint(v)
     _master_plan_for_scope = (_quality_ckpt_for_scope or {}).get("master_plan", {})
-    _plan_tasks = _master_plan_for_scope.get("tasks", []) if isinstance(_master_plan_for_scope, dict) else []
+    _plan_tasks = _declared_scope_tasks_from_plan(_master_plan_for_scope)
     if _plan_tasks and changed_files_list:
         try:
             declared_skill_layers = sorted({
