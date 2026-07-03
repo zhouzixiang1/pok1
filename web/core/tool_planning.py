@@ -2597,7 +2597,8 @@ def _incremental_reset_next_dir(next_dir, source_dir):
       - files in both source+next -> identical to source (authoritative overwrite)
       - files only in next (worker-created NEW) -> untouched (survive the reset)
       - files only in source -> created
-      - .completed is never touched
+      - parent .completed sentinels are removed; commit_bot is the only writer
+        allowed to mark a candidate complete
     """
     source_names = {item.name for item in source_dir.iterdir()}
     preserved = []
@@ -2605,8 +2606,8 @@ def _incremental_reset_next_dir(next_dir, source_dir):
     # that exist in source so the source copy overwrites authoritatively.
     for item in next_dir.iterdir():
         if item.name == ".completed":
-            continue
-        if item.name == "__pycache__" or item.suffix == ".pyc":
+            item.unlink()
+        elif item.name == "__pycache__" or item.suffix == ".pyc":
             # Clean stale bytecode
             if item.is_dir():
                 shutil.rmtree(item)
@@ -4130,6 +4131,19 @@ async def execute_workers(args):
         applied, skipped = apply_known_fixes(next_dir)
         if applied or skipped:
             log_fix_application(applied, skipped, next_dir, source_v)
+        try:
+            from candidate_hygiene import sanitize_candidate_dir
+            from workflow_profiles import get_workflow_profile
+            native_tcp = getattr(get_workflow_profile(), "national_execution_mode", "adapter") == "native_tcp"
+            sanitize_candidate_dir(next_dir, require_native_tcp=native_tcp)
+        except Exception as exc:
+            log_system_event(
+                "pipeline.candidate_hygiene_failed",
+                "error",
+                f"Candidate hygiene failed for v{next_v}: {exc}",
+                {"next_v": next_v, "source_v": source_v, "stage": ckpt.get("stage")},
+            )
+            return _json_tool_result({"error": f"Candidate hygiene failed: {exc}"})
 
         # Write intermediate checkpoint so pipeline state reflects the in-progress retry.
         # Without this, a crash between code reset and worker execution would leave

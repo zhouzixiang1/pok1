@@ -479,7 +479,11 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
         # Reset target dir from parent A baseline to avoid corrupted state from previous attempt
         if target_dir.exists():
             shutil.rmtree(target_dir)
-        shutil.copytree(parent_a_dir, target_dir, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+        shutil.copytree(
+            parent_a_dir,
+            target_dir,
+            ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.completed'),
+        )
 
         # Apply known critical fixes to crossover child
         from fix_injection import apply_known_fixes, log_fix_application
@@ -488,15 +492,13 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
             log_fix_application(applied, skipped, target_dir, parent_a_v)
 
         try:
+            from candidate_hygiene import sanitize_candidate_dir
             from workflow_profiles import get_workflow_profile
-            if getattr(get_workflow_profile(), "national_execution_mode", "adapter") == "native_tcp":
-                from national_native import ensure_native_entry
-                ensure_native_entry(target_dir)
+            native_tcp = getattr(get_workflow_profile(), "national_execution_mode", "adapter") == "native_tcp"
+            sanitize_candidate_dir(target_dir, require_native_tcp=native_tcp)
         except Exception as exc:
             ui.log_history(f"Crossover native TCP entry preparation failed: {exc}", "warn")
             continue
-
-        (target_dir / ".completed").unlink(missing_ok=True)
 
         ui.clear_io()
         ui.set_status(f"Crossover v{parent_a_v}×v{parent_b_v}→v{target_v} (Try {attempt+1})", is_working=True)
@@ -512,6 +514,32 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
             # SDK error (e.g. ClaudeSDKError now propagates from run_claude_query)
             # — retry the crossover attempt instead of escaping the retry loop.
             ui.log_history(f"Crossover LLM error: {e}", "warn")
+            continue
+
+        try:
+            from candidate_hygiene import sanitize_candidate_dir
+            from workflow_profiles import get_workflow_profile
+            native_tcp = getattr(get_workflow_profile(), "national_execution_mode", "adapter") == "native_tcp"
+            hygiene = sanitize_candidate_dir(target_dir, require_native_tcp=native_tcp)
+            if hygiene.get("completed_removed") or hygiene.get("native_entry"):
+                try:
+                    from system_log import log_system_event
+                    log_system_event(
+                        "pipeline.candidate_hygiene_applied",
+                        "info",
+                        f"Candidate hygiene applied for crossover v{target_v}",
+                        {
+                            "target_v": target_v,
+                            "parent_a": parent_a_v,
+                            "parent_b": parent_b_v,
+                            "attempt": attempt + 1,
+                            **hygiene,
+                        },
+                    )
+                except Exception:
+                    pass
+        except Exception as exc:
+            ui.log_history(f"Crossover candidate hygiene failed: {exc}", "warn")
             continue
 
         compile_errors = verify_code(target_dir)

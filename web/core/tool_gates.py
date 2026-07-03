@@ -1274,7 +1274,11 @@ async def prepare_next_gen(args):
             )
             return _json_tool_result({"error": f"Target v{next_v} already exists, prepared from v{prior_source} (not v{source_v}). Refusing silent cross-source overwrite. Call abandon_generation first."})
         shutil.rmtree(next_dir)
-    shutil.copytree(source_dir, next_dir, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    shutil.copytree(
+        source_dir,
+        next_dir,
+        ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.completed'),
+    )
 
     # Apply known critical fixes regardless of source bot state
     from fix_injection import apply_known_fixes, log_fix_application
@@ -1285,17 +1289,16 @@ async def prepare_next_gen(args):
         _log.info("Fix patches skipped for v%d: %s", next_v, skipped)
 
     workflow_profile = get_workflow_profile()
-    if getattr(workflow_profile, "national_execution_mode", "adapter") == "native_tcp":
-        from national_native import ensure_native_entry
-        ensure_native_entry(next_dir)
+    native_tcp = getattr(workflow_profile, "national_execution_mode", "adapter") == "native_tcp"
+    from candidate_hygiene import sanitize_candidate_dir
+    hygiene = sanitize_candidate_dir(next_dir, require_native_tcp=native_tcp)
+    if native_tcp:
         log_system_event(
             "pipeline.native_entry_prepared",
             "info",
             f"Prepared native national TCP entry for v{next_v}",
-            {"next_v": next_v, "source_v": source_v, "entry": "national_bot.py"},
+            {"next_v": next_v, "source_v": source_v, "entry": hygiene.get("native_entry")},
         )
-
-    (next_dir / ".completed").unlink(missing_ok=True)
 
     # Write "prepared" checkpoint so a kill+restart shows "Workers not yet run → call run_direction_audit"
     if not write_pipeline_checkpoint(next_v, source_v, "prepared", worker_failure_count=0):
