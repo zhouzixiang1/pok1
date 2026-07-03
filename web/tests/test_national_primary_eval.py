@@ -27,6 +27,7 @@ def test_national_primary_profile_selects_national_protocol():
     assert profile.national_rating_hands == 70
     assert profile.national_rating_matches == 1
     assert profile.national_acceptance_hands == 70
+    assert profile.national_acceptance_timeout_sec == 420
     assert profile.eval_wait_min_games == 24
     assert profile.eval_wait_rd_threshold == 110.0
     assert profile.eval_wait_rd_min_games == 12
@@ -52,6 +53,91 @@ def test_daemon_dispatches_national_rating_backend(monkeypatch):
     assert calls["national"][4]["protocol"] == "national"
     assert calls["national"][4]["national_hands"] == 70
     assert calls["national"][4]["national_matches"] == 5
+
+
+def test_national_acceptance_runs_candidate_pairs_only(monkeypatch):
+    import national_acceptance
+
+    calls = []
+
+    def fake_resolve(token):
+        path = Path(f"/bots/{token}/main.py")
+        return national_acceptance.BotSpec(label=str(token), path=path)
+
+    async def fake_run_pair(bot_a, bot_b, hands, *, strict=True, deck_seed_base=None):
+        calls.append((bot_a.label, bot_b.label, hands, strict, deck_seed_base))
+        return {
+            "bot_a": bot_a.label,
+            "bot_b": bot_b.label,
+            "hands_requested": hands,
+            "hands_played": hands,
+            "per_player": {
+                bot_a.label: {
+                    "earnings": 100,
+                    "illegal_actions": 0,
+                    "timeouts": 0,
+                    "adapter": {},
+                },
+                bot_b.label: {
+                    "earnings": -100,
+                    "illegal_actions": 0,
+                    "timeouts": 0,
+                    "adapter": {},
+                },
+            },
+            "net_chips_a": 100,
+            "net_chips_b": -100,
+            "net_chips_a_per_hand": 50.0,
+            "strict_adapter": strict,
+            "deck_seed_base": deck_seed_base,
+            "passed_compliance": True,
+            "issues": [],
+        }
+
+    monkeypatch.setattr(national_acceptance, "resolve_bot", fake_resolve)
+    monkeypatch.setattr(national_acceptance, "run_pair", fake_run_pair)
+
+    result = asyncio.run(national_acceptance.run_acceptance_for_candidate(
+        "A",
+        opponent_tokens=["B", "C"],
+        hands=2,
+        timeout_sec=5,
+    ))
+
+    assert result.passed is True
+    assert calls == [
+        ("A", "B", 2, True, None),
+        ("A", "C", 2, True, None),
+    ]
+    assert result.report["candidate_only"] is True
+    assert result.report["pair_count"] == 2
+    assert "C" not in result.report["matrix"]["B"]
+
+
+def test_national_acceptance_timeout_returns_failure(monkeypatch):
+    import national_acceptance
+
+    def fake_resolve(token):
+        path = Path(f"/bots/{token}/main.py")
+        return national_acceptance.BotSpec(label=str(token), path=path)
+
+    async def slow_run_pair(*_args, **_kwargs):
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(national_acceptance, "resolve_bot", fake_resolve)
+    monkeypatch.setattr(national_acceptance, "run_pair", slow_run_pair)
+
+    result = asyncio.run(national_acceptance.run_acceptance_for_candidate(
+        "A",
+        opponent_tokens=["B"],
+        hands=2,
+        timeout_sec=0.01,
+    ))
+
+    assert result.passed is False
+    assert result.issues == ["national_acceptance_timeout: exceeded 0.01s"]
+    assert result.summary["passed_compliance"] is False
+    assert result.report["timed_out"] is True
 
 
 def test_daemon_explicit_national_rating_matches_override_pairs(monkeypatch):
