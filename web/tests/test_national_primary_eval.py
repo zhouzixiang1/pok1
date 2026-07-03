@@ -49,6 +49,26 @@ def test_national_precommit_backend_runs_minimal_bots(tmp_path):
     assert result["passed"] is True
 
 
+def test_national_precommit_blocks_without_opponents(tmp_path):
+    bot_a = tmp_path / "CallA"
+    _write_call_bot(bot_a)
+
+    result = asyncio.run(run_national_precommit(
+        bot_a,
+        [],
+        hands=2,
+        matches_per_opponent=1,
+        deck_seed_base=42,
+    ))
+
+    assert result["passed"] is False
+    assert result["paired_bootstrap"]["net_chips_samples"] == 0
+    assert {blocker["reason"] for blocker in result["blockers"]} >= {
+        "national_no_opponents",
+        "national_no_samples",
+    }
+
+
 def test_tool_eval_national_backend_returns_precommit_shape(tmp_path, monkeypatch):
     bot_a = tmp_path / "CallA"
     bot_b = tmp_path / "CallB"
@@ -94,3 +114,47 @@ def test_tool_eval_national_backend_returns_precommit_shape(tmp_path, monkeypatc
     assert result["scorecard"]["gates"][0]["name"] == "national_precommit_regression"
     assert recorded["name"] == "precommit_eval"
     assert recorded["stage"] in {"verified", "precommit_failed"}
+
+
+def test_tool_eval_national_backend_blocks_without_samples(tmp_path, monkeypatch):
+    bot_a = tmp_path / "CallA"
+    _write_call_bot(bot_a)
+    profile = get_workflow_profile("national_primary")
+    profile.national_precommit_hands = 2
+
+    recorded = {}
+
+    def fake_record_gate(version, source_v, name, payload, stage=None, reviewer_feedback=None):
+        recorded["name"] = name
+        recorded["payload"] = payload
+        recorded["stage"] = stage
+        return True
+
+    monkeypatch.setattr(tool_eval, "_record_gate", fake_record_gate)
+    monkeypatch.setattr(tool_eval, "append_candidate_event", None)
+
+    wrapped = asyncio.run(tool_eval._run_national_precommit_backend(
+        v=10,
+        source_v=9,
+        requested_n_games=8,
+        candidate_name="CallA",
+        parent_name="CallB",
+        candidate_main=bot_a,
+        code_fingerprint="abc",
+        workflow_profile=profile,
+        candidate_id="CallA_from_9",
+        opponents=[],
+        all_opponents=[],
+        precommit_attempt=1,
+        initial_blockers=[],
+        started_at=0.0,
+    ))
+    result = json.loads(wrapped["content"][0]["text"])
+
+    assert result["passed"] is False
+    assert result["paired_bootstrap"]["net_chips_samples"] == 0
+    assert result["failure_class"] == "regression"
+    assert result["scorecard"]["gates"][0]["status"] == "failed"
+    assert {blocker["reason"] for blocker in result["blockers"]} == {"national_no_samples"}
+    assert recorded["name"] == "precommit_eval"
+    assert recorded["stage"] == "precommit_failed"

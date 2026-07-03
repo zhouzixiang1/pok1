@@ -104,6 +104,12 @@ async def run_national_precommit(
     total_draws = 0
     resolved_opponents: list[dict[str, Any]] = []
 
+    if not opponents:
+        blockers.append({
+            "reason": "national_no_opponents",
+            "details": "National precommit requires at least one resolved opponent.",
+        })
+
     for opp_index, item in enumerate(opponents):
         reason = str(item.get("reason") or "precommit")
         token = item.get("path") or item.get("token") or item.get("name")
@@ -202,6 +208,11 @@ async def run_national_precommit(
 
     agg_mean = _mean(aggregate_net_chips)
     agg_ci_lower, agg_ci_upper = _ci(aggregate_net_chips)
+    if not aggregate_net_chips:
+        blockers.append({
+            "reason": "national_no_samples",
+            "details": "National precommit produced zero completed match samples.",
+        })
     if agg_mean is not None and agg_mean < aggregate_loss_threshold:
         blockers.append({
             "reason": "aggregate_national_regression",

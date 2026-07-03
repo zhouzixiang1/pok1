@@ -197,6 +197,60 @@ def test_bot_adapter_payload_accumulates_across_national_match():
     assert adapter._total_win_games == [1, 0]
 
 
+def test_bot_adapter_reconstructs_preflop_allin_price_exactly():
+    async def run():
+        adapter = _CaptureAdapter([{"response": 0}])
+        await adapter._handle("preflop|BIGBLIND|<0,4><1,5>")
+        await adapter._handle("allin")
+        return adapter
+
+    adapter = asyncio.run(run())
+    payload = adapter.bot.payloads[0]
+    request = payload["requests"][0]
+
+    assert request["opponent_chips"] == 0
+    assert request["my_stage_bet"] == 100
+    assert request["opponent_stage_bet"] == 20000
+    assert request["to_call"] == 19900
+    assert request["pot"] == 20100
+    assert request["opponent_allin"] is True
+    assert adapter.sent == ["call"]
+    assert adapter._my_chips == 0
+    assert adapter._my_stage_bet == 20000
+    assert adapter._pot == 40000
+    assert adapter._in_allin_runout is True
+
+
+def test_bot_adapter_short_opponent_allin_does_not_overcharge_call():
+    async def run():
+        adapter = _CaptureAdapter([{"response": 0}])
+        adapter._stage = "flop"
+        adapter._hand_num = 1
+        adapter._my_id = 0
+        adapter._opponent_id = 1
+        adapter._dealer_id = 1
+        adapter._my_chips = 1500
+        adapter._opponent_chips = 500
+        adapter._my_stage_bet = 1000
+        adapter._opponent_stage_bet = 1000
+        adapter._pot = 3000
+        await adapter._handle("allin")
+        return adapter
+
+    adapter = asyncio.run(run())
+    request = adapter.bot.payloads[0]["requests"][0]
+
+    assert request["opponent_chips"] == 0
+    assert request["opponent_stage_bet"] == 1500
+    assert request["to_call"] == 500
+    assert request["pot"] == 3500
+    assert adapter.sent == ["call"]
+    assert adapter._my_chips == 1000
+    assert adapter._my_stage_bet == 1500
+    assert adapter._pot == 4000
+    assert adapter._in_allin_runout is True
+
+
 def test_game_engine_deck_factory_makes_in_process_eval_reproducible():
     async def run_once():
         sent = []

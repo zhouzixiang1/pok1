@@ -250,7 +250,13 @@ async def _run_national_precommit_backend(
     total_draws = int(national_result.get("total_draws", 0) or 0)
     matchups = list(national_result.get("matchups") or [])
     paired_bootstrap_payload = dict(national_result.get("paired_bootstrap") or {})
-    passed = len(blockers) == 0
+    sample_count = int(paired_bootstrap_payload.get("net_chips_samples", 0) or 0)
+    if sample_count <= 0 and not blockers:
+        blockers.append({
+            "reason": "national_no_samples",
+            "details": "National precommit produced zero completed match samples.",
+        })
+    passed = bool(national_result.get("passed")) and len(blockers) == 0 and sample_count > 0
 
     try:
         log_system_event(
