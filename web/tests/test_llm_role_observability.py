@@ -34,6 +34,10 @@ class _DummyShutdown:
     is_shutting_down = True
 
 
+class _UnknownSDKMessage:
+    pass
+
+
 async def _no_wait(*_args, **_kwargs):
     return None
 
@@ -494,6 +498,65 @@ def test_process_stream_hard_times_out_idle_role(monkeypatch, tmp_path):
     assert fields["idle_timeout"] == 0.02
 
 
+def test_process_stream_unknown_messages_do_not_refresh_idle_timeout(
+    monkeypatch, tmp_path
+):
+    events = []
+
+    async def fake_stream():
+        yield AssistantMessage(content=[TextBlock(text="alpha")], model="sonnet")
+        for _ in range(20):
+            await asyncio.sleep(0.005)
+            yield _UnknownSDKMessage()
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=10,
+            duration_api_ms=10,
+            is_error=False,
+            num_turns=1,
+            session_id="session",
+            total_cost_usd=0.1,
+            usage={"input_tokens": 4, "output_tokens": 2},
+        )
+
+    monkeypatch.setenv("POK_LLM_MASTER_IDLE_TIMEOUT", "0.025")
+    monkeypatch.setenv("POK_LLM_MASTER_TOTAL_TIMEOUT", "1")
+    monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 999)
+    monkeypatch.setattr(
+        llm_query,
+        "_emit_llm_event",
+        lambda category, severity, message, **fields: events.append(
+            (category, severity, message, fields)
+        ),
+    )
+
+    log_file = tmp_path / "v269" / "logs" / "master_io.txt"
+    log_file.parent.mkdir(parents=True)
+
+    with pytest.raises(llm_query.LLMRoleTimeout) as exc:
+        asyncio.run(
+            llm_query._process_stream(
+                fake_stream(), str(log_file), _DummyUI(), "MASTER (Try 1)"
+            )
+        )
+
+    assert exc.value.timeout_kind == "idle"
+    unknown_events = [
+        event for event in events if event[0] == "pipeline.llm_role_unknown_message"
+    ]
+    assert unknown_events
+    timeout_events = [
+        event for event in events if event[0] == "pipeline.llm_role_idle_timeout"
+    ]
+    assert timeout_events
+    _category, severity, _message, fields = timeout_events[0]
+    assert severity == "error"
+    assert fields["role"] == "MASTER (Try 1)"
+    assert fields["text_chars"] == len("alpha")
+    assert fields["unknown_messages_seen"] > 0
+    assert fields["idle_timeout"] == 0.025
+
+
 def test_default_role_timeout_policy_is_bounded(monkeypatch):
     monkeypatch.delenv("POK_LLM_DEFAULT_FIRST_ACTIVITY_TIMEOUT", raising=False)
     monkeypatch.delenv("POK_LLM_DEFAULT_IDLE_TIMEOUT", raising=False)
@@ -556,6 +619,55 @@ def test_process_stream_hard_times_out_default_role_first_activity(monkeypatch, 
     _category, severity, _message, fields = timeout_events[0]
     assert severity == "error"
     assert fields["role"] == "COMBINED ANALYST"
+    assert fields["first_activity_timeout"] == 0.02
+
+
+def test_process_stream_unknown_messages_do_not_satisfy_first_activity(
+    monkeypatch, tmp_path
+):
+    events = []
+
+    async def fake_stream():
+        for _ in range(20):
+            await asyncio.sleep(0.005)
+            yield _UnknownSDKMessage()
+        yield AssistantMessage(content=[TextBlock(text="late")], model="sonnet")
+
+    monkeypatch.setenv("POK_LLM_DEFAULT_FIRST_ACTIVITY_TIMEOUT", "0.02")
+    monkeypatch.setenv("POK_LLM_DEFAULT_IDLE_TIMEOUT", "1")
+    monkeypatch.setenv("POK_LLM_DEFAULT_TOTAL_TIMEOUT", "1")
+    monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 999)
+    monkeypatch.setattr(
+        llm_query,
+        "_emit_llm_event",
+        lambda category, severity, message, **fields: events.append(
+            (category, severity, message, fields)
+        ),
+    )
+
+    log_file = tmp_path / "v269" / "logs" / "combined_analysis.txt"
+    log_file.parent.mkdir(parents=True)
+
+    with pytest.raises(llm_query.LLMRoleTimeout) as exc:
+        asyncio.run(
+            llm_query._process_stream(
+                fake_stream(), str(log_file), _DummyUI(), "COMBINED ANALYST"
+            )
+        )
+
+    assert exc.value.timeout_kind == "first_activity"
+    unknown_events = [
+        event for event in events if event[0] == "pipeline.llm_role_unknown_message"
+    ]
+    assert unknown_events
+    timeout_events = [
+        event for event in events if event[0] == "pipeline.llm_role_first_activity_timeout"
+    ]
+    assert timeout_events
+    _category, severity, _message, fields = timeout_events[0]
+    assert severity == "error"
+    assert fields["role"] == "COMBINED ANALYST"
+    assert fields["unknown_messages_seen"] > 0
     assert fields["first_activity_timeout"] == 0.02
 
 

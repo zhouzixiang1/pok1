@@ -1420,6 +1420,7 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
     thinking_chars = 0
     tool_use_count = 0
     tool_result_count = 0
+    unknown_message_count = 0
     timeout_policy = _role_timeout_policy(role_name)
     total_timeout = float(timeout_policy.get("total_timeout") or 0)
     first_activity_timeout = float(timeout_policy.get("first_activity_timeout") or 0)
@@ -1485,6 +1486,7 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             role=role_name,
             elapsed_sec=round(elapsed, 2),
             messages_seen=message_count,
+            unknown_messages_seen=unknown_message_count,
             text_chars=text_chars,
             thinking_chars=thinking_chars,
             tool_use_count=tool_use_count,
@@ -1512,18 +1514,50 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             last_silence_event_at = now
             _emit_llm_event(
                 "pipeline.llm_role_stream_silent", "warn",
-                f"{role_name}: no LLM stream messages for {silent_for:.1f}s",
+                f"{role_name}: no productive LLM stream messages for {silent_for:.1f}s",
                 role=role_name,
                 elapsed_sec=round(now - stream_started_at, 2),
                 silent_for_sec=round(silent_for, 2),
                 silence_warn_sec=_LLM_SILENCE_WARN_SEC,
                 messages_seen=message_count,
+                unknown_messages_seen=unknown_message_count,
                 text_chars=text_chars,
                 thinking_chars=thinking_chars,
                 tool_use_count=tool_use_count,
                 tool_result_count=tool_result_count,
                 **_role_log_metadata(log_file_path),
             )
+
+    def _timeout_limit(effective_kind, wait_timeout):
+        if effective_kind == "total":
+            return total_timeout
+        if effective_kind == "first_activity":
+            return first_activity_timeout
+        if effective_kind == "idle":
+            return idle_timeout
+        return wait_timeout or 0
+
+    def _raise_role_timeout(timeout_kind, wait_timeout):
+        elapsed = time.time() - stream_started_at
+        effective_kind = timeout_kind or "stream"
+        effective_limit = _timeout_limit(effective_kind, wait_timeout)
+        _emit_llm_event(
+            f"pipeline.llm_role_{effective_kind}_timeout",
+            "error",
+            f"{role_name}: LLM {effective_kind} timeout after {effective_limit:.1f}s",
+            role=role_name,
+            elapsed_sec=round(elapsed, 2),
+            timeout_sec=round(effective_limit, 2),
+            messages_seen=message_count,
+            unknown_messages_seen=unknown_message_count,
+            text_chars=text_chars,
+            thinking_chars=thinking_chars,
+            tool_use_count=tool_use_count,
+            tool_result_count=tool_result_count,
+            **timeout_policy,
+            **_role_log_metadata(log_file_path),
+        )
+        raise LLMRoleTimeout(role_name, effective_kind, effective_limit)
 
     try:
         watchdog_task = asyncio.create_task(_silence_watchdog())
@@ -1532,17 +1566,22 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             wait_timeout = None
             timeout_kind = None
             now = time.time()
-            if message_count == 0 and first_activity_timeout > 0:
-                wait_timeout = first_activity_timeout
+            if not first_activity_logged and first_activity_timeout > 0:
+                wait_timeout = max(
+                    0.0,
+                    first_activity_timeout - (now - stream_started_at),
+                )
                 timeout_kind = "first_activity"
-            elif message_count > 0 and idle_timeout > 0:
-                wait_timeout = idle_timeout
+            elif first_activity_logged and idle_timeout > 0:
+                wait_timeout = max(0.0, idle_timeout - (now - last_message_at))
                 timeout_kind = "idle"
             if total_deadline is not None:
                 remaining_total = max(0.0, total_deadline - now)
                 if wait_timeout is None or remaining_total < wait_timeout:
                     wait_timeout = remaining_total
                     timeout_kind = "total"
+            if wait_timeout is not None and wait_timeout <= 0:
+                _raise_role_timeout(timeout_kind, wait_timeout)
             try:
                 if wait_timeout is None:
                     message = await stream_iter.__anext__()
@@ -1554,33 +1593,11 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             except StopAsyncIteration:
                 break
             except asyncio.TimeoutError:
-                elapsed = time.time() - stream_started_at
-                effective_kind = timeout_kind or "stream"
-                effective_limit = (
-                    total_timeout if effective_kind == "total"
-                    else first_activity_timeout if effective_kind == "first_activity"
-                    else idle_timeout if effective_kind == "idle"
-                    else wait_timeout or 0
-                )
-                _emit_llm_event(
-                    f"pipeline.llm_role_{effective_kind}_timeout",
-                    "error",
-                    f"{role_name}: LLM {effective_kind} timeout after {effective_limit:.1f}s",
-                    role=role_name,
-                    elapsed_sec=round(elapsed, 2),
-                    timeout_sec=round(effective_limit, 2),
-                    messages_seen=message_count,
-                    text_chars=text_chars,
-                    thinking_chars=thinking_chars,
-                    tool_use_count=tool_use_count,
-                    tool_result_count=tool_result_count,
-                    **timeout_policy,
-                    **_role_log_metadata(log_file_path),
-                )
-                raise LLMRoleTimeout(role_name, effective_kind, effective_limit)
-            last_message_at = time.time()
+                _raise_role_timeout(timeout_kind, wait_timeout)
             message_count += 1
+            productive_message = False
             if isinstance(message, AssistantMessage):
+                productive_message = True
                 _mark_first_activity("assistant")
                 for block in message.content:
                     if isinstance(block, TextBlock):
@@ -1604,6 +1621,7 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                         _record_tool_result(block.content, getattr(block, "is_error", None))
                 _emit_progress()
             elif isinstance(message, UserMessage):
+                productive_message = True
                 _mark_first_activity("user")
                 saw_tool_result_block = False
                 if isinstance(message.content, list):
@@ -1623,6 +1641,7 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                     )
                 _emit_progress()
             elif isinstance(message, ResultMessage):
+                productive_message = True
                 _mark_first_activity("result")
                 cost_usd = message.total_cost_usd
                 usage = message.usage
@@ -1677,6 +1696,38 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                                 pass
                 except Exception:
                     pass
+            else:
+                unknown_message_count += 1
+                message_type = type(message).__name__
+                message_module = type(message).__module__
+                if (
+                    unknown_message_count == 1
+                    or unknown_message_count in {5, 10, 20, 50}
+                    or unknown_message_count % 100 == 0
+                ):
+                    _append_role_io(
+                        log_file_path,
+                        f"\n[UNKNOWN_SDK_MESSAGE] {message_module}.{message_type}: "
+                        f"{repr(message)[:1000]}\n",
+                    )
+                    _emit_llm_event(
+                        "pipeline.llm_role_unknown_message",
+                        "warn",
+                        f"{role_name}: unknown SDK stream message {message_type}",
+                        role=role_name,
+                        elapsed_sec=round(time.time() - stream_started_at, 2),
+                        message_type=message_type,
+                        message_module=message_module,
+                        messages_seen=message_count,
+                        unknown_messages_seen=unknown_message_count,
+                        text_chars=text_chars,
+                        thinking_chars=thinking_chars,
+                        tool_use_count=tool_use_count,
+                        tool_result_count=tool_result_count,
+                        **_role_log_metadata(log_file_path),
+                    )
+            if productive_message:
+                last_message_at = time.time()
     except ClaudeSDKError as e:
         _emit_llm_event(
             "pipeline.llm_role_stream_sdk_error", "warn",
