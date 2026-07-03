@@ -814,6 +814,30 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             if rel:
                 fpath = next_dir / rel
                 worker_snapshots[(0, rel)] = fpath.read_text() if fpath.exists() else ""
+        if task_skipper is not None:
+            try:
+                skip_reason = task_skipper(tasks[0])
+            except Exception as e:
+                skip_reason = ""
+                log.warning("Task skipper failed for worker 0: %s", e)
+            if skip_reason:
+                ui.log_history(
+                    f"Skipping worker {tasks[0].get('worker_id', 1)}: {skip_reason}",
+                    "info",
+                )
+                try:
+                    from system_log import log_system_event
+                    log_system_event(
+                        "pipeline.worker_skipped_blocker_cleared",
+                        "info",
+                        f"Skipped worker {tasks[0].get('worker_id', 1)} for v{next_v}: {skip_reason}",
+                        {"next_v": next_v, "source_v": source_v,
+                         "worker_id": tasks[0].get("worker_id", 1),
+                         "reason": skip_reason},
+                    )
+                except Exception:
+                    pass
+                return True, worker_snapshots, audit_focus_areas
         ok = await _run_single_worker(
             tasks[0], 0, worker_template, next_dir, next_v,
             context_files, ui, reviewer_feedback,
@@ -952,6 +976,15 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
     # vs output (which would include all preceding workers' changes).
     ui.log_history(f"Running {len(tasks)} workers SEQUENTIALLY (overlapping files)...", "info")
     for i, task in enumerate(tasks):
+        # Capture file state before this worker runs or is skipped. When a cheap
+        # quality-repair skipper observes that a blocker is already cleared, the
+        # outer boundary validator still needs proof that this batch used
+        # per-worker snapshots rather than a whole-candidate source diff.
+        for target in task.get("target_files", []):
+            rel = _target_rel(target, next_v)
+            if rel:
+                fpath = next_dir / rel
+                worker_snapshots[(i, rel)] = fpath.read_text() if fpath.exists() else ""
         if task_skipper is not None:
             try:
                 skip_reason = task_skipper(task)
@@ -975,12 +1008,6 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                 except Exception:
                     pass
                 continue
-        # Capture file state before this worker runs
-        for target in task.get("target_files", []):
-            rel = _target_rel(target, next_v)
-            if rel:
-                fpath = next_dir / rel
-                worker_snapshots[(i, rel)] = fpath.read_text() if fpath.exists() else ""
         ok = await _run_single_worker(
             task, i, worker_template, next_dir, next_v,
             context_files, ui, reviewer_feedback,

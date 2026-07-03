@@ -3843,7 +3843,21 @@ async def execute_workers(args):
                                   master_plan=retry_plan,
                                   reviewer_feedback=reviewer_feedback,
                                   worker_failure_count=ckpt.get("worker_failure_count", 0))
-        if ckpt.get("stage") == "quality_failed":
+        task_kinds = {
+            str(task.get("task_kind") or "")
+            for task in tasks or []
+            if isinstance(task, dict)
+        }
+        is_quality_rework = (
+            ckpt.get("stage") == "quality_failed"
+            or "quality_repair" in rework_kind
+            or any("quality_repair" in kind for kind in task_kinds)
+        )
+        if (
+            is_quality_rework
+            and not _is_precommit_rework_checkpoint(ckpt)
+            and ckpt.get("stage") in {"quality_failed", "repair_planned", "rework_running"}
+        ):
             force_sequential_rework = True
             task_skipper = _quality_rework_skipper(next_dir, source_dir_r, next_v, source_v)
 

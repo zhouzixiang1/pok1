@@ -670,27 +670,33 @@ def _validate_worker_boundaries(tasks, source_v, next_v, worker_snapshots=None):
             if rel:
                 all_targets.add(rel)
 
-    changed_files = _py_files_changed_between(source_dir, next_dir)
-    for rel in changed_files:
-        if rel not in all_targets:
-            errors.append({
-                "type": "target_file_violation",
-                "file": rel,
-                "message": "Worker modified a Python file outside declared target_files.",
-            })
-
-    # Check for new files created outside target_files
-    if source_dir.exists() and next_dir.exists():
-        source_files = {p.relative_to(source_dir).as_posix() for p in source_dir.rglob("*.py")}
-        next_files = {p.relative_to(next_dir).as_posix() for p in next_dir.rglob("*.py")}
-        new_files = next_files - source_files
-        for rel in new_files:
+    # Without per-worker snapshots, fall back to the historical whole-candidate
+    # source diff. With snapshots, per-worker boundary checks have already
+    # isolated each worker's actual writes. Re-running the whole-candidate diff
+    # during in-place quality repair would falsely blame earlier sibling repair
+    # edits on the current one.
+    if not worker_snapshots:
+        changed_files = _py_files_changed_between(source_dir, next_dir)
+        for rel in changed_files:
             if rel not in all_targets:
                 errors.append({
-                    "type": "new_file_violation",
+                    "type": "target_file_violation",
                     "file": rel,
-                    "message": "Worker created a new file outside declared target_files.",
+                    "message": "Worker modified a Python file outside declared target_files.",
                 })
+
+        # Check for new files created outside target_files
+        if source_dir.exists() and next_dir.exists():
+            source_files = {p.relative_to(source_dir).as_posix() for p in source_dir.rglob("*.py")}
+            next_files = {p.relative_to(next_dir).as_posix() for p in next_dir.rglob("*.py")}
+            new_files = next_files - source_files
+            for rel in new_files:
+                if rel not in all_targets:
+                    errors.append({
+                        "type": "new_file_violation",
+                        "file": rel,
+                        "message": "Worker created a new file outside declared target_files.",
+                    })
 
     for task_idx, task in enumerate(tasks):
         role = str(task.get("role", ""))

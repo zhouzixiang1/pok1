@@ -1443,6 +1443,110 @@ class TestWorkerFailureCircuitBreaker:
         assert skipper(mixed_task) == ""
         assert "size" in skipper(size_only_task)
 
+    def test_single_quality_rework_task_uses_skipper(self, tmp_path):
+        """Single-task quality repair must not bypass the cheap cleared-blocker skipper."""
+        import asyncio
+        import agent_workers
+
+        next_dir = tmp_path / "claude_v11"
+        next_dir.mkdir()
+        (next_dir / "strategy_helpers.py").write_text("# already fixed\n")
+
+        class UI:
+            costs = {}
+
+            def __init__(self):
+                self.messages = []
+
+            def log_history(self, message, level="info"):
+                self.messages.append((level, message))
+
+        ui = UI()
+        task = {
+            "worker_id": "auto_quality_repair_file_size_strategy_helpers_py",
+            "role": "Algorithmic Logic Architect",
+            "target_files": ["strategy_helpers.py"],
+            "worker_prompt": "fix file_size",
+        }
+
+        async def _run():
+            with patch.object(agent_workers, "_run_single_worker", new_callable=AsyncMock) as run_worker:
+                result = await agent_workers._execute_workers(
+                    [task],
+                    "",
+                    next_dir,
+                    11,
+                    [],
+                    ui,
+                    reviewer_feedback="Quality gates failed",
+                    source_v=10,
+                    task_skipper=lambda _task: "all cheap quality rework blockers already cleared by current code",
+                )
+                return result, run_worker
+
+        (success, snapshots, focus), run_worker = asyncio.run(_run())
+        assert success is True
+        assert focus == []
+        assert snapshots == {(0, "strategy_helpers.py"): "# already fixed\n"}
+        run_worker.assert_not_called()
+        assert any("Skipping worker auto_quality_repair_file_size_strategy_helpers_py" in msg for _lvl, msg in ui.messages)
+
+    def test_repair_planned_quality_rework_passes_skipper_to_workers(self, tmp_path, monkeypatch):
+        """A resumed quality repair at repair_planned should skip already-cleared blockers."""
+        import asyncio
+        import fix_injection
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        (source_dir / "strategy_helpers.py").write_text("# source\n")
+        (next_dir / "strategy_helpers.py").write_text("# already fixed\n")
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, stage="repair_planned")
+        state = json.loads(ckpt_file.read_text())
+        state["parent2_v"] = 9
+        state["reviewer_feedback"] = "Quality gates failed:\n- file_size(strategy_helpers.py:2501L/2500L)"
+        state["master_plan"] = {
+            "strategy": "crossover",
+            "tasks": [{
+                "worker_id": "auto_quality_repair_file_size_strategy_helpers_py",
+                "role": "Algorithmic Logic Architect",
+                "target_files": ["strategy_helpers.py"],
+                "must_change_files": ["strategy_helpers.py"],
+                "worker_prompt": "fix file_size",
+                "task_kind": "quality_repair",
+                "repair_blocker": "file_size",
+            }],
+            "work_item": {
+                "kind": "crossover_quality_repair",
+                "source_stage": "quality_failed",
+                "reset_performed": False,
+            },
+        }
+        ckpt_file.write_text(json.dumps(state))
+
+        monkeypatch.setattr(tool_planning, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+        monkeypatch.setattr(tool_planning, "check_code_size", lambda *_a, **_k: (0, []))
+        monkeypatch.setattr("tool_gates.detect_position_semantics_errors", lambda _dir: [])
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
+                 patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["strategy_helpers.py"]):
+                mock_exec.return_value = (True, {(0, "strategy_helpers.py"): "# already fixed\n"}, [])
+                result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
+                return result, mock_exec.call_args.kwargs
+
+        result, kwargs = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["success"] is True
+        assert kwargs["force_sequential"] is True
+        assert kwargs["task_skipper"] is not None
+
     def test_quality_repair_contract_tasks_are_file_scoped_and_deduped(self):
         import tool_planning
 
