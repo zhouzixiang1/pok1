@@ -341,14 +341,22 @@ async def run_matrix(
     *,
     strict: bool = True,
     deck_seed_base: int | None = None,
+    pair_indices: list[tuple[int, int]] | None = None,
 ) -> dict[str, Any]:
     results = []
-    for i, bot_a in enumerate(bots):
-        for j, bot_b in enumerate(bots[i + 1:], start=i + 1):
-            pair_seed = None
-            if deck_seed_base is not None:
-                pair_seed = deck_seed_base + (i * 100_000) + (j * 1_000)
-            results.append(await run_pair(bot_a, bot_b, hands, strict=strict, deck_seed_base=pair_seed))
+    if pair_indices is None:
+        pair_indices = [
+            (i, j)
+            for i in range(len(bots))
+            for j in range(i + 1, len(bots))
+        ]
+    for i, j in pair_indices:
+        bot_a = bots[i]
+        bot_b = bots[j]
+        pair_seed = None
+        if deck_seed_base is not None:
+            pair_seed = deck_seed_base + (i * 100_000) + (j * 1_000)
+        results.append(await run_pair(bot_a, bot_b, hands, strict=strict, deck_seed_base=pair_seed))
 
     summary = {
         bot.label: {
@@ -413,6 +421,7 @@ async def run_matrix(
         "hands_per_pair": hands,
         "strict_adapter": strict,
         "deck_seed_base": deck_seed_base,
+        "pair_count": len(pair_indices),
         "bots": [{"label": bot.label, "path": str(bot.path)} for bot in bots],
         "results": results,
         "summary": summary,
@@ -428,6 +437,7 @@ async def run_acceptance_for_candidate(
     hands: int = 10,
     max_opponents: int = 2,
     strict: bool = True,
+    timeout_sec: float | None = None,
 ) -> NationalAcceptanceResult:
     candidate = resolve_bot(candidate_token)
     if opponent_tokens:
@@ -443,7 +453,48 @@ async def run_acceptance_for_candidate(
             passed=False,
             issues=["need at least one opponent for national acceptance"],
         )
-    report = await run_matrix(bots, hands, strict=strict)
+    pair_indices = [(0, idx) for idx in range(1, len(bots))]
+    if timeout_sec is None:
+        timeout_sec = max(120.0, float(hands * max(1, len(pair_indices)) * 3))
+    try:
+        report = await asyncio.wait_for(
+            run_matrix(bots, hands, strict=strict, pair_indices=pair_indices),
+            timeout=timeout_sec,
+        )
+    except TimeoutError:
+        issue = f"national_acceptance_timeout: exceeded {timeout_sec:g}s"
+        return NationalAcceptanceResult(
+            candidate=candidate.label,
+            opponents=[opp.label for opp in bots[1:]],
+            hands_per_pair=hands,
+            passed=False,
+            issues=[issue],
+            summary={
+                "matches": 0,
+                "net_chips": 0,
+                "illegal_actions": 0,
+                "timeouts": 0,
+                "bot_failures": 0,
+                "invalid_actions": 0,
+                "clamped_raises": 0,
+                "allin_conversions": 0,
+                "would_be_illegal_raise": 0,
+                "postflop_pass_conversions": 0,
+                "passed_compliance": False,
+            },
+            report={
+                "generated_at": datetime.now().isoformat(timespec="seconds"),
+                "hands_per_pair": hands,
+                "strict_adapter": strict,
+                "candidate_only": True,
+                "pair_count": len(pair_indices),
+                "timeout_sec": timeout_sec,
+                "timed_out": True,
+                "issues": [issue],
+            },
+        )
+    report["candidate_only"] = True
+    report["timeout_sec"] = timeout_sec
     candidate_summary = report["summary"].get(candidate.label, {})
     issues = []
     for result in report["results"]:

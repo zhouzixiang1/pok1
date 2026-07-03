@@ -445,6 +445,12 @@ async def run_quality_gates(args):
             str(workflow_profile.national_acceptance_hands),
         )
     )
+    national_acceptance_timeout_sec = float(
+        os.environ.get(
+            "POK_NATIONAL_ACCEPTANCE_TIMEOUT_SEC",
+            str(workflow_profile.national_acceptance_timeout_sec),
+        )
+    )
     if national_acceptance_enabled and source_v is not None:
         try:
             _bot_under_project_bots = bot_dir.resolve().is_relative_to((PROJECT_ROOT / "bots").resolve())
@@ -467,6 +473,7 @@ async def run_quality_gates(args):
                     hands=national_acceptance_hands,
                     max_opponents=2,
                     strict=bool(workflow_profile.national_acceptance_hard),
+                    timeout_sec=national_acceptance_timeout_sec,
                 )
                 national_acceptance_ok = bool(_acceptance.passed)
                 national_acceptance_errors = _acceptance.issues[:5]
@@ -480,6 +487,7 @@ async def run_quality_gates(args):
                         "version": v,
                         "source_v": source_v,
                         "hands": national_acceptance_hands,
+                        "timeout_sec": national_acceptance_timeout_sec,
                         "opponents": _acceptance.opponents,
                         "issues": national_acceptance_errors,
                         "summary": _acceptance.summary,

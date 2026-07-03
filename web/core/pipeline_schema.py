@@ -207,6 +207,7 @@ class WorkflowProfile(BaseModel):
     rating_protocol: Literal["local_json", "national"] = "local_json"
     national_acceptance_hands: int = Field(default=20, ge=1, le=70)
     national_acceptance_hard: bool = True
+    national_acceptance_timeout_sec: int = Field(default=300, ge=30, le=3600)
     national_precommit_hands: int = Field(default=70, ge=1, le=70)
     national_precommit_matches: int = Field(default=1, ge=1, le=8)
     national_rating_hands: int = Field(default=70, ge=1, le=70)
