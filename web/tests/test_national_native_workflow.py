@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 
+from candidate_hygiene import sanitize_candidate_dir
 from national_native import (
     check_native_contract,
     ensure_native_entry,
@@ -67,6 +68,22 @@ def test_native_entry_contract_allows_template_and_rejects_legacy_tokens(tmp_pat
     errors = check_native_contract(bot_dir)
     assert any("bot_adapter" in err or "BotAdapter" in err for err in errors)
     assert any("'response'" in err for err in errors)
+
+
+def test_candidate_hygiene_removes_completion_and_restores_native_entry(tmp_path):
+    bot_dir = tmp_path / "BotA"
+    _write_minimal_strategy_bot(bot_dir)
+    (bot_dir / ".completed").write_text("parent sentinel", encoding="utf-8")
+    entry = ensure_native_entry(bot_dir)
+    entry.unlink()
+
+    result = sanitize_candidate_dir(bot_dir, require_native_tcp=True)
+
+    assert result["completed_removed"] is True
+    assert result["native_entry"] == "national_bot.py"
+    assert not (bot_dir / ".completed").exists()
+    assert (bot_dir / "national_bot.py").exists()
+    assert check_native_contract(bot_dir) == []
 
 
 def test_quality_gate_ok_rejects_adapter_cache_under_native_profile(monkeypatch):

@@ -17,7 +17,7 @@ def test_incremental_reset_overwrites_and_preserves(tmp_path):
     (source_dir / "main.py").write_text("SOURCE_MAIN", encoding="utf-8")
     (source_dir / "strategy.py").write_text("SOURCE_STRATEGY", encoding="utf-8")
 
-    # next: modified main.py, modified strategy.py, NEW new_module.py, .completed
+    # next: modified main.py, modified strategy.py, NEW new_module.py, leaked .completed
     (next_dir / "main.py").write_text("MODIFIED_MAIN", encoding="utf-8")
     (next_dir / "strategy.py").write_text("MODIFIED_STRATEGY", encoding="utf-8")
     (next_dir / "new_module.py").write_text("NEW_MODULE_CONTENT", encoding="utf-8")
@@ -33,9 +33,8 @@ def test_incremental_reset_overwrites_and_preserves(tmp_path):
     assert (next_dir / "new_module.py").exists()
     assert (next_dir / "new_module.py").read_text(encoding="utf-8") == "NEW_MODULE_CONTENT"
 
-    # .completed untouched
-    assert (next_dir / ".completed").exists()
-    assert (next_dir / ".completed").read_text(encoding="utf-8") == "sentinel"
+    # .completed is parent metadata and must not survive in-progress reset.
+    assert not (next_dir / ".completed").exists()
 
     # returned list is exactly the NEW file
     assert preserved == ["new_module.py"]
