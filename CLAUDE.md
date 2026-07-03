@@ -167,7 +167,9 @@ root. Claude Code therefore auto-loads this root `CLAUDE.md` for direct
 sub-agent calls. Keep this root file authoritative for protocol boundaries,
 national TCP compatibility via `sever/bot_adapter.py`, and evolution workflow
 facts; `web/CLAUDE.md` and `sever/CLAUDE.md` are directory-specific supplements,
-not replacements for the auto-loaded root guidance.
+not replacements for the auto-loaded root guidance. Direct sub-agent calls also
+pass an empty strict MCP config, so they can use only their explicit `tools`
+list and do not auto-start user/global MCP servers.
 
 **LLM agent roles and their tools:**
 

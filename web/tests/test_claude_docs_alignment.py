@@ -12,6 +12,8 @@ def test_run_claude_query_uses_project_root_for_claude_md_autoload():
 
     assert "cwd=str(PROJECT_ROOT)" in source
     assert "workers use relative paths like bots/claude_vN" in source
+    assert "mcp_servers={}" in source
+    assert "strict_mcp_config=True" in source
 
 
 def test_root_claude_md_keeps_current_module_and_protocol_boundaries():
@@ -30,6 +32,8 @@ def test_root_claude_md_keeps_current_module_and_protocol_boundaries():
         "postflop",
         "all-in",
         "Claude Code therefore auto-loads this root `CLAUDE.md`",
+        "empty strict MCP config",
+        "do not auto-start user/global MCP servers",
     ]
     missing = [item for item in required if item not in text]
     assert not missing
