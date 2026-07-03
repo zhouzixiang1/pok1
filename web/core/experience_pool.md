@@ -40,5 +40,9 @@
 - Anti-lock trash gate must be tournament-safe: hands_left>3, my_chips>15BB, low fold_to_raise before suppressing trash jams; short-stack trash jams can be necessary double-up escapes.
 
 ## RECENT_LESSONS
+- **v269**: Latent engine-convention bugs (sb/bb assignment, raise-to-total semantics) can persist 30+ generations undetected — verify engine/judge.py contract assumptions via reconstruct_state unit tests before trusting downstream strategy logic
+- **v269**: Crossover to a lower-rated donor that loses to the parent's actual nemeses (verified via head_to_head.json, not fabricated framing) violates the experience-pool mandate and risks silently dropping hard-won defensive gates the donor predates — always diff fold-gate presence post-crossover
+- **v269 归档建议 (mixed)**: Re-port _allin_polarized_equity_fold (v237 opponent.py:1076-1127) and its strategy.py:1524-1530 dispatch site, plus the v204 graduated tier exemption in _river_potodds_equity_margin (nut exempt; strong made≥0.45 + overpair AA/KK exempt; TPTK foldable) into v270 via a MASTER generation — both target the documented -20k over-call leak vs polarized all-ins from v205/v250/v184.
 - **v254**: Preflop fold-gates must be conditioned on pot_odds (>0.30) AND opponent width (pfr/VPIP) — unconditional folds of dominated hands re-introduce the over-fold leak seen in v221's unconditional mid_pair tweak (which v222 had to VPIP-gate), since 'playable' hands like T7s retain positive realization vs loose stealers.
 - **v254 归档建议**: Gate `_bb_vs_raise_dominated_floor` on pot_odds>0.30 and opponent pfr≤0.22 (tight/unknown only), then validate at ≥30g vs v250's ACTUAL nemeses (v243 0.40, v209/v238/v240/v246/v247 0.45) — not the critic's stale v241/v182/v197 list, which has no supporting entries in head_to_head.json.
+
