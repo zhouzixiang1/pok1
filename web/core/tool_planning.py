@@ -3334,9 +3334,10 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             "Required method:\n"
             f"- Edit `{filename}`. This file is listed in `must_change_files`; a no-op or editing only another file is failure.\n"
             "- Replace code patterns exactly when present: `sb = next_player(dealer_id, 1)` -> `sb = dealer_id`; `bb = next_player(dealer_id, 2)` -> `bb = 1 - dealer_id`.\n"
+            "- Also fix same-family dealer variables when present: `*_sb = next_player(<dealer_var>, 1)` -> `*_sb = <dealer_var>`; `*_bb = next_player(<dealer_var>, 2)` -> `*_bb = 1 - <dealer_var>`.\n"
             "- If the flagged line is prose/comment/test text, update that text to the authoritative contract above.\n"
             "- Do not change card mapping, action protocol, or unrelated strategy behavior.\n"
-            "- Before finishing, grep the file to confirm the flagged old pattern/text is gone."
+            "- Before finishing, grep the file to confirm no sb/bb assignment remains derived from `next_player(...dealer..., 1/2)`."
         )
         return {
             "worker_id": f"auto_quality_repair_position_{suffix}",
