@@ -161,25 +161,26 @@ def test_daemon_explicit_national_rating_matches_override_pairs(monkeypatch):
     assert calls["national"]["national_matches"] == 2
 
 
-def test_daemon_defaults_to_local_rating_backend(monkeypatch):
+def test_daemon_defaults_to_native_national_rating_backend(monkeypatch):
     monkeypatch.delenv("POK_WORKFLOW_PROFILE", raising=False)
     monkeypatch.delenv("POK_RATING_PROTOCOL", raising=False)
     calls = {}
 
-    def fake_national(*_args):
-        raise AssertionError("national backend should not run by default")
+    def fake_national(a, b, pa, pb, config):
+        calls["national"] = (a, b, pa, pb, config)
+        return (a, b, 1, 0, 0, 1, None, [100])
 
-    def fake_local(a, b, pa, pb, n_pairs):
-        calls["local"] = (a, b, pa, pb, n_pairs)
-        return (a, b, 0, 1, 0, 1, None, [-100])
+    def fake_local(*_args):
+        raise AssertionError("local backend should not run by default")
 
     monkeypatch.setattr(elo_daemon, "_run_national_rating_match", fake_national)
     monkeypatch.setattr(elo_daemon, "_run_local_json_match", fake_local)
 
     result = elo_daemon.run_single_match(("A", "B", "/a/main.py", "/b/main.py", 5))
 
-    assert result == ("A", "B", 0, 1, 0, 1, None, [-100])
-    assert calls["local"][-1] == 5
+    assert result == ("A", "B", 1, 0, 0, 1, None, [100])
+    assert calls["national"][4]["protocol"] == "national"
+    assert calls["national"][4]["national_execution_mode"] == "native_tcp"
 
 
 def test_daemon_national_rating_maps_net_chips(monkeypatch):

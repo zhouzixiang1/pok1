@@ -32,7 +32,7 @@ You evaluate ONLY these strategic dimensions:
 2. **Expected behavior change** — Will this actually alter bot behavior in a meaningful way? Or is it a cosmetic/constant-tweak that won't move the needle?
 3. **EV basis** — Are decisions based on equity/pot-odds/fold-equity reasoning rather than arbitrary threshold adjustment?
 4. **Local optima risk** — Is this the same type of change that failed in recent generations? Are we stuck in a cycle?
-5. **Measurability** — Can we verify improvement through the active workflow precommit backend (national 70-hand matches in `national_primary`)? Is there a clear hypothesis being tested?
+5. **Measurability** — Can we verify improvement through the active workflow precommit backend (`national_primary` adapter national matches or `national_native` direct TCP national matches)? Is there a clear hypothesis being tested?
 </your_scope>
 
 <not_your_scope>

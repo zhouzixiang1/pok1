@@ -8,9 +8,9 @@ Based on actual code changes made by Workers, generate targeted test scenarios t
 - Cards: integers 0-51. number = card // 4 + 2 (2-14 = 2-A), suit = card % 4 (0=♥, 1=♦, 2=♠, 3=♣)
 - Bot JSON protocol: input {"requests": [{...}], "responses": []}, output {"response": ACTION}
 - Actions: -1=fold, -2=all-in, 0=check/call, >0=raise-to-total (NOT raise-by amount)
-- When a scenario needs national legality grounding for JSON response 0, set
-  `"zero_action": "check"` or `"zero_action": "call"` so the tester knows which
-  TCP action the adapter should send.
+- When a scenario needs national legality grounding for legacy JSON response 0,
+  set `"zero_action": "check"` or `"zero_action": "call"` so the tester knows
+  which TCP action the legacy adapter or native entry should map to.
 - Scenario `input` format: a single Botzone/local request dict, not a full bot
   payload. Include fields such as `my_id`, `dealer_id`, `num_players`,
   `my_chips`, `my_cards`, `public_cards`, `history`, `hand`, `max_hand`,

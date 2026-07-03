@@ -319,6 +319,15 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
     Uses atomic tmp+rename under exclusive lock to prevent concurrent
     read-merge-write races (POSIX guarantees os.replace is atomic).
     """
+    try:
+        from workflow_profiles import get_workflow_profile
+        _profile = get_workflow_profile()
+        current_workflow_profile_id = getattr(_profile, "profile_id", "")
+        current_national_execution_mode = getattr(_profile, "national_execution_mode", "adapter")
+    except Exception:
+        current_workflow_profile_id = ""
+        current_national_execution_mode = ""
+
     # Single exclusive lock covers read-merge-write-rename to prevent TOCTOU
     with locked_file(PIPELINE_STATE_FILE, "a+", lock_type=fcntl.LOCK_EX) as f:
         f.seek(0)
@@ -491,6 +500,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "direction_audit": existing_direction_audit,
             "audit_context": existing_audit_context,
             "literature_probe": existing_literature_probe,
+            "workflow_profile_id": current_workflow_profile_id,
+            "national_execution_mode": current_national_execution_mode,
             "repo_baseline": existing_repo_baseline,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "last_stage_change_ts": new_stage_ts,

@@ -136,7 +136,7 @@ refuses abandon, follow its `next_tool`/`directive` exactly.
 - Master fails → retry at most 2 times total. If still failing, abandon this generation.
 - Quality gates fail → retry workers with the exact failure message; do NOT call `run_master` from `quality_failed` unless the tool explicitly says to abandon and start fresh.
 - Reviewer rejects → inject feedback, retry workers (counts toward attempts)
-- Critic score is ADVISORY ONLY: it does NOT block and does NOT force retry. Critic feedback + local_optima_warning are injected into the NEXT generation's worker prompt as improvement hints. ALWAYS proceed to run_precommit_eval regardless of critic score — the workflow precommit gate is the sole regression gate. In `national_primary`, that gate runs national 70-hand matches instead of local mirror battle.
+- Critic score is ADVISORY ONLY: it does NOT block and does NOT force retry. Critic feedback + local_optima_warning are injected into the NEXT generation's worker prompt as improvement hints. ALWAYS proceed to run_precommit_eval regardless of critic score — the workflow precommit gate is the sole regression gate. In `national_primary`, that gate runs adapter-backed national 70-hand matches; in `national_native`, it runs native TCP national matches.
 - Precommit regression fails → inject exact blocker and call `execute_workers`.
   Do NOT retry `run_precommit_eval` on unchanged code, and do NOT abandon before
   the precommit hard limit. Precommit infra-only timeout is different: follow

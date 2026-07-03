@@ -18,6 +18,7 @@ _PROFILES = {
         description="Make national 70-hand matches the primary evolution and rating protocol.",
         evaluation_protocol="national",
         rating_protocol="national",
+        national_execution_mode="adapter",
         national_acceptance_hands=70,
         national_acceptance_hard=True,
         national_acceptance_timeout_sec=420,
@@ -29,6 +30,24 @@ _PROFILES = {
         eval_wait_rd_threshold=110.0,
         eval_wait_rd_min_games=12,
         focus_skill_layers=["protocol", "adapter", "action_sanitizer", "opponent_model"],
+    ),
+    "national_native": WorkflowProfile(
+        profile_id="national_native",
+        description="Make generated bots TCP-native national clients; adapter is legacy regression only.",
+        evaluation_protocol="national",
+        rating_protocol="national",
+        national_execution_mode="native_tcp",
+        national_acceptance_hands=70,
+        national_acceptance_hard=True,
+        national_acceptance_timeout_sec=600,
+        national_precommit_hands=70,
+        national_precommit_matches=1,
+        national_rating_hands=70,
+        national_rating_matches=1,
+        eval_wait_min_games=24,
+        eval_wait_rd_threshold=110.0,
+        eval_wait_rd_min_games=12,
+        focus_skill_layers=["protocol", "native_tcp", "action_sanitizer", "opponent_model"],
     ),
     "national_strict": WorkflowProfile(
         profile_id="national_strict",
@@ -58,7 +77,7 @@ _PROFILES = {
 
 
 def get_workflow_profile(profile_id: str | None = None) -> WorkflowProfile:
-    selected = profile_id or os.environ.get("POK_WORKFLOW_PROFILE") or "default"
+    selected = profile_id or os.environ.get("POK_WORKFLOW_PROFILE") or "national_native"
     return _PROFILES.get(selected, _PROFILES["default"])
 
 
@@ -70,6 +89,7 @@ def profile_summary(profile: WorkflowProfile | None = None) -> str:
         f"- {p.description}\n"
         f"- evaluation_protocol={p.evaluation_protocol}\n"
         f"- rating_protocol={p.rating_protocol}\n"
+        f"- national_execution_mode={p.national_execution_mode}\n"
         f"- max_workers={p.max_workers}\n"
         f"- national_acceptance_hands={p.national_acceptance_hands}, "
         f"hard={p.national_acceptance_hard}, "

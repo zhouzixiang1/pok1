@@ -1,4 +1,4 @@
-"""Protocol-boundary checks for evolved Botzone bots."""
+"""Protocol-boundary checks for legacy Botzone JSON bot entries."""
 
 from __future__ import annotations
 
@@ -71,11 +71,12 @@ def _return_can_escape_as_bot_action(rel: str, function_name: str | None) -> boo
 
 
 def check_bot_protocol_contract(bot_dir: Path) -> list[str]:
-    """Return blocking contract violations for a Botzone-style bot.
+    """Return blocking contract violations for legacy JSON bot files.
 
-    The bot may reason about poker actions in prose/strings, but it must not
-    print or return national TCP wire actions directly. Deployment to TCP goes
-    through sever/bot_adapter.py.
+    In national_native mode, ``national_bot.py`` is the direct TCP entrypoint
+    and is validated by ``national_native.check_native_contract`` instead. This
+    legacy contract still protects ``main.py`` and strategy modules from
+    accidentally turning the JSON/local entry into TCP stdout text.
     """
     bot_dir = Path(bot_dir)
     violations: list[str] = []
@@ -85,6 +86,8 @@ def check_bot_protocol_contract(bot_dir: Path) -> list[str]:
 
     for path in sorted(bot_dir.rglob("*.py")):
         if "__pycache__" in path.parts:
+            continue
+        if path.name == "national_bot.py":
             continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

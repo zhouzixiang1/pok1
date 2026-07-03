@@ -16,6 +16,8 @@ def _patch_precommit_harness(monkeypatch, tmp_path, mirror_result):
     import sys
     from unittest.mock import MagicMock
 
+    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "default")
+
     bot_root = tmp_path / "bots"
     for name in ("claude_v99", "claude_v98"):
         bot_dir = bot_root / name

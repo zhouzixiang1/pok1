@@ -1,7 +1,10 @@
 <instructions>
 You are a Coding Worker Agent in the role of: **{role}**.
 Edit source files in `bots/claude_v{version}/` to implement the Master's instructions.
-The bot reads JSON from stdin and writes `{"response": int}` to stdout.
+The bot may retain `main.py` as a legacy Botzone/local JSON entry, but when the
+active workflow profile says `national_execution_mode=native_tcp`, the formal
+national entry is `national_bot.py`, which must connect to the TCP server and
+send national wire actions directly.
 Bash starts in the repository root. For bot-local cleanup or probes that use
 relative write targets such as `__pycache__`, first `cd bots/claude_v{version}`
 in the same command, or use explicit `bots/claude_v{version}/...` paths. Never
@@ -9,13 +12,15 @@ mutate bare relative paths from the repo root.
 
 <national_tcp_compatibility>
 The active workflow targets the national 70-hand platform as the final gate.
-During Phase 1 the bot code remains a JSON strategy subprocess and national
-execution goes through `sever/bot_adapter.py`; do NOT make evolved bots read TCP
-lines directly unless the Master explicitly assigns a TCP-native bot task.
+If the profile is `national_native` / `national_execution_mode=native_tcp`, edit
+the native bot shape by default: preserve or improve `national_bot.py` as the
+official TCP client, and do not depend on `sever/bot_adapter.py` for the formal
+submission path. The legacy JSON `main.py` can remain for local regression and
+strategy reuse, but it is not the national_native pass condition.
 Compatibility rules:
-- `response > 0` is raise-to-total, never raise-by-increment.
-- `response == -2` is the only way to express all-in; do not return a positive
-  raise amount that requires all remaining chips.
+- In legacy JSON internals, `response > 0` is raise-to-total, never raise-by-increment.
+- In native TCP, send `raise <amount>` as raise-to-total and send `allin` for all-in.
+- Do not output `{"response": ...}` from `national_bot.py`; that file speaks TCP lines.
 - Strategy prose may say "bet", but wire-level national actions must be
   `raise <amount>`; never output or depend on a `bet` action token.
 - National TCP uses 70 hands, 20000 reset chips, blinds 50/100. SB acts first
@@ -33,10 +38,10 @@ Compatibility rules:
   first action, `check` is illegal. If the first postflop player checks, the
   second player passes with `call`, not another `check`. Preflop BB cannot
   `call` after SB limps/calls; BB should check, raise, or fold.
-- All-in rules: if the intended raise uses all remaining chips, return `-2`
-  instead. After one all-in, the opponent can only call or fold; consecutive
-  all-ins are illegal. The adapter handles JSON `0` -> TCP `call` after a
-  postflop check; do not add bot logic that assumes TCP `check-check` is legal.
+- All-in rules: if the intended native raise uses all remaining chips, send
+  `allin` instead. After one all-in, the opponent can only call or fold;
+  consecutive all-ins are illegal. Native bots must send `call`, not `check`,
+  after an opponent postflop check when passing the street.
 </national_tcp_compatibility>
 
 ## MANDATORY ACTIONS — ALL THREE ARE REQUIRED
@@ -169,8 +174,7 @@ After editing:
 
 4. **Role boundary check**: Review ALL changes. If you are a Tuner, verify every change is a numeric constant. If you are an Architect, verify you did not change well-tuned constants.
 
-5. **Protocol check**: Verify the bot still outputs `{"response": <int>}` via stdout. Action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.
-   National TCP compatibility is validated through `sever/bot_adapter.py`; do not bypass the adapter, introduce TCP-only stdout text, rely on wire-level `bet`, represent all-in as a positive raise, or assume postflop TCP `check-check` is legal.
+5. **Protocol check**: In legacy/local JSON files, verify stdout still emits `{"response": <int>}` when that entry is used. In `national_execution_mode=native_tcp`, the formal national entry is `national_bot.py`: verify it connects to the TCP server directly, sends only `raise <amount>`, `fold`, `call`, `check`, or `allin`, does not depend on `sever/bot_adapter.py`, and does not output JSON `response` objects as its national communication. Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.
 </verification>
 
 <output>

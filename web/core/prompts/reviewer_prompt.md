@@ -22,13 +22,15 @@ Parent version tag: `bot-v{parent_version}`
 </context>
 
 <action_semantics>
-When reviewing diffs, verify that positive return values represent raise-to-total (NOT raise-by-increment).
-A return of 0 means call/check (context-dependent). The minimum valid re-raise after raise X is X*2+1 (strictly >2x).
-The evolved bot remains a Botzone/local JSON bot, but it must stay compatible
-with the national TCP adapter. Reject code that emits TCP text on stdout, returns
-positive raises that consume the entire remaining stack instead of `-2`, assumes
-wire-level `bet` is legal, or hard-codes postflop TCP `check-check` as a valid
-platform action. The adapter maps JSON `0` to TCP `call` after a postflop check.
+When reviewing diffs, verify that positive internal action values represent raise-to-total (NOT raise-by-increment).
+A legacy JSON return of 0 means call/check (context-dependent). The minimum valid re-raise after raise X is X*2+1 (strictly >2x).
+In national_primary the evolved bot may remain a Botzone/local JSON bot compatible
+with the national TCP adapter. In national_native, the formal entry is
+`national_bot.py`: it must be a direct TCP client, must not depend on
+`sever/bot_adapter.py`, and must not output `{"response": ...}` as its formal
+national communication. Reject code that emits wire-level `bet`, returns/sends
+positive raises that consume the entire remaining stack instead of all-in, or
+hard-codes postflop TCP `check-check` as a valid platform action.
 Full national legality checklist from `sever/国赛平台/非法行为说明.docx`:
 - 70 hands, 20000 reset chips, blinds 50/100; SB first preflop, BB first postflop.
 - Heads-up identity: dealer_id is SB, BB is 1 - dealer_id. SB/dealer is in position postflop; BB acts first postflop and is out of position.
@@ -53,7 +55,7 @@ You check ONLY these five areas:
 
 2. **File size limits** — Core strategy files (strategy.py, postflop.py) must not exceed 2000 lines (MAX_LINES_PER_FILE). Helper .py files must not exceed 1500 lines (MAX_LINES_HELPER). No .py file may exceed the hard cap of 2500 lines (MAX_LINES_HARD_CAP). These values are authoritative in web/core/evolution_infra.py (MAX_LINES_PER_FILE/MAX_LINES_HELPER/MAX_LINES_HARD_CAP); keep this prompt in sync with those constants.
 
-3. **Code correctness** — The bot must compile and output valid `{"response": <int>}` JSON. No `input()`/`print()` for game communication. No unavailable imports (stdlib only). No infinite loops.
+3. **Code correctness** — The bot must compile. In adapter/local mode, `main.py` must output valid `{"response": <int>}` JSON. In national_native, `national_bot.py` must connect over TCP and send only line-delimited national actions. No unavailable imports (stdlib only). No infinite loops.
 
 4. **No dead code** — No unreachable code, unused imports, or commented-out blocks left behind.
 

@@ -298,9 +298,57 @@ def _checkpoint_gate(checkpoint, gate_name):
     return (checkpoint.get("gate_results", {}) or {}).get(gate_name, {}) or {}
 
 
+def _active_workflow_profile_info():
+    try:
+        from workflow_profiles import get_workflow_profile
+        profile = get_workflow_profile()
+        return (
+            getattr(profile, "profile_id", ""),
+            getattr(profile, "national_execution_mode", "adapter"),
+        )
+    except Exception:
+        return "", "adapter"
+
+
+def _gate_matches_active_workflow(checkpoint, gate):
+    """Reject cached gate results produced under another workflow profile.
+
+    Profile drift is especially dangerous for the national-native migration:
+    a candidate that passed the old adapter-backed national gate must not be
+    allowed to proceed as if it had passed the direct TCP native gate.
+    """
+    active_profile_id, active_execution_mode = _active_workflow_profile_info()
+    if not active_profile_id:
+        return True
+
+    checkpoint_profile_id = str((checkpoint or {}).get("workflow_profile_id") or "")
+    if checkpoint_profile_id and checkpoint_profile_id != active_profile_id:
+        return False
+
+    gate_profile_id = str(gate.get("workflow_profile_id") or gate.get("profile_id") or "")
+    if gate_profile_id and gate_profile_id != active_profile_id:
+        return False
+    if not gate_profile_id and active_profile_id != "default":
+        return False
+
+    gate_execution_mode = str(gate.get("national_execution_mode") or "")
+    if active_execution_mode == "native_tcp":
+        return (
+            gate_execution_mode == "native_tcp"
+            and gate.get("national_native_contract_ok") is True
+        )
+    if gate_execution_mode and gate_execution_mode != active_execution_mode:
+        return False
+    return True
+
+
 def _quality_gate_ok(checkpoint):
     quality = _checkpoint_gate(checkpoint, "quality")
-    return quality.get("all_passed") is True and quality.get("critical_scenarios_passed") is True
+    return (
+        quality.get("all_passed") is True
+        and quality.get("critical_scenarios_passed") is True
+        and _gate_matches_active_workflow(checkpoint, quality)
+    )
 
 
 def _review_gate_ok(checkpoint):

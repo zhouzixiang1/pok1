@@ -3,6 +3,13 @@ import ast
 import json
 from pathlib import Path
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _legacy_default_workflow(monkeypatch):
+    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "default")
+
 
 def test_import_contract_catches_missing_symbol_that_py_compile_misses(tmp_path):
     from code_verification import run_import_contract_test, verify_code

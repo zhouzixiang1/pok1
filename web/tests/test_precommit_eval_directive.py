@@ -43,6 +43,8 @@ def mock_ui():
 @pytest.fixture(autouse=True)
 def mock_precommit_semantic(monkeypatch):
     """Prevent real LLM API calls from _run_precommit_semantic."""
+    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "default")
+
     async def _fake_semantic(v, source_v, matchups, master_plan, ui):
         return {
             "win_pattern_analysis": "",

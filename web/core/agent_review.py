@@ -487,6 +487,15 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
         if applied or skipped:
             log_fix_application(applied, skipped, target_dir, parent_a_v)
 
+        try:
+            from workflow_profiles import get_workflow_profile
+            if getattr(get_workflow_profile(), "national_execution_mode", "adapter") == "native_tcp":
+                from national_native import ensure_native_entry
+                ensure_native_entry(target_dir)
+        except Exception as exc:
+            ui.log_history(f"Crossover native TCP entry preparation failed: {exc}", "warn")
+            continue
+
         (target_dir / ".completed").unlink(missing_ok=True)
 
         ui.clear_io()

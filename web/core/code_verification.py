@@ -862,12 +862,12 @@ def run_decision_test_details(directory, extra_scenarios=None):
 
 
 def run_national_protocol_tests():
-    """Run the national TCP platform/adapter alignment tests.
+    """Run the national TCP platform alignment tests.
 
-    The evolution loop still evaluates JSON-subprocess bots, but those bots are
-    deployed to the national TCP platform through sever/bot_adapter.py. This
-    gate keeps protocol parsing, validator behavior, runout handling, and THP
-    output aligned with the national documents.
+    This gate keeps protocol parsing, validator behavior, adapter legacy
+    compatibility, runout handling, and THP output aligned with the national
+    documents. In national_native workflow, direct TCP bot smoke/precommit runs
+    are separate hard gates; adapter coverage here is legacy regression only.
     """
     test_path = PROJECT_ROOT / "sever" / "tests" / "test_national_alignment.py"
     if not test_path.exists():

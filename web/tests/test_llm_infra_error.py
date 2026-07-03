@@ -18,6 +18,11 @@ import json
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _legacy_default_workflow(monkeypatch):
+    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "default")
+
+
 # ---------------------------------------------------------------------------
 # is_llm_infra_error / infra_payload
 # ---------------------------------------------------------------------------
