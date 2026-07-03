@@ -605,6 +605,37 @@ def test_runtime_guard_allows_execute_workers_after_repair_head_drift(monkeypatc
     assert payload["current_head"] == "new456"
 
 
+def test_runtime_guard_allows_quality_after_workers_done_head_drift(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshots = iter([
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+    ])
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
+        "next_v": 300,
+        "source_v": 299,
+        "stage": "workers_done",
+        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "workers_done"},
+    })
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_quality_gates",
+        {"version": 300, "source_v": 299},
+    )
+
+    assert ok is True
+    assert payload["head_drift_resume_allowed"] is True
+    assert payload["head_drift_repair_allowed"] is False
+    assert payload["resume_kind"] == "gate"
+    assert payload["stage"] == "workers_done"
+    assert payload["baseline_head"] == "old123"
+    assert payload["current_head"] == "new456"
+
+
 def test_runtime_guard_allows_review_after_post_quality_head_drift(monkeypatch):
     import tool_runtime_guard
 
@@ -745,7 +776,7 @@ def test_write_pipeline_checkpoint_refreshes_baseline_on_rework(tmp_path, monkey
     assert state["repo_baseline"]["captured_stage"] == "repair_planned"
 
 
-def test_checkpoint_recovery_diagnostics_blocks_repo_head_mismatch(tmp_path):
+def test_checkpoint_recovery_diagnostics_allows_workers_done_head_mismatch(tmp_path):
     import pipeline_recovery
 
     (tmp_path / "bots" / "claude_v257").mkdir(parents=True)
@@ -753,6 +784,32 @@ def test_checkpoint_recovery_diagnostics_blocks_repo_head_mismatch(tmp_path):
         "next_v": 257,
         "source_v": 197,
         "stage": "workers_done",
+        "repo_baseline": {"branch": "main", "head": "old123"},
+    }
+    snapshot = {"ok": True, "branch": "main", "head": "new456"}
+
+    diag = pipeline_recovery.checkpoint_recovery_diagnostics(
+        checkpoint,
+        snapshot=snapshot,
+        project_root=tmp_path,
+    )
+
+    assert diag["active"] is True
+    assert diag["recoverable"] is True
+    assert "repo_baseline_head_mismatch" not in diag["issues"]
+    assert "repo_baseline_head_mismatch_gate_resume" in diag["warnings"]
+    assert diag["repo"]["baseline_head_mismatch_allowed"] is True
+    assert diag["target"]["exists"] is True
+
+
+def test_checkpoint_recovery_diagnostics_blocks_early_repo_head_mismatch(tmp_path):
+    import pipeline_recovery
+
+    (tmp_path / "bots" / "claude_v257").mkdir(parents=True)
+    checkpoint = {
+        "next_v": 257,
+        "source_v": 197,
+        "stage": "prepared",
         "repo_baseline": {"branch": "main", "head": "old123"},
     }
     snapshot = {"ok": True, "branch": "main", "head": "new456"}
