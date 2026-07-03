@@ -21,6 +21,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     UserMessage,
     ResultMessage,
+    SystemMessage,
     TextBlock,
     ToolUseBlock,
     ToolResultBlock,
@@ -1420,6 +1421,9 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
     thinking_chars = 0
     tool_use_count = 0
     tool_result_count = 0
+    system_message_count = 0
+    thinking_tokens_estimate = 0
+    thinking_tokens_delta_total = 0
     unknown_message_count = 0
     timeout_policy = _role_timeout_policy(role_name)
     total_timeout = float(timeout_policy.get("total_timeout") or 0)
@@ -1486,9 +1490,12 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             role=role_name,
             elapsed_sec=round(elapsed, 2),
             messages_seen=message_count,
+            system_messages_seen=system_message_count,
             unknown_messages_seen=unknown_message_count,
             text_chars=text_chars,
             thinking_chars=thinking_chars,
+            thinking_tokens_estimate=thinking_tokens_estimate,
+            thinking_tokens_delta_total=thinking_tokens_delta_total,
             tool_use_count=tool_use_count,
             tool_result_count=tool_result_count,
             progress_interval_sec=_LLM_PROGRESS_INTERVAL_SEC,
@@ -1520,13 +1527,19 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                 silent_for_sec=round(silent_for, 2),
                 silence_warn_sec=_LLM_SILENCE_WARN_SEC,
                 messages_seen=message_count,
+                system_messages_seen=system_message_count,
                 unknown_messages_seen=unknown_message_count,
                 text_chars=text_chars,
                 thinking_chars=thinking_chars,
+                thinking_tokens_estimate=thinking_tokens_estimate,
+                thinking_tokens_delta_total=thinking_tokens_delta_total,
                 tool_use_count=tool_use_count,
                 tool_result_count=tool_result_count,
                 **_role_log_metadata(log_file_path),
             )
+
+    def _should_log_sparse_count(count):
+        return count == 1 or count in {5, 10, 20, 50} or count % 100 == 0
 
     def _timeout_limit(effective_kind, wait_timeout):
         if effective_kind == "total":
@@ -1549,9 +1562,12 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             elapsed_sec=round(elapsed, 2),
             timeout_sec=round(effective_limit, 2),
             messages_seen=message_count,
+            system_messages_seen=system_message_count,
             unknown_messages_seen=unknown_message_count,
             text_chars=text_chars,
             thinking_chars=thinking_chars,
+            thinking_tokens_estimate=thinking_tokens_estimate,
+            thinking_tokens_delta_total=thinking_tokens_delta_total,
             tool_use_count=tool_use_count,
             tool_result_count=tool_result_count,
             **timeout_policy,
@@ -1640,6 +1656,37 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                         source="UserMessage.tool_use_result",
                     )
                 _emit_progress()
+            elif isinstance(message, SystemMessage):
+                productive_message = True
+                system_message_count += 1
+                subtype = getattr(message, "subtype", None) or "unknown"
+                data = getattr(message, "data", None)
+                if not isinstance(data, dict):
+                    data = {}
+                if subtype == "thinking_tokens":
+                    try:
+                        estimate = int(data.get("estimated_tokens") or 0)
+                    except (TypeError, ValueError):
+                        estimate = 0
+                    try:
+                        delta = int(data.get("estimated_tokens_delta") or 0)
+                    except (TypeError, ValueError):
+                        delta = 0
+                    thinking_tokens_estimate = max(
+                        thinking_tokens_estimate,
+                        estimate,
+                    )
+                    thinking_tokens_delta_total += max(0, delta)
+                _mark_first_activity(f"system:{subtype}")
+                if _should_log_sparse_count(system_message_count):
+                    _append_role_io(
+                        log_file_path,
+                        f"\n[SYSTEM_MESSAGE subtype={subtype} "
+                        f"count={system_message_count} "
+                        f"thinking_tokens={thinking_tokens_estimate} "
+                        f"thinking_delta_total={thinking_tokens_delta_total}]\n",
+                    )
+                _emit_progress()
             elif isinstance(message, ResultMessage):
                 productive_message = True
                 _mark_first_activity("result")
@@ -1700,11 +1747,7 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                 unknown_message_count += 1
                 message_type = type(message).__name__
                 message_module = type(message).__module__
-                if (
-                    unknown_message_count == 1
-                    or unknown_message_count in {5, 10, 20, 50}
-                    or unknown_message_count % 100 == 0
-                ):
+                if _should_log_sparse_count(unknown_message_count):
                     _append_role_io(
                         log_file_path,
                         f"\n[UNKNOWN_SDK_MESSAGE] {message_module}.{message_type}: "
@@ -1719,9 +1762,12 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                         message_type=message_type,
                         message_module=message_module,
                         messages_seen=message_count,
+                        system_messages_seen=system_message_count,
                         unknown_messages_seen=unknown_message_count,
                         text_chars=text_chars,
                         thinking_chars=thinking_chars,
+                        thinking_tokens_estimate=thinking_tokens_estimate,
+                        thinking_tokens_delta_total=thinking_tokens_delta_total,
                         tool_use_count=tool_use_count,
                         tool_result_count=tool_result_count,
                         **_role_log_metadata(log_file_path),
