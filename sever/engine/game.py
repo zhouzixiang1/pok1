@@ -62,19 +62,27 @@ class HandResult:
 class GameEngine:
     """管理一场完整的 70 局比赛。"""
 
-    def __init__(self, send_func, broadcast_func=None, recorder=None):
+    def __init__(self, send_func, broadcast_func=None, recorder=None, deck_factory=None):
         """
         send_func: async send_func(player_idx, message) -> None
         broadcast_func: async broadcast_func(event_dict) -> None  (用于 SSE)
         recorder: optional THPRecorder for match record generation
+        deck_factory: optional callable(hand_num) -> Deck, used by deterministic
+            in-process evaluation. TCP self-play defaults to normal shuffled decks.
         """
         self.send = send_func
         self.broadcast = broadcast_func
         self.recorder = recorder
+        self.deck_factory = deck_factory
         self.players = [PlayerState(idx=0), PlayerState(idx=1)]
         self.hand_num = 0
         self.total_earnings = [0, 0]  # 累计输赢
         self.match_over = False
+
+    def _new_deck(self, hand_num: int) -> Deck:
+        if self.deck_factory is not None:
+            return self.deck_factory(hand_num)
+        return Deck()
 
     def set_player_name(self, player_idx: int, name: str):
         self.players[player_idx].name = name
@@ -105,7 +113,7 @@ class GameEngine:
 
     async def _run_hand(self, hand_num: int) -> HandResult | None:
         """运行一手牌的完整流程。"""
-        deck = Deck()
+        deck = self._new_deck(hand_num)
         sb_idx = (hand_num - 1) % 2  # 奇数局 player0=SB, 偶数局 player1=SB
         bb_idx = 1 - sb_idx
 

@@ -35,7 +35,7 @@ Every plan must include:
 </attribution>
 
 <game_rules>
-Bot action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). The evolved bot remains a Botzone/local JSON subprocess bot; national TCP deployment is through `sever/bot_adapter.py`.
+Bot action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). In the national_primary workflow, the final precommit gate uses national 70-hand matches. During Phase 1 the evolved bot remains a JSON strategy subprocess and national execution is through `sever/bot_adapter.py`; only assign TCP-native work when the phase plan explicitly says so.
 Game parameters from `sever/国赛平台/`: 70 hands/match, 20000 chips reset every hand, blinds 50/100. SB acts first preflop; BB acts first on flop/turn/river; players alternate SB/BB roles every hand.
 Heads-up identity: `dealer_id` is SB. Therefore `bb = 1 - dealer_id`; do not use `next_player(dealer_id, 1)` for SB or `next_player(dealer_id, 2)` for BB. Postflop, BB is out of position and acts first; SB/dealer is in position.
 Wire protocol boundary: TCP actions are `raise <amount>`, `fold`, `call`, `check`, `allin`. Plans must not ask workers to emit TCP text from JSON bots. `bet` is illegal on the wire; use "bet" only as poker prose and implement it as a positive raise-to-total response.

@@ -8,10 +8,11 @@ in the same command, or use explicit `bots/claude_v{version}/...` paths. Never
 mutate bare relative paths from the repo root.
 
 <national_tcp_compatibility>
-This evolution loop evaluates Botzone/local JSON bots, but these bots are also
-deployed to the national TCP platform through `sever/bot_adapter.py`. Keep the
-bot's JSON protocol unchanged; do NOT make evolved bots read TCP lines directly
-unless the Master explicitly assigns a TCP-native bot task. Compatibility rules:
+The active workflow targets the national 70-hand platform as the final gate.
+During Phase 1 the bot code remains a JSON strategy subprocess and national
+execution goes through `sever/bot_adapter.py`; do NOT make evolved bots read TCP
+lines directly unless the Master explicitly assigns a TCP-native bot task.
+Compatibility rules:
 - `response > 0` is raise-to-total, never raise-by-increment.
 - `response == -2` is the only way to express all-in; do not return a positive
   raise amount that requires all remaining chips.

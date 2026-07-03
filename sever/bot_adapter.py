@@ -152,7 +152,8 @@ class BotAdapter:
         self._hand_num = 0
         self._history = []        # judge.py 格式的历史
         self._stage = "preflop"
-        self._my_id = 0           # 本局 my_id（由 SB/BB 决定）
+        self._my_id = 0           # 对 JSON bot 的稳定视角：自己始终是 0
+        self._opponent_id = 1
         self._dealer_id = 0
         self._my_action_count = 0  # 本阶段已行动次数
         self._my_chips = self.INITIAL_CHIPS  # 当前剩余筹码
@@ -161,8 +162,12 @@ class BotAdapter:
 
         # 持久化状态
         self._bot_data = None     # bot 返回的 data（跨决策持久化）
+        self._bot_requests = []   # 与 engine/battle.py 一致：70 手牌内累积
+        self._bot_responses = []
         self._total_win_chips = [0, 0]
         self._total_win_games = [0, 0]
+        self._last_earned = 0
+        self._showdown_observations = []
         self.telemetry = {
             "bot_failures": 0,
             "invalid_actions": 0,
@@ -225,7 +230,6 @@ class BotAdapter:
             self._stage = "preflop"
             self._hand_num += 1
             self._history = []
-            self._bot_data = None  # 新手牌重置 bot data
             self._my_action_count = 0
             self._my_chips = self.INITIAL_CHIPS  # 一局一复位
             self._in_allin_runout = False
@@ -236,15 +240,11 @@ class BotAdapter:
                 self._my_chips -= BIG_BLIND
                 self._my_stage_bet = BIG_BLIND
 
-            # 确定 my_id 和 dealer_id
-            # 在 TCP 协议中：SB 先行动（preflop first actor = SB）
-            # 在 judge.py 中：dealer = SB
-            if self._is_sb:
-                self._my_id = 0
-                self._dealer_id = 0  # dealer = SB in heads-up
-            else:
-                self._my_id = 1
-                self._dealer_id = 0  # opponent is dealer/SB
+            # 对每个 bot 使用稳定视角：自己始终是 player 0，对手始终是 1。
+            # dealer_id 仍表示 SB，因此它会随盲位在 0/1 间切换。
+            self._my_id = 0
+            self._opponent_id = 1
+            self._dealer_id = 0 if self._is_sb else 1
 
             # preflop: SB 先行动
             if self._is_sb:
@@ -272,9 +272,13 @@ class BotAdapter:
         # ── earnChips ──
         if msg.startswith("earnChips"):
             earned = int(msg.split()[1])
+            self._last_earned = earned
             self._total_win_chips[self._my_id] += earned
+            self._total_win_chips[self._opponent_id] -= earned
             if earned > 0:
                 self._total_win_games[self._my_id] += 1
+            elif earned < 0:
+                self._total_win_games[self._opponent_id] += 1
             self._in_allin_runout = False
             logger.info(f"Hand {self._hand_num} earned: {earned}, "
                         f"total: {self._total_win_chips[self._my_id]}")
@@ -282,6 +286,15 @@ class BotAdapter:
 
         # ── oppo_hands（showdown 对手手牌）──
         if msg.startswith("oppo_hands|"):
+            cards = parse_stage_cards(msg)
+            self._showdown_observations.append({
+                "hand": self._hand_num - 1,
+                "opponent_cards": [tcp_card_to_int(c) for c in cards],
+                "my_cards": list(self._my_cards),
+                "public_cards": list(self._public_cards),
+                "history": list(self._history),
+                "earned": self._last_earned,
+            })
             logger.info(f"Opponent showdown: {msg}")
             return
 
@@ -357,7 +370,7 @@ class BotAdapter:
         round_num = stage_map.get(self._stage, 0)
 
         # opponent 的 player_id
-        opp_id = 1 - self._my_id
+        opp_id = self._opponent_id
 
         if action_type == "call":
             action_val = 0
@@ -429,11 +442,15 @@ class BotAdapter:
             "max_hand": self.TOTAL_HANDS,
             "total_win_chips": list(self._total_win_chips),
             "total_win_games": list(self._total_win_games),
+            "opponent_showdowns": list(self._showdown_observations),
         }
 
-        # 构建完整 payload
+        # 构建完整 payload。与 engine/battle.py 对齐：先追加当前 request，
+        # 再把整场累计 requests/responses/data 发给 bot。
+        self._bot_requests.append(request)
         payload = {
-            "requests": [request],
+            "requests": list(self._bot_requests),
+            "responses": list(self._bot_responses),
         }
         if self._bot_data is not None:
             payload["data"] = self._bot_data
@@ -443,12 +460,18 @@ class BotAdapter:
         if result is None:
             self.telemetry["bot_failures"] += 1
             logger.warning("Bot returned None, folding")
+            self._bot_responses.append(-1)
             await self._send_line("fold")
             self.telemetry["actions_sent"] += 1
             self._record_my_action("fold", None)
             return
 
         response = result.get("response", 0)
+        try:
+            response_for_history = int(response)
+        except (TypeError, ValueError):
+            response_for_history = -1
+        self._bot_responses.append(response_for_history)
         data = result.get("data")
         if data is not None:
             self._bot_data = data
@@ -481,7 +504,7 @@ class BotAdapter:
                 self._my_stage_bet += actual
             else:
                 # 计算对手当前阶段下注额
-                opp_id = 1 - self._my_id
+                opp_id = self._opponent_id
                 stage_map = {"preflop": 0, "flop": 1, "turn": 2, "river": 3}
                 round_num = stage_map.get(self._stage, 0)
                 opp_bet = self._my_stage_bet  # 默认与己方相同
@@ -581,7 +604,7 @@ class BotAdapter:
             stage_map = {"preflop": 0, "flop": 1, "turn": 2, "river": 3}
             round_num = stage_map.get(self._stage, 0)
             # 检查对手在本阶段是否有 raise 或 allin
-            opp_id = 1 - self._my_id
+            opp_id = self._opponent_id
             opp_raised = any(
                 h["round"] == round_num and h["player_id"] == opp_id
                 and h["action_type"] in ("raise", "allin")

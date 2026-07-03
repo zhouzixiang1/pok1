@@ -9,7 +9,7 @@ SEVER = ROOT / "sever"
 sys.path.insert(0, str(SEVER))
 
 from bot_adapter import BotAdapter, int_to_tcp_card_str, tcp_card_to_int
-from engine.deck import str_to_card
+from engine.deck import Deck, str_to_card
 from engine.game import GameEngine
 from engine.thp_recorder import THPRecorder
 from engine.validator import validate_action
@@ -67,6 +67,28 @@ def _write_call_bot(bot_dir: Path):
         "    print(json.dumps({'response': 0}), flush=True)\n",
         encoding="utf-8",
     )
+
+
+class _FakeBotProcess:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.payloads = []
+
+    def send_and_recv(self, payload, timeout=60):
+        self.payloads.append(json.loads(json.dumps(payload)))
+        if not self.responses:
+            return {"response": 0}
+        return self.responses.pop(0)
+
+
+class _CaptureAdapter(BotAdapter):
+    def __init__(self, responses):
+        super().__init__("127.0.0.1", 10001, "unused", "Bot")
+        self.bot = _FakeBotProcess(responses)
+        self.sent = []
+
+    async def _send_line(self, msg):
+        self.sent.append(msg)
 
 
 def test_parse_action_requires_exact_raise_spacing():
@@ -136,6 +158,68 @@ def test_bot_adapter_maps_zero_as_first_postflop_action_to_check():
     adapter._history = []
 
     assert adapter._convert_action(0) == ("check", "check", None)
+
+
+def test_bot_adapter_payload_accumulates_across_national_match():
+    async def run():
+        adapter = _CaptureAdapter([
+            {"response": 0, "data": {"memory": "kept"}},
+            {"response": 0},
+        ])
+        await adapter._handle("preflop|SMALLBLIND|<0,0><1,1>")
+        await adapter._handle("earnChips 100")
+        await adapter._handle("oppo_hands|<2,2><3,3>")
+        await adapter._handle("preflop|BIGBLIND|<0,4><1,5>")
+        await adapter._handle("call")
+        return adapter
+
+    adapter = asyncio.run(run())
+    assert len(adapter.bot.payloads) == 2
+
+    first, second = adapter.bot.payloads
+    assert len(first["requests"]) == 1
+    assert first["responses"] == []
+    assert first["requests"][0]["my_id"] == 0
+    assert first["requests"][0]["dealer_id"] == 0
+
+    assert len(second["requests"]) == 2
+    assert second["responses"] == [0]
+    assert second["data"] == {"memory": "kept"}
+    assert second["requests"][1]["my_id"] == 0
+    assert second["requests"][1]["dealer_id"] == 1
+    assert second["requests"][1]["total_win_chips"] == [100, -100]
+    assert len(second["requests"][1]["opponent_showdowns"]) == 1
+    assert second["requests"][1]["opponent_showdowns"][0]["opponent_cards"] == [
+        tcp_card_to_int(str_to_card("<2,2>")),
+        tcp_card_to_int(str_to_card("<3,3>")),
+    ]
+    assert second["requests"][1]["history"][0]["player_id"] == 1
+    assert adapter._total_win_games == [1, 0]
+
+
+def test_game_engine_deck_factory_makes_in_process_eval_reproducible():
+    async def run_once():
+        sent = []
+        actions = {0: ["call", "call", "call", "call"], 1: ["check", "check", "check", "check"]}
+
+        async def send(player_idx, msg):
+            sent.append((player_idx, msg))
+
+        engine = GameEngine(
+            send_func=send,
+            deck_factory=lambda hand_num: Deck(seed=1234 + hand_num),
+        )
+        engine.players[0].name = "A"
+        engine.players[1].name = "B"
+
+        async def recv_action(player_idx):
+            return actions[player_idx].pop(0)
+
+        engine._recv_action = recv_action
+        await engine._run_hand(1)
+        return [msg for _, msg in sent if msg.startswith("preflop|")]
+
+    assert asyncio.run(run_once()) == asyncio.run(run_once())
 
 
 def test_local_and_web_judges_record_postflop_pass_as_call():

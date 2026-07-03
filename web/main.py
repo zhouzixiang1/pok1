@@ -59,6 +59,7 @@ def main():
 
     if args.no_daemon:
         os.environ["DAEMON_DISABLED"] = "1"
+    os.environ.setdefault("POK_WORKFLOW_PROFILE", "national_primary")
 
     # Auto-build frontend before starting server
     if not args.no_build:
