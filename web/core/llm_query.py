@@ -2053,6 +2053,8 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         model=model,
         permission_mode="bypassPermissions",
         cwd=str(PROJECT_ROOT),  # pok/ — workers use relative paths like bots/claude_vN/
+        mcp_servers={},
+        strict_mcp_config=True,  # Direct sub-agents must not auto-start user/global MCP servers.
         tools=tools,
         disallowed_tools=_BLOCKED_MCP_TOOLS,
         thinking={"type": "adaptive"},
