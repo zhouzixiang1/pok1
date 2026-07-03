@@ -24,6 +24,7 @@ _HEAD_DRIFT_REPAIR_STAGES = {
     "rework_running",
 }
 _HEAD_DRIFT_TOOL_BY_STAGE = {
+    "workers_done": {"run_quality_gates"},
     "quality_failed": {"execute_workers"},
     "precommit_failed": {"execute_workers"},
     "repair_planned": {"execute_workers"},
@@ -135,7 +136,12 @@ def _head_change_allowed_for_checkpoint_resume(
     unexpected = _unexpected_entries(snapshot, candidate_v)
     if unexpected:
         return False, {"unexpected_entries": unexpected[:40]}
-    resume_kind = "repair" if stage in _HEAD_DRIFT_REPAIR_STAGES else "post_quality"
+    if stage == "workers_done":
+        resume_kind = "gate"
+    elif stage in _HEAD_DRIFT_REPAIR_STAGES:
+        resume_kind = "repair"
+    else:
+        resume_kind = "post_quality"
     return True, {
         "stage": stage,
         "candidate_v": candidate_v,
