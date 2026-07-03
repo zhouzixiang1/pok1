@@ -1593,8 +1593,8 @@ class TestWorkerFailureCircuitBreaker:
             (task["repair_blocker"], task["target_files"])
             for task in tasks
         ] == [
-            ("file_size", ["strategy_helpers.py"]),
             ("position_semantics", ["strategy_helpers.py"]),
+            ("file_size", ["strategy_helpers.py"]),
         ]
         assert tool_planning._declared_scope_ledger_files(ckpt) == {
             "reachability_test.py",
@@ -1750,8 +1750,8 @@ class TestWorkerFailureCircuitBreaker:
             (task["repair_blocker"], task["target_files"])
             for task in tasks
         ] == [
-            ("file_size", ["strategy_helpers.py"]),
             ("position_semantics", ["strategy_helpers.py"]),
+            ("file_size", ["strategy_helpers.py"]),
         ]
 
         ckpt = json.loads(ckpt_file.read_text())
@@ -1766,6 +1766,9 @@ class TestWorkerFailureCircuitBreaker:
         assert [
             task["target_files"] for task in ckpt["master_plan"]["tasks"]
         ] == [["strategy_helpers.py"], ["strategy_helpers.py"]]
+        assert [
+            task["repair_blocker"] for task in ckpt["master_plan"]["tasks"]
+        ] == ["position_semantics", "file_size"]
 
     def test_quality_rework_skipper_keeps_mixed_task_when_one_blocker_remains(self, tmp_path, monkeypatch):
         """A position task mentioning size feedback must still run while position blockers remain."""
@@ -2086,15 +2089,15 @@ class TestWorkerFailureCircuitBreaker:
         blocker_files = [(task["repair_blocker"], task["target_files"][0]) for task in tasks]
 
         assert blocker_files == [
-            ("file_size", "strategy.py"),
             ("position_semantics", "opponent.py"),
             ("position_semantics", "state.py"),
             ("quality_gate", "opponent.py"),
+            ("file_size", "strategy.py"),
         ]
         assert [task["target_files"] for task in tasks].count(["strategy.py"]) == 1
         assert all(task["must_change_files"] == task["target_files"] for task in tasks)
-        assert "<= 2493 lines" in tasks[0]["worker_prompt"]
-        assert "print() emits TCP action text" in tasks[-1]["worker_prompt"]
+        assert "<= 2493 lines" in tasks[-1]["worker_prompt"]
+        assert "print() emits TCP action text" in tasks[-2]["worker_prompt"]
 
     def test_repair_planned_crossover_quality_retry_preserves_candidate(self, tmp_path, monkeypatch):
         """A planned retry of crossover quality repair must not reset the fused candidate."""
