@@ -48,9 +48,10 @@ def _import_sever_acceptance_modules():
 
     try:
         from bot_adapter import BotAdapter as _BotAdapter  # noqa: E402
+        from engine.deck import Deck as _Deck  # noqa: E402
         from engine.game import GameEngine as _GameEngine  # noqa: E402
         from engine.thp_recorder import THPRecorder as _THPRecorder  # noqa: E402
-        return _BotAdapter, _GameEngine, _THPRecorder
+        return _BotAdapter, _GameEngine, _THPRecorder, _Deck
     finally:
         for name in list(sys.modules):
             if name in prefixes or name.startswith("server.") or name.startswith("engine."):
@@ -63,7 +64,7 @@ def _import_sever_acceptance_modules():
                 pass
 
 
-BotAdapter, GameEngine, THPRecorder = _import_sever_acceptance_modules()
+BotAdapter, GameEngine, THPRecorder, Deck = _import_sever_acceptance_modules()
 
 
 @dataclass(frozen=True)
@@ -94,13 +95,22 @@ class MatrixBotAdapter(BotAdapter):
 class MatrixGameEngine(GameEngine):
     """GameEngine wrapper that connects two in-process adapters."""
 
-    def __init__(self, adapters: list[MatrixBotAdapter], recorder: THPRecorder | None = None):
+    def __init__(
+        self,
+        adapters: list[MatrixBotAdapter],
+        recorder: THPRecorder | None = None,
+        deck_seed_base: int | None = None,
+    ):
         self.adapters = adapters
         self.events: list[dict[str, Any]] = []
+        deck_factory = None
+        if deck_seed_base is not None:
+            deck_factory = lambda hand_num: Deck(seed=deck_seed_base + hand_num)
         super().__init__(
             send_func=self._send_to_adapter,
             broadcast_func=self._record_event,
             recorder=recorder,
+            deck_factory=deck_factory,
         )
 
     async def _send_to_adapter(self, player_idx: int, message: str):
@@ -267,13 +277,20 @@ def _critical_adapter_issues(telemetry: dict[str, Any], *, strict: bool = True) 
     return issues
 
 
-async def run_pair(bot_a: BotSpec, bot_b: BotSpec, hands: int, *, strict: bool = True) -> dict[str, Any]:
+async def run_pair(
+    bot_a: BotSpec,
+    bot_b: BotSpec,
+    hands: int,
+    *,
+    strict: bool = True,
+    deck_seed_base: int | None = None,
+) -> dict[str, Any]:
     adapters = [MatrixBotAdapter(bot_a), MatrixBotAdapter(bot_b)]
     for adapter in adapters:
         adapter.bot.start()
 
     recorder = THPRecorder(bot_a.label, bot_b.label)
-    engine = MatrixGameEngine(adapters, recorder=recorder)
+    engine = MatrixGameEngine(adapters, recorder=recorder, deck_seed_base=deck_seed_base)
     try:
         await engine.run_limited_match(bot_a.label, bot_b.label, hands)
     finally:
@@ -312,16 +329,26 @@ async def run_pair(bot_a: BotSpec, bot_b: BotSpec, hands: int, *, strict: bool =
         "net_chips_b": engine.total_earnings[1],
         "net_chips_a_per_hand": round(engine.total_earnings[0] / max(1, engine.hand_num), 3),
         "strict_adapter": strict,
+        "deck_seed_base": deck_seed_base,
         "passed_compliance": not issues,
         "issues": issues,
     }
 
 
-async def run_matrix(bots: list[BotSpec], hands: int, *, strict: bool = True) -> dict[str, Any]:
+async def run_matrix(
+    bots: list[BotSpec],
+    hands: int,
+    *,
+    strict: bool = True,
+    deck_seed_base: int | None = None,
+) -> dict[str, Any]:
     results = []
     for i, bot_a in enumerate(bots):
-        for bot_b in bots[i + 1:]:
-            results.append(await run_pair(bot_a, bot_b, hands, strict=strict))
+        for j, bot_b in enumerate(bots[i + 1:], start=i + 1):
+            pair_seed = None
+            if deck_seed_base is not None:
+                pair_seed = deck_seed_base + (i * 100_000) + (j * 1_000)
+            results.append(await run_pair(bot_a, bot_b, hands, strict=strict, deck_seed_base=pair_seed))
 
     summary = {
         bot.label: {
@@ -385,6 +412,7 @@ async def run_matrix(bots: list[BotSpec], hands: int, *, strict: bool = True) ->
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "hands_per_pair": hands,
         "strict_adapter": strict,
+        "deck_seed_base": deck_seed_base,
         "bots": [{"label": bot.label, "path": str(bot.path)} for bot in bots],
         "results": results,
         "summary": summary,

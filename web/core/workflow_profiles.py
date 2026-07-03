@@ -13,9 +13,20 @@ _PROFILES = {
         profile_id="default",
         description="Balanced evolution profile with national acceptance enabled.",
     ),
+    "national_primary": WorkflowProfile(
+        profile_id="national_primary",
+        description="Make national 70-hand matches the primary evolution precommit gate.",
+        evaluation_protocol="national",
+        national_acceptance_hands=70,
+        national_acceptance_hard=True,
+        national_precommit_hands=70,
+        national_precommit_matches=1,
+        focus_skill_layers=["protocol", "adapter", "action_sanitizer", "opponent_model"],
+    ),
     "national_strict": WorkflowProfile(
         profile_id="national_strict",
         description="Prioritize national TCP legality and adapter transparency.",
+        evaluation_protocol="local_json",
         national_acceptance_hands=20,
         national_acceptance_hard=True,
         focus_skill_layers=["protocol", "adapter", "action_sanitizer"],
@@ -50,9 +61,12 @@ def profile_summary(profile: WorkflowProfile | None = None) -> str:
     return (
         f"Workflow profile: {p.profile_id}\n"
         f"- {p.description}\n"
+        f"- evaluation_protocol={p.evaluation_protocol}\n"
         f"- max_workers={p.max_workers}\n"
         f"- national_acceptance_hands={p.national_acceptance_hands}, "
         f"hard={p.national_acceptance_hard}\n"
+        f"- national_precommit_hands={p.national_precommit_hands}, "
+        f"matches={p.national_precommit_matches}\n"
         f"- focus_skill_layers={layers}\n"
         f"\nSkill layer contract:\n{describe_skill_layers(p.focus_skill_layers or None)}"
     )

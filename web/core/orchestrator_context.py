@@ -496,7 +496,7 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         lines.append("  run_quality_gates(version, source_v) — full hard gates: code_changed, declared_scope, compile/runtime import, protected contracts, smoke, national protocol/acceptance, decision, size, fix verification, telemetry fidelity, reachability")
         lines.append("  run_review(version, source_v, plan) — code quality review (boundaries, size, correctness)")
         lines.append("  run_critic(version, source_v, plan, reviewer_feedback, force_advance) — advisory strategic assessment; precommit_eval is the final regression gate")
-        lines.append("  run_precommit_eval(version, source_v, n_games) — mirror battle regression check")
+        lines.append("  run_precommit_eval(version, source_v, n_games) — workflow final regression check; national_primary uses 70-hand national matches")
         lines.append("  commit_bot(version, source_v, strategy, review_approved=true) — git commit + tag (requires all gates passed)")
         lines.append("  run_archivist(version, source_v) — archive + cleanup after commit")
         lines.append("  run_crossover(parent_a, parent_b, target_v) — merge two parent bots (alternative to master+workers)")

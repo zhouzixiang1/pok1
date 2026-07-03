@@ -142,6 +142,253 @@ CS_ALPHA = 0.05
 _CS_R = NET_CHIPS_RANGE
 
 
+async def _run_national_precommit_backend(
+    *,
+    v: int,
+    source_v: int,
+    requested_n_games: int,
+    candidate_name: str,
+    parent_name: str,
+    candidate_main,
+    code_fingerprint: str,
+    workflow_profile,
+    candidate_id: str,
+    opponents: list,
+    all_opponents: list,
+    precommit_attempt: int,
+    initial_blockers: list,
+    started_at: float,
+):
+    """National-primary precommit implementation.
+
+    The old precommit backend measures local mirror-battle regression. This
+    backend makes the final commit gate use the national GameEngine: each sample
+    is a full national match (70 hands by profile default), with adapter
+    telemetry and strict protocol failures treated as hard blockers.
+    """
+    national_hands = int(os.environ.get(
+        "POK_NATIONAL_PRECOMMIT_HANDS",
+        str(getattr(workflow_profile, "national_precommit_hands", 70)),
+    ))
+    national_matches = int(os.environ.get(
+        "POK_NATIONAL_PRECOMMIT_MATCHES",
+        str(getattr(workflow_profile, "national_precommit_matches", 1)),
+    ))
+    national_hands = max(1, min(70, national_hands))
+    national_matches = max(1, national_matches)
+
+    opponents_with_paths = []
+    for item in opponents:
+        copied = dict(item)
+        try:
+            copied["path"] = str(_bot_main(item["name"]))
+        except Exception:
+            pass
+        opponents_with_paths.append(copied)
+
+    blockers = list(initial_blockers or [])
+    if not blockers and opponents_with_paths:
+        try:
+            from national_eval import run_national_precommit
+
+            national_result = await run_national_precommit(
+                str(candidate_main),
+                opponents_with_paths,
+                hands=national_hands,
+                matches_per_opponent=national_matches,
+                strict=bool(getattr(workflow_profile, "national_acceptance_hard", True)),
+                parent_label=parent_name,
+            )
+            blockers.extend(national_result.get("blockers") or [])
+        except Exception as exc:
+            national_result = {
+                "evaluation_protocol": "national",
+                "candidate": candidate_name,
+                "opponents": opponents_with_paths,
+                "matchups": [],
+                "total_wins": 0,
+                "total_losses": 0,
+                "total_draws": 0,
+                "paired_bootstrap": {
+                    "protocol": "national",
+                    "hands_per_match": national_hands,
+                    "matches_per_opponent": national_matches,
+                    "net_chips_samples": 0,
+                    "net_chips_mean": None,
+                    "gate_degraded": True,
+                },
+                "blockers": [{
+                    "reason": "national_precommit_exception",
+                    "details": f"{type(exc).__name__}: {str(exc)[:500]}",
+                }],
+                "passed": False,
+            }
+            blockers.extend(national_result["blockers"])
+    else:
+        national_result = {
+            "evaluation_protocol": "national",
+            "candidate": candidate_name,
+            "opponents": opponents_with_paths,
+            "matchups": [],
+            "total_wins": 0,
+            "total_losses": 0,
+            "total_draws": 0,
+            "paired_bootstrap": {
+                "protocol": "national",
+                "hands_per_match": national_hands,
+                "matches_per_opponent": national_matches,
+                "net_chips_samples": 0,
+                "net_chips_mean": None,
+                "gate_degraded": True,
+            },
+            "blockers": blockers,
+            "passed": False,
+        }
+
+    total_wins = int(national_result.get("total_wins", 0) or 0)
+    total_losses = int(national_result.get("total_losses", 0) or 0)
+    total_draws = int(national_result.get("total_draws", 0) or 0)
+    matchups = list(national_result.get("matchups") or [])
+    paired_bootstrap_payload = dict(national_result.get("paired_bootstrap") or {})
+    passed = len(blockers) == 0
+
+    try:
+        log_system_event(
+            "pipeline.precommit_eval.national",
+            "info" if passed else "warn",
+            f"National precommit {'passed' if passed else 'FAILED'} for v{v}: "
+            f"{total_wins}W-{total_losses}L-{total_draws}D vs {len(all_opponents)} opponents",
+            {
+                "version": v,
+                "source_v": source_v,
+                "passed": passed,
+                "evaluation_protocol": "national",
+                "hands_per_match": national_hands,
+                "matches_per_opponent": national_matches,
+                "blockers": blockers,
+                "paired_bootstrap": paired_bootstrap_payload,
+                "elapsed_sec": round(time.time() - started_at, 2),
+            },
+        )
+    except Exception:
+        pass
+
+    result = {
+        "version": v,
+        "source_v": source_v,
+        "n_games": national_matches,
+        "requested_n_games": requested_n_games,
+        "evaluation_protocol": "national",
+        "hands_per_match": national_hands,
+        "matches_per_opponent": national_matches,
+        "opponents": all_opponents,
+        "matchups": matchups,
+        "total_wins": total_wins,
+        "total_losses": total_losses,
+        "total_draws": total_draws,
+        "passed": passed,
+        "blockers": blockers,
+        "paired_bootstrap": paired_bootstrap_payload,
+        "national": national_result,
+        "code_fingerprint": code_fingerprint,
+    }
+
+    scorecard = ScoreCard(
+        name="precommit_eval",
+        primary_score=paired_bootstrap_payload.get("net_chips_mean"),
+        metrics={
+            "evaluation_protocol": "national",
+            "total_wins": total_wins,
+            "total_losses": total_losses,
+            "total_draws": total_draws,
+            "n_opponents": len(all_opponents),
+            "hands_per_match": national_hands,
+            "matches_per_opponent": national_matches,
+        },
+    )
+    scorecard.add(GateResult.from_bool(
+        "national_precommit_regression",
+        passed,
+        metrics=paired_bootstrap_payload,
+        failures=[str(b)[:500] for b in blockers],
+    ))
+    result["scorecard"] = scorecard.model_dump()
+
+    if passed:
+        result["failure_class"] = "passed"
+        result["intent"] = make_intent(
+            "continue",
+            next_tool="commit_bot",
+            authority="tool:precommit_eval",
+            safe_to_auto_execute=True,
+        )
+    else:
+        worst_opponent = _worst_precommit_opponent(matchups, blockers)
+        worst_wins, worst_losses = _worst_wins_losses(matchups, worst_opponent)
+        result["directive"] = (
+            f"National precommit FAILED (attempt {precommit_attempt}/{MAX_PRECOMMIT_RETRIES}) — "
+            f"the final gate now uses national 70-hand rules, not local mirror battle. "
+            f"Do NOT call run_precommit_eval again on unchanged code. Rework the bot against "
+            f"{worst_opponent} ({worst_wins}W-{worst_losses}L) and the listed blockers."
+        )
+        result["failure_class"] = "regression"
+        result["intent"] = make_intent(
+            "rework",
+            next_tool="execute_workers",
+            failure_class="regression",
+            authority="tool:precommit_eval",
+            safe_to_auto_execute=True,
+            reason="national_precommit_regression",
+        )
+
+    checkpoint_stage = "verified" if passed else "precommit_failed"
+    checkpoint_feedback = None if passed else result.get("directive")
+    checkpoint_recorded = _record_gate(
+        v,
+        source_v,
+        "precommit_eval",
+        _gate_payload(
+            v,
+            source_v,
+            passed,
+            **{k: val for k, val in result.items() if k not in {"version", "source_v", "passed"}},
+        ),
+        stage=checkpoint_stage,
+        reviewer_feedback=checkpoint_feedback,
+    )
+    result["checkpoint_recorded"] = checkpoint_recorded
+
+    if append_candidate_event:
+        try:
+            append_candidate_event(
+                "precommit_finished",
+                version=v,
+                source_v=source_v,
+                candidate_id=candidate_id,
+                profile_id=workflow_profile.profile_id,
+                workflow_profile_id=workflow_profile.profile_id,
+                run_id=f"{v}#0",
+                stage="verified" if passed else "precommit_failed",
+                parent_ids=[f"claude_v{source_v}"],
+                gate="precommit_eval",
+                scorecard=scorecard,
+                gate_results=scorecard.gates,
+                metrics={
+                    "passed": passed,
+                    "evaluation_protocol": "national",
+                    "total_wins": total_wins,
+                    "total_losses": total_losses,
+                    "total_draws": total_draws,
+                    "net_chips_mean": paired_bootstrap_payload.get("net_chips_mean"),
+                },
+                failures=[str(b)[:500] for b in blockers],
+                failure_class="" if passed else "national_precommit_regression",
+            )
+        except Exception as e:
+            log.warning("candidate ledger national precommit_finished write failed: %s", e)
+    return _json_tool_result(result)
+
+
 # ──────────────────────────────────────────────
 # Phase 4: PSRO MixtureBot opponent (feature-flagged)
 # ──────────────────────────────────────────────
@@ -575,7 +822,7 @@ def _worst_wins_losses(matchups, opponent):
     return 0, 0
 
 
-@tool("run_precommit_eval", "Run a minimal mirror-battle regression check before commit. Tests parent, current top opponents, and source H2H weaknesses; blocks obvious crashes or collapses.", {"version": int, "source_v": int, "n_games": int})
+@tool("run_precommit_eval", "Run the final workflow precommit regression check before commit. In national_primary it uses 70-hand national matches; otherwise it uses local mirror battle.", {"version": int, "source_v": int, "n_games": int})
 async def run_precommit_eval(args):
     _t0 = time.time()
     v, source_v = _resolve_version_args(args)
@@ -739,6 +986,24 @@ async def run_precommit_eval(args):
             source_v,
             current_stage,
             precommit_attempt=precommit_attempt,
+        )
+
+    if getattr(workflow_profile, "evaluation_protocol", "local_json") == "national":
+        return await _run_national_precommit_backend(
+            v=v,
+            source_v=source_v,
+            requested_n_games=requested,
+            candidate_name=candidate_name,
+            parent_name=parent_name,
+            candidate_main=candidate_main,
+            code_fingerprint=code_fingerprint,
+            workflow_profile=workflow_profile,
+            candidate_id=candidate_id,
+            opponents=opponents,
+            all_opponents=all_opponents,
+            precommit_attempt=precommit_attempt,
+            initial_blockers=blockers,
+            started_at=_t0,
         )
 
     total_wins = 0

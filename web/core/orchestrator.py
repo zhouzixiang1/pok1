@@ -44,6 +44,7 @@ from failure_classification import INFRA_BLOCKER_REASONS
 import logging
 
 log = logging.getLogger("pok.orchestrator")
+os.environ.setdefault("POK_WORKFLOW_PROFILE", "national_primary")
 SHUTDOWN_CANCEL_COST = -99998.0
 
 # Infra-only blocker reasons used by the timed_out handler to distinguish

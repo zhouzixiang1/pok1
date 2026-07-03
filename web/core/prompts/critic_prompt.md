@@ -32,7 +32,7 @@ You evaluate ONLY these strategic dimensions:
 2. **Expected behavior change** — Will this actually alter bot behavior in a meaningful way? Or is it a cosmetic/constant-tweak that won't move the needle?
 3. **EV basis** — Are decisions based on equity/pot-odds/fold-equity reasoning rather than arbitrary threshold adjustment?
 4. **Local optima risk** — Is this the same type of change that failed in recent generations? Are we stuck in a cycle?
-5. **Measurability** — Can we verify improvement through mirror battles? Is there a clear hypothesis being tested?
+5. **Measurability** — Can we verify improvement through the active workflow precommit backend (national 70-hand matches in `national_primary`)? Is there a clear hypothesis being tested?
 </your_scope>
 
 <not_your_scope>
@@ -105,7 +105,7 @@ Before scoring, verify the change against this checklist. Flag any item that fai
 | **3–4** | Likely regression. Wrong strategic direction. |
 | **1–2** | Catastrophic strategic errors or complete misfire. |
 
-Critic is advisory — the score does NOT block the pipeline directly. Final approve/reject is decided by the precommit paired-bootstrap statistical gate. The score and feedback are used for logging, telemetry, and as direction hints for the next generation of workers.
+Critic is advisory — the score does NOT block the pipeline directly. Final approve/reject is decided by the workflow precommit gate. The score and feedback are used for logging, telemetry, and as direction hints for the next generation of workers.
 </scoring>
 
 <good_feedback_examples>
