@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import shutil
 import time
 from pathlib import Path
@@ -98,6 +99,15 @@ _POSITION_SEMANTICS_PATTERNS = {
     "flop_sb_act_first": "decision templates must use BB-first postflop semantics",
 }
 
+_POSITION_SB_FROM_DEALER_NEXT_PLAYER_RE = re.compile(
+    r"\b(?P<var>sb|[a-z_][a-z0-9_]*_sb)\s*=\s*next_player\(\s*"
+    r"(?P<dealer>[a-z_][a-z0-9_]*)\s*,\s*1\s*\)"
+)
+_POSITION_BB_FROM_DEALER_NEXT_PLAYER_RE = re.compile(
+    r"\b(?P<var>bb|[a-z_][a-z0-9_]*_bb)\s*=\s*next_player\(\s*"
+    r"(?P<dealer>[a-z_][a-z0-9_]*)\s*,\s*2\s*\)"
+)
+
 
 def detect_position_semantics_errors(bot_dir: Path) -> list[str]:
     """Detect old heads-up position assumptions in candidate bot code.
@@ -115,17 +125,34 @@ def detect_position_semantics_errors(bot_dir: Path) -> list[str]:
             continue
         for lineno, line in enumerate(lines, 1):
             lowered = line.lower()
-            compact = "".join(lowered.split())
             for pattern, explanation in _POSITION_SEMANTICS_PATTERNS.items():
                 if pattern in lowered:
                     rel = path.relative_to(bot_dir)
                     errors.append(f"{rel}:{lineno}: {explanation} ({pattern})")
-            if "sb=next_player(dealer_id,1)" in compact:
-                rel = path.relative_to(bot_dir)
-                errors.append(f"{rel}:{lineno}: SB must be dealer_id, not next_player(dealer_id, 1)")
-            if "bb=next_player(dealer_id,2)" in compact:
-                rel = path.relative_to(bot_dir)
-                errors.append(f"{rel}:{lineno}: BB must be 1 - dealer_id, not next_player(dealer_id, 2)")
+            sb_match = _POSITION_SB_FROM_DEALER_NEXT_PLAYER_RE.search(lowered)
+            if sb_match:
+                dealer_var = sb_match.group("dealer")
+                if "dealer" in dealer_var:
+                    rel = path.relative_to(bot_dir)
+                    if sb_match.group("var") == "sb" and dealer_var == "dealer_id":
+                        errors.append(f"{rel}:{lineno}: SB must be dealer_id, not next_player(dealer_id, 1)")
+                    else:
+                        errors.append(
+                            f"{rel}:{lineno}: {sb_match.group('var')} must be {dealer_var}, "
+                            f"not next_player({dealer_var}, 1)"
+                        )
+            bb_match = _POSITION_BB_FROM_DEALER_NEXT_PLAYER_RE.search(lowered)
+            if bb_match:
+                dealer_var = bb_match.group("dealer")
+                if "dealer" in dealer_var:
+                    rel = path.relative_to(bot_dir)
+                    if bb_match.group("var") == "bb" and dealer_var == "dealer_id":
+                        errors.append(f"{rel}:{lineno}: BB must be 1 - dealer_id, not next_player(dealer_id, 2)")
+                    else:
+                        errors.append(
+                            f"{rel}:{lineno}: {bb_match.group('var')} must be 1 - {dealer_var}, "
+                            f"not next_player({dealer_var}, 2)"
+                        )
     return errors[:20]
 
 

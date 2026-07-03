@@ -37,6 +37,35 @@ def test_position_semantics_gate_flags_old_formula(tmp_path):
     assert any("BB must be 1 - dealer_id" in err for err in errors)
 
 
+def test_position_semantics_gate_flags_future_dealer_blind_projection(tmp_path):
+    bot_dir = tmp_path / "bot"
+    bot_dir.mkdir()
+    (bot_dir / "state.py").write_text(
+        "def f(future_dealer):\n"
+        "    future_sb = next_player(future_dealer, 1)\n"
+        "    future_bb = next_player(future_dealer, 2)\n"
+        "    return future_sb, future_bb\n",
+        encoding="utf-8",
+    )
+
+    errors = detect_position_semantics_errors(bot_dir)
+    assert any("future_sb must be future_dealer" in err for err in errors)
+    assert any("future_bb must be 1 - future_dealer" in err for err in errors)
+
+
+def test_position_semantics_gate_allows_bb_from_sb_projection(tmp_path):
+    bot_dir = tmp_path / "bot"
+    bot_dir.mkdir()
+    (bot_dir / "state.py").write_text(
+        "def f(sb_player):\n"
+        "    bb_player = next_player(sb_player, 1)\n"
+        "    return bb_player\n",
+        encoding="utf-8",
+    )
+
+    assert detect_position_semantics_errors(bot_dir) == []
+
+
 def test_position_semantics_gate_accepts_current_formula(tmp_path):
     bot_dir = tmp_path / "bot"
     bot_dir.mkdir()
