@@ -427,6 +427,28 @@ def _classify_target_change_for_worker(task, task_idx, rel, next_dir, next_v,
     return _classify_target_change(src_exists, dst_exists, src_text, dst_text)
 
 
+def _target_change_failures_for_worker(task, task_idx, next_dir, next_v,
+                                       source_v=None, baseline_snapshots=None):
+    """Return target files that fail the worker's must-change contract."""
+    target_rels = _must_change_rels_for_task(task, next_v)
+    if not target_rels or source_v is None:
+        return [], []
+
+    invalid_targets = []
+    unchanged = []
+    for rel in target_rels:
+        change = _classify_target_change_for_worker(
+            task, task_idx, rel, next_dir, next_v,
+            source_v=source_v, baseline_snapshots=baseline_snapshots,
+        )
+        if change in ("invalid_target", "deleted"):
+            invalid_targets.append(rel)
+        elif change == "unchanged":
+            unchanged.append(rel)
+        # new_file and modified are successes.
+    return invalid_targets, unchanged
+
+
 def _cot_inconsistency_blocks_task(task):
     """Only hard-block CoT inconsistencies for repair tasks.
 
@@ -509,10 +531,101 @@ async def _run_debug_agent(error_output, changed_diff, target_file, next_v, ui):
         return {}
 
 
+def _preserve_timed_out_worker_if_blocker_cleared(
+    task, idx, next_dir, next_v, source_v, worker_snapshots, local_snapshots,
+    boundary_snapshot, boundary_allowed_files, parallel_mode, task_skipper,
+    ui, worker_id, role, timeout_sec,
+):
+    """Accept a timed-out quality repair when current code proves its blocker cleared.
+
+    Slow models can finish the actual file edit and then spend minutes explaining
+    themselves. The outer worker watchdog may cancel that stream before the final
+    assistant message arrives. For file-scoped quality repairs, the quality-gate
+    skipper is the authoritative cheap validator for whether this task's blocker
+    still exists. If the edit is scoped, compile-clean, and the blocker is gone,
+    preserving it is safer than rolling back useful code and retrying blindly.
+    """
+    if task_skipper is None:
+        return ""
+
+    try:
+        cleared_reason = task_skipper(task)
+    except Exception as e:
+        log.warning("Task skipper failed after worker timeout for %s: %s", worker_id, e)
+        return ""
+    if not cleared_reason:
+        return ""
+
+    snapshots = worker_snapshots or local_snapshots
+    invalid_targets, unchanged = _target_change_failures_for_worker(
+        task, idx, next_dir, next_v,
+        source_v=source_v, baseline_snapshots=snapshots,
+    )
+    if invalid_targets or unchanged:
+        log.info(
+            "Not preserving timed-out worker %s: invalid_targets=%s unchanged=%s",
+            worker_id, invalid_targets, unchanged,
+        )
+        return ""
+
+    boundary_task = dict(task)
+    if boundary_allowed_files:
+        boundary_task["files_allowed"] = list({
+            *(boundary_task.get("files_allowed", []) or []),
+            *boundary_allowed_files,
+        })
+    boundary = audit_worker_boundary(next_dir, boundary_task, boundary_snapshot, next_v=next_v)
+    if not boundary.passed:
+        log.info(
+            "Not preserving timed-out worker %s due boundary violations: %s",
+            worker_id, boundary.violations[:3],
+        )
+        return ""
+
+    if parallel_mode:
+        target_names = [_target_rel(f, next_v) for f in task.get("target_files", [])]
+        target_names = [rel for rel in target_names if rel]
+        compile_errors = verify_code(next_dir, target_files=target_names)
+    else:
+        compile_errors = verify_code(next_dir)
+    if compile_errors:
+        log.info(
+            "Not preserving timed-out worker %s due compile errors: %s",
+            worker_id, compile_errors[:2],
+        )
+        return ""
+
+    ui.log_history(
+        f"Worker {worker_id} ({role}) timed out after {timeout_sec}s, "
+        f"but its scoped edit cleared the blocker; preserving it.",
+        "warn",
+    )
+    try:
+        from system_log import log_system_event
+        log_system_event(
+            "pipeline.worker_timeout_preserved",
+            "warn",
+            f"Preserved timed-out worker {worker_id} for v{next_v}: {cleared_reason}",
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "worker_id": worker_id,
+                "role": role,
+                "reason": cleared_reason,
+                "timeout_sec": timeout_sec,
+                "target_files": task.get("target_files", []),
+                "must_change_files": task.get("must_change_files", []),
+            },
+        )
+    except Exception:
+        pass
+    return cleared_reason
+
+
 async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                               context_files, ui, reviewer_feedback,
                               source_v=None, parallel_mode=False, worker_snapshots=None,
-                              boundary_allowed_files=None):
+                              boundary_allowed_files=None, task_skipper=None):
     """Run a single worker task with retries. Returns True on success."""
     w_id = task.get("worker_id", idx + 1)
     role = task.get("role", f"Expert Coder {w_id}")
@@ -653,6 +766,14 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 _last_error_output = f"{type(exc).__name__}: {str(exc)[:500]}"
                 _last_changed_diff = "(exception — partial edits rolled back)"
                 ui.log_history(f"Worker {w_id} ({role}) error: {exc}", "error")
+            preserve_reason = _preserve_timed_out_worker_if_blocker_cleared(
+                task, idx, next_dir, next_v, source_v,
+                worker_snapshots, _local_snapshots, _boundary_snapshot,
+                boundary_allowed_files, parallel_mode, task_skipper,
+                ui, w_id, role, worker_timeout,
+            )
+            if preserve_reason:
+                return True
             # Roll back target files to the worker's pre-run baseline to avoid
             # partial-edit contamination. Baseline (not source) is used so
             # sequential-overlap siblings' edits are preserved.
@@ -676,19 +797,11 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
         # from a candidate that may already differ from source.
         target_rels = _must_change_rels_for_task(task, next_v)
         if target_rels and source_v is not None:
-            invalid_targets = []  # paths that resolve nowhere (or were deleted)
-            unchanged = []        # genuinely identical
             snapshots = worker_snapshots or _local_snapshots
-            for rel in target_rels:
-                change = _classify_target_change_for_worker(
-                    task, idx, rel, next_dir, next_v,
-                    source_v=source_v, baseline_snapshots=snapshots,
-                )
-                if change in ("invalid_target", "deleted"):
-                    invalid_targets.append(rel)
-                elif change == "unchanged":
-                    unchanged.append(rel)
-                # new_file and modified are successes — skip.
+            invalid_targets, unchanged = _target_change_failures_for_worker(
+                task, idx, next_dir, next_v,
+                source_v=source_v, baseline_snapshots=snapshots,
+            )
             if invalid_targets:
                 _last_reason = f"invalid/deleted target files: {', '.join(invalid_targets)}"
                 _last_failure_type = "invalid_target"
@@ -842,6 +955,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             tasks[0], 0, worker_template, next_dir, next_v,
             context_files, ui, reviewer_feedback,
             source_v=source_v, worker_snapshots=worker_snapshots,
+            task_skipper=task_skipper,
         )
         # P0-2: Worker CoT consistency check
         if ok:
@@ -1012,6 +1126,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             task, i, worker_template, next_dir, next_v,
             context_files, ui, reviewer_feedback,
             source_v=source_v, worker_snapshots=worker_snapshots,
+            task_skipper=task_skipper,
         )
         if not ok:
             return False, worker_snapshots, audit_focus_areas

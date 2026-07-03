@@ -1491,6 +1491,149 @@ class TestWorkerFailureCircuitBreaker:
         run_worker.assert_not_called()
         assert any("Skipping worker auto_quality_repair_file_size_strategy_helpers_py" in msg for _lvl, msg in ui.messages)
 
+    def test_timed_out_quality_worker_preserves_valid_cleared_blocker_edit(self, tmp_path, monkeypatch):
+        """A slow worker that already cleared its blocker should not lose valid edits."""
+        import asyncio
+        import agent_workers
+
+        next_dir = tmp_path / "claude_v11"
+        source_dir = tmp_path / "claude_v10"
+        next_dir.mkdir()
+        source_dir.mkdir()
+        baseline = "value = 1\n"
+        fixed = "value = 1\nfixed = True\n"
+        (next_dir / "opponent.py").write_text(baseline)
+        (source_dir / "opponent.py").write_text(baseline)
+
+        class UI:
+            costs = {}
+
+            def __init__(self):
+                self.messages = []
+
+            def log_history(self, message, level="info"):
+                self.messages.append((level, message))
+
+            def clear_io(self):
+                pass
+
+            def set_status(self, *_args, **_kwargs):
+                pass
+
+            def log_io(self, *_args, **_kwargs):
+                pass
+
+        async def slow_worker(*_args, **_kwargs):
+            (next_dir / "opponent.py").write_text(fixed)
+            await asyncio.sleep(1)
+
+        task = {
+            "worker_id": "auto_quality_repair_file_size_opponent_py",
+            "role": "Algorithmic Logic Architect",
+            "target_files": ["opponent.py"],
+            "must_change_files": ["opponent.py"],
+            "worker_prompt": "fix file_size",
+            "task_kind": "quality_repair",
+            "repair_blocker": "file_size",
+        }
+
+        monkeypatch.setattr(agent_workers, "MAX_WORKER_RETRIES", 1)
+        monkeypatch.setattr(agent_workers, "_worker_timeout_for_task", lambda *_a, **_k: 0.01)
+        monkeypatch.setattr(agent_workers, "run_claude_query", slow_worker)
+        monkeypatch.setattr(agent_workers, "verify_code", lambda *_a, **_k: [])
+        monkeypatch.setattr(agent_workers, "get_bot_dir", lambda _v: source_dir)
+
+        async def _run():
+            with patch("audit_agents._run_worker_cot_check", new_callable=AsyncMock) as cot:
+                cot.return_value = {"cot_consistent": True, "focus_areas": []}
+                return await agent_workers._execute_workers(
+                    [task],
+                    "{worker_prompt}",
+                    next_dir,
+                    11,
+                    [],
+                    UI(),
+                    reviewer_feedback="Quality gates failed: file_size(opponent.py:1650L/1500L)",
+                    source_v=10,
+                    task_skipper=lambda _task: (
+                        "quality blocker file(s) already cleared by current code: opponent.py"
+                        if "fixed = True" in (next_dir / "opponent.py").read_text()
+                        else ""
+                    ),
+                )
+
+        success, snapshots, focus = asyncio.run(_run())
+        assert success is True
+        assert focus == []
+        assert snapshots == {(0, "opponent.py"): baseline}
+        assert (next_dir / "opponent.py").read_text() == fixed
+
+    def test_timed_out_quality_worker_resets_when_blocker_still_present(self, tmp_path, monkeypatch):
+        """Timeout preservation requires the cheap quality blocker to be cleared."""
+        import asyncio
+        import agent_workers
+
+        next_dir = tmp_path / "claude_v11"
+        source_dir = tmp_path / "claude_v10"
+        next_dir.mkdir()
+        source_dir.mkdir()
+        baseline = "value = 1\n"
+        partial = "value = 1\npartial = True\n"
+        (next_dir / "opponent.py").write_text(baseline)
+        (source_dir / "opponent.py").write_text(baseline)
+
+        class UI:
+            costs = {}
+
+            def log_history(self, *_args, **_kwargs):
+                pass
+
+            def clear_io(self):
+                pass
+
+            def set_status(self, *_args, **_kwargs):
+                pass
+
+            def log_io(self, *_args, **_kwargs):
+                pass
+
+        async def slow_worker(*_args, **_kwargs):
+            (next_dir / "opponent.py").write_text(partial)
+            await asyncio.sleep(1)
+
+        task = {
+            "worker_id": "auto_quality_repair_file_size_opponent_py",
+            "role": "Algorithmic Logic Architect",
+            "target_files": ["opponent.py"],
+            "must_change_files": ["opponent.py"],
+            "worker_prompt": "fix file_size",
+            "task_kind": "quality_repair",
+            "repair_blocker": "file_size",
+        }
+
+        monkeypatch.setattr(agent_workers, "MAX_WORKER_RETRIES", 1)
+        monkeypatch.setattr(agent_workers, "_worker_timeout_for_task", lambda *_a, **_k: 0.01)
+        monkeypatch.setattr(agent_workers, "run_claude_query", slow_worker)
+        monkeypatch.setattr(agent_workers, "verify_code", lambda *_a, **_k: [])
+        monkeypatch.setattr(agent_workers, "get_bot_dir", lambda _v: source_dir)
+
+        success, snapshots, focus = asyncio.run(agent_workers._execute_workers(
+            [task],
+            "{worker_prompt}",
+            next_dir,
+            11,
+            [],
+            UI(),
+            reviewer_feedback="Quality gates failed: file_size(opponent.py:1650L/1500L)",
+            source_v=10,
+            task_skipper=lambda _task: "",
+        ))
+
+        assert success is False
+        assert focus == []
+        assert snapshots == {(0, "opponent.py"): baseline}
+        assert (next_dir / "opponent.py").read_text() == baseline
+
     def test_repair_planned_quality_rework_passes_skipper_to_workers(self, tmp_path, monkeypatch):
         """A resumed quality repair at repair_planned should skip already-cleared blockers."""
         import asyncio
