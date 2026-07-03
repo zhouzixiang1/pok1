@@ -23,7 +23,15 @@ _HEAD_DRIFT_REPAIR_STAGES = {
     "repair_planned",
     "rework_running",
 }
-_HEAD_DRIFT_REPAIR_TOOLS = {"execute_workers"}
+_HEAD_DRIFT_TOOL_BY_STAGE = {
+    "quality_failed": {"execute_workers"},
+    "precommit_failed": {"execute_workers"},
+    "repair_planned": {"execute_workers"},
+    "rework_running": {"execute_workers"},
+    "quality_passed": {"run_review"},
+    "reviewed": {"run_critic"},
+    "critic_checked": {"run_precommit_eval"},
+}
 
 
 def _json_tool_result(data: dict[str, Any]) -> dict[str, Any]:
@@ -87,7 +95,7 @@ def _checkpoint_repo_baseline(candidate_v: int | None) -> dict[str, Any] | None:
     return dict(baseline) if isinstance(baseline, dict) else None
 
 
-def _head_change_allowed_for_repair(
+def _head_change_allowed_for_checkpoint_resume(
     *,
     tool_name: str,
     candidate_v: int | None,
@@ -95,16 +103,16 @@ def _head_change_allowed_for_repair(
     current_head: str,
     snapshot: dict[str, Any],
 ) -> tuple[bool, dict[str, Any]]:
-    """Allow deterministic rework after infrastructure HEAD changes.
+    """Allow safe checkpoint continuation after infrastructure HEAD changes.
 
     A failed checkpoint may legitimately survive a codebase update: the next
     correct tool is ``execute_workers`` with the recorded gate failures. Blocking
-    that path leaves the service unable to start. We only allow this on the
-    canonical branch, for the active checkpoint version, and when the worktree
-    has no unexpected entries beyond that candidate bot directory.
+    that path leaves the service unable to start. Post-quality checkpoints can
+    also continue through reviewer/critic/precommit because they do not rewrite
+    the candidate bot. We only allow the exact next tool for the checkpoint stage
+    on the canonical branch, for the active checkpoint version, and when the
+    worktree has no unexpected entries beyond that candidate bot directory.
     """
-    if tool_name not in _HEAD_DRIFT_REPAIR_TOOLS:
-        return False, {}
     if not baseline_head or not current_head or baseline_head == current_head:
         return False, {}
     checkpoint = read_pipeline_checkpoint()
@@ -116,7 +124,8 @@ def _head_change_allowed_for_repair(
     except Exception:
         return False, {}
     stage = str(checkpoint.get("stage") or "")
-    if stage not in _HEAD_DRIFT_REPAIR_STAGES:
+    allowed_tools = _HEAD_DRIFT_TOOL_BY_STAGE.get(stage, set())
+    if tool_name not in allowed_tools:
         return False, {}
     current_branch = _branch_name(str(snapshot.get("branch") or ""))
     if current_branch != EVOLUTION_BRANCH:
@@ -124,12 +133,14 @@ def _head_change_allowed_for_repair(
     unexpected = _unexpected_entries(snapshot, candidate_v)
     if unexpected:
         return False, {"unexpected_entries": unexpected[:40]}
+    resume_kind = "repair" if stage in _HEAD_DRIFT_REPAIR_STAGES else "post_quality"
     return True, {
         "stage": stage,
         "candidate_v": candidate_v,
         "baseline_head": baseline_head,
         "current_head": current_head,
         "branch": snapshot.get("branch"),
+        "resume_kind": resume_kind,
     }
 
 
@@ -243,7 +254,7 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
         and current_head
         and baseline_head != current_head
     ):
-        allowed, allowed_payload = _head_change_allowed_for_repair(
+        allowed, allowed_payload = _head_change_allowed_for_checkpoint_resume(
             tool_name=tool_name,
             candidate_v=candidate_v,
             baseline_head=baseline_head,
@@ -259,7 +270,8 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
             )
             return True, {
                 "guard": "ok",
-                "head_drift_repair_allowed": True,
+                "head_drift_resume_allowed": True,
+                "head_drift_repair_allowed": allowed_payload.get("resume_kind") == "repair",
                 **allowed_payload,
             }
         payload = {
