@@ -66,6 +66,39 @@ def test_position_semantics_gate_allows_bb_from_sb_projection(tmp_path):
     assert detect_position_semantics_errors(bot_dir) == []
 
 
+def test_position_semantics_gate_flags_postflop_oop_helper_keying_on_sb(tmp_path):
+    bot_dir = tmp_path / "bot"
+    bot_dir.mkdir()
+    (bot_dir / "strategy_helpers.py").write_text(
+        "def _turn_oop_pot_control(\n"
+        "    spot_info,\n"
+        "):\n"
+        "    if not spot_info.get('my_is_sb', False):\n"
+        "        return None\n"
+        "    return 1\n",
+        encoding="utf-8",
+    )
+
+    errors = detect_position_semantics_errors(bot_dir)
+    assert any("postflop OOP helper" in err and "my_is_bb" in err for err in errors)
+
+
+def test_position_semantics_gate_accepts_postflop_oop_helper_keying_on_bb(tmp_path):
+    bot_dir = tmp_path / "bot"
+    bot_dir.mkdir()
+    (bot_dir / "strategy_helpers.py").write_text(
+        "def _turn_oop_pot_control(\n"
+        "    spot_info,\n"
+        "):\n"
+        "    if not spot_info.get('my_is_bb', False):\n"
+        "        return None\n"
+        "    return 1\n",
+        encoding="utf-8",
+    )
+
+    assert detect_position_semantics_errors(bot_dir) == []
+
+
 def test_position_semantics_gate_accepts_current_formula(tmp_path):
     bot_dir = tmp_path / "bot"
     bot_dir.mkdir()

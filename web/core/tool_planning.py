@@ -3331,6 +3331,7 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             "- dealer_id is the small blind.\n"
             "- big blind is `1 - dealer_id`.\n"
             "- small blind acts first preflop; big blind acts first postflop.\n\n"
+            "- A helper named or documented as postflop/OOP must key on `my_is_bb`/BB, not `my_is_sb`/SB; SB/dealer is in position postflop.\n\n"
             "Required method:\n"
             f"- Edit `{filename}`. This file is listed in `must_change_files`; a no-op or editing only another file is failure.\n"
             "- Replace code patterns exactly when present: `sb = next_player(dealer_id, 1)` -> `sb = dealer_id`; `bb = next_player(dealer_id, 2)` -> `bb = 1 - dealer_id`.\n"
