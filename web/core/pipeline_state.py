@@ -70,6 +70,53 @@ NEXT_TOOL_BY_STAGE = {
 _STAGE_RANK = {stage: idx for idx, stage in enumerate(STAGE_ORDER)}
 
 
+def _active_workflow_profile_info() -> tuple[str, str]:
+    try:
+        from workflow_profiles import get_workflow_profile
+        profile = get_workflow_profile()
+        return (
+            getattr(profile, "profile_id", ""),
+            getattr(profile, "national_execution_mode", "adapter"),
+        )
+    except Exception:
+        return "", "adapter"
+
+
+def _gate_matches_active_workflow(gate: dict | None) -> bool:
+    active_profile_id, active_execution_mode = _active_workflow_profile_info()
+    if not active_profile_id:
+        return True
+    gate = gate or {}
+    gate_profile_id = str(gate.get("workflow_profile_id") or gate.get("profile_id") or "")
+    gate_execution_mode = str(gate.get("national_execution_mode") or "")
+    if active_profile_id == "default":
+        return (
+            gate_profile_id in {"", "default"}
+            and gate_execution_mode in {"", active_execution_mode}
+        )
+    if gate_profile_id != active_profile_id:
+        return False
+    if gate_execution_mode != active_execution_mode:
+        return False
+    if active_execution_mode == "native_tcp" and gate.get("national_native_contract_ok") is not True:
+        return False
+    return True
+
+
+def _quality_gate_matches_active_workflow(gate_results: dict) -> bool:
+    quality = (gate_results or {}).get("quality") or {}
+    return (
+        quality.get("all_passed") is True
+        and quality.get("critical_scenarios_passed") is True
+        and _gate_matches_active_workflow(quality)
+    )
+
+
+def _precommit_gate_matches_active_workflow(gate_results: dict) -> bool:
+    precommit = (gate_results or {}).get("precommit_eval") or {}
+    return precommit.get("passed") is True and _gate_matches_active_workflow(precommit)
+
+
 def validate_stage_transition(current_stage, proposed_stage):
     """Validate that a pipeline stage transition is legal.
 
@@ -173,8 +220,24 @@ def route_policy(checkpoint: dict | None) -> dict:
     parent2_v = checkpoint.get("parent2_v")
     gate_results = checkpoint.get("gate_results") or {}
     failure_class = None
+    profile_refresh_needed = False
 
-    if stage == "selected":
+    if (
+        stage in {"quality_passed", "reviewed", "critic_checked", "precommit_failed", "verified"}
+        and "quality" in gate_results
+        and not _quality_gate_matches_active_workflow(gate_results)
+    ):
+        next_tool = "run_quality_gates"
+        intent = "quality_profile_refresh"
+        profile_refresh_needed = True
+    elif (
+        stage == "verified"
+        and not _precommit_gate_matches_active_workflow(gate_results)
+    ):
+        next_tool = "run_precommit_eval"
+        intent = "precommit_profile_refresh"
+        profile_refresh_needed = True
+    elif stage == "selected":
         next_tool = "run_crossover" if parent2_v is not None else "prepare_next_gen"
         intent = "crossover_prepare" if parent2_v is not None else "prepare"
     elif stage == "critic_checked":
@@ -234,6 +297,18 @@ def route_policy(checkpoint: dict | None) -> dict:
         directive = "Crossover selected. Call run_crossover; do not call prepare_next_gen."
     elif stage == "master_planned":
         directive = "Master plan is saved. Call execute_workers with the saved tasks."
+    elif profile_refresh_needed and next_tool == "run_quality_gates":
+        directive = (
+            "Cached quality gate was produced under a different workflow profile "
+            "or national execution mode. Call run_quality_gates to revalidate "
+            "the current candidate under the active workflow."
+        )
+    elif profile_refresh_needed and next_tool == "run_precommit_eval":
+        directive = (
+            "Cached precommit gate was produced under a different workflow "
+            "profile or national execution mode. Call run_precommit_eval to "
+            "revalidate under the active workflow."
+        )
 
     return {
         "stage": stage,

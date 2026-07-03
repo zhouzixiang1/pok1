@@ -11,7 +11,7 @@ class WorkerTask(BaseModel):
     role: str = Field(description="Algorithmic Logic Architect, Hyperparameter Tuner, or Opponent Modeler")
     target_files: list[str] = Field(min_length=1)
     difficulty: str = "medium"
-    skill_layer: str = Field(min_length=1, description="Primary strategy/protocol layer: preflop_range, texture, spr, blocker, line_template, protocol, adapter, telemetry, etc.")
+    skill_layer: str = Field(min_length=1, description="Primary strategy/protocol layer: preflop_range, texture, spr, blocker, line_template, protocol, adapter, native_tcp, telemetry, etc.")
     files_allowed: list[str] = Field(default_factory=list)
     prohibited_files: list[str] = Field(default_factory=list)
     expected_diff_shape: str = ""

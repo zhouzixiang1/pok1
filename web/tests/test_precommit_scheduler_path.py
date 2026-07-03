@@ -45,6 +45,8 @@ def mock_precommit_semantic(monkeypatch):
     makes real Claude API calls and hangs forever in tests.
     Safe default: recommended_action="proceed" (non-blocking).
     """
+    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "default")
+
     async def _fake_semantic(v, source_v, matchups, master_plan, ui):
         return {
             "win_pattern_analysis": "",

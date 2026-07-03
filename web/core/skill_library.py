@@ -110,6 +110,14 @@ SKILL_LAYERS: dict[str, SkillLayer] = {
         forbidden_patterns=("suit_mapping_reuse", "wire_bet_token", "check_check_after_postflop_check"),
         gate_metrics=("national_acceptance_ok", "adapter_telemetry_clean"),
     ),
+    "native_tcp": SkillLayer(
+        layer_id="native_tcp",
+        poker_skill_ref="National native client",
+        description="Direct national TCP client entrypoint, line protocol state tracking, and wire action emission.",
+        required_spot_fields=("street", "position", "legal_actions", "to_call"),
+        forbidden_patterns=("bot_adapter_import", "json_response_stdout", "wire_bet_token", "check_check_after_postflop_check"),
+        gate_metrics=("national_native_contract_ok", "national_acceptance_ok", "native_tcp_smoke_ok"),
+    ),
     "map_elites": SkillLayer(
         layer_id="map_elites",
         poker_skill_ref="Evolution archive",

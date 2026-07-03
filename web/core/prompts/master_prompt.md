@@ -35,13 +35,13 @@ Every plan must include:
 </attribution>
 
 <game_rules>
-Bot action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). In the national_primary workflow, the final precommit gate uses national 70-hand matches. During Phase 1 the evolved bot remains a JSON strategy subprocess and national execution is through `sever/bot_adapter.py`; only assign TCP-native work when the phase plan explicitly says so.
+Bot action encoding for legacy JSON internals: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). In the national_primary workflow, the final precommit gate uses national 70-hand matches through the legacy adapter path. In the national_native workflow, the formal evolved bot is a native TCP client: `national_bot.py` must connect to the national server and send `raise <amount>`, `fold`, `call`, `check`, or `allin` directly. Do not plan a national_native bot whose formal entry is only JSON stdin/stdout.
 Game parameters from `sever/国赛平台/`: 70 hands/match, 20000 chips reset every hand, blinds 50/100. SB acts first preflop; BB acts first on flop/turn/river; players alternate SB/BB roles every hand.
 Heads-up identity: `dealer_id` is SB. Therefore `bb = 1 - dealer_id`; do not use `next_player(dealer_id, 1)` for SB or `next_player(dealer_id, 2)` for BB. Postflop, BB is out of position and acts first; SB/dealer is in position.
-Wire protocol boundary: TCP actions are `raise <amount>`, `fold`, `call`, `check`, `allin`. Plans must not ask workers to emit TCP text from JSON bots. `bet` is illegal on the wire; use "bet" only as poker prose and implement it as a positive raise-to-total response.
+Wire protocol boundary: TCP actions are `raise <amount>`, `fold`, `call`, `check`, `allin`. In adapter mode, JSON bots still return integer actions and the adapter emits TCP text. In national_native mode, `national_bot.py` emits TCP text itself and must not import or depend on `sever/bot_adapter.py`. `bet` is illegal on the wire; use "bet" only as poker prose and implement it as `raise <amount>` on TCP or a positive raise-to-total internally.
 Raise rules: first preflop raise-to >= 200; first postflop raise-to >= 100; every re-raise must be strictly greater than 2x the previous raise-to (`prev * 2 + 1` minimum). Raise-to must exceed the player's current street bet, must not exceed available chips, and must not equal all remaining chips.
 Call/check rules: postflop first action cannot be call; postflop after any first action, check is illegal. If the first postflop player checks, the second player passes with call, not another check. Preflop BB cannot call after SB limps/calls; BB should check, raise, or fold.
-All-in rules: return -2 for all-in. After one player all-ins, the opponent may only call or fold; consecutive all-ins are illegal. Avoid plans that rely on TCP postflop check-check being legal; the adapter maps JSON 0 to TCP call after a postflop check.
+All-in rules: use `allin` on native TCP and `-2` only inside legacy JSON internals. After one player all-ins, the opponent may only call or fold; consecutive all-ins are illegal. Avoid plans that rely on TCP postflop check-check being legal; native bots must send `call` after an opponent postflop check when passing the street.
 </game_rules>
 
 <poker_theory_reference>
@@ -85,7 +85,7 @@ Use fewer workers when data is uncertain (few games), more workers when the bot 
 
 **IMPORTANT: Tuner ownership is a hard gate** — If `role` is Hyperparameter Tuner, its `target_files` must be exactly `["constants.py"]`. Do not assign `strategy.py`, `postflop.py`, `strategy_helpers.py`, or any helper module to a Tuner. If a numeric threshold outside `constants.py` needs work, make it an Algorithmic Logic Architect task that refactors the owning logic or centralizes the constant deliberately; do not label that task as Tuner.
 
-Every worker task must declare exactly one primary `skill_layer` so the change can be traced through decision tests, national acceptance, and the candidate ledger. Use the offline skill-library vocabulary injected in the workflow profile; useful layers include `preflop_range`, `texture`, `spr`, `blocker`, `line_template`, `opponent_model`, `action_sanitizer`, `protocol`, `adapter`, and `telemetry`.
+Every worker task must declare exactly one primary `skill_layer` so the change can be traced through decision tests, national acceptance, and the candidate ledger. Use the offline skill-library vocabulary injected in the workflow profile; useful layers include `preflop_range`, `texture`, `spr`, `blocker`, `line_template`, `opponent_model`, `action_sanitizer`, `protocol`, `adapter`, `native_tcp`, and `telemetry`.
 
 If the injected Line budget section marks `strategy.py` or `postflop.py` as `near_hard_cap`, that file must not grow. Plan cohesive helper-module migration or LOC recovery first, and set `expected_diff_shape` to show which logic moves out or is deleted. A plan that only adds logic to a near-cap core file will fail the size gate.
 </worker_guidance>

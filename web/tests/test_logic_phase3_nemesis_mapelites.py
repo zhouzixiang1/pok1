@@ -255,6 +255,8 @@ def mock_ui():
 
 @pytest.fixture(autouse=True)
 def _mock_precommit_semantic(monkeypatch):
+    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "default")
+
     async def _fake_semantic(v, source_v, matchups, master_plan, ui):
         return {"recommended_action": "proceed", "confidence": "low",
                 "win_pattern_analysis": "", "top_opponent_assessment": "",

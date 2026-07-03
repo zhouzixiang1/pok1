@@ -546,6 +546,7 @@ def _rating_protocol_config(n_pairs=None):
     return {
         "profile_id": getattr(profile, "profile_id", "default"),
         "protocol": protocol,
+        "national_execution_mode": getattr(profile, "national_execution_mode", "adapter"),
         "national_hands": national_hands,
         "national_matches": national_matches,
         "strict": strict_bool,
@@ -626,20 +627,32 @@ def _run_local_json_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, n_pair
 
 def _run_national_rating_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, config):
     """Run the national GameEngine rating backend and return daemon result shape."""
-    from national_acceptance import resolve_bot, run_pair
-
-    bot_a = resolve_bot(bot_a_path)
-    bot_b = resolve_bot(bot_b_path)
     hands = int(config["national_hands"])
     matches = int(config["national_matches"])
     strict = bool(config["strict"])
+    native_tcp_mode = config.get("national_execution_mode") == "native_tcp"
+    if native_tcp_mode:
+        from national_native import run_native_tcp_pair
+    else:
+        from national_acceptance import resolve_bot, run_pair
+        bot_a = resolve_bot(bot_a_path)
+        bot_b = resolve_bot(bot_b_path)
     wins_a = wins_b = draws = 0
     net_chips_list: list[int] = []
     replays: list[dict] = []
     issues: list[str] = []
 
     for repeat in range(matches):
-        result = asyncio.run(run_pair(bot_a, bot_b, hands, strict=strict))
+        if native_tcp_mode:
+            result = asyncio.run(run_native_tcp_pair(
+                bot_a_path,
+                bot_b_path,
+                hands,
+                require_native_a=False,
+                require_native_b=False,
+            ))
+        else:
+            result = asyncio.run(run_pair(bot_a, bot_b, hands, strict=strict))
         net = int(result.get("net_chips_a", 0) or 0)
         net_chips_list.append(net)
         if net > 0:
@@ -651,7 +664,7 @@ def _run_national_rating_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, c
         if not result.get("passed_compliance", False):
             issues.extend(str(item) for item in (result.get("issues") or []))
         replay = dict(result)
-        replay["rating_protocol"] = "national"
+        replay["rating_protocol"] = "national_native_tcp" if native_tcp_mode else "national"
         replay["repeat"] = repeat + 1
         replays.append(replay)
 
@@ -669,7 +682,7 @@ def _run_national_rating_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, c
             wins_b,
             draws,
             total,
-            "national_rating_compliance: " + "; ".join(issues[:5]),
+            ("native_rating_compliance: " if native_tcp_mode else "national_rating_compliance: ") + "; ".join(issues[:5]),
             net_chips_list,
         )
     return (bot_a_name, bot_b_name, wins_a, wins_b, draws, total, None, net_chips_list)
@@ -1095,9 +1108,10 @@ def main():
     log.info("Elo ranking + Head-to-Head matrix + per-game updates")
     _backend_config = _rating_protocol_config(n_pairs=args.pairs)
     log.info(
-        "Rating backend: profile=%s protocol=%s national_hands=%s national_matches=%s strict=%s",
+        "Rating backend: profile=%s protocol=%s execution=%s national_hands=%s national_matches=%s strict=%s",
         _backend_config["profile_id"],
         _backend_config["protocol"],
+        _backend_config["national_execution_mode"],
         _backend_config["national_hands"],
         _backend_config["national_matches"],
         _backend_config["strict"],

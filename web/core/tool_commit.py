@@ -73,6 +73,30 @@ def validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=None):
     if not ckpt:
         missing_gates.append("pipeline_checkpoint")
     else:
+        try:
+            from workflow_profiles import get_workflow_profile
+            workflow_profile = get_workflow_profile()
+            expected_profile_id = getattr(workflow_profile, "profile_id", "")
+            expected_execution_mode = getattr(workflow_profile, "national_execution_mode", "adapter")
+        except Exception:
+            expected_profile_id = ""
+            expected_execution_mode = ""
+        checkpoint_profile_id = str(ckpt.get("workflow_profile_id") or "")
+        checkpoint_execution_mode = str(ckpt.get("national_execution_mode") or "")
+        if expected_profile_id and checkpoint_profile_id and checkpoint_profile_id != expected_profile_id:
+            failed_gates.append({
+                "gate": "pipeline_checkpoint",
+                "reason": "workflow_profile_id mismatch",
+                "expected": expected_profile_id,
+                "current": checkpoint_profile_id,
+            })
+        if expected_execution_mode and checkpoint_execution_mode and checkpoint_execution_mode != expected_execution_mode:
+            failed_gates.append({
+                "gate": "pipeline_checkpoint",
+                "reason": "national_execution_mode mismatch",
+                "expected": expected_execution_mode,
+                "current": checkpoint_execution_mode,
+            })
         gate_results = ckpt.get("gate_results", {}) or {}
         if source_v is not None and int(ckpt.get("source_v") or -1) != source_v:
             failed_gates.append({
@@ -99,6 +123,28 @@ def validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=None):
         if not quality:
             missing_gates.append("quality")
         else:
+            quality_profile_id = str(quality.get("workflow_profile_id") or quality.get("profile_id") or "")
+            quality_execution_mode = str(quality.get("national_execution_mode") or "")
+            if expected_profile_id and quality_profile_id != expected_profile_id:
+                failed_gates.append({
+                    "gate": "quality",
+                    "reason": "workflow_profile_id mismatch",
+                    "expected": expected_profile_id,
+                    "current": quality_profile_id or "missing",
+                })
+            if expected_execution_mode and quality_execution_mode != expected_execution_mode:
+                failed_gates.append({
+                    "gate": "quality",
+                    "reason": "national_execution_mode mismatch",
+                    "expected": expected_execution_mode,
+                    "current": quality_execution_mode or "missing",
+                })
+            if expected_execution_mode == "native_tcp" and quality.get("national_native_contract_ok") is not True:
+                failed_gates.append({
+                    "gate": "quality",
+                    "reason": "national native TCP contract did not pass",
+                    "value": quality.get("national_native_contract_ok"),
+                })
             if quality.get("all_passed") is not True:
                 failed_gates.append({"gate": "quality", "reason": "all_passed is not true", "value": quality})
             if quality.get("critical_scenarios_passed") is not True:
@@ -141,6 +187,22 @@ def validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=None):
         elif precommit.get("passed") is not True:
             failed_gates.append({"gate": "precommit_eval", "reason": "precommit eval did not pass", "value": precommit})
         else:
+            precommit_profile_id = str(precommit.get("workflow_profile_id") or precommit.get("profile_id") or "")
+            precommit_execution_mode = str(precommit.get("national_execution_mode") or "")
+            if expected_profile_id and precommit_profile_id != expected_profile_id:
+                failed_gates.append({
+                    "gate": "precommit_eval",
+                    "reason": "workflow_profile_id mismatch",
+                    "expected": expected_profile_id,
+                    "current": precommit_profile_id or "missing",
+                })
+            if expected_execution_mode and precommit_execution_mode != expected_execution_mode:
+                failed_gates.append({
+                    "gate": "precommit_eval",
+                    "reason": "national_execution_mode mismatch",
+                    "expected": expected_execution_mode,
+                    "current": precommit_execution_mode or "missing",
+                })
             precommit_fingerprint = precommit.get("code_fingerprint")
             if not precommit_fingerprint:
                 missing_gates.append("precommit_code_fingerprint")
@@ -150,6 +212,19 @@ def validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=None):
                     "reason": "code_fingerprint changed since precommit eval",
                     "expected": precommit_fingerprint,
                     "current": current_code_fingerprint,
+                })
+
+        if expected_execution_mode == "native_tcp":
+            try:
+                from national_native import check_native_contract
+                native_contract_errors = check_native_contract(bot_dir)
+            except Exception as exc:
+                native_contract_errors = [f"{type(exc).__name__}: {str(exc)[:200]}"]
+            if native_contract_errors:
+                failed_gates.append({
+                    "gate": "native_contract",
+                    "reason": "candidate is not a valid native national TCP bot",
+                    "errors": native_contract_errors[:5],
                 })
 
     return {

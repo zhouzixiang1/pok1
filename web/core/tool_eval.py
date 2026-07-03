@@ -163,8 +163,9 @@ async def _run_national_precommit_backend(
 
     The old precommit backend measures local mirror-battle regression. This
     backend makes the final commit gate use the national GameEngine: each sample
-    is a full national match (70 hands by profile default), with adapter
-    telemetry and strict protocol failures treated as hard blockers.
+    is a full national match (70 hands by profile default). In national_native
+    the match is run through native TCP bot clients; in national_primary it uses
+    the legacy adapter backend.
     """
     national_hands = int(os.environ.get(
         "POK_NATIONAL_PRECOMMIT_HANDS",
@@ -187,22 +188,33 @@ async def _run_national_precommit_backend(
         opponents_with_paths.append(copied)
 
     blockers = list(initial_blockers or [])
+    native_tcp_mode = getattr(workflow_profile, "national_execution_mode", "adapter") == "native_tcp"
+    execution_protocol = "national_native_tcp" if native_tcp_mode else "national"
     if not blockers and opponents_with_paths:
         try:
-            from national_eval import run_national_precommit
-
-            national_result = await run_national_precommit(
-                str(candidate_main),
-                opponents_with_paths,
-                hands=national_hands,
-                matches_per_opponent=national_matches,
-                strict=bool(getattr(workflow_profile, "national_acceptance_hard", True)),
-                parent_label=parent_name,
-            )
+            if native_tcp_mode:
+                from national_native import run_native_precommit
+                national_result = await run_native_precommit(
+                    str(candidate_main),
+                    opponents_with_paths,
+                    hands=national_hands,
+                    matches_per_opponent=national_matches,
+                    parent_label=parent_name,
+                )
+            else:
+                from national_eval import run_national_precommit
+                national_result = await run_national_precommit(
+                    str(candidate_main),
+                    opponents_with_paths,
+                    hands=national_hands,
+                    matches_per_opponent=national_matches,
+                    strict=bool(getattr(workflow_profile, "national_acceptance_hard", True)),
+                    parent_label=parent_name,
+                )
             blockers.extend(national_result.get("blockers") or [])
         except Exception as exc:
             national_result = {
-                "evaluation_protocol": "national",
+                "evaluation_protocol": execution_protocol,
                 "candidate": candidate_name,
                 "opponents": opponents_with_paths,
                 "matchups": [],
@@ -210,7 +222,7 @@ async def _run_national_precommit_backend(
                 "total_losses": 0,
                 "total_draws": 0,
                 "paired_bootstrap": {
-                    "protocol": "national",
+                    "protocol": execution_protocol,
                     "hands_per_match": national_hands,
                     "matches_per_opponent": national_matches,
                     "net_chips_samples": 0,
@@ -218,7 +230,7 @@ async def _run_national_precommit_backend(
                     "gate_degraded": True,
                 },
                 "blockers": [{
-                    "reason": "national_precommit_exception",
+                    "reason": "native_precommit_exception" if native_tcp_mode else "national_precommit_exception",
                     "details": f"{type(exc).__name__}: {str(exc)[:500]}",
                 }],
                 "passed": False,
@@ -226,7 +238,7 @@ async def _run_national_precommit_backend(
             blockers.extend(national_result["blockers"])
     else:
         national_result = {
-            "evaluation_protocol": "national",
+            "evaluation_protocol": execution_protocol,
             "candidate": candidate_name,
             "opponents": opponents_with_paths,
             "matchups": [],
@@ -234,7 +246,7 @@ async def _run_national_precommit_backend(
             "total_losses": 0,
             "total_draws": 0,
             "paired_bootstrap": {
-                "protocol": "national",
+                "protocol": execution_protocol,
                 "hands_per_match": national_hands,
                 "matches_per_opponent": national_matches,
                 "net_chips_samples": 0,
@@ -262,13 +274,15 @@ async def _run_national_precommit_backend(
         log_system_event(
             "pipeline.precommit_eval.national",
             "info" if passed else "warn",
-            f"National precommit {'passed' if passed else 'FAILED'} for v{v}: "
+            f"National {'native TCP ' if native_tcp_mode else ''}precommit "
+            f"{'passed' if passed else 'FAILED'} for v{v}: "
             f"{total_wins}W-{total_losses}L-{total_draws}D vs {len(all_opponents)} opponents",
             {
                 "version": v,
                 "source_v": source_v,
                 "passed": passed,
-                "evaluation_protocol": "national",
+                "evaluation_protocol": execution_protocol,
+                "execution_mode": "native_tcp" if native_tcp_mode else "adapter",
                 "hands_per_match": national_hands,
                 "matches_per_opponent": national_matches,
                 "blockers": blockers,
@@ -284,7 +298,9 @@ async def _run_national_precommit_backend(
         "source_v": source_v,
         "n_games": national_matches,
         "requested_n_games": requested_n_games,
-        "evaluation_protocol": "national",
+        "workflow_profile_id": workflow_profile.profile_id,
+        "evaluation_protocol": execution_protocol,
+        "national_execution_mode": "native_tcp" if native_tcp_mode else "adapter",
         "hands_per_match": national_hands,
         "matches_per_opponent": national_matches,
         "opponents": all_opponents,
@@ -303,7 +319,8 @@ async def _run_national_precommit_backend(
         name="precommit_eval",
         primary_score=paired_bootstrap_payload.get("net_chips_mean"),
         metrics={
-            "evaluation_protocol": "national",
+            "evaluation_protocol": execution_protocol,
+            "national_execution_mode": "native_tcp" if native_tcp_mode else "adapter",
             "total_wins": total_wins,
             "total_losses": total_losses,
             "total_draws": total_draws,
@@ -333,7 +350,7 @@ async def _run_national_precommit_backend(
         worst_wins, worst_losses = _worst_wins_losses(matchups, worst_opponent)
         result["directive"] = (
             f"National precommit FAILED (attempt {precommit_attempt}/{MAX_PRECOMMIT_RETRIES}) — "
-            f"the final gate now uses national 70-hand rules, not local mirror battle. "
+            f"the final gate now uses {'native TCP ' if native_tcp_mode else ''}national 70-hand rules, not local mirror battle. "
             f"Do NOT call run_precommit_eval again on unchanged code. Rework the bot against "
             f"{worst_opponent} ({worst_wins}W-{worst_losses}L) and the listed blockers."
         )
@@ -381,7 +398,8 @@ async def _run_national_precommit_backend(
                 gate_results=scorecard.gates,
                 metrics={
                     "passed": passed,
-                    "evaluation_protocol": "national",
+                    "evaluation_protocol": execution_protocol,
+                    "national_execution_mode": "native_tcp" if native_tcp_mode else "adapter",
                     "total_wins": total_wins,
                     "total_losses": total_losses,
                     "total_draws": total_draws,
@@ -828,7 +846,7 @@ def _worst_wins_losses(matchups, opponent):
     return 0, 0
 
 
-@tool("run_precommit_eval", "Run the final workflow precommit regression check before commit. In national_primary it uses 70-hand national matches; otherwise it uses local mirror battle.", {"version": int, "source_v": int, "n_games": int})
+@tool("run_precommit_eval", "Run the final workflow precommit regression check before commit. national_primary uses adapter national matches; national_native uses native TCP national matches; other profiles use local mirror battle.", {"version": int, "source_v": int, "n_games": int})
 async def run_precommit_eval(args):
     _t0 = time.time()
     v, source_v = _resolve_version_args(args)
@@ -873,14 +891,31 @@ async def run_precommit_eval(args):
     except Exception:
         code_fingerprint = ""
 
-    # Idempotency guard: skip if precommit eval already passed for the same code snapshot.
+    workflow_profile = get_workflow_profile()
+    native_tcp_mode = getattr(workflow_profile, "national_execution_mode", "adapter") == "native_tcp"
+    expected_execution_mode = "native_tcp" if native_tcp_mode else "adapter"
+
+    # Idempotency guard: skip if precommit eval already passed for the same code snapshot
+    # under the same workflow profile and national execution mode.
     _precommit_ckpt = _matching_checkpoint(v, source_v)
     if _precommit_ckpt and _precommit_ckpt.get("stage") in (
         "verified", "archived"
     ):
         precommit_gate = _precommit_ckpt.get("gate_results", {}).get("precommit_eval", {})
         cached_fingerprint = precommit_gate.get("code_fingerprint")
-        if precommit_gate.get("passed") is True and cached_fingerprint == code_fingerprint:
+        cached_profile_id = str(precommit_gate.get("workflow_profile_id") or precommit_gate.get("profile_id") or "")
+        cached_execution_mode = str(precommit_gate.get("national_execution_mode") or "")
+        if workflow_profile.profile_id == "default":
+            cache_profile_matches = (
+                cached_profile_id in {"", "default"}
+                and cached_execution_mode in {"", expected_execution_mode}
+            )
+        else:
+            cache_profile_matches = (
+                cached_profile_id == workflow_profile.profile_id
+                and cached_execution_mode == expected_execution_mode
+            )
+        if precommit_gate.get("passed") is True and cached_fingerprint == code_fingerprint and cache_profile_matches:
             precommit_gate["idempotent_cache"] = True
             precommit_gate["directive"] = (
                 "Precommit eval ALREADY PASSED. Do NOT re-run. "
@@ -891,19 +926,22 @@ async def run_precommit_eval(args):
             log_system_event(
                 "pipeline.precommit_cache_stale",
                 "warn",
-                f"Precommit cache stale for v{v}; bot code changed since cached eval.",
+                f"Precommit cache stale for v{v}; cached code/profile does not match active eval requirements.",
                 {
                     "version": v,
                     "source_v": source_v,
                     "cached_fingerprint": cached_fingerprint,
                     "current_fingerprint": code_fingerprint,
+                    "cached_workflow_profile_id": cached_profile_id,
+                    "active_workflow_profile_id": workflow_profile.profile_id,
+                    "cached_execution_mode": cached_execution_mode,
+                    "active_execution_mode": expected_execution_mode,
                 },
             )
 
     _set_pipeline_status(f"Pre-commit eval for v{v}")
 
     candidate_id = f"{candidate_name}_from_v{source_v}"
-    workflow_profile = get_workflow_profile()
     if append_candidate_event:
         try:
             append_candidate_event(

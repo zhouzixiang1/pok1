@@ -10,11 +10,13 @@ Analyze the Master plan systematically:
 2. **Experience alignment**: Compare the plan against the experience pool. If the pool says "strategy X failed in v12-v15", the plan should not propose X again without a fundamentally different approach.
 3. **Direction novelty**: Compare against recent commit messages. If the last 3 commits all tried "postflop aggression tuning", a 4th attempt is unlikely to succeed.
 4. **Targeting quality**: Does the plan actually address the core issues identified by the combined analyst, or does it pursue tangential improvements?
-5. **National rules safety**: Reject plans that ask JSON bots to emit TCP text,
-   depend on wire-level `bet`, use raise-by-increment instead of raise-to-total,
-   represent all-in as a positive raise, assume postflop TCP `check-check` is
-   legal, allow BB to call after an SB limp/call preflop, or use non-strict
-   re-raise minimums. Full rules live in `sever/国赛平台/`.
+5. **National rules safety**: In adapter workflows, reject plans that ask JSON
+   bots to emit TCP text. In national_native, reject plans that leave the formal
+   entry as JSON-only or depend on `sever/bot_adapter.py`. In all workflows,
+   reject wire-level `bet`, raise-by-increment instead of raise-to-total,
+   positive-raise all-ins, postflop TCP `check-check`, BB calling after an SB
+   limp/call preflop, or non-strict re-raise minimums. Full rules live in
+   `sever/国赛平台/`.
 </analysis>
 
 <data>

@@ -282,6 +282,32 @@ async def run_quality_gates(args):
         return _state_blocked(message, v, source_v, checkpoint=active_ckpt)
     bot_dir = get_bot_dir(v)
     workflow_profile = get_workflow_profile()
+    native_tcp_mode = getattr(workflow_profile, "national_execution_mode", "adapter") == "native_tcp"
+    if native_tcp_mode and not (bot_dir / "national_bot.py").exists():
+        try:
+            from national_native import ensure_native_entry
+            ensure_native_entry(bot_dir)
+            log_system_event(
+                "pipeline.native_entry_recovered",
+                "info",
+                f"Recovered missing native national TCP entry for v{v} before quality gates",
+                {
+                    "version": v,
+                    "source_v": source_v,
+                    "workflow_profile_id": workflow_profile.profile_id,
+                },
+            )
+        except Exception as exc:
+            log_system_event(
+                "pipeline.native_entry_recovery_failed",
+                "error",
+                f"Failed to recover native national TCP entry for v{v}: {type(exc).__name__}: {str(exc)[:200]}",
+                {
+                    "version": v,
+                    "source_v": source_v,
+                    "workflow_profile_id": workflow_profile.profile_id,
+                },
+            )
     candidate_id = f"claude_v{v}_from_v{source_v}" if source_v is not None else f"claude_v{v}"
     if append_candidate_event:
         try:
@@ -326,6 +352,12 @@ async def run_quality_gates(args):
     _quality_ckpt_for_scope = _matching_checkpoint(v, source_v) if source_v is not None else _matching_checkpoint(v)
     _master_plan_for_scope = (_quality_ckpt_for_scope or {}).get("master_plan", {})
     _plan_tasks = _declared_scope_tasks_from_plan(_master_plan_for_scope)
+    if native_tcp_mode and _plan_tasks:
+        _plan_tasks = list(_plan_tasks) + [{
+            "worker_id": "platform_native_entry",
+            "target_files": ["national_bot.py"],
+            "skill_layer": "native_tcp",
+        }]
     if _plan_tasks and changed_files_list:
         try:
             declared_skill_layers = sorted({
@@ -365,6 +397,38 @@ async def run_quality_gates(args):
         }
 
     def _quality_cache_current(gate):
+        cached_profile_id = str(gate.get("workflow_profile_id") or gate.get("profile_id") or "")
+        cached_execution_mode = str(gate.get("national_execution_mode") or "")
+        expected_execution_mode = "native_tcp" if native_tcp_mode else "adapter"
+        if cached_profile_id != workflow_profile.profile_id or cached_execution_mode != expected_execution_mode:
+            log_system_event(
+                "pipeline.quality_cache_profile_stale",
+                "warn",
+                f"Quality gate cache stale for v{v}; cached workflow "
+                f"{cached_profile_id or 'unknown'}/{cached_execution_mode or 'unknown'} "
+                f"does not match active workflow {workflow_profile.profile_id}/{expected_execution_mode}.",
+                {
+                    "version": v,
+                    "source_v": source_v,
+                    "cached_workflow_profile_id": cached_profile_id,
+                    "cached_execution_mode": cached_execution_mode,
+                    "active_workflow_profile_id": workflow_profile.profile_id,
+                    "active_execution_mode": expected_execution_mode,
+                },
+            )
+            return False
+        if native_tcp_mode and gate.get("national_native_contract_ok") is not True:
+            log_system_event(
+                "pipeline.quality_cache_native_contract_stale",
+                "warn",
+                f"Quality gate cache stale for v{v}; native TCP contract was not recorded as passed.",
+                {
+                    "version": v,
+                    "source_v": source_v,
+                    "cached_native_contract_ok": gate.get("national_native_contract_ok"),
+                },
+            )
+            return False
         cached_fingerprint = gate.get("code_fingerprint")
         if cached_fingerprint and cached_fingerprint == code_fingerprint:
             return True
@@ -399,6 +463,13 @@ async def run_quality_gates(args):
         protected_contract_errors = check_bot_protocol_contract(bot_dir)
     except Exception as e:
         protected_contract_errors = [f"protected_contract_check_error: {type(e).__name__}: {str(e)[:200]}"]
+    native_contract_errors = []
+    if native_tcp_mode:
+        try:
+            from national_native import check_native_contract
+            native_contract_errors = check_native_contract(bot_dir)
+        except Exception as e:
+            native_contract_errors = [f"native_contract_check_error: {type(e).__name__}: {str(e)[:200]}"]
     if import_errors:
         log_system_event(
             "pipeline.import_contract_failed", "error",
@@ -515,32 +586,45 @@ async def run_quality_gates(args):
             len(compile_errors) == 0
             and len(import_errors) == 0
             and len(protected_contract_errors) == 0
+            and len(native_contract_errors) == 0
             and len(smoke_errors) == 0
             and (bot_dir / "main.py").exists()
             and _bot_under_project_bots
         )
         if can_run_national_acceptance:
             try:
-                from national_acceptance import run_acceptance_for_candidate
-                _acceptance = await run_acceptance_for_candidate(
-                    bot_dir,
-                    source_v=source_v,
-                    hands=national_acceptance_hands,
-                    max_opponents=2,
-                    strict=bool(workflow_profile.national_acceptance_hard),
-                    timeout_sec=national_acceptance_timeout_sec,
-                )
+                if native_tcp_mode:
+                    from national_native import run_native_acceptance_for_candidate
+                    _acceptance = await run_native_acceptance_for_candidate(
+                        bot_dir,
+                        source_v=source_v,
+                        hands=national_acceptance_hands,
+                        max_opponents=2,
+                        timeout_sec=national_acceptance_timeout_sec,
+                    )
+                else:
+                    from national_acceptance import run_acceptance_for_candidate
+                    _acceptance = await run_acceptance_for_candidate(
+                        bot_dir,
+                        source_v=source_v,
+                        hands=national_acceptance_hands,
+                        max_opponents=2,
+                        strict=bool(workflow_profile.national_acceptance_hard),
+                        timeout_sec=national_acceptance_timeout_sec,
+                    )
                 national_acceptance_ok = bool(_acceptance.passed)
                 national_acceptance_errors = _acceptance.issues[:5]
                 national_acceptance_payload = _acceptance.model_dump()
                 log_system_event(
                     "pipeline.national_acceptance_passed" if national_acceptance_ok else "pipeline.national_acceptance_failed",
                     "success" if national_acceptance_ok else "error",
-                    f"National acceptance {'passed' if national_acceptance_ok else 'failed'} for v{v} "
+                    f"National {'native TCP ' if native_tcp_mode else ''}acceptance "
+                    f"{'passed' if national_acceptance_ok else 'failed'} for v{v} "
                     f"({national_acceptance_hands} hands/pair)",
                     {
                         "version": v,
                         "source_v": source_v,
+                        "execution_mode": "native_tcp" if native_tcp_mode else "adapter",
                         "hands": national_acceptance_hands,
                         "timeout_sec": national_acceptance_timeout_sec,
                         "opponents": _acceptance.opponents,
@@ -719,6 +803,7 @@ async def run_quality_gates(args):
         len(compile_errors) == 0
         and len(import_errors) == 0
         and len(protected_contract_errors) == 0
+        and len(native_contract_errors) == 0
         and len(smoke_errors) == 0
         and len(national_protocol_errors) == 0
         and national_acceptance_ok
@@ -742,6 +827,9 @@ async def run_quality_gates(args):
         "import_errors": import_errors[:3] if import_errors else [],
         "protected_contract_ok": len(protected_contract_errors) == 0,
         "protected_contract_errors": protected_contract_errors[:3] if protected_contract_errors else [],
+        "national_execution_mode": "native_tcp" if native_tcp_mode else "adapter",
+        "national_native_contract_ok": len(native_contract_errors) == 0,
+        "national_native_contract_errors": native_contract_errors[:5] if native_contract_errors else [],
         "smoke_ok": len(smoke_errors) == 0,
         "smoke_errors": smoke_errors[:3] if smoke_errors else [],
         "national_protocol_ok": len(national_protocol_errors) == 0,
@@ -798,6 +886,15 @@ async def run_quality_gates(args):
         )
     if protected_contract_errors:
         failed_gates_detail.append("protected_contract")
+    if native_contract_errors:
+        failed_gates_detail.append(f"national_native_contract({'; '.join(native_contract_errors[:3])})")
+        for err in native_contract_errors[:6]:
+            _record_quality_failure(
+                v,
+                "national_native_contract",
+                "native_tcp",
+                f"Native national TCP contract violation: {err}",
+            )
     if true_shadows:
         failed_gates_detail.append(
             f"placement_shadow({'; '.join(w[:120] for w in true_shadows[:3])})"
@@ -860,6 +957,7 @@ async def run_quality_gates(args):
     result["failed_gates"] = failed_gates_detail if not all_passed else []
     quality_detail = {
         "all_passed": all_passed,
+        "workflow_profile_id": workflow_profile.profile_id,
         "critical_scenarios_passed": critical_ok,
         "decision_pass_rate": round(decision_rate, 4),
         "decision_ok": decision_ok,
@@ -870,6 +968,9 @@ async def run_quality_gates(args):
         "import_errors": result["import_errors"],
         "protected_contract_ok": result["protected_contract_ok"],
         "protected_contract_errors": result["protected_contract_errors"],
+        "national_execution_mode": result["national_execution_mode"],
+        "national_native_contract_ok": result["national_native_contract_ok"],
+        "national_native_contract_errors": result["national_native_contract_errors"],
         "smoke_ok": result["smoke_ok"],
         "smoke_errors": result["smoke_errors"],
         "national_protocol_ok": result["national_protocol_ok"],
@@ -910,6 +1011,14 @@ async def run_quality_gates(args):
     scorecard.add(GateResult.from_bool("compile", len(compile_errors) == 0, failures=compile_errors[:3]))
     scorecard.add(GateResult.from_bool("runtime_import", len(import_errors) == 0, failures=[str(e) for e in import_errors[:3]]))
     scorecard.add(GateResult.from_bool("protected_contract", len(protected_contract_errors) == 0, failures=protected_contract_errors[:3]))
+    scorecard.add(GateResult.from_bool(
+        "national_native_contract",
+        len(native_contract_errors) == 0,
+        failures=native_contract_errors[:5],
+        metrics={"execution_mode": "native_tcp" if native_tcp_mode else "adapter"},
+        blocking=native_tcp_mode,
+        hidden=not native_tcp_mode,
+    ))
     scorecard.add(GateResult.from_bool("smoke", len(smoke_errors) == 0, failures=smoke_errors[:3]))
     scorecard.add(GateResult.from_bool(
         "placement_shadow_review",
@@ -1174,6 +1283,17 @@ async def prepare_next_gen(args):
         log_fix_application(applied, skipped, next_dir, source_v)
     if skipped:
         _log.info("Fix patches skipped for v%d: %s", next_v, skipped)
+
+    workflow_profile = get_workflow_profile()
+    if getattr(workflow_profile, "national_execution_mode", "adapter") == "native_tcp":
+        from national_native import ensure_native_entry
+        ensure_native_entry(next_dir)
+        log_system_event(
+            "pipeline.native_entry_prepared",
+            "info",
+            f"Prepared native national TCP entry for v{next_v}",
+            {"next_v": next_v, "source_v": source_v, "entry": "national_bot.py"},
+        )
 
     (next_dir / ".completed").unlink(missing_ok=True)
 

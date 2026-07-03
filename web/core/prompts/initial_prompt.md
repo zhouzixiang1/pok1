@@ -9,7 +9,8 @@ Create a robust, multi-file Texas Hold'em poker bot in the `bots/claude_v1/` dir
 
 # Requirements
 1. **Multi-file Architecture**: 
-   - `bots/claude_v1/main.py`: The entry point that reads from stdin and writes to stdout.
+   - `bots/claude_v1/main.py`: Legacy Botzone/local JSON entry point.
+   - `bots/claude_v1/national_bot.py`: Native national TCP entry point for national_native workflow.
    - `bots/claude_v1/preflop.py`: Handles preflop hand evaluation.
    - `bots/claude_v1/postflop.py`: Handles postflop logic and win rate estimation.
 2. **Protocol**:
@@ -18,7 +19,8 @@ Create a robust, multi-file Texas Hold'em poker bot in the `bots/claude_v1/` dir
    - Output JSON to `stdout`. Example response:
      `{"response": 100}`
    - Actions: `0` (call/check), `-1` (fold), `-2` (all-in), `>0` (raise-to-total: 加注到的阶段总额).
-   - In `national_primary`, the final precommit gate runs national 70-hand matches. Phase 1 national execution is handled by `sever/bot_adapter.py`; keep this JSON protocol unless the phase plan explicitly assigns TCP-native bot work. Do not output TCP strings from the bot.
+   - In `national_primary`, final national execution may still use `sever/bot_adapter.py` for legacy JSON bots.
+   - In `national_native`, the formal bot entry is `national_bot.py`: it must connect to the TCP server directly and send line-delimited actions. It must not rely on `sever/bot_adapter.py`, and it must not output `{"response": ...}` as the formal national entry.
    - National rules from `sever/国赛平台/`: 70 hands, 20000 chips reset each hand, blinds 50/100, SB acts first preflop, BB acts first postflop. TCP wire actions are only `raise <amount>`, `fold`, `call`, `check`, `allin`; `bet` is illegal and strategy bets must be represented as positive raise-to-total values.
    - Raise/all-in legality: first preflop raise-to >= 200, first postflop raise-to >= 100, every re-raise must be strictly greater than 2x the previous raise-to (`prev * 2 + 1` minimum), positive raises must not consume all remaining chips, and all-in must be `-2`.
    - Call/check legality: postflop first action cannot be call; postflop after any first action, check is illegal. If the first postflop player checks, the second player passes the street with call, not another check. Preflop BB cannot call after SB limps/calls; BB checks, raises, or folds.
