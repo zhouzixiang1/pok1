@@ -162,6 +162,13 @@ Uses `claude_agent_sdk` (not the Anthropic SDK directly). Two distinct patterns:
 **Pattern 2 — Direct `run_claude_query()` (Master, Workers, Reviewer, Critic, Analysts):**
 `evolution_infra.py:run_claude_query()` → `llm_query.py:run_claude_query()` sends a prompt + context files to Claude. 700K char prompt budget (`MAX_PROMPT_CHARS`) — context files proportionally compressed when exceeded. Streaming via `AssistantMessage`/`ResultMessage` types. Output captured as text, cost tracked per role. Each agent gets specific tool access: Workers get Bash/Read/Edit, Reviewer/Critic get Bash/Read, Analysts get no tools. API rate limit (529) handled with automatic retry + exponential backoff (30s, 60s, 120s).
 
+`run_claude_query()` sets the Claude Code working directory to the repository
+root. Claude Code therefore auto-loads this root `CLAUDE.md` for direct
+sub-agent calls. Keep this root file authoritative for protocol boundaries,
+national TCP compatibility via `sever/bot_adapter.py`, and evolution workflow
+facts; `web/CLAUDE.md` and `sever/CLAUDE.md` are directory-specific supplements,
+not replacements for the auto-loaded root guidance.
+
 **LLM agent roles and their tools:**
 
 | Agent | Tools | Purpose |
