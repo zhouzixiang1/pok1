@@ -221,6 +221,35 @@ def test_bot_adapter_reconstructs_preflop_allin_price_exactly():
     assert adapter._in_allin_runout is True
 
 
+def test_bot_adapter_maps_minus_two_facing_opponent_allin_to_call():
+    async def run():
+        adapter = _CaptureAdapter([{"response": -2}])
+        await adapter._handle("preflop|BIGBLIND|<0,4><1,5>")
+        await adapter._handle("allin")
+        return adapter
+
+    adapter = asyncio.run(run())
+
+    assert adapter.sent == ["call"]
+    assert adapter.telemetry["allin_conversions"] == 1
+    assert adapter._my_chips == 0
+    assert adapter._my_stage_bet == 20000
+    assert adapter._pot == 40000
+    assert adapter._in_allin_runout is True
+
+
+def test_bot_adapter_keeps_minus_two_as_open_allin():
+    adapter = BotAdapter("127.0.0.1", 10001, "unused", "Bot")
+    adapter._stage = "flop"
+    adapter._my_stage_bet = 0
+    adapter._opponent_stage_bet = 0
+    adapter._my_chips = 20000
+    adapter._opponent_chips = 20000
+
+    assert adapter._convert_action(-2) == ("allin", "allin", None)
+    assert adapter.telemetry["allin_conversions"] == 0
+
+
 def test_bot_adapter_short_opponent_allin_does_not_overcharge_call():
     async def run():
         adapter = _CaptureAdapter([{"response": 0}])

@@ -638,6 +638,13 @@ class BotAdapter:
         if action_int == -1:
             return "fold", "fold", None
         if action_int == -2:
+            # Botzone bots often use -2 for "commit my stack".  Under the
+            # national protocol, once the opponent has already sent allin the
+            # only legal continuations are call/fold, so preserve the intent as
+            # a call and record the compatibility rewrite for strict gates.
+            if self._opponent_chips == 0 and self._opponent_stage_bet > self._my_stage_bet:
+                self.telemetry["allin_conversions"] += 1
+                return "call", "call", None
             return "allin", "allin", None
         if action_int > 0:
             # Client-side raise validation: clamp to legal minimum
