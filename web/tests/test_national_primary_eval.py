@@ -1,7 +1,9 @@
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
+import elo_daemon
 import tool_eval
 from national_eval import run_national_precommit
 from workflow_profiles import get_workflow_profile
@@ -20,8 +22,142 @@ def _write_call_bot(bot_dir: Path):
 def test_national_primary_profile_selects_national_protocol():
     profile = get_workflow_profile("national_primary")
     assert profile.evaluation_protocol == "national"
+    assert profile.rating_protocol == "national"
     assert profile.national_precommit_hands == 70
+    assert profile.national_rating_hands == 70
+    assert profile.national_rating_matches == 1
     assert profile.national_acceptance_hands == 70
+    assert profile.eval_wait_min_games == 24
+    assert profile.eval_wait_rd_threshold == 110.0
+    assert profile.eval_wait_rd_min_games == 12
+
+
+def test_daemon_dispatches_national_rating_backend(monkeypatch):
+    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_primary")
+    calls = {}
+
+    def fake_national(a, b, pa, pb, config):
+        calls["national"] = (a, b, pa, pb, config)
+        return (a, b, 1, 0, 0, 1, None, [100])
+
+    def fake_local(*_args):
+        raise AssertionError("local rating backend should not run in national_primary")
+
+    monkeypatch.setattr(elo_daemon, "_run_national_rating_match", fake_national)
+    monkeypatch.setattr(elo_daemon, "_run_local_json_match", fake_local)
+
+    result = elo_daemon.run_single_match(("A", "B", "/a/main.py", "/b/main.py", 5))
+
+    assert result == ("A", "B", 1, 0, 0, 1, None, [100])
+    assert calls["national"][4]["protocol"] == "national"
+    assert calls["national"][4]["national_hands"] == 70
+    assert calls["national"][4]["national_matches"] == 5
+
+
+def test_daemon_explicit_national_rating_matches_override_pairs(monkeypatch):
+    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_primary")
+    monkeypatch.setenv("POK_NATIONAL_RATING_MATCHES", "2")
+    calls = {}
+
+    def fake_national(a, b, pa, pb, config):
+        calls["national"] = config
+        return (a, b, 1, 0, 0, 1, None, [100])
+
+    monkeypatch.setattr(elo_daemon, "_run_national_rating_match", fake_national)
+    monkeypatch.setattr(
+        elo_daemon,
+        "_run_local_json_match",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("local backend should not run")),
+    )
+
+    elo_daemon.run_single_match(("A", "B", "/a/main.py", "/b/main.py", 5))
+
+    assert calls["national"]["national_matches"] == 2
+
+
+def test_daemon_defaults_to_local_rating_backend(monkeypatch):
+    monkeypatch.delenv("POK_WORKFLOW_PROFILE", raising=False)
+    monkeypatch.delenv("POK_RATING_PROTOCOL", raising=False)
+    calls = {}
+
+    def fake_national(*_args):
+        raise AssertionError("national backend should not run by default")
+
+    def fake_local(a, b, pa, pb, n_pairs):
+        calls["local"] = (a, b, pa, pb, n_pairs)
+        return (a, b, 0, 1, 0, 1, None, [-100])
+
+    monkeypatch.setattr(elo_daemon, "_run_national_rating_match", fake_national)
+    monkeypatch.setattr(elo_daemon, "_run_local_json_match", fake_local)
+
+    result = elo_daemon.run_single_match(("A", "B", "/a/main.py", "/b/main.py", 5))
+
+    assert result == ("A", "B", 0, 1, 0, 1, None, [-100])
+    assert calls["local"][-1] == 5
+
+
+def test_daemon_national_rating_maps_net_chips(monkeypatch):
+    import national_acceptance
+
+    samples = iter([
+        {"net_chips_a": 100, "passed_compliance": True, "issues": []},
+        {"net_chips_a": -50, "passed_compliance": True, "issues": []},
+        {"net_chips_a": 0, "passed_compliance": True, "issues": []},
+    ])
+    saved = {}
+
+    async def fake_run_pair(*_args, **_kwargs):
+        return next(samples)
+
+    monkeypatch.setattr(
+        national_acceptance,
+        "resolve_bot",
+        lambda token: SimpleNamespace(label=Path(token).parent.name or str(token), path=Path(token)),
+    )
+    monkeypatch.setattr(national_acceptance, "run_pair", fake_run_pair)
+    monkeypatch.setattr(elo_daemon, "save_match_replay", lambda *args: saved.setdefault("args", args))
+
+    result = elo_daemon._run_national_rating_match(
+        "A",
+        "B",
+        "/bots/A/main.py",
+        "/bots/B/main.py",
+        {"national_hands": 70, "national_matches": 3, "strict": True},
+    )
+
+    assert result == ("A", "B", 1, 1, 1, 3, None, [100, -50, 0])
+    assert saved["args"][2:5] == (1, 1, 1)
+
+
+def test_daemon_national_rating_blocks_compliance_failures(monkeypatch):
+    import national_acceptance
+
+    async def fake_run_pair(*_args, **_kwargs):
+        return {
+            "net_chips_a": 100,
+            "passed_compliance": False,
+            "issues": ["A: illegal_actions=1"],
+        }
+
+    monkeypatch.setattr(
+        national_acceptance,
+        "resolve_bot",
+        lambda token: SimpleNamespace(label=Path(token).parent.name or str(token), path=Path(token)),
+    )
+    monkeypatch.setattr(national_acceptance, "run_pair", fake_run_pair)
+    monkeypatch.setattr(elo_daemon, "save_match_replay", lambda *_args: None)
+
+    result = elo_daemon._run_national_rating_match(
+        "A",
+        "B",
+        "/bots/A/main.py",
+        "/bots/B/main.py",
+        {"national_hands": 70, "national_matches": 1, "strict": True},
+    )
+
+    assert result[:6] == ("A", "B", 1, 0, 0, 1)
+    assert result[6].startswith("national_rating_compliance:")
+    assert result[7] == [100]
 
 
 def test_national_precommit_backend_runs_minimal_bots(tmp_path):

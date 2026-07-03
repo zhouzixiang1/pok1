@@ -112,7 +112,7 @@ def _bind_prepare_log_context(current_v: int, max_committed_v: int) -> int:
 async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> GenerationContext | None:
     """Phase 1: Analyze state, decide strategy. Disposable on interrupt."""
     from evolution_infra import (
-        MAX_ACTIVE_BOTS, MIN_GAMES_FOR_EVAL, find_current_v, find_latest_active_v, get_active_bots, load_ratings,
+        MAX_ACTIVE_BOTS, find_current_v, find_latest_active_v, get_active_bots, load_ratings,
         find_max_committed_v, git_dir_is_committed, git_has_tag,
         find_abandoned_version_floor, compute_next_generation_v,
         wait_for_daemon_eval,
@@ -217,6 +217,15 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
 
     # Wait for sufficient evaluation
     eval_kwargs = {"ui": ui, "shutdown_event": shutdown_mgr}
+    try:
+        from workflow_profiles import get_workflow_profile
+        profile = get_workflow_profile()
+        eval_kwargs["rd_threshold"] = profile.eval_wait_rd_threshold
+        eval_kwargs["rd_min_games"] = profile.eval_wait_rd_min_games
+        if min_games is None:
+            eval_kwargs["min_games"] = profile.eval_wait_min_games
+    except Exception:
+        log.warning("Workflow profile eval wait settings unavailable; using defaults")
     if min_games is not None:
         eval_kwargs["min_games"] = min_games
     eval_ok = await wait_for_daemon_eval(bot_name, **eval_kwargs)

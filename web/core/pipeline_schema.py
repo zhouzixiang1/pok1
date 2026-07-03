@@ -204,10 +204,16 @@ class WorkflowProfile(BaseModel):
     description: str = ""
     max_workers: int = Field(default=3, ge=1, le=3)
     evaluation_protocol: Literal["local_json", "national"] = "local_json"
+    rating_protocol: Literal["local_json", "national"] = "local_json"
     national_acceptance_hands: int = Field(default=20, ge=1, le=70)
     national_acceptance_hard: bool = True
     national_precommit_hands: int = Field(default=70, ge=1, le=70)
     national_precommit_matches: int = Field(default=1, ge=1, le=8)
+    national_rating_hands: int = Field(default=70, ge=1, le=70)
+    national_rating_matches: int = Field(default=1, ge=1, le=8)
+    eval_wait_min_games: int = Field(default=100, ge=1, le=1000)
+    eval_wait_rd_threshold: float = Field(default=90.0, ge=1, le=350)
+    eval_wait_rd_min_games: int = Field(default=30, ge=1, le=1000)
     hidden_scenarios_enabled: bool = False
     allowed_path_prefixes: list[str] = Field(default_factory=lambda: ["bots/"])
     focus_skill_layers: list[str] = Field(default_factory=list)
