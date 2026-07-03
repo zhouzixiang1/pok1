@@ -2691,6 +2691,7 @@ def _plan_with_accumulated_repair_scope(ckpt, plan, tasks, next_v):
     scope = set()
     scope.update(_plan_repair_scope_files(existing_plan, next_v))
     scope.update(_plan_repair_scope_files(plan, next_v))
+    scope.update(_declared_scope_ledger_files(ckpt))
     for task in tasks or []:
         scope.update(_task_declared_scope_files(task, next_v))
     if not scope:
@@ -2824,9 +2825,12 @@ def _task_must_change_filenames(task):
 
 
 def _quality_failure_target_files(ckpt, reviewer_feedback=""):
-    failures = _quality_failure_items(ckpt)
+    failures = [
+        item for item in _quality_failure_items(ckpt)
+        if not _is_declared_scope_failure_text(item)
+    ]
     files = _extract_quality_failure_files(failures)
-    if not files and reviewer_feedback:
+    if not files and reviewer_feedback and not _is_declared_scope_failure_text(reviewer_feedback):
         files = _extract_quality_failure_files([reviewer_feedback])
     return set(files)
 
@@ -3117,6 +3121,114 @@ def _flatten_text_items(value):
     return items
 
 
+def _is_declared_scope_failure_text(item):
+    text = str(item or "").lower()
+    return (
+        "declared_scope" in text
+        or "declared scope" in text
+        or "outside master plan target_files/files_allowed" in text
+        or "outside declared target_files/files_allowed" in text
+    )
+
+
+def _is_position_semantics_failure_text(item):
+    text = str(item or "").lower()
+    return (
+        "position_semantics" in text
+        or "sb must be dealer_id" in text
+        or "bb must be 1 - dealer_id" in text
+        or "dealer is sb" in text
+        or "bb acts first postflop" in text
+        or "postflop oop helper" in text
+        or "must key on my_is_bb" in text
+        or "must key on my_is_bb/bb" in text
+        or "not my_is_sb" in text
+    )
+
+
+def _declared_scope_ledger_files(ckpt, reviewer_feedback=""):
+    """Files that should be added to repair_scope_files without spawning workers.
+
+    declared_scope failures can happen after in-place crossover/repair rounds when
+    the candidate already legitimately changed a file but the accumulated scope
+    ledger did not include it yet. That is an accounting update, not a request to
+    make another code edit in that file.
+    """
+    if not isinstance(ckpt, dict):
+        return set()
+    quality = (ckpt.get("gate_results") or {}).get("quality") or {}
+    if not isinstance(quality, dict) or quality.get("declared_scope_ok") is True:
+        return set()
+
+    next_v = ckpt.get("next_v")
+    evidence = []
+    evidence.extend(_flatten_text_items(quality.get("declared_scope_errors")))
+    evidence.extend(
+        item for item in _quality_failure_items(ckpt)
+        if _is_declared_scope_failure_text(item)
+    )
+    if reviewer_feedback and _is_declared_scope_failure_text(reviewer_feedback):
+        evidence.append(reviewer_feedback)
+
+    files = set()
+    for filename in _extract_quality_failure_files(evidence):
+        rel = _target_rel(filename, next_v)
+        if rel:
+            files.add(rel)
+
+    scope_metrics = quality.get("declared_scope") or {}
+    if not files and isinstance(scope_metrics, dict):
+        changed = {
+            rel for rel in (
+                _target_rel(item, next_v)
+                for item in scope_metrics.get("changed_files", []) or []
+            )
+            if rel
+        }
+        allowed = {
+            rel for rel in (
+                _target_rel(item, next_v)
+                for item in scope_metrics.get("allowed_files", []) or []
+            )
+            if rel
+        }
+        files.update(changed - allowed)
+    return files
+
+
+def _is_declared_scope_ledger_task(task):
+    if not isinstance(task, dict):
+        return False
+    contract = task.get("repair_contract") if isinstance(task.get("repair_contract"), dict) else {}
+    text = " ".join([
+        str(task.get("worker_id", "")),
+        str(task.get("repair_blocker", "")),
+        str(contract.get("blocker", "")),
+        str(contract.get("evidence", "")),
+        str(task.get("worker_prompt", task.get("instruction", ""))),
+    ])
+    return _is_declared_scope_failure_text(text)
+
+
+def _prune_declared_scope_ledger_tasks(tasks, ckpt, reviewer_feedback=""):
+    ledger_files = _declared_scope_ledger_files(ckpt, reviewer_feedback)
+    if not ledger_files:
+        return list(tasks or []), set()
+    kept = []
+    for task in tasks or []:
+        task_files = {
+            rel for rel in (
+                _target_rel(target, ckpt.get("next_v") if isinstance(ckpt, dict) else None)
+                for target in task.get("target_files", []) or []
+            )
+            if rel
+        }
+        if task_files and task_files <= ledger_files and _is_declared_scope_ledger_task(task):
+            continue
+        kept.append(task)
+    return kept, ledger_files
+
+
 def _task_id_suffix(filename):
     return re.sub(r"[^a-z0-9]+", "_", Path(str(filename)).name.lower()).strip("_")
 
@@ -3218,20 +3330,20 @@ def _generic_quality_contracts(quality, failures, claimed_files):
         "smoke_errors",
         "national_protocol_errors",
         "national_acceptance_errors",
-        "declared_scope_errors",
         "critical_failures",
         "reachability_warnings",
     ):
         evidence_items.extend(_flatten_text_items(quality.get(key)))
+    evidence_items = [
+        item for item in evidence_items
+        if not _is_declared_scope_failure_text(item)
+    ]
     if not evidence_items:
         evidence_items = [
             item for item in failures
             if not str(item).startswith("file_size(")
-            and "position_semantics(" not in str(item)
-            and "SB must be dealer_id" not in str(item)
-            and "BB must be 1 - dealer_id" not in str(item)
-            and "dealer is SB" not in str(item)
-            and "BB acts first postflop" not in str(item)
+            and not _is_position_semantics_failure_text(item)
+            and not _is_declared_scope_failure_text(item)
         ]
     evidence_files = _extract_quality_failure_files(evidence_items)
     mechanical_files = {c["file"] for c in _line_count_contracts(quality, failures)}
@@ -3259,6 +3371,9 @@ def _quality_repair_contracts(ckpt, feedback=""):
     claimed_files = _extract_quality_failure_files(failures)
     if not claimed_files and feedback:
         claimed_files = _extract_quality_failure_files([feedback])
+    ledger_files = _declared_scope_ledger_files(ckpt, feedback)
+    if ledger_files:
+        claimed_files = [filename for filename in claimed_files if filename not in ledger_files]
     contracts = []
     contracts.extend(_line_count_contracts(quality, failures))
     contracts.extend(_position_contracts(quality))
@@ -3551,6 +3666,52 @@ async def execute_workers(args):
 
     replace_checkpoint_tasks = False
 
+    def _finish_declared_scope_ledger_only(ledger_files):
+        base_kind = "quality_repair" if ckpt.get("stage") == "quality_failed" else "gate_rework"
+        if ckpt.get("stage") == "precommit_failed":
+            base_kind = "precommit_repair"
+        elif ckpt.get("parent2_v") is not None:
+            base_kind = f"crossover_{base_kind}"
+        plan = _checkpoint_plan_with_tasks(ckpt, [], replace_existing_tasks=True)
+        plan = {
+            **plan,
+            "work_item": {
+                "kind": base_kind,
+                "source_stage": ckpt.get("stage"),
+                "reset_performed": False,
+                "route": route_policy(ckpt),
+                "scope_ledger_only": True,
+            },
+        }
+        plan = _plan_with_accumulated_repair_scope(ckpt, plan, [], next_v)
+        write_pipeline_checkpoint(
+            next_v,
+            source_v,
+            "workers_done",
+            master_plan=plan,
+            reviewer_feedback=reviewer_feedback,
+            worker_failure_count=ckpt.get("worker_failure_count", 0),
+        )
+        log_system_event(
+            "pipeline.declared_scope_ledger_repaired",
+            "warn",
+            f"Updated declared-scope ledger for v{next_v}; no bot code worker needed",
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "files": sorted(ledger_files),
+                "stage": ckpt.get("stage"),
+            },
+        )
+        return _json_tool_result({
+            "success": True,
+            "scope_ledger_only": True,
+            "repair_scope_files": sorted(ledger_files),
+            "logs": _get_ui().get_output() if _get_ui() else "",
+            "costs": getattr(_get_ui(), "costs", {}) if _get_ui() else {},
+            "audit_focus_areas": [],
+        })
+
     # Fallback: if tasks not provided, load from checkpoint master_plan.
     # This happens when the orchestrator session is fresh (not resumed) and
     # the LLM doesn't have the task list in its conversation history.
@@ -3610,18 +3771,50 @@ async def execute_workers(args):
                              f"Tasks loaded from checkpoint for v{next_v} (LLM omitted tasks arg)",
                              {"next_v": next_v, "num_tasks": len(tasks)})
         else:
+            ledger_files = _declared_scope_ledger_files(ckpt, reviewer_feedback)
+            if ledger_files and ckpt.get("stage") in rework_stages:
+                return _finish_declared_scope_ledger_only(ledger_files)
             return _json_tool_result({
                 "error": "No tasks provided and checkpoint has no task plan. Call run_master first.",
                 "next_v": next_v,
                 "source_v": source_v,
                 })
         if not tasks:
+            ledger_files = _declared_scope_ledger_files(ckpt, reviewer_feedback)
+            if ledger_files and ckpt.get("stage") in rework_stages:
+                return _finish_declared_scope_ledger_only(ledger_files)
             return _json_tool_result({
                 "error": "No tasks provided and checkpoint has no task plan. Call run_master first.",
                 "next_v": next_v,
                 "source_v": source_v,
                 "stage": ckpt.get("stage"),
             })
+
+    if tasks and ckpt.get("stage") in rework_stages:
+        pruned_tasks, ledger_files = _prune_declared_scope_ledger_tasks(
+            tasks,
+            ckpt,
+            reviewer_feedback,
+        )
+        if len(pruned_tasks) != len(tasks):
+            old_files = sorted(_task_target_filenames(tasks))
+            tasks = pruned_tasks
+            replace_checkpoint_tasks = True
+            log_system_event(
+                "pipeline.declared_scope_ledger_tasks_pruned",
+                "warn",
+                f"Pruned declared-scope ledger-only repair task(s) for v{next_v}",
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "old_target_files": old_files,
+                    "new_target_files": sorted(_task_target_filenames(tasks)),
+                    "ledger_files": sorted(ledger_files),
+                    "num_tasks": len(tasks),
+                },
+            )
+            if not tasks:
+                return _finish_declared_scope_ledger_only(ledger_files)
 
     if tasks and ckpt.get("stage") == "quality_failed":
         failure_files = _quality_failure_target_files(ckpt, reviewer_feedback)
@@ -3908,6 +4101,7 @@ async def execute_workers(args):
         for task in tasks:
             if isinstance(task, dict):
                 task.setdefault("task_kind", rework_kind)
+        retry_plan = _plan_with_accumulated_repair_scope(ckpt, retry_plan, tasks, next_v)
         write_pipeline_checkpoint(next_v, source_v, "repair_planned",
                                   master_plan=retry_plan,
                                   reviewer_feedback=reviewer_feedback,

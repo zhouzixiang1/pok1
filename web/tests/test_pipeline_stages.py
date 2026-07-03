@@ -1534,6 +1534,239 @@ class TestWorkerFailureCircuitBreaker:
         assert result.passed is True
         assert result.allowed_files == ["opponent.py", "state.py", "strategy_helpers.py"]
 
+    def test_declared_scope_failure_is_ledger_not_worker_contract(self):
+        """Declared-scope misses should update scope accounting, not spawn edit tasks."""
+        import tool_planning
+
+        ckpt = {
+            "next_v": 272,
+            "source_v": 187,
+            "parent2_v": 241,
+            "stage": "quality_failed",
+            "master_plan": {
+                "strategy": "crossover",
+                "tasks": [],
+                "repair_scope_files": ["opponent.py", "state.py", "strategy_helpers.py"],
+            },
+            "gate_results": {
+                "quality": {
+                    "all_passed": False,
+                    "failed_gates": [
+                        (
+                            "declared_scope(reachability_test.py: changed outside master plan "
+                            "target_files/files_allowed; strategy.py: changed outside master plan "
+                            "target_files/files_allowed)"
+                        ),
+                        "file_size(strategy_helpers.py:2501L/2500L)",
+                        (
+                            "position_semantics(strategy_helpers.py:1191: postflop OOP helper "
+                            "must key on my_is_bb/BB)"
+                        ),
+                    ],
+                    "declared_scope_ok": False,
+                    "declared_scope_errors": [
+                        "reachability_test.py: changed outside master plan target_files/files_allowed",
+                        "strategy.py: changed outside master plan target_files/files_allowed",
+                    ],
+                    "declared_scope": {
+                        "changed_files": [
+                            "opponent.py",
+                            "reachability_test.py",
+                            "state.py",
+                            "strategy.py",
+                            "strategy_helpers.py",
+                        ],
+                        "allowed_files": ["opponent.py", "state.py", "strategy_helpers.py"],
+                        "violation_count": 2,
+                    },
+                    "oversized_files": {"strategy_helpers.py": 2501},
+                    "position_semantics_errors": [
+                        "strategy_helpers.py:1191: postflop OOP helper must key on my_is_bb/BB"
+                    ],
+                }
+            },
+        }
+
+        tasks = tool_planning._synthesize_rework_tasks_from_checkpoint(ckpt)
+
+        assert [
+            (task["repair_blocker"], task["target_files"])
+            for task in tasks
+        ] == [
+            ("file_size", ["strategy_helpers.py"]),
+            ("position_semantics", ["strategy_helpers.py"]),
+        ]
+        assert tool_planning._declared_scope_ledger_files(ckpt) == {
+            "reachability_test.py",
+            "strategy.py",
+        }
+
+    def test_execute_workers_prunes_declared_scope_ledger_tasks(self, tmp_path, monkeypatch):
+        """Old checkpoints with declared-scope pseudo tasks should resume without them."""
+        import asyncio
+        import fix_injection
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        for directory in (source_dir, next_dir):
+            for filename in (
+                "opponent.py",
+                "reachability_test.py",
+                "state.py",
+                "strategy.py",
+                "strategy_helpers.py",
+            ):
+                (directory / filename).write_text(f"# {filename}\n")
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, stage="quality_failed")
+        state = json.loads(ckpt_file.read_text())
+        state["parent2_v"] = 9
+        state["master_plan"] = {
+            "strategy": "crossover",
+            "repair_scope_files": ["opponent.py", "state.py", "strategy_helpers.py"],
+            "tasks": [
+                {
+                    "worker_id": "auto_quality_repair_file_size_strategy_helpers_py",
+                    "role": "Algorithmic Logic Architect",
+                    "target_files": ["strategy_helpers.py"],
+                    "must_change_files": ["strategy_helpers.py"],
+                    "worker_prompt": "fix file_size",
+                    "task_kind": "quality_repair",
+                    "repair_blocker": "file_size",
+                    "repair_contract": {
+                        "blocker": "file_size",
+                        "file": "strategy_helpers.py",
+                    },
+                },
+                {
+                    "worker_id": "auto_quality_repair_position_strategy_helpers_py",
+                    "role": "Algorithmic Logic Architect",
+                    "target_files": ["strategy_helpers.py"],
+                    "must_change_files": ["strategy_helpers.py"],
+                    "worker_prompt": "fix position_semantics",
+                    "task_kind": "quality_repair",
+                    "repair_blocker": "position_semantics",
+                    "repair_contract": {
+                        "blocker": "position_semantics",
+                        "file": "strategy_helpers.py",
+                    },
+                },
+                {
+                    "worker_id": "auto_quality_repair_gate_reachability_test_py",
+                    "role": "Algorithmic Logic Architect",
+                    "target_files": ["reachability_test.py"],
+                    "must_change_files": ["reachability_test.py"],
+                    "worker_prompt": "reachability_test.py changed outside master plan target_files/files_allowed",
+                    "task_kind": "quality_repair",
+                    "repair_blocker": "quality_gate",
+                    "repair_contract": {
+                        "blocker": "quality_gate",
+                        "file": "reachability_test.py",
+                        "evidence": "reachability_test.py: changed outside master plan target_files/files_allowed",
+                    },
+                },
+                {
+                    "worker_id": "auto_quality_repair_gate_strategy_py",
+                    "role": "Algorithmic Logic Architect",
+                    "target_files": ["strategy.py"],
+                    "must_change_files": ["strategy.py"],
+                    "worker_prompt": "strategy.py changed outside master plan target_files/files_allowed",
+                    "task_kind": "quality_repair",
+                    "repair_blocker": "quality_gate",
+                    "repair_contract": {
+                        "blocker": "quality_gate",
+                        "file": "strategy.py",
+                        "evidence": "strategy.py: changed outside master plan target_files/files_allowed",
+                    },
+                },
+            ],
+        }
+        state["gate_results"] = {
+            "quality": {
+                "all_passed": False,
+                "failed_gates": [
+                    (
+                        "declared_scope(reachability_test.py: changed outside master plan "
+                        "target_files/files_allowed; strategy.py: changed outside master plan "
+                        "target_files/files_allowed)"
+                    ),
+                    "file_size(strategy_helpers.py:2501L/2500L)",
+                    "position_semantics(strategy_helpers.py:1191: postflop OOP helper must key on BB)",
+                ],
+                "declared_scope_ok": False,
+                "declared_scope_errors": [
+                    "reachability_test.py: changed outside master plan target_files/files_allowed",
+                    "strategy.py: changed outside master plan target_files/files_allowed",
+                ],
+                "declared_scope": {
+                    "changed_files": [
+                        "opponent.py",
+                        "reachability_test.py",
+                        "state.py",
+                        "strategy.py",
+                        "strategy_helpers.py",
+                    ],
+                    "allowed_files": ["opponent.py", "state.py", "strategy_helpers.py"],
+                    "violation_count": 2,
+                },
+                "oversized_files": {"strategy_helpers.py": 2501},
+                "position_semantics_errors": [
+                    "strategy_helpers.py:1191: postflop OOP helper must key on BB"
+                ],
+            }
+        }
+        ckpt_file.write_text(json.dumps(state))
+
+        monkeypatch.setattr(tool_planning, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
+                 patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
+                 patch.object(
+                     tool_planning,
+                     "_py_files_changed_between",
+                     return_value=[
+                         "opponent.py",
+                         "reachability_test.py",
+                         "state.py",
+                         "strategy.py",
+                         "strategy_helpers.py",
+                     ],
+                 ):
+                mock_exec.return_value = (True, {}, [])
+                result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
+                return result, mock_exec
+
+        result, mock_exec = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["success"] is True
+        tasks = mock_exec.call_args.args[0]
+        assert [
+            (task["repair_blocker"], task["target_files"])
+            for task in tasks
+        ] == [
+            ("file_size", ["strategy_helpers.py"]),
+            ("position_semantics", ["strategy_helpers.py"]),
+        ]
+
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["stage"] == "workers_done"
+        assert ckpt["master_plan"]["repair_scope_files"] == [
+            "opponent.py",
+            "reachability_test.py",
+            "state.py",
+            "strategy.py",
+            "strategy_helpers.py",
+        ]
+        assert [
+            task["target_files"] for task in ckpt["master_plan"]["tasks"]
+        ] == [["strategy_helpers.py"], ["strategy_helpers.py"]]
+
     def test_quality_rework_skipper_keeps_mixed_task_when_one_blocker_remains(self, tmp_path, monkeypatch):
         """A position task mentioning size feedback must still run while position blockers remain."""
         import tool_gates
