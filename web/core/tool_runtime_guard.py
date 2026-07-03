@@ -31,6 +31,7 @@ _HEAD_DRIFT_TOOL_BY_STAGE = {
     "quality_passed": {"run_review"},
     "reviewed": {"run_critic"},
     "critic_checked": {"run_precommit_eval"},
+    "verified": {"commit_bot"},
 }
 
 
@@ -108,10 +109,11 @@ def _head_change_allowed_for_checkpoint_resume(
     A failed checkpoint may legitimately survive a codebase update: the next
     correct tool is ``execute_workers`` with the recorded gate failures. Blocking
     that path leaves the service unable to start. Post-quality checkpoints can
-    also continue through reviewer/critic/precommit because they do not rewrite
-    the candidate bot. We only allow the exact next tool for the checkpoint stage
-    on the canonical branch, for the active checkpoint version, and when the
-    worktree has no unexpected entries beyond that candidate bot directory.
+    also continue through reviewer/critic/precommit/commit after the candidate
+    has been revalidated on the current HEAD. We only allow the exact next tool
+    for the checkpoint stage on the canonical branch, for the active checkpoint
+    version, and when the worktree has no unexpected entries beyond that
+    candidate bot directory.
     """
     if not baseline_head or not current_head or baseline_head == current_head:
         return False, {}

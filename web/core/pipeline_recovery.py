@@ -37,6 +37,7 @@ HEAD_DRIFT_POST_QUALITY_STAGES = {
     "quality_passed",
     "reviewed",
     "critic_checked",
+    "verified",
 }
 HEAD_DRIFT_RESUME_STAGES = HEAD_DRIFT_REPAIR_STAGES | HEAD_DRIFT_POST_QUALITY_STAGES
 
