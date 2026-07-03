@@ -3,6 +3,7 @@
 from core.agent_workers import (
     _classify_target_change,
     _classify_target_change_for_worker,
+    _compose_worker_task_prompt,
     _cot_inconsistency_blocks_task,
     _must_change_rels_for_task,
 )
@@ -74,3 +75,41 @@ def test_cot_inconsistency_blocks_repair_tasks_only():
     assert _cot_inconsistency_blocks_task({"task_kind": "quality_repair"})
     assert _cot_inconsistency_blocks_task({"task_kind": "precommit_repair"})
     assert not _cot_inconsistency_blocks_task({"task_kind": "feature_work", "worker_prompt": "add a new idea"})
+
+
+def test_file_scoped_quality_repair_omits_global_feedback():
+    task = {
+        "task_kind": "quality_repair",
+        "repair_blocker": "position_semantics",
+        "target_files": ["opponent.py"],
+        "must_change_files": ["opponent.py"],
+        "worker_prompt": "Repair only opponent.py position contract.",
+        "repair_contract": {
+            "blocker": "position_semantics",
+            "file": "opponent.py",
+        },
+    }
+    feedback = "Quality gates failed: position_semantics(state.py:223); protected_contract"
+
+    prompt = _compose_worker_task_prompt(task, feedback)
+
+    assert "Repair only opponent.py position contract." in prompt
+    assert "Scope Isolation" in prompt
+    assert "state.py:223" not in prompt
+    assert "protected_contract" not in prompt
+    assert "CRITICAL REVISION NEEDED" not in prompt
+
+
+def test_non_file_scoped_repair_keeps_reviewer_feedback():
+    task = {
+        "task_kind": "precommit_repair",
+        "target_files": ["strategy.py"],
+        "worker_prompt": "Fix regression.",
+    }
+    feedback = "Precommit failed vs claude_v241"
+
+    prompt = _compose_worker_task_prompt(task, feedback)
+
+    assert "CRITICAL REVISION NEEDED" in prompt
+    assert feedback in prompt
+    assert "ORIGINAL:\nFix regression." in prompt
