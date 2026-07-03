@@ -72,15 +72,32 @@ def _is_file_scoped_quality_repair_task(task):
     return bool(targets or contract_file)
 
 
+def _is_file_scoped_precommit_repair_task(task):
+    if not isinstance(task, dict):
+        return False
+    task_kind = str(task.get("task_kind", "")).lower()
+    if "precommit_repair" not in task_kind:
+        return False
+    contract = task.get("repair_contract") if isinstance(task.get("repair_contract"), dict) else {}
+    blocker = str(contract.get("blocker") or task.get("repair_blocker") or "").lower()
+    if blocker != "precommit_regression":
+        return False
+    targets = [
+        target for target in (task.get("must_change_files") or task.get("target_files") or [])
+        if target
+    ]
+    return len(targets) == 1
+
+
 def _compose_worker_task_prompt(task, reviewer_feedback):
     base_prompt = task.get("worker_prompt", task.get("instruction", ""))
     if not reviewer_feedback:
         return base_prompt
-    if _is_file_scoped_quality_repair_task(task):
+    if _is_file_scoped_quality_repair_task(task) or _is_file_scoped_precommit_repair_task(task):
         return (
             base_prompt
             + "\n\n# Scope Isolation\n"
-            + "This worker is one file-scoped quality repair from a larger gate "
+            + "This worker is one file-scoped repair from a larger gate "
               "failure. Other blockers may exist, but they are assigned to other "
               "workers. Do not inspect, edit, or attempt to fix files outside this "
               "task's target_files/must_change_files."

@@ -2301,7 +2301,10 @@ class TestWorkerFailureCircuitBreaker:
         ckpt = json.loads(ckpt_file.read_text())
         assert ckpt["stage"] == "repair_planned"
         assert ckpt["precommit_attempt"] == 0
-        assert ckpt["master_plan"]["tasks"] == retry_tasks
+        assert ckpt["master_plan"]["tasks"][0]["worker_id"] == "auto_precommit_repair_strategy_py"
+        assert ckpt["master_plan"]["tasks"][0]["target_files"] == ["strategy.py"]
+        assert ckpt["master_plan"]["tasks"][0]["must_change_files"] == ["strategy.py"]
+        assert ckpt["master_plan"]["tasks"][0]["repair_blocker"] == "precommit_regression"
         assert ckpt["master_plan"]["work_item"]["kind"] == "precommit_repair"
         assert "Precommit FAILED" in ckpt["reviewer_feedback"]
 
@@ -2394,14 +2397,10 @@ class TestWorkerFailureCircuitBreaker:
         data = json.loads(result["content"][0]["text"])
         assert data["success"] is True
         tasks = mock_exec.call_args.args[0]
-        assert tasks[0]["worker_id"] == "auto_precommit_repair"
+        assert tasks[0]["worker_id"] == "auto_precommit_repair_strategy_py"
         assert tasks[0]["task_kind"] == "precommit_repair"
-        assert tasks[0]["target_files"] == [
-            "strategy.py",
-            "postflop.py",
-            "strategy_helpers.py",
-            "opponent.py",
-        ]
+        assert tasks[0]["target_files"] == ["strategy.py"]
+        assert tasks[0]["must_change_files"] == ["strategy.py"]
         assert "aggregate_negative_chip_ev" in tasks[0]["worker_prompt"]
         assert "semantic_regression" in tasks[0]["worker_prompt"]
         assert "old quality repair" not in tasks[0]["worker_prompt"]
@@ -2410,9 +2409,116 @@ class TestWorkerFailureCircuitBreaker:
 
         ckpt = json.loads(ckpt_file.read_text())
         assert ckpt["stage"] == "workers_done"
-        assert ckpt["master_plan"]["tasks"][0]["worker_id"] == "auto_precommit_repair"
+        assert ckpt["master_plan"]["tasks"][0]["worker_id"] == "auto_precommit_repair_strategy_py"
         assert ckpt["master_plan"]["work_item"]["kind"] == "precommit_repair"
         assert ckpt["master_plan"]["work_item"]["reset_performed"] is False
+
+    def test_precommit_repair_targets_actual_changed_file(self, tmp_path, monkeypatch):
+        """Numeric precommit failures should target the real candidate diff, not broad defaults."""
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        for directory in (source_dir, next_dir):
+            (directory / "strategy.py").write_text("def act():\n    return 0\n")
+            (directory / "postflop.py").write_text("def postflop():\n    return 0\n")
+            (directory / "strategy_helpers.py").write_text("def helper():\n    return 0\n")
+            (directory / "opponent.py").write_text("def opp():\n    return 0\n")
+        (next_dir / "opponent.py").write_text("def opp():\n    return 1\n")
+
+        monkeypatch.setattr(tool_planning, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+
+        ckpt = {
+            "next_v": 11,
+            "source_v": 10,
+            "stage": "precommit_failed",
+            "master_plan": {"strategy": "crossover", "tasks": []},
+            "gate_results": {
+                "precommit_eval": {
+                    "passed": False,
+                    "blockers": [{"reason": "aggregate_negative_chip_ev"}],
+                }
+            },
+        }
+
+        tasks = tool_planning._synthesize_rework_tasks_from_checkpoint(
+            ckpt,
+            "National precommit FAILED vs claude_v10",
+        )
+
+        assert [task["worker_id"] for task in tasks] == ["auto_precommit_repair_opponent_py"]
+        assert [task["target_files"] for task in tasks] == [["opponent.py"]]
+        assert tasks[0]["repair_contract"]["blocker"] == "precommit_regression"
+
+    def test_rework_running_refreshes_broad_precommit_task(self, tmp_path, monkeypatch):
+        """A resumed old broad auto_precommit_repair task must become file-scoped."""
+        import asyncio
+        import fix_injection
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        for directory in (source_dir, next_dir):
+            for filename in ("strategy.py", "postflop.py", "strategy_helpers.py", "opponent.py"):
+                (directory / filename).write_text(f"def marker():\n    return {filename!r}\n")
+        (next_dir / "opponent.py").write_text("def marker():\n    return 'changed opponent'\n")
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, stage="rework_running")
+        state = json.loads(ckpt_file.read_text())
+        state["parent2_v"] = 9
+        state["reviewer_feedback"] = "National precommit FAILED vs claude_v10"
+        state["master_plan"] = {
+            "strategy": "crossover",
+            "tasks": [{
+                "worker_id": "auto_precommit_repair",
+                "role": "Strategic Regression Repair Architect",
+                "target_files": ["strategy.py", "postflop.py", "strategy_helpers.py", "opponent.py"],
+                "must_change_files": ["strategy.py", "postflop.py", "strategy_helpers.py", "opponent.py"],
+                "worker_prompt": "old broad precommit repair",
+                "task_kind": "precommit_repair",
+            }],
+            "work_item": {
+                "kind": "precommit_repair",
+                "source_stage": "precommit_failed",
+                "reset_performed": False,
+            },
+        }
+        state["gate_results"] = {
+            "quality": {"all_passed": True},
+            "precommit_eval": {
+                "passed": False,
+                "blockers": [{"reason": "aggregate_negative_chip_ev"}],
+            },
+        }
+        ckpt_file.write_text(json.dumps(state))
+
+        monkeypatch.setattr(tool_planning, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
+                 patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]):
+                mock_exec.return_value = (True, {}, [])
+                result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
+                return result, mock_exec
+
+        result, mock_exec = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["success"] is True
+        tasks = mock_exec.call_args.args[0]
+        assert [task["worker_id"] for task in tasks] == ["auto_precommit_repair_opponent_py"]
+        assert [task["target_files"] for task in tasks] == [["opponent.py"]]
+        assert [task["must_change_files"] for task in tasks] == [["opponent.py"]]
+
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["stage"] == "workers_done"
+        assert ckpt["master_plan"]["tasks"][0]["worker_id"] == "auto_precommit_repair_opponent_py"
+        assert ckpt["master_plan"]["work_item"]["kind"] == "precommit_repair"
 
     def test_circuit_breaker_trips_at_threshold(self, tmp_path, monkeypatch):
         """Circuit breaker should block when failure_count >= 6."""

@@ -113,3 +113,25 @@ def test_non_file_scoped_repair_keeps_reviewer_feedback():
     assert "CRITICAL REVISION NEEDED" in prompt
     assert feedback in prompt
     assert "ORIGINAL:\nFix regression." in prompt
+
+
+def test_file_scoped_precommit_repair_omits_duplicate_global_feedback():
+    task = {
+        "task_kind": "precommit_repair",
+        "repair_blocker": "precommit_regression",
+        "target_files": ["opponent.py"],
+        "must_change_files": ["opponent.py"],
+        "worker_prompt": "Exact precommit feedback: already embedded here.",
+        "repair_contract": {
+            "blocker": "precommit_regression",
+            "file": "opponent.py",
+        },
+    }
+    feedback = "National precommit failed vs claude_v274"
+
+    prompt = _compose_worker_task_prompt(task, feedback)
+
+    assert "Exact precommit feedback: already embedded here." in prompt
+    assert "Scope Isolation" in prompt
+    assert feedback not in prompt
+    assert "CRITICAL REVISION NEEDED" not in prompt

@@ -2953,21 +2953,6 @@ def _is_precommit_rework_checkpoint(ckpt):
     )
 
 
-def _tasks_look_like_precommit_repair(tasks):
-    for task in tasks or []:
-        if not isinstance(task, dict):
-            continue
-        text = " ".join([
-            str(task.get("worker_id", "")),
-            str(task.get("role", "")),
-            str(task.get("task_kind", "")),
-            str(task.get("worker_prompt", task.get("instruction", ""))),
-        ]).lower()
-        if "precommit" in text or "regression" in text or "semantic_regression" in text:
-            return True
-    return False
-
-
 def _precommit_failure_items(ckpt):
     if not isinstance(ckpt, dict):
         return []
@@ -3028,13 +3013,77 @@ def _precommit_failure_items(ckpt):
     return deduped
 
 
+def _precommit_changed_python_files(ckpt):
+    """Return candidate .py files that actually differ from the source parent."""
+    if not isinstance(ckpt, dict):
+        return []
+    source_v = ckpt.get("source_v")
+    next_v = ckpt.get("next_v")
+    if source_v is None or next_v is None:
+        return []
+    try:
+        source_dir = get_bot_dir(source_v)
+        next_dir = get_bot_dir(next_v)
+        changed = _py_files_changed_between(source_dir, next_dir)
+    except Exception:
+        return []
+
+    preferred_order = {
+        "strategy.py": 0,
+        "postflop.py": 1,
+        "preflop.py": 2,
+        "strategy_helpers.py": 3,
+        "opponent.py": 4,
+        "state.py": 5,
+        "national_bot.py": 6,
+        "main.py": 7,
+    }
+    normalized = []
+    seen = set()
+    for item in changed:
+        rel = _target_rel(item, next_v)
+        if not rel or "backup" in rel:
+            continue
+        if rel.endswith(".py") and rel not in seen:
+            seen.add(rel)
+            normalized.append(rel)
+    return sorted(normalized, key=lambda rel: (preferred_order.get(rel, 100), rel))
+
+
+def _limit_precommit_repair_targets(files):
+    try:
+        limit = int(os.environ.get("POK_PRECOMMIT_REPAIR_MAX_TARGETS", "3"))
+    except ValueError:
+        limit = 3
+    limit = max(1, limit)
+    targets = []
+    seen = set()
+    for item in files or []:
+        rel = Path(str(item)).name
+        if rel and rel.endswith(".py") and rel not in seen:
+            seen.add(rel)
+            targets.append(rel)
+        if len(targets) >= limit:
+            break
+    return targets
+
+
 def _precommit_repair_target_files(ckpt, feedback):
     failures = _precommit_failure_items(ckpt)
-    files = _extract_quality_failure_files(failures)
-    if not files and feedback:
-        files = _extract_quality_failure_files([feedback])
-    if files:
-        return files
+    evidence_files = _extract_quality_failure_files(failures)
+    if not evidence_files and feedback:
+        evidence_files = _extract_quality_failure_files([feedback])
+
+    changed_files = _precommit_changed_python_files(ckpt)
+    if changed_files and evidence_files:
+        evidence_set = set(evidence_files)
+        intersected = [name for name in changed_files if name in evidence_set]
+        if intersected:
+            return _limit_precommit_repair_targets(intersected)
+    if changed_files:
+        return _limit_precommit_repair_targets(changed_files)
+    if evidence_files:
+        return _limit_precommit_repair_targets(evidence_files)
 
     preferred = ["strategy.py", "postflop.py", "preflop.py", "strategy_helpers.py", "opponent.py"]
     try:
@@ -3043,7 +3092,7 @@ def _precommit_repair_target_files(ckpt, feedback):
         if bot_dir:
             existing = [name for name in preferred if (bot_dir / name).exists()]
             if existing:
-                return existing[:4]
+                return _limit_precommit_repair_targets(existing[:1])
     except Exception:
         pass
     return ["strategy.py"]
@@ -3520,6 +3569,112 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
     }
 
 
+def _precommit_repair_task(filename, ckpt, feedback):
+    next_v = ckpt.get("next_v")
+    source_v = ckpt.get("source_v")
+    suffix = _task_id_suffix(filename)
+    line_note = ""
+    try:
+        path = get_bot_dir(next_v) / filename
+        if path.exists():
+            line_count = sum(1 for _ in path.open("r", encoding="utf-8", errors="ignore"))
+            if line_count >= 2300:
+                line_note = (
+                    f"\n- `{filename}` is near the hard size cap ({line_count} lines). "
+                    "Prefer deleting or tightening an existing risky branch over adding a new subsystem."
+                )
+    except Exception:
+        line_note = ""
+
+    prompt = (
+        "This is one file-scoped precommit regression repair from a failed native "
+        f"national TCP final gate for bots/claude_v{next_v}.\n\n"
+        f"Target file: `{filename}`\n"
+        f"Source parent for diff: bots/claude_v{source_v}/\n"
+        f"Failed candidate: bots/claude_v{next_v}/\n\n"
+        f"Exact precommit feedback:\n{feedback}\n\n"
+        "Required method:\n"
+        f"- Only edit `{filename}`. Other files are intentionally out of scope for this worker.\n"
+        f"- First inspect `diff bots/claude_v{source_v}/{filename} bots/claude_v{next_v}/{filename}` "
+        "and identify which changed behavior could explain the losing 70-hand national TCP matchups.\n"
+        "- Make one bounded EV/matchup correction in this file. Prefer tightening, gating, or partially "
+        "rolling back a risky new branch over adding broad new logic.\n"
+        "- Do not wholesale replace the candidate with the source parent; the final candidate must remain "
+        "a real code change after repair.\n"
+        "- Preserve native TCP protocol/card mapping, national action legality, and previously passed quality gates.\n"
+        "- Run a compile check for the bot package before finishing."
+        f"{line_note}"
+    )
+    return {
+        "worker_id": f"auto_precommit_repair_{suffix}",
+        "role": "Strategic Regression Repair Architect",
+        "target_files": [filename],
+        "must_change_files": [filename],
+        "worker_prompt": prompt,
+        "task_kind": "precommit_repair",
+        "repair_blocker": "precommit_regression",
+        "repair_contract": {
+            "blocker": "precommit_regression",
+            "file": filename,
+            "evidence": feedback[:2000],
+        },
+    }
+
+
+def _precommit_repair_tasks(ckpt, feedback):
+    return [
+        _precommit_repair_task(filename, ckpt, feedback)
+        for filename in _precommit_repair_target_files(ckpt, feedback)
+    ]
+
+
+def _precommit_repair_task_refresh_reason(tasks, ckpt, feedback=""):
+    if not _is_precommit_rework_checkpoint(ckpt):
+        return ""
+    if not tasks:
+        return "missing precommit repair task(s)"
+
+    expected = set(_precommit_repair_target_files(ckpt, feedback))
+    task_targets = []
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            return "invalid precommit repair task"
+        task_kind = str(task.get("task_kind") or "").lower()
+        task_text = " ".join([
+            str(task.get("worker_id", "")),
+            str(task.get("role", "")),
+            str(task.get("worker_prompt", task.get("instruction", "")))[:500],
+        ]).lower()
+        if "precommit_repair" not in task_kind and "precommit" not in task_text:
+            return "checkpoint task is not a precommit repair"
+        targets = [
+            rel for rel in (
+                _target_rel(target, ckpt.get("next_v"))
+                for target in task.get("target_files", []) or []
+            )
+            if rel
+        ]
+        must_change = [
+            rel for rel in (
+                _target_rel(target, ckpt.get("next_v"))
+                for target in task.get("must_change_files", []) or []
+            )
+            if rel
+        ]
+        if len(targets) != 1:
+            return "precommit repair task is not file-scoped"
+        if must_change and must_change != targets:
+            return "precommit repair must_change_files do not match its single target"
+        task_targets.extend(targets)
+
+    task_set = set(task_targets)
+    if expected and task_set != expected:
+        return "precommit repair targets are stale"
+    if len(task_targets) != len(task_set):
+        return "duplicate precommit repair targets"
+    return ""
+
+
 def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
     """Build bounded repair tasks when a checkpoint has gate feedback but no plan.
 
@@ -3542,7 +3697,7 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
     is_precommit_rework = _is_precommit_rework_checkpoint(ckpt)
     quality_contracts = [] if is_precommit_rework else _quality_repair_contracts(ckpt, feedback)
     if is_precommit_rework:
-        target_files = _precommit_repair_target_files(ckpt, feedback)
+        return _precommit_repair_tasks(ckpt, feedback)
     elif quality_contracts:
         target_files = [contract["file"] for contract in quality_contracts]
     else:
@@ -3555,23 +3710,7 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
 
     targets = target_files
     is_crossover = bool(ckpt.get("parent2_v")) or master_plan.get("strategy") == "crossover"
-    if is_precommit_rework:
-        preservation = (
-            "This is a precommit regression repair. Preserve the current candidate "
-            "in bots/claude_v{next_v}; fix the EV and matchup regression blockers "
-            "without reverting to the source parent or weakening protocol/quality behavior."
-        )
-        method = (
-            "- Read the listed target files before editing.\n"
-            "- Use the precommit blockers, worst matchups, W/L, and net-chip evidence to identify a concrete strategic leak.\n"
-            "- Make a bounded strategy correction that improves the failing matchup profile; do not retry precommit on unchanged code.\n"
-            "- Preserve national protocol/card mapping and previously passed quality gates.\n"
-            "- Leave stderr telemetry honest if touched."
-        )
-        worker_id = "auto_precommit_repair"
-        role = "Strategic Regression Repair Architect"
-        task_kind = "precommit_repair"
-    elif is_crossover and stage in {"quality_failed", "repair_planned", "rework_running"}:
+    if is_crossover and stage in {"quality_failed", "repair_planned", "rework_running"}:
         preservation = (
             "This is a crossover quality repair. Preserve the current candidate's "
             "crossover behavior in bots/claude_v{next_v}; fix only the blocking "
@@ -3750,17 +3889,18 @@ async def execute_workers(args):
     if not tasks:
         plan = _checkpoint_master_plan(ckpt)
         checkpoint_tasks = plan.get("tasks", [])
+        precommit_stale_reason = (
+            _precommit_repair_task_refresh_reason(checkpoint_tasks, ckpt, reviewer_feedback)
+            if checkpoint_tasks and _is_precommit_rework_checkpoint(ckpt) else ""
+        )
         quality_stale_reason = (
             _stale_quality_task_reason(checkpoint_tasks, ckpt, reviewer_feedback)
-            if checkpoint_tasks else ""
+            if checkpoint_tasks and not _is_precommit_rework_checkpoint(ckpt) else ""
         )
         if ckpt.get("stage") in rework_stages and (
             not checkpoint_tasks
             or quality_stale_reason
-            or (
-                _is_precommit_rework_checkpoint(ckpt)
-                and not _tasks_look_like_precommit_repair(checkpoint_tasks)
-            )
+            or precommit_stale_reason
         ):
             tasks = _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback)
             if tasks:
@@ -3771,7 +3911,7 @@ async def execute_workers(args):
                 )
                 if checkpoint_tasks and _is_precommit_rework_checkpoint(ckpt):
                     event_message = (
-                        f"Refreshed precommit repair task(s) for v{next_v} from checkpoint blockers"
+                        f"Refreshed precommit repair task(s) for v{next_v}: {precommit_stale_reason}"
                     )
                 elif quality_stale_reason:
                     event_message = (
@@ -3792,7 +3932,7 @@ async def execute_workers(args):
                         "parent2_v": ckpt.get("parent2_v"),
                         "old_target_files": sorted(_task_target_filenames(checkpoint_tasks)),
                         "new_target_files": sorted(_task_target_filenames(tasks)),
-                        "refresh_reason": quality_stale_reason,
+                        "refresh_reason": precommit_stale_reason or quality_stale_reason,
                         "num_tasks": len(tasks),
                         "task_kind": tasks[0].get("task_kind") if tasks else None,
                     },
@@ -3876,12 +4016,11 @@ async def execute_workers(args):
                     },
                 )
 
-    if (
-        tasks
-        and not tasks_provided
-        and _is_precommit_rework_checkpoint(ckpt)
-        and not _tasks_look_like_precommit_repair(tasks)
-    ):
+    if tasks and _is_precommit_rework_checkpoint(ckpt):
+        precommit_stale_reason = _precommit_repair_task_refresh_reason(tasks, ckpt, reviewer_feedback)
+    else:
+        precommit_stale_reason = ""
+    if tasks and _is_precommit_rework_checkpoint(ckpt) and precommit_stale_reason:
         refreshed_tasks = _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback)
         if refreshed_tasks:
             old_files = sorted(_task_target_filenames(tasks))
@@ -3890,7 +4029,7 @@ async def execute_workers(args):
             log_system_event(
                 "pipeline.workers_tasks_refreshed",
                 "warn",
-                f"Refreshed precommit repair task(s) for v{next_v}; old tasks did not target precommit blockers",
+                f"Refreshed precommit repair task(s) for v{next_v}; {precommit_stale_reason}",
                 {
                     "next_v": next_v,
                     "source_v": source_v,
@@ -3898,6 +4037,7 @@ async def execute_workers(args):
                     "new_target_files": sorted(_task_target_filenames(refreshed_tasks)),
                     "num_tasks": len(refreshed_tasks),
                     "task_kind": refreshed_tasks[0].get("task_kind") if refreshed_tasks else None,
+                    "refresh_reason": precommit_stale_reason,
                 },
             )
 
