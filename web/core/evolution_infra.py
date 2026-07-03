@@ -456,7 +456,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         # AUTO-RESET precommit_attempt and timeout_extensions on true rework.
         # Any regression to a code-regeneration stage means this is new bot code,
         # so counters against the previous code snapshot must restart.
-        if is_rework_reset_transition(old_stage, stage):
+        refresh_repo_baseline = is_rework_reset_transition(old_stage, stage)
+        if refresh_repo_baseline:
             existing_precommit_attempt = 0
             existing_timeout_extensions = 0
 
@@ -471,7 +472,9 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         if existing_precommit_attempt is None:
             existing_precommit_attempt = 0
         run_id = f"{next_v}#{existing_generation_attempt}"
-        if not existing_repo_baseline:
+        if refresh_repo_baseline:
+            existing_repo_baseline = _capture_repo_baseline(stage)
+        elif not existing_repo_baseline:
             existing_repo_baseline = _capture_repo_baseline(stage)
 
         state = {

@@ -17,6 +17,13 @@ from repo_state import get_last_snapshot, git_worktree_snapshot, is_generated_bo
 
 _BOT_DIR_RE = re.compile(r"^\?\? bots/claude_v(?P<version>\d+)/$")
 _HEAD_CHANGE_ALLOWED_TOOLS = {"run_archivist"}
+_HEAD_DRIFT_REPAIR_STAGES = {
+    "quality_failed",
+    "precommit_failed",
+    "repair_planned",
+    "rework_running",
+}
+_HEAD_DRIFT_REPAIR_TOOLS = {"execute_workers"}
 
 
 def _json_tool_result(data: dict[str, Any]) -> dict[str, Any]:
@@ -78,6 +85,52 @@ def _checkpoint_repo_baseline(candidate_v: int | None) -> dict[str, Any] | None:
         return None
     baseline = checkpoint.get("repo_baseline")
     return dict(baseline) if isinstance(baseline, dict) else None
+
+
+def _head_change_allowed_for_repair(
+    *,
+    tool_name: str,
+    candidate_v: int | None,
+    baseline_head: str,
+    current_head: str,
+    snapshot: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Allow deterministic rework after infrastructure HEAD changes.
+
+    A failed checkpoint may legitimately survive a codebase update: the next
+    correct tool is ``execute_workers`` with the recorded gate failures. Blocking
+    that path leaves the service unable to start. We only allow this on the
+    canonical branch, for the active checkpoint version, and when the worktree
+    has no unexpected entries beyond that candidate bot directory.
+    """
+    if tool_name not in _HEAD_DRIFT_REPAIR_TOOLS:
+        return False, {}
+    if not baseline_head or not current_head or baseline_head == current_head:
+        return False, {}
+    checkpoint = read_pipeline_checkpoint()
+    if not checkpoint:
+        return False, {}
+    try:
+        if candidate_v is None or int(checkpoint.get("next_v") or -1) != int(candidate_v):
+            return False, {}
+    except Exception:
+        return False, {}
+    stage = str(checkpoint.get("stage") or "")
+    if stage not in _HEAD_DRIFT_REPAIR_STAGES:
+        return False, {}
+    current_branch = _branch_name(str(snapshot.get("branch") or ""))
+    if current_branch != EVOLUTION_BRANCH:
+        return False, {}
+    unexpected = _unexpected_entries(snapshot, candidate_v)
+    if unexpected:
+        return False, {"unexpected_entries": unexpected[:40]}
+    return True, {
+        "stage": stage,
+        "candidate_v": candidate_v,
+        "baseline_head": baseline_head,
+        "current_head": current_head,
+        "branch": snapshot.get("branch"),
+    }
 
 
 def _run_git(*args: str) -> subprocess.CompletedProcess[str]:
@@ -190,6 +243,25 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
         and current_head
         and baseline_head != current_head
     ):
+        allowed, allowed_payload = _head_change_allowed_for_repair(
+            tool_name=tool_name,
+            candidate_v=candidate_v,
+            baseline_head=baseline_head,
+            current_head=current_head,
+            snapshot=snapshot,
+        )
+        if allowed:
+            _log_guard_event(
+                "repo.runtime_guard_head_drift_repair_allowed",
+                "warn",
+                f"Runtime git guard allowed {tool_name} after infrastructure HEAD change",
+                allowed_payload,
+            )
+            return True, {
+                "guard": "ok",
+                "head_drift_repair_allowed": True,
+                **allowed_payload,
+            }
         payload = {
             "blocked": True,
             "reason": "head_changed_during_generation",
