@@ -27,6 +27,12 @@ TARGET_DIR_STAGES = {
     "verified",
     "infra_timed_out",
 }
+HEAD_DRIFT_REPAIR_STAGES = {
+    "quality_failed",
+    "precommit_failed",
+    "repair_planned",
+    "rework_running",
+}
 
 
 def branch_name(branch_status: str | None) -> str:
@@ -108,7 +114,19 @@ def checkpoint_recovery_diagnostics(
     if baseline_branch and current_branch and baseline_branch != current_branch:
         issues.append("repo_baseline_branch_mismatch")
     if baseline_head and current_head and baseline_head != current_head:
-        issues.append("repo_baseline_head_mismatch")
+        target_dir = root / "bots" / f"claude_v{next_v}" if next_v is not None else None
+        can_resume_repair = (
+            stage in HEAD_DRIFT_REPAIR_STAGES
+            and current_branch == EVOLUTION_BRANCH
+            and (not baseline_branch or baseline_branch == current_branch)
+            and target_dir is not None
+            and target_dir.exists()
+        )
+        if can_resume_repair:
+            warnings.append("repo_baseline_head_mismatch_repair_resume")
+            repo_diag["baseline_head_mismatch_allowed"] = True
+        else:
+            issues.append("repo_baseline_head_mismatch")
 
     if stage in TARGET_DIR_STAGES and next_v is not None:
         target_dir = root / "bots" / f"claude_v{next_v}"
