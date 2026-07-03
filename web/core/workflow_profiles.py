@@ -15,12 +15,18 @@ _PROFILES = {
     ),
     "national_primary": WorkflowProfile(
         profile_id="national_primary",
-        description="Make national 70-hand matches the primary evolution precommit gate.",
+        description="Make national 70-hand matches the primary evolution and rating protocol.",
         evaluation_protocol="national",
+        rating_protocol="national",
         national_acceptance_hands=70,
         national_acceptance_hard=True,
         national_precommit_hands=70,
         national_precommit_matches=1,
+        national_rating_hands=70,
+        national_rating_matches=1,
+        eval_wait_min_games=24,
+        eval_wait_rd_threshold=110.0,
+        eval_wait_rd_min_games=12,
         focus_skill_layers=["protocol", "adapter", "action_sanitizer", "opponent_model"],
     ),
     "national_strict": WorkflowProfile(
@@ -62,11 +68,17 @@ def profile_summary(profile: WorkflowProfile | None = None) -> str:
         f"Workflow profile: {p.profile_id}\n"
         f"- {p.description}\n"
         f"- evaluation_protocol={p.evaluation_protocol}\n"
+        f"- rating_protocol={p.rating_protocol}\n"
         f"- max_workers={p.max_workers}\n"
         f"- national_acceptance_hands={p.national_acceptance_hands}, "
         f"hard={p.national_acceptance_hard}\n"
         f"- national_precommit_hands={p.national_precommit_hands}, "
         f"matches={p.national_precommit_matches}\n"
+        f"- national_rating_hands={p.national_rating_hands}, "
+        f"matches={p.national_rating_matches}\n"
+        f"- eval_wait_min_games={p.eval_wait_min_games}, "
+        f"rd_threshold={p.eval_wait_rd_threshold:g}, "
+        f"rd_min_games={p.eval_wait_rd_min_games}\n"
         f"- focus_skill_layers={layers}\n"
         f"\nSkill layer contract:\n{describe_skill_layers(p.focus_skill_layers or None)}"
     )

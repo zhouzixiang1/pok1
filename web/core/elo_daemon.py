@@ -15,6 +15,7 @@ import json
 import random
 import signal
 import argparse
+import asyncio
 import time
 import multiprocessing
 import threading
@@ -65,6 +66,7 @@ from evolution_infra import (
 )
 from bot_action_stats import compute_all_bot_stats, get_global_stats
 from eval_rounds import EvalRoundManager
+from workflow_profiles import get_workflow_profile
 
 BOTS_DIR = PROJECT_ROOT / "bots"
 RESULTS_DIR = CORE_DIR / "results"
@@ -516,6 +518,40 @@ def cleanup_old_replays():
             old_file.unlink()
 
 
+def _rating_protocol_config(n_pairs=None):
+    profile = get_workflow_profile()
+    protocol = os.environ.get(
+        "POK_RATING_PROTOCOL",
+        getattr(profile, "rating_protocol", "local_json"),
+    )
+    protocol = protocol if protocol in {"local_json", "national"} else "local_json"
+    national_hands = int(os.environ.get(
+        "POK_NATIONAL_RATING_HANDS",
+        str(getattr(profile, "national_rating_hands", 70)),
+    ))
+    matches_override = "POK_NATIONAL_RATING_MATCHES" in os.environ
+    national_matches = int(os.environ.get(
+        "POK_NATIONAL_RATING_MATCHES",
+        str(getattr(profile, "national_rating_matches", 1)),
+    ))
+    if n_pairs is not None and not matches_override:
+        national_matches = max(national_matches, int(n_pairs))
+    national_hands = max(1, min(70, national_hands))
+    national_matches = max(1, min(8, national_matches))
+    strict = os.environ.get("POK_NATIONAL_RATING_STRICT")
+    if strict is None:
+        strict_bool = bool(getattr(profile, "national_acceptance_hard", True))
+    else:
+        strict_bool = strict not in {"0", "false", "False", "no", "NO"}
+    return {
+        "profile_id": getattr(profile, "profile_id", "default"),
+        "protocol": protocol,
+        "national_hands": national_hands,
+        "national_matches": national_matches,
+        "strict": strict_bool,
+    }
+
+
 def _rotate_jsonl(filepath, max_lines):
     """Trim a JSONL file to keep only the last `max_lines` lines.
 
@@ -555,39 +591,100 @@ def _rotate_jsonl(filepath, max_lines):
         log.debug("JSONL rotation failed for %s: %s", filepath.name, e)
 
 
+def _run_local_json_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, n_pairs):
+    """Run the legacy local JSON mirror-battle rating backend."""
+    _match_wins, _draws, _n_played, all_logs, net_chips_list = mirror_battle(
+        bot_a_path, bot_b_path, n_games=n_pairs, verbose=False, save_log=True
+    )
+    # Count each game (normal + mirror) independently by winner
+    games_a, games_b, games_draw = 0, 0, 0
+    for game in all_logs:
+        w = game.get("winner", -1)
+        if w == 0:
+            games_a += 1
+        elif w == 1:
+            games_b += 1
+        else:
+            games_draw += 1
+    total = games_a + games_b + games_draw
+
+    # Save replay inside worker to avoid ~2MB cross-process transfer
+    try:
+        save_match_replay(bot_a_name, bot_b_name, games_a, games_b, games_draw, all_logs)
+    except Exception as e:
+        log.debug("Replay save failed: %s", e)
+
+    # A1 (INERTNESS fix): capture bot stderr telemetry for detector firing
+    # verification. Best-effort — never blocks match result processing.
+    try:
+        save_bot_telemetry(bot_a_name, bot_b_name, all_logs)
+    except Exception as e:
+        log.debug("Telemetry save failed: %s", e)
+
+    return (bot_a_name, bot_b_name, games_a, games_b, games_draw, total, None, list(net_chips_list or []))
+
+
+def _run_national_rating_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, config):
+    """Run the national GameEngine rating backend and return daemon result shape."""
+    from national_acceptance import resolve_bot, run_pair
+
+    bot_a = resolve_bot(bot_a_path)
+    bot_b = resolve_bot(bot_b_path)
+    hands = int(config["national_hands"])
+    matches = int(config["national_matches"])
+    strict = bool(config["strict"])
+    wins_a = wins_b = draws = 0
+    net_chips_list: list[int] = []
+    replays: list[dict] = []
+    issues: list[str] = []
+
+    for repeat in range(matches):
+        result = asyncio.run(run_pair(bot_a, bot_b, hands, strict=strict))
+        net = int(result.get("net_chips_a", 0) or 0)
+        net_chips_list.append(net)
+        if net > 0:
+            wins_a += 1
+        elif net < 0:
+            wins_b += 1
+        else:
+            draws += 1
+        if not result.get("passed_compliance", False):
+            issues.extend(str(item) for item in (result.get("issues") or []))
+        replay = dict(result)
+        replay["rating_protocol"] = "national"
+        replay["repeat"] = repeat + 1
+        replays.append(replay)
+
+    total = wins_a + wins_b + draws
+    try:
+        save_match_replay(bot_a_name, bot_b_name, wins_a, wins_b, draws, replays)
+    except Exception as e:
+        log.debug("National replay save failed: %s", e)
+
+    if issues:
+        return (
+            bot_a_name,
+            bot_b_name,
+            wins_a,
+            wins_b,
+            draws,
+            total,
+            "national_rating_compliance: " + "; ".join(issues[:5]),
+            net_chips_list,
+        )
+    return (bot_a_name, bot_b_name, wins_a, wins_b, draws, total, None, net_chips_list)
+
+
 def run_single_match(args):
-    """Run mirror_battle, save replay in-worker, return lightweight result."""
+    """Run the configured rating backend and return lightweight daemon result."""
     bot_a_name, bot_b_name, bot_a_path, bot_b_path, n_pairs = args
     try:
-        match_wins, draws, n_played, all_logs, net_chips_list = mirror_battle(
-            bot_a_path, bot_b_path, n_games=n_pairs, verbose=False, save_log=True
-        )
-        # Count each game (normal + mirror) independently by winner
-        games_a, games_b, games_draw = 0, 0, 0
-        for game in all_logs:
-            w = game.get("winner", -1)
-            if w == 0:
-                games_a += 1
-            elif w == 1:
-                games_b += 1
-            else:
-                games_draw += 1
-        total = games_a + games_b + games_draw
-
-        # Save replay inside worker to avoid ~2MB cross-process transfer
-        try:
-            save_match_replay(bot_a_name, bot_b_name, games_a, games_b, games_draw, all_logs)
-        except Exception as e:
-            log.debug("Replay save failed: %s", e)
-
-        # A1 (INERTNESS fix): capture bot stderr telemetry for detector firing
-        # verification. Best-effort — never blocks match result processing.
-        try:
-            save_bot_telemetry(bot_a_name, bot_b_name, all_logs)
-        except Exception as e:
-            log.debug("Telemetry save failed: %s", e)
-
-        return (bot_a_name, bot_b_name, games_a, games_b, games_draw, total, None, list(net_chips_list or []))
+        config = _rating_protocol_config(n_pairs=n_pairs)
+        if config["protocol"] == "national":
+            return _run_national_rating_match(
+                bot_a_name, bot_b_name, bot_a_path, bot_b_path, config
+            )
+        return _run_local_json_match(bot_a_name, bot_b_name, bot_a_path, bot_b_path, n_pairs)
     except Exception as e:
         return (bot_a_name, bot_b_name, 0, 0, 0, 0, str(e), [])
 
@@ -996,6 +1093,24 @@ def main():
 
     log.info("Starting rating daemon (workers=%d, pairs=%d)", args.workers, args.pairs)
     log.info("Elo ranking + Head-to-Head matrix + per-game updates")
+    _backend_config = _rating_protocol_config(n_pairs=args.pairs)
+    log.info(
+        "Rating backend: profile=%s protocol=%s national_hands=%s national_matches=%s strict=%s",
+        _backend_config["profile_id"],
+        _backend_config["protocol"],
+        _backend_config["national_hands"],
+        _backend_config["national_matches"],
+        _backend_config["strict"],
+    )
+    try:
+        log_system_event(
+            "daemon.rating_backend",
+            "info",
+            f"Rating daemon backend: {_backend_config['protocol']}",
+            _backend_config,
+        )
+    except Exception:
+        pass
 
     # Load persisted state
     ratings = load_ratings()

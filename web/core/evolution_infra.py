@@ -785,7 +785,15 @@ def _log_eval_wait_event(event_type: str, severity: str, message: str, **data) -
         pass
 
 
-async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=MIN_GAMES_FOR_EVAL, ui=None, shutdown_event=None):
+async def wait_for_daemon_eval(
+    bot_name,
+    timeout=DAEMON_EVAL_TIMEOUT,
+    min_games=MIN_GAMES_FOR_EVAL,
+    ui=None,
+    shutdown_event=None,
+    rd_threshold=90,
+    rd_min_games=30,
+):
     """Wait for daemon to evaluate a new bot (async, non-blocking).
 
     Returns True when either:
@@ -796,12 +804,11 @@ async def wait_for_daemon_eval(bot_name, timeout=DAEMON_EVAL_TIMEOUT, min_games=
     from daemon_management import daemon_proc, _daemon_lock
 
     # RD-based confidence early-exit. Now that decay_rd uses the official Glicko-2
-    # formula (no 150 floor), RD genuinely converges as a bot accumulates games,
-    # so this branch is no longer dead. Threshold 90 ≈ a ±180 confidence band;
-    # combined with the ≥30-game sample floor it means "rated well enough to
-    # proceed without waiting the full 600s timeout or 100-game hard gate".
-    EVAL_RD_THRESHOLD = 90
-    EVAL_RD_MIN_GAMES = 30
+    # formula (no 150 floor), RD genuinely converges as a bot accumulates games.
+    # Defaults keep the historical 90/30 gate; workflow profiles may relax or
+    # tighten those values for rating backends with different sample semantics.
+    EVAL_RD_THRESHOLD = float(rd_threshold)
+    EVAL_RD_MIN_GAMES = int(rd_min_games)
 
     start = time.time()
     cached_bot_stats = None
