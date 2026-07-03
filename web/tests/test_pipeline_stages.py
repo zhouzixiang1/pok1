@@ -1235,22 +1235,22 @@ class TestWorkerFailureCircuitBreaker:
         data = json.loads(result["content"][0]["text"])
         assert data["success"] is True
         tasks = mock_exec.call_args.args[0]
-        assert tasks[0]["worker_id"] == "auto_quality_repair"
-        assert tasks[0]["target_files"] == [
-            "strategy.py",
-            "opponent.py",
-            "state.py",
-            "strategy_helpers.py",
-        ]
-        assert "Preserve the current candidate" in tasks[0]["worker_prompt"]
-        assert "strategy_helpers.py" in tasks[0]["worker_prompt"]
+        by_blocker_file = {(task["repair_blocker"], task["target_files"][0]): task for task in tasks}
+        assert ("file_size", "strategy.py") in by_blocker_file
+        assert ("position_semantics", "opponent.py") in by_blocker_file
+        assert ("position_semantics", "state.py") in by_blocker_file
+        assert ("position_semantics", "strategy_helpers.py") in by_blocker_file
+        assert ("quality_gate", "opponent.py") in by_blocker_file
+        assert by_blocker_file[("file_size", "strategy.py")]["must_change_files"] == ["strategy.py"]
+        assert "Preserve the current candidate" in by_blocker_file[("file_size", "strategy.py")]["worker_prompt"]
+        assert "strategy_helpers.py" in by_blocker_file[("position_semantics", "strategy_helpers.py")]["worker_prompt"]
         assert mock_exec.call_args.kwargs["force_sequential"] is True
         assert "in-place crossover quality repair" in mock_exec.call_args.kwargs["reviewer_feedback"]
         assert (next_dir / "strategy.py").read_text() == "def act():\n    return 1\n"
 
         ckpt = json.loads(ckpt_file.read_text())
         assert ckpt["stage"] == "workers_done"
-        assert ckpt["master_plan"]["tasks"][0]["worker_id"] == "auto_quality_repair"
+        assert len(ckpt["master_plan"]["tasks"]) == len(tasks)
         assert ckpt["master_plan"]["work_item"]["kind"] == "crossover_quality_repair"
         assert ckpt["master_plan"]["work_item"]["reset_performed"] is False
 
@@ -1313,15 +1313,21 @@ class TestWorkerFailureCircuitBreaker:
         data = json.loads(result["content"][0]["text"])
         assert data["success"] is True
         tasks = mock_exec.call_args.args[0]
-        assert tasks[0]["target_files"] == ["opponent.py", "state.py", "strategy_helpers.py"]
-        assert "strategy_helpers.py" in tasks[0]["worker_prompt"]
+        assert [task["target_files"] for task in tasks] == [
+            ["opponent.py"],
+            ["state.py"],
+            ["strategy_helpers.py"],
+        ]
+        assert all(task["repair_blocker"] == "position_semantics" for task in tasks)
+        assert tasks[-1]["must_change_files"] == ["strategy_helpers.py"]
+        assert "strategy_helpers.py" in tasks[-1]["worker_prompt"]
 
         ckpt = json.loads(ckpt_file.read_text())
         assert ckpt["stage"] == "workers_done"
-        assert ckpt["master_plan"]["tasks"][0]["target_files"] == [
-            "opponent.py",
-            "state.py",
-            "strategy_helpers.py",
+        assert [task["target_files"] for task in ckpt["master_plan"]["tasks"]] == [
+            ["opponent.py"],
+            ["state.py"],
+            ["strategy_helpers.py"],
         ]
         assert ckpt["master_plan"]["work_item"]["reset_performed"] is False
 
@@ -1361,6 +1367,51 @@ class TestWorkerFailureCircuitBreaker:
 
         assert skipper(mixed_task) == ""
         assert "size" in skipper(size_only_task)
+
+    def test_quality_repair_contract_tasks_are_file_scoped_and_deduped(self):
+        import tool_planning
+
+        ckpt = {
+            "next_v": 268,
+            "source_v": 246,
+            "parent2_v": 254,
+            "stage": "quality_failed",
+            "master_plan": {"strategy": "crossover", "tasks": []},
+            "gate_results": {
+                "quality": {
+                    "all_passed": False,
+                    "failed_gates": [
+                        "file_size(strategy.py:2496L/2493L)",
+                        (
+                            "position_semantics(opponent.py:1256: SB must be dealer_id; "
+                            "state.py:223: SB must be dealer_id)"
+                        ),
+                    ],
+                    "oversized_files": {"strategy.py": 2496},
+                    "position_semantics_errors": [
+                        "opponent.py:1256: SB must be dealer_id",
+                        "state.py:223: SB must be dealer_id",
+                    ],
+                    "protected_contract_errors": [
+                        "opponent.py: print() emits TCP action text; output must be JSON response int",
+                    ],
+                }
+            },
+        }
+
+        tasks = tool_planning._synthesize_rework_tasks_from_checkpoint(ckpt)
+        blocker_files = [(task["repair_blocker"], task["target_files"][0]) for task in tasks]
+
+        assert blocker_files == [
+            ("file_size", "strategy.py"),
+            ("position_semantics", "opponent.py"),
+            ("position_semantics", "state.py"),
+            ("quality_gate", "opponent.py"),
+        ]
+        assert [task["target_files"] for task in tasks].count(["strategy.py"]) == 1
+        assert all(task["must_change_files"] == task["target_files"] for task in tasks)
+        assert "<= 2493 lines" in tasks[0]["worker_prompt"]
+        assert "print() emits TCP action text" in tasks[-1]["worker_prompt"]
 
     def test_repair_planned_crossover_quality_retry_preserves_candidate(self, tmp_path, monkeypatch):
         """A planned retry of crossover quality repair must not reset the fused candidate."""

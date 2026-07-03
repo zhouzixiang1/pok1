@@ -50,7 +50,7 @@ def _worker_timeout_for_task(task, reviewer_feedback):
         "file_size(",
         "position_semantics(",
         "size_recovery",
-        "loc",
+        "loc limit",
     )
     if any(marker in text for marker in quality_rework_markers):
         return min(WORKER_TIMEOUT, QUALITY_REWORK_WORKER_TIMEOUT)
@@ -349,6 +349,75 @@ def _classify_target_change(src_exists, dst_exists, src_text, dst_text):
     return "modified"
 
 
+def _must_change_rels_for_task(task, next_v):
+    """Return the normalized files this worker must actually edit.
+
+    ``target_files`` defines the write boundary. ``must_change_files`` narrows the
+    completion contract when some targets are context-only. Existing tasks do not
+    set ``must_change_files``, so they retain the stricter historical behavior:
+    every declared target file must change.
+    """
+    raw_files = task.get("must_change_files") or task.get("target_files") or []
+    rels = []
+    seen = set()
+    for target in raw_files:
+        rel = _target_rel(target, next_v)
+        if rel and rel not in seen:
+            seen.add(rel)
+            rels.append(rel)
+    return rels
+
+
+def _classify_target_change_for_worker(task, task_idx, rel, next_dir, next_v,
+                                       source_v=None, baseline_snapshots=None):
+    """Classify a target's change relative to the worker's own pre-run baseline.
+
+    The old check compared candidate files to the source parent. That is wrong for
+    in-place crossover/precommit repairs: the candidate is already different from
+    the source before the repair worker starts, so a worker that edits nothing can
+    look successful. Prefer the per-worker snapshot and fall back to source only
+    for older callers/tests without snapshots.
+    """
+    dst_file = next_dir / rel
+    dst_exists = dst_file.exists()
+    dst_text = dst_file.read_text() if dst_exists else ""
+
+    if baseline_snapshots is not None and (task_idx, rel) in baseline_snapshots:
+        before_text = baseline_snapshots[(task_idx, rel)]
+        return _classify_target_change(True, dst_exists, before_text, dst_text)
+
+    if source_v is None:
+        return _classify_target_change(True, dst_exists, dst_text, dst_text)
+
+    src_dir = get_bot_dir(source_v)
+    src_file = src_dir / rel
+    src_exists = src_file.exists()
+    src_text = src_file.read_text() if src_exists else ""
+    return _classify_target_change(src_exists, dst_exists, src_text, dst_text)
+
+
+def _cot_inconsistency_blocks_task(task):
+    """Only hard-block CoT inconsistencies for repair tasks.
+
+    Normal innovation workers can surface reviewer focus areas without forcing an
+    immediate retry. Gate/precommit repairs are different: their whole purpose is
+    to resolve exact blockers, so a claim-vs-diff mismatch is actionable failure.
+    """
+    text = " ".join([
+        str(task.get("task_kind", "")),
+        str(task.get("worker_id", "")),
+        str(task.get("role", "")),
+        str(task.get("worker_prompt", task.get("instruction", "")))[:1000],
+    ]).lower()
+    return any(marker in text for marker in (
+        "quality_repair",
+        "precommit_repair",
+        "file_size(",
+        "position_semantics(",
+        "protected_contract",
+    ))
+
+
 async def _run_debug_agent(error_output, changed_diff, target_file, next_v, ui):
     """Run the DeepEvolve debug sub-agent to diagnose and fix a compile/crash error.
 
@@ -572,21 +641,20 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             )
             continue
 
-        # Verify target files were actually modified (catch zero-change workers
-        # and bogus paths that resolve to nothing on disk).
-        target_rels = [_target_rel(f, next_v) for f in task.get("target_files", [])]
-        target_rels = [r for r in target_rels if r]
+        # Verify required target files were actually modified (catch zero-change
+        # workers and bogus paths that resolve to nothing on disk). This is
+        # intentionally measured against the worker's own pre-run snapshot, not
+        # the source parent, because in-place crossover/precommit repairs start
+        # from a candidate that may already differ from source.
+        target_rels = _must_change_rels_for_task(task, next_v)
         if target_rels and source_v is not None:
-            src_dir = get_bot_dir(source_v)
             invalid_targets = []  # paths that resolve nowhere (or were deleted)
             unchanged = []        # genuinely identical
+            snapshots = worker_snapshots or _local_snapshots
             for rel in target_rels:
-                src_file = src_dir / rel
-                dst_file = next_dir / rel
-                src_text = src_file.read_text() if src_file.exists() else ""
-                dst_text = dst_file.read_text() if dst_file.exists() else ""
-                change = _classify_target_change(
-                    src_file.exists(), dst_file.exists(), src_text, dst_text
+                change = _classify_target_change_for_worker(
+                    task, idx, rel, next_dir, next_v,
+                    source_v=source_v, baseline_snapshots=snapshots,
                 )
                 if change in ("invalid_target", "deleted"):
                     invalid_targets.append(rel)
@@ -732,6 +800,12 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                 )
                 if not cot.get("cot_consistent", True):
                     audit_focus_areas.extend(cot.get("focus_areas", []))
+                    if _cot_inconsistency_blocks_task(tasks[0]):
+                        _reset_target_files_to_source(
+                            tasks[0], source_v, next_dir, next_v,
+                            baseline_snapshots=worker_snapshots, task_idx=0,
+                        )
+                        ok = False
             except Exception as e:
                 log.warning("CoT audit failed for worker 0: %s", e)
         return ok, worker_snapshots, audit_focus_areas
@@ -831,9 +905,17 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                 )
                 if not cot.get("cot_consistent", True):
                     audit_focus_areas.extend(cot.get("focus_areas", []))
+                    if _cot_inconsistency_blocks_task(task):
+                        _reset_target_files_to_source(
+                            task, source_v, next_dir, next_v,
+                            baseline_snapshots=worker_snapshots, task_idx=i,
+                        )
+                        any_failed = True
             except Exception as e:
                 log.warning("CoT audit failed for worker %d: %s", i, e)
 
+        if any_failed:
+            return False, worker_snapshots, audit_focus_areas
         return True, worker_snapshots, audit_focus_areas
 
     # ── Sequential fallback: target files overlap or empty sets ──
@@ -886,6 +968,12 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             )
             if not cot.get("cot_consistent", True):
                 audit_focus_areas.extend(cot.get("focus_areas", []))
+                if _cot_inconsistency_blocks_task(task):
+                    _reset_target_files_to_source(
+                        task, source_v, next_dir, next_v,
+                        baseline_snapshots=worker_snapshots, task_idx=i,
+                    )
+                    return False, worker_snapshots, audit_focus_areas
         except Exception as e:
             log.warning("CoT audit failed for worker %d (sequential): %s", i, e)
     return True, worker_snapshots, audit_focus_areas

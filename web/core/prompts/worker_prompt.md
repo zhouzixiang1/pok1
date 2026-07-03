@@ -152,10 +152,11 @@ After editing:
    edits FAILED. You MUST see at least ONE of: new function definition, changed
    numeric constant, new conditional logic, changed return value.
    Exception: if the assigned worker prompt explicitly says this is a
-   `file_size`, LOC, or size-recovery repair and asks for semantic-preserving
-   compression, then formatting/comment/docstring-only reduction is valid only
-   when py_compile and the later quality gates pass. Do not add unrelated
-   executable changes just to satisfy the normal substantive-change rule.
+   `file_size`, LOC, size-recovery, or `position_semantics` text-contract repair,
+   then formatting/comment/docstring-only reduction or correction is valid only
+   when it directly removes the gate-flagged stale text and py_compile plus the
+   later quality gates pass. Do not add unrelated executable changes just to
+   satisfy the normal substantive-change rule.
 
 2. **Verify changes**: Use `diff -rq bots/claude_v{parent_version}/ bots/claude_v{version}/` to list changed files, then `diff` each changed file. Ensure no unintended modifications outside `target_files`.
 
