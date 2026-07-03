@@ -4,6 +4,7 @@ import pytest
 from claude_agent_sdk.types import (
     AssistantMessage,
     ResultMessage,
+    SystemMessage,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
@@ -555,6 +556,73 @@ def test_process_stream_unknown_messages_do_not_refresh_idle_timeout(
     assert fields["text_chars"] == len("alpha")
     assert fields["unknown_messages_seen"] > 0
     assert fields["idle_timeout"] == 0.025
+
+
+def test_process_stream_system_thinking_messages_are_productive_activity(
+    monkeypatch, tmp_path
+):
+    events = []
+
+    async def fake_stream():
+        for index in range(8):
+            await asyncio.sleep(0.005)
+            yield SystemMessage(
+                subtype="thinking_tokens",
+                data={
+                    "estimated_tokens": index + 1,
+                    "estimated_tokens_delta": 1,
+                },
+            )
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=10,
+            duration_api_ms=10,
+            is_error=False,
+            num_turns=1,
+            session_id="session",
+            total_cost_usd=0.1,
+            usage={"input_tokens": 4, "output_tokens": 2},
+        )
+
+    monkeypatch.setenv("POK_LLM_MASTER_FIRST_ACTIVITY_TIMEOUT", "0.02")
+    monkeypatch.setenv("POK_LLM_MASTER_IDLE_TIMEOUT", "0.02")
+    monkeypatch.setenv("POK_LLM_MASTER_TOTAL_TIMEOUT", "1")
+    monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 999)
+    monkeypatch.setattr(
+        llm_query,
+        "_emit_llm_event",
+        lambda category, severity, message, **fields: events.append(
+            (category, severity, message, fields)
+        ),
+    )
+
+    log_file = tmp_path / "v269" / "logs" / "master_io.txt"
+    log_file.parent.mkdir(parents=True)
+
+    texts, cost, usage = asyncio.run(
+        llm_query._process_stream(
+            fake_stream(), str(log_file), _DummyUI(), "MASTER (Try 1)"
+        )
+    )
+
+    assert texts == []
+    assert cost == 0.1
+    assert usage["output_tokens"] == 2
+    assert [
+        event for event in events
+        if event[0] == "pipeline.llm_role_unknown_message"
+    ] == []
+
+    first_activity = next(
+        event for event in events
+        if event[0] == "pipeline.llm_role_first_activity"
+    )
+    _category, severity, _message, fields = first_activity
+    assert severity == "info"
+    assert fields["activity_kind"] == "system:thinking_tokens"
+
+    role_log = log_file.read_text(encoding="utf-8")
+    assert "[SYSTEM_MESSAGE subtype=thinking_tokens" in role_log
 
 
 def test_default_role_timeout_policy_is_bounded(monkeypatch):
