@@ -3492,13 +3492,6 @@ def _should_reset_before_rework(ckpt, tasks):
         for task in tasks or []
         if isinstance(task, dict)
     }
-    is_crossover = (
-        bool(ckpt.get("parent2_v"))
-        or master_plan.get("strategy") == "crossover"
-        or work_kind.startswith("crossover_")
-    )
-    if not is_crossover:
-        return True
     is_quality_repair = (
         stage == "quality_failed"
         or "quality_repair" in work_kind
@@ -3507,6 +3500,13 @@ def _should_reset_before_rework(ckpt, tasks):
     )
     if is_quality_repair and "precommit" not in work_kind:
         return False
+    is_crossover = (
+        bool(ckpt.get("parent2_v"))
+        or master_plan.get("strategy") == "crossover"
+        or work_kind.startswith("crossover_")
+    )
+    if not is_crossover:
+        return True
     return True
 
 
@@ -3858,10 +3858,25 @@ async def execute_workers(args):
                     {"next_v": next_v, "source_v": source_v, "parent2_v": ckpt.get("parent2_v")},
                 )
             else:
+                in_place_kind = (
+                    "crossover_quality_repair"
+                    if rework_kind.startswith("crossover_") or ckpt.get("parent2_v") is not None
+                    else "quality_repair"
+                )
+                event_type = (
+                    "pipeline.crossover_quality_repair_in_place"
+                    if in_place_kind == "crossover_quality_repair"
+                    else "pipeline.quality_repair_in_place"
+                )
+                event_message = (
+                    f"Repairing crossover v{next_v} in place after quality failure; preserving fused candidate code"
+                    if in_place_kind == "crossover_quality_repair"
+                    else f"Repairing v{next_v} in place after quality failure; preserving generated candidate code"
+                )
                 log_system_event(
-                    "pipeline.crossover_quality_repair_in_place",
+                    event_type,
                     "warn",
-                    f"Repairing crossover v{next_v} in place after quality failure; preserving fused candidate code",
+                    event_message,
                     {"next_v": next_v, "source_v": source_v, "parent2_v": ckpt.get("parent2_v")},
                 )
 
@@ -3926,11 +3941,18 @@ async def execute_workers(args):
                 f"for targeted EV/matchup regression fixes."
             )
         else:
-            reviewer_feedback += (
-                f"\n\nNOTE: This is an in-place crossover quality repair. The current code in "
-                f"bots/claude_v{next_v}/ is the generated crossover candidate and must be preserved "
-                f"except for the exact quality-gate blockers above."
-            )
+            if rework_kind.startswith("crossover_") or ckpt.get("parent2_v") is not None:
+                reviewer_feedback += (
+                    f"\n\nNOTE: This is an in-place crossover quality repair. The current code in "
+                    f"bots/claude_v{next_v}/ is the generated crossover candidate and must be preserved "
+                    f"except for the exact quality-gate blockers above."
+                )
+            else:
+                reviewer_feedback += (
+                    f"\n\nNOTE: This is an in-place quality repair. The current code in "
+                    f"bots/claude_v{next_v}/ is the generated candidate and must be preserved "
+                    f"except for the exact quality-gate blockers above."
+                )
 
     # P2: Validate positive worker intent against EXHAUSTED directions from the
     # experience pool. Negative guardrail prose is ignored to prevent warnings
