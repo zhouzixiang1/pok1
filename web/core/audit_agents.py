@@ -282,7 +282,7 @@ async def _run_worker_cot_check(task, worker_idx, next_v, source_v, next_dir, wo
                 log.warning("Worker CoT check validation: %s", "; ".join(errors[:3]))
                 return safe_default
             consistent = data.get("cot_consistent", True)
-            log.info("Worker %d CoT check: consistent=%s", w_id, consistent)
+            log.info("Worker %s CoT check: consistent=%s", w_id, consistent)
             if not consistent:
                 log_system_event("pipeline.worker_cot_inconsistency", "warn",
                                  f"Worker {w_id} CoT inconsistency: {data.get('discrepancies', [])[:2]}",

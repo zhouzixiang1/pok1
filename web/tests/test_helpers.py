@@ -213,6 +213,37 @@ class TestValidateWorkerBoundaries:
         )
         assert errors == []
 
+    def test_worker_snapshots_do_not_blame_prior_in_place_repairs(self, tmp_path, monkeypatch):
+        from tool_helpers import _validate_worker_boundaries
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        for name in ("opponent.py", "strategy_helpers.py"):
+            (source_dir / name).write_text(f"# source {name}\n", encoding="utf-8")
+        (next_dir / "opponent.py").write_text("# prior sibling repair\n", encoding="utf-8")
+        before_helper = "# helper before this worker\n# extra line\n"
+        after_helper = "# helper before this worker\n"
+        (next_dir / "strategy_helpers.py").write_text(after_helper, encoding="utf-8")
+
+        monkeypatch.setattr(
+            "tool_helpers.get_bot_dir",
+            lambda v: source_dir if v == 10 else next_dir,
+        )
+
+        task = {"target_files": ["strategy_helpers.py"], "role": "Algorithmic Logic Architect"}
+        without_snapshots = _validate_worker_boundaries([task], source_v=10, next_v=11)
+        assert any(err["file"] == "opponent.py" for err in without_snapshots)
+
+        with_snapshots = _validate_worker_boundaries(
+            [task],
+            source_v=10,
+            next_v=11,
+            worker_snapshots={(0, "strategy_helpers.py"): before_helper},
+        )
+        assert with_snapshots == []
+
 
 # ── evolution_infra.py ──
 
