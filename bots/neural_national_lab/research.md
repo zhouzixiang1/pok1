@@ -129,9 +129,11 @@ Practical takeaways for this repo:
   quality or action-value estimation, not only tighten thresholds.
 - Replaying v025 trace diagnostics with fixed deck seeds did not reproduce the
   exact paired-match outliers. The deck is deterministic, but the rule bot
-  simulation layer still uses process-local randomness. Before larger
-  96/128-pair promotion runs, the evaluator should seed bot subprocess RNGs or
-  report that the result is deck-paired but not fully deterministic.
+  simulation layer still uses process-local randomness. `paired_evaluate.py`
+  and `trace_advice_outcomes.py` now support `--bot-seed-base`, which launches
+  bot subprocesses through a seeded wrapper before running the bot script. A
+  4-pair v022/v025 smoke with both deck and bot RNG seeds reran byte-identical.
+  Larger 96/128-pair promotion runs should use both seed families.
 
 ## Scale-Up Gate
 
