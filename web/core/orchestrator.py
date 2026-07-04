@@ -1562,6 +1562,40 @@ def _runtime_git_identity() -> dict:
     }
 
 
+def _runtime_head_drift_unrelated_allowed(expected_head: str, current_head: str) -> tuple[bool, dict]:
+    if not expected_head or not current_head or expected_head == current_head:
+        return False, {}
+    try:
+        from evolution_core import read_pipeline_checkpoint
+        checkpoint = read_pipeline_checkpoint()
+    except Exception:
+        checkpoint = None
+    candidate_v = None
+    if isinstance(checkpoint, dict):
+        try:
+            candidate_v = int(checkpoint.get("next_v"))
+        except Exception:
+            candidate_v = None
+    try:
+        from evolution_scope import changed_paths_between_heads, classify_paths
+        changed_paths = changed_paths_between_heads(PROJECT_ROOT, expected_head, current_head)
+    except Exception:
+        changed_paths = None
+    if changed_paths is None:
+        return False, {"head_drift_paths_available": False}
+    path_scope = classify_paths(changed_paths, candidate_v)
+    blocking = list(path_scope.get("blocking_entries") or [])
+    candidate_entries = list(path_scope.get("candidate_entries") or [])
+    return not (blocking or candidate_entries), {
+        "head_drift_paths_available": True,
+        "candidate_v": candidate_v,
+        "head_changed_paths": changed_paths[:80],
+        "head_blocking_entries": blocking[:40],
+        "head_candidate_entries": candidate_entries[:40],
+        "head_ignored_entries": (path_scope.get("ignored_entries") or [])[:40],
+    }
+
+
 async def _runtime_branch_guard_coroutine(
     ui,
     shutdown_mgr,
@@ -1581,6 +1615,7 @@ async def _runtime_branch_guard_coroutine(
     tree, so it is recorded and tolerated until a commit/HEAD change appears.
     """
     allowed_aliases: set[tuple[str, str]] = set()
+    allowed_unrelated_heads: set[tuple[str, str, str]] = set()
     while True:
         if shutdown_mgr and shutdown_mgr.is_shutting_down:
             return
@@ -1626,6 +1661,38 @@ async def _runtime_branch_guard_coroutine(
                     )
                 continue
             if expected_head and current_head and current_head != expected_head:
+                unrelated_allowed, unrelated_payload = _runtime_head_drift_unrelated_allowed(
+                    expected_head,
+                    current_head,
+                )
+                if unrelated_allowed:
+                    drift_key = (current_branch, expected_head, current_head)
+                    if drift_key not in allowed_unrelated_heads:
+                        allowed_unrelated_heads.add(drift_key)
+                        log_system_event(
+                            "repo.runtime_head_drift_unrelated_allowed",
+                            "warn",
+                            (
+                                "Runtime branch guard tolerated unrelated HEAD drift: "
+                                f"{expected_branch}@{expected_head} -> "
+                                f"{current_branch}@{current_head}"
+                            ),
+                            {
+                                "expected_branch": expected_branch,
+                                "current_branch": current_branch,
+                                "expected_head": expected_head,
+                                "current_head": current_head,
+                                "branch_status": current.get("branch_status", ""),
+                                **unrelated_payload,
+                                "directive": (
+                                    "Continuing because the HEAD change does not touch "
+                                    "evolution infrastructure, the national platform, the "
+                                    "local engine, or the active candidate bot. commit_bot "
+                                    "still requires the canonical branch."
+                                ),
+                            },
+                        )
+                    continue
                 reason = "head_drift"
             elif expected_branch and current_branch and current_branch != expected_branch:
                 reason = "branch_drift"

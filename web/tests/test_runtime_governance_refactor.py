@@ -997,6 +997,61 @@ def test_runtime_guard_blocks_commit_on_same_head_branch_alias(monkeypatch):
     assert payload["expected_branch"] == "main"
 
 
+def test_runtime_guard_allows_non_commit_tool_on_branch_with_unrelated_head_drift(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    monkeypatch.setenv("POK_RUNTIME_EXPECTED_HEAD", "old123")
+    snapshots = iter([
+        {"ok": True, "branch": "codex/docs", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "codex/docs", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+    ])
+    events = []
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "old123"})
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: None)
+    monkeypatch.setattr(
+        tool_runtime_guard,
+        "changed_paths_between_heads",
+        lambda *_args: ["docs/notes.md", "bots/neural_national_lab/data/run.json"],
+    )
+    monkeypatch.setattr(tool_runtime_guard, "_log_guard_event", lambda *args: events.append(args))
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_review",
+        {"next_v": 300, "source_v": 299},
+    )
+
+    assert ok is True
+    assert payload["head_drift_unrelated_allowed"] is True
+    assert payload["head_changed_paths"] == [
+        "docs/notes.md",
+        "bots/neural_national_lab/data/run.json",
+    ]
+    assert any(event[0] == "repo.runtime_guard_branch_head_drift_unrelated_allowed" for event in events)
+
+
+def test_runtime_guard_blocks_commit_on_branch_with_unrelated_head_drift(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    monkeypatch.setenv("POK_RUNTIME_EXPECTED_HEAD", "old123")
+    snapshot = {"ok": True, "branch": "codex/docs", "head": "new456", "entries": ["?? bots/claude_v300/"]}
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "old123"})
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: None)
+    monkeypatch.setattr(tool_runtime_guard, "changed_paths_between_heads", lambda *_args: ["docs/notes.md"])
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "commit_bot",
+        {"version": 300, "source_v": 299},
+    )
+
+    assert ok is False
+    assert payload["reason"] == "branch_drift"
+    assert payload["expected_branch"] == "main"
+
+
 def test_write_pipeline_checkpoint_persists_repo_baseline(tmp_path, monkeypatch):
     import evolution_infra
     import repo_state
@@ -1570,6 +1625,55 @@ def test_runtime_branch_guard_tolerates_same_head_branch_alias(monkeypatch):
     assert hard_stop.is_set() is False
     assert cleared == []
     assert events[0][0] == "repo.runtime_branch_alias_allowed"
+
+
+def test_runtime_branch_guard_tolerates_unrelated_head_drift(monkeypatch):
+    import asyncio
+    import orchestrator
+
+    monkeypatch.setenv("POK_FORCE_RUNTIME_BRANCH_GUARD", "1")
+    snapshots = iter([
+        {"branch": "codex/docs", "head": "def456", "branch_status": "codex/docs"},
+    ])
+    events = []
+    cleared = []
+    monkeypatch.setattr(orchestrator, "_runtime_git_identity", lambda: next(snapshots))
+    monkeypatch.setattr(
+        orchestrator,
+        "_runtime_head_drift_unrelated_allowed",
+        lambda *_args: (True, {"head_changed_paths": ["docs/notes.md"], "candidate_v": 300}),
+    )
+    monkeypatch.setattr(orchestrator, "_clear_orchestrator_session", lambda **kwargs: cleared.append(kwargs))
+
+    class DummyShutdown:
+        def __init__(self):
+            self.is_shutting_down = False
+            self.requested = False
+
+        def request_shutdown(self):
+            self.requested = True
+            self.is_shutting_down = True
+
+    shutdown = DummyShutdown()
+
+    def _fake_log(*args):
+        events.append(args)
+        shutdown.is_shutting_down = True
+
+    monkeypatch.setattr(orchestrator, "log_system_event", _fake_log)
+
+    asyncio.run(orchestrator._runtime_branch_guard_coroutine(
+        None,
+        shutdown,
+        expected_branch="main",
+        expected_head="abc123",
+        check_interval=0.001,
+    ))
+
+    assert shutdown.requested is False
+    assert cleared == []
+    assert events[0][0] == "repo.runtime_head_drift_unrelated_allowed"
+    assert events[0][3]["head_changed_paths"] == ["docs/notes.md"]
 
 
 def test_runtime_branch_guard_requests_shutdown_on_head_drift(monkeypatch):

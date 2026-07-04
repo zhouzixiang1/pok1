@@ -254,6 +254,39 @@ def _unrelated_head_drift_allowed(
     }
 
 
+def _branch_head_drift_unrelated_allowed(
+    *,
+    tool_name: str,
+    candidate_v: int | None,
+    snapshot: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    if tool_name == "commit_bot":
+        return False, {}
+    current_branch = _branch_name(str(snapshot.get("branch") or ""))
+    if not current_branch or current_branch == EVOLUTION_BRANCH:
+        return False, {}
+    expected_head = _runtime_expected_head()
+    current_head = str(snapshot.get("head") or "").strip()
+    if not expected_head or not current_head or expected_head == current_head:
+        return False, {}
+    allowed, payload = _unrelated_head_drift_allowed(
+        candidate_v=candidate_v,
+        baseline_head=expected_head,
+        current_head=current_head,
+    )
+    if not allowed:
+        return False, payload
+    return True, {
+        "tool": tool_name,
+        "candidate_v": candidate_v,
+        "branch": snapshot.get("branch"),
+        "expected_branch": EVOLUTION_BRANCH,
+        "runtime_expected_head": expected_head,
+        "head": current_head,
+        **payload,
+    }
+
+
 def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None) -> tuple[bool, dict[str, Any]]:
     """Ensure mutating pipeline tools run on the canonical branch and clean codebase."""
     args = args or {}
@@ -264,6 +297,11 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
     before = _snapshot()
     current_branch = _branch_name(str(before.get("branch") or ""))
     branch_alias_allowed = _branch_alias_allowed_for_tool(tool_name, before)
+    branch_head_drift_unrelated_allowed, branch_head_drift_payload = _branch_head_drift_unrelated_allowed(
+        tool_name=tool_name,
+        candidate_v=candidate_v,
+        snapshot=before,
+    )
 
     if before.get("truncated"):
         payload = {
@@ -285,7 +323,12 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
         )
         return False, payload
 
-    if current_branch and current_branch != EVOLUTION_BRANCH and not branch_alias_allowed:
+    if (
+        current_branch
+        and current_branch != EVOLUTION_BRANCH
+        and not branch_alias_allowed
+        and not branch_head_drift_unrelated_allowed
+    ):
         unexpected = _unexpected_entries(before, candidate_v)
         payload = {
             "blocked": True,
@@ -324,6 +367,13 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
                 "head": before.get("head"),
             },
         )
+    elif branch_head_drift_unrelated_allowed:
+        _log_guard_event(
+            "repo.runtime_guard_branch_head_drift_unrelated_allowed",
+            "warn",
+            f"Runtime git guard allowed {tool_name} on branch with unrelated HEAD drift",
+            branch_head_drift_payload,
+        )
 
     snapshot = _snapshot()
     if snapshot.get("truncated"):
@@ -348,8 +398,23 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
 
     snapshot_branch = _branch_name(str(snapshot.get("branch") or ""))
     snapshot_branch_alias_allowed = _branch_alias_allowed_for_tool(tool_name, snapshot)
+    snapshot_branch_head_drift_unrelated_allowed, snapshot_branch_head_drift_payload = (
+        _branch_head_drift_unrelated_allowed(
+            tool_name=tool_name,
+            candidate_v=candidate_v,
+            snapshot=snapshot,
+        )
+    )
     branch_alias_allowed = branch_alias_allowed or snapshot_branch_alias_allowed
-    if snapshot_branch and snapshot_branch != EVOLUTION_BRANCH and not snapshot_branch_alias_allowed:
+    branch_head_drift_unrelated_allowed = (
+        branch_head_drift_unrelated_allowed or snapshot_branch_head_drift_unrelated_allowed
+    )
+    if (
+        snapshot_branch
+        and snapshot_branch != EVOLUTION_BRANCH
+        and not snapshot_branch_alias_allowed
+        and not snapshot_branch_head_drift_unrelated_allowed
+    ):
         unexpected = _unexpected_entries(snapshot, candidate_v)
         payload = {
             "blocked": True,
@@ -373,6 +438,13 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
             payload,
         )
         return False, payload
+    if snapshot_branch_head_drift_unrelated_allowed and not branch_alias_allowed:
+        _log_guard_event(
+            "repo.runtime_guard_branch_head_drift_unrelated_allowed",
+            "warn",
+            f"Runtime git guard allowed {tool_name} on branch with unrelated HEAD drift",
+            snapshot_branch_head_drift_payload,
+        )
 
     baseline = _checkpoint_repo_baseline(candidate_v) or get_last_snapshot() or {}
     baseline_head = baseline.get("head") or ""
@@ -476,6 +548,7 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
         "branch": snapshot.get("branch"),
         "head": snapshot.get("head"),
         "branch_alias_allowed": branch_alias_allowed,
+        "branch_head_drift_unrelated_allowed": branch_head_drift_unrelated_allowed,
         "ignored_entries": ignored[:40],
         "ignored_count": len(ignored),
     }
