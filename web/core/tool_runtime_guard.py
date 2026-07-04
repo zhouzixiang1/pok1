@@ -24,6 +24,7 @@ _HEAD_DRIFT_REPAIR_STAGES = {
     "rework_running",
 }
 _HEAD_DRIFT_TOOL_BY_STAGE = {
+    "master_planned": {"execute_workers"},
     "workers_done": {"run_quality_gates"},
     "quality_failed": {"execute_workers"},
     "precommit_failed": {"execute_workers"},
@@ -107,14 +108,15 @@ def _head_change_allowed_for_checkpoint_resume(
 ) -> tuple[bool, dict[str, Any]]:
     """Allow safe checkpoint continuation after infrastructure HEAD changes.
 
-    A failed checkpoint may legitimately survive a codebase update: the next
-    correct tool is ``execute_workers`` with the recorded gate failures. Blocking
-    that path leaves the service unable to start. Post-quality checkpoints can
-    also continue through reviewer/critic/precommit/commit after the candidate
-    has been revalidated on the current HEAD. We only allow the exact next tool
-    for the checkpoint stage on the canonical branch, for the active checkpoint
-    version, and when the worktree has no unexpected entries beyond that
-    candidate bot directory.
+    A checkpoint may legitimately survive a codebase update: a saved master
+    plan must continue with the initial workers, and a failed checkpoint must
+    continue with ``execute_workers`` plus the recorded gate failures. Blocking
+    those paths leaves the service unable to start. Post-quality checkpoints
+    can also continue through reviewer/critic/precommit/commit after the
+    candidate has been revalidated on the current HEAD. We only allow the exact
+    next tool for the checkpoint stage on the canonical branch, for the active
+    checkpoint version, and when the worktree has no unexpected entries beyond
+    that candidate bot directory.
     """
     if not baseline_head or not current_head or baseline_head == current_head:
         return False, {}
@@ -136,7 +138,9 @@ def _head_change_allowed_for_checkpoint_resume(
     unexpected = _unexpected_entries(snapshot, candidate_v)
     if unexpected:
         return False, {"unexpected_entries": unexpected[:40]}
-    if stage == "workers_done":
+    if stage == "master_planned":
+        resume_kind = "initial_workers"
+    elif stage == "workers_done":
         resume_kind = "gate"
     elif stage in _HEAD_DRIFT_REPAIR_STAGES:
         resume_kind = "repair"
