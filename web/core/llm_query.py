@@ -14,6 +14,7 @@ import re
 import shlex
 import threading
 import time
+from urllib.parse import unquote, urlsplit
 
 from claude_agent_sdk import (
     query as claude_query,
@@ -625,21 +626,43 @@ def _normalize_allowed_write_scope(allowed_write_dir):
         from pathlib import Path
         for item in dirs:
             if item:
-                resolved_dirs.append(str(Path(item).resolve()))
+                resolved_dirs.append(str(Path(_local_path_from_file_uri(item)).resolve()))
         for item in files:
             if item:
-                resolved_files.append(str(Path(item).resolve()))
+                resolved_files.append(str(Path(_local_path_from_file_uri(item)).resolve()))
     except Exception:
         resolved_dirs = [str(item) for item in dirs if item]
         resolved_files = [str(item) for item in files if item]
     return {"dirs": resolved_dirs, "files": resolved_files}
 
 
+def _local_path_from_file_uri(path):
+    """Return a local filesystem path for file:/... URIs.
+
+    Claude sometimes echoes repository paths as ``file:/abs/path`` in tool
+    inputs. Treat local file URIs as their real path before scope checks so the
+    guard does not block legitimate writes inside the assigned bot file.
+    """
+    text = str(path or "").strip().strip("'\"")
+    if not text.lower().startswith("file:"):
+        return text
+    try:
+        parsed = urlsplit(text)
+    except Exception:
+        return text
+    if parsed.scheme.lower() != "file":
+        return text
+    netloc = (parsed.netloc or "").lower()
+    if netloc not in {"", "localhost"}:
+        return text
+    return unquote(parsed.path or "")
+
+
 def _path_inside_allowed_scope(path, allowed_scope, base_dir=None):
     try:
         from pathlib import Path
 
-        candidate = Path(path)
+        candidate = Path(_local_path_from_file_uri(path))
         if not candidate.is_absolute():
             base = Path(base_dir).resolve(strict=False) if base_dir else _project_root_for_guard()
             candidate = base / candidate
