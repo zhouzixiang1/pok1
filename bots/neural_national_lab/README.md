@@ -654,6 +654,48 @@ not another one-row retrain; collect a larger set of true v043-v053 runtime
 divergences across opponents, then retrain only if the new rows cover multiple
 positive and negative contexts instead of a single seed.
 
+That larger collection now has a first targeted shard. A multi-opponent
+template prefilter for v043 versus v053 over `claude_v279`, `claude_v283`,
+`claude_v284`, and `claude_v285` used 16 process workers, 32 paired seeds per
+opponent, and stopped after sparse template hits. It completed 128 tasks and
+found only two hit pairs, a 1.56 percent hit rate: `claude_v279` idx6 on the
+mirror side and `claude_v285` idx3 on the normal side. Active labeling with 8
+workers showed that only the `claude_v279` idx6 hit was actually harmful
+(`-92` chips); the `claude_v285` idx3 hit changed the action but had zero net
+delta, and the same pair indexes did not reproduce divergences against
+`claude_v283` or `claude_v284`.
+
+`template_neighborhood_prefilter.py` now accepts `--source-opponent-label`, so
+a multi-opponent source file can feed a single-opponent neighborhood scan
+without accidentally expanding unrelated opponent hits. Using that filter on
+the `claude_v279` idx6 source generated 54 one-card neighborhood variants and
+20 template hits, a 37.04 percent hit rate. Full active labels for those 20
+hits were all negative for v053 versus v043: mean `-2561.15`, median `-92`,
+and three flop2 variants at `-16552`. Converted into runtime-compatible value
+rows, this shard became
+`runtime_value_v043_v053_idx6_neighborhood_p020_seed2026073100.jsonl`: 20
+positive `baseline_minus_candidate` rows, all with the `101->0|mirror`
+template.
+
+Merging that p020 shard with the earlier p097 set produced
+`runtime_value_v043_v053_mix_p117_seed2026071503_2026073100.jsonl`: 117
+runtime rows, 70 input features, 60 positive, 3 zero, 54 negative, and mean
+delta `435.19`. The value heads were trained on CUDA, then distilled back to
+the same JSON-only stdlib runtime format. The h16 seed581 model had the best
+validation sign accuracy (`0.7083`, versus h32 `0.6250` and h8 `0.6667`) and
+became `v055_v254_cf_runtime_divergence_repair_p117_h16_b050`.
+
+Targeted v055 replay fixed the newly collected `claude_v279` idx6 regression:
+v043 versus v055 had zero delta and no divergence on that seed. It also kept
+the older targeted behavior intact: pair21 stayed zero and pair48 still
+produced the known `+1727` delta. A 32-sample multi-opponent validation on the
+same v053 smoke range against `claude_v279`, `claude_v283`, `claude_v284`, and
+`claude_v285` produced 32 zero deltas, aggregate `0.00` chips per 70 hands
+with CI `[0.00, 0.00]`. Treat v055 as a safer repair candidate than v053/v054,
+not as a promoted strength improvement yet; the next promotion-quality step is
+more true runtime-divergence collection across opponents and larger
+multi-opponent paired validation.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass

@@ -1,0 +1,8417 @@
+{
+  "mode": "template_neighborhood_prefilter_v1",
+  "source": "bots/neural_national_lab/data/template_prefilter_v043_v053_vs_v279_v283_v284_v285_g032_t012_d080_seed2026073100_botrng.json",
+  "baseline": {
+    "label": "v043_v254_cf_handstrength_veto_p268_h32_t050",
+    "path": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050/main.py"
+  },
+  "candidate": {
+    "label": "v053_v254_cf_neighborhood_value_veto_p096_h32_b050",
+    "path": "bots/neural_national_lab/versions/v053_v254_cf_neighborhood_value_veto_p096_h32_b050/main.py"
+  },
+  "opponent": {
+    "label": "claude_v279",
+    "path": "bots/claude_v279/main.py"
+  },
+  "workers": 16,
+  "executor": "process",
+  "max_hands": 70,
+  "max_source_hits": 1,
+  "source_opponent_labels": [
+    "claude_v279"
+  ],
+  "max_variants_per_hit": 64,
+  "slot": [
+    "hole0",
+    "hole1",
+    "flop0",
+    "flop1",
+    "flop2"
+  ],
+  "rank_window": 1,
+  "include_same_rank_suits": true,
+  "max_own_decisions_per_side": 80,
+  "baseline_action": 101,
+  "candidate_action": 0,
+  "stage": "flop",
+  "max_hits_per_side": 1,
+  "stop_after_hits": 24,
+  "source_hits": 1,
+  "skipped_sources": [],
+  "tasks_total": 54,
+  "tasks_existing": 0,
+  "tasks_submitted": 54,
+  "tasks_skipped": 0,
+  "tasks_completed": 54,
+  "tasks_remaining": 0,
+  "early_stopped": false,
+  "variants": [
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop0:24->20",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop0",
+        "from": {
+          "card": 24,
+          "rank": 8,
+          "suit": 0
+        },
+        "to": {
+          "card": 20,
+          "rank": 7,
+          "suit": 0
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        24,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        20,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 160,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop0:24->21",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop0",
+        "from": {
+          "card": 24,
+          "rank": 8,
+          "suit": 0
+        },
+        "to": {
+          "card": 21,
+          "rank": 7,
+          "suit": 1
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        24,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        21,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 160,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop0:24->22",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop0",
+        "from": {
+          "card": 24,
+          "rank": 8,
+          "suit": 0
+        },
+        "to": {
+          "card": 22,
+          "rank": 7,
+          "suit": 2
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        24,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        22,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 160,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop0:24->23",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop0",
+        "from": {
+          "card": 24,
+          "rank": 8,
+          "suit": 0
+        },
+        "to": {
+          "card": 23,
+          "rank": 7,
+          "suit": 3
+        }
+      },
+      "target_deck": [
+        42,
+        24,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        23,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 160,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop0:24->25",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop0",
+        "from": {
+          "card": 24,
+          "rank": 8,
+          "suit": 0
+        },
+        "to": {
+          "card": 25,
+          "rank": 8,
+          "suit": 1
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        24,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        25,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 159,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop0:24->26",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop0",
+        "from": {
+          "card": 24,
+          "rank": 8,
+          "suit": 0
+        },
+        "to": {
+          "card": 26,
+          "rank": 8,
+          "suit": 2
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        24,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        26,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                26,
+                4,
+                18
+              ],
+              "my_cards": [
+                38,
+                11
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop0:24->27",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop0",
+        "from": {
+          "card": 24,
+          "rank": 8,
+          "suit": 0
+        },
+        "to": {
+          "card": 27,
+          "rank": 8,
+          "suit": 3
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        24,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        27,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 159,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop0:24->28",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop0",
+        "from": {
+          "card": 24,
+          "rank": 8,
+          "suit": 0
+        },
+        "to": {
+          "card": 28,
+          "rank": 9,
+          "suit": 0
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        24,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        28,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 159,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop0:24->29",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop0",
+        "from": {
+          "card": 24,
+          "rank": 8,
+          "suit": 0
+        },
+        "to": {
+          "card": 29,
+          "rank": 9,
+          "suit": 1
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        24,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        29,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                29,
+                4,
+                18
+              ],
+              "my_cards": [
+                38,
+                11
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop0:24->30",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop0",
+        "from": {
+          "card": 24,
+          "rank": 8,
+          "suit": 0
+        },
+        "to": {
+          "card": 30,
+          "rank": 9,
+          "suit": 2
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        24,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        30,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 159,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop0:24->31",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop0",
+        "from": {
+          "card": 24,
+          "rank": 8,
+          "suit": 0
+        },
+        "to": {
+          "card": 31,
+          "rank": 9,
+          "suit": 3
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        24,
+        18,
+        4,
+        31,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                31,
+                4,
+                18
+              ],
+              "my_cards": [
+                38,
+                11
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop1:4->0",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop1",
+        "from": {
+          "card": 4,
+          "rank": 3,
+          "suit": 0
+        },
+        "to": {
+          "card": 0,
+          "rank": 2,
+          "suit": 0
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        4,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        0,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 160,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop1:4->1",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop1",
+        "from": {
+          "card": 4,
+          "rank": 3,
+          "suit": 0
+        },
+        "to": {
+          "card": 1,
+          "rank": 2,
+          "suit": 1
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        4,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        1,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 160,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop1:4->10",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop1",
+        "from": {
+          "card": 4,
+          "rank": 3,
+          "suit": 0
+        },
+        "to": {
+          "card": 10,
+          "rank": 4,
+          "suit": 2
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        4,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        10,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 159,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop1:4->2",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop1",
+        "from": {
+          "card": 4,
+          "rank": 3,
+          "suit": 0
+        },
+        "to": {
+          "card": 2,
+          "rank": 2,
+          "suit": 2
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        4,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        2,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 160,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop1:4->3",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop1",
+        "from": {
+          "card": 4,
+          "rank": 3,
+          "suit": 0
+        },
+        "to": {
+          "card": 3,
+          "rank": 2,
+          "suit": 3
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        3,
+        24,
+        34,
+        4,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 159,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop1:4->5",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop1",
+        "from": {
+          "card": 4,
+          "rank": 3,
+          "suit": 0
+        },
+        "to": {
+          "card": 5,
+          "rank": 3,
+          "suit": 1
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        4,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        5,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 159,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop1:4->6",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop1",
+        "from": {
+          "card": 4,
+          "rank": 3,
+          "suit": 0
+        },
+        "to": {
+          "card": 6,
+          "rank": 3,
+          "suit": 2
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        4,
+        13,
+        48,
+        35,
+        31,
+        18,
+        6,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                24,
+                6,
+                18
+              ],
+              "my_cards": [
+                38,
+                11
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop1:4->7",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop1",
+        "from": {
+          "card": 4,
+          "rank": 3,
+          "suit": 0
+        },
+        "to": {
+          "card": 7,
+          "rank": 3,
+          "suit": 3
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        4,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        7,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 159,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop1:4->8",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop1",
+        "from": {
+          "card": 4,
+          "rank": 3,
+          "suit": 0
+        },
+        "to": {
+          "card": 8,
+          "rank": 4,
+          "suit": 0
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        4,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        8,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 160,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop1:4->9",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop1",
+        "from": {
+          "card": 4,
+          "rank": 3,
+          "suit": 0
+        },
+        "to": {
+          "card": 9,
+          "rank": 4,
+          "suit": 1
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        4,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        9,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 160,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop2:18->12",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop2",
+        "from": {
+          "card": 18,
+          "rank": 6,
+          "suit": 2
+        },
+        "to": {
+          "card": 12,
+          "rank": 5,
+          "suit": 0
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        18,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        12,
+        4,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 161,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop2:18->13",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop2",
+        "from": {
+          "card": 18,
+          "rank": 6,
+          "suit": 2
+        },
+        "to": {
+          "card": 13,
+          "rank": 5,
+          "suit": 1
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        18,
+        48,
+        35,
+        31,
+        13,
+        4,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                24,
+                4,
+                13
+              ],
+              "my_cards": [
+                38,
+                11
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop2:18->14",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop2",
+        "from": {
+          "card": 18,
+          "rank": 6,
+          "suit": 2
+        },
+        "to": {
+          "card": 14,
+          "rank": 5,
+          "suit": 2
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        18,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        14,
+        4,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                24,
+                4,
+                14
+              ],
+              "my_cards": [
+                38,
+                11
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop2:18->15",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop2",
+        "from": {
+          "card": 18,
+          "rank": 6,
+          "suit": 2
+        },
+        "to": {
+          "card": 15,
+          "rank": 5,
+          "suit": 3
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        18,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        15,
+        4,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                24,
+                4,
+                15
+              ],
+              "my_cards": [
+                38,
+                11
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop2:18->16",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop2",
+        "from": {
+          "card": 18,
+          "rank": 6,
+          "suit": 2
+        },
+        "to": {
+          "card": 16,
+          "rank": 6,
+          "suit": 0
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        18,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        16,
+        4,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 160,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop2:18->17",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop2",
+        "from": {
+          "card": 18,
+          "rank": 6,
+          "suit": 2
+        },
+        "to": {
+          "card": 17,
+          "rank": 6,
+          "suit": 1
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        18,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        17,
+        4,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                24,
+                4,
+                17
+              ],
+              "my_cards": [
+                38,
+                11
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop2:18->19",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop2",
+        "from": {
+          "card": 18,
+          "rank": 6,
+          "suit": 2
+        },
+        "to": {
+          "card": 19,
+          "rank": 6,
+          "suit": 3
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        18,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        19,
+        4,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                24,
+                4,
+                19
+              ],
+              "my_cards": [
+                38,
+                11
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop2:18->20",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop2",
+        "from": {
+          "card": 18,
+          "rank": 6,
+          "suit": 2
+        },
+        "to": {
+          "card": 20,
+          "rank": 7,
+          "suit": 0
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        18,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        20,
+        4,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 160,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop2:18->21",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop2",
+        "from": {
+          "card": 18,
+          "rank": 6,
+          "suit": 2
+        },
+        "to": {
+          "card": 21,
+          "rank": 7,
+          "suit": 1
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        18,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        21,
+        4,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                24,
+                4,
+                21
+              ],
+              "my_cards": [
+                38,
+                11
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop2:18->22",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop2",
+        "from": {
+          "card": 18,
+          "rank": 6,
+          "suit": 2
+        },
+        "to": {
+          "card": 22,
+          "rank": 7,
+          "suit": 2
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        18,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        22,
+        4,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                24,
+                4,
+                22
+              ],
+              "my_cards": [
+                38,
+                11
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:flop2:18->23",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "flop2",
+        "from": {
+          "card": 18,
+          "rank": 6,
+          "suit": 2
+        },
+        "to": {
+          "card": 23,
+          "rank": 7,
+          "suit": 3
+        }
+      },
+      "target_deck": [
+        42,
+        18,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        23,
+        4,
+        24,
+        34,
+        3,
+        11,
+        38
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                24,
+                4,
+                23
+              ],
+              "my_cards": [
+                38,
+                11
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole0:38->32",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole0",
+        "from": {
+          "card": 38,
+          "rank": 11,
+          "suit": 2
+        },
+        "to": {
+          "card": 32,
+          "rank": 10,
+          "suit": 0
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        38,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        11,
+        32
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 160,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole0:38->33",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole0",
+        "from": {
+          "card": 38,
+          "rank": 11,
+          "suit": 2
+        },
+        "to": {
+          "card": 33,
+          "rank": 10,
+          "suit": 1
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        38,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        11,
+        33
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 160,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole0:38->34",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole0",
+        "from": {
+          "card": 38,
+          "rank": 11,
+          "suit": 2
+        },
+        "to": {
+          "card": 34,
+          "rank": 10,
+          "suit": 2
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        38,
+        3,
+        11,
+        34
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 161,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole0:38->35",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole0",
+        "from": {
+          "card": 38,
+          "rank": 11,
+          "suit": 2
+        },
+        "to": {
+          "card": 35,
+          "rank": 10,
+          "suit": 3
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        38,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        11,
+        35
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 160,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole0:38->36",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole0",
+        "from": {
+          "card": 38,
+          "rank": 11,
+          "suit": 2
+        },
+        "to": {
+          "card": 36,
+          "rank": 11,
+          "suit": 0
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        38,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        11,
+        36
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                24,
+                4,
+                18
+              ],
+              "my_cards": [
+                36,
+                11
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole0:38->37",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole0",
+        "from": {
+          "card": 38,
+          "rank": 11,
+          "suit": 2
+        },
+        "to": {
+          "card": 37,
+          "rank": 11,
+          "suit": 1
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        38,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        11,
+        37
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                24,
+                4,
+                18
+              ],
+              "my_cards": [
+                37,
+                11
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole0:38->39",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole0",
+        "from": {
+          "card": 38,
+          "rank": 11,
+          "suit": 2
+        },
+        "to": {
+          "card": 39,
+          "rank": 11,
+          "suit": 3
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        38,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        11,
+        39
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 160,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole0:38->40",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole0",
+        "from": {
+          "card": 38,
+          "rank": 11,
+          "suit": 2
+        },
+        "to": {
+          "card": 40,
+          "rank": 12,
+          "suit": 0
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        38,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        11,
+        40
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                24,
+                4,
+                18
+              ],
+              "my_cards": [
+                40,
+                11
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole0:38->41",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole0",
+        "from": {
+          "card": 38,
+          "rank": 11,
+          "suit": 2
+        },
+        "to": {
+          "card": 41,
+          "rank": 12,
+          "suit": 1
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        38,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        11,
+        41
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                24,
+                4,
+                18
+              ],
+              "my_cards": [
+                41,
+                11
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole0:38->42",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole0",
+        "from": {
+          "card": 38,
+          "rank": 11,
+          "suit": 2
+        },
+        "to": {
+          "card": 42,
+          "rank": 12,
+          "suit": 2
+        }
+      },
+      "target_deck": [
+        38,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        11,
+        42
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                24,
+                4,
+                18
+              ],
+              "my_cards": [
+                42,
+                11
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole0:38->43",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole0",
+        "from": {
+          "card": 38,
+          "rank": 11,
+          "suit": 2
+        },
+        "to": {
+          "card": 43,
+          "rank": 12,
+          "suit": 3
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        38,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        11,
+        43
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 160,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole1:11->10",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole1",
+        "from": {
+          "card": 11,
+          "rank": 4,
+          "suit": 3
+        },
+        "to": {
+          "card": 10,
+          "rank": 4,
+          "suit": 2
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        11,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        10,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 160,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole1:11->12",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole1",
+        "from": {
+          "card": 11,
+          "rank": 4,
+          "suit": 3
+        },
+        "to": {
+          "card": 12,
+          "rank": 5,
+          "suit": 0
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        11,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        12,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 159,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole1:11->13",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole1",
+        "from": {
+          "card": 11,
+          "rank": 4,
+          "suit": 3
+        },
+        "to": {
+          "card": 13,
+          "rank": 5,
+          "suit": 1
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        11,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        13,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 159,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole1:11->14",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole1",
+        "from": {
+          "card": 11,
+          "rank": 4,
+          "suit": 3
+        },
+        "to": {
+          "card": 14,
+          "rank": 5,
+          "suit": 2
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        11,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        14,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 160,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole1:11->15",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole1",
+        "from": {
+          "card": 11,
+          "rank": 4,
+          "suit": 3
+        },
+        "to": {
+          "card": 15,
+          "rank": 5,
+          "suit": 3
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        11,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        15,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 159,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole1:11->4",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole1",
+        "from": {
+          "card": 11,
+          "rank": 4,
+          "suit": 3
+        },
+        "to": {
+          "card": 4,
+          "rank": 3,
+          "suit": 0
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        11,
+        24,
+        34,
+        3,
+        4,
+        38
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                24,
+                11,
+                18
+              ],
+              "my_cards": [
+                38,
+                4
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole1:11->5",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole1",
+        "from": {
+          "card": 11,
+          "rank": 4,
+          "suit": 3
+        },
+        "to": {
+          "card": 5,
+          "rank": 3,
+          "suit": 1
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        11,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        5,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 159,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole1:11->6",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole1",
+        "from": {
+          "card": 11,
+          "rank": 4,
+          "suit": 3
+        },
+        "to": {
+          "card": 6,
+          "rank": 3,
+          "suit": 2
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        11,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        6,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 159,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole1:11->7",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole1",
+        "from": {
+          "card": 11,
+          "rank": 4,
+          "suit": 3
+        },
+        "to": {
+          "card": 7,
+          "rank": 3,
+          "suit": 3
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        11,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        7,
+        38
+      ],
+      "has_hit": false,
+      "scan": {
+        "status": "max_decisions",
+        "has_hit": false,
+        "steps": 159,
+        "compared_own_decisions": 80,
+        "hits": []
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole1:11->8",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole1",
+        "from": {
+          "card": 11,
+          "rank": 4,
+          "suit": 3
+        },
+        "to": {
+          "card": 8,
+          "rank": 4,
+          "suit": 0
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        11,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        9,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        8,
+        38
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                24,
+                4,
+                18
+              ],
+              "my_cards": [
+                38,
+                8
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "variant_id": "claude_v279:6:mirror:h14:hit0:hole1:11->9",
+      "source": {
+        "opponent_label": "claude_v279",
+        "idx": 6,
+        "seed": 2026073106,
+        "side": "mirror",
+        "side_status": "hit",
+        "hit_index": 0,
+        "hand": 14,
+        "decision_index": 25,
+        "request": {
+          "hand": 14,
+          "round": null,
+          "my_id": 0,
+          "dealer_id": 0,
+          "stage": "flop",
+          "public_cards": [
+            24,
+            4,
+            18
+          ],
+          "my_cards": [
+            38,
+            11
+          ],
+          "pot": null,
+          "to_call": null,
+          "my_stage_bet": null,
+          "opponent_stage_bet": null,
+          "my_chips": 19900,
+          "opponent_allin": null,
+          "history_len": 3,
+          "last_history": [
+            {
+              "round": 0,
+              "player_id": 0,
+              "action": 0,
+              "action_type": "call"
+            },
+            {
+              "round": 0,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            },
+            {
+              "round": 1,
+              "player_id": 1,
+              "action": 0,
+              "action_type": "check"
+            }
+          ]
+        },
+        "bot_seeds": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "mutation": {
+        "slot": "hole1",
+        "from": {
+          "card": 11,
+          "rank": 4,
+          "suit": 3
+        },
+        "to": {
+          "card": 9,
+          "rank": 4,
+          "suit": 1
+        }
+      },
+      "target_deck": [
+        42,
+        23,
+        32,
+        36,
+        20,
+        51,
+        44,
+        33,
+        16,
+        19,
+        25,
+        0,
+        50,
+        26,
+        2,
+        29,
+        45,
+        8,
+        40,
+        49,
+        30,
+        41,
+        21,
+        12,
+        1,
+        37,
+        7,
+        5,
+        14,
+        43,
+        27,
+        28,
+        15,
+        47,
+        22,
+        17,
+        11,
+        10,
+        46,
+        39,
+        6,
+        13,
+        48,
+        35,
+        31,
+        18,
+        4,
+        24,
+        34,
+        3,
+        9,
+        38
+      ],
+      "has_hit": true,
+      "scan": {
+        "status": "hit",
+        "has_hit": true,
+        "steps": 51,
+        "compared_own_decisions": 26,
+        "hits": [
+          {
+            "decision_index": 25,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "baseline_verdict": "OK",
+            "candidate_verdict": "OK",
+            "stage": "flop",
+            "request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                24,
+                4,
+                18
+              ],
+              "my_cards": [
+                38,
+                9
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "summary": {
+    "variants": 54,
+    "hit_variants": 20,
+    "hit_rate": 0.37037037037037035,
+    "side_statuses": {
+      "max_decisions": 34,
+      "hit": 20
+    },
+    "by_source": {
+      "claude_v279:6:mirror:h14:hit0": {
+        "variants": 54,
+        "hit_variants": 20
+      }
+    },
+    "by_slot": {
+      "flop0": {
+        "variants": 11,
+        "hit_variants": 3
+      },
+      "flop1": {
+        "variants": 10,
+        "hit_variants": 1
+      },
+      "flop2": {
+        "variants": 11,
+        "hit_variants": 8
+      },
+      "hole0": {
+        "variants": 11,
+        "hit_variants": 5
+      },
+      "hole1": {
+        "variants": 11,
+        "hit_variants": 3
+      }
+    }
+  }
+}
