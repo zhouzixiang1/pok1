@@ -1,0 +1,229 @@
+from __future__ import annotations
+
+import json
+import math
+import os
+import sys
+from typing import Any
+
+from neural_features import LABELS, encode_features
+
+
+BOT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_CONFIG = {
+    "enabled": True,
+    "weights": "policy_weights.json",
+    "contract": "blueprint_policy_v1",
+    "min_conf": 0.68,
+    "fold_conf": 0.90,
+    "call_conf": 0.78,
+    "raise_conf": 0.86,
+    "allin_conf": 1.01,
+    "max_paid_call_chips": 650,
+    "max_paid_call_ratio": 0.34,
+    "max_call_pot_ratio": 0.10,
+    "max_raise_delta": 1600,
+    "max_raise_pot_ratio": 1.25,
+    "allow_fold": True,
+    "allow_call": True,
+    "allow_raise": True,
+    "allow_allin": False,
+}
+RAISE_RATIOS = {2: 0.50, 3: 1.00, 4: 2.00}
+_CONFIG: dict[str, Any] | None = None
+_MODEL: dict[str, Any] | None = None
+
+
+def _config() -> dict[str, Any]:
+    global _CONFIG
+    if _CONFIG is not None:
+        return _CONFIG
+    cfg = dict(DEFAULT_CONFIG)
+    path = os.path.join(BOT_DIR, "neural_config.json")
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                cfg.update(json.load(fh))
+        except Exception as exc:
+            print(f"NEURAL_CONFIG_ERROR {exc}", file=sys.stderr)
+    _CONFIG = cfg
+    return cfg
+
+
+def _model() -> dict[str, Any] | None:
+    global _MODEL
+    if _MODEL is not None:
+        return _MODEL
+    cfg = _config()
+    if not cfg.get("enabled", True):
+        return None
+    path = str(cfg.get("weights", "policy_weights.json"))
+    if not os.path.isabs(path):
+        path = os.path.join(BOT_DIR, path)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            model = json.load(fh)
+        if model.get("labels") != list(LABELS):
+            raise ValueError("label mismatch")
+        if int(model.get("input_dim", 0)) != len(encode_features({"my_cards": [0, 4], "public_cards": []}, None)):
+            raise ValueError("feature dimension mismatch")
+        _MODEL = model
+        return model
+    except Exception as exc:
+        print(f"NEURAL_MODEL_ERROR {exc}", file=sys.stderr)
+        return None
+
+
+def _dot(row: list[float], vec: list[float]) -> float:
+    return sum(a * b for a, b in zip(row, vec))
+
+
+def _predict(model: dict[str, Any], features: list[float]) -> list[float]:
+    hidden = [max(0.0, _dot(row, features) + float(b)) for row, b in zip(model["w1"], model["b1"])]
+    logits = [_dot(row, hidden) + float(b) for row, b in zip(model["w2"], model["b2"])]
+    top = max(logits)
+    exps = [math.exp(max(-30.0, min(30.0, x - top))) for x in logits]
+    denom = sum(exps) or 1.0
+    return [x / denom for x in exps]
+
+
+def _f(state: dict[str, Any], key: str, default: float = 0.0) -> float:
+    try:
+        return float(state.get(key, default) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _rule_label(action: int) -> int:
+    if action == -1:
+        return 0
+    if action == -2:
+        return 5
+    if action == 0:
+        return 1
+    return 3
+
+
+def _legal_mask(req: dict[str, Any], state: dict[str, Any]) -> list[int]:
+    my_chips = int(req.get("my_chips", 0) or 0)
+    to_call = _f(state, "to_call")
+    min_raise = _f(state, "min_raise_action", _f(state, "round_raise", 100.0))
+    can_continue = my_chips > 0
+    can_raise = (
+        can_continue
+        and not state.get("opponent_allin")
+        and my_chips > max(to_call, 0.0) + max(min_raise, 1.0)
+    )
+    mask = [0] * len(LABELS)
+    mask[0] = 1
+    mask[1] = 1 if can_continue else 0
+    for label in RAISE_RATIOS:
+        mask[label] = 1 if can_raise else 0
+    mask[5] = 1 if can_continue and not state.get("opponent_allin") else 0
+    if not any(mask):
+        mask[0] = 1
+    return mask
+
+
+def _masked_top(probs: list[float], mask: list[int]) -> tuple[int, float, list[float]]:
+    masked = [float(p) if mask[i] else 0.0 for i, p in enumerate(probs)]
+    total = sum(masked)
+    if total <= 0:
+        masked = [1.0 if i == 0 else 0.0 for i in range(len(probs))]
+        total = 1.0
+    norm = [p / total for p in masked]
+    label = max(range(len(norm)), key=lambda i: norm[i])
+    return label, float(norm[label]), norm
+
+
+def _raise_action(label: int, state: dict[str, Any], my_chips: int) -> int:
+    to_call = _f(state, "to_call")
+    pot = max(1.0, _f(state, "pot", 150.0))
+    ratio = RAISE_RATIOS.get(label, 1.0)
+    min_raise = int(max(1.0, _f(state, "min_raise_action", _f(state, "round_raise", 100.0))))
+    amount = max(min_raise, int(to_call + (pot + to_call) * ratio))
+    if amount >= my_chips:
+        return -2
+    return 0 if amount <= to_call else int(amount)
+
+
+def _candidate_action(label: int, req: dict[str, Any], state: dict[str, Any]) -> int:
+    if label == 0:
+        return -1
+    if label == 1:
+        return 0
+    if label == 5:
+        return -2
+    if label in RAISE_RATIOS:
+        return _raise_action(label, state, int(req.get("my_chips", 0) or 0))
+    return 0
+
+
+def _passes_runtime_gate(
+    label: int,
+    conf: float,
+    probs: list[float],
+    req: dict[str, Any],
+    state: dict[str, Any],
+    rule_action: int,
+    candidate: int,
+) -> bool:
+    cfg = _config()
+    if conf < float(cfg.get("min_conf", 0.68)):
+        return False
+    to_call = _f(state, "to_call")
+    pot = max(1.0, _f(state, "pot", 150.0))
+    if label == 0:
+        return (
+            cfg.get("allow_fold", True)
+            and to_call > 0
+            and conf >= float(cfg.get("fold_conf", 0.90))
+            and _rule_label(rule_action) in {1, 2, 3, 4, 5}
+        )
+    if label == 1:
+        call_ratio = to_call / max(1.0, pot + to_call)
+        return (
+            cfg.get("allow_call", True)
+            and rule_action == -1
+            and conf >= float(cfg.get("call_conf", 0.78))
+            and to_call <= float(cfg.get("max_paid_call_chips", 650))
+            and call_ratio <= float(cfg.get("max_paid_call_ratio", 0.34))
+            and pot / 20000.0 <= float(cfg.get("max_call_pot_ratio", 0.10))
+        )
+    if label in RAISE_RATIOS:
+        raise_delta = max(0, int(candidate))
+        return (
+            cfg.get("allow_raise", True)
+            and not state.get("opponent_allin")
+            and conf >= float(cfg.get("raise_conf", 0.86))
+            and raise_delta > max(to_call, 0)
+            and raise_delta <= float(cfg.get("max_raise_delta", 1600))
+            and raise_delta / max(1.0, pot + to_call) <= float(cfg.get("max_raise_pot_ratio", 1.25))
+        )
+    if label == 5:
+        return (
+            cfg.get("allow_allin", False)
+            and not state.get("opponent_allin")
+            and conf >= float(cfg.get("allin_conf", 1.01))
+        )
+    return False
+
+
+def apply_neural_advice(req: dict[str, Any], state: dict[str, Any], rule_action: int) -> int:
+    model = _model()
+    if model is None:
+        return rule_action
+    feature_req = dict(req)
+    for key in ("pot", "to_call", "my_stage_bet", "opponent_stage_bet", "opponent_allin"):
+        if key in state:
+            feature_req[key] = state[key]
+    probs = _predict(model, encode_features(feature_req, None))
+    label, conf, masked_probs = _masked_top(probs, _legal_mask(req, state))
+    if label == _rule_label(rule_action):
+        return rule_action
+    candidate = _candidate_action(label, req, state)
+    if _passes_runtime_gate(label, conf, masked_probs, req, state, rule_action, candidate):
+        return candidate
+    return rule_action

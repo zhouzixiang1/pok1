@@ -124,6 +124,32 @@
   `rule call -> neural fold` candidates on large losing hands. v016 tests that
   veto separately from the earlier fold-to-call advisor.
 
+## v017_v254_blueprint_contract254
+
+- Base: `v016_v254_call_fold_veto254`.
+- Change: first fixed-contract blueprint attempt. The data collector writes
+  legal action masks, the trainer exports `tiny_mlp_policy_v2` with
+  `blueprint_policy_v1`, and runtime uses a fixed six-action abstraction before
+  handing every candidate through the normal sanitizer.
+- Runtime policy: allows bounded neural fold, call, and raise proposals under
+  confidence and price gates. The native TCP entry also calls the same neural
+  policy, so Botzone JSON and national-native execution share the learned
+  action layer.
+- Safety: if neural advice raises an exception, both `main.py` and
+  `national_bot.py` fall back to the rule action and then sanitize; they do not
+  continue with an unclean positive action.
+
+## v018_v254_flop_raise_blueprint254
+
+- Base: `v017_v254_blueprint_contract254`.
+- Change: keeps the fixed-contract model and native TCP integration, but
+  disables neural fold/call/all-in and permits only high-confidence free-action
+  flop raises from a rule check/call.
+- Rationale: v017's broad blueprint gate was active but negative in the first
+  paired smoke. Trace suggested the least bad slice was small flop pressure
+  when `to_call == 0`; v018 isolates that slice while preserving v017 for
+  replay.
+
 ## Round 1 Notes
 
 - Training data: `teacher214_round1.jsonl`, 272 teacher decisions from
@@ -265,6 +291,7 @@
   productive direction is a richer trainer: more teacher/self-play data plus
   action-bucket or regret-style targets, then paired evaluation against v254 and
   v279 on common decks.
+
 ## Round 6 Notes
 
 - Added `trace_advice_outcomes.py`. It runs common-deck normal/mirror matches,
@@ -295,3 +322,38 @@
   mean, but it is not significant. The advisor approach is producing sparse,
   noisy, hard-to-credit interventions. The next serious attempt should move to
   a native fixed-contract blueprint trainer rather than more threshold tuning.
+
+## Round 7 Notes
+
+- Added `blueprint_contract.py` and upgraded the teacher-data/training path to
+  carry a stable `blueprint_policy_v1` contract: feature vector, six action
+  labels, legal mask, optional sample weight, and sanitized action conversion.
+- `teacher254_blueprint_round1.jsonl`: 573 `claude_v254` teacher decisions from
+  mirror sampling against `claude_v279` and `claude_v214`. Label counts were
+  `fold=126`, `call=312`, `raise_half=67`, `raise_pot=58`, `raise_2pot=3`,
+  `allin=7`.
+- `teacher254_blueprint_round1_metrics.json`: 64-hidden-unit MLP, validation
+  accuracy `0.730`, masked validation accuracy `0.739`, average masked
+  confidence `0.882`.
+- `v017_v254_blueprint_contract254` advisor analysis, 2 ordinary games vs
+  `claude_v279`: `final_changed=8/182`, with `4` `to_raise` and `4` `to_fold`
+  changes. This proved the fixed-contract runtime can make real interventions.
+- `v017` trace, 1 common-deck normal/mirror pair before manual interruption:
+  16 changes, 39 high-confidence counterfactual candidates, changed-hand delta
+  sum `-572`, total bot0 delta `-264`. This is diagnostic only, not a full
+  2-pair trace.
+- `v017` paired smoke vs `claude_v254`, both against `claude_v279`, 2 mirror
+  pairs: deltas `[-14083, 2473]`, mean `-2902.5 chips/70`, 95 percent CI
+  `[-11014.9, +5209.9]`. This rejects the broad blueprint gate for now.
+- `v018_v254_flop_raise_blueprint254` narrows v017 to flop-only free-action
+  raises and disables neural fold/call/all-in. Advisor analysis, 2 ordinary
+  games vs `claude_v279`: `final_changed=1/232`, type `to_raise`.
+- `v018` paired smoke was manually interrupted after 1 mirror pair. The single
+  completed pair delta was `+21` total chips, or `+10.5 chips/70`; this only
+  shows the narrowed gate avoided v017's immediate large loss in that one pair,
+  not that it improved strength.
+- Current status: fixed-contract infrastructure is in place and native TCP uses
+  the neural layer, but no neural blueprint variant has shown a significant
+  edge. The next useful step is better targets, not another round of manual
+  gate tuning: collect counterfactual/regret-style outcomes or train on larger
+  self-play/teacher pools with held-out common-deck evaluation.
