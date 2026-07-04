@@ -471,6 +471,27 @@ not be another global threshold move. It should collect active divergence rows
 around this template and train a local value/variance model that can separate
 the losing pair21 context from the winning pair48 context.
 
+The remaining nonzero v052-v043 paired seeds against `claude_v279` were also
+scanned: pair29 was `+150` and pair38 was `-102`, and both had the same first
+divergence template (`raise 101 -> 0`) on the flop after check-through preflop.
+`build_divergence_value_data.py` converts these active-divergence JSON files
+into a compact supervised JSONL format for the next value model:
+
+```bash
+python bots/neural_national_lab/tools/build_divergence_value_data.py \
+  --input bots/neural_national_lab/data/divergence_v043_v052_vs_v279_pair21_48_seed2026071503_botrng.json \
+  --input bots/neural_national_lab/data/divergence_v043_v052_vs_v279_pair29_38_seed2026071503_botrng.json \
+  --output bots/neural_national_lab/data/divergence_value_v043_v052_vs_v279_nonzero_p004_seed2026071503.jsonl \
+  --summary-output bots/neural_national_lab/data/divergence_value_v043_v052_vs_v279_nonzero_p004_seed2026071503.summary.json
+```
+
+The first dataset has only 4 rows, input dimension 48, and a balanced `2/2`
+positive/negative split. It is a data-contract artifact, not a training set.
+Before v053, expand this template to at least 40-60 decision-changing rows
+across `claude_v279`, `claude_v283`, and `claude_v284`, then train a local
+value head or nearest-neighbor veto and evaluate it with
+`multi_opponent_paired_evaluate.py`.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass
