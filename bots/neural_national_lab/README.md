@@ -107,4 +107,15 @@ v025 positive on average versus v022 against `claude_v279` (`+796.44` chips per
 70 hands), but the 95 percent CI still crossed zero (`[-2089.29, 3682.16]`).
 Extending the same run to 32 pairs improved the mean to `+1170.11` chips per
 70 hands, but the 95 percent CI still crossed zero (`[-528.02, 2868.23]`).
-v025 remains promising but not yet a clear end-to-end winner.
+Extending again to 64 pairs reduced the mean to `+686.17` chips per 70 hands
+with 95 percent CI `[-602.07, 1974.41]`. v025 remains promising at the
+counterfactual-action level, but it is not a clear end-to-end winner.
+
+`versions/v026_v254_flop_low_raise_h96_254` narrows v025 to the only bucket
+covered by the p120 counterfactual evidence: low-size flop free-action raises.
+The direct 16-pair check against v025 was positive on average (`+1133.59` chips
+per 70 hands), but the 95 percent CI still crossed zero
+(`[-1027.52, 3294.71]`). A direct 32-pair check against v022 was slightly
+negative (`-301.33` chips per 70 hands, 95 percent CI
+`[-2241.13, 1638.48]`). v026 is therefore a recorded experiment, not a
+successor.

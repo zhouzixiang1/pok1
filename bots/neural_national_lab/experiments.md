@@ -212,6 +212,33 @@
   classifier trained from v019/v022 trace candidates can reduce harmful
   interventions.
 
+## v025_v254_low_raise_gate_h96_254
+
+- Base: `v022_v254_sharded_h96_raise_only254`.
+- Change: keeps the same h96 policy weights but caps neural raise proposals to
+  low-size free-action raises (`max_raise_delta=125`,
+  `max_raise_pot_ratio=0.65`).
+- Rationale: seeded counterfactual probes showed the previous larger raise
+  sizes carried the worst outliers, while the low-raise bucket had positive
+  local deltas.
+- Result: the p120 seeded counterfactual run was strongly positive, but
+  64 paired common-deck mirrors against `claude_v279` were still inconclusive
+  versus v022 (`+686.17` chips per 70 hands, 95 percent CI
+  `[-602.07, 1974.41]`).
+
+## v026_v254_flop_low_raise_h96_254
+
+- Base: `v025_v254_low_raise_gate_h96_254`.
+- Change: keeps the same h96 weights and low-raise cap, but restricts neural
+  raise interventions to flop only.
+- Rationale: the strongest counterfactual evidence for v025 came from flop
+  `to_raise` probes; preflop raises were still enabled in v025 but did not have
+  the same seeded counterfactual support.
+- Result: v026 was positive but noisy versus v025 in a 16-pair check
+  (`+1133.59` chips per 70 hands, 95 percent CI `[-1027.52, 3294.71]`) and
+  slightly negative versus v022 in a 32-pair check (`-301.33` chips per
+  70 hands, 95 percent CI `[-2241.13, 1638.48]`). It is not a successor.
+
 ## Round 1 Notes
 
 - Training data: `teacher214_round1.jsonl`, 272 teacher decisions from

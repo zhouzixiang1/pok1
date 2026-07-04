@@ -1,0 +1,2384 @@
+{
+  "mode": "common_deck_mirror_pair",
+  "games": 64,
+  "workers": 8,
+  "seed_base": 2026070600,
+  "seed_offset": 0,
+  "seed_stride": 1,
+  "max_hands": 70,
+  "baseline_label": "v022_v254_sharded_h96_raise_only254",
+  "entries": {
+    "v022_v254_sharded_h96_raise_only254": {
+      "path": "bots/neural_national_lab/versions/v022_v254_sharded_h96_raise_only254/main.py",
+      "opponent": "bots/claude_v279/main.py"
+    },
+    "v025_v254_low_raise_gate_h96_254": {
+      "path": "bots/neural_national_lab/versions/v025_v254_low_raise_gate_h96_254/main.py",
+      "opponent": "bots/claude_v279/main.py"
+    }
+  },
+  "pairs": [
+    {
+      "idx": 0,
+      "seed": 2026070600,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -7336.0,
+        "v025_v254_low_raise_gate_h96_254": -8221.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -9595.0,
+          "bot1_chips": 9595.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -10405.0,
+          "bot1_chips": 10405.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 2259.0,
+          "bot1_chips": -2259.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 2184.0,
+          "bot1_chips": -2184.0
+        }
+      }
+    },
+    {
+      "idx": 1,
+      "seed": 2026070601,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -19796.0,
+        "v025_v254_low_raise_gate_h96_254": 14244.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 18.0,
+          "bot1_chips": -18.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 130.0,
+          "bot1_chips": -130.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -19814.0,
+          "bot1_chips": 19814.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 14114.0,
+          "bot1_chips": -14114.0
+        }
+      }
+    },
+    {
+      "idx": 2,
+      "seed": 2026070602,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 50.0,
+        "v025_v254_low_raise_gate_h96_254": 13128.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -57.0,
+          "bot1_chips": 57.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 1169.0,
+          "bot1_chips": -1169.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 107.0,
+          "bot1_chips": -107.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 11959.0,
+          "bot1_chips": -11959.0
+        }
+      }
+    },
+    {
+      "idx": 3,
+      "seed": 2026070603,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 4382.0,
+        "v025_v254_low_raise_gate_h96_254": -4634.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -4165.0,
+          "bot1_chips": 4165.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -4614.0,
+          "bot1_chips": 4614.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 8547.0,
+          "bot1_chips": -8547.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -20.0,
+          "bot1_chips": 20.0
+        }
+      }
+    },
+    {
+      "idx": 4,
+      "seed": 2026070604,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 5131.0,
+        "v025_v254_low_raise_gate_h96_254": 5.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 5060.0,
+          "bot1_chips": -5060.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -75.0,
+          "bot1_chips": 75.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 71.0,
+          "bot1_chips": -71.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 80.0,
+          "bot1_chips": -80.0
+        }
+      }
+    },
+    {
+      "idx": 5,
+      "seed": 2026070605,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 171.0,
+        "v025_v254_low_raise_gate_h96_254": 303.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -140.0,
+          "bot1_chips": 140.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -75.0,
+          "bot1_chips": 75.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 311.0,
+          "bot1_chips": -311.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 378.0,
+          "bot1_chips": -378.0
+        }
+      }
+    },
+    {
+      "idx": 6,
+      "seed": 2026070606,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 13530.0,
+        "v025_v254_low_raise_gate_h96_254": 13330.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -5300.0,
+          "bot1_chips": 5300.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -5300.0,
+          "bot1_chips": 5300.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 18830.0,
+          "bot1_chips": -18830.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 18630.0,
+          "bot1_chips": -18630.0
+        }
+      }
+    },
+    {
+      "idx": 7,
+      "seed": 2026070607,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 6729.0,
+        "v025_v254_low_raise_gate_h96_254": 1188.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -495.0,
+          "bot1_chips": 495.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -566.0,
+          "bot1_chips": 566.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 7224.0,
+          "bot1_chips": -7224.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 1754.0,
+          "bot1_chips": -1754.0
+        }
+      }
+    },
+    {
+      "idx": 8,
+      "seed": 2026070608,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -11.0,
+        "v025_v254_low_raise_gate_h96_254": 10510.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -210.0,
+          "bot1_chips": 210.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 10341.0,
+          "bot1_chips": -10341.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 199.0,
+          "bot1_chips": -199.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 169.0,
+          "bot1_chips": -169.0
+        }
+      }
+    },
+    {
+      "idx": 9,
+      "seed": 2026070609,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -6955.0,
+        "v025_v254_low_raise_gate_h96_254": 5817.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 8212.0,
+          "bot1_chips": -8212.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 8047.0,
+          "bot1_chips": -8047.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -15167.0,
+          "bot1_chips": 15167.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -2230.0,
+          "bot1_chips": 2230.0
+        }
+      }
+    },
+    {
+      "idx": 10,
+      "seed": 2026070610,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 16177.0,
+        "v025_v254_low_raise_gate_h96_254": 838.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 16214.0,
+          "bot1_chips": -16214.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 16949.0,
+          "bot1_chips": -16949.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -37.0,
+          "bot1_chips": 37.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -16111.0,
+          "bot1_chips": 16111.0
+        }
+      }
+    },
+    {
+      "idx": 11,
+      "seed": 2026070611,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -95.0,
+        "v025_v254_low_raise_gate_h96_254": 1343.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -165.0,
+          "bot1_chips": 165.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -50.0,
+          "bot1_chips": 50.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 70.0,
+          "bot1_chips": -70.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 1393.0,
+          "bot1_chips": -1393.0
+        }
+      }
+    },
+    {
+      "idx": 12,
+      "seed": 2026070612,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 19135.0,
+        "v025_v254_low_raise_gate_h96_254": 10455.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -43.0,
+          "bot1_chips": 43.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 116.0,
+          "bot1_chips": -116.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 19178.0,
+          "bot1_chips": -19178.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 10339.0,
+          "bot1_chips": -10339.0
+        }
+      }
+    },
+    {
+      "idx": 13,
+      "seed": 2026070613,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 6208.0,
+        "v025_v254_low_raise_gate_h96_254": 12229.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 20158.0,
+          "bot1_chips": -20158.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 20180.0,
+          "bot1_chips": -20180.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -13950.0,
+          "bot1_chips": 13950.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -7951.0,
+          "bot1_chips": 7951.0
+        }
+      }
+    },
+    {
+      "idx": 14,
+      "seed": 2026070614,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 4283.0,
+        "v025_v254_low_raise_gate_h96_254": 213.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 17370.0,
+          "bot1_chips": -17370.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 17275.0,
+          "bot1_chips": -17275.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -13087.0,
+          "bot1_chips": 13087.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -17062.0,
+          "bot1_chips": 17062.0
+        }
+      }
+    },
+    {
+      "idx": 15,
+      "seed": 2026070615,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 6572.0,
+        "v025_v254_low_raise_gate_h96_254": 2913.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 6640.0,
+          "bot1_chips": -6640.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 6246.0,
+          "bot1_chips": -6246.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -68.0,
+          "bot1_chips": 68.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -3333.0,
+          "bot1_chips": 3333.0
+        }
+      }
+    },
+    {
+      "idx": 16,
+      "seed": 2026070616,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -15238.0,
+        "v025_v254_low_raise_gate_h96_254": -15297.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -15350.0,
+          "bot1_chips": 15350.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -15350.0,
+          "bot1_chips": 15350.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 112.0,
+          "bot1_chips": -112.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 53.0,
+          "bot1_chips": -53.0
+        }
+      }
+    },
+    {
+      "idx": 17,
+      "seed": 2026070617,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 5189.0,
+        "v025_v254_low_raise_gate_h96_254": 5816.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 4737.0,
+          "bot1_chips": -4737.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 4987.0,
+          "bot1_chips": -4987.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 452.0,
+          "bot1_chips": -452.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 829.0,
+          "bot1_chips": -829.0
+        }
+      }
+    },
+    {
+      "idx": 18,
+      "seed": 2026070618,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -332.0,
+        "v025_v254_low_raise_gate_h96_254": 11476.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -216.0,
+          "bot1_chips": 216.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 11622.0,
+          "bot1_chips": -11622.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -116.0,
+          "bot1_chips": 116.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -146.0,
+          "bot1_chips": 146.0
+        }
+      }
+    },
+    {
+      "idx": 19,
+      "seed": 2026070619,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 125.0,
+        "v025_v254_low_raise_gate_h96_254": 19688.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 19899.0,
+          "bot1_chips": -19899.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 19899.0,
+          "bot1_chips": -19899.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -19774.0,
+          "bot1_chips": 19774.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -211.0,
+          "bot1_chips": 211.0
+        }
+      }
+    },
+    {
+      "idx": 20,
+      "seed": 2026070620,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 245.0,
+        "v025_v254_low_raise_gate_h96_254": 19747.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 2944.0,
+          "bot1_chips": -2944.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 19804.0,
+          "bot1_chips": -19804.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -2699.0,
+          "bot1_chips": 2699.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -57.0,
+          "bot1_chips": 57.0
+        }
+      }
+    },
+    {
+      "idx": 21,
+      "seed": 2026070621,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -51.0,
+        "v025_v254_low_raise_gate_h96_254": 32.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 11.0,
+          "bot1_chips": -11.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 70.0,
+          "bot1_chips": -70.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -62.0,
+          "bot1_chips": 62.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -38.0,
+          "bot1_chips": 38.0
+        }
+      }
+    },
+    {
+      "idx": 22,
+      "seed": 2026070622,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 3563.0,
+        "v025_v254_low_raise_gate_h96_254": 3673.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -67.0,
+          "bot1_chips": 67.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -2.0,
+          "bot1_chips": 2.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 3630.0,
+          "bot1_chips": -3630.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 3675.0,
+          "bot1_chips": -3675.0
+        }
+      }
+    },
+    {
+      "idx": 23,
+      "seed": 2026070623,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 320.0,
+        "v025_v254_low_raise_gate_h96_254": -8165.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -53.0,
+          "bot1_chips": 53.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -8108.0,
+          "bot1_chips": 8108.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 373.0,
+          "bot1_chips": -373.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -57.0,
+          "bot1_chips": 57.0
+        }
+      }
+    },
+    {
+      "idx": 24,
+      "seed": 2026070624,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 8492.0,
+        "v025_v254_low_raise_gate_h96_254": 6555.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 8507.0,
+          "bot1_chips": -8507.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 8516.0,
+          "bot1_chips": -8516.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -15.0,
+          "bot1_chips": 15.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -1961.0,
+          "bot1_chips": 1961.0
+        }
+      }
+    },
+    {
+      "idx": 25,
+      "seed": 2026070625,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 18040.0,
+        "v025_v254_low_raise_gate_h96_254": 18611.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 16646.0,
+          "bot1_chips": -16646.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 17147.0,
+          "bot1_chips": -17147.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 1394.0,
+          "bot1_chips": -1394.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 1464.0,
+          "bot1_chips": -1464.0
+        }
+      }
+    },
+    {
+      "idx": 26,
+      "seed": 2026070626,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -3929.0,
+        "v025_v254_low_raise_gate_h96_254": 2532.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -4062.0,
+          "bot1_chips": 4062.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 2541.0,
+          "bot1_chips": -2541.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 133.0,
+          "bot1_chips": -133.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -9.0,
+          "bot1_chips": 9.0
+        }
+      }
+    },
+    {
+      "idx": 27,
+      "seed": 2026070627,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 1264.0,
+        "v025_v254_low_raise_gate_h96_254": 1269.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -28.0,
+          "bot1_chips": 28.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -40.0,
+          "bot1_chips": 40.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 1292.0,
+          "bot1_chips": -1292.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 1309.0,
+          "bot1_chips": -1309.0
+        }
+      }
+    },
+    {
+      "idx": 28,
+      "seed": 2026070628,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 24218.0,
+        "v025_v254_low_raise_gate_h96_254": 24133.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 15800.0,
+          "bot1_chips": -15800.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 15800.0,
+          "bot1_chips": -15800.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 8418.0,
+          "bot1_chips": -8418.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 8333.0,
+          "bot1_chips": -8333.0
+        }
+      }
+    },
+    {
+      "idx": 29,
+      "seed": 2026070629,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 480.0,
+        "v025_v254_low_raise_gate_h96_254": -1161.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 464.0,
+          "bot1_chips": -464.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 468.0,
+          "bot1_chips": -468.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 16.0,
+          "bot1_chips": -16.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -1629.0,
+          "bot1_chips": 1629.0
+        }
+      }
+    },
+    {
+      "idx": 30,
+      "seed": 2026070630,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 1.0,
+        "v025_v254_low_raise_gate_h96_254": -83.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -140.0,
+          "bot1_chips": 140.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -73.0,
+          "bot1_chips": 73.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 141.0,
+          "bot1_chips": -141.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -10.0,
+          "bot1_chips": 10.0
+        }
+      }
+    },
+    {
+      "idx": 31,
+      "seed": 2026070631,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -3194.0,
+        "v025_v254_low_raise_gate_h96_254": -232.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -3151.0,
+          "bot1_chips": 3151.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -189.0,
+          "bot1_chips": 189.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -43.0,
+          "bot1_chips": 43.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -43.0,
+          "bot1_chips": 43.0
+        }
+      }
+    },
+    {
+      "idx": 32,
+      "seed": 2026070632,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 20801.0,
+        "v025_v254_low_raise_gate_h96_254": -21545.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 19950.0,
+          "bot1_chips": -19950.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -1597.0,
+          "bot1_chips": 1597.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 851.0,
+          "bot1_chips": -851.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -19948.0,
+          "bot1_chips": 19948.0
+        }
+      }
+    },
+    {
+      "idx": 33,
+      "seed": 2026070633,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -1363.0,
+        "v025_v254_low_raise_gate_h96_254": -7621.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -1346.0,
+          "bot1_chips": 1346.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -7601.0,
+          "bot1_chips": 7601.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -17.0,
+          "bot1_chips": 17.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -20.0,
+          "bot1_chips": 20.0
+        }
+      }
+    },
+    {
+      "idx": 34,
+      "seed": 2026070634,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -7505.0,
+        "v025_v254_low_raise_gate_h96_254": -5714.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -5868.0,
+          "bot1_chips": 5868.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -5676.0,
+          "bot1_chips": 5676.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -1637.0,
+          "bot1_chips": 1637.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -38.0,
+          "bot1_chips": 38.0
+        }
+      }
+    },
+    {
+      "idx": 35,
+      "seed": 2026070635,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 10.0,
+        "v025_v254_low_raise_gate_h96_254": 6757.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -183.0,
+          "bot1_chips": 183.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -193.0,
+          "bot1_chips": 193.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 193.0,
+          "bot1_chips": -193.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 6950.0,
+          "bot1_chips": -6950.0
+        }
+      }
+    },
+    {
+      "idx": 36,
+      "seed": 2026070636,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 1190.0,
+        "v025_v254_low_raise_gate_h96_254": 957.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 1120.0,
+          "bot1_chips": -1120.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 1081.0,
+          "bot1_chips": -1081.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 70.0,
+          "bot1_chips": -70.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -124.0,
+          "bot1_chips": 124.0
+        }
+      }
+    },
+    {
+      "idx": 37,
+      "seed": 2026070637,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 3162.0,
+        "v025_v254_low_raise_gate_h96_254": -259.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 4.0,
+          "bot1_chips": -4.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 54.0,
+          "bot1_chips": -54.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 3158.0,
+          "bot1_chips": -3158.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -313.0,
+          "bot1_chips": 313.0
+        }
+      }
+    },
+    {
+      "idx": 38,
+      "seed": 2026070638,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -21.0,
+        "v025_v254_low_raise_gate_h96_254": -220.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 118.0,
+          "bot1_chips": -118.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 107.0,
+          "bot1_chips": -107.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -139.0,
+          "bot1_chips": 139.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -327.0,
+          "bot1_chips": 327.0
+        }
+      }
+    },
+    {
+      "idx": 39,
+      "seed": 2026070639,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -7616.0,
+        "v025_v254_low_raise_gate_h96_254": -19523.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -7723.0,
+          "bot1_chips": 7723.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -19501.0,
+          "bot1_chips": 19501.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 107.0,
+          "bot1_chips": -107.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -22.0,
+          "bot1_chips": 22.0
+        }
+      }
+    },
+    {
+      "idx": 40,
+      "seed": 2026070640,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -455.0,
+        "v025_v254_low_raise_gate_h96_254": 12528.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 2277.0,
+          "bot1_chips": -2277.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 15200.0,
+          "bot1_chips": -15200.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -2732.0,
+          "bot1_chips": 2732.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -2672.0,
+          "bot1_chips": 2672.0
+        }
+      }
+    },
+    {
+      "idx": 41,
+      "seed": 2026070641,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -6.0,
+        "v025_v254_low_raise_gate_h96_254": 161.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 74.0,
+          "bot1_chips": -74.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 174.0,
+          "bot1_chips": -174.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -80.0,
+          "bot1_chips": 80.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -13.0,
+          "bot1_chips": 13.0
+        }
+      }
+    },
+    {
+      "idx": 42,
+      "seed": 2026070642,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 5004.0,
+        "v025_v254_low_raise_gate_h96_254": 4751.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 133.0,
+          "bot1_chips": -133.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 46.0,
+          "bot1_chips": -46.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 4871.0,
+          "bot1_chips": -4871.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 4705.0,
+          "bot1_chips": -4705.0
+        }
+      }
+    },
+    {
+      "idx": 43,
+      "seed": 2026070643,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -75.0,
+        "v025_v254_low_raise_gate_h96_254": -51.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -39.0,
+          "bot1_chips": 39.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 224.0,
+          "bot1_chips": -224.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -36.0,
+          "bot1_chips": 36.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -275.0,
+          "bot1_chips": 275.0
+        }
+      }
+    },
+    {
+      "idx": 44,
+      "seed": 2026070644,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -5752.0,
+        "v025_v254_low_raise_gate_h96_254": 3304.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -3671.0,
+          "bot1_chips": 3671.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -86.0,
+          "bot1_chips": 86.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -2081.0,
+          "bot1_chips": 2081.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 3390.0,
+          "bot1_chips": -3390.0
+        }
+      }
+    },
+    {
+      "idx": 45,
+      "seed": 2026070645,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 0.0,
+        "v025_v254_low_raise_gate_h96_254": 15784.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 14.0,
+          "bot1_chips": -14.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 1738.0,
+          "bot1_chips": -1738.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -14.0,
+          "bot1_chips": 14.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 14046.0,
+          "bot1_chips": -14046.0
+        }
+      }
+    },
+    {
+      "idx": 46,
+      "seed": 2026070646,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -3185.0,
+        "v025_v254_low_raise_gate_h96_254": -6625.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -3302.0,
+          "bot1_chips": 3302.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -6785.0,
+          "bot1_chips": 6785.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 117.0,
+          "bot1_chips": -117.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 160.0,
+          "bot1_chips": -160.0
+        }
+      }
+    },
+    {
+      "idx": 47,
+      "seed": 2026070647,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 19928.0,
+        "v025_v254_low_raise_gate_h96_254": -2852.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -3.0,
+          "bot1_chips": 3.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -2867.0,
+          "bot1_chips": 2867.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 19931.0,
+          "bot1_chips": -19931.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 15.0,
+          "bot1_chips": -15.0
+        }
+      }
+    },
+    {
+      "idx": 48,
+      "seed": 2026070648,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -12961.0,
+        "v025_v254_low_raise_gate_h96_254": 7547.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -126.0,
+          "bot1_chips": 126.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 7260.0,
+          "bot1_chips": -7260.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -12835.0,
+          "bot1_chips": 12835.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 287.0,
+          "bot1_chips": -287.0
+        }
+      }
+    },
+    {
+      "idx": 49,
+      "seed": 2026070649,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 16224.0,
+        "v025_v254_low_raise_gate_h96_254": 16796.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -599.0,
+          "bot1_chips": 599.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 45.0,
+          "bot1_chips": -45.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 16823.0,
+          "bot1_chips": -16823.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 16751.0,
+          "bot1_chips": -16751.0
+        }
+      }
+    },
+    {
+      "idx": 50,
+      "seed": 2026070650,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -10750.0,
+        "v025_v254_low_raise_gate_h96_254": 4240.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -9127.0,
+          "bot1_chips": 9127.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 4234.0,
+          "bot1_chips": -4234.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -1623.0,
+          "bot1_chips": 1623.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 6.0,
+          "bot1_chips": -6.0
+        }
+      }
+    },
+    {
+      "idx": 51,
+      "seed": 2026070651,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -98.0,
+        "v025_v254_low_raise_gate_h96_254": -183.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 72.0,
+          "bot1_chips": -72.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -13.0,
+          "bot1_chips": 13.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -170.0,
+          "bot1_chips": 170.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -170.0,
+          "bot1_chips": 170.0
+        }
+      }
+    },
+    {
+      "idx": 52,
+      "seed": 2026070652,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -267.0,
+        "v025_v254_low_raise_gate_h96_254": 949.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 44.0,
+          "bot1_chips": -44.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 61.0,
+          "bot1_chips": -61.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -311.0,
+          "bot1_chips": 311.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 888.0,
+          "bot1_chips": -888.0
+        }
+      }
+    },
+    {
+      "idx": 53,
+      "seed": 2026070653,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 0.0,
+        "v025_v254_low_raise_gate_h96_254": -151.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -108.0,
+          "bot1_chips": 108.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -292.0,
+          "bot1_chips": 292.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 108.0,
+          "bot1_chips": -108.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 141.0,
+          "bot1_chips": -141.0
+        }
+      }
+    },
+    {
+      "idx": 54,
+      "seed": 2026070654,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 1336.0,
+        "v025_v254_low_raise_gate_h96_254": -1658.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 7456.0,
+          "bot1_chips": -7456.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 7578.0,
+          "bot1_chips": -7578.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -6120.0,
+          "bot1_chips": 6120.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -9236.0,
+          "bot1_chips": 9236.0
+        }
+      }
+    },
+    {
+      "idx": 55,
+      "seed": 2026070655,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 4648.0,
+        "v025_v254_low_raise_gate_h96_254": 4601.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 4681.0,
+          "bot1_chips": -4681.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 4627.0,
+          "bot1_chips": -4627.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -33.0,
+          "bot1_chips": 33.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -26.0,
+          "bot1_chips": 26.0
+        }
+      }
+    },
+    {
+      "idx": 56,
+      "seed": 2026070656,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -25.0,
+        "v025_v254_low_raise_gate_h96_254": -2188.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -26.0,
+          "bot1_chips": 26.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -77.0,
+          "bot1_chips": 77.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 1.0,
+          "bot1_chips": -1.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -2111.0,
+          "bot1_chips": 2111.0
+        }
+      }
+    },
+    {
+      "idx": 57,
+      "seed": 2026070657,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -115.0,
+        "v025_v254_low_raise_gate_h96_254": 5301.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -104.0,
+          "bot1_chips": 104.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 5162.0,
+          "bot1_chips": -5162.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -11.0,
+          "bot1_chips": 11.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 139.0,
+          "bot1_chips": -139.0
+        }
+      }
+    },
+    {
+      "idx": 58,
+      "seed": 2026070658,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -14291.0,
+        "v025_v254_low_raise_gate_h96_254": -4443.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -1570.0,
+          "bot1_chips": 1570.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 138.0,
+          "bot1_chips": -138.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -12721.0,
+          "bot1_chips": 12721.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -4581.0,
+          "bot1_chips": 4581.0
+        }
+      }
+    },
+    {
+      "idx": 59,
+      "seed": 2026070659,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -1868.0,
+        "v025_v254_low_raise_gate_h96_254": 4879.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -133.0,
+          "bot1_chips": 133.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 4844.0,
+          "bot1_chips": -4844.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -1735.0,
+          "bot1_chips": 1735.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 35.0,
+          "bot1_chips": -35.0
+        }
+      }
+    },
+    {
+      "idx": 60,
+      "seed": 2026070660,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -69.0,
+        "v025_v254_low_raise_gate_h96_254": -55.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -99.0,
+          "bot1_chips": 99.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -62.0,
+          "bot1_chips": 62.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 30.0,
+          "bot1_chips": -30.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 7.0,
+          "bot1_chips": -7.0
+        }
+      }
+    },
+    {
+      "idx": 61,
+      "seed": 2026070661,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 90.0,
+        "v025_v254_low_raise_gate_h96_254": 5534.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 6931.0,
+          "bot1_chips": -6931.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 5547.0,
+          "bot1_chips": -5547.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -6841.0,
+          "bot1_chips": 6841.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -13.0,
+          "bot1_chips": 13.0
+        }
+      }
+    },
+    {
+      "idx": 62,
+      "seed": 2026070662,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 1892.0,
+        "v025_v254_low_raise_gate_h96_254": -631.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -7936.0,
+          "bot1_chips": 7936.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -10494.0,
+          "bot1_chips": 10494.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 9828.0,
+          "bot1_chips": -9828.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 9863.0,
+          "bot1_chips": -9863.0
+        }
+      }
+    },
+    {
+      "idx": 63,
+      "seed": 2026070663,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -6525.0,
+        "v025_v254_low_raise_gate_h96_254": -6089.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -6415.0,
+          "bot1_chips": 6415.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -6015.0,
+          "bot1_chips": 6015.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -110.0,
+          "bot1_chips": 110.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -74.0,
+          "bot1_chips": 74.0
+        }
+      }
+    }
+  ],
+  "results": {
+    "v022_v254_sharded_h96_raise_only254": {
+      "path": "bots/neural_national_lab/versions/v022_v254_sharded_h96_raise_only254/main.py",
+      "opponent": "bots/claude_v279/main.py",
+      "net_chips": [
+        -7336.0,
+        -19796.0,
+        50.0,
+        4382.0,
+        5131.0,
+        171.0,
+        13530.0,
+        6729.0,
+        -11.0,
+        -6955.0,
+        16177.0,
+        -95.0,
+        19135.0,
+        6208.0,
+        4283.0,
+        6572.0,
+        -15238.0,
+        5189.0,
+        -332.0,
+        125.0,
+        245.0,
+        -51.0,
+        3563.0,
+        320.0,
+        8492.0,
+        18040.0,
+        -3929.0,
+        1264.0,
+        24218.0,
+        480.0,
+        1.0,
+        -3194.0,
+        20801.0,
+        -1363.0,
+        -7505.0,
+        10.0,
+        1190.0,
+        3162.0,
+        -21.0,
+        -7616.0,
+        -455.0,
+        -6.0,
+        5004.0,
+        -75.0,
+        -5752.0,
+        0.0,
+        -3185.0,
+        19928.0,
+        -12961.0,
+        16224.0,
+        -10750.0,
+        -98.0,
+        -267.0,
+        0.0,
+        1336.0,
+        4648.0,
+        -25.0,
+        -115.0,
+        -14291.0,
+        -1868.0,
+        -69.0,
+        90.0,
+        1892.0,
+        -6525.0
+      ],
+      "samples": 64,
+      "mean_net": 1386.03125,
+      "median_net": 5.5,
+      "stddev_net": 8457.760754664021,
+      "stderr_net": 1057.2200943330026,
+      "ci95_low": -686.1201348926852,
+      "ci95_high": 3458.182634892685,
+      "mean_per_70_hands": 693.015625,
+      "ci95_low_per_70_hands": -343.0600674463426,
+      "ci95_high_per_70_hands": 1729.0913174463426,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    },
+    "v025_v254_low_raise_gate_h96_254": {
+      "path": "bots/neural_national_lab/versions/v025_v254_low_raise_gate_h96_254/main.py",
+      "opponent": "bots/claude_v279/main.py",
+      "net_chips": [
+        -8221.0,
+        14244.0,
+        13128.0,
+        -4634.0,
+        5.0,
+        303.0,
+        13330.0,
+        1188.0,
+        10510.0,
+        5817.0,
+        838.0,
+        1343.0,
+        10455.0,
+        12229.0,
+        213.0,
+        2913.0,
+        -15297.0,
+        5816.0,
+        11476.0,
+        19688.0,
+        19747.0,
+        32.0,
+        3673.0,
+        -8165.0,
+        6555.0,
+        18611.0,
+        2532.0,
+        1269.0,
+        24133.0,
+        -1161.0,
+        -83.0,
+        -232.0,
+        -21545.0,
+        -7621.0,
+        -5714.0,
+        6757.0,
+        957.0,
+        -259.0,
+        -220.0,
+        -19523.0,
+        12528.0,
+        161.0,
+        4751.0,
+        -51.0,
+        3304.0,
+        15784.0,
+        -6625.0,
+        -2852.0,
+        7547.0,
+        16796.0,
+        4240.0,
+        -183.0,
+        949.0,
+        -151.0,
+        -1658.0,
+        4601.0,
+        -2188.0,
+        5301.0,
+        -4443.0,
+        4879.0,
+        -55.0,
+        5534.0,
+        -631.0,
+        -6089.0
+      ],
+      "samples": 64,
+      "mean_net": 2758.375,
+      "median_net": 1072.5,
+      "stddev_net": 8737.77265850663,
+      "stderr_net": 1092.2215823133288,
+      "ci95_low": 617.6206986658758,
+      "ci95_high": 4899.129301334124,
+      "mean_per_70_hands": 1379.1875,
+      "ci95_low_per_70_hands": 308.8103493329379,
+      "ci95_high_per_70_hands": 2449.564650667062,
+      "significant_positive_95": true,
+      "significant_negative_95": false
+    }
+  },
+  "paired_vs_baseline": {
+    "v025_v254_low_raise_gate_h96_254": {
+      "baseline": "v022_v254_sharded_h96_raise_only254",
+      "candidate": "v025_v254_low_raise_gate_h96_254",
+      "delta_net_chips": [
+        -885.0,
+        34040.0,
+        13078.0,
+        -9016.0,
+        -5126.0,
+        132.0,
+        -200.0,
+        -5541.0,
+        10521.0,
+        12772.0,
+        -15339.0,
+        1438.0,
+        -8680.0,
+        6021.0,
+        -4070.0,
+        -3659.0,
+        -59.0,
+        627.0,
+        11808.0,
+        19563.0,
+        19502.0,
+        83.0,
+        110.0,
+        -8485.0,
+        -1937.0,
+        571.0,
+        6461.0,
+        5.0,
+        -85.0,
+        -1641.0,
+        -84.0,
+        2962.0,
+        -42346.0,
+        -6258.0,
+        1791.0,
+        6747.0,
+        -233.0,
+        -3421.0,
+        -199.0,
+        -11907.0,
+        12983.0,
+        167.0,
+        -253.0,
+        24.0,
+        9056.0,
+        15784.0,
+        -3440.0,
+        -22780.0,
+        20508.0,
+        572.0,
+        14990.0,
+        -85.0,
+        1216.0,
+        -151.0,
+        -2994.0,
+        -47.0,
+        -2163.0,
+        5416.0,
+        9848.0,
+        6747.0,
+        14.0,
+        5444.0,
+        -2523.0,
+        436.0
+      ],
+      "samples": 64,
+      "mean_net": 1372.34375,
+      "median_net": 19.0,
+      "stddev_net": 10516.220656482696,
+      "stderr_net": 1314.527582060337,
+      "ci95_low": -1204.1303108382604,
+      "ci95_high": 3948.8178108382604,
+      "mean_per_70_hands": 686.171875,
+      "ci95_low_per_70_hands": -602.0651554191302,
+      "ci95_high_per_70_hands": 1974.4089054191302,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  }
+}
