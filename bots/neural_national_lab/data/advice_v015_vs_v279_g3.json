@@ -1,0 +1,331 @@
+{
+  "version": "bots/neural_national_lab/versions/v015_v254_flop_band_rescue254/main.py",
+  "opponent": "bots/claude_v279/main.py",
+  "games": 3,
+  "rows": [
+    {
+      "decisions": 117,
+      "raw_changed": 0,
+      "final_changed": 0,
+      "actual_mismatch": 10,
+      "change_types": {},
+      "top_labels": {
+        "call": 47,
+        "raise_half": 22,
+        "fold": 27,
+        "raise_pot": 15,
+        "raise_2pot": 5,
+        "allin": 1
+      },
+      "rule_final": {
+        "0": 58,
+        "101": 6,
+        "-1": 37,
+        "195": 1,
+        "201": 4,
+        "135": 1,
+        "139": 1,
+        "153": 2,
+        "164": 1,
+        "133": 1,
+        "228": 1,
+        "144": 1,
+        "319": 1,
+        "2828": 1,
+        "6476": 1
+      },
+      "rule_fold_top_call": 9,
+      "rule_fold_top_call_conf_ge_070": 5,
+      "rule_fold_top_call_conf_ge_080": 2,
+      "rule_fold_top_call_conf_ge_090": 1,
+      "max_call_conf_on_rule_fold": 0.9513935355052828,
+      "examples": [],
+      "fold_call_candidates": [
+        {
+          "decision_index": 3,
+          "hand": 2,
+          "to_call": 151,
+          "pot": 351,
+          "call_conf": 0.9513935355052828,
+          "top_conf": 0.9513935355052828
+        },
+        {
+          "decision_index": 100,
+          "hand": 52,
+          "to_call": 0,
+          "pot": 150,
+          "call_conf": 0.8889711007713066,
+          "top_conf": 0.8889711007713066
+        },
+        {
+          "decision_index": 104,
+          "hand": 56,
+          "to_call": 0,
+          "pot": 150,
+          "call_conf": 0.7571654303833459,
+          "top_conf": 0.7571654303833459
+        },
+        {
+          "decision_index": 106,
+          "hand": 58,
+          "to_call": 0,
+          "pot": 150,
+          "call_conf": 0.7779433632281247,
+          "top_conf": 0.7779433632281247
+        },
+        {
+          "decision_index": 108,
+          "hand": 60,
+          "to_call": 0,
+          "pot": 150,
+          "call_conf": 0.67152312712074,
+          "top_conf": 0.67152312712074
+        },
+        {
+          "decision_index": 110,
+          "hand": 62,
+          "to_call": 0,
+          "pot": 150,
+          "call_conf": 0.6813010927045267,
+          "top_conf": 0.6813010927045267
+        },
+        {
+          "decision_index": 114,
+          "hand": 66,
+          "to_call": 0,
+          "pot": 150,
+          "call_conf": 0.37221279025990056,
+          "top_conf": 0.37221279025990056
+        },
+        {
+          "decision_index": 115,
+          "hand": 67,
+          "to_call": 19950,
+          "pot": 20050,
+          "call_conf": 0.7987238914503507,
+          "top_conf": 0.7987238914503507
+        },
+        {
+          "decision_index": 116,
+          "hand": 68,
+          "to_call": 0,
+          "pot": 150,
+          "call_conf": 0.6148817085488796,
+          "top_conf": 0.6148817085488796
+        }
+      ],
+      "idx": 0,
+      "winner": 0,
+      "bot0_chips": 8124.0,
+      "bot1_chips": -8124.0,
+      "wins": [
+        1,
+        0
+      ],
+      "draws": 0,
+      "played": 1
+    },
+    {
+      "decisions": 139,
+      "raw_changed": 0,
+      "final_changed": 0,
+      "actual_mismatch": 10,
+      "change_types": {},
+      "top_labels": {
+        "call": 48,
+        "raise_half": 26,
+        "raise_pot": 19,
+        "fold": 31,
+        "raise_2pot": 14,
+        "allin": 1
+      },
+      "rule_final": {
+        "0": 73,
+        "101": 11,
+        "161": 1,
+        "201": 9,
+        "134": 1,
+        "-1": 32,
+        "132": 1,
+        "102": 1,
+        "428": 1,
+        "296": 1,
+        "317": 1,
+        "133": 1,
+        "115": 1,
+        "-2": 4,
+        "228": 1
+      },
+      "rule_fold_top_call": 2,
+      "rule_fold_top_call_conf_ge_070": 0,
+      "rule_fold_top_call_conf_ge_080": 0,
+      "rule_fold_top_call_conf_ge_090": 0,
+      "max_call_conf_on_rule_fold": 0.5260052944867957,
+      "examples": [],
+      "fold_call_candidates": [
+        {
+          "decision_index": 52,
+          "hand": 26,
+          "to_call": 186,
+          "pot": 386,
+          "call_conf": 0.47092686101238157,
+          "top_conf": 0.47092686101238157
+        },
+        {
+          "decision_index": 100,
+          "hand": 49,
+          "to_call": 206,
+          "pot": 406,
+          "call_conf": 0.5260052944867957,
+          "top_conf": 0.5260052944867957
+        }
+      ],
+      "idx": 1,
+      "winner": 1,
+      "bot0_chips": -416.0,
+      "bot1_chips": 416.0,
+      "wins": [
+        0,
+        1
+      ],
+      "draws": 0,
+      "played": 1
+    },
+    {
+      "decisions": 55,
+      "raw_changed": 0,
+      "final_changed": 0,
+      "actual_mismatch": 10,
+      "change_types": {},
+      "top_labels": {
+        "call": 12,
+        "raise_half": 9,
+        "raise_pot": 9,
+        "fold": 2,
+        "raise_2pot": 22,
+        "allin": 1
+      },
+      "rule_final": {
+        "0": 9,
+        "101": 3,
+        "201": 5,
+        "128": 1,
+        "190": 1,
+        "781": 1,
+        "-1": 2,
+        "138": 1,
+        "120": 1,
+        "178": 1,
+        "658": 1,
+        "5202": 1,
+        "580": 2,
+        "550": 4,
+        "604": 10,
+        "566": 2,
+        "578": 2,
+        "551": 1,
+        "564": 1,
+        "558": 1,
+        "562": 1,
+        "560": 1,
+        "557": 1,
+        "610": 1,
+        "-2": 1
+      },
+      "rule_fold_top_call": 1,
+      "rule_fold_top_call_conf_ge_070": 1,
+      "rule_fold_top_call_conf_ge_080": 1,
+      "rule_fold_top_call_conf_ge_090": 1,
+      "max_call_conf_on_rule_fold": 0.9977617030372539,
+      "examples": [],
+      "fold_call_candidates": [
+        {
+          "decision_index": 13,
+          "hand": 7,
+          "to_call": 101,
+          "pot": 301,
+          "call_conf": 0.9977617030372539,
+          "top_conf": 0.9977617030372539
+        }
+      ],
+      "idx": 2,
+      "winner": 1,
+      "bot0_chips": -4894.0,
+      "bot1_chips": 4894.0,
+      "wins": [
+        0,
+        1
+      ],
+      "draws": 0,
+      "played": 1
+    }
+  ],
+  "total": {
+    "decisions": 311,
+    "raw_changed": 0,
+    "final_changed": 0,
+    "actual_mismatch": 30,
+    "change_types": {},
+    "top_labels": {
+      "call": 107,
+      "raise_half": 57,
+      "fold": 60,
+      "raise_pot": 43,
+      "raise_2pot": 41,
+      "allin": 3
+    },
+    "rule_final": {
+      "0": 140,
+      "101": 20,
+      "-1": 71,
+      "195": 1,
+      "201": 18,
+      "135": 1,
+      "139": 1,
+      "153": 2,
+      "164": 1,
+      "133": 2,
+      "228": 2,
+      "144": 1,
+      "319": 1,
+      "2828": 1,
+      "6476": 1,
+      "161": 1,
+      "134": 1,
+      "132": 1,
+      "102": 1,
+      "428": 1,
+      "296": 1,
+      "317": 1,
+      "115": 1,
+      "-2": 5,
+      "128": 1,
+      "190": 1,
+      "781": 1,
+      "138": 1,
+      "120": 1,
+      "178": 1,
+      "658": 1,
+      "5202": 1,
+      "580": 2,
+      "550": 4,
+      "604": 10,
+      "566": 2,
+      "578": 2,
+      "551": 1,
+      "564": 1,
+      "558": 1,
+      "562": 1,
+      "560": 1,
+      "557": 1,
+      "610": 1
+    },
+    "rule_fold_top_call": 12,
+    "rule_fold_top_call_conf_ge_070": 6,
+    "rule_fold_top_call_conf_ge_080": 3,
+    "rule_fold_top_call_conf_ge_090": 2,
+    "max_call_conf_on_rule_fold": 0.9977617030372539,
+    "raw_change_rate": 0.0,
+    "final_change_rate": 0.0
+  }
+}

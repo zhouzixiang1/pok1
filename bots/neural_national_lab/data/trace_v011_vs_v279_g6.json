@@ -1,0 +1,436 @@
+{
+  "mode": "common_deck_advice_trace",
+  "games": 6,
+  "version": "bots/neural_national_lab/versions/v011_v254_wide_call_rescue254/main.py",
+  "opponent": "bots/claude_v279/main.py",
+  "pairs": [
+    {
+      "idx": 0,
+      "normal": {
+        "winner": 1,
+        "bot0_chips": -403.0,
+        "bot1_chips": 403.0,
+        "summary": {
+          "decisions": 137,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": -403.0
+        },
+        "changes": []
+      },
+      "mirror": {
+        "winner": 1,
+        "bot0_chips": -10895.0,
+        "bot1_chips": 10895.0,
+        "summary": {
+          "decisions": 68,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": -10895.0
+        },
+        "changes": []
+      }
+    },
+    {
+      "idx": 1,
+      "normal": {
+        "winner": 0,
+        "bot0_chips": 9514.0,
+        "bot1_chips": -9514.0,
+        "summary": {
+          "decisions": 130,
+          "final_changed": 3,
+          "change_types": {
+            "fold_to_call": 3
+          },
+          "changed_hand_count": 3,
+          "changed_hand_delta_sum": -113.0,
+          "all_hand_delta_sum": 9514.0
+        },
+        "changes": [
+          {
+            "decision_index": 2,
+            "hand": 1,
+            "hand_delta": -249.0,
+            "stage": "flop",
+            "public_cards": [
+              42,
+              29,
+              18
+            ],
+            "my_cards": [
+              6,
+              4
+            ],
+            "to_call": 149,
+            "pot": 349,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.9815842123215937,
+            "call_conf": 0.9815842123215937
+          },
+          {
+            "decision_index": 6,
+            "hand": 3,
+            "hand_delta": 236.0,
+            "stage": "flop",
+            "public_cards": [
+              31,
+              50,
+              3
+            ],
+            "my_cards": [
+              18,
+              10
+            ],
+            "to_call": 136,
+            "pot": 336,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.9185853211871957,
+            "call_conf": 0.9185853211871957
+          },
+          {
+            "decision_index": 128,
+            "hand": 69,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              31,
+              3
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.8571926409316866,
+            "call_conf": 0.8571926409316866
+          }
+        ]
+      },
+      "mirror": {
+        "winner": 0,
+        "bot0_chips": 30.0,
+        "bot1_chips": -30.0,
+        "summary": {
+          "decisions": 142,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": 30.0
+        },
+        "changes": []
+      }
+    },
+    {
+      "idx": 2,
+      "normal": {
+        "winner": 1,
+        "bot0_chips": -467.0,
+        "bot1_chips": 467.0,
+        "summary": {
+          "decisions": 147,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": -467.0
+        },
+        "changes": []
+      },
+      "mirror": {
+        "winner": 1,
+        "bot0_chips": -49.0,
+        "bot1_chips": 49.0,
+        "summary": {
+          "decisions": 148,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": -49.0
+        },
+        "changes": []
+      }
+    },
+    {
+      "idx": 3,
+      "normal": {
+        "winner": 0,
+        "bot0_chips": 45.0,
+        "bot1_chips": -45.0,
+        "summary": {
+          "decisions": 121,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": 45.0
+        },
+        "changes": []
+      },
+      "mirror": {
+        "winner": 1,
+        "bot0_chips": -12483.0,
+        "bot1_chips": 12483.0,
+        "summary": {
+          "decisions": 128,
+          "final_changed": 1,
+          "change_types": {
+            "fold_to_call": 1
+          },
+          "changed_hand_count": 1,
+          "changed_hand_delta_sum": 201.0,
+          "all_hand_delta_sum": -12483.0
+        },
+        "changes": [
+          {
+            "decision_index": 4,
+            "hand": 1,
+            "hand_delta": 201.0,
+            "stage": "flop",
+            "public_cards": [
+              32,
+              19,
+              34
+            ],
+            "my_cards": [
+              28,
+              13
+            ],
+            "to_call": 101,
+            "pot": 301,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.8663480605663573,
+            "call_conf": 0.8663480605663573
+          }
+        ]
+      }
+    },
+    {
+      "idx": 4,
+      "normal": {
+        "winner": 1,
+        "bot0_chips": -233.0,
+        "bot1_chips": 233.0,
+        "summary": {
+          "decisions": 146,
+          "final_changed": 1,
+          "change_types": {
+            "fold_to_call": 1
+          },
+          "changed_hand_count": 1,
+          "changed_hand_delta_sum": -201.0,
+          "all_hand_delta_sum": -233.0
+        },
+        "changes": [
+          {
+            "decision_index": 17,
+            "hand": 6,
+            "hand_delta": -201.0,
+            "stage": "flop",
+            "public_cards": [
+              8,
+              9,
+              32
+            ],
+            "my_cards": [
+              13,
+              21
+            ],
+            "to_call": 101,
+            "pot": 301,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.9518469337971524,
+            "call_conf": 0.9518469337971524
+          }
+        ]
+      },
+      "mirror": {
+        "winner": 1,
+        "bot0_chips": -10301.0,
+        "bot1_chips": 10301.0,
+        "summary": {
+          "decisions": 64,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": -10301.0
+        },
+        "changes": []
+      }
+    },
+    {
+      "idx": 5,
+      "normal": {
+        "winner": 0,
+        "bot0_chips": 1851.0,
+        "bot1_chips": -1851.0,
+        "summary": {
+          "decisions": 143,
+          "final_changed": 1,
+          "change_types": {
+            "fold_to_call": 1
+          },
+          "changed_hand_count": 1,
+          "changed_hand_delta_sum": -100.0,
+          "all_hand_delta_sum": 1851.0
+        },
+        "changes": [
+          {
+            "decision_index": 23,
+            "hand": 10,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              16,
+              3
+            ],
+            "to_call": 50,
+            "pot": 150,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.9999959194123135,
+            "call_conf": 0.9999959194123135
+          }
+        ]
+      },
+      "mirror": {
+        "winner": 1,
+        "bot0_chips": -1996.0,
+        "bot1_chips": 1996.0,
+        "summary": {
+          "decisions": 86,
+          "final_changed": 1,
+          "change_types": {
+            "fold_to_call": 1
+          },
+          "changed_hand_count": 1,
+          "changed_hand_delta_sum": -201.0,
+          "all_hand_delta_sum": -1996.0
+        },
+        "changes": [
+          {
+            "decision_index": 52,
+            "hand": 24,
+            "hand_delta": -201.0,
+            "stage": "flop",
+            "public_cards": [
+              48,
+              17,
+              50
+            ],
+            "my_cards": [
+              2,
+              31
+            ],
+            "to_call": 101,
+            "pot": 301,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.9160548128139553,
+            "call_conf": 0.9160548128139553
+          }
+        ]
+      }
+    }
+  ],
+  "total": {
+    "decisions": 1460,
+    "final_changed": 7,
+    "changed_hand_delta_sum": -414.0,
+    "all_hand_delta_sum": -25387.0,
+    "change_types": {
+      "fold_to_call": 7
+    }
+  },
+  "change_groups": {
+    "fold_to_call|flop|to_call=149": {
+      "n": 1,
+      "mean_hand_delta": -249.0,
+      "sum_hand_delta": -249.0,
+      "min_hand_delta": -249.0,
+      "max_hand_delta": -249.0
+    },
+    "fold_to_call|flop|to_call=101": {
+      "n": 3,
+      "mean_hand_delta": -67.0,
+      "sum_hand_delta": -201.0,
+      "min_hand_delta": -201.0,
+      "max_hand_delta": 201.0
+    },
+    "fold_to_call|preflop|to_call=0": {
+      "n": 1,
+      "mean_hand_delta": -100.0,
+      "sum_hand_delta": -100.0,
+      "min_hand_delta": -100.0,
+      "max_hand_delta": -100.0
+    },
+    "fold_to_call|preflop|to_call=50": {
+      "n": 1,
+      "mean_hand_delta": -100.0,
+      "sum_hand_delta": -100.0,
+      "min_hand_delta": -100.0,
+      "max_hand_delta": -100.0
+    },
+    "fold_to_call|flop|to_call=136": {
+      "n": 1,
+      "mean_hand_delta": 236.0,
+      "sum_hand_delta": 236.0,
+      "min_hand_delta": 236.0,
+      "max_hand_delta": 236.0
+    }
+  }
+}
