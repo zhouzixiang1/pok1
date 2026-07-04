@@ -200,6 +200,18 @@
   while many blocked turn/preflop candidates were dangerous. v023 tests only
   the smallest safe-looking resize expansion.
 
+## v024_v254_advantage_gate_h96_254
+
+- Base: `v022_v254_sharded_h96_raise_only254`.
+- Change: adds a second JSON-exported MLP, `advantage_weights.json`, that
+  vetoes policy-model suggestions unless a trace-trained binary gate predicts
+  positive local hand delta. The gate only filters neural advice; it does not
+  create actions and every surviving action still passes the normal sanitizer.
+- Rationale: v022 trace showed actual gated raises were positive while
+  aggregate match results were noisy. v024 tests whether a small advantage
+  classifier trained from v019/v022 trace candidates can reduce harmful
+  interventions.
+
 ## Round 1 Notes
 
 - Training data: `teacher214_round1.jsonl`, 272 teacher decisions from
@@ -488,3 +500,30 @@
   but still not a statistically clear edge. The next useful step is not more
   gate widening; it is a real value/advantage target that can separate positive
   neural raises from outlier-driven match results.
+
+## Round 10 Notes
+
+- Added `collect_advantage_trace_data.py` and `train_advantage_gate.py`.
+  These convert existing trace candidate/change rows into a 70-feature binary
+  dataset and train a small JSON-exported advantage gate. This was the first
+  attempt to move from whole-hand outcome weighting toward a local action
+  advantage filter.
+- `advisor_advantage_v019_v022_trace.jsonl`: 250 samples from `v019` and
+  `v022` traces, with 179 positive and 71 negative examples. This dataset is
+  intentionally small and diagnostic; it is not enough to claim a robust value
+  model.
+- `advantage_gate_v019_v022_h32_metrics.json`: 32-hidden-unit binary MLP,
+  validation accuracy `0.720`, average predicted good probability `0.600`,
+  trained on CUDA with batch size `64`.
+- `v024` advisor analysis, 2 ordinary games vs `claude_v279`:
+  `final_changed=3/155`, all `to_raise`. The gate made the neural layer much
+  more conservative than v022.
+- `v024` paired common-deck 4-pair result vs `claude_v254`, both against
+  `claude_v279`: deltas `[-5372, -22030, -10380, -6340]`, mean
+  `-5515.2 chips/70`, 95 percent CI `[-9262.3, -1768.2]`. This significantly
+  rejects the trace-derived binary gate.
+- Current status: v024 is a useful negative result. A binary classifier trained
+  on trace rows still inherits whole-hand outcome noise and can veto helpful
+  neural raises. The next serious advantage attempt should collect explicit
+  single-decision counterfactual rollouts on the same deck, then train from
+  action delta rather than from observed hand delta.

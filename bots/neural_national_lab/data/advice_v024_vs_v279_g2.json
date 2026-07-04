@@ -1,0 +1,270 @@
+{
+  "version": "bots/neural_national_lab/versions/v024_v254_advantage_gate_h96_254/main.py",
+  "opponent": "bots/claude_v279/main.py",
+  "games": 2,
+  "rows": [
+    {
+      "decisions": 46,
+      "raw_changed": 0,
+      "final_changed": 0,
+      "actual_mismatch": 4,
+      "change_types": {},
+      "top_labels": {
+        "call": 13,
+        "raise_half": 3,
+        "fold": 4,
+        "raise_pot": 7,
+        "raise_2pot": 18,
+        "allin": 1
+      },
+      "rule_final": {
+        "0": 10,
+        "-1": 3,
+        "101": 1,
+        "177": 1,
+        "873": 1,
+        "9818": 1,
+        "604": 12,
+        "655": 1,
+        "550": 4,
+        "566": 2,
+        "587": 2,
+        "575": 1,
+        "567": 1,
+        "606": 1,
+        "605": 1,
+        "570": 1,
+        "578": 1,
+        "563": 1,
+        "-2": 1
+      },
+      "rule_fold_top_call": 1,
+      "rule_fold_top_call_conf_ge_070": 1,
+      "rule_fold_top_call_conf_ge_080": 0,
+      "rule_fold_top_call_conf_ge_090": 0,
+      "max_call_conf_on_rule_fold": 0.7990396650050599,
+      "examples": [],
+      "fold_call_candidates": [
+        {
+          "decision_index": 2,
+          "hand": 0,
+          "to_call": 101,
+          "pot": 301,
+          "call_conf": 0.7990396650050599,
+          "top_conf": 0.7990396650050599
+        }
+      ],
+      "idx": 0,
+      "winner": 1,
+      "bot0_chips": -8075.0,
+      "bot1_chips": 8075.0,
+      "wins": [
+        0,
+        1
+      ],
+      "draws": 0,
+      "played": 1
+    },
+    {
+      "decisions": 109,
+      "raw_changed": 3,
+      "final_changed": 3,
+      "actual_mismatch": 8,
+      "change_types": {
+        "to_raise": 3
+      },
+      "top_labels": {
+        "raise_pot": 19,
+        "fold": 31,
+        "call": 34,
+        "raise_half": 21,
+        "raise_2pot": 3,
+        "allin": 1
+      },
+      "rule_final": {
+        "201": 11,
+        "1225": 1,
+        "-1": 39,
+        "0": 50,
+        "122": 1,
+        "110": 1,
+        "187": 1,
+        "221": 1,
+        "101": 1,
+        "120": 1,
+        "760": 1,
+        "8707": 1
+      },
+      "rule_fold_top_call": 5,
+      "rule_fold_top_call_conf_ge_070": 1,
+      "rule_fold_top_call_conf_ge_080": 0,
+      "rule_fold_top_call_conf_ge_090": 0,
+      "max_call_conf_on_rule_fold": 0.7600143363671941,
+      "examples": [
+        {
+          "decision_index": 19,
+          "hand": 10,
+          "public_cards": [
+            21,
+            30,
+            38
+          ],
+          "to_call": 0,
+          "pot": 200,
+          "rule_action": 0,
+          "base_final": 0,
+          "advised_raw": 101,
+          "advised_final": 101,
+          "actual": 101,
+          "kind": "to_raise",
+          "top_label": "raise_half",
+          "top_conf": 0.9658076524633453
+        },
+        {
+          "decision_index": 48,
+          "hand": 22,
+          "public_cards": [
+            12,
+            34,
+            45
+          ],
+          "to_call": 0,
+          "pot": 200,
+          "rule_action": 0,
+          "base_final": 0,
+          "advised_raw": 101,
+          "advised_final": 101,
+          "actual": 101,
+          "kind": "to_raise",
+          "top_label": "raise_half",
+          "top_conf": 0.9207183318212553
+        },
+        {
+          "decision_index": 73,
+          "hand": 40,
+          "public_cards": [
+            50,
+            19,
+            13
+          ],
+          "to_call": 0,
+          "pot": 200,
+          "rule_action": 0,
+          "base_final": 0,
+          "advised_raw": 101,
+          "advised_final": 101,
+          "actual": 101,
+          "kind": "to_raise",
+          "top_label": "raise_half",
+          "top_conf": 0.91531750996315
+        }
+      ],
+      "fold_call_candidates": [
+        {
+          "decision_index": 91,
+          "hand": 51,
+          "to_call": 50,
+          "pot": 150,
+          "call_conf": 0.7600143363671941,
+          "top_conf": 0.7600143363671941
+        },
+        {
+          "decision_index": 94,
+          "hand": 54,
+          "to_call": 0,
+          "pot": 150,
+          "call_conf": 0.6812771994852133,
+          "top_conf": 0.6812771994852133
+        },
+        {
+          "decision_index": 96,
+          "hand": 56,
+          "to_call": 0,
+          "pot": 150,
+          "call_conf": 0.4229426699997511,
+          "top_conf": 0.4229426699997511
+        },
+        {
+          "decision_index": 98,
+          "hand": 58,
+          "to_call": 0,
+          "pot": 150,
+          "call_conf": 0.5052093699956522,
+          "top_conf": 0.5052093699956522
+        },
+        {
+          "decision_index": 100,
+          "hand": 60,
+          "to_call": 0,
+          "pot": 150,
+          "call_conf": 0.5896204818273784,
+          "top_conf": 0.5896204818273784
+        }
+      ],
+      "idx": 1,
+      "winner": 0,
+      "bot0_chips": 6578.0,
+      "bot1_chips": -6578.0,
+      "wins": [
+        1,
+        0
+      ],
+      "draws": 0,
+      "played": 1
+    }
+  ],
+  "total": {
+    "decisions": 155,
+    "raw_changed": 3,
+    "final_changed": 3,
+    "actual_mismatch": 12,
+    "change_types": {
+      "to_raise": 3
+    },
+    "top_labels": {
+      "call": 47,
+      "raise_half": 24,
+      "fold": 35,
+      "raise_pot": 26,
+      "raise_2pot": 21,
+      "allin": 2
+    },
+    "rule_final": {
+      "0": 60,
+      "-1": 42,
+      "101": 2,
+      "177": 1,
+      "873": 1,
+      "9818": 1,
+      "604": 12,
+      "655": 1,
+      "550": 4,
+      "566": 2,
+      "587": 2,
+      "575": 1,
+      "567": 1,
+      "606": 1,
+      "605": 1,
+      "570": 1,
+      "578": 1,
+      "563": 1,
+      "-2": 1,
+      "201": 11,
+      "1225": 1,
+      "122": 1,
+      "110": 1,
+      "187": 1,
+      "221": 1,
+      "120": 1,
+      "760": 1,
+      "8707": 1
+    },
+    "rule_fold_top_call": 6,
+    "rule_fold_top_call_conf_ge_070": 2,
+    "rule_fold_top_call_conf_ge_080": 0,
+    "rule_fold_top_call_conf_ge_090": 0,
+    "max_call_conf_on_rule_fold": 0.7990396650050599,
+    "raw_change_rate": 0.01935483870967742,
+    "final_change_rate": 0.01935483870967742
+  }
+}

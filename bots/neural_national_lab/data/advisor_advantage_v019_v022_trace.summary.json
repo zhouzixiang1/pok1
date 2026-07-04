@@ -1,0 +1,13 @@
+{
+  "samples": 250,
+  "positive": 179,
+  "negative": 71,
+  "positive_rate": 0.716,
+  "feature_dim": 70,
+  "contract": "blueprint_policy_v1",
+  "target": "advisor_candidate_positive_delta",
+  "traces": [
+    "bots/neural_national_lab/data/trace_v019_vs_v279_g2.json",
+    "bots/neural_national_lab/data/trace_v022_vs_v279_g4.json"
+  ]
+}
