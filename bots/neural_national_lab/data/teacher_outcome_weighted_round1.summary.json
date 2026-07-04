@@ -1,0 +1,26 @@
+{
+  "samples": 919,
+  "pair_counts": {
+    "claude_v254 vs claude_v279": 218,
+    "claude_v254 vs claude_v214": 131,
+    "claude_v279 vs claude_v254": 286,
+    "claude_v279 vs claude_v214": 284
+  },
+  "label_counts": {
+    "fold": 242,
+    "call": 437,
+    "raise_half": 71,
+    "raise_pot": 93,
+    "raise_2pot": 60,
+    "allin": 16
+  },
+  "weighted_label_counts": {
+    "fold": 51.08892378851746,
+    "call": 275.3516135710081,
+    "raise_half": 86.32192320333243,
+    "raise_pot": 108.78138332055705,
+    "raise_2pot": 70.86000000000008,
+    "allin": 6.958316326530612
+  },
+  "contract": "blueprint_policy_v1"
+}

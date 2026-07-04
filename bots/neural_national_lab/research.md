@@ -85,3 +85,35 @@ Practical takeaways for this repo:
 - Next neural work should generate training rows with outcome or advantage
   targets, especially for raise/no-raise and call/fold counterfactuals, then
   score every candidate against the rule base on common normal/mirrored decks.
+
+## Outcome-Weighted Findings
+
+- `collect_outcome_teacher_data.py` is the first step away from plain
+  imitation. It still records the teacher action label, but weights each row by
+  the teacher's final hand chip outcome. This gives the tiny MLP a weak
+  advantage-style signal while preserving the fixed legal-mask contract.
+- The first outcome-weighted model was useful only under narrow gates. v019 had
+  a positive 4-pair paired mean but still crossed zero; v020 significantly lost
+  when turn and pot-resize raises were allowed; v021 recovered a positive median
+  by allowing only preflop/flop free-action raises.
+- This supports the literature direction from Deep CFR, Single Deep CFR, and
+  ReBeL: scale the target quality first. More data with legal masks,
+  outcome/advantage targets, and common-deck paired evaluation is more valuable
+  than making the current classifier wider.
+- GPU training becomes worthwhile after the data pipeline can produce at least
+  tens of thousands of rows with held-out paired validation. The runtime should
+  remain small and protocol-safe: train larger value/advantage models offline,
+  then distill or export compact weights for the national-native bot.
+
+## Scale-Up Gate
+
+- Immediate scale step: collect 50k-200k decisions from multiple teachers,
+  opponents, and seeds; keep the six-action abstraction, legal masks, sample
+  weights, and JSON export.
+- Promotion gate before larger models: a candidate should stay positive over
+  at least 20 common-deck mirror pairs against its rule base, with median delta
+  above zero and no protocol/illegal-action regression.
+- Larger-model step: replace the pure policy classifier with a value or
+  advantage head trained from outcome/self-play data. Deep-CFR-style regret
+  replay is the preferred direction; direct LLM calls during play are not
+  suitable for the 60-second national protocol.
