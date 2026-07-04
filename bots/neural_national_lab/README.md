@@ -293,6 +293,23 @@ pipeline and multicore sampler, not as stronger bots. The next attempt needs
 more isolated probes around the newly exposed negative outliers, not a lower
 threshold on the same 22-row dataset.
 
+`v050_v254_cf_isolated_aux_veto_p033_h8_b040` keeps the v043 hand-strength
+gate and adds the p33 isolated model only as a conservative auxiliary veto:
+block only when the original gate is very confident and the p33 model scores
+the action below `0.40`. The v049 64-pair failure was traced to missing v043
+rescue raises on exact seeds, especially pair42 and pair51; a replacement
+isolated gate blocked those raises instead of repairing bad extra actions.
+The follow-up hand-scope shard over pairs42..52 added 11 probes and looked
+positive (`+99.91`, 95 percent CI `[29.89, 169.93]`), but the match-scope
+rerun on the same area was not significant (`+14.78`, 95 percent CI
+`[-252.71, 282.27]`). The p33 and p42 auxiliary datasets both trained on CUDA
+but had weak validation accuracy (`0.57` and `0.56`). v050 preserved the traced
+pair42/pair51 rescue actions and avoided v049's catastrophic paths, but its
+64-pair evaluation versus v043 was essentially neutral: `-0.91` chips per
+70 hands with 95 percent CI `[-2.48, 0.67]`. Treat v050 as a safety experiment,
+not a promotion. The next useful step is trajectory-level credit assignment,
+or targeted match-scope branch data, before changing the runtime gate again.
+
 Recent literature and open-source scans point to the next useful local
 direction:
 
