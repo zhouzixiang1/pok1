@@ -1,0 +1,69 @@
+{
+  "samples": 5608,
+  "jobs": 21,
+  "completed_jobs": 21,
+  "shards": 3,
+  "games_per_shard": 1,
+  "workers": 4,
+  "mode": "mirror",
+  "teachers": [
+    "bots/claude_v254/main.py",
+    "bots/claude_v279/main.py",
+    "bots/neural_national_lab/versions/v021_v254_outcome_raise_only254/main.py"
+  ],
+  "opponents": [
+    "bots/claude_v279/main.py",
+    "bots/claude_v254/main.py",
+    "bots/claude_v214/main.py"
+  ],
+  "pair_counts": {
+    "claude_v254 vs claude_v279": 832,
+    "claude_v254 vs claude_v214": 894,
+    "claude_v279 vs claude_v254": 760,
+    "claude_v279 vs claude_v214": 752,
+    "v021_v254_outcome_raise_only254 vs claude_v279": 769,
+    "v021_v254_outcome_raise_only254 vs claude_v254": 828,
+    "v021_v254_outcome_raise_only254 vs claude_v214": 773
+  },
+  "shard_counts": {
+    "claude_v254 vs claude_v279 shard 1": 267,
+    "claude_v254 vs claude_v279 shard 0": 274,
+    "claude_v254 vs claude_v279 shard 2": 291,
+    "claude_v254 vs claude_v214 shard 0": 304,
+    "claude_v279 vs claude_v254 shard 0": 228,
+    "claude_v279 vs claude_v254 shard 1": 263,
+    "claude_v254 vs claude_v214 shard 1": 294,
+    "claude_v254 vs claude_v214 shard 2": 296,
+    "claude_v279 vs claude_v214 shard 0": 195,
+    "claude_v279 vs claude_v254 shard 2": 269,
+    "claude_v279 vs claude_v214 shard 2": 266,
+    "claude_v279 vs claude_v214 shard 1": 291,
+    "v021_v254_outcome_raise_only254 vs claude_v279 shard 0": 276,
+    "v021_v254_outcome_raise_only254 vs claude_v279 shard 1": 259,
+    "v021_v254_outcome_raise_only254 vs claude_v279 shard 2": 234,
+    "v021_v254_outcome_raise_only254 vs claude_v254 shard 0": 300,
+    "v021_v254_outcome_raise_only254 vs claude_v254 shard 2": 214,
+    "v021_v254_outcome_raise_only254 vs claude_v214 shard 0": 227,
+    "v021_v254_outcome_raise_only254 vs claude_v254 shard 1": 314,
+    "v021_v254_outcome_raise_only254 vs claude_v214 shard 1": 236,
+    "v021_v254_outcome_raise_only254 vs claude_v214 shard 2": 310
+  },
+  "label_counts": {
+    "fold": 1394,
+    "call": 2789,
+    "raise_half": 652,
+    "raise_pot": 613,
+    "raise_2pot": 101,
+    "allin": 59
+  },
+  "weighted_label_counts": {
+    "fold": 288.56213412350957,
+    "call": 1848.541978942072,
+    "raise_half": 769.832115908716,
+    "raise_pot": 755.7295352099576,
+    "raise_2pot": 125.89945981214123,
+    "allin": 53.780581263127054
+  },
+  "contract": "blueprint_policy_v1",
+  "target": "teacher_action_outcome_weighted_sharded"
+}
