@@ -1,0 +1,12 @@
+{
+  "input": "bots/neural_national_lab/data/advantage_counterfactual_v025_flop_botrng_p266_nonneg_group_pair03_trace_pair11.jsonl",
+  "rows": 266,
+  "input_dim": 88,
+  "base_dim": 70,
+  "extra_dim": 18,
+  "positive": 234,
+  "negative": 32,
+  "positive_rate": 0.8796992481203008,
+  "missing_context": 0,
+  "extra_trace_changes": 0
+}
