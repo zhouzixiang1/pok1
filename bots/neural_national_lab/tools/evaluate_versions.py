@@ -25,6 +25,35 @@ def _write_output(rows: list[dict], output: Path | None) -> None:
     out.write_text(json.dumps(rows, indent=2), encoding="utf-8")
 
 
+def _net_stats(values: list[float], hands_per_unit: int) -> dict[str, float | int | bool | None]:
+    n = len(values)
+    mean = statistics.mean(values) if values else 0.0
+    median = statistics.median(values) if values else 0.0
+    stddev = statistics.stdev(values) if n >= 2 else 0.0
+    stderr = stddev / (n ** 0.5) if n >= 2 else 0.0
+    ci_delta = 1.96 * stderr if n >= 2 else 0.0
+    per_70_scale = 70.0 / max(1, hands_per_unit)
+    return {
+        "samples": n,
+        "mean_net": mean,
+        "median_net": median,
+        "stddev_net": stddev,
+        "stderr_net": stderr,
+        "ci95_low": mean - ci_delta if n >= 2 else None,
+        "ci95_high": mean + ci_delta if n >= 2 else None,
+        "mean_per_hand": mean / max(1, hands_per_unit),
+        "mean_per_70_hands": mean * per_70_scale,
+        "ci95_low_per_70_hands": (mean - ci_delta) * per_70_scale if n >= 2 else None,
+        "ci95_high_per_70_hands": (mean + ci_delta) * per_70_scale if n >= 2 else None,
+        "significant_positive_95": bool(n >= 2 and mean - ci_delta > 0.0),
+        "significant_negative_95": bool(n >= 2 and mean + ci_delta < 0.0),
+    }
+
+
+def _update_net_stats(row: dict, hands_per_unit: int) -> None:
+    row.update(_net_stats(row["net_chips"], hands_per_unit))
+
+
 def _battle_row(v_main: Path, o_main: Path, games: int, rows: list[dict], output: Path | None) -> None:
     row = {
         "mode": "battle",
@@ -35,8 +64,7 @@ def _battle_row(v_main: Path, o_main: Path, games: int, rows: list[dict], output
         "wins": [0, 0],
         "draws": 0,
         "net_chips": [],
-        "mean_net": 0.0,
-        "median_net": 0.0,
+        **_net_stats([], 70),
         "per_game": [],
     }
     rows.append(row)
@@ -59,12 +87,13 @@ def _battle_row(v_main: Path, o_main: Path, games: int, rows: list[dict], output
                     "bot1_chips": game_log.get("bot1_chips"),
                 }
             )
-        row["mean_net"] = statistics.mean(row["net_chips"]) if row["net_chips"] else 0.0
-        row["median_net"] = statistics.median(row["net_chips"]) if row["net_chips"] else 0.0
+        _update_net_stats(row, 70)
         _write_output(rows, output)
         print(
             f"{row['version']} vs {row['opponent']} game {game_idx + 1}/{games}: "
-            f"mean={row['mean_net']:.1f} wins={row['wins']} nets={row['net_chips']}"
+            f"mean70={row['mean_per_70_hands']:.1f} ci70="
+            f"[{row['ci95_low_per_70_hands']}, {row['ci95_high_per_70_hands']}] "
+            f"wins={row['wins']} nets={row['net_chips']}"
         )
 
 
@@ -78,8 +107,7 @@ def _mirror_row(v_main: Path, o_main: Path, games: int, rows: list[dict], output
         "wins": [0, 0],
         "draws": 0,
         "net_chips": [],
-        "mean_net": 0.0,
-        "median_net": 0.0,
+        **_net_stats([], 140),
     }
     rows.append(row)
     _write_output(rows, output)
@@ -90,12 +118,13 @@ def _mirror_row(v_main: Path, o_main: Path, games: int, rows: list[dict], output
         row["wins"][1] += wins[1]
         row["draws"] += draws
         row["net_chips"].extend(float(x) for x in nets)
-        row["mean_net"] = statistics.mean(row["net_chips"]) if row["net_chips"] else 0.0
-        row["median_net"] = statistics.median(row["net_chips"]) if row["net_chips"] else 0.0
+        _update_net_stats(row, 140)
         _write_output(rows, output)
         print(
             f"{row['version']} vs {row['opponent']} mirror {game_idx + 1}/{games}: "
-            f"mean={row['mean_net']:.1f} wins={row['wins']} nets={row['net_chips']}"
+            f"mean70={row['mean_per_70_hands']:.1f} ci70="
+            f"[{row['ci95_low_per_70_hands']}, {row['ci95_high_per_70_hands']}] "
+            f"wins={row['wins']} nets={row['net_chips']}"
         )
 
 

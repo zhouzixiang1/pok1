@@ -1,0 +1,35 @@
+[
+  {
+    "mode": "mirror",
+    "version": "bots/claude_v254/main.py",
+    "opponent": "bots/claude_v279/main.py",
+    "games": 6,
+    "played": 6,
+    "wins": [
+      4,
+      2
+    ],
+    "draws": 0,
+    "net_chips": [
+      -1459.0,
+      8208.0,
+      -2187.0,
+      631.0,
+      132.0,
+      4963.0
+    ],
+    "samples": 6,
+    "mean_net": 1714.6666666666667,
+    "median_net": 381.5,
+    "stddev_net": 4042.013788530003,
+    "stderr_net": 1650.1452191987362,
+    "ci95_low": -1519.6179629628562,
+    "ci95_high": 4948.95129629619,
+    "mean_per_hand": 12.247619047619049,
+    "mean_per_70_hands": 857.3333333333334,
+    "ci95_low_per_70_hands": -759.8089814814281,
+    "ci95_high_per_70_hands": 2474.475648148095,
+    "significant_positive_95": false,
+    "significant_negative_95": false
+  }
+]

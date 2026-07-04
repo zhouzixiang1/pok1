@@ -84,6 +84,17 @@
   `to_call=128`, `pot=328`, but the ratio was about `0.281` and missed the
   previous threshold by less than one basis point.
 
+## v011_v254_wide_call_rescue254
+
+- Base: `v010_v254_active_rescue254`.
+- Change: keeps the same v254 rule base and teacher254 MLP, but widens paid
+  fold-to-call rescue to `call_conf >= 0.78`, `max_call_chips <= 500`,
+  `max_call_ratio <= 0.30`, and `max_call_pot_ratio <= 0.07`.
+- Rationale: v010's mirrored result was negative and its advisor analysis
+  showed only `1/375` final interventions. v011 deliberately tests a more
+  active neural-call prior while still blocking raises, all-ins, and neural
+  folds.
+
 ## Round 1 Notes
 
 - Training data: `teacher214_round1.jsonl`, 272 teacher decisions from
@@ -162,3 +173,36 @@
   It has actual advisor changes plus positive small-sample results against both
   `claude_v279` and `claude_v254`; next proof step is larger and mirrored
   batches.
+
+## Round 4 Notes
+
+- `evaluate_versions.py` now reports sample count, standard deviation, standard
+  error, 95 percent CI, and normalized `mean_per_70_hands`; mirror rows report
+  mirror-pair net chips but normalize to one 70-hand match for comparison.
+- Literature note updated with RL-CFR and Deep Predictive Discounted CFR:
+  next training work should treat raise buckets/action abstraction and
+  regret/advantage targets as learnable, not just imitate teacher actions.
+- `v010_v254_active_rescue254` vs `claude_v279`, mirror 10 pairs:
+  `[3096, -10632, 69, -1904, -3577, -17646, -944, 6624, -133, 7435]`.
+  Mean per 70 hands: `-880.6`, 95 percent CI `[-3235.0, 1473.8]`, record
+  `4-6`. This invalidates the earlier ordinary 3-game positive sample as
+  insufficient evidence.
+- `claude_v254` vs `claude_v279`, mirror 6 pairs:
+  `[-1459, 8208, -2187, 631, 132, 4963]`. Mean per 70 hands: `857.3`,
+  95 percent CI `[-759.8, 2474.5]`, record `4-2`. The v254 base remains a
+  stronger reference than v010 in this short mirrored sample.
+- `v010_v254_active_rescue254` advisor analysis, 3 ordinary games vs
+  `claude_v279`: `final_changed=1/375`, type `fold_to_call`; this is too
+  conservative to materially affect play.
+- `v011_v254_wide_call_rescue254` advisor analysis, 3 ordinary games vs
+  `claude_v279`: `final_changed=26/314`, all `fold_to_call`. The wider gate
+  successfully makes the neural module active.
+- `v011_v254_wide_call_rescue254` vs `claude_v279`, ordinary battle 3 games:
+  `[6298, -1334, -40]`, mean `1641.3`, record `1-2`.
+- `v011_v254_wide_call_rescue254` vs `claude_v279`, mirror 6 pairs:
+  `[-3183, 58, -3795, 3418, 18744, -6860]`. Mean per 70 hands: `698.5`,
+  95 percent CI `[-2981.0, 4378.0]`, record `3-3`.
+- Current status: v011 is the best active neural-advisor variant by mirrored
+  mean, but it is not statistically significant and does not yet prove an edge
+  over the v254 base. Next step is common-deck paired evaluation and a trainer
+  that learns action-bucket/regret targets rather than only a call-rescue prior.

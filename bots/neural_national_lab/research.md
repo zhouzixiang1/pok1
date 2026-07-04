@@ -5,8 +5,15 @@
 - Deep CFR / Single Deep CFR: neural approximators replace tabular regret and
   average strategy. Lesson: keep data collection, training, and runtime export
   separate.
+- Deep Predictive Discounted CFR (2025): neural CFR can approximate stronger
+  discounted/clipped regret updates with variance-reduced advantage samples.
+  Lesson: the next trainer should save advantage/regret targets, not only
+  teacher action labels.
 - ReBeL: combines self-play RL with public-belief search. Lesson: range/belief
   features are more useful than calling an LLM during play.
+- RL-CFR (2024): learns action abstraction for HUNL and reports gains over
+  fixed-abstraction baselines. Lesson: raise buckets should become trainable
+  outputs, then be translated through the national raise-to-total sanitizer.
 - RLCard: no-limit Hold'em uses a small action abstraction: fold, check/call,
   half-pot raise, pot raise, all-in. This is a practical first policy head.
 - `noambrown/poker_solver`: useful reference for a later river-only CFR
