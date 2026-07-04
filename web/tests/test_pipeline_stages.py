@@ -1911,6 +1911,109 @@ class TestWorkerFailureCircuitBreaker:
         assert skipper(mixed_task) == ""
         assert "size" in skipper(size_only_task)
 
+    def test_quality_rework_skipper_skips_cleared_protected_contract_task(self, tmp_path, monkeypatch):
+        """A stale protected_contract repair must not force a no-op bot edit."""
+        import tool_gates
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        (next_dir / "main.py").write_text("print({'response': 0})\n", encoding="utf-8")
+        (next_dir / "opponent.py").write_text(
+            "import sys\nprint('allin selftest pass', file=sys.stderr)\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(tool_planning, "check_code_size", lambda *_a, **_k: (0, []))
+        monkeypatch.setattr(tool_gates, "detect_position_semantics_errors", lambda _dir: [])
+        monkeypatch.setattr(tool_planning, "_py_files_changed_between", lambda *_a, **_k: ["opponent.py"])
+
+        skipper = tool_planning._quality_rework_skipper(next_dir, source_dir, 11, 10)
+        task = {
+            "worker_id": "auto_quality_repair_gate_opponent_py",
+            "role": "Algorithmic Logic Architect",
+            "target_files": ["opponent.py"],
+            "repair_blocker": "quality_gate",
+            "repair_contract": {
+                "blocker": "quality_gate",
+                "file": "opponent.py",
+                "evidence": (
+                    "opponent.py: print() emits TCP action text "
+                    "'allin selftest pass'; output must be JSON response int"
+                ),
+            },
+            "worker_prompt": "Fix protected_contract evidence only.",
+        }
+
+        reason = skipper(task)
+
+        assert "protected_contract" in reason
+        assert "already cleared" in reason
+
+    def test_quality_rework_skipper_keeps_active_protected_contract_task(self, tmp_path, monkeypatch):
+        import tool_gates
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        (next_dir / "main.py").write_text("print({'response': 0})\n", encoding="utf-8")
+        (next_dir / "opponent.py").write_text(
+            "print('allin selftest pass')\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(tool_planning, "check_code_size", lambda *_a, **_k: (0, []))
+        monkeypatch.setattr(tool_gates, "detect_position_semantics_errors", lambda _dir: [])
+        monkeypatch.setattr(tool_planning, "_py_files_changed_between", lambda *_a, **_k: ["opponent.py"])
+
+        skipper = tool_planning._quality_rework_skipper(next_dir, source_dir, 11, 10)
+        task = {
+            "worker_id": "auto_quality_repair_gate_opponent_py",
+            "target_files": ["opponent.py"],
+            "repair_blocker": "quality_gate",
+            "worker_prompt": (
+                "opponent.py: print() emits TCP action text 'allin selftest pass'; "
+                "output must be JSON response int"
+            ),
+        }
+
+        assert skipper(task) == ""
+
+    def test_quality_rework_skipper_skips_cleared_reachability_task(self, tmp_path, monkeypatch):
+        import tool_gates
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        (source_dir / "reachability_test.py").write_text("def existing():\n    return 1\n", encoding="utf-8")
+        (next_dir / "reachability_test.py").write_text("def existing():\n    return 1\n", encoding="utf-8")
+
+        monkeypatch.setattr(tool_planning, "check_code_size", lambda *_a, **_k: (0, []))
+        monkeypatch.setattr(tool_gates, "detect_position_semantics_errors", lambda _dir: [])
+        monkeypatch.setattr(tool_planning, "_py_files_changed_between", lambda *_a, **_k: ["reachability_test.py"])
+
+        skipper = tool_planning._quality_rework_skipper(next_dir, source_dir, 11, 10)
+        task = {
+            "worker_id": "auto_quality_repair_gate_reachability_test_py",
+            "target_files": ["reachability_test.py"],
+            "repair_blocker": "quality_gate",
+            "worker_prompt": (
+                "reachability_test.py:L136: reachability - new top-level function "
+                "'_restore_boost' has no non-import references"
+            ),
+        }
+
+        reason = skipper(task)
+
+        assert "reachability" in reason
+        assert "already cleared" in reason
+
     def test_single_quality_rework_task_uses_skipper(self, tmp_path):
         """Single-task quality repair must not bypass the cheap cleared-blocker skipper."""
         import asyncio

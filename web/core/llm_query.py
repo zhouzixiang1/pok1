@@ -14,6 +14,7 @@ import re
 import shlex
 import threading
 import time
+from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from claude_agent_sdk import (
@@ -1141,6 +1142,30 @@ def _make_subagent_readonly_guard(role_name):
     except Exception:
         return None
 
+def _format_runtime_path_contract(project_root, allowed_write_dir=None):
+    """Return a prompt prefix that anchors sub-agents to the active checkout."""
+    root = str(Path(project_root).resolve())
+    lines = [
+        "# Runtime Path Contract",
+        f"- The active repository root for this run is `{root}`.",
+        "- Bash starts in that directory; prefer relative paths from this root.",
+        "- Do not use sibling or parent checkout absolute paths as edit targets.",
+    ]
+    if allowed_write_dir is not None:
+        scope = _normalize_allowed_write_scope(allowed_write_dir)
+        allowed = [
+            *(f"`{path}`" for path in scope.get("files", [])),
+            *(f"`{path}/`" for path in scope.get("dirs", [])),
+        ]
+        if allowed:
+            lines.append(
+                "- This call may write only inside the declared write scope: "
+                + ", ".join(allowed)
+                + "."
+            )
+    return "\n".join(lines) + "\n\n"
+
+
 # Serialize role-IO log rotation across threads/processes (mirrors
 # battle_experience._LOG_ROTATION_LOCK). Without this lock, two concurrent
 # appenders can both observe the file over the size cap and race the rename
@@ -2006,6 +2031,8 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
         await rate_limiter.wait_until_reset()
 
     from evolution_infra import PROJECT_ROOT, MAX_PROMPT_CHARS, _BLOCKED_MCP_TOOLS
+
+    prompt = _format_runtime_path_contract(PROJECT_ROOT, allowed_write_dir) + (prompt or "")
 
     # Build (path, content) pairs for context files
     context_parts = []

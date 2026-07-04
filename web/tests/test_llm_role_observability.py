@@ -12,6 +12,7 @@ from claude_agent_sdk.types import (
 )
 
 from core import llm_query
+from core import evolution_infra
 
 
 class _DummyUI:
@@ -97,6 +98,41 @@ def test_run_claude_query_emits_role_start_and_done(monkeypatch, tmp_path):
     assert done["output_chars"] == len("hello")
     assert done["input_tokens"] == 10
     assert done["output_tokens"] == 3
+
+
+def test_run_claude_query_injects_runtime_path_contract(monkeypatch, tmp_path):
+    seen = {}
+
+    async def fake_stream(full_prompt, options, log_file_path, ui, role_name):
+        seen["prompt"] = full_prompt
+        seen["cwd"] = options.cwd
+        return ["ok"], 0.0, {}
+
+    monkeypatch.setattr(llm_query, "_run_stream_with_signature_retry", fake_stream)
+    monkeypatch.setattr(llm_query, "_emit_llm_event", lambda *_args, **_kwargs: None)
+
+    log_file = tmp_path / "v282" / "logs" / "worker_io.txt"
+    log_file.parent.mkdir(parents=True)
+    target = evolution_infra.PROJECT_ROOT / "bots" / "claude_v282" / "opponent.py"
+
+    output, _cost, _usage = asyncio.run(
+        llm_query.run_claude_query(
+            "base prompt",
+            [],
+            _DummyUI(),
+            "worker",
+            str(log_file),
+            tools=["Read", "Edit"],
+            allowed_write_dir={"files": [target]},
+        )
+    )
+
+    assert output == "ok"
+    assert seen["cwd"] == str(evolution_infra.PROJECT_ROOT)
+    assert "# Runtime Path Contract" in seen["prompt"]
+    assert f"`{evolution_infra.PROJECT_ROOT}`" in seen["prompt"]
+    assert f"`{target}`" in seen["prompt"]
+    assert "base prompt" in seen["prompt"]
 
 
 def test_run_claude_query_emits_role_failed(monkeypatch, tmp_path):

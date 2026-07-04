@@ -2729,6 +2729,46 @@ def _task_matches_quality_blocker(task, blocker):
     return False
 
 
+def _task_quality_recheck_blockers(task):
+    """Return cheap static quality blockers this task is trying to repair.
+
+    Generic ``quality_gate`` tasks are only skippable when their evidence maps to
+    a checker we can rerun cheaply. Compile, smoke, decision, and national
+    acceptance repairs still run because this callback is intentionally not a
+    replacement for the full quality gate.
+    """
+    if not isinstance(task, dict):
+        return set()
+    contract = task.get("repair_contract") if isinstance(task.get("repair_contract"), dict) else {}
+    blocker = _normalize_repair_blocker(contract.get("blocker") or task.get("repair_blocker"))
+    text = " ".join([
+        str(task.get("worker_id", "")),
+        str(task.get("role", "")),
+        str(task.get("repair_blocker", "")),
+        str(contract.get("blocker", "")),
+        str(contract.get("evidence", "")),
+        " ".join(str(x) for x in task.get("target_files", []) or []),
+        str(task.get("worker_prompt", task.get("instruction", ""))),
+    ]).lower()
+
+    blockers = set()
+    if blocker == "file_size" or _task_matches_quality_blocker(task, "size"):
+        blockers.add("file_size")
+    if blocker == "position_semantics" or _task_matches_quality_blocker(task, "position_semantics"):
+        blockers.add("position_semantics")
+    if blocker == "national_native_contract" or _is_national_native_contract_failure_text(text):
+        blockers.add("national_native_contract")
+    if (
+        "protected_contract" in text
+        or "tcp action text" in text
+        or "output must be json response int" in text
+    ):
+        blockers.add("protected_contract")
+    if "reachability" in text:
+        blockers.add("reachability")
+    return blockers
+
+
 def _normalize_repair_blocker(value):
     text = str(value or "").strip().lower()
     if text in {"size", "file_size", "line_count", "loc"}:
@@ -2882,29 +2922,64 @@ def _quality_rework_skipper(next_dir, source_dir, next_v, source_v):
     """
     def remaining_blockers():
         blockers = {}
+        checked = set()
         try:
             _total, oversized = check_code_size(next_dir, source_dir=source_dir)
+            checked.add("file_size")
             if oversized:
-                blockers["size"] = {Path(name).name for name, _lines, _limit in oversized}
+                blockers["file_size"] = {Path(name).name for name, _lines, _limit in oversized}
         except Exception:
-            blockers["size"] = set()
+            pass
         try:
             from tool_gates import detect_position_semantics_errors
             position_errors = detect_position_semantics_errors(next_dir)
+            checked.add("position_semantics")
             if position_errors:
                 files = _extract_quality_failure_files(position_errors)
                 blockers["position_semantics"] = set(files)
         except Exception:
-            blockers["position_semantics"] = set()
-        return blockers
+            pass
+        try:
+            from protected_contracts import check_bot_protocol_contract
+            protected_errors = check_bot_protocol_contract(next_dir)
+            checked.add("protected_contract")
+            if protected_errors:
+                files = _extract_quality_failure_files(protected_errors)
+                blockers["protected_contract"] = set(files)
+        except Exception:
+            pass
+        try:
+            from national_native import check_native_contract
+            native_errors = check_native_contract(next_dir)
+            checked.add("national_native_contract")
+            if native_errors:
+                files = _extract_quality_failure_files(native_errors)
+                blockers["national_native_contract"] = set(files or ["national_bot.py"])
+        except Exception:
+            pass
+        try:
+            from code_verification import detect_new_function_reachability_warnings
+            changed = _py_files_changed_between(source_dir, next_dir)
+            reachability = detect_new_function_reachability_warnings(
+                source_dir,
+                next_dir,
+                changed_files=changed,
+            )
+            checked.add("reachability")
+            if reachability:
+                files = _extract_quality_failure_files(reachability)
+                blockers["reachability"] = set(files)
+        except Exception:
+            pass
+        return blockers, checked
 
     def skipper(task):
-        blockers = remaining_blockers()
-        task_blockers = {
-            blocker for blocker in ("size", "position_semantics")
-            if _task_matches_quality_blocker(task, blocker)
-        }
+        blockers, checked = remaining_blockers()
+        task_blockers = _task_quality_recheck_blockers(task)
         if not task_blockers:
+            return ""
+        unchecked = task_blockers - checked
+        if unchecked:
             return ""
         if not blockers:
             return "all cheap quality rework blockers already cleared by current code"
