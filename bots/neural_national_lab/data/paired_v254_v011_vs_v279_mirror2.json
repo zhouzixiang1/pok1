@@ -1,0 +1,145 @@
+{
+  "mode": "common_deck_mirror_pair",
+  "games": 2,
+  "baseline_label": "claude_v254",
+  "entries": {
+    "claude_v254": {
+      "path": "bots/claude_v254/main.py",
+      "opponent": "bots/claude_v279/main.py"
+    },
+    "v011_v254_wide_call_rescue254": {
+      "path": "bots/neural_national_lab/versions/v011_v254_wide_call_rescue254/main.py",
+      "opponent": "bots/claude_v279/main.py"
+    }
+  },
+  "pairs": [
+    {
+      "idx": 0,
+      "dealer": 1,
+      "net_chips": {
+        "claude_v254": -11104.0,
+        "v011_v254_wide_call_rescue254": -11003.0
+      },
+      "normal": {
+        "claude_v254": {
+          "winner": 1,
+          "bot0_chips": -11797.0,
+          "bot1_chips": 11797.0
+        },
+        "v011_v254_wide_call_rescue254": {
+          "winner": 1,
+          "bot0_chips": -11468.0,
+          "bot1_chips": 11468.0
+        }
+      },
+      "mirror": {
+        "claude_v254": {
+          "winner": 0,
+          "bot0_chips": 693.0,
+          "bot1_chips": -693.0
+        },
+        "v011_v254_wide_call_rescue254": {
+          "winner": 0,
+          "bot0_chips": 465.0,
+          "bot1_chips": -465.0
+        }
+      }
+    },
+    {
+      "idx": 1,
+      "dealer": 0,
+      "net_chips": {
+        "claude_v254": 1432.0,
+        "v011_v254_wide_call_rescue254": 1738.0
+      },
+      "normal": {
+        "claude_v254": {
+          "winner": 0,
+          "bot0_chips": 1537.0,
+          "bot1_chips": -1537.0
+        },
+        "v011_v254_wide_call_rescue254": {
+          "winner": 0,
+          "bot0_chips": 71.0,
+          "bot1_chips": -71.0
+        }
+      },
+      "mirror": {
+        "claude_v254": {
+          "winner": 1,
+          "bot0_chips": -105.0,
+          "bot1_chips": 105.0
+        },
+        "v011_v254_wide_call_rescue254": {
+          "winner": 0,
+          "bot0_chips": 1667.0,
+          "bot1_chips": -1667.0
+        }
+      }
+    }
+  ],
+  "results": {
+    "claude_v254": {
+      "path": "bots/claude_v254/main.py",
+      "opponent": "bots/claude_v279/main.py",
+      "net_chips": [
+        -11104.0,
+        1432.0
+      ],
+      "samples": 2,
+      "mean_net": -4836.0,
+      "median_net": -4836.0,
+      "stddev_net": 8864.29060895456,
+      "stderr_net": 6267.999999999999,
+      "ci95_low": -17121.28,
+      "ci95_high": 7449.279999999999,
+      "mean_per_70_hands": -2418.0,
+      "ci95_low_per_70_hands": -8560.64,
+      "ci95_high_per_70_hands": 3724.6399999999994,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    },
+    "v011_v254_wide_call_rescue254": {
+      "path": "bots/neural_national_lab/versions/v011_v254_wide_call_rescue254/main.py",
+      "opponent": "bots/claude_v279/main.py",
+      "net_chips": [
+        -11003.0,
+        1738.0
+      ],
+      "samples": 2,
+      "mean_net": -4632.5,
+      "median_net": -4632.5,
+      "stddev_net": 9009.247499097803,
+      "stderr_net": 6370.5,
+      "ci95_low": -17118.68,
+      "ci95_high": 7853.68,
+      "mean_per_70_hands": -2316.25,
+      "ci95_low_per_70_hands": -8559.34,
+      "ci95_high_per_70_hands": 3926.84,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  },
+  "paired_vs_baseline": {
+    "v011_v254_wide_call_rescue254": {
+      "baseline": "claude_v254",
+      "candidate": "v011_v254_wide_call_rescue254",
+      "delta_net_chips": [
+        101.0,
+        306.0
+      ],
+      "samples": 2,
+      "mean_net": 203.5,
+      "median_net": 203.5,
+      "stddev_net": 144.95689014324225,
+      "stderr_net": 102.5,
+      "ci95_low": 2.5999999999999943,
+      "ci95_high": 404.4,
+      "mean_per_70_hands": 101.75,
+      "ci95_low_per_70_hands": 1.2999999999999972,
+      "ci95_high_per_70_hands": 202.2,
+      "significant_positive_95": true,
+      "significant_negative_95": false
+    }
+  }
+}
