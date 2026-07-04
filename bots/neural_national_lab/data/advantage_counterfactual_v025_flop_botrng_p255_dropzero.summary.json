@@ -1,0 +1,18 @@
+{
+  "inputs": [
+    "bots/neural_national_lab/data/counterfactual_v025_flop_botrng_p64.json",
+    "bots/neural_national_lab/data/counterfactual_v025_pair11_botrng_focus.json",
+    "bots/neural_national_lab/data/counterfactual_v025_flop_botrng_p192.json"
+  ],
+  "scanned_probes": 255,
+  "skipped_probes": 101,
+  "rows": 154,
+  "input_dim": 70,
+  "positive": 129,
+  "negative": 25,
+  "positive_rate": 0.8376623376623377,
+  "zero_delta": 0,
+  "positive_threshold": 0.0,
+  "include_zero": false,
+  "mean_delta": 145.07142857142858
+}

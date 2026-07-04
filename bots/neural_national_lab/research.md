@@ -185,6 +185,14 @@ Practical takeaways for this repo:
   `0`). Scale data coverage now; postpone larger models until a candidate
   clears paired promotion with a positive median and a confidence interval
   above zero.
+- v032/v033/v034 show the next data-quality boundary. Drop-zero labels can
+  avoid some over-suppression but do not solve rare outliers. Targeted p257
+  repair fixed one v032 catastrophe, yet the repaired v034 still failed the
+  16-pair gate and exposed an interaction problem: several individually
+  positive flop raises can combine into a poor match path. The next useful data
+  collector should support grouped intervention sets or match-scope interaction
+  labels, then run them in parallel shards (`--workers 12` to `16` on this
+  32-thread machine) before training a larger model.
 
 ## Scale-Up Gate
 
@@ -199,7 +207,9 @@ Practical takeaways for this repo:
   paired outcomes. The v029 result narrows the next step further: collect
   disputed-gate counterfactuals from many outlier seeds, not just random
   accepted interventions. The v030 result means this is the only scale-up that
-  is currently justified.
+  is currently justified. The v034 result adds a stricter condition: include
+  grouped or match-scope interaction checks before trusting a larger single-
+  action advantage model.
 - Promotion gate before larger models: a candidate should stay positive over
   at least 64 common-deck mirror pairs against its rule base, with median delta
   above zero, no large negative bucket, and no protocol/illegal-action
