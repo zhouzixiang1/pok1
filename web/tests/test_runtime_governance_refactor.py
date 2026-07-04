@@ -1081,6 +1081,127 @@ def test_checkpoint_recovery_diagnostics_allows_workers_done_head_mismatch(tmp_p
     assert diag["target"]["exists"] is True
 
 
+def test_checkpoint_recovery_diagnostics_allows_same_head_branch_alias(tmp_path, monkeypatch):
+    import pipeline_recovery
+
+    monkeypatch.setenv("POK_FORCE_PIPELINE_RECOVERY_GUARD", "1")
+    (tmp_path / "bots" / "claude_v257").mkdir(parents=True)
+    checkpoint = {
+        "next_v": 257,
+        "source_v": 197,
+        "stage": "workers_done",
+        "repo_baseline": {"branch": "main", "head": "same123"},
+    }
+    snapshot = {"ok": True, "branch": "codex/refactor", "head": "same123"}
+
+    diag = pipeline_recovery.checkpoint_recovery_diagnostics(
+        checkpoint,
+        snapshot=snapshot,
+        project_root=tmp_path,
+    )
+
+    assert diag["recoverable"] is True
+    assert "repo_not_on_evolution_branch" not in diag["issues"]
+    assert "repo_baseline_branch_mismatch" not in diag["issues"]
+    assert "repo_current_branch_alias_resume" in diag["warnings"]
+    assert "repo_baseline_branch_alias_resume" in diag["warnings"]
+    assert diag["repo"]["current_branch_alias_allowed"] is True
+    assert diag["repo"]["baseline_branch_alias_allowed"] is True
+
+
+def test_checkpoint_recovery_diagnostics_blocks_verified_branch_alias(tmp_path, monkeypatch):
+    import pipeline_recovery
+
+    monkeypatch.setenv("POK_FORCE_PIPELINE_RECOVERY_GUARD", "1")
+    (tmp_path / "bots" / "claude_v257").mkdir(parents=True)
+    checkpoint = {
+        "next_v": 257,
+        "source_v": 197,
+        "stage": "verified",
+        "repo_baseline": {"branch": "main", "head": "same123"},
+    }
+    snapshot = {"ok": True, "branch": "codex/refactor", "head": "same123"}
+
+    diag = pipeline_recovery.checkpoint_recovery_diagnostics(
+        checkpoint,
+        snapshot=snapshot,
+        project_root=tmp_path,
+    )
+
+    assert diag["recoverable"] is False
+    assert "repo_not_on_evolution_branch" in diag["issues"]
+
+
+def test_checkpoint_recovery_diagnostics_allows_main_resume_from_alias_after_external_head_advance(
+    tmp_path,
+    monkeypatch,
+):
+    import pipeline_recovery
+
+    monkeypatch.setenv("POK_FORCE_PIPELINE_RECOVERY_GUARD", "1")
+    monkeypatch.setattr(
+        pipeline_recovery,
+        "changed_paths_between_heads",
+        lambda *_args: ["bots/neural_national_lab/data/run.json"],
+    )
+    (tmp_path / "bots" / "claude_v281").mkdir(parents=True)
+    checkpoint = {
+        "next_v": 281,
+        "source_v": 279,
+        "stage": "workers_done",
+        "repo_baseline": {"branch": "codex/neural-work", "head": "old123"},
+    }
+    snapshot = {"ok": True, "branch": "main...origin/main", "head": "new456"}
+
+    diag = pipeline_recovery.checkpoint_recovery_diagnostics(
+        checkpoint,
+        snapshot=snapshot,
+        project_root=tmp_path,
+    )
+
+    assert diag["recoverable"] is True
+    assert "repo_baseline_branch_mismatch" not in diag["issues"]
+    assert "repo_baseline_head_mismatch" not in diag["issues"]
+    assert "repo_baseline_branch_alias_resume" in diag["warnings"]
+    assert "repo_baseline_head_mismatch_gate_resume" in diag["warnings"]
+    assert diag["repo"]["baseline_branch_alias_allowed"] is True
+    assert diag["repo"]["baseline_head_mismatch_allowed"] is True
+    assert diag["repo"]["baseline_branch_alias_reason"] == "main_resume_external_head_drift"
+
+
+def test_checkpoint_recovery_diagnostics_blocks_main_resume_from_alias_after_critical_head_advance(
+    tmp_path,
+    monkeypatch,
+):
+    import pipeline_recovery
+
+    monkeypatch.setenv("POK_FORCE_PIPELINE_RECOVERY_GUARD", "1")
+    monkeypatch.setattr(
+        pipeline_recovery,
+        "changed_paths_between_heads",
+        lambda *_args: ["web/core/orchestrator.py"],
+    )
+    (tmp_path / "bots" / "claude_v281").mkdir(parents=True)
+    checkpoint = {
+        "next_v": 281,
+        "source_v": 279,
+        "stage": "workers_done",
+        "repo_baseline": {"branch": "codex/neural-work", "head": "old123"},
+    }
+    snapshot = {"ok": True, "branch": "main...origin/main", "head": "new456"}
+
+    diag = pipeline_recovery.checkpoint_recovery_diagnostics(
+        checkpoint,
+        snapshot=snapshot,
+        project_root=tmp_path,
+    )
+
+    assert diag["recoverable"] is False
+    assert "repo_baseline_branch_mismatch" in diag["issues"]
+    assert "repo_baseline_head_mismatch" in diag["issues"]
+    assert diag["repo"]["head_blocking_entries"] == ["?? web/core/orchestrator.py"]
+
+
 def test_checkpoint_recovery_diagnostics_allows_master_planned_head_mismatch(tmp_path):
     import pipeline_recovery
 
