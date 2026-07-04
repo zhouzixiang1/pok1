@@ -546,6 +546,16 @@ therefore has 9 rows: 4 positive, 2 zero, and 3 negative. This is still below
 the v053 training threshold, but it validates the intended pipeline: prefilter
 for action hits first, then spend full match-delta labeling only on hits.
 
+A second `claude_v279` prefilter range (`seed_base=2026072500`) requested 64
+pairs with the same 40-own-decision cap and found only 2 hits (`idx11`,
+`idx23`), a lower 3.1 percent hit rate. Their full labels were `-19` and
+`+1546`, bringing the merged dataset
+`divergence_value_v043_v052_prefilter_p011_seed2026071503_2026072500.jsonl`
+to 11 rows: 5 positive, 2 zero, and 4 negative. Continue collecting, but do
+not assume hit density is stable; the next batch should test either a wider
+own-decision cap or additional opponents to avoid spending many full scans on
+empty windows.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass
