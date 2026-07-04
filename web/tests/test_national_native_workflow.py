@@ -70,6 +70,28 @@ def test_native_entry_contract_allows_template_and_rejects_legacy_tokens(tmp_pat
     assert any("'response'" in err for err in errors)
 
 
+def test_native_entry_contract_rejects_sanitizer_exception_pass(tmp_path):
+    bot_dir = tmp_path / "BotA"
+    bot_dir.mkdir()
+    (bot_dir / "national_bot.py").write_text(
+        "import socket\n\n"
+        "class NativeNationalBot:\n"
+        "    def _strategy_action(self):\n"
+        "        action = 250\n"
+        "        try:\n"
+        "            action = self.sanitize_action(action, {}, 20000)\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "        return int(action)\n\n"
+        "# required wire tokens: raise fold call check allin\n",
+        encoding="utf-8",
+    )
+
+    errors = check_native_contract(bot_dir)
+
+    assert any("sanitizer failure" in err for err in errors)
+
+
 def test_candidate_hygiene_removes_completion_and_restores_native_entry(tmp_path):
     bot_dir = tmp_path / "BotA"
     _write_minimal_strategy_bot(bot_dir)
@@ -167,3 +189,38 @@ def test_native_tcp_pair_runs_without_adapter(tmp_path):
         row["adapter"]["actions_sent"] == 0
         for row in result["per_player"].values()
     )
+
+
+def test_native_tcp_pair_refreshes_unsafe_legacy_opponent_entry(tmp_path):
+    bot_a = tmp_path / "BotA"
+    bot_b = tmp_path / "BotB"
+    _write_minimal_strategy_bot(bot_a)
+    _write_minimal_strategy_bot(bot_b)
+    ensure_native_entry(bot_a)
+    (bot_b / "national_bot.py").write_text(
+        "import socket\n\n"
+        "class NativeNationalBot:\n"
+        "    def _strategy_action(self):\n"
+        "        action = 250\n"
+        "        try:\n"
+        "            action = self.sanitize_action(action, {}, 20000)\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "        return int(action)\n\n"
+        "# required wire tokens: raise fold call check allin\n",
+        encoding="utf-8",
+    )
+
+    result = asyncio.run(run_native_tcp_pair(
+        bot_a,
+        bot_b,
+        hands=2,
+        require_native_a=True,
+        require_native_b=False,
+        deck_seed_base=5678,
+        timeout_sec=30,
+    ))
+
+    assert result["execution_mode"] == "native_tcp"
+    assert result["hands_played"] == 2
+    assert result["passed_compliance"] is True
