@@ -1,0 +1,185 @@
+{
+  "mode": "action_divergence_prefilter_v1",
+  "baseline": {
+    "label": "v043_v254_cf_handstrength_veto_p268_h32_t050",
+    "path": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050/main.py"
+  },
+  "candidate": {
+    "label": "v052_v254_cf_value_veto_mix_p063_h32_bm050",
+    "path": "bots/neural_national_lab/versions/v052_v254_cf_value_veto_mix_p063_h32_bm050/main.py"
+  },
+  "opponents": [
+    {
+      "label": "claude_v279",
+      "path": "bots/claude_v279/main.py"
+    }
+  ],
+  "indices": [
+    21,
+    48
+  ],
+  "workers": 1,
+  "seed_base": 2026071503,
+  "seed_offset": 0,
+  "seed_stride": 1,
+  "opponent_seed_stride": 100000,
+  "bot_seed_base": 202609190000,
+  "bot_seed_stride": 10000,
+  "opponent_bot_seed_stride": 10000000,
+  "max_hands": 70,
+  "max_own_decisions_per_side": 0,
+  "stop_after_hits": 1,
+  "stop_pair_after_first_side": true,
+  "tasks_total": 2,
+  "tasks_submitted": 1,
+  "tasks_skipped": 1,
+  "early_stopped": true,
+  "pairs": [
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 21,
+      "seed": 2026071524,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202609610000,
+          202609610001
+        ],
+        "mirror": [
+          202609620000,
+          202609620001
+        ]
+      },
+      "has_divergence": true,
+      "normal": {
+        "status": "finished",
+        "has_divergence": false,
+        "steps": 257,
+        "compared_own_decisions": 124,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "diverged",
+        "has_divergence": true,
+        "steps": 17,
+        "compared_own_decisions": 8,
+        "first_divergence": {
+          "kind": "own_action",
+          "decision_index": 7,
+          "baseline_action": 101,
+          "candidate_action": 0,
+          "baseline_verdict": "OK",
+          "candidate_verdict": "OK",
+          "same_request": true,
+          "baseline_request": {
+            "hand": 3,
+            "round": null,
+            "my_id": 0,
+            "dealer_id": 0,
+            "stage": "flop",
+            "public_cards": [
+              33,
+              20,
+              18
+            ],
+            "my_cards": [
+              3,
+              37
+            ],
+            "pot": null,
+            "to_call": null,
+            "my_stage_bet": null,
+            "opponent_stage_bet": null,
+            "my_chips": 19900,
+            "opponent_allin": null,
+            "history_len": 3,
+            "last_history": [
+              {
+                "round": 0,
+                "player_id": 0,
+                "action": 0,
+                "action_type": "call"
+              },
+              {
+                "round": 0,
+                "player_id": 1,
+                "action": 0,
+                "action_type": "check"
+              },
+              {
+                "round": 1,
+                "player_id": 1,
+                "action": 0,
+                "action_type": "check"
+              }
+            ]
+          },
+          "candidate_request": {
+            "hand": 3,
+            "round": null,
+            "my_id": 0,
+            "dealer_id": 0,
+            "stage": "flop",
+            "public_cards": [
+              33,
+              20,
+              18
+            ],
+            "my_cards": [
+              3,
+              37
+            ],
+            "pot": null,
+            "to_call": null,
+            "my_stage_bet": null,
+            "opponent_stage_bet": null,
+            "my_chips": 19900,
+            "opponent_allin": null,
+            "history_len": 3,
+            "last_history": [
+              {
+                "round": 0,
+                "player_id": 0,
+                "action": 0,
+                "action_type": "call"
+              },
+              {
+                "round": 0,
+                "player_id": 1,
+                "action": 0,
+                "action_type": "check"
+              },
+              {
+                "round": 1,
+                "player_id": 1,
+                "action": 0,
+                "action_type": "check"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "summary": {
+    "pairs": 1,
+    "divergence_pairs": 1,
+    "divergence_rate": 1.0,
+    "side_hits": {
+      "normal": 0,
+      "mirror": 1
+    },
+    "side_statuses": {
+      "finished": 1,
+      "diverged": 1
+    },
+    "by_opponent": {
+      "claude_v279": {
+        "pairs": 1,
+        "divergence_pairs": 1
+      }
+    }
+  }
+}
