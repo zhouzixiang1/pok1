@@ -3632,18 +3632,39 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
     if blocker == "file_size":
         current = contract.get("current_lines")
         limit = contract.get("line_limit")
+        overage = None
         required = (
             f"Reduce `{filename}` to <= {limit} lines."
             if limit else f"Reduce `{filename}` enough to clear the file_size gate."
         )
         if current is not None and limit is not None:
+            try:
+                overage = int(current) - int(limit)
+            except (TypeError, ValueError):
+                overage = None
             required += f" Current gate reading: {current}L/{limit}L."
+        large_overage = ""
+        if overage is not None and overage >= 200:
+            target_removal = overage + 50
+            large_overage = (
+                "\nLarge-overage requirement:\n"
+                f"- This file is {overage} lines over the gate. Do not spend the attempt "
+                "on tiny comment trimming alone.\n"
+                f"- Before editing, identify a removal/consolidation plan worth at least "
+                f"{target_removal} lines so the final file has margin under the limit.\n"
+                "- Remove whole dead/debug/self-test blocks, duplicated historical notes, "
+                "and unreferenced helper wrappers first. If comments cannot meet the target, "
+                "delete or consolidate unreachable helper code verified by local grep/references.\n"
+                "- A script-based rewrite is acceptable when it writes only this assigned file; "
+                "run `wc -l` early and again before finishing.\n"
+            )
         prompt = (
             f"{preservation.format(next_v=next_v)}\n\n"
             f"Repair contract: file_size\n"
             f"- Target file: `{filename}`\n"
             f"- Evidence: {contract.get('evidence') or 'file_size gate failed'}\n"
             f"- Required outcome: {required}\n\n"
+            f"{large_overage}"
             "Required method:\n"
             f"- Edit `{filename}`. This file is listed in `must_change_files`; a no-op or editing only other files is failure.\n"
             "- Prefer deleting duplicated/dead comments, stale historical notes, or redundant helper wrappers before touching active decisions.\n"

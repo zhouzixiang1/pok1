@@ -95,12 +95,25 @@ _SUBAGENT_GIT_TAG_MUTATION_FLAGS = {
     "--force", "-d", "--delete",
 }
 _SUBAGENT_PYTHON_WRITE_PATTERNS = (
-    ".write_text(", ".unlink(", ".rename(",
+    ".write_text(", ".write_bytes(", ".unlink(", ".rename(",
     ".mkdir(", ".rmdir(", "shutil.move", "shutil.copy",
     "shutil.copytree", "shutil.rmtree", "os.remove", "os.unlink",
     "os.rename", "os.replace", "os.makedirs",
 )
 _SUBAGENT_PYTHON_OPEN_WRITE_RE = re.compile(r"open\([^)]*,\s*['\"][^'\"]*[wax+]")
+_SUBAGENT_PYTHON_OPEN_WRITE_TARGET_RE = re.compile(
+    r"(?<![\w.])open\s*\(\s*"
+    r"(?P<quote>['\"])(?P<path>[^'\"]+)(?P=quote)\s*,\s*"
+    r"(?:mode\s*=\s*)?"
+    r"(?P<mode_quote>['\"])(?P<mode>[^'\"]*[wax+][^'\"]*)(?P=mode_quote)",
+    re.IGNORECASE | re.DOTALL,
+)
+_SUBAGENT_PYTHON_PATH_WRITE_TARGET_RE = re.compile(
+    r"(?:\bPath|\bpathlib\.Path)\s*\(\s*"
+    r"(?P<quote>['\"])(?P<path>[^'\"]+)(?P=quote)\s*\)\s*\.\s*"
+    r"(?P<method>write_text|write_bytes|unlink|mkdir|rmdir)\s*\(",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _subagent_git_tag_invocation_is_mutating(args):
@@ -517,6 +530,15 @@ def _iter_subagent_segment_write_targets(segment):
     cmd = _command_name(words[0])
     args = words[1:]
 
+    if cmd.startswith("python"):
+        for match in _SUBAGENT_PYTHON_OPEN_WRITE_TARGET_RE.finditer(str(segment)):
+            mode = (match.group("mode") or "").lower()
+            if any(flag in mode for flag in ("w", "a", "x", "+")):
+                yield "python_open_write", match.group("path")
+        for match in _SUBAGENT_PYTHON_PATH_WRITE_TARGET_RE.finditer(str(segment)):
+            yield f"python_path_{match.group('method').lower()}", match.group("path")
+        return
+
     if cmd in {"mkdir", "touch", "rm", "rmdir"}:
         for target in _non_option_args(args):
             yield cmd, target
@@ -705,7 +727,10 @@ def _subagent_write_target_outside_allowed(target, allowed_dir, base_dir=None):
 
 def _subagent_bash_write_scope_violation(command, allowed_dir):
     """Return a violation reason when a Bash mutation writes outside allowed_dir."""
+    python_write_event_seen = False
     for detector, target, cwd in _iter_subagent_bash_write_events(command):
+        if detector.startswith("python_"):
+            python_write_event_seen = True
         if _subagent_write_target_outside_allowed(target, allowed_dir, base_dir=cwd):
             return f"{detector}:{str(target)[:120]}"
 
@@ -714,6 +739,8 @@ def _subagent_bash_write_scope_violation(command, allowed_dir):
         return None
 
     if mutation_detector.startswith("python_"):
+        if python_write_event_seen:
+            return None
         return mutation_detector if _subagent_is_outside_allowed(command, allowed_dir) else None
     if mutation_detector.startswith("git_") or mutation_detector == "git_tag_mutation":
         return mutation_detector

@@ -507,12 +507,21 @@ async def _run_debug_agent(error_output, changed_diff, target_file, next_v, ui):
 
         prompt_template = prompt_template_file.read_text(encoding="utf-8")
 
+        target_rel = _target_rel(target_file, next_v) or str(target_file or "").strip()
+        target_display = f"bots/claude_v{next_v}/{target_rel}" if target_rel else str(target_file or "")
+        target_abs = get_bot_dir(next_v) / target_rel if target_rel else get_bot_dir(next_v)
+
         debug_prompt = (
             f"{prompt_template}\n\n"
             f"## Error Output\n```\n{error_output[:3000]}\n```\n\n"
             f"## Changed Diff\n```\n{changed_diff[:3000]}\n```\n\n"
-            f"## Target File\n{target_file}\n\n"
-            f"Read the target file `{target_file}` for full context, then produce your diagnosis.\n"
+            f"## Target File\n"
+            f"- Generation: v{next_v}\n"
+            f"- Repository-relative path: `{target_display}`\n"
+            f"- Absolute path: `{target_abs}`\n\n"
+            f"Read exactly `{target_abs}` for full context. Do not inspect or infer from "
+            f"any other bot version unless the error output explicitly names that file. "
+            f"Then produce your diagnosis.\n"
             f"Return ONLY a ```json``` block with your diagnosis, fix, and confidence level."
         )
 

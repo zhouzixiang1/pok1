@@ -94,6 +94,42 @@ class TestDebugAgentFailureDoesNotBlockRetry:
             )
         assert result == {}
 
+    @pytest.mark.asyncio
+    async def test_prompt_pins_current_generation_target_path(self, tmp_path):
+        """Debug agent must read the current candidate file, not guess an old bot version."""
+        from core.agent_workers import _run_debug_agent
+
+        mock_ui = MagicMock()
+        bot_dir = tmp_path / "repo" / "bots" / "claude_v282"
+        logs_dir = tmp_path / "logs"
+        bot_dir.mkdir(parents=True)
+        logs_dir.mkdir()
+        captured = {}
+
+        async def fake_run_claude_query(prompt, *args, **kwargs):
+            captured["prompt"] = prompt
+            payload = {"diagnosis": "ok", "confidence": "high"}
+            return f"```json\n{json.dumps(payload)}\n```", None, None
+
+        with (
+            patch("core.agent_workers.run_claude_query", side_effect=fake_run_claude_query),
+            patch("core.agent_workers.get_bot_dir", return_value=bot_dir),
+            patch("core.agent_workers.get_logs_dir", return_value=logs_dir),
+        ):
+            result = await _run_debug_agent(
+                error_output="worker timed out while editing strategy.py",
+                changed_diff="diff --git a/bots/claude_v282/strategy.py b/bots/claude_v282/strategy.py",
+                target_file="strategy.py",
+                next_v=282,
+                ui=mock_ui,
+            )
+
+        prompt = captured["prompt"]
+        assert result["confidence"] == "high"
+        assert "bots/claude_v282/strategy.py" in prompt
+        assert str(bot_dir / "strategy.py") in prompt
+        assert "Do not inspect or infer from any other bot version" in prompt
+
 
 class TestDebugDiagnosisInjectedIntoAttemptNote:
     """Debug diagnosis should appear in the retry attempt note."""

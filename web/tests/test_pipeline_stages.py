@@ -1435,6 +1435,9 @@ class TestWorkerFailureCircuitBreaker:
         blocker_files = {(task["repair_blocker"], task["target_files"][0]) for task in tasks}
         assert ("national_native_contract", "national_bot.py") in blocker_files
         assert ("quality_gate", "national_bot.py") not in blocker_files
+        file_size_task = next(task for task in tasks if task["repair_blocker"] == "file_size")
+        assert "Large-overage requirement" in file_size_task["worker_prompt"]
+        assert "483 lines over" in file_size_task["worker_prompt"]
 
         ckpt = json.loads(ckpt_file.read_text())
         checkpoint_blocker_files = {
