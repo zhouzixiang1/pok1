@@ -23,6 +23,7 @@ python bots/neural_national_lab/tools/counterfactual_rollout_probe.py \
   --opponent bots/claude_v279 \
   --games 3 \
   --max-probes 24 \
+  --max-scan-decisions 400 \
   --kind to_raise \
   --branch-scope hand \
   --output bots/neural_national_lab/data/counterfactual_v022_vs_v279_g3_p24.json
@@ -37,3 +38,12 @@ training decision. Move toward large scale only after all of these hold:
 - no obvious negative bucket by street, action type, or price band;
 - candidate collection can be sharded/replayed without relying on slow full
   match rescans.
+
+`counterfactual_rollout_probe.py` now uses a persistent process for the scanned
+match by default and applies a cheap neural/street/confidence prefilter before
+running the expensive rule-strategy analysis. Use `--no-scan-persistent` only
+when debugging subprocess-state issues.
+
+Run street-specific probes before training a gate. For example, v022 permits
+both preflop and flop raise interventions, so flop-positive evidence must not
+be blended with preflop data until the preflop bucket is independently checked.
