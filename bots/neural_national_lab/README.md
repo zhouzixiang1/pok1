@@ -556,6 +556,16 @@ not assume hit density is stable; the next batch should test either a wider
 own-decision cap or additional opponents to avoid spending many full scans on
 empty windows.
 
+The follow-up tests showed that neither simple lever was sufficient by itself.
+With `claude_v279`, `seed_base=2026072600`, and a wider 80-own-decision cap,
+32 requested pairs produced zero hits. Switching opponent to `claude_v285`
+with `seed_base=2026072700` and the original 40-decision cap also produced
+zero hits across 32 pairs. The next collection step should therefore be more
+targeted than range scanning: use the known hit templates to search or generate
+flop free-action `raise 101 -> 0` contexts, then full-label those candidates.
+Blindly increasing cap, opponent count, or seed ranges is not currently an
+efficient path to the 40-60 row training threshold.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass
