@@ -488,6 +488,43 @@ def _cot_inconsistency_blocks_task(task):
     ))
 
 
+def _cot_inconsistency_override_reason(task, task_skipper, worker_id, next_v, source_v, ui):
+    """Let authoritative cheap rechecks override noisy COT text mismatches."""
+    if task_skipper is None:
+        return ""
+    try:
+        reason = task_skipper(task)
+    except Exception as e:
+        log.warning("Task skipper failed during CoT override for %s: %s", worker_id, e)
+        return ""
+    if not reason:
+        return ""
+    message = (
+        f"Worker {worker_id} CoT check was inconsistent, but the scoped quality "
+        f"blocker is now cleared; preserving edit. Recheck: {reason}"
+    )
+    try:
+        ui.log_history(message, "warn")
+    except Exception:
+        pass
+    try:
+        from system_log import log_system_event
+        log_system_event(
+            "pipeline.worker_cot_inconsistency_overridden",
+            "warn",
+            message,
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "worker_id": worker_id,
+                "reason": reason,
+            },
+        )
+    except Exception:
+        pass
+    return reason
+
+
 async def _run_debug_agent(error_output, changed_diff, target_file, next_v, ui):
     """Run the DeepEvolve debug sub-agent to diagnose and fix a compile/crash error.
 
@@ -991,13 +1028,20 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                     tasks[0], 0, next_v, source_v, next_dir, worker_snapshots, ui
                 )
                 if not cot.get("cot_consistent", True):
-                    audit_focus_areas.extend(cot.get("focus_areas", []))
                     if _cot_inconsistency_blocks_task(tasks[0]):
-                        _reset_target_files_to_source(
-                            tasks[0], source_v, next_dir, next_v,
-                            baseline_snapshots=worker_snapshots, task_idx=0,
+                        override = _cot_inconsistency_override_reason(
+                            tasks[0], task_skipper, tasks[0].get("worker_id", 1),
+                            next_v, source_v, ui,
                         )
-                        ok = False
+                        if not override:
+                            audit_focus_areas.extend(cot.get("focus_areas", []))
+                            _reset_target_files_to_source(
+                                tasks[0], source_v, next_dir, next_v,
+                                baseline_snapshots=worker_snapshots, task_idx=0,
+                            )
+                            ok = False
+                    else:
+                        audit_focus_areas.extend(cot.get("focus_areas", []))
             except Exception as e:
                 log.warning("CoT audit failed for worker 0: %s", e)
         return ok, worker_snapshots, audit_focus_areas
@@ -1096,13 +1140,20 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                     task, i, next_v, source_v, next_dir, worker_snapshots, ui
                 )
                 if not cot.get("cot_consistent", True):
-                    audit_focus_areas.extend(cot.get("focus_areas", []))
                     if _cot_inconsistency_blocks_task(task):
-                        _reset_target_files_to_source(
-                            task, source_v, next_dir, next_v,
-                            baseline_snapshots=worker_snapshots, task_idx=i,
+                        override = _cot_inconsistency_override_reason(
+                            task, task_skipper, task.get("worker_id", i + 1),
+                            next_v, source_v, ui,
                         )
-                        any_failed = True
+                        if not override:
+                            audit_focus_areas.extend(cot.get("focus_areas", []))
+                            _reset_target_files_to_source(
+                                task, source_v, next_dir, next_v,
+                                baseline_snapshots=worker_snapshots, task_idx=i,
+                            )
+                            any_failed = True
+                    else:
+                        audit_focus_areas.extend(cot.get("focus_areas", []))
             except Exception as e:
                 log.warning("CoT audit failed for worker %d: %s", i, e)
 
@@ -1163,13 +1214,20 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                 task, i, next_v, source_v, next_dir, worker_snapshots, ui
             )
             if not cot.get("cot_consistent", True):
-                audit_focus_areas.extend(cot.get("focus_areas", []))
                 if _cot_inconsistency_blocks_task(task):
-                    _reset_target_files_to_source(
-                        task, source_v, next_dir, next_v,
-                        baseline_snapshots=worker_snapshots, task_idx=i,
+                    override = _cot_inconsistency_override_reason(
+                        task, task_skipper, task.get("worker_id", i + 1),
+                        next_v, source_v, ui,
                     )
-                    return False, worker_snapshots, audit_focus_areas
+                    if not override:
+                        audit_focus_areas.extend(cot.get("focus_areas", []))
+                        _reset_target_files_to_source(
+                            task, source_v, next_dir, next_v,
+                            baseline_snapshots=worker_snapshots, task_idx=i,
+                        )
+                        return False, worker_snapshots, audit_focus_areas
+                else:
+                    audit_focus_areas.extend(cot.get("focus_areas", []))
         except Exception as e:
             log.warning("CoT audit failed for worker %d (sequential): %s", i, e)
     return True, worker_snapshots, audit_focus_areas

@@ -2208,6 +2208,75 @@ class TestWorkerFailureCircuitBreaker:
         assert snapshots == {(0, "opponent.py"): baseline}
         assert (next_dir / "opponent.py").read_text() == baseline
 
+    def test_cot_inconsistency_does_not_reset_cleared_file_size_repair(self, tmp_path, monkeypatch):
+        """Cheap quality recheck is authoritative over noisy CoT arithmetic."""
+        import asyncio
+        import agent_workers
+
+        next_dir = tmp_path / "claude_v11"
+        source_dir = tmp_path / "claude_v10"
+        next_dir.mkdir()
+        source_dir.mkdir()
+        baseline = "value = 1\n"
+        fixed = "value = 1\nfixed = True\n"
+        (next_dir / "strategy_helpers.py").write_text(baseline)
+        (source_dir / "strategy_helpers.py").write_text(baseline)
+
+        class UI:
+            costs = {}
+
+            def __init__(self):
+                self.messages = []
+
+            def log_history(self, message, level="info"):
+                self.messages.append((level, message))
+
+        async def fake_worker(*_args, **_kwargs):
+            (next_dir / "strategy_helpers.py").write_text(fixed)
+            return True
+
+        task = {
+            "worker_id": "auto_quality_repair_file_size_strategy_helpers_py",
+            "role": "Algorithmic Logic Architect",
+            "target_files": ["strategy_helpers.py"],
+            "must_change_files": ["strategy_helpers.py"],
+            "worker_prompt": "fix file_size",
+            "task_kind": "quality_repair",
+            "repair_blocker": "file_size",
+        }
+        ui = UI()
+        monkeypatch.setattr(agent_workers, "_run_single_worker", fake_worker)
+        monkeypatch.setattr(agent_workers, "get_bot_dir", lambda _v: source_dir)
+
+        async def _run():
+            with patch("audit_agents._run_worker_cot_check", new_callable=AsyncMock) as cot:
+                cot.return_value = {
+                    "cot_consistent": False,
+                    "focus_areas": ["line-count arithmetic used stale gate baseline"],
+                }
+                return await agent_workers._execute_workers(
+                    [task],
+                    "{worker_prompt}",
+                    next_dir,
+                    11,
+                    [],
+                    ui,
+                    reviewer_feedback="Quality gates failed: file_size(strategy_helpers.py:1664L/1500L)",
+                    source_v=10,
+                    task_skipper=lambda _task: (
+                        "quality blocker file(s) already cleared by current code: strategy_helpers.py"
+                        if "fixed = True" in (next_dir / "strategy_helpers.py").read_text()
+                        else ""
+                    ),
+                )
+
+        success, snapshots, focus = asyncio.run(_run())
+        assert success is True
+        assert focus == []
+        assert snapshots == {(0, "strategy_helpers.py"): baseline}
+        assert (next_dir / "strategy_helpers.py").read_text() == fixed
+        assert any("CoT check was inconsistent" in msg for _level, msg in ui.messages)
+
     def test_repair_planned_quality_rework_passes_skipper_to_workers(self, tmp_path, monkeypatch):
         """A resumed quality repair at repair_planned should skip already-cleared blockers."""
         import asyncio

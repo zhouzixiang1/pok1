@@ -24,6 +24,9 @@ Workers describe what they intend to do in their output text. You compare those 
 ## Worker Output Text (what it claimed to do)
 {worker_output}
 
+## Target File Metadata
+{diff_metadata}
+
 ## Actual Code Diff
 {code_diff}
 </data>
@@ -57,6 +60,9 @@ If issues found:
 **Key rules**:
 - Minor formatting differences between claim and diff are OK (not a discrepancy)
 - Only flag REAL logical contradictions, not ambiguous wording
+- For line-count claims, use **Target File Metadata** as the authoritative baseline.
+  Reviewer/gate text can contain stale pre-repair line counts when the pipeline
+  mechanically removed comments/docstrings/blank lines before the Worker ran.
 - `focus_areas` should be actionable items for the Code Reviewer, not vague warnings
 - `cot_consistent=true` means no significant issues; minor discrepancies without practical impact are acceptable
 </output_format>
