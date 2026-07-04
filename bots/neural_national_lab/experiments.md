@@ -37,5 +37,7 @@
   confidence 0.90.
 - A single ordinary 70-hand battle for `v001_v279_teacher214` vs `claude_v279`
   completed; v001 lost that one-game sample.
+- A single ordinary 70-hand battle for `v004_v279_guarded214` vs `claude_v279`
+  completed; v004 won that one-game smoke sample.
 - The mirror evaluation runner was terminated by SIGTERM in this environment,
   so current battle evidence is only a smoke/small-sample signal.
