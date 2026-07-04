@@ -112,6 +112,11 @@ Practical takeaways for this repo:
   outcome-weighting is too noisy as the only target. The next trainer should
   predict local action advantage or value deltas so the model can learn which
   raises are causally good instead of inheriting whole-hand variance.
+- v024 tested a trace-derived binary advantage gate and failed badly in paired
+  evaluation. The failure mode is informative: observed hand delta is still too
+  indirect, even when attached to candidate decisions. The next data collector
+  should force one alternative action at a sampled decision, finish the hand on
+  the same deck, and train on the resulting action delta.
 - Recent CFR work points in the same direction: keep explicit legal-action
   search/control around the model, and use neural networks for batched value or
   advantage approximation. Directly increasing the policy classifier or asking
