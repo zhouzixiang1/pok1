@@ -595,22 +595,69 @@ def _run_parallel(args: argparse.Namespace, payload: dict[str, Any]) -> None:
         return
     workers = min(max(1, int(args.workers)), len(tasks))
     completed: list[dict[str, Any]] = []
+    pending: dict[concurrent.futures.Future[dict[str, Any]], dict[str, Any]] = {}
+    next_task = 0
+    submitted = 0
+    early_stopped = False
     print(f"parallel probe tasks={len(tasks)} workers={workers}")
+
+    def submit_next(executor: concurrent.futures.ProcessPoolExecutor) -> None:
+        nonlocal next_task, submitted
+        if next_task >= len(tasks):
+            return
+        task = tasks[next_task]
+        next_task += 1
+        submitted += 1
+        pending[executor.submit(_probe_task, task)] = task
+
     with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
-        future_map = {executor.submit(_probe_task, task): task for task in tasks}
-        for future in concurrent.futures.as_completed(future_map):
-            task = future_map[future]
-            result = future.result()
-            completed.append(result)
-            _merge_task_results(payload, completed, args.max_probes)
-            _write(args.output, payload)
-            print(
-                f"task {task['task_index'] + 1}/{len(tasks)} "
-                f"g{task['game_idx']}:{task['side_name']} done: "
-                f"task_probes={len(result['probes'])} merged_probes={len(payload['probes'])} "
-                f"mean={payload['summary'].get('primary_delta', {}).get('mean', 0.0):.1f}"
+        for _ in range(workers):
+            submit_next(executor)
+
+        while pending:
+            done, _ = concurrent.futures.wait(
+                pending,
+                return_when=concurrent.futures.FIRST_COMPLETED,
             )
+            for future in done:
+                task = pending.pop(future)
+                result = future.result()
+                completed.append(result)
+                _merge_task_results(payload, completed, args.max_probes)
+                if (
+                    not early_stopped
+                    and not args.no_parallel_early_stop
+                    and len(payload["probes"]) >= int(args.max_probes)
+                ):
+                    early_stopped = True
+                payload["parallel_status"] = {
+                    "tasks_total": len(tasks),
+                    "tasks_submitted": submitted,
+                    "tasks_completed": len(completed),
+                    "tasks_skipped": max(0, len(tasks) - submitted),
+                    "early_stopped": early_stopped,
+                    "draining_running_tasks": bool(early_stopped and pending),
+                }
+                _write(args.output, payload)
+                print(
+                    f"task {task['task_index'] + 1}/{len(tasks)} "
+                    f"g{task['game_idx']}:{task['side_name']} done: "
+                    f"task_probes={len(result['probes'])} merged_probes={len(payload['probes'])} "
+                    f"mean={payload['summary'].get('primary_delta', {}).get('mean', 0.0):.1f}"
+                )
+
+                if not early_stopped:
+                    submit_next(executor)
+
     _merge_task_results(payload, completed, args.max_probes)
+    payload["parallel_status"] = {
+        "tasks_total": len(tasks),
+        "tasks_submitted": submitted,
+        "tasks_completed": len(completed),
+        "tasks_skipped": max(0, len(tasks) - submitted),
+        "early_stopped": early_stopped,
+        "draining_running_tasks": False,
+    }
 
 
 def _probe_side(
@@ -848,6 +895,11 @@ def main() -> None:
         type=int,
         help="per game/side probe cap when --workers > 1; defaults to global --max-probes",
     )
+    parser.add_argument(
+        "--no-parallel-early-stop",
+        action="store_true",
+        help="with --workers, continue submitting all game/side tasks after global --max-probes is reached",
+    )
     parser.add_argument("--no-scan-persistent", action="store_true")
     parser.add_argument("--no-mirror", action="store_true")
     parser.add_argument("--output", type=Path)
@@ -879,6 +931,7 @@ def main() -> None:
         "max_hands": args.max_hands,
         "workers": args.workers,
         "max_probes_per_task": args.max_probes_per_task,
+        "parallel_early_stop": not args.no_parallel_early_stop,
         "branch_scope": args.branch_scope,
         "scan_persistent": args.scan_persistent,
         "filters": {
