@@ -269,6 +269,22 @@
   failure points to insufficient counterfactual coverage and poor gate
   generalization, not just threshold placement.
 
+## v029_v254_cf_advantage_pair11_h32_t090
+
+- Base: `v027_v254_cf_advantage_low_raise_h32`.
+- Change: retrains the h32 advantage gate after adding a targeted
+  counterfactual probe for the v027 worst outlier seed
+  (`seed_base=2026071111`, `bot_seed_base=202607330000`). That focus run
+  recovered 3 v025 flop low-raise interventions with action-level deltas
+  `[301, 184, 0]`. Runtime uses the new h32 weights and raises
+  `advantage_min` to `0.90`.
+- Result: fixed the outlier over-filtering but did not create an edge. On the
+  outlier trace, v029 restored v025's 3 neural raises and changed-hand sum
+  `+585`. In a 16-pair deck+bot-RNG mirror check against `claude_v279`, v029
+  was essentially tied with v025 (`-2.25` chips per 70 hands, 95 percent CI
+  `[-12.45, 7.95]`). It is not a successor, but it proves targeted
+  counterfactual resampling can repair a gate regression.
+
 ## Round 1 Notes
 
 - Training data: `teacher214_round1.jsonl`, 272 teacher decisions from
