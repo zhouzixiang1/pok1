@@ -2735,6 +2735,8 @@ def _normalize_repair_blocker(value):
         return "file_size"
     if text in {"position", "position_semantics"}:
         return "position_semantics"
+    if text in {"national_native", "national_native_contract", "native_tcp_contract"}:
+        return "national_native_contract"
     if text in {"quality", "quality_gate", "protected_contract", "compile", "smoke_test"}:
         return "quality_gate"
     return text
@@ -3149,6 +3151,7 @@ def _quality_failure_items(ckpt):
         "compile_errors",
         "import_errors",
         "protected_contract_errors",
+        "national_native_contract_errors",
         "smoke_errors",
         "national_protocol_errors",
         "national_acceptance_errors",
@@ -3225,6 +3228,24 @@ def _is_position_semantics_failure_text(item):
         or "must key on my_is_bb" in text
         or "must key on my_is_bb/bb" in text
         or "not my_is_sb" in text
+    )
+
+
+def _is_national_native_contract_failure_text(item):
+    text = str(item or "").lower()
+    return (
+        "national_native_contract" in text
+        or "native national tcp contract" in text
+        or "national_bot.py missing" in text
+        or (
+            "national_bot.py" in text
+            and (
+                "sanitizer failure" in text
+                or "raw action" in text
+                or "direct tcp" in text
+                or "botzone integer" in text
+            )
+        )
     )
 
 
@@ -3402,6 +3423,45 @@ def _position_contracts(quality):
     return sorted(contracts, key=lambda c: c["file"])
 
 
+def _national_native_contracts(quality, failures):
+    """Return file-scoped contracts for direct national TCP entrypoint blockers."""
+    source_items = []
+    source_items.extend(_flatten_text_items(quality.get("national_native_contract_errors")))
+    source_items.extend(
+        item for item in _flatten_text_items(quality.get("failed_gates"))
+        if _is_national_native_contract_failure_text(item)
+    )
+    source_items.extend(
+        item for item in failures or []
+        if _is_national_native_contract_failure_text(item)
+    )
+    if quality.get("national_native_contract_ok") is False and not source_items:
+        source_items.append(
+            "national_native_contract failed; national native bots must keep a direct TCP entrypoint"
+        )
+
+    deduped = []
+    seen = set()
+    for item in source_items:
+        text = str(item).strip()
+        if text and text not in seen:
+            seen.add(text)
+            deduped.append(text)
+
+    files = _extract_quality_failure_files(deduped)
+    if not files and (deduped or quality.get("national_native_contract_ok") is False):
+        files = ["national_bot.py"]
+
+    return [
+        {
+            "blocker": "national_native_contract",
+            "file": rel,
+            "evidence": "\n".join(deduped[:8]) or "national_native_contract failed",
+        }
+        for rel in files
+    ]
+
+
 def _generic_quality_contracts(quality, failures, claimed_files):
     """Build file-scoped fallback contracts for non-mechanical quality blockers."""
     evidence_items = []
@@ -3409,6 +3469,7 @@ def _generic_quality_contracts(quality, failures, claimed_files):
         "compile_errors",
         "import_errors",
         "protected_contract_errors",
+        "national_native_contract_errors",
         "smoke_errors",
         "national_protocol_errors",
         "national_acceptance_errors",
@@ -3419,6 +3480,7 @@ def _generic_quality_contracts(quality, failures, claimed_files):
     evidence_items = [
         item for item in evidence_items
         if not _is_declared_scope_failure_text(item)
+        and not _is_national_native_contract_failure_text(item)
     ]
     if not evidence_items:
         evidence_items = [
@@ -3426,10 +3488,12 @@ def _generic_quality_contracts(quality, failures, claimed_files):
             if not str(item).startswith("file_size(")
             and not _is_position_semantics_failure_text(item)
             and not _is_declared_scope_failure_text(item)
+            and not _is_national_native_contract_failure_text(item)
         ]
     evidence_files = _extract_quality_failure_files(evidence_items)
     mechanical_files = {c["file"] for c in _line_count_contracts(quality, failures)}
     mechanical_files.update(c["file"] for c in _position_contracts(quality))
+    mechanical_files.update(c["file"] for c in _national_native_contracts(quality, failures))
     generic_files = evidence_files or [f for f in claimed_files if f not in mechanical_files]
     if not generic_files:
         return []
@@ -3459,6 +3523,7 @@ def _quality_repair_contracts(ckpt, feedback=""):
     contracts = []
     contracts.extend(_line_count_contracts(quality, failures))
     contracts.extend(_position_contracts(quality))
+    contracts.extend(_national_native_contracts(quality, failures))
     contracts.extend(_generic_quality_contracts(quality, failures, claimed_files))
 
     ordered = []
@@ -3545,6 +3610,33 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             "worker_prompt": prompt,
             "task_kind": task_kind,
             "repair_blocker": "position_semantics",
+            "repair_contract": contract,
+        }
+    if blocker == "national_native_contract":
+        prompt = (
+            f"{preservation.format(next_v=next_v)}\n\n"
+            "Repair contract: national_native_contract\n"
+            f"- Target file: `{filename}`\n"
+            f"- Evidence:\n{contract.get('evidence') or 'national_native_contract failed'}\n\n"
+            "Authoritative national-native entrypoint contract:\n"
+            "- `national_bot.py` is the formal submitted entrypoint for new bots.\n"
+            "- It must be a direct TCP client for the national line protocol; do not depend on `sever/bot_adapter.py`.\n"
+            "- It must emit only legal line actions such as `raise <amount>`, `call`, `check`, `fold`, or `allin`; never emit Botzone JSON as the formal response.\n"
+            "- If state reconstruction or action sanitization fails, choose a bounded legal fallback action instead of passing through a raw Botzone integer action.\n\n"
+            "Required method:\n"
+            f"- Edit `{filename}`. This file is listed in `must_change_files`; a no-op or editing only another file is failure.\n"
+            "- Keep card mapping and national protocol formatting intact.\n"
+            "- Fix the exact native contract violation shown above without weakening existing legal-action validation.\n"
+            "- Run `python -m py_compile` on the edited entrypoint before finishing."
+        )
+        return {
+            "worker_id": f"auto_quality_repair_national_native_{suffix}",
+            "role": "Protocol Integration Architect",
+            "target_files": [filename],
+            "must_change_files": [filename],
+            "worker_prompt": prompt,
+            "task_kind": task_kind,
+            "repair_blocker": "national_native_contract",
             "repair_contract": contract,
         }
     prompt = (
