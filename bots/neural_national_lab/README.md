@@ -256,6 +256,22 @@ neural raises in the bad paths, but v043 is not a promotion candidate. The next
 experiment should convert those exact trace contexts into match-scope
 interaction rows and require better robustness before increasing model size.
 
+`v044` through `v047` tested that match-scope idea and rejected the first
+implementation. `v044_v254_cf_handstrength_veto_allconf_t050` kept the v043
+model but removed the low-confidence interaction bypass; targeted checks showed
+no useful repair. The p278 match-scope dataset then added 10 exact trace rows:
+pair6/pair23 as positive contexts and pair42/pair47/pair21/pair28 as negative
+contexts. Single replacement models (`v045` seed282 at threshold `0.30` and
+`v046` seed280 at threshold `0.25`) both preserved pair6 but broke pair23 by
+allowing or blocking different mirror-side paths. `v047` kept the v043
+interaction gate and added the p278 model as a second veto, but its 64-pair
+run versus v043 was negative: `-306.10` chips per 70 hands with 95 percent CI
+`[-729.15, 116.95]` and a `6/51/7` positive/zero/negative split. The practical
+lesson is that weak pair-level deltas are not reliable labels for individual
+flop probe actions. Future match-scope training needs trajectory-level credit
+assignment, or at minimum counterfactual reruns that isolate one candidate
+change at a time before it becomes a supervised row.
+
 Recent literature and open-source scans point to the next useful local
 direction:
 
