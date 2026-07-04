@@ -57,6 +57,7 @@ ARCHIVE_DIR = RESULTS_DIR / "archive"
 LLM_COSTS_FILE = RESULTS_DIR / "llm_costs.jsonl"
 RATING_HISTORY_FILE = RESULTS_DIR / "rating_history.jsonl"
 ABANDONED_VERSIONS_FILE = RESULTS_DIR / "abandoned_versions.jsonl"
+REAPED_BOTS_FILE = RESULTS_DIR / "reaped_bots.jsonl"
 # fix-5: cross-gen direction pivot — tracks exhausted directions per generation
 # so consecutive same-axis exhaustion can force a structural pivot.
 CROSS_GEN_EXHAUSTED_HISTORY = RESULTS_DIR / "cross_gen_exhausted_history.jsonl"
@@ -669,21 +670,74 @@ def _tagged_bot_versions():
     return tag_versions
 
 
-def _ensure_completed_sentinels_for_tagged_bots(tag_versions=None):
+def _bot_version_from_name(bot_name):
+    try:
+        if isinstance(bot_name, str) and bot_name.startswith("claude_v"):
+            return int(bot_name.split("_v", 1)[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    return None
+
+
+def load_reaped_bot_versions():
+    """Return versions intentionally removed from the active pool."""
+    versions = set()
+    try:
+        with locked_file(REAPED_BOTS_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                version = entry.get("version")
+                if version is None:
+                    version = _bot_version_from_name(entry.get("bot"))
+                try:
+                    versions.add(int(version))
+                except (TypeError, ValueError):
+                    continue
+    except (FileNotFoundError, OSError):
+        pass
+    return versions
+
+
+def record_reaped_bot(bot_name, *, reason="", data=None):
+    """Persist active-pool deactivation without changing tracked bot source."""
+    version = _bot_version_from_name(bot_name)
+    entry = {
+        "ts": time.time(),
+        "bot": bot_name,
+        "version": version,
+        "reason": reason,
+        "data": data or {},
+    }
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    append_locked_jsonl(REAPED_BOTS_FILE, entry)
+    return entry
+
+
+def _ensure_completed_sentinels_for_tagged_bots(tag_versions=None, reaped_versions=None):
     """Restore local .completed sentinels for bot dirs that already have tags.
 
     The sentinel is runtime metadata and may be absent in isolated clones because
     it is gitignored. The bot-vN tag remains the authoritative completion proof,
     so restoring the local sentinel keeps runtime active-bot discovery consistent
-    without trusting untagged or abandoned directories.
+    without trusting untagged or abandoned directories. Intentionally reaped bots
+    are skipped because they are tagged but no longer active.
     """
     if tag_versions is None:
         tag_versions = _tagged_bot_versions()
+    if reaped_versions is None:
+        reaped_versions = load_reaped_bot_versions()
     if not tag_versions or not BOTS_DIR.exists():
         return []
 
     restored = []
     for version in sorted(tag_versions):
+        if version in reaped_versions:
+            continue
         bot_dir = BOTS_DIR / f"claude_v{version}"
         sentinel = bot_dir / ".completed"
         if not bot_dir.is_dir() or sentinel.exists():
@@ -740,7 +794,8 @@ def get_active_bots():
     keeps this O(1 git call) regardless of bot count.
     """
     tag_versions = _tagged_bot_versions()
-    _ensure_completed_sentinels_for_tagged_bots(tag_versions)
+    reaped_versions = load_reaped_bot_versions()
+    _ensure_completed_sentinels_for_tagged_bots(tag_versions, reaped_versions)
 
     bots = []
     if BOTS_DIR.exists():
@@ -751,7 +806,7 @@ def get_active_bots():
                         v = int(d.split("_v")[1])
                     except (ValueError, IndexError):
                         continue
-                    if v in tag_versions:  # git tag backs the .completed sentinel
+                    if v in tag_versions and v not in reaped_versions:
                         bots.append(d)
     return sorted(bots, key=lambda x: int(x.split("_v")[1]))
 

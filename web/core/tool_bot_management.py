@@ -20,7 +20,7 @@ from tool_helpers import (
 )
 from system_log import log_system_event
 
-from evolution_infra import MAX_PRECOMMIT_RETRIES, read_pipeline_checkpoint
+from evolution_infra import MAX_PRECOMMIT_RETRIES, read_pipeline_checkpoint, record_reaped_bot
 from experience_pool import trim_experience_pool
 from code_verification import seed_initial_bots
 from pipeline_state import generic_abandon_block
@@ -97,22 +97,31 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
     culled_name = weakest[0]
     conservative = weakest[1].r - 2 * weakest[1].rd
 
-    graveyard = PROJECT_ROOT / "bots" / "graveyard"
-    graveyard.mkdir(exist_ok=True)
-    target = graveyard / culled_name
-
     # Serialize concurrent reaps via file lock
     reap_lock = RESULTS_DIR / ".reap.lock"
     with open(reap_lock, "w") as lock_f:
         fcntl.flock(lock_f, fcntl.LOCK_EX)
         try:
-            # Re-check after acquiring lock — another process may have reaped this bot
-            if target.exists():
-                shutil.rmtree(target)
             bot_src = PROJECT_ROOT / "bots" / culled_name
             if not bot_src.exists():
                 return {"reaped": False, "reason": f"{culled_name} already moved"}
-            shutil.move(str(bot_src), str(target))
+            # Keep git-tracked bot source in place. Active membership is the
+            # runtime .completed sentinel plus bot-vN tag, so removing the
+            # sentinel deactivates the bot without dirtying the worktree.
+            sentinel = bot_src / ".completed"
+            if sentinel.exists():
+                sentinel.unlink()
+            record_reaped_bot(
+                culled_name,
+                reason="max_active_bots",
+                data={
+                    "selection_key": "conservative_glicko",
+                    "conservative_rating": round(conservative, 1),
+                    "leaderboard_score": round(strength_scores.get(culled_name, 0.0), 4),
+                    "h2h_avg_wr": round(h2h_winrates.get(culled_name, 0.0), 4),
+                    "quiet": quiet,
+                },
+            )
         finally:
             fcntl.flock(lock_f, fcntl.LOCK_UN)
 
@@ -156,6 +165,7 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
         "h2h_avg_wr": round(h2h_winrates.get(culled_name, 0.0), 4),
         "rating": {"r": round(weakest[1].r, 1), "rd": round(weakest[1].rd, 1)},
         "remaining": len(active_bots) - 1,
+        "reap_mode": "deactivate_completed_sentinel",
     }
 
 
