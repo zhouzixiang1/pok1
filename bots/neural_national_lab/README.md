@@ -99,3 +99,10 @@ probes in `raise_le_125`. A two-pair common-deck mirror against `claude_v279`
 was still inconclusive versus v022 (`[-9095, +14398]` chips over paired
 140-hand samples), so the next step is more paired battle volume before calling
 v025 a clear performance improvement.
+
+`paired_evaluate.py` supports deterministic seeds and parallel workers for that
+next step. A 16-pair seeded mirror run (`seed_base=2026070600`, `workers=8`)
+kept v025 positive on average versus v022 against `claude_v279`
+(`+796.44` chips per 70 hands), but the 95 percent CI still crossed zero
+(`[-2089.29, 3682.16]`). v025 remains promising but not yet a clear end-to-end
+winner.

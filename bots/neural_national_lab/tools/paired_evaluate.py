@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import copy
 import json
+import random
 import statistics
 import sys
 from pathlib import Path
@@ -68,6 +70,20 @@ def _stats(values: list[float], hands_per_unit: int) -> dict[str, Any]:
 def _fresh_initdata() -> dict[str, Any]:
     result = json.loads(judge_func(json.dumps({"log": []})))
     return copy.deepcopy(result["initdata"])
+
+
+def _seeded_initdata(seed: int, max_hands: int = 70) -> dict[str, Any]:
+    rng = random.Random(int(seed))
+    decks = []
+    for _ in range(max_hands):
+        deck = list(range(52))
+        rng.shuffle(deck)
+        decks.append(deck)
+    return {
+        "max_hand": max_hands,
+        "dealer": rng.randint(0, 1),
+        "decks": decks,
+    }
 
 
 def _mirror_initdata(initdata: dict[str, Any]) -> dict[str, Any]:
@@ -136,6 +152,34 @@ def _write(output: Path | None, payload: dict[str, Any]) -> None:
     out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _pair_seed(args: argparse.Namespace, idx: int) -> int | None:
+    if args.seed_base is None:
+        return None
+    return int(args.seed_base) + int(args.seed_offset) + idx * int(args.seed_stride)
+
+
+def _play_pair(idx: int, paths: list[Path], opponent: Path, args: argparse.Namespace) -> dict[str, Any]:
+    seed = _pair_seed(args, idx)
+    initdata = _seeded_initdata(seed, args.max_hands) if seed is not None else _fresh_initdata()
+    mirror = _mirror_initdata(initdata)
+    row: dict[str, Any] = {
+        "idx": idx,
+        "seed": seed,
+        "dealer": initdata["dealer"],
+        "net_chips": {},
+        "normal": {},
+        "mirror": {},
+    }
+    for path in paths:
+        label = _label(path)
+        normal_result = _play_match(path, opponent, initdata)
+        mirror_result = _play_match(path, opponent, mirror)
+        row["normal"][label] = normal_result
+        row["mirror"][label] = mirror_result
+        row["net_chips"][label] = normal_result["bot0_chips"] + mirror_result["bot0_chips"]
+    return row
+
+
 def _summarize(payload: dict[str, Any]) -> None:
     samples = {key: [] for key in payload["entries"]}
     deltas = {key: [] for key in payload["entries"] if key != payload["baseline_label"]}
@@ -170,6 +214,11 @@ def main() -> None:
     parser.add_argument("--candidate", action="append", required=True)
     parser.add_argument("--opponent", required=True)
     parser.add_argument("--games", type=int, default=4)
+    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--seed-base", type=int)
+    parser.add_argument("--seed-offset", type=int, default=0)
+    parser.add_argument("--seed-stride", type=int, default=1)
+    parser.add_argument("--max-hands", type=int, default=70)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
@@ -191,6 +240,11 @@ def main() -> None:
     payload: dict[str, Any] = {
         "mode": "common_deck_mirror_pair",
         "games": args.games,
+        "workers": args.workers,
+        "seed_base": args.seed_base,
+        "seed_offset": args.seed_offset,
+        "seed_stride": args.seed_stride,
+        "max_hands": args.max_hands,
         "baseline_label": _label(baseline),
         "entries": entries,
         "pairs": [],
@@ -199,40 +253,47 @@ def main() -> None:
     }
     _write(args.output, payload)
 
-    for idx in range(args.games):
-        initdata = _fresh_initdata()
-        mirror = _mirror_initdata(initdata)
-        row: dict[str, Any] = {
-            "idx": idx,
-            "dealer": initdata["dealer"],
-            "net_chips": {},
-            "normal": {},
-            "mirror": {},
-        }
-        for path in paths:
-            label = _label(path)
-            normal_result = _play_match(path, opponent, initdata)
-            mirror_result = _play_match(path, opponent, mirror)
-            row["normal"][label] = normal_result
-            row["mirror"][label] = mirror_result
-            row["net_chips"][label] = normal_result["bot0_chips"] + mirror_result["bot0_chips"]
-        payload["pairs"].append(row)
-        _summarize(payload)
-        _write(args.output, payload)
-        paired = payload["paired_vs_baseline"]
-        print(f"pair {idx + 1}/{args.games}")
-        for label, result in payload["results"].items():
-            print(
-                f"  {label}: mean70={result['mean_per_70_hands']:.1f} "
-                f"ci70=[{result['ci95_low_per_70_hands']}, {result['ci95_high_per_70_hands']}] "
-                f"nets={result['net_chips']}"
-            )
-        for label, result in paired.items():
-            print(
-                f"  delta {label}: mean70={result['mean_per_70_hands']:.1f} "
-                f"ci70=[{result['ci95_low_per_70_hands']}, {result['ci95_high_per_70_hands']}] "
-                f"deltas={result['delta_net_chips']}"
-            )
+    rows: dict[int, dict[str, Any]] = {}
+    next_idx = 0
+
+    def _consume_row(row: dict[str, Any]) -> None:
+        nonlocal next_idx
+        rows[int(row["idx"])] = row
+        while next_idx in rows:
+            payload["pairs"].append(rows.pop(next_idx))
+            _summarize(payload)
+            _write(args.output, payload)
+            _print_progress(payload, next_idx + 1, args.games)
+            next_idx += 1
+
+    if args.workers <= 1:
+        for idx in range(args.games):
+            _consume_row(_play_pair(idx, paths, opponent, args))
+    else:
+        with ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
+            futures = {
+                executor.submit(_play_pair, idx, paths, opponent, args): idx
+                for idx in range(args.games)
+            }
+            for future in as_completed(futures):
+                _consume_row(future.result())
+
+
+def _print_progress(payload: dict[str, Any], completed: int, total: int) -> None:
+    paired = payload["paired_vs_baseline"]
+    print(f"pair {completed}/{total}")
+    for label, result in payload["results"].items():
+        print(
+            f"  {label}: mean70={result['mean_per_70_hands']:.1f} "
+            f"ci70=[{result['ci95_low_per_70_hands']}, {result['ci95_high_per_70_hands']}] "
+            f"nets={result['net_chips']}"
+        )
+    for label, result in paired.items():
+        print(
+            f"  delta {label}: mean70={result['mean_per_70_hands']:.1f} "
+            f"ci70=[{result['ci95_low_per_70_hands']}, {result['ci95_high_per_70_hands']}] "
+            f"deltas={result['delta_net_chips']}"
+        )
 
 
 if __name__ == "__main__":
