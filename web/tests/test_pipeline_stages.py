@@ -2099,6 +2099,51 @@ class TestWorkerFailureCircuitBreaker:
         assert "<= 2493 lines" in tasks[-1]["worker_prompt"]
         assert "print() emits TCP action text" in tasks[-2]["worker_prompt"]
 
+    def test_quality_repair_synthesizes_national_native_contract_task(self):
+        import tool_planning
+
+        ckpt = {
+            "next_v": 282,
+            "source_v": 28,
+            "parent2_v": 235,
+            "stage": "quality_failed",
+            "master_plan": {"strategy": "crossover", "tasks": []},
+            "gate_results": {
+                "quality": {
+                    "all_passed": False,
+                    "national_native_contract_ok": False,
+                    "failed_gates": [
+                        (
+                            "national_native_contract(national_bot.py: "
+                            "_strategy_action must not continue with raw action after sanitizer failure)"
+                        ),
+                        "file_size(strategy.py:2483L/2000L)",
+                    ],
+                    "national_native_contract_errors": [
+                        (
+                            "national_bot.py: _strategy_action must not continue "
+                            "with raw action after sanitizer failure"
+                        ),
+                    ],
+                    "protected_contract_errors": [
+                        "opponent.py: print() emits TCP action text; output must be JSON response int",
+                    ],
+                    "oversized_files": {"strategy.py": 2483},
+                }
+            },
+        }
+
+        tasks = tool_planning._synthesize_rework_tasks_from_checkpoint(ckpt)
+        blocker_files = [(task["repair_blocker"], task["target_files"][0]) for task in tasks]
+
+        assert ("national_native_contract", "national_bot.py") in blocker_files
+        assert blocker_files.count(("quality_gate", "national_bot.py")) == 0
+        native_task = next(task for task in tasks if task["repair_blocker"] == "national_native_contract")
+        assert native_task["role"] == "Protocol Integration Architect"
+        assert native_task["must_change_files"] == ["national_bot.py"]
+        assert "direct TCP client" in native_task["worker_prompt"]
+        assert "sever/bot_adapter.py" in native_task["worker_prompt"]
+
     def test_repair_planned_crossover_quality_retry_preserves_candidate(self, tmp_path, monkeypatch):
         """A planned retry of crossover quality repair must not reset the fused candidate."""
         import asyncio
