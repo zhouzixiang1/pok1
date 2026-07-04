@@ -112,15 +112,22 @@ def _side_initdata(seed: int, side: str, max_hands: int) -> dict[str, Any]:
     return initdata
 
 
-def _source_hits(payload: dict[str, Any], max_source_hits: int) -> list[dict[str, Any]]:
+def _source_hits(
+    payload: dict[str, Any],
+    max_source_hits: int,
+    opponent_labels: set[str] | None,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for pair in payload.get("pairs", []):
+        opponent_label = str(pair.get("opponent_label"))
+        if opponent_labels is not None and opponent_label not in opponent_labels:
+            continue
         for side in ("normal", "mirror"):
             side_row = pair.get(side, {})
             for hit_index, hit in enumerate(side_row.get("hits") or []):
                 rows.append({
                     "opponent_index": int(pair.get("opponent_index", 0)),
-                    "opponent_label": str(pair.get("opponent_label")),
+                    "opponent_label": opponent_label,
                     "idx": int(pair["idx"]),
                     "seed": int(pair["seed"]),
                     "side": side,
@@ -299,6 +306,7 @@ def main() -> None:
     parser.add_argument("--baseline")
     parser.add_argument("--candidate")
     parser.add_argument("--opponent")
+    parser.add_argument("--source-opponent-label", action="append")
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--executor", choices=["process", "thread"], default="process")
     parser.add_argument("--max-hands", type=int, default=70)
@@ -336,7 +344,8 @@ def main() -> None:
     baseline = _main_path(_resolve(str(baseline_arg)))
     candidate = _main_path(_resolve(str(candidate_arg)))
     opponent = _main_path(_resolve(str(opponent_arg)))
-    sources = _source_hits(source_payload, args.max_source_hits)
+    source_labels = {str(label) for label in args.source_opponent_label} if args.source_opponent_label else None
+    sources = _source_hits(source_payload, args.max_source_hits, source_labels)
     generated: list[dict[str, Any]] = []
     skipped_sources: list[dict[str, Any]] = []
     for source in sources:
@@ -364,6 +373,7 @@ def main() -> None:
         "executor": args.executor,
         "max_hands": args.max_hands,
         "max_source_hits": args.max_source_hits,
+        "source_opponent_labels": sorted(source_labels) if source_labels else None,
         "max_variants_per_hit": args.max_variants_per_hit,
         "slot": args.slot,
         "rank_window": args.rank_window,

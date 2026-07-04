@@ -1,0 +1,12 @@
+{
+  "inputs": [
+    "bots/neural_national_lab/data/runtime_value_v043_v053_mix_p097_seed2026071503_2026073000.jsonl",
+    "bots/neural_national_lab/data/runtime_value_v043_v053_idx6_neighborhood_p020_seed2026073100.jsonl"
+  ],
+  "rows": 117,
+  "input_dim": 70,
+  "positive": 60,
+  "zero": 3,
+  "negative": 54,
+  "mean_delta": 435.1880341880342
+}
