@@ -74,8 +74,8 @@ class TestP0ReapSignalOrder:
 class TestP1TimeBasedRefresh:
     """P1: Daemon has time-based bot list refresh every 30s as a safety net."""
 
-    def test_get_active_bots_finds_completed(self, tmp_path):
-        """get_active_bots returns directories with .completed sentinel."""
+    def test_get_active_bots_finds_tagged_completed(self, tmp_path, monkeypatch):
+        """get_active_bots returns directories with a tag-backed .completed sentinel."""
         from elo_daemon import get_active_bots
         import evolution_infra
 
@@ -86,34 +86,45 @@ class TestP1TimeBasedRefresh:
         bot_dir.mkdir()
         (bot_dir / ".completed").touch()
 
-        # Patch BOTS_DIR in evolution_infra (where get_active_bots now lives)
-        original = evolution_infra.BOTS_DIR
-        try:
-            evolution_infra.BOTS_DIR = bots_dir
-            result = get_active_bots()
-            assert "claude_v99" in result
-        finally:
-            evolution_infra.BOTS_DIR = original
+        monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
+        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "bot-v99\n")
 
-    def test_get_active_bots_skips_incomplete(self, tmp_path):
-        """get_active_bots does NOT return directories without .completed."""
+        result = get_active_bots()
+        assert "claude_v99" in result
+
+    def test_get_active_bots_skips_untagged_completed(self, tmp_path, monkeypatch):
+        """get_active_bots does NOT trust .completed without a bot-vN tag."""
         from elo_daemon import get_active_bots
         import evolution_infra
 
-        # Create a fake bot dir WITHOUT .completed
         bots_dir = tmp_path / "bots"
         bots_dir.mkdir()
         bot_dir = bots_dir / "claude_v99"
         bot_dir.mkdir()
-        # No .completed file
+        (bot_dir / ".completed").touch()
 
-        original = evolution_infra.BOTS_DIR
-        try:
-            evolution_infra.BOTS_DIR = bots_dir
-            result = get_active_bots()
-            assert "claude_v99" not in result
-        finally:
-            evolution_infra.BOTS_DIR = original
+        monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
+        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "")
+
+        result = get_active_bots()
+        assert "claude_v99" not in result
+
+    def test_get_active_bots_restores_missing_completed_for_tagged_bot(self, tmp_path, monkeypatch):
+        """A tagged bot dir missing gitignored .completed is restored and treated active."""
+        from elo_daemon import get_active_bots
+        import evolution_infra
+
+        bots_dir = tmp_path / "bots"
+        bots_dir.mkdir()
+        bot_dir = bots_dir / "claude_v99"
+        bot_dir.mkdir()
+
+        monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
+        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "bot-v99\n")
+
+        result = get_active_bots()
+        assert result == ["claude_v99"]
+        assert (bot_dir / ".completed").exists()
 
     def test_refresh_timer_variable_exists(self):
         """Daemon source contains the last_bot_refresh_time variable."""

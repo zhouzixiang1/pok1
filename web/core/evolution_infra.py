@@ -658,6 +658,56 @@ def get_logs_dir(version):
     return d
 
 
+def _tagged_bot_versions():
+    """Return versions backed by authoritative bot-vN git tags."""
+    tag_versions = set()
+    for tag in _git("tag", "-l", "bot-v*", check=False).strip().splitlines():
+        try:
+            tag_versions.add(int(tag.replace("bot-v", "")))
+        except ValueError:
+            pass
+    return tag_versions
+
+
+def _ensure_completed_sentinels_for_tagged_bots(tag_versions=None):
+    """Restore local .completed sentinels for bot dirs that already have tags.
+
+    The sentinel is runtime metadata and may be absent in isolated clones because
+    it is gitignored. The bot-vN tag remains the authoritative completion proof,
+    so restoring the local sentinel keeps runtime active-bot discovery consistent
+    without trusting untagged or abandoned directories.
+    """
+    if tag_versions is None:
+        tag_versions = _tagged_bot_versions()
+    if not tag_versions or not BOTS_DIR.exists():
+        return []
+
+    restored = []
+    for version in sorted(tag_versions):
+        bot_dir = BOTS_DIR / f"claude_v{version}"
+        sentinel = bot_dir / ".completed"
+        if not bot_dir.is_dir() or sentinel.exists():
+            continue
+        try:
+            sentinel.write_text("restored from bot-v tag\n", encoding="utf-8")
+            restored.append(version)
+        except OSError as exc:
+            log.warning("Failed to restore .completed sentinel for claude_v%s: %s", version, exc)
+
+    if restored:
+        try:
+            from system_log import log_system_event
+            log_system_event(
+                "pipeline.completed_sentinel_restored",
+                "warning",
+                f"Restored .completed sentinels for tagged bots: {restored}",
+                {"versions": restored},
+            )
+        except Exception:
+            pass
+    return restored
+
+
 def _target_rel(path, version):
     raw = str(path).strip()
     if not raw:
@@ -689,12 +739,8 @@ def get_active_bots():
     Collecting all tags once here (instead of calling git_has_tag per bot)
     keeps this O(1 git call) regardless of bot count.
     """
-    tag_versions = set()
-    for tag in _git("tag", "-l", "bot-v*", check=False).strip().splitlines():
-        try:
-            tag_versions.add(int(tag.replace("bot-v", "")))
-        except ValueError:
-            pass
+    tag_versions = _tagged_bot_versions()
+    _ensure_completed_sentinels_for_tagged_bots(tag_versions)
 
     bots = []
     if BOTS_DIR.exists():
