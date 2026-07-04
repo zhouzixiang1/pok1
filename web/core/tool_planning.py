@@ -2831,7 +2831,10 @@ def _order_quality_repair_tasks(tasks):
 
 def _stale_quality_task_reason(tasks, ckpt, reviewer_feedback=""):
     """Return a refresh reason when saved quality tasks no longer match gate blockers."""
-    if not isinstance(ckpt, dict) or ckpt.get("stage") != "quality_failed":
+    if (
+        not isinstance(ckpt, dict)
+        or ckpt.get("stage") not in {"quality_failed", "repair_planned", "rework_running"}
+    ):
         return ""
     current = _quality_contract_signatures(ckpt, reviewer_feedback)
     if not current:
@@ -4081,7 +4084,11 @@ async def execute_workers(args):
             if not tasks:
                 return _finish_declared_scope_ledger_only(ledger_files)
 
-    if tasks and ckpt.get("stage") == "quality_failed":
+    if (
+        tasks
+        and ckpt.get("stage") in {"quality_failed", "repair_planned", "rework_running"}
+        and not _is_precommit_rework_checkpoint(ckpt)
+    ):
         failure_files = _quality_failure_target_files(ckpt, reviewer_feedback)
         task_files = _task_target_filenames(tasks)
         missing_files = sorted(failure_files - task_files)

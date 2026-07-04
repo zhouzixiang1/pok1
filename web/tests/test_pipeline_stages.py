@@ -1340,6 +1340,110 @@ class TestWorkerFailureCircuitBreaker:
         ]
         assert ckpt["master_plan"]["work_item"]["reset_performed"] is False
 
+    def test_rework_running_refreshes_stale_national_native_contract_task(self, tmp_path, monkeypatch):
+        """A resumed rework batch must refresh old tasks when the native contract adds national_bot.py."""
+        import asyncio
+        import fix_injection
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        for directory in (source_dir, next_dir):
+            (directory / "national_bot.py").write_text("def main():\n    return None\n")
+            (directory / "opponent.py").write_text("def opp():\n    return 0\n")
+            (directory / "strategy.py").write_text("def act():\n    return 0\n")
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, stage="rework_running")
+        state = json.loads(ckpt_file.read_text())
+        state["parent2_v"] = 9
+        state["reviewer_feedback"] = (
+            "Quality gates failed:\n"
+            "- national_native_contract(national_bot.py: _strategy_action must not continue "
+            "with raw action after sanitizer failure)\n"
+            "- opponent.py: print() emits TCP action text; output must be JSON response int\n"
+            "- file_size(strategy.py:2483L/2000L)"
+        )
+        state["master_plan"] = {
+            "strategy": "crossover",
+            "tasks": [
+                {
+                    "worker_id": "auto_quality_repair_gate_opponent_py",
+                    "role": "Algorithmic Logic Architect",
+                    "target_files": ["opponent.py"],
+                    "must_change_files": ["opponent.py"],
+                    "worker_prompt": "old protected contract repair",
+                    "task_kind": "quality_repair",
+                    "repair_blocker": "quality_gate",
+                    "repair_contract": {"blocker": "quality_gate", "file": "opponent.py"},
+                },
+                {
+                    "worker_id": "auto_quality_repair_file_size_strategy_py",
+                    "role": "Algorithmic Logic Architect",
+                    "target_files": ["strategy.py"],
+                    "must_change_files": ["strategy.py"],
+                    "worker_prompt": "old file-size repair",
+                    "task_kind": "quality_repair",
+                    "repair_blocker": "file_size",
+                    "repair_contract": {"blocker": "file_size", "file": "strategy.py"},
+                },
+            ],
+            "repair_scope_files": ["opponent.py", "strategy.py"],
+        }
+        state["gate_results"] = {
+            "quality": {
+                "all_passed": False,
+                "national_native_contract_ok": False,
+                "failed_gates": [
+                    (
+                        "national_native_contract(national_bot.py: "
+                        "_strategy_action must not continue with raw action after sanitizer failure)"
+                    ),
+                    "file_size(strategy.py:2483L/2000L)",
+                ],
+                "national_native_contract_errors": [
+                    (
+                        "national_bot.py: _strategy_action must not continue "
+                        "with raw action after sanitizer failure"
+                    ),
+                ],
+                "protected_contract_errors": [
+                    "opponent.py: print() emits TCP action text; output must be JSON response int",
+                ],
+                "oversized_files": {"strategy.py": 2483},
+            }
+        }
+        ckpt_file.write_text(json.dumps(state))
+
+        monkeypatch.setattr(tool_planning, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
+                 patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["national_bot.py"]):
+                mock_exec.return_value = (True, {}, [])
+                result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
+                return result, mock_exec
+
+        result, mock_exec = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["success"] is True
+        tasks = mock_exec.call_args.args[0]
+        blocker_files = {(task["repair_blocker"], task["target_files"][0]) for task in tasks}
+        assert ("national_native_contract", "national_bot.py") in blocker_files
+        assert ("quality_gate", "national_bot.py") not in blocker_files
+
+        ckpt = json.loads(ckpt_file.read_text())
+        checkpoint_blocker_files = {
+            (task["repair_blocker"], task["target_files"][0])
+            for task in ckpt["master_plan"]["tasks"]
+        }
+        assert ("national_native_contract", "national_bot.py") in checkpoint_blocker_files
+        assert "national_bot.py" in ckpt["master_plan"]["repair_scope_files"]
+
     def test_quality_failed_refreshes_same_file_changed_blocker_contract(self, tmp_path, monkeypatch):
         """A same-file quality failure with a new blocker must not reuse the old contract."""
         import asyncio
