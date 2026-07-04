@@ -43,10 +43,12 @@ HEAD_DRIFT_GATE_STAGES = {
     "master_planned",
     "workers_done",
 }
+HEAD_DRIFT_SELECTED_STAGES = {"selected"}
 HEAD_DRIFT_RESUME_STAGES = (
     HEAD_DRIFT_REPAIR_STAGES
     | HEAD_DRIFT_POST_QUALITY_STAGES
     | HEAD_DRIFT_GATE_STAGES
+    | HEAD_DRIFT_SELECTED_STAGES
 )
 
 
@@ -135,11 +137,13 @@ def checkpoint_recovery_diagnostics(
             and current_branch == EVOLUTION_BRANCH
             and (not baseline_branch or baseline_branch == current_branch)
             and target_dir is not None
-            and target_dir.exists()
+            and (stage in HEAD_DRIFT_SELECTED_STAGES or target_dir.exists())
         )
         if can_resume:
             if stage in HEAD_DRIFT_REPAIR_STAGES:
                 warnings.append("repo_baseline_head_mismatch_repair_resume")
+            elif stage in HEAD_DRIFT_SELECTED_STAGES:
+                warnings.append("repo_baseline_head_mismatch_selected_resume")
             elif stage == "master_planned":
                 warnings.append("repo_baseline_head_mismatch_initial_workers_resume")
             elif stage in HEAD_DRIFT_GATE_STAGES:

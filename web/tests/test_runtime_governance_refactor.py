@@ -893,6 +893,32 @@ def test_checkpoint_recovery_diagnostics_allows_master_planned_head_mismatch(tmp
     assert diag["target"]["exists"] is True
 
 
+def test_checkpoint_recovery_diagnostics_allows_selected_head_mismatch_without_target(tmp_path):
+    import pipeline_recovery
+
+    checkpoint = {
+        "next_v": 257,
+        "source_v": 197,
+        "stage": "selected",
+        "parent2_v": 188,
+        "repo_baseline": {"branch": "main", "head": "old123"},
+    }
+    snapshot = {"ok": True, "branch": "main", "head": "new456"}
+
+    diag = pipeline_recovery.checkpoint_recovery_diagnostics(
+        checkpoint,
+        snapshot=snapshot,
+        project_root=tmp_path,
+    )
+
+    assert diag["active"] is True
+    assert diag["recoverable"] is True
+    assert "repo_baseline_head_mismatch" not in diag["issues"]
+    assert "repo_baseline_head_mismatch_selected_resume" in diag["warnings"]
+    assert diag["repo"]["baseline_head_mismatch_allowed"] is True
+    assert "target" not in diag
+
+
 def test_checkpoint_recovery_diagnostics_blocks_early_repo_head_mismatch(tmp_path):
     import pipeline_recovery
 
