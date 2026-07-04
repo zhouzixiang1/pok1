@@ -8,6 +8,7 @@ connects to the national TCP server directly and sends wire actions itself.
 from __future__ import annotations
 
 import asyncio
+import ast
 from dataclasses import dataclass
 from datetime import datetime
 import os
@@ -157,8 +158,12 @@ class NativeNationalBot:
             state = self.reconstruct_state(req)
             action = self.sanitize_action(action, state, req["my_chips"])
         except Exception:
-            pass
-        return int(action)
+            traceback.print_exc(file=sys.stderr)
+            return 0
+        try:
+            return int(action)
+        except (TypeError, ValueError):
+            return 0
 
     def _current_round_has_allin(self) -> bool:
         round_num = self._round_num()
@@ -528,7 +533,43 @@ def check_native_contract(bot_dir: str | Path) -> list[str]:
     for token in required:
         if token not in text:
             errors.append(f"{NATIVE_ENTRY}: missing native TCP token {token!r}")
+    if _strategy_action_has_exception_pass(text):
+        errors.append(
+            f"{NATIVE_ENTRY}: _strategy_action must not continue with raw action after sanitizer failure"
+        )
     return errors
+
+
+def _strategy_action_has_exception_pass(text: str) -> bool:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_strategy_action":
+            for child in ast.walk(node):
+                if isinstance(child, ast.Try):
+                    for handler in child.handlers:
+                        if (
+                            _handler_catches_broad_exception(handler)
+                            and len(handler.body) == 1
+                            and isinstance(handler.body[0], ast.Pass)
+                        ):
+                            return True
+    return False
+
+
+def _handler_catches_broad_exception(handler: ast.ExceptHandler) -> bool:
+    if handler.type is None:
+        return True
+    if isinstance(handler.type, ast.Name):
+        return handler.type.id in {"Exception", "BaseException"}
+    if isinstance(handler.type, ast.Tuple):
+        return any(
+            isinstance(item, ast.Name) and item.id in {"Exception", "BaseException"}
+            for item in handler.type.elts
+        )
+    return False
 
 
 def _bot_version(label: str) -> int:
@@ -589,13 +630,14 @@ def select_acceptance_opponents(candidate_label: str, source_v: int | None, limi
 def _prepare_native_spec(label: str, bot_dir: Path, *, require_existing: bool) -> NativeBotSpec:
     entry = bot_dir / NATIVE_ENTRY
     if entry.exists():
-        return NativeBotSpec(label=label, path=bot_dir, entry=entry)
+        if require_existing or not check_native_contract(bot_dir):
+            return NativeBotSpec(label=label, path=bot_dir, entry=entry)
     if require_existing:
         raise ValueError(f"{label}: missing required {NATIVE_ENTRY}")
     tmp = Path(tempfile.mkdtemp(prefix=f"pok_native_{label}_"))
     dst = tmp / bot_dir.name
     shutil.copytree(bot_dir, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    return NativeBotSpec(label=label, path=dst, entry=ensure_native_entry(dst), temp_root=tmp)
+    return NativeBotSpec(label=label, path=dst, entry=ensure_native_entry(dst, overwrite=True), temp_root=tmp)
 
 
 def _cleanup_specs(specs: list[NativeBotSpec]) -> None:
