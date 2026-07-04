@@ -566,6 +566,41 @@ flop free-action `raise 101 -> 0` contexts, then full-label those candidates.
 Blindly increasing cap, opponent count, or seed ranges is not currently an
 efficient path to the 40-60 row training threshold.
 
+`template_action_prefilter.py` is the narrower search tool for that template.
+It follows the baseline plus opponent trajectory, asks the candidate on each
+baseline decision state, then forces candidate history back to the baseline
+action so later comparisons stay on the same path. The default template is
+flop `baseline_action=101` and `candidate_action=0`. The tool now defaults to
+a process executor, so the local judge and scan loop can use multiple CPU
+cores instead of only relying on bot subprocess concurrency:
+
+```bash
+python bots/neural_national_lab/tools/template_action_prefilter.py \
+  --baseline bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050 \
+  --candidate bots/neural_national_lab/versions/v052_v254_cf_value_veto_mix_p063_h32_bm050 \
+  --opponent bots/claude_v279 \
+  --games 64 \
+  --workers 16 \
+  --executor process \
+  --stop-after-hits 6 \
+  --stop-pair-after-first-side \
+  --max-own-decisions-per-side 80 \
+  --seed-base 2026072800 \
+  --bot-seed-base 202611280000 \
+  --output bots/neural_national_lab/data/template_prefilter_v043_v052_vs_v279_seed2026072800.json
+```
+
+The process-pool smoke on the known `pair21/pair48` seed range found both
+mirror-side template hits. Because worker tasks are submitted in parallel,
+`--stop-after-hits` can overshoot by up to the active worker batch; use
+`--workers 1` only when strict minimum submission matters. A 64-pair
+`claude_v279` search at `seed_base=2026072800`, with an 80-own-decision cap,
+completed all pairs and found zero hits. That makes the next v053 data step
+clearer: do not spend the main CPU budget on blind exact-template ranges.
+Generate or replay neighborhoods around the known hit contexts, then run
+`active_divergence_scan.py` only on the candidates that actually reproduce a
+decision-changing state.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass
