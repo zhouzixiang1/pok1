@@ -1,0 +1,3535 @@
+{
+  "mode": "single_decision_counterfactual_rollout",
+  "target": "forced_action_primary_delta",
+  "notes": [
+    "Branches force one bot0 action with verdict OK, then continue the same local judge match.",
+    "hand scope stops after the forked hand settles and uses hand_delta as primary_delta.",
+    "match scope continues the full local judge match and uses match_delta as primary_delta."
+  ],
+  "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050/main.py",
+  "opponent": "bots/claude_v283/main.py",
+  "games": 192,
+  "max_probes": 48,
+  "max_scan_decisions": 260,
+  "seed_base": 2026072103,
+  "seed_offset": 0,
+  "seed_stride": 1,
+  "bot_seed_base": 202610210000,
+  "bot_seed_stride": 10000,
+  "max_hands": 70,
+  "workers": 16,
+  "max_probes_per_task": 1,
+  "parallel_early_stop": true,
+  "branch_scope": "match",
+  "scan_persistent": true,
+  "filters": {
+    "kind": "any",
+    "stage": "any",
+    "min_conf": 0.5
+  },
+  "matches": [
+    {
+      "game": 0,
+      "seed": 2026072103,
+      "side": "g0:normal",
+      "decisions": 76,
+      "bot0_chips": 14799.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610210000,
+        202610210001
+      ]
+    },
+    {
+      "game": 0,
+      "seed": 2026072103,
+      "side": "g0:mirror",
+      "decisions": 82,
+      "bot0_chips": 13522.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610220000,
+        202610220001
+      ]
+    },
+    {
+      "game": 1,
+      "seed": 2026072104,
+      "side": "g1:normal",
+      "decisions": 101,
+      "bot0_chips": 9165.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610230000,
+        202610230001
+      ]
+    },
+    {
+      "game": 1,
+      "seed": 2026072104,
+      "side": "g1:mirror",
+      "decisions": 43,
+      "bot0_chips": -15350.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610240000,
+        202610240001
+      ]
+    },
+    {
+      "game": 2,
+      "seed": 2026072105,
+      "side": "g2:normal",
+      "decisions": 40,
+      "bot0_chips": null,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610250000,
+        202610250001
+      ]
+    },
+    {
+      "game": 2,
+      "seed": 2026072105,
+      "side": "g2:mirror",
+      "decisions": 93,
+      "bot0_chips": 13533.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610260000,
+        202610260001
+      ]
+    },
+    {
+      "game": 3,
+      "seed": 2026072106,
+      "side": "g3:normal",
+      "decisions": 126,
+      "bot0_chips": 3570.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610270000,
+        202610270001
+      ]
+    },
+    {
+      "game": 3,
+      "seed": 2026072106,
+      "side": "g3:mirror",
+      "decisions": 122,
+      "bot0_chips": -19863.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610280000,
+        202610280001
+      ]
+    },
+    {
+      "game": 4,
+      "seed": 2026072107,
+      "side": "g4:normal",
+      "decisions": 90,
+      "bot0_chips": -5.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610290000,
+        202610290001
+      ]
+    },
+    {
+      "game": 4,
+      "seed": 2026072107,
+      "side": "g4:mirror",
+      "decisions": 74,
+      "bot0_chips": 14850.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610300000,
+        202610300001
+      ]
+    },
+    {
+      "game": 5,
+      "seed": 2026072108,
+      "side": "g5:normal",
+      "decisions": 77,
+      "bot0_chips": -7986.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610310000,
+        202610310001
+      ]
+    },
+    {
+      "game": 5,
+      "seed": 2026072108,
+      "side": "g5:mirror",
+      "decisions": 119,
+      "bot0_chips": 534.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610320000,
+        202610320001
+      ]
+    },
+    {
+      "game": 6,
+      "seed": 2026072109,
+      "side": "g6:normal",
+      "decisions": 52,
+      "bot0_chips": -14175.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610330000,
+        202610330001
+      ]
+    },
+    {
+      "game": 6,
+      "seed": 2026072109,
+      "side": "g6:mirror",
+      "decisions": 51,
+      "bot0_chips": null,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610340000,
+        202610340001
+      ]
+    },
+    {
+      "game": 7,
+      "seed": 2026072110,
+      "side": "g7:normal",
+      "decisions": 73,
+      "bot0_chips": -638.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610350000,
+        202610350001
+      ]
+    },
+    {
+      "game": 7,
+      "seed": 2026072110,
+      "side": "g7:mirror",
+      "decisions": 103,
+      "bot0_chips": -583.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610360000,
+        202610360001
+      ]
+    },
+    {
+      "game": 8,
+      "seed": 2026072111,
+      "side": "g8:normal",
+      "decisions": 48,
+      "bot0_chips": -15851.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610370000,
+        202610370001
+      ]
+    },
+    {
+      "game": 8,
+      "seed": 2026072111,
+      "side": "g8:mirror",
+      "decisions": 104,
+      "bot0_chips": 17672.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610380000,
+        202610380001
+      ]
+    },
+    {
+      "game": 9,
+      "seed": 2026072112,
+      "side": "g9:normal",
+      "decisions": 21,
+      "bot0_chips": null,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610390000,
+        202610390001
+      ]
+    },
+    {
+      "game": 9,
+      "seed": 2026072112,
+      "side": "g9:mirror",
+      "decisions": 94,
+      "bot0_chips": -37.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610400000,
+        202610400001
+      ]
+    },
+    {
+      "game": 10,
+      "seed": 2026072113,
+      "side": "g10:normal",
+      "decisions": 54,
+      "bot0_chips": -2461.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610410000,
+        202610410001
+      ]
+    },
+    {
+      "game": 10,
+      "seed": 2026072113,
+      "side": "g10:mirror",
+      "decisions": 113,
+      "bot0_chips": 9349.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610420000,
+        202610420001
+      ]
+    },
+    {
+      "game": 11,
+      "seed": 2026072114,
+      "side": "g11:normal",
+      "decisions": 97,
+      "bot0_chips": -3673.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610430000,
+        202610430001
+      ]
+    },
+    {
+      "game": 11,
+      "seed": 2026072114,
+      "side": "g11:mirror",
+      "decisions": 98,
+      "bot0_chips": 14910.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610440000,
+        202610440001
+      ]
+    },
+    {
+      "game": 12,
+      "seed": 2026072115,
+      "side": "g12:normal",
+      "decisions": 73,
+      "bot0_chips": -16842.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610450000,
+        202610450001
+      ]
+    },
+    {
+      "game": 12,
+      "seed": 2026072115,
+      "side": "g12:mirror",
+      "decisions": 84,
+      "bot0_chips": 15177.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610460000,
+        202610460001
+      ]
+    },
+    {
+      "game": 13,
+      "seed": 2026072116,
+      "side": "g13:normal",
+      "decisions": 88,
+      "bot0_chips": -8687.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610470000,
+        202610470001
+      ]
+    },
+    {
+      "game": 13,
+      "seed": 2026072116,
+      "side": "g13:mirror",
+      "decisions": 125,
+      "bot0_chips": -20053.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610480000,
+        202610480001
+      ]
+    },
+    {
+      "game": 14,
+      "seed": 2026072117,
+      "side": "g14:normal",
+      "decisions": 123,
+      "bot0_chips": 1059.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610490000,
+        202610490001
+      ]
+    },
+    {
+      "game": 14,
+      "seed": 2026072117,
+      "side": "g14:mirror",
+      "decisions": 14,
+      "bot0_chips": null,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610500000,
+        202610500001
+      ]
+    },
+    {
+      "game": 15,
+      "seed": 2026072118,
+      "side": "g15:normal",
+      "decisions": 51,
+      "bot0_chips": -5530.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610510000,
+        202610510001
+      ]
+    },
+    {
+      "game": 15,
+      "seed": 2026072118,
+      "side": "g15:mirror",
+      "decisions": 96,
+      "bot0_chips": 8334.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610520000,
+        202610520001
+      ]
+    },
+    {
+      "game": 16,
+      "seed": 2026072119,
+      "side": "g16:normal",
+      "decisions": 38,
+      "bot0_chips": null,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610530000,
+        202610530001
+      ]
+    },
+    {
+      "game": 16,
+      "seed": 2026072119,
+      "side": "g16:mirror",
+      "decisions": 106,
+      "bot0_chips": -3.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610540000,
+        202610540001
+      ]
+    },
+    {
+      "game": 17,
+      "seed": 2026072120,
+      "side": "g17:normal",
+      "decisions": 53,
+      "bot0_chips": null,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610550000,
+        202610550001
+      ]
+    },
+    {
+      "game": 17,
+      "seed": 2026072120,
+      "side": "g17:mirror",
+      "decisions": 102,
+      "bot0_chips": 16336.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610560000,
+        202610560001
+      ]
+    },
+    {
+      "game": 18,
+      "seed": 2026072121,
+      "side": "g18:normal",
+      "decisions": 87,
+      "bot0_chips": -11122.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610570000,
+        202610570001
+      ]
+    },
+    {
+      "game": 18,
+      "seed": 2026072121,
+      "side": "g18:mirror",
+      "decisions": 119,
+      "bot0_chips": -833.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610580000,
+        202610580001
+      ]
+    },
+    {
+      "game": 19,
+      "seed": 2026072122,
+      "side": "g19:normal",
+      "decisions": 104,
+      "bot0_chips": 12806.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610590000,
+        202610590001
+      ]
+    },
+    {
+      "game": 19,
+      "seed": 2026072122,
+      "side": "g19:mirror",
+      "decisions": 127,
+      "bot0_chips": 19808.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610600000,
+        202610600001
+      ]
+    },
+    {
+      "game": 20,
+      "seed": 2026072123,
+      "side": "g20:normal",
+      "decisions": 32,
+      "bot0_chips": null,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610610000,
+        202610610001
+      ]
+    },
+    {
+      "game": 20,
+      "seed": 2026072123,
+      "side": "g20:mirror",
+      "decisions": 132,
+      "bot0_chips": -11.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610620000,
+        202610620001
+      ]
+    },
+    {
+      "game": 21,
+      "seed": 2026072124,
+      "side": "g21:normal",
+      "decisions": 118,
+      "bot0_chips": 12645.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610630000,
+        202610630001
+      ]
+    },
+    {
+      "game": 21,
+      "seed": 2026072124,
+      "side": "g21:mirror",
+      "decisions": 129,
+      "bot0_chips": 19378.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610640000,
+        202610640001
+      ]
+    },
+    {
+      "game": 22,
+      "seed": 2026072125,
+      "side": "g22:normal",
+      "decisions": 99,
+      "bot0_chips": 8971.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610650000,
+        202610650001
+      ]
+    },
+    {
+      "game": 22,
+      "seed": 2026072125,
+      "side": "g22:mirror",
+      "decisions": 86,
+      "bot0_chips": 16512.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610660000,
+        202610660001
+      ]
+    },
+    {
+      "game": 23,
+      "seed": 2026072126,
+      "side": "g23:normal",
+      "decisions": 74,
+      "bot0_chips": 14950.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610670000,
+        202610670001
+      ]
+    },
+    {
+      "game": 23,
+      "seed": 2026072126,
+      "side": "g23:mirror",
+      "decisions": 109,
+      "bot0_chips": 12755.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610680000,
+        202610680001
+      ]
+    },
+    {
+      "game": 24,
+      "seed": 2026072127,
+      "side": "g24:normal",
+      "decisions": 82,
+      "bot0_chips": 12492.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610690000,
+        202610690001
+      ]
+    },
+    {
+      "game": 24,
+      "seed": 2026072127,
+      "side": "g24:mirror",
+      "decisions": 109,
+      "bot0_chips": 1068.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610700000,
+        202610700001
+      ]
+    },
+    {
+      "game": 25,
+      "seed": 2026072128,
+      "side": "g25:normal",
+      "decisions": 111,
+      "bot0_chips": -30.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610710000,
+        202610710001
+      ]
+    },
+    {
+      "game": 25,
+      "seed": 2026072128,
+      "side": "g25:mirror",
+      "decisions": 128,
+      "bot0_chips": -13583.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610720000,
+        202610720001
+      ]
+    },
+    {
+      "game": 26,
+      "seed": 2026072129,
+      "side": "g26:normal",
+      "decisions": 103,
+      "bot0_chips": 16265.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610730000,
+        202610730001
+      ]
+    },
+    {
+      "game": 26,
+      "seed": 2026072129,
+      "side": "g26:mirror",
+      "decisions": 104,
+      "bot0_chips": 10241.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610740000,
+        202610740001
+      ]
+    },
+    {
+      "game": 27,
+      "seed": 2026072130,
+      "side": "g27:normal",
+      "decisions": 126,
+      "bot0_chips": 471.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610750000,
+        202610750001
+      ]
+    },
+    {
+      "game": 27,
+      "seed": 2026072130,
+      "side": "g27:mirror",
+      "decisions": 94,
+      "bot0_chips": -8020.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610760000,
+        202610760001
+      ]
+    },
+    {
+      "game": 28,
+      "seed": 2026072131,
+      "side": "g28:normal",
+      "decisions": 93,
+      "bot0_chips": 16394.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610770000,
+        202610770001
+      ]
+    },
+    {
+      "game": 28,
+      "seed": 2026072131,
+      "side": "g28:mirror",
+      "decisions": 104,
+      "bot0_chips": 13722.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610780000,
+        202610780001
+      ]
+    },
+    {
+      "game": 29,
+      "seed": 2026072132,
+      "side": "g29:normal",
+      "decisions": 92,
+      "bot0_chips": 15623.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610790000,
+        202610790001
+      ]
+    },
+    {
+      "game": 29,
+      "seed": 2026072132,
+      "side": "g29:mirror",
+      "decisions": 75,
+      "bot0_chips": 8531.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610800000,
+        202610800001
+      ]
+    },
+    {
+      "game": 30,
+      "seed": 2026072133,
+      "side": "g30:normal",
+      "decisions": 95,
+      "bot0_chips": 4558.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610810000,
+        202610810001
+      ]
+    },
+    {
+      "game": 30,
+      "seed": 2026072133,
+      "side": "g30:mirror",
+      "decisions": 7,
+      "bot0_chips": null,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610820000,
+        202610820001
+      ]
+    },
+    {
+      "game": 31,
+      "seed": 2026072134,
+      "side": "g31:normal",
+      "decisions": 111,
+      "bot0_chips": -38.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610830000,
+        202610830001
+      ]
+    },
+    {
+      "game": 31,
+      "seed": 2026072134,
+      "side": "g31:mirror",
+      "decisions": 108,
+      "bot0_chips": 536.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610840000,
+        202610840001
+      ]
+    },
+    {
+      "game": 32,
+      "seed": 2026072135,
+      "side": "g32:normal",
+      "decisions": 20,
+      "bot0_chips": null,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610850000,
+        202610850001
+      ]
+    },
+    {
+      "game": 32,
+      "seed": 2026072135,
+      "side": "g32:mirror",
+      "decisions": 91,
+      "bot0_chips": 15257.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610860000,
+        202610860001
+      ]
+    },
+    {
+      "game": 33,
+      "seed": 2026072136,
+      "side": "g33:normal",
+      "decisions": 118,
+      "bot0_chips": 91.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610870000,
+        202610870001
+      ]
+    },
+    {
+      "game": 33,
+      "seed": 2026072136,
+      "side": "g33:mirror",
+      "decisions": 66,
+      "bot0_chips": -7641.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610880000,
+        202610880001
+      ]
+    },
+    {
+      "game": 34,
+      "seed": 2026072137,
+      "side": "g34:normal",
+      "decisions": 89,
+      "bot0_chips": 8166.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610890000,
+        202610890001
+      ]
+    },
+    {
+      "game": 34,
+      "seed": 2026072137,
+      "side": "g34:mirror",
+      "decisions": 104,
+      "bot0_chips": 12559.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610900000,
+        202610900001
+      ]
+    },
+    {
+      "game": 35,
+      "seed": 2026072138,
+      "side": "g35:normal",
+      "decisions": 92,
+      "bot0_chips": 15395.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610910000,
+        202610910001
+      ]
+    },
+    {
+      "game": 35,
+      "seed": 2026072138,
+      "side": "g35:mirror",
+      "decisions": 128,
+      "bot0_chips": 16514.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610920000,
+        202610920001
+      ]
+    },
+    {
+      "game": 36,
+      "seed": 2026072139,
+      "side": "g36:normal",
+      "decisions": 104,
+      "bot0_chips": 9170.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610930000,
+        202610930001
+      ]
+    },
+    {
+      "game": 36,
+      "seed": 2026072139,
+      "side": "g36:mirror",
+      "decisions": 118,
+      "bot0_chips": 1164.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610940000,
+        202610940001
+      ]
+    },
+    {
+      "game": 37,
+      "seed": 2026072140,
+      "side": "g37:normal",
+      "decisions": 36,
+      "bot0_chips": null,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610950000,
+        202610950001
+      ]
+    },
+    {
+      "game": 37,
+      "seed": 2026072140,
+      "side": "g37:mirror",
+      "decisions": 99,
+      "bot0_chips": -11564.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610960000,
+        202610960001
+      ]
+    },
+    {
+      "game": 38,
+      "seed": 2026072141,
+      "side": "g38:normal",
+      "decisions": 98,
+      "bot0_chips": -2565.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610970000,
+        202610970001
+      ]
+    },
+    {
+      "game": 38,
+      "seed": 2026072141,
+      "side": "g38:mirror",
+      "decisions": 120,
+      "bot0_chips": -4723.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610980000,
+        202610980001
+      ]
+    },
+    {
+      "game": 39,
+      "seed": 2026072142,
+      "side": "g39:normal",
+      "decisions": 127,
+      "bot0_chips": 2607.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202610990000,
+        202610990001
+      ]
+    },
+    {
+      "game": 39,
+      "seed": 2026072142,
+      "side": "g39:mirror",
+      "decisions": 93,
+      "bot0_chips": 14669.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611000000,
+        202611000001
+      ]
+    },
+    {
+      "game": 40,
+      "seed": 2026072143,
+      "side": "g40:normal",
+      "decisions": 80,
+      "bot0_chips": 1979.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611010000,
+        202611010001
+      ]
+    },
+    {
+      "game": 40,
+      "seed": 2026072143,
+      "side": "g40:mirror",
+      "decisions": 77,
+      "bot0_chips": -10899.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611020000,
+        202611020001
+      ]
+    },
+    {
+      "game": 41,
+      "seed": 2026072144,
+      "side": "g41:normal",
+      "decisions": 115,
+      "bot0_chips": 6099.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611030000,
+        202611030001
+      ]
+    },
+    {
+      "game": 41,
+      "seed": 2026072144,
+      "side": "g41:mirror",
+      "decisions": 119,
+      "bot0_chips": 299.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611040000,
+        202611040001
+      ]
+    },
+    {
+      "game": 42,
+      "seed": 2026072145,
+      "side": "g42:normal",
+      "decisions": 116,
+      "bot0_chips": 85.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611050000,
+        202611050001
+      ]
+    },
+    {
+      "game": 42,
+      "seed": 2026072145,
+      "side": "g42:mirror",
+      "decisions": 79,
+      "bot0_chips": 14207.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611060000,
+        202611060001
+      ]
+    },
+    {
+      "game": 43,
+      "seed": 2026072146,
+      "side": "g43:normal",
+      "decisions": 113,
+      "bot0_chips": 2992.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611070000,
+        202611070001
+      ]
+    },
+    {
+      "game": 43,
+      "seed": 2026072146,
+      "side": "g43:mirror",
+      "decisions": 117,
+      "bot0_chips": 1010.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611080000,
+        202611080001
+      ]
+    },
+    {
+      "game": 44,
+      "seed": 2026072147,
+      "side": "g44:normal",
+      "decisions": 123,
+      "bot0_chips": -1834.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611090000,
+        202611090001
+      ]
+    },
+    {
+      "game": 44,
+      "seed": 2026072147,
+      "side": "g44:mirror",
+      "decisions": 114,
+      "bot0_chips": 19001.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611100000,
+        202611100001
+      ]
+    },
+    {
+      "game": 45,
+      "seed": 2026072148,
+      "side": "g45:normal",
+      "decisions": 89,
+      "bot0_chips": -9673.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611110000,
+        202611110001
+      ]
+    },
+    {
+      "game": 45,
+      "seed": 2026072148,
+      "side": "g45:mirror",
+      "decisions": 78,
+      "bot0_chips": 15000.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611120000,
+        202611120001
+      ]
+    },
+    {
+      "game": 46,
+      "seed": 2026072149,
+      "side": "g46:normal",
+      "decisions": 108,
+      "bot0_chips": 10004.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611130000,
+        202611130001
+      ]
+    },
+    {
+      "game": 46,
+      "seed": 2026072149,
+      "side": "g46:mirror",
+      "decisions": 119,
+      "bot0_chips": 1276.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611140000,
+        202611140001
+      ]
+    },
+    {
+      "game": 47,
+      "seed": 2026072150,
+      "side": "g47:normal",
+      "decisions": 88,
+      "bot0_chips": -18348.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611150000,
+        202611150001
+      ]
+    },
+    {
+      "game": 47,
+      "seed": 2026072150,
+      "side": "g47:mirror",
+      "decisions": 100,
+      "bot0_chips": 17489.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611160000,
+        202611160001
+      ]
+    },
+    {
+      "game": 48,
+      "seed": 2026072151,
+      "side": "g48:normal",
+      "decisions": 65,
+      "bot0_chips": -1.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611170000,
+        202611170001
+      ]
+    },
+    {
+      "game": 48,
+      "seed": 2026072151,
+      "side": "g48:mirror",
+      "decisions": 112,
+      "bot0_chips": 117.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611180000,
+        202611180001
+      ]
+    },
+    {
+      "game": 49,
+      "seed": 2026072152,
+      "side": "g49:normal",
+      "decisions": 85,
+      "bot0_chips": 11210.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611190000,
+        202611190001
+      ]
+    },
+    {
+      "game": 49,
+      "seed": 2026072152,
+      "side": "g49:mirror",
+      "decisions": 119,
+      "bot0_chips": 1232.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611200000,
+        202611200001
+      ]
+    },
+    {
+      "game": 50,
+      "seed": 2026072153,
+      "side": "g50:normal",
+      "decisions": 91,
+      "bot0_chips": 10071.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611210000,
+        202611210001
+      ]
+    },
+    {
+      "game": 50,
+      "seed": 2026072153,
+      "side": "g50:mirror",
+      "decisions": 78,
+      "bot0_chips": 15100.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611220000,
+        202611220001
+      ]
+    },
+    {
+      "game": 51,
+      "seed": 2026072154,
+      "side": "g51:normal",
+      "decisions": 5,
+      "bot0_chips": null,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611230000,
+        202611230001
+      ]
+    },
+    {
+      "game": 51,
+      "seed": 2026072154,
+      "side": "g51:mirror",
+      "decisions": 117,
+      "bot0_chips": -20052.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611240000,
+        202611240001
+      ]
+    },
+    {
+      "game": 52,
+      "seed": 2026072155,
+      "side": "g52:normal",
+      "decisions": 104,
+      "bot0_chips": -5749.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611250000,
+        202611250001
+      ]
+    },
+    {
+      "game": 52,
+      "seed": 2026072155,
+      "side": "g52:mirror",
+      "decisions": 129,
+      "bot0_chips": -197.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611260000,
+        202611260001
+      ]
+    },
+    {
+      "game": 53,
+      "seed": 2026072156,
+      "side": "g53:normal",
+      "decisions": 86,
+      "bot0_chips": 6127.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611270000,
+        202611270001
+      ]
+    },
+    {
+      "game": 53,
+      "seed": 2026072156,
+      "side": "g53:mirror",
+      "decisions": 102,
+      "bot0_chips": 13554.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611280000,
+        202611280001
+      ]
+    },
+    {
+      "game": 54,
+      "seed": 2026072157,
+      "side": "g54:normal",
+      "decisions": 96,
+      "bot0_chips": 9077.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611290000,
+        202611290001
+      ]
+    },
+    {
+      "game": 54,
+      "seed": 2026072157,
+      "side": "g54:mirror",
+      "decisions": 63,
+      "bot0_chips": -10721.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611300000,
+        202611300001
+      ]
+    },
+    {
+      "game": 55,
+      "seed": 2026072158,
+      "side": "g55:normal",
+      "decisions": 34,
+      "bot0_chips": null,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611310000,
+        202611310001
+      ]
+    },
+    {
+      "game": 55,
+      "seed": 2026072158,
+      "side": "g55:mirror",
+      "decisions": 99,
+      "bot0_chips": 405.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611320000,
+        202611320001
+      ]
+    },
+    {
+      "game": 56,
+      "seed": 2026072159,
+      "side": "g56:normal",
+      "decisions": 116,
+      "bot0_chips": -48.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611330000,
+        202611330001
+      ]
+    },
+    {
+      "game": 56,
+      "seed": 2026072159,
+      "side": "g56:mirror",
+      "decisions": 123,
+      "bot0_chips": -200.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611340000,
+        202611340001
+      ]
+    },
+    {
+      "game": 57,
+      "seed": 2026072160,
+      "side": "g57:normal",
+      "decisions": 123,
+      "bot0_chips": 4687.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611350000,
+        202611350001
+      ]
+    },
+    {
+      "game": 57,
+      "seed": 2026072160,
+      "side": "g57:mirror",
+      "decisions": 135,
+      "bot0_chips": 1796.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611360000,
+        202611360001
+      ]
+    },
+    {
+      "game": 58,
+      "seed": 2026072161,
+      "side": "g58:normal",
+      "decisions": 109,
+      "bot0_chips": -45.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611370000,
+        202611370001
+      ]
+    },
+    {
+      "game": 58,
+      "seed": 2026072161,
+      "side": "g58:mirror",
+      "decisions": 103,
+      "bot0_chips": 6054.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611380000,
+        202611380001
+      ]
+    },
+    {
+      "game": 59,
+      "seed": 2026072162,
+      "side": "g59:normal",
+      "decisions": 107,
+      "bot0_chips": 10716.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611390000,
+        202611390001
+      ]
+    },
+    {
+      "game": 59,
+      "seed": 2026072162,
+      "side": "g59:mirror",
+      "decisions": 109,
+      "bot0_chips": 18460.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611400000,
+        202611400001
+      ]
+    },
+    {
+      "game": 60,
+      "seed": 2026072163,
+      "side": "g60:normal",
+      "decisions": 113,
+      "bot0_chips": 722.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611410000,
+        202611410001
+      ]
+    },
+    {
+      "game": 60,
+      "seed": 2026072163,
+      "side": "g60:mirror",
+      "decisions": 42,
+      "bot0_chips": -5915.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611420000,
+        202611420001
+      ]
+    },
+    {
+      "game": 61,
+      "seed": 2026072164,
+      "side": "g61:normal",
+      "decisions": 113,
+      "bot0_chips": 19930.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611430000,
+        202611430001
+      ]
+    },
+    {
+      "game": 61,
+      "seed": 2026072164,
+      "side": "g61:mirror",
+      "decisions": 79,
+      "bot0_chips": 15249.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611440000,
+        202611440001
+      ]
+    },
+    {
+      "game": 62,
+      "seed": 2026072165,
+      "side": "g62:normal",
+      "decisions": 38,
+      "bot0_chips": null,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611450000,
+        202611450001
+      ]
+    },
+    {
+      "game": 62,
+      "seed": 2026072165,
+      "side": "g62:mirror",
+      "decisions": 107,
+      "bot0_chips": -1764.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611460000,
+        202611460001
+      ]
+    },
+    {
+      "game": 63,
+      "seed": 2026072166,
+      "side": "g63:normal",
+      "decisions": 75,
+      "bot0_chips": 14106.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611470000,
+        202611470001
+      ]
+    },
+    {
+      "game": 63,
+      "seed": 2026072166,
+      "side": "g63:mirror",
+      "decisions": 106,
+      "bot0_chips": -38.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611480000,
+        202611480001
+      ]
+    },
+    {
+      "game": 64,
+      "seed": 2026072167,
+      "side": "g64:normal",
+      "decisions": 110,
+      "bot0_chips": 17870.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611490000,
+        202611490001
+      ]
+    },
+    {
+      "game": 64,
+      "seed": 2026072167,
+      "side": "g64:mirror",
+      "decisions": 123,
+      "bot0_chips": 10154.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611500000,
+        202611500001
+      ]
+    },
+    {
+      "game": 65,
+      "seed": 2026072168,
+      "side": "g65:normal",
+      "decisions": 80,
+      "bot0_chips": 15602.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611510000,
+        202611510001
+      ]
+    },
+    {
+      "game": 65,
+      "seed": 2026072168,
+      "side": "g65:mirror",
+      "decisions": 119,
+      "bot0_chips": -7420.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611520000,
+        202611520001
+      ]
+    },
+    {
+      "game": 66,
+      "seed": 2026072169,
+      "side": "g66:normal",
+      "decisions": 94,
+      "bot0_chips": -1868.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611530000,
+        202611530001
+      ]
+    },
+    {
+      "game": 66,
+      "seed": 2026072169,
+      "side": "g66:mirror",
+      "decisions": 87,
+      "bot0_chips": 14593.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611540000,
+        202611540001
+      ]
+    },
+    {
+      "game": 67,
+      "seed": 2026072170,
+      "side": "g67:normal",
+      "decisions": 124,
+      "bot0_chips": -31.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611550000,
+        202611550001
+      ]
+    },
+    {
+      "game": 67,
+      "seed": 2026072170,
+      "side": "g67:mirror",
+      "decisions": 105,
+      "bot0_chips": 7583.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611560000,
+        202611560001
+      ]
+    },
+    {
+      "game": 68,
+      "seed": 2026072171,
+      "side": "g68:normal",
+      "decisions": 105,
+      "bot0_chips": -37.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611570000,
+        202611570001
+      ]
+    },
+    {
+      "game": 68,
+      "seed": 2026072171,
+      "side": "g68:mirror",
+      "decisions": 12,
+      "bot0_chips": null,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611580000,
+        202611580001
+      ]
+    },
+    {
+      "game": 71,
+      "seed": 2026072174,
+      "side": "g71:normal",
+      "decisions": 47,
+      "bot0_chips": -15500.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611630000,
+        202611630001
+      ]
+    },
+    {
+      "game": 73,
+      "seed": 2026072176,
+      "side": "g73:normal",
+      "decisions": 77,
+      "bot0_chips": 14596.0,
+      "version": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "bot_seeds": [
+        202611670000,
+        202611670001
+      ]
+    }
+  ],
+  "probes": [
+    {
+      "probe_index": 4,
+      "side": "g2:normal",
+      "decision_index": 39,
+      "analysis_seed": 202810250039,
+      "hand": 21,
+      "stage": "flop",
+      "kind": "to_raise",
+      "public_cards": [
+        19,
+        33,
+        11
+      ],
+      "my_cards": [
+        1,
+        26
+      ],
+      "to_call": 0,
+      "pot": 200,
+      "my_chips": 19900,
+      "rule_action": 0,
+      "base_final": 0,
+      "base_label": "call",
+      "advised_raw": 101,
+      "advised_final": 101,
+      "advised_label": "raise",
+      "candidate_label_id": 2,
+      "rule_label_id": 1,
+      "top_label": "raise_half",
+      "top_conf": 0.953715228520958,
+      "call_conf": 0.03926008762034679,
+      "raise_conf": 0.953715228520958,
+      "advantage_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.5,
+        0.0,
+        0.0,
+        0.0,
+        0.265,
+        0.01,
+        0.995,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.7,
+        0.4895375,
+        0.0,
+        0.6,
+        0.6666666666666666,
+        0.0,
+        0.0,
+        0.4,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.025,
+        1.0,
+        0.0,
+        0.125,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.953715228520958,
+        0.03926008762034679,
+        0.0,
+        0.01,
+        1.0,
+        0.995,
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "status": "ok",
+      "baseline_status": "ok",
+      "candidate_status": "ok",
+      "branch_bot_seeds": [
+        202710210008,
+        202710210009
+      ],
+      "baseline_chips": -386.0,
+      "candidate_chips": 638.0,
+      "match_delta": 1024.0,
+      "baseline_hand_delta": 100.0,
+      "candidate_hand_delta": 100.0,
+      "hand_delta": 0.0,
+      "primary_delta": 1024.0,
+      "advantage_target": 1,
+      "advantage_weight": 5.0
+    },
+    {
+      "probe_index": 13,
+      "side": "g6:mirror",
+      "decision_index": 50,
+      "analysis_seed": 202810340050,
+      "hand": 26,
+      "stage": "flop",
+      "kind": "to_raise",
+      "public_cards": [
+        10,
+        32,
+        31
+      ],
+      "my_cards": [
+        17,
+        48
+      ],
+      "to_call": 0,
+      "pot": 200,
+      "my_chips": 19900,
+      "rule_action": 0,
+      "base_final": 0,
+      "base_label": "call",
+      "advised_raw": 101,
+      "advised_final": 101,
+      "advised_label": "raise",
+      "candidate_label_id": 2,
+      "rule_label_id": 1,
+      "top_label": "raise_half",
+      "top_conf": 0.8860810221429468,
+      "call_conf": 0.054507425175898766,
+      "raise_conf": 0.8860810221429468,
+      "advantage_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.3333333333333333,
+        0.0,
+        0.0,
+        0.5349999999999999,
+        0.01,
+        0.995,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.6285714285714286,
+        0.49585,
+        0.0,
+        0.6,
+        0.6666666666666666,
+        0.0,
+        0.0,
+        0.2,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        0.0,
+        0.25,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.8860810221429468,
+        0.05450742517589878,
+        0.0,
+        0.01,
+        1.0,
+        0.995,
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "status": "ok",
+      "baseline_status": "ok",
+      "candidate_status": "ok",
+      "branch_bot_seeds": [
+        202710210026,
+        202710210027
+      ],
+      "baseline_chips": 354.0,
+      "candidate_chips": -424.0,
+      "match_delta": -778.0,
+      "baseline_hand_delta": -100.0,
+      "candidate_hand_delta": 100.0,
+      "hand_delta": 200.0,
+      "primary_delta": -778.0,
+      "advantage_target": 0,
+      "advantage_weight": 5.0
+    },
+    {
+      "probe_index": 18,
+      "side": "g9:normal",
+      "decision_index": 20,
+      "analysis_seed": 202810390020,
+      "hand": 11,
+      "stage": "flop",
+      "kind": "to_raise",
+      "public_cards": [
+        6,
+        40,
+        13
+      ],
+      "my_cards": [
+        8,
+        39
+      ],
+      "to_call": 0,
+      "pot": 200,
+      "my_chips": 19900,
+      "rule_action": 0,
+      "base_final": 0,
+      "base_label": "call",
+      "advised_raw": 101,
+      "advised_final": 101,
+      "advised_label": "raise",
+      "candidate_label_id": 2,
+      "rule_label_id": 1,
+      "top_label": "raise_half",
+      "top_conf": 0.941053954797717,
+      "call_conf": 0.04925886812708417,
+      "raise_conf": 0.941053954797717,
+      "advantage_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.75,
+        0.16666666666666666,
+        0.0,
+        0.0,
+        0.4,
+        0.01,
+        0.995,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.8428571428571429,
+        0.481525,
+        0.0,
+        0.6,
+        0.8333333333333334,
+        0.0,
+        0.0,
+        0.2,
+        0.0,
+        0.0,
+        0.2,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.025,
+        1.0,
+        0.0,
+        0.125,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.941053954797717,
+        0.04925886812708417,
+        0.0,
+        0.01,
+        1.0,
+        0.995,
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "status": "ok",
+      "baseline_status": "ok",
+      "candidate_status": "ok",
+      "branch_bot_seeds": [
+        202710210036,
+        202710210037
+      ],
+      "baseline_chips": 8473.0,
+      "candidate_chips": 8037.0,
+      "match_delta": -436.0,
+      "baseline_hand_delta": 100.0,
+      "candidate_hand_delta": 100.0,
+      "hand_delta": 0.0,
+      "primary_delta": -436.0,
+      "advantage_target": 0,
+      "advantage_weight": 4.36
+    },
+    {
+      "probe_index": 29,
+      "side": "g14:mirror",
+      "decision_index": 13,
+      "analysis_seed": 202810500013,
+      "hand": 7,
+      "stage": "flop",
+      "kind": "to_raise",
+      "public_cards": [
+        31,
+        18,
+        44
+      ],
+      "my_cards": [
+        20,
+        5
+      ],
+      "to_call": 0,
+      "pot": 200,
+      "my_chips": 19900,
+      "rule_action": 0,
+      "base_final": 0,
+      "base_label": "call",
+      "advised_raw": 101,
+      "advised_final": 101,
+      "advised_label": "raise",
+      "candidate_label_id": 2,
+      "rule_label_id": 1,
+      "top_label": "raise_half",
+      "top_conf": 0.9532773199718073,
+      "call_conf": 0.03401929204033964,
+      "raise_conf": 0.9532773199718073,
+      "advantage_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.4166666666666667,
+        0.08333333333333333,
+        0.0,
+        0.0,
+        0.295,
+        0.01,
+        0.995,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.9,
+        0.5127875,
+        0.0,
+        0.6,
+        0.9166666666666666,
+        0.0,
+        0.0,
+        0.2,
+        0.0,
+        0.0,
+        0.2,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.025,
+        1.0,
+        0.0,
+        0.125,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.9532773199718073,
+        0.03401929204033964,
+        0.0,
+        0.01,
+        1.0,
+        0.995,
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "status": "ok",
+      "baseline_status": "ok",
+      "candidate_status": "ok",
+      "branch_bot_seeds": [
+        202710210058,
+        202710210059
+      ],
+      "baseline_chips": 1027.0,
+      "candidate_chips": 1027.0,
+      "match_delta": 0.0,
+      "baseline_hand_delta": 100.0,
+      "candidate_hand_delta": 100.0,
+      "hand_delta": 0.0,
+      "primary_delta": 0.0,
+      "advantage_target": 0,
+      "advantage_weight": 0.05
+    },
+    {
+      "probe_index": 32,
+      "side": "g16:normal",
+      "decision_index": 37,
+      "analysis_seed": 202810530037,
+      "hand": 20,
+      "stage": "flop",
+      "kind": "to_raise",
+      "public_cards": [
+        28,
+        15,
+        9
+      ],
+      "my_cards": [
+        7,
+        44
+      ],
+      "to_call": 0,
+      "pot": 200,
+      "my_chips": 19900,
+      "rule_action": 0,
+      "base_final": 0,
+      "base_label": "call",
+      "advised_raw": 101,
+      "advised_final": 101,
+      "advised_label": "raise",
+      "candidate_label_id": 2,
+      "rule_label_id": 1,
+      "top_label": "raise_half",
+      "top_conf": 0.9124084800434943,
+      "call_conf": 0.05206221722572148,
+      "raise_conf": 0.9124084800434943,
+      "advantage_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.9166666666666666,
+        0.08333333333333333,
+        0.0,
+        0.0,
+        0.45499999999999996,
+        0.01,
+        0.995,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.7142857142857143,
+        0.4954875,
+        0.0,
+        0.6,
+        0.5833333333333334,
+        0.0,
+        0.0,
+        0.2,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        0.0,
+        0.25,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.9124084800434943,
+        0.05206221722572148,
+        0.0,
+        0.01,
+        1.0,
+        0.995,
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "status": "ok",
+      "baseline_status": "ok",
+      "candidate_status": "ok",
+      "branch_bot_seeds": [
+        202710210064,
+        202710210065
+      ],
+      "baseline_chips": 105.0,
+      "candidate_chips": 160.0,
+      "match_delta": 55.0,
+      "baseline_hand_delta": -100.0,
+      "candidate_hand_delta": 100.0,
+      "hand_delta": 200.0,
+      "primary_delta": 55.0,
+      "advantage_target": 1,
+      "advantage_weight": 0.55
+    },
+    {
+      "probe_index": 34,
+      "side": "g17:normal",
+      "decision_index": 52,
+      "analysis_seed": 202810550052,
+      "hand": 28,
+      "stage": "flop",
+      "kind": "to_raise",
+      "public_cards": [
+        40,
+        1,
+        18
+      ],
+      "my_cards": [
+        8,
+        21
+      ],
+      "to_call": 0,
+      "pot": 200,
+      "my_chips": 19900,
+      "rule_action": 0,
+      "base_final": 0,
+      "base_label": "call",
+      "advised_raw": 101,
+      "advised_final": 101,
+      "advised_label": "raise",
+      "candidate_label_id": 2,
+      "rule_label_id": 1,
+      "top_label": "raise_half",
+      "top_conf": 0.90024662865626,
+      "call_conf": 0.09486843688815506,
+      "raise_conf": 0.90024662865626,
+      "advantage_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.4166666666666667,
+        0.16666666666666666,
+        0.0,
+        0.0,
+        0.335,
+        0.01,
+        0.995,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.6,
+        0.4747125,
+        0.0,
+        0.6,
+        0.8333333333333334,
+        0.0,
+        0.0,
+        0.2,
+        0.0,
+        0.0,
+        0.2,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.025,
+        1.0,
+        0.0,
+        0.125,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.90024662865626,
+        0.09486843688815506,
+        0.0,
+        0.01,
+        1.0,
+        0.995,
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "status": "ok",
+      "baseline_status": "ok",
+      "candidate_status": "ok",
+      "branch_bot_seeds": [
+        202710210068,
+        202710210069
+      ],
+      "baseline_chips": 1511.0,
+      "candidate_chips": 19875.0,
+      "match_delta": 18364.0,
+      "baseline_hand_delta": 100.0,
+      "candidate_hand_delta": 100.0,
+      "hand_delta": 0.0,
+      "primary_delta": 18364.0,
+      "advantage_target": 1,
+      "advantage_weight": 5.0
+    },
+    {
+      "probe_index": 40,
+      "side": "g20:normal",
+      "decision_index": 31,
+      "analysis_seed": 202810610031,
+      "hand": 18,
+      "stage": "flop",
+      "kind": "to_raise",
+      "public_cards": [
+        10,
+        25,
+        1
+      ],
+      "my_cards": [
+        3,
+        50
+      ],
+      "to_call": 0,
+      "pot": 200,
+      "my_chips": 19900,
+      "rule_action": 0,
+      "base_final": 0,
+      "base_label": "call",
+      "advised_raw": 101,
+      "advised_final": 101,
+      "advised_label": "raise",
+      "candidate_label_id": 2,
+      "rule_label_id": 1,
+      "top_label": "raise_half",
+      "top_conf": 0.9101017326101779,
+      "call_conf": 0.037366617469219536,
+      "raise_conf": 0.9101017326101779,
+      "advantage_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.475,
+        0.01,
+        0.995,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.7428571428571429,
+        0.5111125,
+        0.0,
+        0.6,
+        0.5,
+        0.0,
+        0.0,
+        0.4,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        0.0,
+        0.25,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.9101017326101779,
+        0.037366617469219536,
+        0.0,
+        0.01,
+        1.0,
+        0.995,
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "status": "ok",
+      "baseline_status": "ok",
+      "candidate_status": "ok",
+      "branch_bot_seeds": [
+        202710210080,
+        202710210081
+      ],
+      "baseline_chips": -278.0,
+      "candidate_chips": 798.0,
+      "match_delta": 1076.0,
+      "baseline_hand_delta": -100.0,
+      "candidate_hand_delta": 100.0,
+      "hand_delta": 200.0,
+      "primary_delta": 1076.0,
+      "advantage_target": 1,
+      "advantage_weight": 5.0
+    },
+    {
+      "probe_index": 61,
+      "side": "g30:mirror",
+      "decision_index": 6,
+      "analysis_seed": 202810820006,
+      "hand": 5,
+      "stage": "flop",
+      "kind": "to_raise",
+      "public_cards": [
+        28,
+        9,
+        22
+      ],
+      "my_cards": [
+        38,
+        1
+      ],
+      "to_call": 0,
+      "pot": 200,
+      "my_chips": 19900,
+      "rule_action": 0,
+      "base_final": 0,
+      "base_label": "call",
+      "advised_raw": 101,
+      "advised_final": 101,
+      "advised_label": "raise",
+      "candidate_label_id": 2,
+      "rule_label_id": 1,
+      "top_label": "raise_half",
+      "top_conf": 0.9563794174280646,
+      "call_conf": 0.02857459856887999,
+      "raise_conf": 0.9563794174280646,
+      "advantage_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.75,
+        0.0,
+        0.0,
+        0.0,
+        0.37,
+        0.01,
+        0.995,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.9285714285714286,
+        0.4975,
+        0.0,
+        0.6,
+        0.5833333333333334,
+        0.0,
+        0.0,
+        0.2,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.025,
+        1.0,
+        0.0,
+        0.125,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.9563794174280646,
+        0.02857459856887999,
+        0.0,
+        0.01,
+        1.0,
+        0.995,
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "status": "ok",
+      "baseline_status": "ok",
+      "candidate_status": "ok",
+      "branch_bot_seeds": [
+        202710210122,
+        202710210123
+      ],
+      "baseline_chips": 8601.0,
+      "candidate_chips": 8654.0,
+      "match_delta": 53.0,
+      "baseline_hand_delta": 100.0,
+      "candidate_hand_delta": 100.0,
+      "hand_delta": 0.0,
+      "primary_delta": 53.0,
+      "advantage_target": 1,
+      "advantage_weight": 0.53
+    },
+    {
+      "probe_index": 64,
+      "side": "g32:normal",
+      "decision_index": 19,
+      "analysis_seed": 202810850019,
+      "hand": 10,
+      "stage": "flop",
+      "kind": "to_raise",
+      "public_cards": [
+        11,
+        33,
+        26
+      ],
+      "my_cards": [
+        40,
+        3
+      ],
+      "to_call": 0,
+      "pot": 200,
+      "my_chips": 19900,
+      "rule_action": 0,
+      "base_final": 0,
+      "base_label": "call",
+      "advised_raw": 101,
+      "advised_final": 101,
+      "advised_label": "raise",
+      "candidate_label_id": 2,
+      "rule_label_id": 1,
+      "top_label": "raise_half",
+      "top_conf": 0.9652129997757741,
+      "call_conf": 0.02723085760089368,
+      "raise_conf": 0.9652129997757741,
+      "advantage_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.8333333333333334,
+        0.0,
+        0.0,
+        0.0,
+        0.405,
+        0.01,
+        0.995,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.8571428571428571,
+        0.4949875,
+        0.0,
+        0.6,
+        0.6666666666666666,
+        0.0,
+        0.0,
+        0.2,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.025,
+        1.0,
+        0.0,
+        0.125,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.9652129997757741,
+        0.02723085760089368,
+        0.0,
+        0.01,
+        1.0,
+        0.995,
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "status": "ok",
+      "baseline_status": "ok",
+      "candidate_status": "ok",
+      "branch_bot_seeds": [
+        202710210128,
+        202710210129
+      ],
+      "baseline_chips": 3438.0,
+      "candidate_chips": 3571.0,
+      "match_delta": 133.0,
+      "baseline_hand_delta": 100.0,
+      "candidate_hand_delta": 100.0,
+      "hand_delta": 0.0,
+      "primary_delta": 133.0,
+      "advantage_target": 1,
+      "advantage_weight": 1.33
+    },
+    {
+      "probe_index": 74,
+      "side": "g37:normal",
+      "decision_index": 35,
+      "analysis_seed": 202810950035,
+      "hand": 16,
+      "stage": "flop",
+      "kind": "to_raise",
+      "public_cards": [
+        13,
+        27,
+        33
+      ],
+      "my_cards": [
+        40,
+        23
+      ],
+      "to_call": 0,
+      "pot": 200,
+      "my_chips": 19900,
+      "rule_action": 0,
+      "base_final": 0,
+      "base_label": "call",
+      "advised_raw": 101,
+      "advised_final": 101,
+      "advised_label": "raise",
+      "candidate_label_id": 2,
+      "rule_label_id": 1,
+      "top_label": "raise_half",
+      "top_conf": 0.909395306421432,
+      "call_conf": 0.07554666455075994,
+      "raise_conf": 0.909395306421432,
+      "advantage_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.8333333333333334,
+        0.4166666666666667,
+        0.0,
+        0.0,
+        0.505,
+        0.01,
+        0.995,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.7714285714285715,
+        0.4906375,
+        0.0,
+        0.6,
+        0.6666666666666666,
+        0.0,
+        0.0,
+        0.4,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.025,
+        1.0,
+        0.0,
+        0.125,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.909395306421432,
+        0.07554666455075992,
+        0.0,
+        0.01,
+        1.0,
+        0.995,
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "status": "ok",
+      "baseline_status": "ok",
+      "candidate_status": "ok",
+      "branch_bot_seeds": [
+        202710210148,
+        202710210149
+      ],
+      "baseline_chips": -9.0,
+      "candidate_chips": -27.0,
+      "match_delta": -18.0,
+      "baseline_hand_delta": -100.0,
+      "candidate_hand_delta": 100.0,
+      "hand_delta": 200.0,
+      "primary_delta": -18.0,
+      "advantage_target": 0,
+      "advantage_weight": 0.18
+    },
+    {
+      "probe_index": 102,
+      "side": "g51:normal",
+      "decision_index": 4,
+      "analysis_seed": 202811230004,
+      "hand": 2,
+      "stage": "flop",
+      "kind": "to_raise",
+      "public_cards": [
+        28,
+        38,
+        9
+      ],
+      "my_cards": [
+        45,
+        4
+      ],
+      "to_call": 0,
+      "pot": 200,
+      "my_chips": 19900,
+      "rule_action": 0,
+      "base_final": 0,
+      "base_label": "call",
+      "advised_raw": 101,
+      "advised_final": 101,
+      "advised_label": "raise",
+      "candidate_label_id": 2,
+      "rule_label_id": 1,
+      "top_label": "raise_half",
+      "top_conf": 0.9206426227209626,
+      "call_conf": 0.057523850385918666,
+      "raise_conf": 0.9206426227209626,
+      "advantage_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.9166666666666666,
+        0.08333333333333333,
+        0.0,
+        0.0,
+        0.45499999999999996,
+        0.01,
+        0.995,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.9714285714285714,
+        0.4962375,
+        0.0,
+        0.6,
+        0.75,
+        0.0,
+        0.0,
+        0.2,
+        0.0,
+        0.0,
+        0.2,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.025,
+        1.0,
+        0.0,
+        0.125,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.9206426227209626,
+        0.057523850385918666,
+        0.0,
+        0.01,
+        1.0,
+        0.995,
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "status": "ok",
+      "baseline_status": "ok",
+      "candidate_status": "ok",
+      "branch_bot_seeds": [
+        202710210204,
+        202710210205
+      ],
+      "baseline_chips": 499.0,
+      "candidate_chips": -318.0,
+      "match_delta": -817.0,
+      "baseline_hand_delta": 100.0,
+      "candidate_hand_delta": 100.0,
+      "hand_delta": 0.0,
+      "primary_delta": -817.0,
+      "advantage_target": 0,
+      "advantage_weight": 5.0
+    },
+    {
+      "probe_index": 110,
+      "side": "g55:normal",
+      "decision_index": 33,
+      "analysis_seed": 202811310033,
+      "hand": 18,
+      "stage": "flop",
+      "kind": "to_raise",
+      "public_cards": [
+        20,
+        5,
+        15
+      ],
+      "my_cards": [
+        46,
+        3
+      ],
+      "to_call": 0,
+      "pot": 200,
+      "my_chips": 19900,
+      "rule_action": 0,
+      "base_final": 0,
+      "base_label": "call",
+      "advised_raw": 101,
+      "advised_final": 101,
+      "advised_label": "raise",
+      "candidate_label_id": 2,
+      "rule_label_id": 1,
+      "top_label": "raise_half",
+      "top_conf": 0.9404810035072689,
+      "call_conf": 0.058939656954324474,
+      "raise_conf": 0.9404810035072689,
+      "advantage_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.9166666666666666,
+        0.0,
+        0.0,
+        0.0,
+        0.43999999999999995,
+        0.01,
+        0.995,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.7428571428571429,
+        0.49005,
+        0.0,
+        0.6,
+        0.4166666666666667,
+        0.0,
+        0.0,
+        0.2,
+        0.0,
+        0.25,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        0.0,
+        0.25,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.9404810035072689,
+        0.058939656954324474,
+        0.0,
+        0.01,
+        1.0,
+        0.995,
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "status": "ok",
+      "baseline_status": "ok",
+      "candidate_status": "ok",
+      "branch_bot_seeds": [
+        202710210220,
+        202710210221
+      ],
+      "baseline_chips": -14784.0,
+      "candidate_chips": -16981.0,
+      "match_delta": -2197.0,
+      "baseline_hand_delta": -100.0,
+      "candidate_hand_delta": -201.0,
+      "hand_delta": -101.0,
+      "primary_delta": -2197.0,
+      "advantage_target": 0,
+      "advantage_weight": 5.0
+    },
+    {
+      "probe_index": 124,
+      "side": "g62:normal",
+      "decision_index": 37,
+      "analysis_seed": 202811450037,
+      "hand": 17,
+      "stage": "flop",
+      "kind": "to_raise",
+      "public_cards": [
+        8,
+        19,
+        30
+      ],
+      "my_cards": [
+        6,
+        27
+      ],
+      "to_call": 0,
+      "pot": 200,
+      "my_chips": 19900,
+      "rule_action": 0,
+      "base_final": 0,
+      "base_label": "call",
+      "advised_raw": 101,
+      "advised_final": 101,
+      "advised_label": "raise",
+      "candidate_label_id": 2,
+      "rule_label_id": 1,
+      "top_label": "raise_half",
+      "top_conf": 0.9664163714614366,
+      "call_conf": 0.024814845870384693,
+      "raise_conf": 0.9664163714614366,
+      "advantage_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.5,
+        0.08333333333333333,
+        0.0,
+        0.0,
+        0.30500000000000005,
+        0.01,
+        0.995,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.7571428571428571,
+        0.5109,
+        0.0,
+        0.6,
+        0.5833333333333334,
+        0.0,
+        0.0,
+        0.2,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.025,
+        1.0,
+        0.0,
+        0.125,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.9664163714614366,
+        0.024814845870384693,
+        0.0,
+        0.01,
+        1.0,
+        0.995,
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "status": "ok",
+      "baseline_status": "ok",
+      "candidate_status": "ok",
+      "branch_bot_seeds": [
+        202710210248,
+        202710210249
+      ],
+      "baseline_chips": 17843.0,
+      "candidate_chips": 17742.0,
+      "match_delta": -101.0,
+      "baseline_hand_delta": -100.0,
+      "candidate_hand_delta": -201.0,
+      "hand_delta": -101.0,
+      "primary_delta": -101.0,
+      "advantage_target": 0,
+      "advantage_weight": 1.01
+    },
+    {
+      "probe_index": 137,
+      "side": "g68:mirror",
+      "decision_index": 11,
+      "analysis_seed": 202811580011,
+      "hand": 7,
+      "stage": "flop",
+      "kind": "to_raise",
+      "public_cards": [
+        7,
+        8,
+        24
+      ],
+      "my_cards": [
+        51,
+        16
+      ],
+      "to_call": 0,
+      "pot": 200,
+      "my_chips": 19900,
+      "rule_action": 0,
+      "base_final": 0,
+      "base_label": "call",
+      "advised_raw": 101,
+      "advised_final": 101,
+      "advised_label": "raise",
+      "candidate_label_id": 2,
+      "rule_label_id": 1,
+      "top_label": "raise_half",
+      "top_conf": 0.8898424598289939,
+      "call_conf": 0.07485431092303033,
+      "raise_conf": 0.8898424598289939,
+      "advantage_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        0.3333333333333333,
+        0.0,
+        0.0,
+        0.5349999999999999,
+        0.01,
+        0.995,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.9,
+        0.4993875,
+        0.0,
+        0.6,
+        0.5,
+        0.0,
+        0.0,
+        0.4,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.025,
+        1.0,
+        0.0,
+        0.125,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.8898424598289939,
+        0.07485431092303033,
+        0.0,
+        0.01,
+        1.0,
+        0.995,
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "status": "ok",
+      "baseline_status": "ok",
+      "candidate_status": "ok",
+      "branch_bot_seeds": [
+        202710210274,
+        202710210275
+      ],
+      "baseline_chips": -12959.0,
+      "candidate_chips": -12746.0,
+      "match_delta": 213.0,
+      "baseline_hand_delta": 100.0,
+      "candidate_hand_delta": 100.0,
+      "hand_delta": 0.0,
+      "primary_delta": 213.0,
+      "advantage_target": 1,
+      "advantage_weight": 2.13
+    }
+  ],
+  "summary": {
+    "ok_probes": 14,
+    "failed_probes": 0,
+    "primary_delta": {
+      "samples": 14,
+      "mean": 1183.642857142857,
+      "median": 26.5,
+      "stddev": 5009.205350876799,
+      "stderr": 1338.7664430696948,
+      "ci95_low": -1440.3393712737445,
+      "ci95_high": 3807.625085559459,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    },
+    "match_delta": {
+      "samples": 14,
+      "mean": 1183.642857142857,
+      "median": 26.5,
+      "stddev": 5009.205350876799,
+      "stderr": 1338.7664430696948,
+      "ci95_low": -1440.3393712737445,
+      "ci95_high": 3807.625085559459,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    },
+    "hand_delta": {
+      "samples": 14,
+      "mean": 42.714285714285715,
+      "median": 0.0,
+      "stddev": 109.14311604595034,
+      "stderr": 29.169724740632542,
+      "ci95_low": -14.458374777354067,
+      "ci95_high": 99.8869462059255,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    },
+    "by_kind": {
+      "to_raise": {
+        "samples": 14,
+        "mean": 1183.642857142857,
+        "median": 26.5,
+        "stddev": 5009.205350876799,
+        "stderr": 1338.7664430696948,
+        "ci95_low": -1440.3393712737445,
+        "ci95_high": 3807.625085559459,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      }
+    },
+    "by_stage": {
+      "flop": {
+        "samples": 14,
+        "mean": 1183.642857142857,
+        "median": 26.5,
+        "stddev": 5009.205350876799,
+        "stderr": 1338.7664430696948,
+        "ci95_low": -1440.3393712737445,
+        "ci95_high": 3807.625085559459,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      }
+    },
+    "by_stage_kind": {
+      "flop|to_raise": {
+        "samples": 14,
+        "mean": 1183.642857142857,
+        "median": 26.5,
+        "stddev": 5009.205350876799,
+        "stderr": 1338.7664430696948,
+        "ci95_low": -1440.3393712737445,
+        "ci95_high": 3807.625085559459,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      }
+    },
+    "by_pot_band": {
+      "pot_lt_300": {
+        "samples": 14,
+        "mean": 1183.642857142857,
+        "median": 26.5,
+        "stddev": 5009.205350876799,
+        "stderr": 1338.7664430696948,
+        "ci95_low": -1440.3393712737445,
+        "ci95_high": 3807.625085559459,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      }
+    },
+    "by_advised_final": {
+      "101": {
+        "samples": 14,
+        "mean": 1183.642857142857,
+        "median": 26.5,
+        "stddev": 5009.205350876799,
+        "stderr": 1338.7664430696948,
+        "ci95_low": -1440.3393712737445,
+        "ci95_high": 3807.625085559459,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      }
+    },
+    "by_raise_delta_band": {
+      "raise_le_125": {
+        "samples": 14,
+        "mean": 1183.642857142857,
+        "median": 26.5,
+        "stddev": 5009.205350876799,
+        "stderr": 1338.7664430696948,
+        "ci95_low": -1440.3393712737445,
+        "ci95_high": 3807.625085559459,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      }
+    }
+  },
+  "parallel_status": {
+    "tasks_total": 384,
+    "tasks_submitted": 155,
+    "tasks_completed": 140,
+    "tasks_skipped": 229,
+    "early_stopped": false,
+    "draining_running_tasks": false
+  },
+  "run_status": "interrupted_after_valid_partial_output",
+  "actual_probes": 14,
+  "actual_matches": 140,
+  "interruption_note": "manual KeyboardInterrupt after v283 probe density remained low; process tree was checked and no probe/bot subprocesses remained"
+}
