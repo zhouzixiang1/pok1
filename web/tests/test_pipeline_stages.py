@@ -2351,6 +2351,58 @@ class TestWorkerFailureCircuitBreaker:
         assert "Large-overage requirement" in file_size_task["worker_prompt"]
         assert file_size_task["repair_contract"]["line_limit"] == 2000
 
+    def test_mechanical_file_size_trim_preserves_strings_and_compiles(self, tmp_path, monkeypatch):
+        import py_compile
+        import tool_planning
+
+        next_dir = tmp_path / "claude_v11"
+        source_dir = tmp_path / "claude_v10"
+        next_dir.mkdir()
+        source_dir.mkdir()
+        target = next_dir / "strategy.py"
+        target.write_text(
+            '"""module docs\\nline two\\n"""\n'
+            "# removable header\n"
+            "\n"
+            "VALUE = 1\n"
+            "\n"
+            "def f():\n"
+            '    """function docs\\n    line two\\n    line three\\n    """\n'
+            "    # removable body comment\n"
+            '    text = """keep\\n\\nblank line inside string\\n"""\n'
+            "    return text, VALUE\n",
+            encoding="utf-8",
+        )
+        task = {
+            "worker_id": "auto_quality_repair_file_size_strategy_py",
+            "target_files": ["strategy.py"],
+            "repair_blocker": "file_size",
+            "repair_contract": {"blocker": "file_size", "file": "strategy.py"},
+        }
+
+        monkeypatch.setattr(
+            tool_planning,
+            "check_code_size",
+            lambda *_a, **_k: (250, [("strategy.py", 250, 5)]),
+        )
+
+        results = tool_planning._apply_mechanical_file_size_trims(
+            [task],
+            next_dir,
+            source_dir,
+            11,
+            10,
+        )
+        text = target.read_text(encoding="utf-8")
+
+        assert results and results[0]["changed"] is True
+        assert results[0]["after"] < results[0]["before"]
+        assert "module docs" not in text
+        assert "function docs" not in text
+        assert "removable" not in text
+        assert '"""keep\\n\\nblank line inside string\\n"""' in text
+        py_compile.compile(str(target), doraise=True)
+
     def test_quality_repair_synthesizes_national_native_contract_task(self):
         import tool_planning
 
