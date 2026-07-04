@@ -272,6 +272,27 @@ flop probe actions. Future match-scope training needs trajectory-level credit
 assignment, or at minimum counterfactual reruns that isolate one candidate
 change at a time before it becomes a supervised row.
 
+`counterfactual_rollout_probe.py` now also supports direct game/side-level
+process parallelism with `--workers` and `--max-probes-per-task`. The worker
+boundary is one deterministic game side, so each process owns its bot module
+load, local judge state, and bot subprocesses; the parent only merges probes
+and writes JSON. On this 32-thread machine, an 8-worker smoke run over v043
+produced 9 isolated hand-scope probes with mean primary delta `+144.33`, and a
+16-worker follow-up produced 13 more probes with mean `+86.00`. The merged
+22-row training set had 13 positives, 9 non-positives, and input dimension 70.
+Training ran on CUDA (`NVIDIA GeForce RTX 4060 Laptop GPU`); h16/h8/h4 models
+all had validation accuracy `0.60`, so h8 was selected for calibration rather
+than capacity. `v048_v254_cf_isolated_veto_p022_h8_t080` used h8 with
+`advantage_min=0.8`; it failed end-to-end versus v043 over 32 paired mirrors
+(`-125.45` chips per 70 hands, 95 percent CI `[-1016.44, 765.53]`) due to
+large negative outliers. `v049_v254_cf_isolated_veto_p022_h8_t090` raised the
+threshold to `0.9`; it improved the 32-pair sample but did not survive a
+64-pair extension (`+70.88` chips per 70 hands, 95 percent CI
+`[-556.85, 698.60]`). Keep v048/v049 as artifacts proving the isolated-label
+pipeline and multicore sampler, not as stronger bots. The next attempt needs
+more isolated probes around the newly exposed negative outliers, not a lower
+threshold on the same 22-row dataset.
+
 Recent literature and open-source scans point to the next useful local
 direction:
 

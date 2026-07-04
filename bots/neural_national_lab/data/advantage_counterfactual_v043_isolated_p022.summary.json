@@ -1,0 +1,17 @@
+{
+  "inputs": [
+    "bots/neural_national_lab/data/counterfactual_v043_isolated_p032_seed2026071303_botrng.json",
+    "bots/neural_national_lab/data/counterfactual_v043_isolated_p064_seed2026071311_botrng.json"
+  ],
+  "scanned_probes": 22,
+  "skipped_probes": 0,
+  "rows": 22,
+  "input_dim": 70,
+  "positive": 13,
+  "negative": 9,
+  "positive_rate": 0.5909090909090909,
+  "zero_delta": 7,
+  "positive_threshold": 0.0,
+  "include_zero": true,
+  "mean_delta": 109.86363636363636
+}
