@@ -1670,6 +1670,39 @@ def test_runtime_branch_guard_requests_shutdown_on_branch_drift(monkeypatch):
     assert events[0][3]["reason"] == "branch_drift"
 
 
+def test_runtime_git_identity_tolerates_empty_branch_status(monkeypatch):
+    import orchestrator
+
+    calls = []
+
+    class Result:
+        def __init__(self, returncode, stdout=""):
+            self.returncode = returncode
+            self.stdout = stdout
+
+    def fake_run(args, **_kwargs):
+        calls.append(args)
+        if args[:3] == ["git", "status", "--short"]:
+            return Result(1, "")
+        if args == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return Result(0, "main\n")
+        if args == ["git", "rev-parse", "--short=12", "HEAD"]:
+            return Result(0, "abc123def456\n")
+        raise AssertionError(f"unexpected git command: {args}")
+
+    monkeypatch.setattr(orchestrator.subprocess, "run", fake_run)
+
+    identity = orchestrator._runtime_git_identity()
+
+    assert orchestrator._branch_name("") == ""
+    assert identity == {
+        "branch": "main",
+        "branch_status": "main",
+        "head": "abc123def456",
+    }
+    assert "--untracked-files=no" in calls[0]
+
+
 def test_runtime_branch_guard_tolerates_same_head_branch_alias(monkeypatch):
     import asyncio
     import orchestrator

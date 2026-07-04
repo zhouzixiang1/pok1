@@ -1522,7 +1522,8 @@ def _runtime_branch_guard_enabled() -> bool:
 
 
 def _branch_name(branch_status: str | None) -> str:
-    return (branch_status or "").split("...", 1)[0].split()[0]
+    parts = (branch_status or "").split("...", 1)[0].split()
+    return parts[0] if parts else ""
 
 
 def _runtime_git_identity() -> dict:
@@ -1531,7 +1532,7 @@ def _runtime_git_identity() -> dict:
     head = ""
     try:
         status = subprocess.run(
-            ["git", "status", "--short", "--branch"],
+            ["git", "status", "--short", "--branch", "--untracked-files=no"],
             cwd=str(PROJECT_ROOT),
             capture_output=True,
             text=True,
@@ -1543,6 +1544,19 @@ def _runtime_git_identity() -> dict:
                 branch_status = lines[0].replace("## ", "", 1)
     except Exception:
         branch_status = ""
+    if not branch_status:
+        try:
+            branch = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=str(PROJECT_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if branch.returncode == 0:
+                branch_status = (branch.stdout or "").strip()
+        except Exception:
+            branch_status = ""
     try:
         rev = subprocess.run(
             ["git", "rev-parse", "--short=12", "HEAD"],
