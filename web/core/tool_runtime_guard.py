@@ -155,7 +155,8 @@ def _head_change_allowed_for_checkpoint_resume(
     if tool_name not in allowed_tools:
         return False, {}
     current_branch = _branch_name(str(snapshot.get("branch") or ""))
-    if current_branch != EVOLUTION_BRANCH:
+    branch_alias_allowed = _branch_alias_allowed_for_tool(tool_name, snapshot)
+    if current_branch != EVOLUTION_BRANCH and not branch_alias_allowed:
         return False, {}
     unexpected = _unexpected_entries(snapshot, candidate_v)
     if unexpected:
@@ -178,6 +179,7 @@ def _head_change_allowed_for_checkpoint_resume(
         "baseline_head": baseline_head,
         "current_head": current_head,
         "branch": snapshot.get("branch"),
+        "branch_alias_allowed": branch_alias_allowed,
         "resume_kind": resume_kind,
     }
 
@@ -202,6 +204,28 @@ def _log_guard_event(event_type: str, severity: str, message: str, data: dict[st
 
 def _branch_name(branch_status: str) -> str:
     return (branch_status or "").split("...", 1)[0].split()[0]
+
+
+def _runtime_expected_head() -> str:
+    return os.environ.get("POK_RUNTIME_EXPECTED_HEAD", "").strip()
+
+
+def _branch_alias_allowed_for_tool(tool_name: str, snapshot: dict[str, Any]) -> bool:
+    """Allow non-commit tools when only the branch name changed.
+
+    The orchestrator stores its startup HEAD in ``POK_RUNTIME_EXPECTED_HEAD``.
+    A branch switch to another name at that same commit does not change the
+    files seen by planners, workers, or evaluators. ``commit_bot`` remains
+    canonical-branch-only so a final accepted bot is not committed elsewhere.
+    """
+    if tool_name == "commit_bot":
+        return False
+    current_branch = _branch_name(str(snapshot.get("branch") or ""))
+    if not current_branch or current_branch == EVOLUTION_BRANCH:
+        return False
+    expected_head = _runtime_expected_head()
+    current_head = str(snapshot.get("head") or "").strip()
+    return bool(expected_head and current_head and current_head == expected_head)
 
 
 def _unrelated_head_drift_allowed(
@@ -239,6 +263,7 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
     candidate_v = _candidate_version(tool_name, args)
     before = _snapshot()
     current_branch = _branch_name(str(before.get("branch") or ""))
+    branch_alias_allowed = _branch_alias_allowed_for_tool(tool_name, before)
 
     if before.get("truncated"):
         payload = {
@@ -260,7 +285,7 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
         )
         return False, payload
 
-    if current_branch and current_branch != EVOLUTION_BRANCH:
+    if current_branch and current_branch != EVOLUTION_BRANCH and not branch_alias_allowed:
         unexpected = _unexpected_entries(before, candidate_v)
         payload = {
             "blocked": True,
@@ -285,6 +310,20 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
             payload,
         )
         return False, payload
+    if branch_alias_allowed:
+        _log_guard_event(
+            "repo.runtime_guard_branch_alias_allowed",
+            "warn",
+            f"Runtime git guard allowed {tool_name} on branch alias with unchanged HEAD",
+            {
+                "tool": tool_name,
+                "candidate_v": candidate_v,
+                "branch": before.get("branch"),
+                "expected_branch": EVOLUTION_BRANCH,
+                "runtime_expected_head": _runtime_expected_head(),
+                "head": before.get("head"),
+            },
+        )
 
     snapshot = _snapshot()
     if snapshot.get("truncated"):
@@ -303,6 +342,34 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
             "repo.runtime_guard_blocked",
             "error",
             "Runtime git guard blocked truncated worktree snapshot",
+            payload,
+        )
+        return False, payload
+
+    snapshot_branch = _branch_name(str(snapshot.get("branch") or ""))
+    snapshot_branch_alias_allowed = _branch_alias_allowed_for_tool(tool_name, snapshot)
+    branch_alias_allowed = branch_alias_allowed or snapshot_branch_alias_allowed
+    if snapshot_branch and snapshot_branch != EVOLUTION_BRANCH and not snapshot_branch_alias_allowed:
+        unexpected = _unexpected_entries(snapshot, candidate_v)
+        payload = {
+            "blocked": True,
+            "reason": "branch_drift",
+            "tool": tool_name,
+            "candidate_v": candidate_v,
+            "branch": snapshot.get("branch"),
+            "expected_branch": EVOLUTION_BRANCH,
+            "head": snapshot.get("head"),
+            "unexpected_entries": unexpected[:40],
+            "directive": (
+                "Runtime evolution tools must run from the canonical evolution "
+                "branch, except for non-commit tools on a branch alias with the "
+                "unchanged runtime HEAD."
+            ),
+        }
+        _log_guard_event(
+            "repo.runtime_guard_blocked",
+            "error",
+            f"Runtime git guard blocked branch drift before {tool_name}",
             payload,
         )
         return False, payload
@@ -408,6 +475,7 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
         "candidate_v": candidate_v,
         "branch": snapshot.get("branch"),
         "head": snapshot.get("head"),
+        "branch_alias_allowed": branch_alias_allowed,
         "ignored_entries": ignored[:40],
         "ignored_count": len(ignored),
     }
