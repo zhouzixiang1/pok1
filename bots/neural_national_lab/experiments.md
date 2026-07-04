@@ -104,6 +104,17 @@
   suggested many interventions were free check/call rescues, so v012 isolates
   that safer part of the neural prior from paid call risk.
 
+## v014_v254_weighted_free_only254
+
+- Base: `v011_v254_wide_call_rescue254` rule family.
+- Neural source: weighted `claude_v254` teacher-policy artifact exported as the
+  version-local `policy_weights.json`.
+- Change: adds a local `allow_paid_call` switch and disables paid call rescue.
+  Only free check/call rescue remains enabled.
+- Rationale: v012 showed that the old teacher254 model was usually inactive in
+  free-only mode. v014 tests whether the larger weighted model finds more
+  free-check mistakes without taking paid-call risk.
+
 ## Round 1 Notes
 
 - Training data: `teacher214_round1.jsonl`, 272 teacher decisions from
@@ -245,3 +256,26 @@
   productive direction is a richer trainer: more teacher/self-play data plus
   action-bucket or regret-style targets, then paired evaluation against v254 and
   v279 on common decks.
+
+## Round 6 Notes
+
+- `v014_v254_weighted_free_only254` advisor analysis, 3 ordinary games vs
+  `claude_v279`: `final_changed=10/395`, all `fold_to_call`. All recorded
+  examples had `to_call=0`, so the new `allow_paid_call=false` gate worked.
+- `v014_v254_weighted_free_only254` vs `claude_v254`, common-deck mirror 6
+  pairs against `claude_v279`: paired deltas
+  `[-84, 14, -540, 1148, -10706, 21]`, mean `-845.6 chips/70`,
+  95 percent CI `[-2626.5, +935.4]`. The free-only weighted model is not a
+  stable improvement over the v254 base.
+- Shallow-cloned and scanned current external references under ignored
+  `external/`: `uzlez/fullhouse-engine`,
+  `dberweger2017/deepcfr-texas-no-limit-holdem-6-players`, and
+  `advitrocks9/fullhouse-bot`.
+- The strongest new lesson from those scans is that the neural component should
+  be a native blueprint with a fixed feature/action/runtime contract, not an
+  after-the-fact advisor patched onto a mature rule bot. The current advisor
+  line is now mostly a diagnostic scaffold.
+- Next direction: build an offline Deep-CFR/advantage-style trainer over this
+  repo's heads-up engine with a small fixed action abstraction, export a pure
+  JSON/NumPy-or-stdlib runtime policy, and add leak diagnostics by position,
+  street, amount owed, and changed-action type before promoting any version.
