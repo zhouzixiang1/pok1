@@ -88,6 +88,35 @@ def _declared_scope_tasks_from_plan(master_plan):
             })
     return tasks
 
+
+def _is_crossover_scope_checkpoint(ckpt, master_plan):
+    if not isinstance(ckpt, dict):
+        ckpt = {}
+    if not isinstance(master_plan, dict):
+        master_plan = {}
+    work_item = master_plan.get("work_item") if isinstance(master_plan.get("work_item"), dict) else {}
+    return (
+        bool(ckpt.get("parent2_v"))
+        or master_plan.get("strategy") == "crossover"
+        or str(work_item.get("kind", "")).startswith("crossover_")
+    )
+
+
+def _master_plan_with_crossover_scope(master_plan, ckpt, changed_files):
+    if not _is_crossover_scope_checkpoint(ckpt, master_plan) or not changed_files:
+        return master_plan
+    existing = []
+    if isinstance(master_plan, dict):
+        raw = master_plan.get("repair_scope_files", []) or []
+        if isinstance(raw, list):
+            existing = [str(item).strip() for item in raw if str(item).strip()]
+    scope = sorted({*existing, *(str(item).strip() for item in changed_files if str(item).strip())})
+    if not scope:
+        return master_plan
+    plan = dict(master_plan or {})
+    plan["repair_scope_files"] = scope
+    return plan
+
 _POSITION_SEMANTICS_PATTERNS = {
     "dealer==bb": "dealer is SB in heads-up; BB is 1 - dealer_id",
     "dealer == bb": "dealer is SB in heads-up; BB is 1 - dealer_id",
@@ -351,6 +380,11 @@ async def run_quality_gates(args):
     declared_skill_layers = []
     _quality_ckpt_for_scope = _matching_checkpoint(v, source_v) if source_v is not None else _matching_checkpoint(v)
     _master_plan_for_scope = (_quality_ckpt_for_scope or {}).get("master_plan", {})
+    _master_plan_for_scope = _master_plan_with_crossover_scope(
+        _master_plan_for_scope,
+        _quality_ckpt_for_scope,
+        changed_files_list,
+    )
     _plan_tasks = _declared_scope_tasks_from_plan(_master_plan_for_scope)
     if native_tcp_mode and _plan_tasks:
         _plan_tasks = list(_plan_tasks) + [{
