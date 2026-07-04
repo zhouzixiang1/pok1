@@ -193,6 +193,12 @@ Practical takeaways for this repo:
   collector should support grouped intervention sets or match-scope interaction
   labels, then run them in parallel shards (`--workers 12` to `16` on this
   32-thread machine) before training a larger model.
+- v035/v036/v037 turned grouped paired deltas into training rows, but mixing
+  those labels into the same advantage head created a threshold conflict:
+  thresholds that repair pair03 suppress the pair11 repair, while thresholds
+  that preserve pair11 leave pair03 unchanged. The next model should separate
+  concerns: keep the single-action advantage gate for local value, and add a
+  second interaction-veto head trained only on grouped or match-path failures.
 
 ## Scale-Up Gate
 
@@ -209,7 +215,9 @@ Practical takeaways for this repo:
   accepted interventions. The v030 result means this is the only scale-up that
   is currently justified. The v034 result adds a stricter condition: include
   grouped or match-scope interaction checks before trusting a larger single-
-  action advantage model.
+  action advantage model. The v035-v037 result refines that further: grouped
+  labels should feed a separate interaction model, not just shift the existing
+  gate's threshold.
 - Promotion gate before larger models: a candidate should stay positive over
   at least 64 common-deck mirror pairs against its rule base, with median delta
   above zero, no large negative bucket, and no protocol/illegal-action

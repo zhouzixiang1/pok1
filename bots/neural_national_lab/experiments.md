@@ -346,6 +346,37 @@
   grouped or interaction-aware counterfactual targets, not only more
   single-action samples.
 
+## v035_v254_cf_group_pair03_p260_h32_t075
+
+- Base: `v034_v254_cf_pair11_p257_h32_t090`.
+- Change: introduces `build_group_interaction_advantage_data.py`, which maps
+  paired mirror deltas back onto probe features. Adds three pair03
+  group-negative rows to the p257 dataset, trains h32 p260 weights, and sets
+  `advantage_min=0.75`.
+- Result: not viable. It repaired the pair03 targeted check (`-227` raw chips
+  versus v025 instead of v034's `-5699`), but destroyed the pair11 repair
+  (`-19119` raw chips versus v025). This confirms a single threshold cannot
+  satisfy both interaction cases.
+
+## v036_v254_cf_group_pair03_p260_h32_t065
+
+- Base: `v035_v254_cf_group_pair03_p260_h32_t075`.
+- Change: lowers `advantage_min` to `0.65` to preserve the pair11 positive
+  repair while still using the p260 group-aware weights.
+- Result: also not viable. Pair11 was preserved (`-14` raw chips versus v025),
+  but pair03 regressed to the full v034 failure (`-5699` raw chips versus
+  v025). This is the opposite side of the same threshold conflict.
+
+## v037_v254_cf_group_pair03_p260_h32_t070
+
+- Base: `v036_v254_cf_group_pair03_p260_h32_t065`.
+- Change: tests the midpoint `advantage_min=0.70`.
+- Result: failed like v035: pair03 was repaired (`-227` raw chips versus v025),
+  but pair11 collapsed (`-19119`). Do not continue tuning this single-head
+  threshold. The next design should add a separate interaction-veto model or
+  grouped intervention policy instead of mixing grouped labels into the same
+  single-action advantage gate.
+
 ## Round 1 Notes
 
 - Training data: `teacher214_round1.jsonl`, 272 teacher decisions from
