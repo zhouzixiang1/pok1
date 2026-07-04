@@ -310,6 +310,24 @@ pair42/pair51 rescue actions and avoided v049's catastrophic paths, but its
 not a promotion. The next useful step is trajectory-level credit assignment,
 or targeted match-scope branch data, before changing the runtime gate again.
 
+`v051_v254_cf_matchscope_aux_veto_p049_h16_b030` tested that next step in a
+small form. A 24-worker match-scope probe run was stopped after valid partial
+output because full-match branch sampling was too slow; it still produced 49
+usable single-action full-match probes. The important result was the split between
+scopes: the same probes had hand_delta mean `+93.78` with 95 percent CI
+`[61.69, 125.86]`, but match_delta mean `-603.04` with 95 percent CI
+`[-1957.60, 751.52]`. h8/h16/h32 CUDA classifiers trained from those rows had
+validation accuracy `0.50`, `0.50`, and `0.40`. The h16 model was nevertheless
+wrapped as a very conservative auxiliary veto at threshold `0.30`; targeted
+trace on pairs42..52 preserved the known pair42/pair51 rescue raises and did
+not reintroduce v049's pair52 extra raise. End-to-end paired evaluation still
+rejected it: v051 versus v043 over 64 mirror pairs was `-1.32` chips per
+70 hands with 95 percent CI `[-434.58, 431.94]`. The conclusion is not that
+match-scope labels are useless; it is that a tiny binary classifier over sparse
+single-action full-match deltas is still too noisy. The next implementation
+should collect paired trajectory credit/value targets and add sampler early
+stop/cancellation before another runtime gate.
+
 Recent literature and open-source scans point to the next useful local
 direction:
 
