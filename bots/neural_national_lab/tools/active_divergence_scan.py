@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import copy
 import json
 from pathlib import Path
@@ -293,6 +293,14 @@ def _summarize(payload: dict[str, Any]) -> None:
     }
 
 
+def _divergence_count(payload: dict[str, Any]) -> int:
+    return sum(1 for row in payload.get("pairs", []) if row.get("has_divergence"))
+
+
+def _stop_reached(payload: dict[str, Any], target: int) -> bool:
+    return int(target) > 0 and _divergence_count(payload) >= int(target)
+
+
 def _write(path: Path | None, payload: dict[str, Any]) -> None:
     if path is None:
         return
@@ -318,6 +326,8 @@ def main() -> None:
     parser.add_argument("--opponent-bot-seed-stride", type=int, default=10000000)
     parser.add_argument("--max-hands", type=int, default=70)
     parser.add_argument("--max-divergences-per-side", type=int, default=3)
+    parser.add_argument("--stop-after-divergence-pairs", type=int, default=0)
+    parser.add_argument("--no-parallel-early-stop", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -342,6 +352,12 @@ def main() -> None:
         "opponent_bot_seed_stride": args.opponent_bot_seed_stride,
         "max_hands": args.max_hands,
         "max_divergences_per_side": args.max_divergences_per_side,
+        "stop_after_divergence_pairs": args.stop_after_divergence_pairs,
+        "parallel_early_stop": not args.no_parallel_early_stop,
+        "tasks_total": 0,
+        "tasks_submitted": 0,
+        "tasks_skipped": 0,
+        "early_stopped": False,
         "pairs": [],
         "summary": {},
     }
@@ -359,6 +375,7 @@ def main() -> None:
         for idx in indices:
             if (_label(opponent), int(idx)) not in existing:
                 tasks.append((opponent_index, opponent, int(idx)))
+    payload["tasks_total"] = len(tasks) + len(existing)
 
     def _consume(row: dict[str, Any]) -> None:
         payload["pairs"].append(row)
@@ -371,17 +388,55 @@ def main() -> None:
             flush=True,
         )
 
+    submitted = 0
     if args.workers <= 1:
         for task in tasks:
+            if _stop_reached(payload, args.stop_after_divergence_pairs):
+                payload["early_stopped"] = True
+                break
+            submitted += 1
+            payload["tasks_submitted"] = submitted
             _consume(_scan_pair(*task, baseline=baseline, candidate=candidate, args=args))
     else:
         with ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
-            futures = {
-                executor.submit(_scan_pair, *task, baseline, candidate, args): task
-                for task in tasks
-            }
-            for future in as_completed(futures):
-                _consume(future.result())
+            remaining = list(tasks)
+            futures = {}
+
+            def _submit_next() -> None:
+                nonlocal submitted
+                if not remaining:
+                    return
+                if (
+                    not args.no_parallel_early_stop
+                    and _stop_reached(payload, args.stop_after_divergence_pairs)
+                ):
+                    payload["early_stopped"] = True
+                    return
+                task = remaining.pop(0)
+                submitted += 1
+                payload["tasks_submitted"] = submitted
+                futures[executor.submit(_scan_pair, *task, baseline, candidate, args)] = task
+
+            while remaining and len(futures) < max(1, args.workers):
+                _submit_next()
+            while futures:
+                done, _ = wait(set(futures), return_when=FIRST_COMPLETED)
+                for future in done:
+                    futures.pop(future)
+                    _consume(future.result())
+                while remaining and len(futures) < max(1, args.workers):
+                    before = len(futures)
+                    _submit_next()
+                    if len(futures) == before:
+                        break
+                if not futures and remaining and payload.get("early_stopped"):
+                    break
+    payload["tasks_submitted"] = submitted
+    payload["tasks_skipped"] = max(0, len(tasks) - submitted)
+    if _stop_reached(payload, args.stop_after_divergence_pairs):
+        payload["early_stopped"] = bool(payload["tasks_skipped"])
+    _summarize(payload)
+    _write(args.output, payload)
 
     if not tasks:
         _write(args.output, payload)

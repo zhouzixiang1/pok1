@@ -447,7 +447,9 @@ sampling first finds states where it actually changes decisions.
 It replays a baseline and candidate against the same opponent, deck seed, and
 bot RNG seeds, then records the first action divergence for our bot in each
 normal/mirror side. Use explicit `--pair-index` values to reproduce known
-paired outliers without scanning all earlier seeds:
+paired outliers without scanning all earlier seeds. For broader collection,
+use `--stop-after-divergence-pairs` so the sampler stops after enough
+decision-changing rows instead of exhausting every requested seed:
 
 ```bash
 python bots/neural_national_lab/tools/active_divergence_scan.py \
@@ -461,6 +463,10 @@ python bots/neural_national_lab/tools/active_divergence_scan.py \
   --bot-seed-base 202609190000 \
   --output bots/neural_national_lab/data/divergence_v043_v052_vs_v279_pair21_48_seed2026071503_botrng.json
 ```
+
+The early-stop path was smoke-tested on pair21/pair48 with target `1`; it
+submitted one task, found pair21's divergence, skipped pair48, and wrote
+`data/divergence_earlystop_v043_v052_vs_v279_pair21_48_target1_seed2026071503_botrng.json`.
 
 That scan found real v043-v052 action divergence on both known nonzero seeds:
 pair21 was `-3243` chips and pair48 was `+1727`. In both cases the first
