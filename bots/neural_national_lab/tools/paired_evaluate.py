@@ -152,6 +152,15 @@ def _write(output: Path | None, payload: dict[str, Any]) -> None:
     out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _read_payload(output: Path | None) -> dict[str, Any] | None:
+    if output is None:
+        return None
+    path = output if output.is_absolute() else ROOT / output
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def _pair_seed(args: argparse.Namespace, idx: int) -> int | None:
     if args.seed_base is None:
         return None
@@ -178,6 +187,33 @@ def _play_pair(idx: int, paths: list[Path], opponent: Path, args: argparse.Names
         row["mirror"][label] = mirror_result
         row["net_chips"][label] = normal_result["bot0_chips"] + mirror_result["bot0_chips"]
     return row
+
+
+def _compatible_resume(existing: dict[str, Any], expected: dict[str, Any]) -> bool:
+    keys = (
+        "mode",
+        "baseline_label",
+        "seed_base",
+        "seed_offset",
+        "seed_stride",
+        "max_hands",
+    )
+    for key in keys:
+        if existing.get(key) != expected.get(key):
+            return False
+    return existing.get("entries") == expected.get("entries")
+
+
+def _existing_pairs(payload: dict[str, Any], games: int) -> dict[int, dict[str, Any]]:
+    out: dict[int, dict[str, Any]] = {}
+    for row in payload.get("pairs", []):
+        try:
+            idx = int(row["idx"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if 0 <= idx < games:
+            out[idx] = row
+    return out
 
 
 def _summarize(payload: dict[str, Any]) -> None:
@@ -219,6 +255,7 @@ def main() -> None:
     parser.add_argument("--seed-offset", type=int, default=0)
     parser.add_argument("--seed-stride", type=int, default=1)
     parser.add_argument("--max-hands", type=int, default=70)
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
@@ -251,10 +288,23 @@ def main() -> None:
         "results": {},
         "paired_vs_baseline": {},
     }
+    existing = _read_payload(args.output) if args.resume else None
+    if existing is not None:
+        if not _compatible_resume(existing, payload):
+            raise SystemExit("existing output is not compatible with requested resume parameters")
+        existing_by_idx = _existing_pairs(existing, args.games)
+        payload["pairs"] = []
+        idx = 0
+        while idx in existing_by_idx:
+            payload["pairs"].append(existing_by_idx[idx])
+            idx += 1
+        payload["games"] = args.games
+        payload["workers"] = args.workers
+        _summarize(payload)
     _write(args.output, payload)
 
     rows: dict[int, dict[str, Any]] = {}
-    next_idx = 0
+    next_idx = len(payload["pairs"])
 
     def _consume_row(row: dict[str, Any]) -> None:
         nonlocal next_idx
@@ -266,14 +316,19 @@ def main() -> None:
             _print_progress(payload, next_idx + 1, args.games)
             next_idx += 1
 
+    pending_indices = [idx for idx in range(args.games) if idx >= next_idx]
+    if not pending_indices:
+        _print_progress(payload, len(payload["pairs"]), args.games)
+        return
+
     if args.workers <= 1:
-        for idx in range(args.games):
+        for idx in pending_indices:
             _consume_row(_play_pair(idx, paths, opponent, args))
     else:
         with ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
             futures = {
                 executor.submit(_play_pair, idx, paths, opponent, args): idx
-                for idx in range(args.games)
+                for idx in pending_indices
             }
             for future in as_completed(futures):
                 _consume_row(future.result())
