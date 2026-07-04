@@ -236,6 +236,7 @@ async def _run_worker_cot_check(task, worker_idx, next_v, source_v, next_dir, wo
 
         # Compute diff for this worker's target files using snapshots
         diff_parts = []
+        diff_metadata = []
         for target in task.get("target_files", []):
             rel = _target_rel(target, next_v)
             if not rel:
@@ -244,6 +245,12 @@ async def _run_worker_cot_check(task, worker_idx, next_v, source_v, next_dir, wo
             before = worker_snapshots.get(snapshot_key, "")
             after_path = next_dir / rel
             after = after_path.read_text() if after_path.exists() else ""
+            before_lines = len(before.splitlines())
+            after_lines = len(after.splitlines())
+            diff_metadata.append(
+                f"- {rel}: pre-worker snapshot {before_lines} lines; "
+                f"post-worker file {after_lines} lines; delta {after_lines - before_lines:+d}"
+            )
             if before != after:
                 diff = difflib.unified_diff(
                     before.splitlines(keepends=True),
@@ -265,6 +272,7 @@ async def _run_worker_cot_check(task, worker_idx, next_v, source_v, next_dir, wo
             "worker_task": task.get("worker_prompt", task.get("instruction", ""))[:2000],
             "worker_output": worker_output[:3000],
             "code_diff": code_diff,
+            "diff_metadata": "\n".join(diff_metadata) or "- no target file metadata",
         })
 
         log_file = get_logs_dir(next_v) / f"worker_{w_id}_cot_audit_io.txt"
