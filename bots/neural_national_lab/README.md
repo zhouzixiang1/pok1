@@ -393,6 +393,14 @@ and Robust Deep MCCFR diagnostics
 (`https://arxiv.org/abs/2509.00923`) as useful constraints: do not trust one
 small neural gate unless it survives variance, target-shift, and action-support
 checks across opponents.
+Two newer directions sharpen that into an engineering rule for this repo:
+Real-Time Parallel CFR (`https://arxiv.org/abs/2605.19928`) uses CPU/GPU
+parallelism and batched neural leaf evaluation to get more solving iterations
+inside a fixed decision budget, while Deep Predictive Discounted CFR
+(`https://arxiv.org/abs/2511.08174`) fits variance-reduced sampled advantages
+with a value network and CFR-style discounting. The local analogue is active
+sampling of decision-changing seeds plus variance-aware value targets, not
+blind threshold tuning of a sparse gate.
 
 This machine has 32 CPU threads, so deterministic paired evaluation and
 counterfactual shards can use `--workers 12` to `--workers 16` for practical
@@ -434,6 +442,34 @@ and `claude_v284` wrote
 All six deltas were zero, which is useful tooling evidence: v052's conservative
 value veto is too sparse to be a reliable next search direction unless active
 sampling first finds states where it actually changes decisions.
+
+`active_divergence_scan.py` is the active-sampling companion for that problem.
+It replays a baseline and candidate against the same opponent, deck seed, and
+bot RNG seeds, then records the first action divergence for our bot in each
+normal/mirror side. Use explicit `--pair-index` values to reproduce known
+paired outliers without scanning all earlier seeds:
+
+```bash
+python bots/neural_national_lab/tools/active_divergence_scan.py \
+  --baseline bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050 \
+  --candidate bots/neural_national_lab/versions/v052_v254_cf_value_veto_mix_p063_h32_bm050 \
+  --opponent bots/claude_v279 \
+  --pair-index 21 \
+  --pair-index 48 \
+  --workers 2 \
+  --seed-base 2026071503 \
+  --bot-seed-base 202609190000 \
+  --output bots/neural_national_lab/data/divergence_v043_v052_vs_v279_pair21_48_seed2026071503_botrng.json
+```
+
+That scan found real v043-v052 action divergence on both known nonzero seeds:
+pair21 was `-3243` chips and pair48 was `+1727`. In both cases the first
+divergence was the mirror-side flop free action after check-through preflop:
+v043 raised to `101`, while v052 checked/called `0`. The same action template
+therefore has opposite outcomes depending on cards and board, so v053 should
+not be another global threshold move. It should collect active divergence rows
+around this template and train a local value/variance model that can separate
+the losing pair21 context from the winning pair48 context.
 
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
