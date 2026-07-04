@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from evolution_infra import EVOLUTION_BRANCH, PROJECT_ROOT
-from evolution_scope import classify_status_entries
+from evolution_scope import changed_paths_between_heads, classify_paths, classify_status_entries
 from repo_state import git_worktree_snapshot
 
 INACTIVE_STAGES = {None, "archived", "abandoned", "timed_out"}
@@ -83,6 +83,97 @@ def _snapshot_for_recovery(root: Path) -> dict[str, Any]:
         return git_worktree_snapshot(root)
 
 
+def _target_available_for_resume(root: Path, stage: str | None, next_v: int | None) -> bool:
+    if stage in HEAD_DRIFT_SELECTED_STAGES:
+        return True
+    if next_v is None:
+        return False
+    return (root / "bots" / f"claude_v{next_v}").exists()
+
+
+def _current_branch_alias_resume_allowed(
+    *,
+    stage: str | None,
+    current_branch: str,
+    current_head: str,
+    baseline_head: str,
+    target_available: bool,
+    blocking_entries: list[str],
+) -> bool:
+    """Allow recovery on a temporary branch name when files are unchanged."""
+    return bool(
+        stage in HEAD_DRIFT_RESUME_STAGES
+        and stage != "verified"
+        and current_branch
+        and current_branch != EVOLUTION_BRANCH
+        and current_head
+        and baseline_head
+        and current_head == baseline_head
+        and target_available
+        and not blocking_entries
+    )
+
+
+def _branch_alias_head_drift_paths_allowed(
+    *,
+    root: Path,
+    baseline_head: str,
+    current_head: str,
+    next_v: int | None,
+) -> tuple[bool, dict[str, Any]]:
+    changed_paths = changed_paths_between_heads(root, baseline_head, current_head)
+    if changed_paths is None:
+        return False, {"head_drift_paths_available": False}
+    path_scope = classify_paths(changed_paths, next_v)
+    blocking = list(path_scope.get("blocking_entries") or [])
+    candidate_entries = list(path_scope.get("candidate_entries") or [])
+    return not (blocking or candidate_entries), {
+        "head_drift_paths_available": True,
+        "head_changed_paths": changed_paths[:80],
+        "head_blocking_entries": blocking[:40],
+        "head_candidate_entries": candidate_entries[:40],
+        "head_ignored_entries": (path_scope.get("ignored_entries") or [])[:40],
+    }
+
+
+def _baseline_branch_alias_resume_allowed(
+    *,
+    root: Path,
+    stage: str | None,
+    next_v: int | None,
+    current_branch: str,
+    baseline_branch: str,
+    current_head: str,
+    baseline_head: str,
+    target_available: bool,
+    blocking_entries: list[str],
+    current_branch_alias_allowed: bool,
+) -> tuple[bool, dict[str, Any]]:
+    if not (baseline_branch and current_branch and baseline_branch != current_branch):
+        return False, {}
+    if current_branch_alias_allowed:
+        return True, {"baseline_branch_alias_reason": "current_branch_alias_same_head"}
+    if not (
+        stage in HEAD_DRIFT_RESUME_STAGES
+        and current_branch == EVOLUTION_BRANCH
+        and baseline_branch != EVOLUTION_BRANCH
+        and target_available
+        and not blocking_entries
+    ):
+        return False, {}
+    if baseline_head and current_head and baseline_head == current_head:
+        return True, {"baseline_branch_alias_reason": "same_head"}
+    allowed, path_diag = _branch_alias_head_drift_paths_allowed(
+        root=root,
+        baseline_head=baseline_head,
+        current_head=current_head,
+        next_v=next_v,
+    )
+    if allowed:
+        path_diag["baseline_branch_alias_reason"] = "main_resume_external_head_drift"
+    return allowed, path_diag
+
+
 def checkpoint_recovery_diagnostics(
     checkpoint: dict[str, Any] | None,
     *,
@@ -123,6 +214,7 @@ def checkpoint_recovery_diagnostics(
     baseline_branch = branch_name(str(baseline.get("branch") or ""))
     current_head = str(snapshot.get("head") or "")
     baseline_head = str(baseline.get("head") or "")
+    target_available = _target_available_for_resume(root, stage, next_v)
 
     repo_diag = {
         "current_branch": current_branch,
@@ -148,16 +240,59 @@ def checkpoint_recovery_diagnostics(
         issues.append("repo_blocking_worktree_entries")
     if worktree_scope.get("ignored_entries"):
         warnings.append("repo_unrelated_worktree_entries_ignored")
-    if _enforce_evolution_branch() and current_branch and current_branch != EVOLUTION_BRANCH:
+    blocking_entries = list(worktree_scope.get("blocking_entries") or [])
+    current_branch_alias_allowed = _current_branch_alias_resume_allowed(
+        stage=stage,
+        current_branch=current_branch,
+        current_head=current_head,
+        baseline_head=baseline_head,
+        target_available=target_available,
+        blocking_entries=blocking_entries,
+    )
+    if current_branch_alias_allowed:
+        warnings.append("repo_current_branch_alias_resume")
+        repo_diag["current_branch_alias_allowed"] = True
+    baseline_branch_alias_allowed, baseline_branch_alias_diag = _baseline_branch_alias_resume_allowed(
+        root=root,
+        stage=stage,
+        next_v=next_v,
+        current_branch=current_branch,
+        baseline_branch=baseline_branch,
+        current_head=current_head,
+        baseline_head=baseline_head,
+        target_available=target_available,
+        blocking_entries=blocking_entries,
+        current_branch_alias_allowed=current_branch_alias_allowed,
+    )
+    if baseline_branch_alias_allowed:
+        warnings.append("repo_baseline_branch_alias_resume")
+        repo_diag["baseline_branch_alias_allowed"] = True
+    if baseline_branch_alias_diag:
+        repo_diag.update(baseline_branch_alias_diag)
+
+    if (
+        _enforce_evolution_branch()
+        and current_branch
+        and current_branch != EVOLUTION_BRANCH
+        and not current_branch_alias_allowed
+    ):
         issues.append("repo_not_on_evolution_branch")
-    if baseline_branch and current_branch and baseline_branch != current_branch:
+    if (
+        baseline_branch
+        and current_branch
+        and baseline_branch != current_branch
+        and not baseline_branch_alias_allowed
+    ):
         issues.append("repo_baseline_branch_mismatch")
     if baseline_head and current_head and baseline_head != current_head:
         target_dir = root / "bots" / f"claude_v{next_v}" if next_v is not None else None
+        branch_compatible = (
+            current_branch == EVOLUTION_BRANCH
+            and (not baseline_branch or baseline_branch == current_branch or baseline_branch_alias_allowed)
+        )
         can_resume = (
             stage in HEAD_DRIFT_RESUME_STAGES
-            and current_branch == EVOLUTION_BRANCH
-            and (not baseline_branch or baseline_branch == current_branch)
+            and branch_compatible
             and not worktree_scope.get("blocking_entries")
             and target_dir is not None
             and (stage in HEAD_DRIFT_SELECTED_STAGES or target_dir.exists())
