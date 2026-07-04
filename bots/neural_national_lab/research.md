@@ -172,6 +172,11 @@ Practical takeaways for this repo:
   research lesson is to collect broader counterfactual coverage before training
   larger gates, especially rare positive raises that a classifier can otherwise
   mis-score as bad.
+- Adding the v027 worst outlier seed to the counterfactual set produced v029,
+  which repaired that specific over-filtering regression and tied v025 over the
+  same 16-pair check. This is progress in the data loop, not a strategic edge:
+  single-outlier replay can fix a known miss, but a useful advantage model needs
+  systematic active learning over many disputed gates and opponents.
 
 ## Scale-Up Gate
 
@@ -183,7 +188,9 @@ Practical takeaways for this repo:
   export. The v027/v028 result adds one more condition: the target set must
   cover both negative interventions and rare high-value positives, or a gate can
   look good in-sample while blocking the very raises that carried v025's best
-  paired outcomes.
+  paired outcomes. The v029 result narrows the next step further: collect
+  disputed-gate counterfactuals from many outlier seeds, not just random
+  accepted interventions.
 - Promotion gate before larger models: a candidate should stay positive over
   at least 20 common-deck mirror pairs against its rule base, with median delta
   above zero and no protocol/illegal-action regression.

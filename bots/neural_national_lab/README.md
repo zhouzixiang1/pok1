@@ -153,3 +153,10 @@ over 16 paired mirrors (`-107.28` chips per 70 hands), and v028 with a lower
 gate threshold was also slightly negative over 8 pairs. The next scale step
 needs broader counterfactual coverage, especially examples that prevent the
 gate from blocking rare high-value v025 raises.
+
+`versions/v029_v254_cf_advantage_pair11_h32_t090` adds the worst v027 outlier
+seed back into the counterfactual training set. That repaired the specific
+over-filtering failure: v029 restored v025's 3 neural raises on the outlier
+trace. It still did not beat v025 over 16 paired mirrors (`-2.25` chips per
+70 hands, 95 percent CI `[-12.45, 7.95]`). Treat v029 as a diagnostic repair,
+not a stronger bot.
