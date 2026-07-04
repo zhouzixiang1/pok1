@@ -1641,6 +1641,47 @@ class TestWorkerFailureCircuitBreaker:
         assert result.passed is True
         assert result.allowed_files == ["opponent.py", "state.py", "strategy_helpers.py"]
 
+    def test_crossover_repair_scope_includes_existing_candidate_diff(self, tmp_path, monkeypatch):
+        """Crossover rework scope must include pre-existing fused candidate files."""
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        monkeypatch.setattr(
+            tool_planning,
+            "get_bot_dir",
+            lambda v: source_dir if int(v) == 10 else next_dir,
+        )
+        monkeypatch.setattr(
+            tool_planning,
+            "_py_files_changed_between",
+            lambda *_a, **_k: ["constants.py", "state.py", "strategy_helpers.py"],
+        )
+
+        ckpt = {
+            "next_v": 11,
+            "source_v": 10,
+            "parent2_v": 9,
+            "master_plan": {"strategy": "crossover", "repair_scope_files": ["strategy_helpers.py"]},
+        }
+        plan = {
+            "tasks": [{
+                "worker_id": "auto_quality_repair_file_size_strategy_helpers_py",
+                "target_files": ["strategy_helpers.py"],
+            }],
+            "work_item": {"kind": "crossover_quality_repair"},
+        }
+
+        updated = tool_planning._plan_with_accumulated_repair_scope(ckpt, plan, plan["tasks"], 11)
+
+        assert updated["repair_scope_files"] == [
+            "constants.py",
+            "state.py",
+            "strategy_helpers.py",
+        ]
+
     def test_declared_scope_failure_is_ledger_not_worker_contract(self):
         """Declared-scope misses should update scope accounting, not spawn edit tasks."""
         import tool_planning

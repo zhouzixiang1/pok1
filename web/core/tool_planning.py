@@ -2700,6 +2700,26 @@ def _plan_with_accumulated_repair_scope(ckpt, plan, tasks, next_v):
     scope.update(_declared_scope_ledger_files(ckpt))
     for task in tasks or []:
         scope.update(_task_declared_scope_files(task, next_v))
+    work_item = plan.get("work_item") if isinstance(plan.get("work_item"), dict) else {}
+    existing_work_item = existing_plan.get("work_item") if isinstance(existing_plan.get("work_item"), dict) else {}
+    is_crossover = (
+        bool(ckpt.get("parent2_v"))
+        or plan.get("strategy") == "crossover"
+        or existing_plan.get("strategy") == "crossover"
+        or str(work_item.get("kind", "")).startswith("crossover_")
+        or str(existing_work_item.get("kind", "")).startswith("crossover_")
+    )
+    if is_crossover and ckpt.get("source_v") is not None:
+        try:
+            source_dir = get_bot_dir(ckpt.get("source_v"))
+            next_dir = get_bot_dir(next_v)
+            if source_dir.exists() and next_dir.exists():
+                scope.update(
+                    rel for rel in _py_files_changed_between(source_dir, next_dir)
+                    if rel and "backup" not in rel
+                )
+        except Exception as exc:
+            _log.debug("Could not accumulate crossover repair scope for v%s: %s", next_v, exc)
     if not scope:
         return plan
     return {**plan, "repair_scope_files": sorted(scope)}
