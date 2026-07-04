@@ -1577,9 +1577,10 @@ async def _runtime_branch_guard_coroutine(
     Dirty-path scope can be made safe, but git branch/HEAD is global to a
     worktree. If another agent switches or advances HEAD while workers are
     running, the LLM may read a different codebase than the one that passed
-    gates. The only safe in-place behavior is to stop and resume from the
-    checkpoint after the worktree returns to the expected branch.
+    gates. A branch-name change to the same HEAD is only an alias of the same
+    tree, so it is recorded and tolerated until a commit/HEAD change appears.
     """
+    allowed_aliases: set[tuple[str, str]] = set()
     while True:
         if shutdown_mgr and shutdown_mgr.is_shutting_down:
             return
@@ -1591,10 +1592,43 @@ async def _runtime_branch_guard_coroutine(
             current_branch = current.get("branch") or ""
             current_head = current.get("head") or ""
             reason = ""
-            if expected_branch and current_branch and current_branch != expected_branch:
-                reason = "branch_drift"
-            elif expected_head and current_head and current_head != expected_head:
+            same_expected_head = bool(expected_head and current_head and current_head == expected_head)
+            branch_alias = bool(
+                expected_branch
+                and current_branch
+                and current_branch != expected_branch
+                and same_expected_head
+            )
+            if branch_alias:
+                alias_key = (current_branch, current_head)
+                if alias_key not in allowed_aliases:
+                    allowed_aliases.add(alias_key)
+                    log_system_event(
+                        "repo.runtime_branch_alias_allowed",
+                        "warn",
+                        (
+                            "Runtime branch guard tolerated branch alias on the "
+                            f"same HEAD: {expected_branch}@{expected_head} -> "
+                            f"{current_branch}@{current_head}"
+                        ),
+                        {
+                            "expected_branch": expected_branch,
+                            "current_branch": current_branch,
+                            "expected_head": expected_head,
+                            "current_head": current_head,
+                            "branch_status": current.get("branch_status", ""),
+                            "directive": (
+                                "Continuing because the worktree HEAD is unchanged. "
+                                "A later HEAD change will stop evolution; commit_bot "
+                                "still requires the canonical branch."
+                            ),
+                        },
+                    )
+                continue
+            if expected_head and current_head and current_head != expected_head:
                 reason = "head_drift"
+            elif expected_branch and current_branch and current_branch != expected_branch:
+                reason = "branch_drift"
             if not reason:
                 continue
 
@@ -1675,6 +1709,15 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
     except Exception:
         EVOLUTION_BRANCH = "main"
     _runtime_identity = _runtime_git_identity()
+    _expected_runtime_head = (
+        _runtime_identity.get("head", "")
+        if _runtime_identity.get("branch") == EVOLUTION_BRANCH else ""
+    )
+    os.environ["POK_RUNTIME_EXPECTED_BRANCH"] = EVOLUTION_BRANCH
+    if _expected_runtime_head:
+        os.environ["POK_RUNTIME_EXPECTED_HEAD"] = _expected_runtime_head
+    else:
+        os.environ.pop("POK_RUNTIME_EXPECTED_HEAD", None)
     _branch_guard_task = None
     _runtime_hard_stop_event = asyncio.Event()
     if _runtime_branch_guard_enabled():
@@ -1683,10 +1726,7 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                 ui,
                 shutdown_mgr,
                 expected_branch=EVOLUTION_BRANCH,
-                expected_head=(
-                    _runtime_identity.get("head", "")
-                    if _runtime_identity.get("branch") == EVOLUTION_BRANCH else ""
-                ),
+                expected_head=_expected_runtime_head,
                 owner_task=asyncio.current_task(),
                 hard_stop_event=_runtime_hard_stop_event,
             )
@@ -1697,10 +1737,7 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
             "Runtime branch guard started",
             {
                 "expected_branch": EVOLUTION_BRANCH,
-                "expected_head": (
-                    _runtime_identity.get("head", "")
-                    if _runtime_identity.get("branch") == EVOLUTION_BRANCH else ""
-                ),
+                "expected_head": _expected_runtime_head,
                 "current_branch": _runtime_identity.get("branch", ""),
                 "current_head": _runtime_identity.get("head", ""),
                 "check_interval": RUNTIME_BRANCH_GUARD_INTERVAL,

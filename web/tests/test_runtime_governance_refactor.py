@@ -903,10 +903,12 @@ def test_runtime_guard_blocks_clean_branch_drift_without_auto_checkout(monkeypat
     import tool_runtime_guard
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    monkeypatch.delenv("POK_RUNTIME_EXPECTED_HEAD", raising=False)
     snapshot = {"ok": True, "branch": "codex/refactor", "head": "abc123", "entries": ["?? bots/claude_v300/"]}
     commands = []
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: None)
     monkeypatch.setattr(tool_runtime_guard, "_run_git", lambda *args: commands.append(args))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
@@ -918,6 +920,81 @@ def test_runtime_guard_blocks_clean_branch_drift_without_auto_checkout(monkeypat
     assert payload["reason"] == "branch_drift"
     assert payload["expected_branch"] == "main"
     assert commands == []
+
+
+def test_runtime_guard_allows_non_commit_tool_on_same_head_branch_alias(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    monkeypatch.setenv("POK_RUNTIME_EXPECTED_HEAD", "abc123")
+    snapshots = iter([
+        {"ok": True, "branch": "codex/refactor", "head": "abc123", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "codex/refactor", "head": "abc123", "entries": ["?? bots/claude_v300/"]},
+    ])
+    events = []
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: None)
+    monkeypatch.setattr(tool_runtime_guard, "_log_guard_event", lambda *args: events.append(args))
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_literature_probe",
+        {"next_v": 300, "source_v": 299},
+    )
+
+    assert ok is True
+    assert payload["branch_alias_allowed"] is True
+    assert events[0][0] == "repo.runtime_guard_branch_alias_allowed"
+
+
+def test_runtime_guard_allows_pre_master_head_resume_on_same_head_branch_alias(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    monkeypatch.setenv("POK_RUNTIME_EXPECTED_HEAD", "new456")
+    snapshots = iter([
+        {"ok": True, "branch": "codex/refactor", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "codex/refactor", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+    ])
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
+    monkeypatch.setattr(tool_runtime_guard, "_unrelated_head_drift_allowed", lambda **_kwargs: (False, {}))
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
+        "next_v": 300,
+        "source_v": 299,
+        "stage": "direction_audited",
+        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "prepared"},
+    })
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_master",
+        {"next_v": 300, "source_v": 299},
+    )
+
+    assert ok is True
+    assert payload["head_drift_resume_allowed"] is True
+    assert payload["resume_kind"] == "pre_master"
+    assert payload["branch_alias_allowed"] is True
+
+
+def test_runtime_guard_blocks_commit_on_same_head_branch_alias(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    monkeypatch.setenv("POK_RUNTIME_EXPECTED_HEAD", "abc123")
+    snapshot = {"ok": True, "branch": "codex/refactor", "head": "abc123", "entries": ["?? bots/claude_v300/"]}
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: None)
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "commit_bot",
+        {"version": 300, "source_v": 299},
+    )
+
+    assert ok is False
+    assert payload["reason"] == "branch_drift"
+    assert payload["expected_branch"] == "main"
 
 
 def test_write_pipeline_checkpoint_persists_repo_baseline(tmp_path, monkeypatch):
@@ -1308,7 +1385,7 @@ def test_runtime_branch_guard_requests_shutdown_on_branch_drift(monkeypatch):
         None,
         shutdown,
         expected_branch="main",
-        expected_head="abc123",
+        expected_head="",
         owner_task=owner,
         hard_stop_event=hard_stop,
         check_interval=0.001,
@@ -1320,6 +1397,66 @@ def test_runtime_branch_guard_requests_shutdown_on_branch_drift(monkeypatch):
     assert cleared == [{"reason": "runtime_branch_drift"}]
     assert events[0][0] == "repo.runtime_branch_drift_shutdown"
     assert events[0][3]["reason"] == "branch_drift"
+
+
+def test_runtime_branch_guard_tolerates_same_head_branch_alias(monkeypatch):
+    import asyncio
+    import orchestrator
+
+    monkeypatch.setenv("POK_FORCE_RUNTIME_BRANCH_GUARD", "1")
+    snapshots = iter([
+        {"branch": "codex/other", "head": "abc123", "branch_status": "codex/other"},
+    ])
+    events = []
+    cleared = []
+    monkeypatch.setattr(orchestrator, "_runtime_git_identity", lambda: next(snapshots))
+    monkeypatch.setattr(orchestrator, "_clear_orchestrator_session", lambda **kwargs: cleared.append(kwargs))
+
+    class DummyShutdown:
+        def __init__(self):
+            self.is_shutting_down = False
+            self.requested = False
+
+        def request_shutdown(self):
+            self.requested = True
+            self.is_shutting_down = True
+
+    class DummyOwnerTask:
+        def __init__(self):
+            self.cancelled = False
+
+        def done(self):
+            return False
+
+        def cancel(self):
+            self.cancelled = True
+
+    shutdown = DummyShutdown()
+
+    def _fake_log(*args):
+        events.append(args)
+        shutdown.is_shutting_down = True
+
+    monkeypatch.setattr(orchestrator, "log_system_event", _fake_log)
+
+    owner = DummyOwnerTask()
+    hard_stop = asyncio.Event()
+
+    asyncio.run(orchestrator._runtime_branch_guard_coroutine(
+        None,
+        shutdown,
+        expected_branch="main",
+        expected_head="abc123",
+        owner_task=owner,
+        hard_stop_event=hard_stop,
+        check_interval=0.001,
+    ))
+
+    assert shutdown.requested is False
+    assert owner.cancelled is False
+    assert hard_stop.is_set() is False
+    assert cleared == []
+    assert events[0][0] == "repo.runtime_branch_alias_allowed"
 
 
 def test_runtime_branch_guard_requests_shutdown_on_head_drift(monkeypatch):
