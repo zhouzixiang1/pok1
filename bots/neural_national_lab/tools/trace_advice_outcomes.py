@@ -35,6 +35,7 @@ if str(ENGINE) not in sys.path:
 from analyze_advice import _classify_change, _load_bot, _neural_probs  # noqa: E402
 from engine.battle import _PersistentBot, _call_bot  # noqa: E402
 from judge import judge as judge_func  # noqa: E402
+from seeded_process import SeededPersistentBot, match_bot_seeds  # noqa: E402
 
 
 def _resolve(path: str) -> Path:
@@ -87,9 +88,20 @@ def _mirror_initdata(initdata: dict[str, Any]) -> dict[str, Any]:
     return mirrored
 
 
-def _play_match(bot0: Path, bot1: Path, initdata: dict[str, Any]) -> dict[str, Any]:
+def _play_match(
+    bot0: Path,
+    bot1: Path,
+    initdata: dict[str, Any],
+    bot_seeds: tuple[int, int] | None = None,
+) -> dict[str, Any]:
     bot_paths = [str(bot0.resolve()), str(bot1.resolve())]
-    persistent = [_PersistentBot(bot_paths[0]), _PersistentBot(bot_paths[1])]
+    if bot_seeds is None:
+        persistent = [_PersistentBot(bot_paths[0]), _PersistentBot(bot_paths[1])]
+    else:
+        persistent = [
+            SeededPersistentBot(bot_paths[0], bot_seeds[0]),
+            SeededPersistentBot(bot_paths[1], bot_seeds[1]),
+        ]
     try:
         result = json.loads(judge_func(json.dumps({"log": [], "initdata": copy.deepcopy(initdata)})))
         game_initdata = copy.deepcopy(result["initdata"])
@@ -362,6 +374,8 @@ def main() -> None:
     parser.add_argument("--seed-base", type=int)
     parser.add_argument("--seed-offset", type=int, default=0)
     parser.add_argument("--seed-stride", type=int, default=1)
+    parser.add_argument("--bot-seed-base", type=int)
+    parser.add_argument("--bot-seed-stride", type=int, default=10000)
     parser.add_argument("--max-hands", type=int, default=70)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -375,6 +389,8 @@ def main() -> None:
         "seed_base": args.seed_base,
         "seed_offset": args.seed_offset,
         "seed_stride": args.seed_stride,
+        "bot_seed_base": args.bot_seed_base,
+        "bot_seed_stride": args.bot_seed_stride,
         "max_hands": args.max_hands,
         "version": _rel(version_main),
         "opponent": _rel(opponent),
@@ -402,9 +418,22 @@ def main() -> None:
         )
         initdata = _seeded_initdata(seed, args.max_hands) if seed is not None else _fresh_initdata()
         mirror = _mirror_initdata(initdata)
-        row: dict[str, Any] = {"idx": idx, "seed": seed, "dealer": initdata["dealer"], "normal": {}, "mirror": {}}
+        normal_bot_seeds = match_bot_seeds(args.bot_seed_base, args.bot_seed_stride, idx, "normal")
+        mirror_bot_seeds = match_bot_seeds(args.bot_seed_base, args.bot_seed_stride, idx, "mirror")
+        row: dict[str, Any] = {
+            "idx": idx,
+            "seed": seed,
+            "dealer": initdata["dealer"],
+            "bot_seeds": {},
+            "normal": {},
+            "mirror": {},
+        }
+        if normal_bot_seeds is not None:
+            row["bot_seeds"]["normal"] = list(normal_bot_seeds)
+            row["bot_seeds"]["mirror"] = list(mirror_bot_seeds)
         for name, deck in (("normal", initdata), ("mirror", mirror)):
-            match = _play_match(version_main, opponent, deck)
+            bot_seeds = normal_bot_seeds if name == "normal" else mirror_bot_seeds
+            match = _play_match(version_main, opponent, deck, bot_seeds)
             analysis = _analyze_log(version_dir, match["log"], seat=0, candidate_conf=args.candidate_conf)
             row[name] = {
                 "winner": match["winner"],

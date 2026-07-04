@@ -100,16 +100,23 @@ was still inconclusive versus v022 (`[-9095, +14398]` chips over paired
 140-hand samples), so the next step is more paired battle volume before calling
 v025 a clear performance improvement.
 
-`paired_evaluate.py` supports deterministic seeds, parallel workers, and
-`--resume` for extending an existing seeded run without replaying completed
-pairs. The 16-pair seeded mirror run (`seed_base=2026070600`, `workers=8`) kept
-v025 positive on average versus v022 against `claude_v279` (`+796.44` chips per
-70 hands), but the 95 percent CI still crossed zero (`[-2089.29, 3682.16]`).
-Extending the same run to 32 pairs improved the mean to `+1170.11` chips per
-70 hands, but the 95 percent CI still crossed zero (`[-528.02, 2868.23]`).
-Extending again to 64 pairs reduced the mean to `+686.17` chips per 70 hands
-with 95 percent CI `[-602.07, 1974.41]`. v025 remains promising at the
-counterfactual-action level, but it is not a clear end-to-end winner.
+`paired_evaluate.py` supports deterministic deck seeds, optional bot-subprocess
+RNG seeds, parallel workers, and `--resume` for extending an existing seeded
+run without replaying completed pairs. Use `--seed-base` to fix the local judge
+decks and `--bot-seed-base` when the compared bots use Python `random` inside
+their simulation code. The 16-pair seeded mirror run (`seed_base=2026070600`,
+`workers=8`) kept v025 positive on average versus v022 against `claude_v279`
+(`+796.44` chips per 70 hands), but the 95 percent CI still crossed zero
+(`[-2089.29, 3682.16]`). Extending the same run to 32 pairs improved the mean
+to `+1170.11` chips per 70 hands, but the 95 percent CI still crossed zero
+(`[-528.02, 2868.23]`). Extending again to 64 pairs reduced the mean to
+`+686.17` chips per 70 hands with 95 percent CI `[-602.07, 1974.41]`. v025
+remains promising at the counterfactual-action level, but it is not a clear
+end-to-end winner.
+
+A 4-pair smoke with both deck and bot RNG seeds (`seed_base=2026070800`,
+`bot_seed_base=202607080000`) produced byte-identical JSON on rerun, confirming
+the seeded subprocess path is suitable for larger deterministic evaluation.
 
 `versions/v026_v254_flop_low_raise_h96_254` narrows v025 to the only bucket
 covered by the p120 counterfactual evidence: low-size flop free-action raises.

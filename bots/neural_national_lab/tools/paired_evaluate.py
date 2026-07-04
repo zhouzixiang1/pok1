@@ -21,6 +21,7 @@ if str(ENGINE) not in sys.path:
 
 from engine.battle import _PersistentBot, _call_bot  # noqa: E402
 from judge import judge as judge_func  # noqa: E402
+from seeded_process import SeededPersistentBot, match_bot_seeds  # noqa: E402
 
 
 def _resolve(path: str) -> Path:
@@ -97,9 +98,20 @@ def _mirror_initdata(initdata: dict[str, Any]) -> dict[str, Any]:
     return mirrored
 
 
-def _play_match(bot0: Path, bot1: Path, initdata: dict[str, Any]) -> dict[str, Any]:
+def _play_match(
+    bot0: Path,
+    bot1: Path,
+    initdata: dict[str, Any],
+    bot_seeds: tuple[int, int] | None = None,
+) -> dict[str, Any]:
     bot_paths = [str(bot0.resolve()), str(bot1.resolve())]
-    persistent = [_PersistentBot(bot_paths[0]), _PersistentBot(bot_paths[1])]
+    if bot_seeds is None:
+        persistent = [_PersistentBot(bot_paths[0]), _PersistentBot(bot_paths[1])]
+    else:
+        persistent = [
+            SeededPersistentBot(bot_paths[0], bot_seeds[0]),
+            SeededPersistentBot(bot_paths[1], bot_seeds[1]),
+        ]
     try:
         result = json.loads(judge_func(json.dumps({"log": [], "initdata": copy.deepcopy(initdata)})))
         game_initdata = copy.deepcopy(result["initdata"])
@@ -175,14 +187,20 @@ def _play_pair(idx: int, paths: list[Path], opponent: Path, args: argparse.Names
         "idx": idx,
         "seed": seed,
         "dealer": initdata["dealer"],
+        "bot_seeds": {},
         "net_chips": {},
         "normal": {},
         "mirror": {},
     }
+    normal_bot_seeds = match_bot_seeds(args.bot_seed_base, args.bot_seed_stride, idx, "normal")
+    mirror_bot_seeds = match_bot_seeds(args.bot_seed_base, args.bot_seed_stride, idx, "mirror")
+    if normal_bot_seeds is not None:
+        row["bot_seeds"]["normal"] = list(normal_bot_seeds)
+        row["bot_seeds"]["mirror"] = list(mirror_bot_seeds)
     for path in paths:
         label = _label(path)
-        normal_result = _play_match(path, opponent, initdata)
-        mirror_result = _play_match(path, opponent, mirror)
+        normal_result = _play_match(path, opponent, initdata, normal_bot_seeds)
+        mirror_result = _play_match(path, opponent, mirror, mirror_bot_seeds)
         row["normal"][label] = normal_result
         row["mirror"][label] = mirror_result
         row["net_chips"][label] = normal_result["bot0_chips"] + mirror_result["bot0_chips"]
@@ -196,11 +214,14 @@ def _compatible_resume(existing: dict[str, Any], expected: dict[str, Any]) -> bo
         "seed_base",
         "seed_offset",
         "seed_stride",
+        "bot_seed_base",
         "max_hands",
     )
     for key in keys:
         if existing.get(key) != expected.get(key):
             return False
+    if expected.get("bot_seed_base") is not None and existing.get("bot_seed_stride") != expected.get("bot_seed_stride"):
+        return False
     return existing.get("entries") == expected.get("entries")
 
 
@@ -254,6 +275,8 @@ def main() -> None:
     parser.add_argument("--seed-base", type=int)
     parser.add_argument("--seed-offset", type=int, default=0)
     parser.add_argument("--seed-stride", type=int, default=1)
+    parser.add_argument("--bot-seed-base", type=int)
+    parser.add_argument("--bot-seed-stride", type=int, default=10000)
     parser.add_argument("--max-hands", type=int, default=70)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--output", type=Path)
@@ -281,6 +304,8 @@ def main() -> None:
         "seed_base": args.seed_base,
         "seed_offset": args.seed_offset,
         "seed_stride": args.seed_stride,
+        "bot_seed_base": args.bot_seed_base,
+        "bot_seed_stride": args.bot_seed_stride,
         "max_hands": args.max_hands,
         "baseline_label": _label(baseline),
         "entries": entries,
