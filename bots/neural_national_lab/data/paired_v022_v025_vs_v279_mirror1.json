@@ -1,0 +1,110 @@
+{
+  "mode": "common_deck_mirror_pair",
+  "games": 1,
+  "baseline_label": "v022_v254_sharded_h96_raise_only254",
+  "entries": {
+    "v022_v254_sharded_h96_raise_only254": {
+      "path": "bots/neural_national_lab/versions/v022_v254_sharded_h96_raise_only254/main.py",
+      "opponent": "bots/claude_v279/main.py"
+    },
+    "v025_v254_low_raise_gate_h96_254": {
+      "path": "bots/neural_national_lab/versions/v025_v254_low_raise_gate_h96_254/main.py",
+      "opponent": "bots/claude_v279/main.py"
+    }
+  },
+  "pairs": [
+    {
+      "idx": 0,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 979.0,
+        "v025_v254_low_raise_gate_h96_254": 897.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -16550.0,
+          "bot1_chips": 16550.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 1,
+          "bot0_chips": -16432.0,
+          "bot1_chips": 16432.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 17529.0,
+          "bot1_chips": -17529.0
+        },
+        "v025_v254_low_raise_gate_h96_254": {
+          "winner": 0,
+          "bot0_chips": 17329.0,
+          "bot1_chips": -17329.0
+        }
+      }
+    }
+  ],
+  "results": {
+    "v022_v254_sharded_h96_raise_only254": {
+      "path": "bots/neural_national_lab/versions/v022_v254_sharded_h96_raise_only254/main.py",
+      "opponent": "bots/claude_v279/main.py",
+      "net_chips": [
+        979.0
+      ],
+      "samples": 1,
+      "mean_net": 979.0,
+      "median_net": 979.0,
+      "stddev_net": 0.0,
+      "stderr_net": 0.0,
+      "ci95_low": null,
+      "ci95_high": null,
+      "mean_per_70_hands": 489.5,
+      "ci95_low_per_70_hands": null,
+      "ci95_high_per_70_hands": null,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    },
+    "v025_v254_low_raise_gate_h96_254": {
+      "path": "bots/neural_national_lab/versions/v025_v254_low_raise_gate_h96_254/main.py",
+      "opponent": "bots/claude_v279/main.py",
+      "net_chips": [
+        897.0
+      ],
+      "samples": 1,
+      "mean_net": 897.0,
+      "median_net": 897.0,
+      "stddev_net": 0.0,
+      "stderr_net": 0.0,
+      "ci95_low": null,
+      "ci95_high": null,
+      "mean_per_70_hands": 448.5,
+      "ci95_low_per_70_hands": null,
+      "ci95_high_per_70_hands": null,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  },
+  "paired_vs_baseline": {
+    "v025_v254_low_raise_gate_h96_254": {
+      "baseline": "v022_v254_sharded_h96_raise_only254",
+      "candidate": "v025_v254_low_raise_gate_h96_254",
+      "delta_net_chips": [
+        -82.0
+      ],
+      "samples": 1,
+      "mean_net": -82.0,
+      "median_net": -82.0,
+      "stddev_net": 0.0,
+      "stderr_net": 0.0,
+      "ci95_low": null,
+      "ci95_high": null,
+      "mean_per_70_hands": -41.0,
+      "ci95_low_per_70_hands": null,
+      "ci95_high_per_70_hands": null,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  }
+}

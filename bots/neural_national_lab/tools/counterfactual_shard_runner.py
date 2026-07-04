@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import statistics
 import subprocess
@@ -64,12 +65,30 @@ def _pot_band(value: Any) -> str:
     return "pot_ge_3000"
 
 
+def _raise_delta_band(value: Any) -> str:
+    try:
+        amount = int(value)
+    except (TypeError, ValueError):
+        return "unknown"
+    if amount <= 0:
+        return "non_raise"
+    if amount <= 125:
+        return "raise_le_125"
+    if amount <= 250:
+        return "raise_126_250"
+    if amount <= 500:
+        return "raise_251_500"
+    return "raise_gt_500"
+
+
 def _summarize(probes: list[dict[str, Any]]) -> dict[str, Any]:
     primary = [float(row["primary_delta"]) for row in probes if row.get("status") == "ok" and row.get("primary_delta") is not None]
     by_kind: dict[str, list[float]] = {}
     by_stage: dict[str, list[float]] = {}
     by_stage_kind: dict[str, list[float]] = {}
     by_pot_band: dict[str, list[float]] = {}
+    by_advised_final: dict[str, list[float]] = {}
+    by_raise_delta_band: dict[str, list[float]] = {}
     for row in probes:
         if row.get("status") != "ok" or row.get("primary_delta") is None:
             continue
@@ -78,6 +97,8 @@ def _summarize(probes: list[dict[str, Any]]) -> dict[str, Any]:
         by_stage.setdefault(str(row.get("stage")), []).append(delta)
         by_stage_kind.setdefault(f"{row.get('stage')}|{row.get('kind')}", []).append(delta)
         by_pot_band.setdefault(_pot_band(row.get("pot")), []).append(delta)
+        by_advised_final.setdefault(str(row.get("advised_final")), []).append(delta)
+        by_raise_delta_band.setdefault(_raise_delta_band(row.get("advised_final")), []).append(delta)
     return {
         "ok_probes": len(primary),
         "failed_probes": len(probes) - len(primary),
@@ -86,6 +107,8 @@ def _summarize(probes: list[dict[str, Any]]) -> dict[str, Any]:
         "by_stage": {key: _stats(values) for key, values in sorted(by_stage.items())},
         "by_stage_kind": {key: _stats(values) for key, values in sorted(by_stage_kind.items())},
         "by_pot_band": {key: _stats(values) for key, values in sorted(by_pot_band.items())},
+        "by_advised_final": {key: _stats(values) for key, values in sorted(by_advised_final.items())},
+        "by_raise_delta_band": {key: _stats(values) for key, values in sorted(by_raise_delta_band.items())},
     }
 
 
@@ -132,6 +155,83 @@ def _probe_cmd(args: argparse.Namespace, shard_idx: int, shard_output: Path) -> 
     return cmd
 
 
+def _display_cmd(cmd: list[str]) -> str:
+    display = []
+    for idx, part in enumerate(cmd):
+        if idx == 0:
+            display.append("python")
+            continue
+        path = Path(part)
+        if path.is_absolute():
+            display.append(_rel(path))
+        else:
+            display.append(part)
+    return " ".join(display)
+
+
+def _shard_seed_offset(args: argparse.Namespace, shard_idx: int) -> int:
+    return args.seed_offset + shard_idx * args.games_per_shard * args.seed_stride
+
+
+def _run_shard(args: argparse.Namespace, shard_idx: int, shard_output: Path) -> dict[str, Any]:
+    cmd = _probe_cmd(args, shard_idx, shard_output)
+    skipped = shard_output.exists() and not args.rerun_existing
+    if skipped:
+        return {
+            "shard": shard_idx,
+            "output": _rel(shard_output),
+            "seed_offset": _shard_seed_offset(args, shard_idx),
+            "command": _display_cmd(cmd),
+            "returncode": 0,
+            "skipped_existing": True,
+            "stdout_tail": "",
+            "stderr_tail": "",
+        }
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(ROOT),
+            text=True,
+            capture_output=True,
+            timeout=args.shard_timeout_sec or None,
+        )
+        returncode = proc.returncode
+        stdout_tail = proc.stdout[-4000:]
+        stderr_tail = proc.stderr[-4000:]
+    except subprocess.TimeoutExpired as exc:
+        returncode = 124
+        stdout_tail = str(exc.stdout or "")[-4000:]
+        stderr_tail = str(exc.stderr or "")[-4000:]
+    return {
+        "shard": shard_idx,
+        "output": _rel(shard_output),
+        "seed_offset": _shard_seed_offset(args, shard_idx),
+        "command": _display_cmd(cmd),
+        "returncode": returncode,
+        "skipped_existing": False,
+        "stdout_tail": stdout_tail,
+        "stderr_tail": stderr_tail,
+    }
+
+
+def _merge_shard_entry(payload: dict[str, Any], shard_entry: dict[str, Any]) -> None:
+    shard_output = ROOT / shard_entry["output"]
+    if shard_output.exists():
+        shard_data = json.loads(shard_output.read_text(encoding="utf-8"))
+        shard_entry["summary"] = shard_data.get("summary", {})
+        shard_entry["probe_count"] = len(shard_data.get("probes", []))
+        for row in shard_data.get("probes", []):
+            payload["probes"].append(
+                {
+                    **row,
+                    "shard": shard_entry["shard"],
+                    "shard_seed_offset": shard_entry.get("seed_offset"),
+                }
+            )
+    payload["shard_results"].append(shard_entry)
+    payload["summary"] = _summarize(payload["probes"])
+
+
 def _write(output: Path | None, payload: dict[str, Any]) -> None:
     if output is None:
         return
@@ -145,6 +245,7 @@ def main() -> None:
     parser.add_argument("--version", required=True)
     parser.add_argument("--opponent", required=True)
     parser.add_argument("--shards", type=int, default=4)
+    parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--games-per-shard", type=int, default=2)
     parser.add_argument("--max-probes-per-shard", type=int, default=8)
     parser.add_argument("--max-scan-decisions", type=int, default=400)
@@ -172,6 +273,7 @@ def main() -> None:
         "version": _rel(_resolve(args.version)),
         "opponent": _rel(_resolve(args.opponent)),
         "shards": args.shards,
+        "workers": args.workers,
         "games_per_shard": args.games_per_shard,
         "max_probes_per_shard": args.max_probes_per_shard,
         "seed_base": args.seed_base,
@@ -189,54 +291,43 @@ def main() -> None:
     }
     _write(output, payload)
 
-    for shard_idx in range(args.shards):
-        shard_output = shard_dir / f"shard_{shard_idx:03d}.json"
-        cmd = _probe_cmd(args, shard_idx, shard_output)
-        skipped = shard_output.exists() and not args.rerun_existing
-        if skipped:
-            print(f"shard {shard_idx + 1}/{args.shards}: reuse {_rel(shard_output)}")
-            returncode = 0
-            stdout_tail = ""
-            stderr_tail = ""
-        else:
-            print(f"shard {shard_idx + 1}/{args.shards}: {' '.join(cmd)}")
-            try:
-                proc = subprocess.run(
-                    cmd,
-                    cwd=str(ROOT),
-                    text=True,
-                    capture_output=True,
-                    timeout=args.shard_timeout_sec or None,
+    shard_outputs = [shard_dir / f"shard_{idx:03d}.json" for idx in range(args.shards)]
+    if args.workers <= 1:
+        shard_entries = []
+        for shard_idx, shard_output in enumerate(shard_outputs):
+            if shard_output.exists() and not args.rerun_existing:
+                print(f"shard {shard_idx + 1}/{args.shards}: reuse {_rel(shard_output)}")
+            else:
+                print(f"shard {shard_idx + 1}/{args.shards}: {' '.join(_probe_cmd(args, shard_idx, shard_output))}")
+            shard_entries.append(_run_shard(args, shard_idx, shard_output))
+    else:
+        print(f"running {args.shards} shards with {args.workers} workers")
+        shard_entries = [None] * args.shards
+        with ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
+            futures = {
+                executor.submit(_run_shard, args, shard_idx, shard_output): shard_idx
+                for shard_idx, shard_output in enumerate(shard_outputs)
+            }
+            for future in as_completed(futures):
+                shard_idx = futures[future]
+                shard_entry = future.result()
+                shard_entries[shard_idx] = shard_entry
+                print(
+                    f"  shard {shard_idx + 1}/{args.shards} rc={shard_entry['returncode']} "
+                    f"output={shard_entry['output']}"
                 )
-                returncode = proc.returncode
-                stdout_tail = proc.stdout[-4000:]
-                stderr_tail = proc.stderr[-4000:]
-            except subprocess.TimeoutExpired as exc:
-                returncode = 124
-                stdout_tail = str(exc.stdout or "")[-4000:]
-                stderr_tail = str(exc.stderr or "")[-4000:]
-        shard_entry: dict[str, Any] = {
-            "shard": shard_idx,
-            "output": _rel(shard_output),
-            "returncode": returncode,
-            "skipped_existing": skipped,
-            "stdout_tail": stdout_tail,
-            "stderr_tail": stderr_tail,
-        }
-        if shard_output.exists():
-            shard_data = json.loads(shard_output.read_text(encoding="utf-8"))
-            shard_entry["summary"] = shard_data.get("summary", {})
-            shard_entry["probe_count"] = len(shard_data.get("probes", []))
-            for row in shard_data.get("probes", []):
-                payload["probes"].append({**row, "shard": shard_idx})
-        payload["shard_results"].append(shard_entry)
-        payload["summary"] = _summarize(payload["probes"])
+
+    for shard_entry in shard_entries:
+        if shard_entry is None:
+            continue
+        _merge_shard_entry(payload, shard_entry)
         _write(output, payload)
         print(
-            f"  rc={returncode} probes={shard_entry.get('probe_count', 0)} "
+            f"merge shard {shard_entry['shard'] + 1}/{args.shards}: "
+            f"rc={shard_entry['returncode']} probes={shard_entry.get('probe_count', 0)} "
             f"merged={len(payload['probes'])} mean={payload['summary'].get('primary_delta', {}).get('mean', 0.0):.1f}"
         )
-        if returncode != 0 and not shard_output.exists():
+        if shard_entry["returncode"] != 0 and not (ROOT / shard_entry["output"]).exists():
             break
 
     payload["summary"] = _summarize(payload["probes"])
