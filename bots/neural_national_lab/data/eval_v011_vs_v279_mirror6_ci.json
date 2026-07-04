@@ -1,0 +1,35 @@
+[
+  {
+    "mode": "mirror",
+    "version": "bots/neural_national_lab/versions/v011_v254_wide_call_rescue254/main.py",
+    "opponent": "bots/claude_v279/main.py",
+    "games": 6,
+    "played": 6,
+    "wins": [
+      3,
+      3
+    ],
+    "draws": 0,
+    "net_chips": [
+      -3183.0,
+      58.0,
+      -3795.0,
+      3418.0,
+      18744.0,
+      -6860.0
+    ],
+    "samples": 6,
+    "mean_net": 1397.0,
+    "median_net": -1562.5,
+    "stddev_net": 9196.815579318745,
+    "stderr_net": 3754.5842379683,
+    "ci95_low": -5961.985106417867,
+    "ci95_high": 8755.985106417867,
+    "mean_per_hand": 9.978571428571428,
+    "mean_per_70_hands": 698.5,
+    "ci95_low_per_70_hands": -2980.9925532089337,
+    "ci95_high_per_70_hands": 4377.992553208934,
+    "significant_positive_95": false,
+    "significant_negative_95": false
+  }
+]
