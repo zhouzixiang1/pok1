@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
 from evolution_infra import EVOLUTION_BRANCH, PROJECT_ROOT
-from evolution_scope import changed_paths_between_heads, classify_paths, classify_status_entries
+from evolution_scope import classify_status_entries
 from repo_state import git_worktree_snapshot
 
 INACTIVE_STAGES = {None, "archived", "abandoned", "timed_out"}
@@ -114,26 +115,22 @@ def _current_branch_alias_resume_allowed(
     )
 
 
-def _branch_alias_head_drift_paths_allowed(
-    *,
-    root: Path,
-    baseline_head: str,
-    current_head: str,
-    next_v: int | None,
-) -> tuple[bool, dict[str, Any]]:
-    changed_paths = changed_paths_between_heads(root, baseline_head, current_head)
-    if changed_paths is None:
-        return False, {"head_drift_paths_available": False}
-    path_scope = classify_paths(changed_paths, next_v)
-    blocking = list(path_scope.get("blocking_entries") or [])
-    candidate_entries = list(path_scope.get("candidate_entries") or [])
-    return not (blocking or candidate_entries), {
-        "head_drift_paths_available": True,
-        "head_changed_paths": changed_paths[:80],
-        "head_blocking_entries": blocking[:40],
-        "head_candidate_entries": candidate_entries[:40],
-        "head_ignored_entries": (path_scope.get("ignored_entries") or [])[:40],
-    }
+def _head_is_ancestor(root: Path, ancestor_head: str, descendant_head: str) -> bool:
+    if not ancestor_head or not descendant_head:
+        return False
+    if ancestor_head == descendant_head:
+        return True
+    try:
+        proc = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor_head, descendant_head],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception:
+        return False
+    return proc.returncode == 0
 
 
 def _baseline_branch_alias_resume_allowed(
@@ -163,15 +160,9 @@ def _baseline_branch_alias_resume_allowed(
         return False, {}
     if baseline_head and current_head and baseline_head == current_head:
         return True, {"baseline_branch_alias_reason": "same_head"}
-    allowed, path_diag = _branch_alias_head_drift_paths_allowed(
-        root=root,
-        baseline_head=baseline_head,
-        current_head=current_head,
-        next_v=next_v,
-    )
-    if allowed:
-        path_diag["baseline_branch_alias_reason"] = "main_resume_external_head_drift"
-    return allowed, path_diag
+    if _head_is_ancestor(root, baseline_head, current_head):
+        return True, {"baseline_branch_alias_reason": "main_resume_ancestor_head_drift"}
+    return False, {"baseline_branch_alias_reason": "non_ancestor_head_drift"}
 
 
 def checkpoint_recovery_diagnostics(
