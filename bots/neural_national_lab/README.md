@@ -245,9 +245,70 @@ common-deck mirror pairs against `claude_v279`, v043 was `+971.44` chips per
 70 hands versus v025 with 95 percent CI `[-376.65, 2319.52]`. That is a
 stronger signal than v040/v041, but still not statistically clear because the
 interval crosses zero and one very large positive pair contributes heavily.
-The next scale step should extend this exact paired run to at least 64 pairs
-using resumable multi-worker evaluation, then inspect the remaining negative
-outliers before increasing model size.
+The 64-pair multi-worker rerun confirmed that caution: v043 dropped to
+`+221.27` chips per 70 hands versus v025 with 95 percent CI
+`[-350.43, 792.97]` and a `30/8/26` positive/zero/negative split. Against v040
+on the same 64 seeds, v043 was only `+173.95` chips per 70 hands with 95
+percent CI `[-128.07, 475.98]`; 53 of 64 pairs were identical. The largest
+v025-relative negative outliers were pair18 (`-20407` raw), pair23 (`-11119`),
+and pair47 (`-6790`). Exact bot-RNG trace files for those outliers show actual
+neural raises in the bad paths, but v043 is not a promotion candidate. The next
+experiment should convert those exact trace contexts into match-scope
+interaction rows and require better robustness before increasing model size.
+
+`v044` through `v047` tested that match-scope idea and rejected the first
+implementation. `v044_v254_cf_handstrength_veto_allconf_t050` kept the v043
+model but removed the low-confidence interaction bypass; targeted checks showed
+no useful repair. The p278 match-scope dataset then added 10 exact trace rows:
+pair6/pair23 as positive contexts and pair42/pair47/pair21/pair28 as negative
+contexts. Single replacement models (`v045` seed282 at threshold `0.30` and
+`v046` seed280 at threshold `0.25`) both preserved pair6 but broke pair23 by
+allowing or blocking different mirror-side paths. `v047` kept the v043
+interaction gate and added the p278 model as a second veto, but its 64-pair
+run versus v043 was negative: `-306.10` chips per 70 hands with 95 percent CI
+`[-729.15, 116.95]` and a `6/51/7` positive/zero/negative split. The practical
+lesson is that weak pair-level deltas are not reliable labels for individual
+flop probe actions. Future match-scope training needs trajectory-level credit
+assignment, or at minimum counterfactual reruns that isolate one candidate
+change at a time before it becomes a supervised row.
+
+`counterfactual_rollout_probe.py` now also supports direct game/side-level
+process parallelism with `--workers` and `--max-probes-per-task`. The worker
+boundary is one deterministic game side, so each process owns its bot module
+load, local judge state, and bot subprocesses; the parent only merges probes
+and writes JSON. On this 32-thread machine, an 8-worker smoke run over v043
+produced 9 isolated hand-scope probes with mean primary delta `+144.33`, and a
+16-worker follow-up produced 13 more probes with mean `+86.00`. The merged
+22-row training set had 13 positives, 9 non-positives, and input dimension 70.
+Training ran on CUDA (`NVIDIA GeForce RTX 4060 Laptop GPU`); h16/h8/h4 models
+all had validation accuracy `0.60`, so h8 was selected for calibration rather
+than capacity. `v048_v254_cf_isolated_veto_p022_h8_t080` used h8 with
+`advantage_min=0.8`; it failed end-to-end versus v043 over 32 paired mirrors
+(`-125.45` chips per 70 hands, 95 percent CI `[-1016.44, 765.53]`) due to
+large negative outliers. `v049_v254_cf_isolated_veto_p022_h8_t090` raised the
+threshold to `0.9`; it improved the 32-pair sample but did not survive a
+64-pair extension (`+70.88` chips per 70 hands, 95 percent CI
+`[-556.85, 698.60]`). Keep v048/v049 as artifacts proving the isolated-label
+pipeline and multicore sampler, not as stronger bots. The next attempt needs
+more isolated probes around the newly exposed negative outliers, not a lower
+threshold on the same 22-row dataset.
+
+`v050_v254_cf_isolated_aux_veto_p033_h8_b040` keeps the v043 hand-strength
+gate and adds the p33 isolated model only as a conservative auxiliary veto:
+block only when the original gate is very confident and the p33 model scores
+the action below `0.40`. The v049 64-pair failure was traced to missing v043
+rescue raises on exact seeds, especially pair42 and pair51; a replacement
+isolated gate blocked those raises instead of repairing bad extra actions.
+The follow-up hand-scope shard over pairs42..52 added 11 probes and looked
+positive (`+99.91`, 95 percent CI `[29.89, 169.93]`), but the match-scope
+rerun on the same area was not significant (`+14.78`, 95 percent CI
+`[-252.71, 282.27]`). The p33 and p42 auxiliary datasets both trained on CUDA
+but had weak validation accuracy (`0.57` and `0.56`). v050 preserved the traced
+pair42/pair51 rescue actions and avoided v049's catastrophic paths, but its
+64-pair evaluation versus v043 was essentially neutral: `-0.91` chips per
+70 hands with 95 percent CI `[-2.48, 0.67]`. Treat v050 as a safety experiment,
+not a promotion. The next useful step is trajectory-level credit assignment,
+or targeted match-scope branch data, before changing the runtime gate again.
 
 Recent literature and open-source scans point to the next useful local
 direction:

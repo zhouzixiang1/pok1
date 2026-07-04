@@ -1,0 +1,128 @@
+{
+  "mode": "common_deck_mirror_pair",
+  "games": 1,
+  "workers": 1,
+  "seed_base": 2026071308,
+  "seed_offset": 0,
+  "seed_stride": 1,
+  "bot_seed_base": 202607290000,
+  "bot_seed_stride": 10000,
+  "max_hands": 70,
+  "baseline_label": "v043_v254_cf_handstrength_veto_p268_h32_t050",
+  "entries": {
+    "v043_v254_cf_handstrength_veto_p268_h32_t050": {
+      "path": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050/main.py",
+      "opponent": "bots/claude_v279/main.py"
+    },
+    "v047_v254_cf_dual_matchscope_veto_p278_h32_s280_t025": {
+      "path": "bots/neural_national_lab/versions/v047_v254_cf_dual_matchscope_veto_p278_h32_s280_t025/main.py",
+      "opponent": "bots/claude_v279/main.py"
+    }
+  },
+  "pairs": [
+    {
+      "idx": 0,
+      "seed": 2026071308,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202607290000,
+          202607290001
+        ],
+        "mirror": [
+          202607300000,
+          202607300001
+        ]
+      },
+      "net_chips": {
+        "v043_v254_cf_handstrength_veto_p268_h32_t050": 19236.0,
+        "v047_v254_cf_dual_matchscope_veto_p278_h32_s280_t025": 19236.0
+      },
+      "normal": {
+        "v043_v254_cf_handstrength_veto_p268_h32_t050": {
+          "winner": 0,
+          "bot0_chips": 19739.0,
+          "bot1_chips": -19739.0
+        },
+        "v047_v254_cf_dual_matchscope_veto_p278_h32_s280_t025": {
+          "winner": 0,
+          "bot0_chips": 19739.0,
+          "bot1_chips": -19739.0
+        }
+      },
+      "mirror": {
+        "v043_v254_cf_handstrength_veto_p268_h32_t050": {
+          "winner": 1,
+          "bot0_chips": -503.0,
+          "bot1_chips": 503.0
+        },
+        "v047_v254_cf_dual_matchscope_veto_p278_h32_s280_t025": {
+          "winner": 1,
+          "bot0_chips": -503.0,
+          "bot1_chips": 503.0
+        }
+      }
+    }
+  ],
+  "results": {
+    "v043_v254_cf_handstrength_veto_p268_h32_t050": {
+      "path": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050/main.py",
+      "opponent": "bots/claude_v279/main.py",
+      "net_chips": [
+        19236.0
+      ],
+      "samples": 1,
+      "mean_net": 19236.0,
+      "median_net": 19236.0,
+      "stddev_net": 0.0,
+      "stderr_net": 0.0,
+      "ci95_low": null,
+      "ci95_high": null,
+      "mean_per_70_hands": 9618.0,
+      "ci95_low_per_70_hands": null,
+      "ci95_high_per_70_hands": null,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    },
+    "v047_v254_cf_dual_matchscope_veto_p278_h32_s280_t025": {
+      "path": "bots/neural_national_lab/versions/v047_v254_cf_dual_matchscope_veto_p278_h32_s280_t025/main.py",
+      "opponent": "bots/claude_v279/main.py",
+      "net_chips": [
+        19236.0
+      ],
+      "samples": 1,
+      "mean_net": 19236.0,
+      "median_net": 19236.0,
+      "stddev_net": 0.0,
+      "stderr_net": 0.0,
+      "ci95_low": null,
+      "ci95_high": null,
+      "mean_per_70_hands": 9618.0,
+      "ci95_low_per_70_hands": null,
+      "ci95_high_per_70_hands": null,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  },
+  "paired_vs_baseline": {
+    "v047_v254_cf_dual_matchscope_veto_p278_h32_s280_t025": {
+      "baseline": "v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "candidate": "v047_v254_cf_dual_matchscope_veto_p278_h32_s280_t025",
+      "delta_net_chips": [
+        0.0
+      ],
+      "samples": 1,
+      "mean_net": 0.0,
+      "median_net": 0.0,
+      "stddev_net": 0.0,
+      "stderr_net": 0.0,
+      "ci95_low": null,
+      "ci95_high": null,
+      "mean_per_70_hands": 0.0,
+      "ci95_low_per_70_hands": null,
+      "ci95_high_per_70_hands": null,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  }
+}
