@@ -57,6 +57,33 @@
   version tests whether the same neural prior works when paired with its native
   teacher-family rule base.
 
+## v008_v254_free_check_rescue254
+
+- Base: `v007_v254_call_rescue254`.
+- Change: still disables paid broad action replacement, but allows the neural
+  policy to rescue a rule fold into check/call when `to_call == 0`.
+- Rationale: advisor analysis found a real battle spot where the rule strategy
+  folded for free while the neural prior had `call` confidence `0.9998`; this is
+  the lowest-risk place to make the neural module actually intervene.
+
+## v009_v254_active_rescue254
+
+- Base: `v008_v254_free_check_rescue254`.
+- Change: active but bounded rescue gate. Free check rescue threshold lowered
+  to `0.65`; paid call rescue is allowed only for `to_call <= 250`, pot-odds
+  ratio `<= 0.28`, and call confidence `>= 0.90`.
+- Rationale: v008 analysis showed 12 rule-fold/top-call candidates in one game
+  but zero final interventions because thresholds were too strict.
+
+## v010_v254_active_rescue254
+
+- Base: `v009_v254_active_rescue254`.
+- Change: paid rescue remains small, but `max_call_ratio` is widened from
+  `0.28` to `0.32` and `max_call_chips` from `250` to `350`.
+- Rationale: v009 analysis found a high-confidence call candidate at
+  `to_call=128`, `pot=328`, but the ratio was about `0.281` and missed the
+  previous threshold by less than one basis point.
+
 ## Round 1 Notes
 
 - Training data: `teacher214_round1.jsonl`, 272 teacher decisions from
@@ -103,3 +130,35 @@
 - Current best neural variant by positive battle evidence: `v007_v254_call_rescue254`.
   Evidence is still non-mirrored and low-sample; the next step is larger
   incremental battle batches and a faster mirror-compatible evaluator.
+
+## Round 3 Notes
+
+- `analyze_advice.py` was added to measure whether neural advisors actually
+  change actions.
+- `v007_v254_call_rescue254` advisor analysis, one ordinary game vs
+  `claude_v279`: `final_changed=0/148`; neural top labels included `call=50`,
+  but the current gates prevented all action changes.
+- In that same analysis, one rule fold had neural top `call` with confidence
+  `0.9998` while `to_call=0`; v008 was created to rescue exactly this class of
+  free-check spots.
+- `v008_v254_free_check_rescue254` advisor analysis, one ordinary game vs
+  `claude_v279`: `final_changed=0/113`, but found 12 rule-fold/top-call
+  candidates. Several were free checks with call confidence around `0.70-0.78`;
+  two paid calls had very high confidence at `to_call=201` and `to_call=50`.
+  v009 uses these observations to make bounded interventions.
+- `v009_v254_active_rescue254` advisor analysis, one ordinary game vs
+  `claude_v279`: `final_changed=0/137`; one high-confidence paid call candidate
+  had `to_call=128`, `pot=328`, `call_conf=0.9905`, but ratio just exceeded
+  `0.28`. v010 widens only that small-call ratio.
+- `v010_v254_active_rescue254` advisor analysis, one ordinary game vs
+  `claude_v279`: `final_changed=1/127`, type `fold_to_call`. The intervention
+  changed a rule fold at `to_call=50`, `pot=150`, call confidence `0.99998`,
+  and the actual bot response matched the advised call.
+- `v010_v254_active_rescue254` vs `claude_v279`, ordinary battle 3 games:
+  `[1477, 5133, 13500]`, mean `6703`, record `3-0`.
+- `v010_v254_active_rescue254` vs `claude_v254`, ordinary battle 2 games:
+  `[14661, -382]`, mean `7139.5`, record `1-1`.
+- Current best neural variant with confirmed intervention: `v010_v254_active_rescue254`.
+  It has actual advisor changes plus positive small-sample results against both
+  `claude_v279` and `claude_v254`; next proof step is larger and mirrored
+  batches.
