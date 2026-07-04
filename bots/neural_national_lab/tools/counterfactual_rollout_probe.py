@@ -32,7 +32,7 @@ if str(ENGINE) not in sys.path:
     sys.path.insert(0, str(ENGINE))
 
 from analyze_advice import _classify_change, _load_bot, _neural_probs  # noqa: E402
-from engine.battle import _call_bot  # noqa: E402
+from engine.battle import _PersistentBot, _call_bot  # noqa: E402
 from judge import judge as judge_func  # noqa: E402
 
 
@@ -87,6 +87,72 @@ def _final_label(action: int) -> str:
     if action == 0:
         return "call"
     return "raise"
+
+
+def _label_matches_kind(label_name: str | None, kind: str) -> bool:
+    if kind == "any":
+        return True
+    if label_name is None:
+        return False
+    if kind == "to_raise":
+        return label_name.startswith("raise")
+    if kind == "to_call" or kind == "fold_to_call":
+        return label_name == "call"
+    if kind == "to_fold":
+        return label_name == "fold"
+    if kind == "to_allin":
+        return label_name == "allin"
+    return True
+
+
+def _advisor_signal(neural_mod, req: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    probs, top_label, top_conf = _neural_probs(neural_mod, req, state)
+    top_name = (
+        neural_mod.LABELS[top_label]
+        if neural_mod is not None and top_label is not None
+        else None
+    )
+    signal: dict[str, Any] = {
+        "probs": probs,
+        "top_label": top_label,
+        "top_name": top_name,
+        "top_conf": float(top_conf),
+        "call_conf": float(probs[1]) if probs is not None and len(probs) > 1 else None,
+        "raise_conf": float(probs[2]) if probs is not None and len(probs) > 2 else None,
+    }
+    if neural_mod is None:
+        return signal
+    try:
+        model = neural_mod._model()
+        if model is None:
+            return signal
+        feature_req = dict(req)
+        for key in ("pot", "to_call", "my_stage_bet", "opponent_stage_bet", "opponent_allin"):
+            if key in state:
+                feature_req[key] = state[key]
+        raw_probs = neural_mod._predict(model, neural_mod.encode_features(feature_req, None))
+        label, conf, masked_probs = neural_mod._masked_top(raw_probs, neural_mod._legal_mask(req, state))
+        signal.update(
+            {
+                "probs": masked_probs,
+                "top_label": label,
+                "top_name": neural_mod.LABELS[label],
+                "top_conf": float(conf),
+                "call_conf": float(masked_probs[1]) if len(masked_probs) > 1 else None,
+                "raise_conf": float(max(masked_probs[2:5])) if len(masked_probs) > 4 else None,
+            }
+        )
+    except Exception:
+        return signal
+    return signal
+
+
+def _cheap_candidate_possible(signal: dict[str, Any], stage: str, args: argparse.Namespace) -> bool:
+    if args.stage != "any" and stage != args.stage:
+        return False
+    if float(signal.get("top_conf") or 0.0) < args.min_conf:
+        return False
+    return _label_matches_kind(signal.get("top_name"), args.kind)
 
 
 def _final_bot0_chips(result: dict[str, Any]) -> float | None:
@@ -153,18 +219,38 @@ def _stats(values: list[float]) -> dict[str, Any]:
     }
 
 
+def _pot_band(value: Any) -> str:
+    try:
+        pot = float(value)
+    except (TypeError, ValueError):
+        return "unknown"
+    if pot < 300:
+        return "pot_lt_300"
+    if pot < 700:
+        return "pot_300_699"
+    if pot < 1500:
+        return "pot_700_1499"
+    if pot < 3000:
+        return "pot_1500_2999"
+    return "pot_ge_3000"
+
+
 def _summarize(probes: list[dict[str, Any]]) -> dict[str, Any]:
     deltas = [float(row["primary_delta"]) for row in probes if row.get("status") == "ok" and row.get("primary_delta") is not None]
     match_deltas = [float(row["match_delta"]) for row in probes if row.get("status") == "ok" and row.get("match_delta") is not None]
     hand_deltas = [float(row["hand_delta"]) for row in probes if row.get("status") == "ok" and row.get("hand_delta") is not None]
     by_kind: dict[str, list[float]] = {}
     by_stage: dict[str, list[float]] = {}
+    by_stage_kind: dict[str, list[float]] = {}
+    by_pot_band: dict[str, list[float]] = {}
     for row in probes:
         if row.get("status") != "ok":
             continue
         delta = float(row["primary_delta"])
         by_kind.setdefault(str(row.get("kind")), []).append(delta)
         by_stage.setdefault(str(row.get("stage")), []).append(delta)
+        by_stage_kind.setdefault(f"{row.get('stage')}|{row.get('kind')}", []).append(delta)
+        by_pot_band.setdefault(_pot_band(row.get("pot")), []).append(delta)
     return {
         "ok_probes": len(deltas),
         "failed_probes": len(probes) - len(deltas),
@@ -173,6 +259,8 @@ def _summarize(probes: list[dict[str, Any]]) -> dict[str, Any]:
         "hand_delta": _stats(hand_deltas),
         "by_kind": {key: _stats(values) for key, values in sorted(by_kind.items())},
         "by_stage": {key: _stats(values) for key, values in sorted(by_stage.items())},
+        "by_stage_kind": {key: _stats(values) for key, values in sorted(by_stage_kind.items())},
+        "by_pot_band": {key: _stats(values) for key, values in sorted(by_pot_band.items())},
     }
 
 
@@ -287,146 +375,154 @@ def _probe_side(
     analysis_requests: list[dict[str, Any]] = []
     probes: list[dict[str, Any]] = []
     decisions = 0
+    persistent = [_PersistentBot(bot_paths[0]), _PersistentBot(bot_paths[1])] if args.scan_persistent else None
 
-    while result.get("command") == "request":
-        if len(probes) + start_probe_index >= args.max_probes:
-            break
-        if decisions >= args.max_scan_decisions:
-            break
-        content = result.get("content", {})
-        if not content:
-            break
-        player_id = int(next(iter(content.keys())))
-        request_data = content[str(player_id)]
+    try:
+        while result.get("command") == "request":
+            if len(probes) + start_probe_index >= args.max_probes:
+                break
+            if decisions >= args.max_scan_decisions:
+                break
+            content = result.get("content", {})
+            if not content:
+                break
+            player_id = int(next(iter(content.keys())))
+            request_data = content[str(player_id)]
 
-        if player_id == 0:
-            req = dict(request_data)
-            analysis_requests.append(req)
-            if "remaining_hands" not in req and hasattr(state_mod, "infer_remaining_hands_from_requests"):
-                req["remaining_hands"] = state_mod.infer_remaining_hands_from_requests(analysis_requests)
-                analysis_requests[-1] = req
+            if player_id == 0:
+                req = dict(request_data)
+                analysis_requests.append(req)
+                if "remaining_hands" not in req and hasattr(state_mod, "infer_remaining_hands_from_requests"):
+                    req["remaining_hands"] = state_mod.infer_remaining_hands_from_requests(analysis_requests)
+                    analysis_requests[-1] = req
 
-            with contextlib.redirect_stderr(io.StringIO()):
-                rule_action = strategy_mod.get_action(req, list(analysis_requests))
-                state = state_mod.reconstruct_state(req)
-                base_final = main_mod.sanitize_action(rule_action, state, req["my_chips"])
-                advised_raw = rule_action
-                if apply_neural_advice is not None:
-                    advised_raw = apply_neural_advice(req, state, int(rule_action))
-                advised_final = main_mod.sanitize_action(advised_raw, state, req["my_chips"])
-            probs, top_label, top_conf = _neural_probs(neural_mod, req, state)
-            public_cards = list(req.get("public_cards") or [])
-            stage = _stage_name(public_cards)
-            kind = _classify_change(int(base_final), int(advised_final))
+                with contextlib.redirect_stderr(io.StringIO()):
+                    state = state_mod.reconstruct_state(req)
+                public_cards = list(req.get("public_cards") or [])
+                stage = _stage_name(public_cards)
+                signal = _advisor_signal(neural_mod, req, state)
 
-            if (
-                len(probes) + start_probe_index < args.max_probes
-                and int(base_final) != int(advised_final)
-                and float(top_conf) >= args.min_conf
-                and _candidate_passes(kind, stage, args)
-            ):
-                branch_requests = copy.deepcopy(bot_requests)
-                branch_requests[0].append(copy.deepcopy(request_data))
-                branch_responses = copy.deepcopy(bot_responses)
-                branch_data = copy.deepcopy(bot_data)
-                stop_after_hand = int(req.get("hand", -1)) if args.branch_scope == "hand" else None
-                baseline = _forced_branch(
-                    log,
-                    game_initdata,
-                    bot_paths,
-                    branch_requests,
-                    branch_responses,
-                    branch_data,
-                    int(base_final),
-                    args.max_branch_steps,
-                    stop_after_hand,
-                )
-                candidate = _forced_branch(
-                    log,
-                    game_initdata,
-                    bot_paths,
-                    branch_requests,
-                    branch_responses,
-                    branch_data,
-                    int(advised_final),
-                    args.max_branch_steps,
-                    stop_after_hand,
-                )
-                baseline_chips = baseline.get("bot0_chips")
-                candidate_chips = candidate.get("bot0_chips")
-                hand = int(req.get("hand", -1))
-                baseline_hand = _hand_delta(baseline.get("log", []), hand)
-                candidate_hand = _hand_delta(candidate.get("log", []), hand)
-                match_delta = (
-                    float(candidate_chips) - float(baseline_chips)
-                    if baseline_chips is not None and candidate_chips is not None
-                    else None
-                )
-                hand_delta = (
-                    float(candidate_hand) - float(baseline_hand)
-                    if baseline_hand is not None and candidate_hand is not None
-                    else None
-                )
-                if args.branch_scope == "hand":
-                    status = "ok" if hand_delta is not None else "branch_failed"
-                    primary_delta = hand_delta
-                else:
-                    status = "ok" if match_delta is not None else "branch_failed"
-                    primary_delta = match_delta
-                probe = {
-                    "probe_index": start_probe_index + len(probes),
-                    "side": side_name,
-                    "decision_index": decisions,
-                    "hand": hand,
-                    "stage": stage,
-                    "kind": kind,
-                    "public_cards": public_cards,
-                    "my_cards": list(req.get("my_cards") or []),
-                    "to_call": state.get("to_call"),
-                    "pot": state.get("pot"),
-                    "my_chips": req.get("my_chips"),
-                    "rule_action": int(rule_action),
-                    "base_final": int(base_final),
-                    "base_label": _final_label(int(base_final)),
-                    "advised_raw": int(advised_raw),
-                    "advised_final": int(advised_final),
-                    "advised_label": _final_label(int(advised_final)),
-                    "top_label": neural_mod.LABELS[top_label] if neural_mod is not None and top_label is not None else None,
-                    "top_conf": float(top_conf),
-                    "call_conf": float(probs[1]) if probs is not None and len(probs) > 1 else None,
-                    "raise_conf": float(probs[2]) if probs is not None and len(probs) > 2 else None,
-                    "status": status,
-                    "baseline_status": baseline.get("status"),
-                    "candidate_status": candidate.get("status"),
-                    "baseline_chips": baseline_chips,
-                    "candidate_chips": candidate_chips,
-                    "match_delta": match_delta,
-                    "baseline_hand_delta": baseline_hand,
-                    "candidate_hand_delta": candidate_hand,
-                    "hand_delta": hand_delta,
-                    "primary_delta": primary_delta,
-                }
-                probes.append(probe)
-                print(
-                    f"{side_name} probe {probe['probe_index']}: {kind} {stage} "
-                    f"primary_delta={probe['primary_delta']} match_delta={probe['match_delta']} "
-                    f"hand_delta={probe['hand_delta']}"
-                )
+                if _cheap_candidate_possible(signal, stage, args):
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        rule_action = strategy_mod.get_action(req, list(analysis_requests))
+                        base_final = main_mod.sanitize_action(rule_action, state, req["my_chips"])
+                        advised_raw = rule_action
+                        if apply_neural_advice is not None:
+                            advised_raw = apply_neural_advice(req, state, int(rule_action))
+                        advised_final = main_mod.sanitize_action(advised_raw, state, req["my_chips"])
+                    kind = _classify_change(int(base_final), int(advised_final))
 
-        response, verdict, _ = _call_bot(
-            bot_paths,
-            player_id,
-            request_data,
-            bot_requests,
-            bot_responses,
-            bot_data=bot_data,
-            persistent_procs=None,
-        )
-        log.append({str(player_id): {"response": str(response), "verdict": verdict}, "output": None})
-        result = json.loads(judge_func(json.dumps({"log": log, "initdata": game_initdata})))
-        log.append({"output": result})
-        if player_id == 0:
-            decisions += 1
+                    if (
+                        len(probes) + start_probe_index < args.max_probes
+                        and int(base_final) != int(advised_final)
+                        and _candidate_passes(kind, stage, args)
+                    ):
+                        branch_requests = copy.deepcopy(bot_requests)
+                        branch_requests[0].append(copy.deepcopy(request_data))
+                        branch_responses = copy.deepcopy(bot_responses)
+                        branch_data = copy.deepcopy(bot_data)
+                        stop_after_hand = int(req.get("hand", -1)) if args.branch_scope == "hand" else None
+                        baseline = _forced_branch(
+                            log,
+                            game_initdata,
+                            bot_paths,
+                            branch_requests,
+                            branch_responses,
+                            branch_data,
+                            int(base_final),
+                            args.max_branch_steps,
+                            stop_after_hand,
+                        )
+                        candidate = _forced_branch(
+                            log,
+                            game_initdata,
+                            bot_paths,
+                            branch_requests,
+                            branch_responses,
+                            branch_data,
+                            int(advised_final),
+                            args.max_branch_steps,
+                            stop_after_hand,
+                        )
+                        baseline_chips = baseline.get("bot0_chips")
+                        candidate_chips = candidate.get("bot0_chips")
+                        hand = int(req.get("hand", -1))
+                        baseline_hand = _hand_delta(baseline.get("log", []), hand)
+                        candidate_hand = _hand_delta(candidate.get("log", []), hand)
+                        match_delta = (
+                            float(candidate_chips) - float(baseline_chips)
+                            if baseline_chips is not None and candidate_chips is not None
+                            else None
+                        )
+                        hand_delta = (
+                            float(candidate_hand) - float(baseline_hand)
+                            if baseline_hand is not None and candidate_hand is not None
+                            else None
+                        )
+                        if args.branch_scope == "hand":
+                            status = "ok" if hand_delta is not None else "branch_failed"
+                            primary_delta = hand_delta
+                        else:
+                            status = "ok" if match_delta is not None else "branch_failed"
+                            primary_delta = match_delta
+                        probe = {
+                            "probe_index": start_probe_index + len(probes),
+                            "side": side_name,
+                            "decision_index": decisions,
+                            "hand": hand,
+                            "stage": stage,
+                            "kind": kind,
+                            "public_cards": public_cards,
+                            "my_cards": list(req.get("my_cards") or []),
+                            "to_call": state.get("to_call"),
+                            "pot": state.get("pot"),
+                            "my_chips": req.get("my_chips"),
+                            "rule_action": int(rule_action),
+                            "base_final": int(base_final),
+                            "base_label": _final_label(int(base_final)),
+                            "advised_raw": int(advised_raw),
+                            "advised_final": int(advised_final),
+                            "advised_label": _final_label(int(advised_final)),
+                            "top_label": signal.get("top_name"),
+                            "top_conf": float(signal.get("top_conf") or 0.0),
+                            "call_conf": signal.get("call_conf"),
+                            "raise_conf": signal.get("raise_conf"),
+                            "status": status,
+                            "baseline_status": baseline.get("status"),
+                            "candidate_status": candidate.get("status"),
+                            "baseline_chips": baseline_chips,
+                            "candidate_chips": candidate_chips,
+                            "match_delta": match_delta,
+                            "baseline_hand_delta": baseline_hand,
+                            "candidate_hand_delta": candidate_hand,
+                            "hand_delta": hand_delta,
+                            "primary_delta": primary_delta,
+                        }
+                        probes.append(probe)
+                        print(
+                            f"{side_name} probe {probe['probe_index']}: {kind} {stage} "
+                            f"primary_delta={probe['primary_delta']} match_delta={probe['match_delta']} "
+                            f"hand_delta={probe['hand_delta']}"
+                        )
+
+            response, verdict, _ = _call_bot(
+                bot_paths,
+                player_id,
+                request_data,
+                bot_requests,
+                bot_responses,
+                bot_data=bot_data,
+                persistent_procs=persistent,
+            )
+            log.append({str(player_id): {"response": str(response), "verdict": verdict}, "output": None})
+            result = json.loads(judge_func(json.dumps({"log": log, "initdata": game_initdata})))
+            log.append({"output": result})
+            if player_id == 0:
+                decisions += 1
+    finally:
+        if persistent:
+            for proc in persistent:
+                proc.close()
 
     final_chips = _final_bot0_chips(result)
     return probes, {
@@ -449,9 +545,11 @@ def main() -> None:
     parser.add_argument("--stage", choices=["any", "preflop", "flop", "turn", "river"], default="any")
     parser.add_argument("--branch-scope", choices=["hand", "match"], default="hand")
     parser.add_argument("--max-branch-steps", type=int, default=5000)
+    parser.add_argument("--no-scan-persistent", action="store_true")
     parser.add_argument("--no-mirror", action="store_true")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    args.scan_persistent = not args.no_scan_persistent
 
     version_dir = _resolve(args.version)
     bot0 = _main_path(version_dir)
@@ -459,7 +557,7 @@ def main() -> None:
     loaded_bot = _load_bot(version_dir)
     payload: dict[str, Any] = {
         "mode": "single_decision_counterfactual_rollout",
-        "target": "forced_action_match_delta",
+        "target": "forced_action_primary_delta",
         "notes": [
             "Branches force one bot0 action with verdict OK, then continue the same local judge match.",
             "hand scope stops after the forked hand settles and uses hand_delta as primary_delta.",
@@ -471,6 +569,7 @@ def main() -> None:
         "max_probes": args.max_probes,
         "max_scan_decisions": args.max_scan_decisions,
         "branch_scope": args.branch_scope,
+        "scan_persistent": args.scan_persistent,
         "filters": {
             "kind": args.kind,
             "stage": args.stage,
