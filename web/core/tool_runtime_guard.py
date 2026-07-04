@@ -30,6 +30,8 @@ _HEAD_DRIFT_REPAIR_STAGES = {
 }
 _HEAD_DRIFT_TOOL_BY_STAGE = {
     "selected": {"prepare_next_gen", "run_crossover"},
+    "prepared": {"run_direction_audit"},
+    "direction_audited": {"run_literature_probe", "run_master"},
     "master_planned": {"execute_workers"},
     "workers_done": {"run_quality_gates"},
     "quality_failed": {"execute_workers"},
@@ -160,6 +162,8 @@ def _head_change_allowed_for_checkpoint_resume(
         return False, {"unexpected_entries": unexpected[:40]}
     if stage == "selected":
         resume_kind = "selected"
+    elif stage in {"prepared", "direction_audited"}:
+        resume_kind = "pre_master"
     elif stage == "master_planned":
         resume_kind = "initial_workers"
     elif stage == "workers_done":
