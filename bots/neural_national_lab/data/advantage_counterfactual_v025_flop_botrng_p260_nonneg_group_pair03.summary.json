@@ -1,0 +1,23 @@
+{
+  "base_inputs": [
+    "bots/neural_national_lab/data/advantage_counterfactual_v025_flop_botrng_p257_nonneg_pair11_2026071311.jsonl"
+  ],
+  "probe_inputs": [
+    "bots/neural_national_lab/data/counterfactual_v034_pair03_2026071303_botrng_match_focus.json"
+  ],
+  "paired_input": "bots/neural_national_lab/data/paired_v025_v034_vs_v279_seeded_botrng_mirror16.json",
+  "candidate_label": "v034_v254_cf_pair11_p257_h32_t090",
+  "rows": 260,
+  "base_rows": 257,
+  "input_dim": 70,
+  "positive": 232,
+  "negative": 28,
+  "positive_rate": 0.8923076923076924,
+  "zero_delta": 102,
+  "positive_threshold": 0.0,
+  "weight_scale": 1000.0,
+  "interaction_scanned_probes": 3,
+  "interaction_skipped_probes": 0,
+  "interaction_missing_seed_delta": 0,
+  "interaction_rows": 3
+}
