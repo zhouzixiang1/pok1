@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -124,6 +125,7 @@ ORCH_FIRST_ACTIVITY_TIMEOUT = int(os.environ.get("POK_ORCH_FIRST_ACTIVITY_TIMEOU
 ORCH_STREAM_POLL_INTERVAL = float(os.environ.get("POK_ORCH_STREAM_POLL_INTERVAL", "15"))
 ORCH_ACTIONABLE_STAGE_TIMEOUT = float(os.environ.get("POK_ORCH_ACTIONABLE_STAGE_TIMEOUT", "300"))
 POST_GENERATION_CLEANUP_TIMEOUT = int(os.environ.get("POK_POST_GENERATION_CLEANUP_TIMEOUT", "900"))
+RUNTIME_BRANCH_GUARD_INTERVAL = float(os.environ.get("POK_RUNTIME_BRANCH_GUARD_INTERVAL", "5"))
 
 ORCHESTRATOR_PROMPT = (Path(__file__).parent / "prompts" / "orchestrator.md").read_text()
 LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
@@ -1511,6 +1513,123 @@ async def _watchdog_coroutine(ui, shutdown_mgr, check_interval=60):
             log.debug("Watchdog check error (non-fatal): %s", e)
 
 
+def _runtime_branch_guard_enabled() -> bool:
+    if os.environ.get("POK_DISABLE_RUNTIME_BRANCH_GUARD") == "1":
+        return False
+    if os.environ.get("PYTEST_CURRENT_TEST") and os.environ.get("POK_FORCE_RUNTIME_BRANCH_GUARD") != "1":
+        return False
+    return True
+
+
+def _branch_name(branch_status: str | None) -> str:
+    return (branch_status or "").split("...", 1)[0].split()[0]
+
+
+def _runtime_git_identity() -> dict:
+    """Read the current branch and HEAD without mutating the worktree."""
+    branch_status = ""
+    head = ""
+    try:
+        status = subprocess.run(
+            ["git", "status", "--short", "--branch"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if status.returncode == 0:
+            lines = [line for line in (status.stdout or "").splitlines() if line.strip()]
+            if lines and lines[0].startswith("## "):
+                branch_status = lines[0].replace("## ", "", 1)
+    except Exception:
+        branch_status = ""
+    try:
+        rev = subprocess.run(
+            ["git", "rev-parse", "--short=12", "HEAD"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if rev.returncode == 0:
+            head = (rev.stdout or "").strip()
+    except Exception:
+        head = ""
+    return {
+        "branch": _branch_name(branch_status),
+        "branch_status": branch_status,
+        "head": head,
+    }
+
+
+async def _runtime_branch_guard_coroutine(
+    ui,
+    shutdown_mgr,
+    *,
+    expected_branch: str,
+    expected_head: str,
+    check_interval: float = RUNTIME_BRANCH_GUARD_INTERVAL,
+):
+    """Stop in-place evolution if another actor changes this worktree's branch.
+
+    Dirty-path scope can be made safe, but git branch/HEAD is global to a
+    worktree. If another agent switches or advances HEAD while workers are
+    running, the LLM may read a different codebase than the one that passed
+    gates. The only safe in-place behavior is to stop and resume from the
+    checkpoint after the worktree returns to the expected branch.
+    """
+    while True:
+        if shutdown_mgr and shutdown_mgr.is_shutting_down:
+            return
+        try:
+            await asyncio.sleep(check_interval)
+            if shutdown_mgr and shutdown_mgr.is_shutting_down:
+                return
+            current = _runtime_git_identity()
+            current_branch = current.get("branch") or ""
+            current_head = current.get("head") or ""
+            reason = ""
+            if expected_branch and current_branch and current_branch != expected_branch:
+                reason = "branch_drift"
+            elif expected_head and current_head and current_head != expected_head:
+                reason = "head_drift"
+            if not reason:
+                continue
+
+            payload = {
+                "reason": reason,
+                "expected_branch": expected_branch,
+                "current_branch": current_branch,
+                "expected_head": expected_head,
+                "current_head": current_head,
+                "branch_status": current.get("branch_status", ""),
+                "directive": (
+                    "Runtime evolution stopped because this shared worktree's "
+                    "git branch/HEAD changed. Return to the expected branch and "
+                    "restart so checkpoint recovery can revalidate the candidate."
+                ),
+            }
+            msg = (
+                "Runtime branch guard stopped evolution: "
+                f"{reason} {expected_branch}@{expected_head} -> "
+                f"{current_branch}@{current_head}"
+            )
+            if ui:
+                ui.log_history(msg, "error")
+                ui.set_status("Stopped: git branch drift", is_working=False)
+            else:
+                log.error(msg)
+            log_system_event("repo.runtime_branch_drift_shutdown", "error", msg, payload)
+            _clear_orchestrator_session(reason="runtime_branch_drift")
+            if shutdown_mgr:
+                shutdown_mgr.request_shutdown()
+            return
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            log.debug("Runtime branch guard check error (non-fatal): %s", e)
+
+
 async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_workers=None, daemon_pairs=5):
     """Orchestrator entry point — three-phase generation loop.
 
@@ -1542,6 +1661,39 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
     log_system_event("orchestrator.started", "success", "Orchestrator started",
                      {"daemon_enabled": not no_daemon})
     log.info("Orchestrator loop started (daemon=%s)", not no_daemon)
+    try:
+        from evolution_infra import EVOLUTION_BRANCH
+    except Exception:
+        EVOLUTION_BRANCH = "main"
+    _runtime_identity = _runtime_git_identity()
+    _branch_guard_task = None
+    if _runtime_branch_guard_enabled():
+        _branch_guard_task = asyncio.create_task(
+            _runtime_branch_guard_coroutine(
+                ui,
+                shutdown_mgr,
+                expected_branch=EVOLUTION_BRANCH,
+                expected_head=(
+                    _runtime_identity.get("head", "")
+                    if _runtime_identity.get("branch") == EVOLUTION_BRANCH else ""
+                ),
+            )
+        )
+        log_system_event(
+            "repo.runtime_branch_guard_started",
+            "info",
+            "Runtime branch guard started",
+            {
+                "expected_branch": EVOLUTION_BRANCH,
+                "expected_head": (
+                    _runtime_identity.get("head", "")
+                    if _runtime_identity.get("branch") == EVOLUTION_BRANCH else ""
+                ),
+                "current_branch": _runtime_identity.get("branch", ""),
+                "current_head": _runtime_identity.get("head", ""),
+                "check_interval": RUNTIME_BRANCH_GUARD_INTERVAL,
+            },
+        )
 
     # Start daemon
     _daemon_stop = None
@@ -1881,6 +2033,17 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
         except Exception as e:
             log.debug("Loop error cleanup: %s", e)
     finally:
+        try:
+            from server.state import app_state
+            app_state.set_running(False)
+        except Exception as e:
+            log.debug("Loop final cleanup error: %s", e)
+        if _branch_guard_task is not None and not _branch_guard_task.done():
+            _branch_guard_task.cancel()
+            try:
+                await _branch_guard_task
+            except asyncio.CancelledError:
+                pass
         if not _watchdog_task.done():
             _watchdog_task.cancel()
             try:

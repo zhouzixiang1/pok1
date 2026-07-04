@@ -1177,6 +1177,84 @@ def test_checkpoint_recovery_diagnostics_blocks_critical_dirty_entries(tmp_path)
     assert " M sever/server/tcp_server.py" in diag["worktree_scope"]["blocking_entries"]
 
 
+def test_runtime_branch_guard_requests_shutdown_on_branch_drift(monkeypatch):
+    import asyncio
+    import orchestrator
+
+    monkeypatch.setenv("POK_FORCE_RUNTIME_BRANCH_GUARD", "1")
+    snapshots = iter([
+        {"branch": "main", "head": "abc123", "branch_status": "main"},
+        {"branch": "codex/other", "head": "abc123", "branch_status": "codex/other"},
+    ])
+    events = []
+    cleared = []
+    monkeypatch.setattr(orchestrator, "_runtime_git_identity", lambda: next(snapshots))
+    monkeypatch.setattr(orchestrator, "log_system_event", lambda *args: events.append(args))
+    monkeypatch.setattr(orchestrator, "_clear_orchestrator_session", lambda **kwargs: cleared.append(kwargs))
+
+    class DummyShutdown:
+        def __init__(self):
+            self.is_shutting_down = False
+            self.requested = False
+
+        def request_shutdown(self):
+            self.requested = True
+            self.is_shutting_down = True
+
+    shutdown = DummyShutdown()
+
+    asyncio.run(orchestrator._runtime_branch_guard_coroutine(
+        None,
+        shutdown,
+        expected_branch="main",
+        expected_head="abc123",
+        check_interval=0.001,
+    ))
+
+    assert shutdown.requested is True
+    assert cleared == [{"reason": "runtime_branch_drift"}]
+    assert events[0][0] == "repo.runtime_branch_drift_shutdown"
+    assert events[0][3]["reason"] == "branch_drift"
+
+
+def test_runtime_branch_guard_requests_shutdown_on_head_drift(monkeypatch):
+    import asyncio
+    import orchestrator
+
+    monkeypatch.setenv("POK_FORCE_RUNTIME_BRANCH_GUARD", "1")
+    snapshots = iter([
+        {"branch": "main", "head": "abc123", "branch_status": "main"},
+        {"branch": "main", "head": "def456", "branch_status": "main"},
+    ])
+    events = []
+    monkeypatch.setattr(orchestrator, "_runtime_git_identity", lambda: next(snapshots))
+    monkeypatch.setattr(orchestrator, "log_system_event", lambda *args: events.append(args))
+    monkeypatch.setattr(orchestrator, "_clear_orchestrator_session", lambda **_kwargs: None)
+
+    class DummyShutdown:
+        def __init__(self):
+            self.is_shutting_down = False
+            self.requested = False
+
+        def request_shutdown(self):
+            self.requested = True
+            self.is_shutting_down = True
+
+    shutdown = DummyShutdown()
+
+    asyncio.run(orchestrator._runtime_branch_guard_coroutine(
+        None,
+        shutdown,
+        expected_branch="main",
+        expected_head="abc123",
+        check_interval=0.001,
+    ))
+
+    assert shutdown.requested is True
+    assert events[0][0] == "repo.runtime_branch_drift_shutdown"
+    assert events[0][3]["reason"] == "head_drift"
+
+
 def test_checkpoint_recovery_diagnostics_tracks_rework_target_dirs(tmp_path):
     import pipeline_recovery
 
