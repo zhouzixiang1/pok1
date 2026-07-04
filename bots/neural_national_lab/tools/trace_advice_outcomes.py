@@ -210,6 +210,27 @@ def _optional_interaction_scores(neural_mod, features: list[float] | None) -> li
         return None
 
 
+def _optional_runtime_interaction_features(
+    neural_mod,
+    req: dict[str, Any],
+    state: dict[str, Any],
+    rule_action: int,
+    label: int | None,
+    conf: float,
+    probs: list[float] | None,
+    fallback: list[float] | None,
+) -> list[float] | None:
+    if neural_mod is None or label is None or probs is None:
+        return fallback
+    try:
+        build_features = getattr(neural_mod, "_interaction_features", None)
+        if build_features is None:
+            return fallback
+        return list(build_features(req, state, int(rule_action), int(label), float(conf), probs))
+    except Exception:
+        return fallback
+
+
 def _hand_deltas(log: list[dict[str, Any]]) -> dict[int, float]:
     deltas: dict[int, float] = {}
     for row in log:
@@ -296,9 +317,19 @@ def _analyze_log(
             float(top_conf),
             probs,
         )
+        interaction_features = _optional_runtime_interaction_features(
+            neural_mod,
+            req,
+            state,
+            int(rule_action),
+            int(top_label) if top_label is not None else None,
+            float(top_conf),
+            probs,
+            advantage_features,
+        )
         advantage_score = _optional_gate_score(neural_mod, "_advantage_model", advantage_features)
-        interaction_score = _optional_gate_score(neural_mod, "_interaction_model", advantage_features)
-        interaction_scores = _optional_interaction_scores(neural_mod, advantage_features)
+        interaction_score = _optional_gate_score(neural_mod, "_interaction_model", interaction_features)
+        interaction_scores = _optional_interaction_scores(neural_mod, interaction_features)
         interaction_mean_score = (
             sum(interaction_scores) / len(interaction_scores)
             if interaction_scores
@@ -334,6 +365,7 @@ def _analyze_log(
                     "interaction_mean_score": interaction_mean_score,
                     "interaction_min_score": interaction_min_score,
                     "advantage_features": advantage_features,
+                    "interaction_features": interaction_features,
                 }
             )
 
@@ -369,6 +401,7 @@ def _analyze_log(
                 "interaction_mean_score": interaction_mean_score,
                 "interaction_min_score": interaction_min_score,
                 "advantage_features": advantage_features,
+                "interaction_features": interaction_features,
             }
         )
 

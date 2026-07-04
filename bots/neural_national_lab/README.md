@@ -232,6 +232,23 @@ threshold movements can flip different seeds in opposite directions. Do not
 scale this ensemble threshold family further without adding better context
 features or a branch-level value target for mirror-side high-confidence raises.
 
+`v043_v254_cf_handstrength_veto_p268_h32_t050` adds those missing local
+context features to the interaction-veto head. The augmented dataset appends
+18 runtime-computable hand-strength features, including made-hand class, hole
+card participation, pair/trips/two-pair flags, flush pressure, straight draw
+density, and board pairing. It also adds two trace-supervised rows from the
+v040 pair5/pair15 boundary and trains three h32 seeds on the p268 augmented
+set; seed270 became the deployed model. Exact paired checks preserved the
+known repaired seeds and improved the pair5 boundary (`-185` raw in v040 to
+`+63` raw) without reintroducing the pair15 regression. Over the same 16
+common-deck mirror pairs against `claude_v279`, v043 was `+971.44` chips per
+70 hands versus v025 with 95 percent CI `[-376.65, 2319.52]`. That is a
+stronger signal than v040/v041, but still not statistically clear because the
+interval crosses zero and one very large positive pair contributes heavily.
+The next scale step should extend this exact paired run to at least 64 pairs
+using resumable multi-worker evaluation, then inspect the remaining negative
+outliers before increasing model size.
+
 Recent literature and open-source scans point to the next useful local
 direction:
 
@@ -264,9 +281,10 @@ Deep-CFR/PokerRL/ReBeL implementations
 
 This machine has 32 CPU threads, so deterministic paired evaluation and
 counterfactual shards can use `--workers 12` to `--workers 16` for practical
-speedups. Avoid blindly using all 32 workers: each worker launches multiple bot
-subprocesses, and full saturation can increase timeout risk and scheduling
-overhead.
+speedups when the evolution daemon is quiet. During concurrent daemon runs,
+keep ad-hoc paired evaluation lower, such as `--workers 4`, because each worker
+launches multiple bot subprocesses and full saturation can increase timeout
+risk and scheduling overhead.
 
 Move toward large scale in stages:
 
