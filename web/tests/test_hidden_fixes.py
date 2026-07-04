@@ -8,6 +8,8 @@ import asyncio
 import json, os, tempfile
 from pathlib import Path
 
+import pytest
+
 
 # ──────────────────────────────────────────────
 # H1: precommit shutdown signal (thread-safe Event)
@@ -453,8 +455,9 @@ def test_P1_guard_hook_returns_stage_recovery_and_command_preview():
     assert data["next_step"] == "run_master"
 
 
-def test_P1_guard_hook_blocks_readonly_bash_at_actionable_stage(tmp_path, monkeypatch):
-    """At quality_failed, even read-only Bash must give way to execute_workers."""
+@pytest.mark.parametrize("stage", ["master_planned", "quality_failed"])
+def test_P1_guard_hook_blocks_readonly_bash_at_actionable_stage(tmp_path, monkeypatch, stage):
+    """At deterministic execute_workers stages, even read-only Bash must give way."""
     import asyncio
     import sys
 
@@ -469,8 +472,18 @@ def test_P1_guard_hook_blocks_readonly_bash_at_actionable_stage(tmp_path, monkey
     evolution_infra.write_pipeline_checkpoint(
         268,
         242,
-        "quality_failed",
-        master_plan={"strategy": "crossover", "tasks": []},
+        stage,
+        master_plan={
+            "strategy": "master",
+            "tasks": [
+                {
+                    "worker_id": "w1",
+                    "role": "Algorithmic Logic Architect",
+                    "target_files": ["state.py"],
+                    "worker_prompt": "fix position semantics",
+                }
+            ],
+        },
         parent2_v=248,
         gate_results={
             "quality": {

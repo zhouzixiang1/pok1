@@ -592,7 +592,7 @@ def test_actionable_stage_idle_timeout_is_infra_and_preserves_checkpoint(tmp_pat
 
 @pytest.mark.parametrize(
     "stage",
-    ["quality_failed", "repair_planned", "rework_running", "precommit_failed"],
+    ["master_planned", "quality_failed", "repair_planned", "rework_running", "precommit_failed"],
 )
 def test_actionable_recovery_deterministically_calls_execute_workers(monkeypatch, stage):
     """Actionable execute_workers checkpoints should not rely on another Orchestrator LLM turn."""

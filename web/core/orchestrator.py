@@ -154,6 +154,7 @@ from llm_query import extract_result_error  # noqa: E402
 
 
 _ACTIONABLE_STALL_STAGES = frozenset({
+    "master_planned",
     "quality_failed",
     "precommit_failed",
     "repair_planned",
