@@ -535,6 +535,17 @@ one, and found pair21's mirror-side divergence after only 8 compared own
 decisions on that side. This confirms the prefilter is suitable for locating
 decision-changing seeds before paying for full match-delta labels.
 
+The first real prefilter collection used `claude_v279`, `seed_base=2026072400`,
+32 requested pairs, `workers=4`, and a 40-own-decision cap per side. It
+submitted 29 tasks before early stopping, skipped 3, and found 4 hits
+(`idx18`, `idx19`, `idx25`, `idx28`) for a hit rate of about 13.8 percent.
+Full `active_divergence_scan.py` labels on those hits produced deltas
+`+39755`, `-6`, `+1621`, and `0`. The merged dataset
+`divergence_value_v043_v052_prefilter_p009_seed2026071503_2026072400.jsonl`
+therefore has 9 rows: 4 positive, 2 zero, and 3 negative. This is still below
+the v053 training threshold, but it validates the intended pipeline: prefilter
+for action hits first, then spend full match-delta labeling only on hits.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass
