@@ -142,3 +142,14 @@ per 70 hands), but the 95 percent CI still crossed zero
 negative (`-301.33` chips per 70 hands, 95 percent CI
 `[-2241.13, 1638.48]`). v026 is therefore a recorded experiment, not a
 successor.
+
+The first counterfactual-trained advantage branch is also only a recorded
+experiment. `counterfactual_rollout_probe.py` now exports the same 70-dimension
+advantage features used by runtime gates and seeds the local analysis RNG in
+addition to deck and bot subprocess RNG. A 62-probe p64 run for v025 flop
+low-raise labels stayed positive (`+59.13`, 95 percent CI `[30.97, 87.29]`),
+but the h32 gate trained from it did not transfer: v027 lost slightly to v025
+over 16 paired mirrors (`-107.28` chips per 70 hands), and v028 with a lower
+gate threshold was also slightly negative over 8 pairs. The next scale step
+needs broader counterfactual coverage, especially examples that prevent the
+gate from blocking rare high-value v025 raises.

@@ -22,6 +22,27 @@
 First implementation: distill strong rule bots into a compact MLP that predicts
 the 6-class action abstraction, then use it conservatively as a runtime advisor.
 
+## Literature Refresh 2026-07-04
+
+- DeepStack (`https://arxiv.org/abs/1701.01724`) and ReBeL
+  (`https://arxiv.org/abs/2007.13544`) both reinforce that neural modules work
+  best as value/search components inside explicit imperfect-information
+  reasoning, not as direct LLM/runtime policy calls.
+- Deep CFR (`https://arxiv.org/abs/1811.00164`) and Single Deep CFR
+  (`https://arxiv.org/abs/1901.07621`) train from sampled regret/value targets
+  over many traversals. This is a better match for the current bottleneck than
+  binary filtering from a few dozen observed interventions.
+- RL-CFR (`https://arxiv.org/abs/2403.04344`) frames action abstraction choice
+  as expected payoff improvement over a default action. That directly matches
+  the counterfactual rollout data this repo is now collecting: every candidate
+  raise should be labeled by delta versus the rule/default action, then grouped
+  into trainable raise buckets before sanitizer conversion.
+- Deep Predictive Discounted CFR (`https://arxiv.org/abs/2511.08174`) points
+  toward variance-reduced, discounted regret targets. The practical lesson here
+  is to scale target quality and coverage before model size; v027/v028 failed
+  because the gate mis-scored rare useful raises, not because the MLP was too
+  small.
+
 ## External Clone Scan
 
 Scanned shallow clones under ignored `external/`:
@@ -143,6 +164,14 @@ Practical takeaways for this repo:
   the same branch-local bot RNG seeds. This closes the main reproducibility gap
   in the action-value target path; scaling data before this point would mix
   policy effects with random simulation drift.
+- The target path now also seeds the local analysis RNG and exports runtime-
+  compatible 70-dimensional advantage features. The first 62-row p64 dataset
+  remained positive at the action-value level, but an h32 advantage gate trained
+  on it failed in paired play: v027 over-filtered useful v025 raises, and v028
+  showed lowering the threshold alone did not fix the issue. The immediate
+  research lesson is to collect broader counterfactual coverage before training
+  larger gates, especially rare positive raises that a classifier can otherwise
+  mis-score as bad.
 
 ## Scale-Up Gate
 
@@ -151,7 +180,10 @@ Practical takeaways for this repo:
   promotion and counterfactual-target runs, and collect 50k-200k decisions from
   multiple teachers, opponents, and seeds only after the target generator can
   produce reproducible local action-value labels with legal masks and JSON
-  export.
+  export. The v027/v028 result adds one more condition: the target set must
+  cover both negative interventions and rare high-value positives, or a gate can
+  look good in-sample while blocking the very raises that carried v025's best
+  paired outcomes.
 - Promotion gate before larger models: a candidate should stay positive over
   at least 20 common-deck mirror pairs against its rule base, with median delta
   above zero and no protocol/illegal-action regression.

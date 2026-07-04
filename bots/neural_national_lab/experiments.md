@@ -242,6 +242,33 @@
   slightly negative versus v022 in a 32-pair check (`-301.33` chips per
   70 hands, 95 percent CI `[-2241.13, 1638.48]`). It is not a successor.
 
+## v027_v254_cf_advantage_low_raise_h32
+
+- Base: `v025_v254_low_raise_gate_h96_254`.
+- Change: adds a JSON-exported h32 advantage gate trained from 62 reproducible
+  flop low-raise counterfactual probes with deck, bot, and analysis RNG seeds.
+  Runtime keeps v025's low-raise cap and only filters neural suggestions.
+- Training data: `advantage_counterfactual_v025_flop_botrng_p64.jsonl`,
+  24 positive and 38 non-positive rows, 70-dimensional advantage features.
+  The h32 model used CUDA; sample-internal threshold analysis looked best
+  around `advantage_min=0.65`.
+- Result: failed to improve v025. A 16-pair deck+bot-RNG mirror check against
+  `claude_v279` was slightly negative versus v025 (`-107.28` chips per
+  70 hands, 95 percent CI `[-1585.67, 1371.11]`, median delta `0`). Trace on
+  the worst outlier showed v027 blocked all v025 neural raises in that pair,
+  while v025 had 3 flop low-raise interventions with changed-hand sum `+585`.
+
+## v028_v254_cf_advantage_low_raise_h32_t050
+
+- Base: `v027_v254_cf_advantage_low_raise_h32`.
+- Change: lowers `advantage_min` from `0.65` to `0.50` to test whether v027's
+  failure was mainly an over-strict gate threshold.
+- Result: still not a successor. The same outlier trace had `0` final neural
+  interventions, and an 8-pair mirror check versus v025 was slightly negative
+  (`-50.38` chips per 70 hands, 95 percent CI `[-1710.51, 1609.76]`). The
+  failure points to insufficient counterfactual coverage and poor gate
+  generalization, not just threshold placement.
+
 ## Round 1 Notes
 
 - Training data: `teacher214_round1.jsonl`, 272 teacher decisions from
