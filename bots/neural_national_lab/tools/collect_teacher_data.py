@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from engine.battle import battle, mirror_battle  # noqa: E402
+from blueprint_contract import CONTRACT_VERSION, legal_mask, state_from_request  # noqa: E402
 from feature_spec import LABELS, encode_features, label_action  # noqa: E402
 
 
@@ -33,11 +34,23 @@ def _extract(game_log: dict[str, Any], teacher: str, opponent: str) -> list[dict
             continue
         display = out.get("display") or {}
         label = label_action(action, req, display)
+        state = state_from_request(req, display)
+        mask = legal_mask(req, state)
+        if 0 <= label < len(mask):
+            mask[label] = 1
         samples.append({
             "features": encode_features(req, display),
             "label": label,
+            "legal_mask": mask,
+            "weight": 1.0,
             "action": action,
-            "meta": {"teacher": teacher, "opponent": opponent, "label_name": LABELS[label], "hand": req.get("hand")},
+            "meta": {
+                "teacher": teacher,
+                "opponent": opponent,
+                "label_name": LABELS[label],
+                "hand": req.get("hand"),
+                "contract": CONTRACT_VERSION,
+            },
         })
     return samples
 

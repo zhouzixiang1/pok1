@@ -1,0 +1,19 @@
+{
+  "enabled": true,
+  "weights": "policy_weights.json",
+  "contract": "blueprint_policy_v1",
+  "min_conf": 0.68,
+  "fold_conf": 0.9,
+  "call_conf": 0.78,
+  "raise_conf": 0.86,
+  "allin_conf": 1.01,
+  "max_paid_call_chips": 650,
+  "max_paid_call_ratio": 0.34,
+  "max_call_pot_ratio": 0.1,
+  "max_raise_delta": 1600,
+  "max_raise_pot_ratio": 1.25,
+  "allow_fold": true,
+  "allow_call": true,
+  "allow_raise": true,
+  "allow_allin": false
+}

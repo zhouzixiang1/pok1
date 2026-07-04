@@ -8,11 +8,12 @@ import random
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from blueprint_contract import CONTRACT_VERSION  # noqa: E402
 from feature_spec import LABELS, feature_dim  # noqa: E402
 
 
-def _load(path: Path) -> tuple[list[list[float]], list[int]]:
-    x, y = [], []
+def _load(path: Path) -> tuple[list[list[float]], list[int], list[list[float]], list[float]]:
+    x, y, masks, weights = [], [], [], []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
@@ -21,8 +22,21 @@ def _load(path: Path) -> tuple[list[list[float]], list[int]]:
         if len(feat) != feature_dim():
             raise ValueError(f"feature dim {len(feat)} != {feature_dim()}")
         x.append(feat)
-        y.append(int(row["label"]))
-    return x, y
+        label = int(row["label"])
+        y.append(label)
+        mask = row.get("legal_mask")
+        if isinstance(mask, list) and len(mask) == len(LABELS):
+            masks.append([1.0 if float(v) > 0 else 0.0 for v in mask])
+        else:
+            fallback = [1.0] * len(LABELS)
+            if 0 <= label < len(fallback):
+                fallback[label] = 1.0
+            masks.append(fallback)
+        try:
+            weights.append(max(0.05, float(row.get("weight", 1.0))))
+        except (TypeError, ValueError):
+            weights.append(1.0)
+    return x, y, masks, weights
 
 
 def _weights(labels: list[int]) -> list[float]:
@@ -51,37 +65,48 @@ def main() -> None:
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    features, labels = _load(args.input)
+    features, labels, legal_masks, sample_weights = _load(args.input)
     if len(labels) < 20:
         raise SystemExit(f"need at least 20 samples, got {len(labels)}")
     x = torch.tensor(np.asarray(features, dtype=np.float32))
     y = torch.tensor(np.asarray(labels, dtype=np.int64))
+    mask_tensor = torch.tensor(np.asarray(legal_masks, dtype=np.float32))
+    weight_tensor = torch.tensor(np.asarray(sample_weights, dtype=np.float32))
     idx = list(range(len(labels)))
     random.shuffle(idx)
     split = max(1, int(len(idx) * 0.8))
     tr = torch.tensor(idx[:split], dtype=torch.long)
     va = torch.tensor(idx[split:] or idx[:1], dtype=torch.long)
     model = nn.Sequential(nn.Linear(x.shape[1], args.hidden), nn.ReLU(), nn.Linear(args.hidden, len(LABELS)))
-    loss_fn = nn.CrossEntropyLoss(weight=torch.tensor(_weights(labels), dtype=torch.float32))
+    class_weights = torch.tensor(_weights(labels), dtype=torch.float32)
+    loss_fn = nn.CrossEntropyLoss(weight=class_weights, reduction="none")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     for _ in range(args.epochs):
-        loss = loss_fn(model(x[tr]), y[tr])
+        loss = (loss_fn(model(x[tr]), y[tr]) * weight_tensor[tr]).mean()
         opt.zero_grad()
         loss.backward()
         opt.step()
     with torch.no_grad():
-        pred = model(x).argmax(dim=1)
-        probs = torch.softmax(model(x), dim=1)
+        logits = model(x)
+        pred = logits.argmax(dim=1)
+        masked_logits = logits.masked_fill(mask_tensor <= 0, -1e9)
+        probs = torch.softmax(masked_logits, dim=1)
+        masked_pred = probs.argmax(dim=1)
         metrics = {
             "samples": len(labels),
             "train_acc": float((pred[tr] == y[tr]).float().mean().item()),
             "val_acc": float((pred[va] == y[va]).float().mean().item()),
+            "masked_train_acc": float((masked_pred[tr] == y[tr]).float().mean().item()),
+            "masked_val_acc": float((masked_pred[va] == y[va]).float().mean().item()),
             "avg_conf": float(probs.max(dim=1).values.mean().item()),
             "class_weights": _weights(labels),
+            "contract": CONTRACT_VERSION,
+            "legal_mask_rows": int(sum(1 for row in legal_masks if any(v <= 0 for v in row))),
         }
     l1, _, l2 = list(model)
     artifact = {
-        "format": "tiny_mlp_policy_v1",
+        "format": "tiny_mlp_policy_v2",
+        "contract": CONTRACT_VERSION,
         "input_dim": int(x.shape[1]),
         "hidden_dim": args.hidden,
         "labels": list(LABELS),

@@ -69,3 +69,19 @@ Practical takeaways for this repo:
   training targets: regret/advantage samples, legal action masks, and a stable
   action abstraction. More hand-written gates around the current imitation MLP
   are unlikely to produce a significant result.
+
+## Fixed-Contract Blueprint Findings
+
+- The Fullhouse/DeepCFR scans translated into a concrete local contract rather
+  than copied runtime code: one feature encoder, six fixed action labels, legal
+  masks at data/training/runtime, JSON-exported weights, and sanitizer-owned
+  conversion to Botzone or national raise-to-total actions.
+- `v017` showed that a broader learned policy overlay can be made native and
+  protocol-safe, but the first teacher-imitation model over-intervened and lost
+  badly in paired common-deck smoke.
+- `v018` showed that narrowing the gate can avoid immediate large damage, but
+  it becomes almost inactive. This reinforces the main research lesson: the
+  bottleneck is target quality, not threshold polishing.
+- Next neural work should generate training rows with outcome or advantage
+  targets, especially for raise/no-raise and call/fold counterfactuals, then
+  score every candidate against the rule base on common normal/mirrored decks.
