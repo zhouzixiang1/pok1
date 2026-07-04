@@ -767,6 +767,7 @@ def _make_bot_dir_guard_hook():
         "abandoned_versions.jsonl",
     )
     _ACTIONABLE_ROUTE_STAGES = {
+        "master_planned",
         "quality_failed",
         "precommit_failed",
         "repair_planned",
