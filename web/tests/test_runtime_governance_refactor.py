@@ -713,6 +713,68 @@ def test_runtime_guard_allows_execute_workers_after_master_planned_head_drift(mo
     assert payload["current_head"] == "new456"
 
 
+def test_runtime_guard_allows_direction_audit_after_prepared_head_drift(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshots = iter([
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+    ])
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
+        "next_v": 300,
+        "source_v": 299,
+        "stage": "prepared",
+        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "selected"},
+    })
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_direction_audit",
+        {"version": 300, "source_v": 299},
+    )
+
+    assert ok is True
+    assert payload["head_drift_resume_allowed"] is True
+    assert payload["head_drift_repair_allowed"] is False
+    assert payload["resume_kind"] == "pre_master"
+    assert payload["stage"] == "prepared"
+    assert payload["baseline_head"] == "old123"
+    assert payload["current_head"] == "new456"
+
+
+def test_runtime_guard_allows_master_after_direction_audited_head_drift(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshots = iter([
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+    ])
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
+        "next_v": 300,
+        "source_v": 299,
+        "stage": "direction_audited",
+        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "prepared"},
+    })
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_master",
+        {"version": 300, "source_v": 299},
+    )
+
+    assert ok is True
+    assert payload["head_drift_resume_allowed"] is True
+    assert payload["head_drift_repair_allowed"] is False
+    assert payload["resume_kind"] == "pre_master"
+    assert payload["stage"] == "direction_audited"
+    assert payload["baseline_head"] == "old123"
+    assert payload["current_head"] == "new456"
+
+
 def test_runtime_guard_allows_crossover_after_selected_head_drift(monkeypatch):
     import tool_runtime_guard
 
@@ -995,14 +1057,41 @@ def test_checkpoint_recovery_diagnostics_allows_selected_head_mismatch_without_t
     assert "target" not in diag
 
 
-def test_checkpoint_recovery_diagnostics_blocks_early_repo_head_mismatch(tmp_path):
+def test_checkpoint_recovery_diagnostics_allows_pre_master_head_mismatch(tmp_path):
+    import pipeline_recovery
+
+    for stage in ("prepared", "direction_audited"):
+        (tmp_path / "bots" / "claude_v257").mkdir(parents=True, exist_ok=True)
+        checkpoint = {
+            "next_v": 257,
+            "source_v": 197,
+            "stage": stage,
+            "repo_baseline": {"branch": "main", "head": "old123"},
+        }
+        snapshot = {"ok": True, "branch": "main", "head": "new456"}
+
+        diag = pipeline_recovery.checkpoint_recovery_diagnostics(
+            checkpoint,
+            snapshot=snapshot,
+            project_root=tmp_path,
+        )
+
+        assert diag["active"] is True
+        assert diag["recoverable"] is True
+        assert "repo_baseline_head_mismatch" not in diag["issues"]
+        assert "repo_baseline_head_mismatch_pre_master_resume" in diag["warnings"]
+        assert diag["repo"]["baseline_head_mismatch_allowed"] is True
+        assert diag["target"]["exists"] is True
+
+
+def test_checkpoint_recovery_diagnostics_blocks_preparing_repo_head_mismatch(tmp_path):
     import pipeline_recovery
 
     (tmp_path / "bots" / "claude_v257").mkdir(parents=True)
     checkpoint = {
         "next_v": 257,
         "source_v": 197,
-        "stage": "prepared",
+        "stage": "preparing",
         "repo_baseline": {"branch": "main", "head": "old123"},
     }
     snapshot = {"ok": True, "branch": "main", "head": "new456"}
