@@ -195,6 +195,16 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     active_v = find_latest_active_v()  # 活跃 bot（排除 graveyard），用于 eval/分析
     active_bots = get_active_bots()
     ratings = load_ratings()
+    if active_v <= 0 or not active_bots:
+        log_system_event(
+            "pipeline.prepare_no_active_source",
+            "error",
+            "Prepare generation found no tagged active bot source; skipping eval wait.",
+            {"active_v": active_v, "active_bots": active_bots, "planned_next_v": _planned_next_v},
+        )
+        if ui:
+            ui.log_history("没有可用的 tagged active bot，跳过本轮 prepare，避免等待 claude_v0。", "error")
+        return None
     bot_name = f"claude_v{active_v}"   # 等待活跃 bot 的 eval（核心 fix）
 
     # Reap bots if pool exceeds limit — reduces starvation in match selection
