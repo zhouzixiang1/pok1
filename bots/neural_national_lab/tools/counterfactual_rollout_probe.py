@@ -15,6 +15,7 @@ import contextlib
 import copy
 import io
 import json
+import random
 import statistics
 import sys
 from pathlib import Path
@@ -55,6 +56,20 @@ def _rel(path: Path) -> str:
 def _fresh_initdata() -> dict[str, Any]:
     result = json.loads(judge_func(json.dumps({"log": []})))
     return copy.deepcopy(result["initdata"])
+
+
+def _seeded_initdata(seed: int, max_hands: int = 70) -> dict[str, Any]:
+    rng = random.Random(int(seed))
+    decks = []
+    for _ in range(max_hands):
+        deck = list(range(52))
+        rng.shuffle(deck)
+        decks.append(deck)
+    return {
+        "max_hand": max_hands,
+        "dealer": rng.randint(0, 1),
+        "decks": decks,
+    }
 
 
 def _mirror_initdata(initdata: dict[str, Any]) -> dict[str, Any]:
@@ -545,6 +560,10 @@ def main() -> None:
     parser.add_argument("--stage", choices=["any", "preflop", "flop", "turn", "river"], default="any")
     parser.add_argument("--branch-scope", choices=["hand", "match"], default="hand")
     parser.add_argument("--max-branch-steps", type=int, default=5000)
+    parser.add_argument("--seed-base", type=int)
+    parser.add_argument("--seed-offset", type=int, default=0)
+    parser.add_argument("--seed-stride", type=int, default=1)
+    parser.add_argument("--max-hands", type=int, default=70)
     parser.add_argument("--no-scan-persistent", action="store_true")
     parser.add_argument("--no-mirror", action="store_true")
     parser.add_argument("--output", type=Path)
@@ -568,6 +587,10 @@ def main() -> None:
         "games": args.games,
         "max_probes": args.max_probes,
         "max_scan_decisions": args.max_scan_decisions,
+        "seed_base": args.seed_base,
+        "seed_offset": args.seed_offset,
+        "seed_stride": args.seed_stride,
+        "max_hands": args.max_hands,
         "branch_scope": args.branch_scope,
         "scan_persistent": args.scan_persistent,
         "filters": {
@@ -582,7 +605,12 @@ def main() -> None:
     _write(args.output, payload)
 
     for idx in range(args.games):
-        initdata = _fresh_initdata()
+        seed = (
+            args.seed_base + args.seed_offset + idx * args.seed_stride
+            if args.seed_base is not None
+            else None
+        )
+        initdata = _seeded_initdata(seed, args.max_hands) if seed is not None else _fresh_initdata()
         sides = [("normal", initdata)]
         if not args.no_mirror:
             sides.append(("mirror", _mirror_initdata(initdata)))
@@ -599,7 +627,7 @@ def main() -> None:
                 args,
                 len(payload["probes"]),
             )
-            payload["matches"].append({"game": idx, **match_summary})
+            payload["matches"].append({"game": idx, "seed": seed, **match_summary})
             payload["probes"].extend(probes)
             payload["summary"] = _summarize(payload["probes"])
             _write(args.output, payload)

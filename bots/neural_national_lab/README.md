@@ -47,3 +47,28 @@ when debugging subprocess-state issues.
 Run street-specific probes before training a gate. For example, v022 permits
 both preflop and flop raise interventions, so flop-positive evidence must not
 be blended with preflop data until the preflop bucket is independently checked.
+
+For reproducible scale-up sampling, use deterministic seeds and shard outputs:
+
+```bash
+python bots/neural_national_lab/tools/counterfactual_shard_runner.py \
+  --version bots/neural_national_lab/versions/v022_v254_sharded_h96_raise_only254 \
+  --opponent bots/claude_v279 \
+  --shards 8 \
+  --games-per-shard 3 \
+  --max-probes-per-shard 8 \
+  --stage flop \
+  --kind to_raise \
+  --seed-base 20260704 \
+  --output bots/neural_national_lab/data/counterfactual_v022_flop_seeded_shards.json
+```
+
+The shard runner writes per-shard JSON files next to the merged output, so a
+negative bucket or suspicious outlier can be replayed with the same seed range.
+Existing shard files are reused by default; pass `--rerun-existing` when the
+probe code or filters changed and the shards should be regenerated.
+The first seeded smoke run (`seed_base=2026070401`, 2 shards, 4 total probes)
+found flop `to_raise` mean primary delta `-64.25` with a very wide confidence
+interval. Treat that as a warning against shipping or training from optimistic
+unseeded micro-samples; it is not enough evidence to reject the bucket by
+itself.
