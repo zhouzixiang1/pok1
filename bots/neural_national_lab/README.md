@@ -91,3 +91,11 @@ On the same p16 seed range, v025 produced 9 low-raise flop probes with mean
 primary delta `+111.11` and no high-raise probes. A one-pair common-deck mirror
 smoke against `claude_v279` was roughly neutral versus v022 (`-82` chips over
 140 hands). This supports keeping v025 for larger tests, not promoting it.
+
+The larger p120 deterministic shard run (`seed_base=2026070500`, 40 shards)
+crossed the counterfactual scale-up gate: 108 hand-scoped flop `to_raise`
+probes, mean primary delta `+90.68`, 95 percent CI `[69.62, 111.73]`, and all
+probes in `raise_le_125`. A two-pair common-deck mirror against `claude_v279`
+was still inconclusive versus v022 (`[-9095, +14398]` chips over paired
+140-hand samples), so the next step is more paired battle volume before calling
+v025 a clear performance improvement.
