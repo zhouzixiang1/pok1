@@ -11,8 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from feature_spec import LABELS, feature_dim  # noqa: E402
 
 
-def _load(path: Path) -> tuple[list[list[float]], list[int], list[float]]:
-    x, y, w = [], [], []
+def _load(path: Path) -> tuple[list[list[float]], list[int]]:
+    x, y = [], []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
@@ -22,12 +22,7 @@ def _load(path: Path) -> tuple[list[list[float]], list[int], list[float]]:
             raise ValueError(f"feature dim {len(feat)} != {feature_dim()}")
         x.append(feat)
         y.append(int(row["label"]))
-        try:
-            weight = float(row.get("weight", 1.0) or 1.0)
-        except (TypeError, ValueError):
-            weight = 1.0
-        w.append(max(0.05, min(10.0, weight)))
-    return x, y, w
+    return x, y
 
 
 def _weights(labels: list[int]) -> list[float]:
@@ -56,23 +51,21 @@ def main() -> None:
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    features, labels, sample_weights = _load(args.input)
+    features, labels = _load(args.input)
     if len(labels) < 20:
         raise SystemExit(f"need at least 20 samples, got {len(labels)}")
     x = torch.tensor(np.asarray(features, dtype=np.float32))
     y = torch.tensor(np.asarray(labels, dtype=np.int64))
-    w = torch.tensor(np.asarray(sample_weights, dtype=np.float32))
     idx = list(range(len(labels)))
     random.shuffle(idx)
     split = max(1, int(len(idx) * 0.8))
     tr = torch.tensor(idx[:split], dtype=torch.long)
     va = torch.tensor(idx[split:] or idx[:1], dtype=torch.long)
     model = nn.Sequential(nn.Linear(x.shape[1], args.hidden), nn.ReLU(), nn.Linear(args.hidden, len(LABELS)))
-    loss_fn = nn.CrossEntropyLoss(weight=torch.tensor(_weights(labels), dtype=torch.float32), reduction="none")
+    loss_fn = nn.CrossEntropyLoss(weight=torch.tensor(_weights(labels), dtype=torch.float32))
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     for _ in range(args.epochs):
-        losses = loss_fn(model(x[tr]), y[tr])
-        loss = (losses * w[tr]).sum() / w[tr].sum().clamp_min(1.0)
+        loss = loss_fn(model(x[tr]), y[tr])
         opt.zero_grad()
         loss.backward()
         opt.step()
@@ -85,9 +78,6 @@ def main() -> None:
             "val_acc": float((pred[va] == y[va]).float().mean().item()),
             "avg_conf": float(probs.max(dim=1).values.mean().item()),
             "class_weights": _weights(labels),
-            "avg_sample_weight": float(w.mean().item()),
-            "min_sample_weight": float(w.min().item()),
-            "max_sample_weight": float(w.max().item()),
         }
     l1, _, l2 = list(model)
     artifact = {

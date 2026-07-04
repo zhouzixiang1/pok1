@@ -15,18 +15,9 @@ from engine.battle import battle, mirror_battle  # noqa: E402
 from feature_spec import LABELS, encode_features, label_action  # noqa: E402
 
 
-def _outcome_weight(game_log: dict[str, Any]) -> float:
-    try:
-        net = float(game_log.get("bot0_chips", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        net = 0.0
-    return max(0.25, min(2.5, 1.0 + net / 20000.0))
-
-
-def _extract(game_log: dict[str, Any], teacher: str, opponent: str, outcome_weights: bool) -> list[dict]:
+def _extract(game_log: dict[str, Any], teacher: str, opponent: str) -> list[dict]:
     rows = game_log.get("logs") or []
     samples = []
-    weight = _outcome_weight(game_log) if outcome_weights else 1.0
     for idx in range(0, max(0, len(rows) - 1), 2):
         out = rows[idx].get("output") if isinstance(rows[idx], dict) else None
         resp_row = rows[idx + 1] if isinstance(rows[idx + 1], dict) else {}
@@ -46,14 +37,7 @@ def _extract(game_log: dict[str, Any], teacher: str, opponent: str, outcome_weig
             "features": encode_features(req, display),
             "label": label,
             "action": action,
-            "weight": weight,
-            "meta": {
-                "teacher": teacher,
-                "opponent": opponent,
-                "label_name": LABELS[label],
-                "hand": req.get("hand"),
-                "bot0_chips": game_log.get("bot0_chips"),
-            },
+            "meta": {"teacher": teacher, "opponent": opponent, "label_name": LABELS[label], "hand": req.get("hand")},
         })
     return samples
 
@@ -64,7 +48,6 @@ def main() -> None:
     parser.add_argument("--opponent", action="append", required=True, type=Path)
     parser.add_argument("--games", type=int, default=1)
     parser.add_argument("--mode", choices=["battle", "mirror"], default="battle")
-    parser.add_argument("--outcome-weights", action="store_true")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     teacher = (ROOT / args.teacher).resolve() if not args.teacher.is_absolute() else args.teacher
@@ -77,7 +60,7 @@ def main() -> None:
             _, _, _, logs = battle(str(teacher), str(opponent), n_games=args.games, save_log=True)
         pair = []
         for game_log in logs:
-            pair.extend(_extract(game_log, teacher.parent.name, opponent.parent.name, args.outcome_weights))
+            pair.extend(_extract(game_log, teacher.parent.name, opponent.parent.name))
         samples.extend(pair)
         print(f"{teacher.parent.name} vs {opponent.parent.name}: {len(pair)} samples", file=sys.stderr)
     args.output.parent.mkdir(parents=True, exist_ok=True)

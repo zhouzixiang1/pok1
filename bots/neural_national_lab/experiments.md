@@ -104,17 +104,6 @@
   suggested many interventions were free check/call rescues, so v012 isolates
   that safer part of the neural prior from paid call risk.
 
-## v013_v254_weighted_call_rescue254
-
-- Base: `v011_v254_wide_call_rescue254`.
-- Neural source: `teacher254_weighted_round2`, 1615 outcome-weighted teacher
-  decisions from `claude_v254` mirror games against `claude_v279` and
-  `claude_v214`.
-- Change: same active call-rescue gates as v011, but the MLP weights are
-  retrained on the larger weighted dataset with hidden size 48.
-- Rationale: tests whether more teacher coverage plus simple outcome weighting
-  is better than the small round1 imitation model.
-
 ## Round 1 Notes
 
 - Training data: `teacher214_round1.jsonl`, 272 teacher decisions from
@@ -256,27 +245,3 @@
   productive direction is a richer trainer: more teacher/self-play data plus
   action-bucket or regret-style targets, then paired evaluation against v254 and
   v279 on common decks.
-
-## Round 6 Notes
-
-- `collect_teacher_data.py` now optionally writes `weight` per sample using the
-  teacher's match outcome. `train_policy_mlp.py` consumes those weights while
-  keeping old unweighted JSONL files compatible.
-- Collected `teacher254_weighted_round2.jsonl`: 1615 samples from
-  `claude_v254` mirror games against `claude_v279` and `claude_v214`, label
-  counts `fold=372`, `call=841`, `raise_half=195`, `raise_pot=175`,
-  `raise_2pot=21`, `allin=11`.
-- Trained `policy_teacher254_weighted_round2.json`: validation accuracy
-  `0.678`, average confidence `0.797`, average sample weight `1.083`.
-- `v013_v254_weighted_call_rescue254` advisor analysis, 3 ordinary games vs
-  `claude_v279`: `final_changed=8/371`, all `fold_to_call`. It is more active
-  than v010 but more conservative than v011.
-- `v013_v254_weighted_call_rescue254` vs `claude_v254`, common-deck mirror 6
-  pairs against `claude_v279`: paired deltas
-  `[16591, -815, -24622, 3401, -1109, -500]`, mean `-587.8 chips/70`,
-  95 percent CI `[-5916.4, +4740.7]`. The larger weighted imitation model did
-  not improve on v254 or v011.
-- Current status: v011 remains the best neural-advisor candidate by paired
-  mean. Outcome-weighted action imitation alone is not enough; the next trainer
-  should collect explicit counterfactual/action-bucket targets or generate
-  controlled candidate interventions and label them by paired outcome.
