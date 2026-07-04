@@ -31,6 +31,7 @@ log = logging.getLogger("pok.infra")
 # Local module imports (same directory)
 from glicko2 import Glicko2Player, update_rating_period
 from experience_pool import trim_experience_pool
+from evolution_scope import classify_status_entries
 
 # ──────────────────────────────────────────────
 # Constants
@@ -1284,45 +1285,62 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
         f"strategy: {strategy_tag}\n"
         f"{rating_info}"
     )
+    bot_path = f"bots/claude_v{version}"
     preexisting_staged = [
         p for p in _git("diff", "--cached", "--name-only", check=False).splitlines()
         if p
     ]
-    if preexisting_staged:
+    preexisting_scope = classify_status_entries(
+        [f"?? {path}" for path in preexisting_staged],
+        int(version),
+    )
+    preexisting_blocking = (
+        list(preexisting_scope.get("critical_entries") or [])
+        + list(preexisting_scope.get("foreign_bot_entries") or [])
+    )
+    if preexisting_blocking:
         try:
             from system_log import log_system_event
             log_system_event(
                 "pipeline.git_commit_blocked_preexisting_staged",
                 "error",
-                f"v{version}: refusing commit because unrelated staged files already exist",
-                {"version": version, "staged_files": preexisting_staged[:40]},
+                f"v{version}: refusing commit because blocking staged files already exist",
+                {
+                    "version": version,
+                    "staged_files": preexisting_staged[:40],
+                    "blocking_staged": preexisting_blocking[:40],
+                },
             )
         except Exception:
             pass
         raise RuntimeError(
-            "Refusing git_commit_bot with pre-existing staged files: "
-            + ", ".join(preexisting_staged[:10])
+            "Refusing git_commit_bot with pre-existing blocking staged files: "
+            + ", ".join(preexisting_blocking[:10])
         )
 
     # LOG GAP FIX (2026-06-29): record what gets staged so a hand-edit bypass
     # (orchestrator LLM mutating bot code outside execute_workers) is visible.
-    bot_path = f"bots/claude_v{version}"
     _staged = _git("add", "--", bot_path, check=False)
-    _exp_added = False
     allowed_paths = [bot_path]
-    if EXPERIENCE_FILE.exists():
-        exp_rel = str(EXPERIENCE_FILE.relative_to(PROJECT_ROOT))
-        _git("add", "--", exp_rel, check=False)
-        _exp_added = True
-        allowed_paths.append(exp_rel)
     # Capture the staged file list right before commit for auditability.
     _staged_files = _git("diff", "--cached", "--name-only", check=False).strip().splitlines()
     allowed_exact = set(allowed_paths)
     allowed_prefixes = [p.rstrip("/") + "/" for p in allowed_paths if p.endswith(f"claude_v{version}")]
-    unexpected_staged = [
+    commit_staged_files = [
+        p for p in _staged_files
+        if p in allowed_exact or any(p.startswith(prefix) for prefix in allowed_prefixes)
+    ]
+    outside_staged = [
         p for p in _staged_files
         if p not in allowed_exact and not any(p.startswith(prefix) for prefix in allowed_prefixes)
     ]
+    outside_scope = classify_status_entries([f"?? {path}" for path in outside_staged], int(version))
+    unexpected_staged = (
+        list(outside_scope.get("critical_entries") or [])
+        + list(outside_scope.get("foreign_bot_entries") or [])
+    )
+    if not commit_staged_files:
+        raise RuntimeError(f"Refusing git_commit_bot with no staged files under {bot_path}")
     if unexpected_staged:
         for path in allowed_paths:
             _git("restore", "--staged", "--", path, check=False)
@@ -1336,6 +1354,7 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
                     "version": version,
                     "unexpected_staged": unexpected_staged[:40],
                     "allowed_paths": allowed_paths,
+                    "outside_staged": outside_staged[:40],
                 },
             )
         except Exception:
@@ -1348,10 +1367,11 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
         from system_log import log_system_event
         log_system_event(
             "pipeline.git_commit_staged", "info",
-            f"v{version}: staging {len(_staged_files)} file(s) for commit",
+            f"v{version}: staging {len(commit_staged_files)} file(s) for commit",
             {"version": version, "source_v": source_v,
-             "staged_files": _staged_files[:30],
-             "experience_added": _exp_added},
+             "staged_files": commit_staged_files[:30],
+             "external_staged_preserved": outside_staged[:30],
+             "experience_added": False},
         )
     except Exception:
         pass
