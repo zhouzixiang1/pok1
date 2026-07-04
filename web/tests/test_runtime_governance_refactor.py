@@ -1279,6 +1279,79 @@ def test_checkpoint_recovery_diagnostics_blocks_main_resume_from_alias_after_non
     assert diag["repo"]["baseline_branch_alias_reason"] == "non_ancestor_head_drift"
 
 
+def test_checkpoint_recovery_diagnostics_allows_branch_with_unrelated_head_drift(
+    tmp_path,
+    monkeypatch,
+):
+    import pipeline_recovery
+
+    monkeypatch.setenv("POK_FORCE_PIPELINE_RECOVERY_GUARD", "1")
+    monkeypatch.setattr(
+        pipeline_recovery,
+        "changed_paths_between_heads",
+        lambda *_args: [
+            "bots/neural_national_lab/data/run.json",
+            "bots/neural_national_lab/versions/v026/main.py",
+        ],
+    )
+    (tmp_path / "bots" / "claude_v281").mkdir(parents=True)
+    checkpoint = {
+        "next_v": 281,
+        "source_v": 279,
+        "stage": "quality_passed",
+        "repo_baseline": {"branch": "main...origin/main", "head": "old123"},
+    }
+    snapshot = {"ok": True, "branch": "codex/neural-work", "head": "new456"}
+
+    diag = pipeline_recovery.checkpoint_recovery_diagnostics(
+        checkpoint,
+        snapshot=snapshot,
+        project_root=tmp_path,
+    )
+
+    assert diag["recoverable"] is True
+    assert "repo_not_on_evolution_branch" not in diag["issues"]
+    assert "repo_baseline_branch_mismatch" not in diag["issues"]
+    assert "repo_baseline_head_mismatch" not in diag["issues"]
+    assert "repo_current_branch_unrelated_head_resume" in diag["warnings"]
+    assert "repo_baseline_head_mismatch_post_quality_resume" in diag["warnings"]
+    assert diag["repo"]["current_branch_unrelated_head_allowed"] is True
+
+
+def test_checkpoint_recovery_diagnostics_blocks_branch_with_critical_head_drift(
+    tmp_path,
+    monkeypatch,
+):
+    import pipeline_recovery
+
+    monkeypatch.setenv("POK_FORCE_PIPELINE_RECOVERY_GUARD", "1")
+    monkeypatch.setattr(
+        pipeline_recovery,
+        "changed_paths_between_heads",
+        lambda *_args: ["web/core/orchestrator.py"],
+    )
+    (tmp_path / "bots" / "claude_v281").mkdir(parents=True)
+    checkpoint = {
+        "next_v": 281,
+        "source_v": 279,
+        "stage": "quality_passed",
+        "repo_baseline": {"branch": "main...origin/main", "head": "old123"},
+    }
+    snapshot = {"ok": True, "branch": "codex/neural-work", "head": "new456"}
+
+    diag = pipeline_recovery.checkpoint_recovery_diagnostics(
+        checkpoint,
+        snapshot=snapshot,
+        project_root=tmp_path,
+    )
+
+    assert diag["recoverable"] is False
+    assert "repo_not_on_evolution_branch" in diag["issues"]
+    assert "repo_baseline_branch_mismatch" in diag["issues"]
+    assert "repo_baseline_head_mismatch" in diag["issues"]
+    assert diag["repo"]["current_branch_head_blocking_entries"] == ["?? web/core/orchestrator.py"]
+
+
 def test_checkpoint_recovery_diagnostics_allows_master_planned_head_mismatch(tmp_path):
     import pipeline_recovery
 
