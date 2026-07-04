@@ -1246,7 +1246,10 @@ async def _try_deterministic_checkpoint_route(recovery, ui=None):
     stage = checkpoint.get("stage")
     if stage not in _ACTIONABLE_STALL_STAGES:
         return False
-    if _load_orchestrator_session():
+    saved_session_id = _load_orchestrator_session()
+    if saved_session_id and stage == "master_planned":
+        _clear_orchestrator_session(reason="deterministic_master_planned_route")
+    elif saved_session_id:
         return False
 
     try:

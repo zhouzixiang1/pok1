@@ -802,6 +802,33 @@ def test_checkpoint_recovery_diagnostics_allows_workers_done_head_mismatch(tmp_p
     assert diag["target"]["exists"] is True
 
 
+def test_checkpoint_recovery_diagnostics_allows_master_planned_head_mismatch(tmp_path):
+    import pipeline_recovery
+
+    (tmp_path / "bots" / "claude_v257").mkdir(parents=True)
+    checkpoint = {
+        "next_v": 257,
+        "source_v": 197,
+        "stage": "master_planned",
+        "repo_baseline": {"branch": "main", "head": "old123"},
+        "master_plan": {"tasks": [{"worker_id": "w1", "target_files": ["state.py"]}]},
+    }
+    snapshot = {"ok": True, "branch": "main...origin/main", "head": "new456"}
+
+    diag = pipeline_recovery.checkpoint_recovery_diagnostics(
+        checkpoint,
+        snapshot=snapshot,
+        project_root=tmp_path,
+    )
+
+    assert diag["active"] is True
+    assert diag["recoverable"] is True
+    assert "repo_baseline_head_mismatch" not in diag["issues"]
+    assert "repo_baseline_head_mismatch_initial_workers_resume" in diag["warnings"]
+    assert diag["repo"]["baseline_head_mismatch_allowed"] is True
+    assert diag["target"]["exists"] is True
+
+
 def test_checkpoint_recovery_diagnostics_blocks_early_repo_head_mismatch(tmp_path):
     import pipeline_recovery
 
