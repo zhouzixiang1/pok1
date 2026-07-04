@@ -117,6 +117,11 @@ end-to-end winner.
 A 4-pair smoke with both deck and bot RNG seeds (`seed_base=2026070800`,
 `bot_seed_base=202607080000`) produced byte-identical JSON on rerun, confirming
 the seeded subprocess path is suitable for larger deterministic evaluation.
+Extending that deterministic setup to 32 pairs made the v025 signal essentially
+neutral versus v022: `+95.09` chips per 70 hands, 95 percent CI
+`[-701.02, 891.21]`, median paired delta `0`, with 11 positive, 11 zero, and
+10 negative samples. Do not spend the next scale step on more v025 threshold
+tuning; move to better action-value targets.
 
 `versions/v026_v254_flop_low_raise_h96_254` narrows v025 to the only bucket
 covered by the p120 counterfactual evidence: low-size flop free-action raises.

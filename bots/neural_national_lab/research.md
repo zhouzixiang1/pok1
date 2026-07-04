@@ -132,15 +132,19 @@ Practical takeaways for this repo:
   simulation layer still uses process-local randomness. `paired_evaluate.py`
   and `trace_advice_outcomes.py` now support `--bot-seed-base`, which launches
   bot subprocesses through a seeded wrapper before running the bot script. A
-  4-pair v022/v025 smoke with both deck and bot RNG seeds reran byte-identical.
-  Larger 96/128-pair promotion runs should use both seed families.
+  4-pair v022/v025 smoke with both deck and bot RNG seeds reran byte-identical;
+  the first 32-pair deterministic v022/v025 check was neutral (`+95.09` chips
+  per 70 hands, 95 percent CI `[-701.02, 891.21]`). Larger 96/128-pair
+  promotion runs should use both seed families, but v025 itself no longer
+  merits that spend.
 
 ## Scale-Up Gate
 
-- Immediate scale step: first make large paired evaluation reproducible enough
-  by controlling bot subprocess randomness, then collect 50k-200k decisions
-  from multiple teachers, opponents, and seeds; keep the six-action
-  abstraction, legal masks, sample weights, and JSON export.
+- Immediate scale step: collect value or advantage targets instead of more
+  threshold-tuning data for v025. Use deck plus bot RNG seeds for all new
+  promotion runs, and collect 50k-200k decisions from multiple teachers,
+  opponents, and seeds only after the target generator can produce local
+  action-value labels with legal masks and JSON export.
 - Promotion gate before larger models: a candidate should stay positive over
   at least 20 common-deck mirror pairs against its rule base, with median delta
   above zero and no protocol/illegal-action regression.

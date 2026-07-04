@@ -222,9 +222,12 @@
   sizes carried the worst outliers, while the low-raise bucket had positive
   local deltas.
 - Result: the p120 seeded counterfactual run was strongly positive, but
-  64 paired common-deck mirrors against `claude_v279` were still inconclusive
-  versus v022 (`+686.17` chips per 70 hands, 95 percent CI
-  `[-602.07, 1974.41]`).
+  64 deck-seeded paired common-deck mirrors against `claude_v279` were still
+  inconclusive versus v022 (`+686.17` chips per 70 hands, 95 percent CI
+  `[-602.07, 1974.41]`). Re-running the comparison with both deck and bot RNG
+  seeds was essentially neutral over 32 pairs (`+95.09` chips per 70 hands,
+  95 percent CI `[-701.02, 891.21]`, median delta `0`). v025 should not be
+  scaled further without a better action-value target.
 
 ## v026_v254_flop_low_raise_h96_254
 
