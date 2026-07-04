@@ -3,6 +3,7 @@
   "version": "bots/neural_national_lab/versions/v022_v254_sharded_h96_raise_only254",
   "opponent": "bots/claude_v279",
   "shards": 2,
+  "workers": 2,
   "games_per_shard": 1,
   "max_probes_per_shard": 2,
   "seed_base": 2026070401,
@@ -18,6 +19,8 @@
     {
       "shard": 0,
       "output": "bots/neural_national_lab/data/counterfactual_seeded_shard_smoke/shard_000.json",
+      "seed_offset": 0,
+      "command": "python bots/neural_national_lab/tools/counterfactual_rollout_probe.py --version bots/neural_national_lab/versions/v022_v254_sharded_h96_raise_only254 --opponent bots/claude_v279 --games 1 --max-probes 2 --max-scan-decisions 220 --kind to_raise --stage flop --branch-scope hand --max-branch-steps 5000 --seed-base 2026070401 --seed-offset 0 --seed-stride 1 --max-hands 70 --output bots/neural_national_lab/data/counterfactual_seeded_shard_smoke/shard_000.json",
       "returncode": 0,
       "skipped_existing": true,
       "stdout_tail": "",
@@ -116,6 +119,8 @@
     {
       "shard": 1,
       "output": "bots/neural_national_lab/data/counterfactual_seeded_shard_smoke/shard_001.json",
+      "seed_offset": 1,
+      "command": "python bots/neural_national_lab/tools/counterfactual_rollout_probe.py --version bots/neural_national_lab/versions/v022_v254_sharded_h96_raise_only254 --opponent bots/claude_v279 --games 1 --max-probes 2 --max-scan-decisions 220 --kind to_raise --stage flop --branch-scope hand --max-branch-steps 5000 --seed-base 2026070401 --seed-offset 1 --seed-stride 1 --max-hands 70 --output bots/neural_national_lab/data/counterfactual_seeded_shard_smoke/shard_001.json",
       "returncode": 0,
       "skipped_existing": true,
       "stdout_tail": "",
@@ -252,7 +257,8 @@
       "candidate_hand_delta": 100.0,
       "hand_delta": -457.0,
       "primary_delta": -457.0,
-      "shard": 0
+      "shard": 0,
+      "shard_seed_offset": 0
     },
     {
       "probe_index": 1,
@@ -293,7 +299,8 @@
       "candidate_hand_delta": 100.0,
       "hand_delta": 0.0,
       "primary_delta": 0.0,
-      "shard": 0
+      "shard": 0,
+      "shard_seed_offset": 0
     },
     {
       "probe_index": 0,
@@ -334,7 +341,8 @@
       "candidate_hand_delta": 100.0,
       "hand_delta": 0.0,
       "primary_delta": 0.0,
-      "shard": 1
+      "shard": 1,
+      "shard_seed_offset": 1
     },
     {
       "probe_index": 1,
@@ -375,7 +383,8 @@
       "candidate_hand_delta": 100.0,
       "hand_delta": 200.0,
       "primary_delta": 200.0,
-      "shard": 1
+      "shard": 1,
+      "shard_seed_offset": 1
     }
   ],
   "summary": {
@@ -433,6 +442,32 @@
     },
     "by_pot_band": {
       "pot_lt_300": {
+        "samples": 4,
+        "mean": -64.25,
+        "median": 0.0,
+        "stddev": 278.2904657607467,
+        "stderr": 139.14523288037336,
+        "ci95_low": -336.97465644553176,
+        "ci95_high": 208.47465644553176,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      }
+    },
+    "by_advised_final": {
+      "101": {
+        "samples": 4,
+        "mean": -64.25,
+        "median": 0.0,
+        "stddev": 278.2904657607467,
+        "stderr": 139.14523288037336,
+        "ci95_low": -336.97465644553176,
+        "ci95_high": 208.47465644553176,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      }
+    },
+    "by_raise_delta_band": {
+      "raise_le_125": {
         "samples": 4,
         "mean": -64.25,
         "median": 0.0,

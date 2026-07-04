@@ -250,6 +250,22 @@ def _pot_band(value: Any) -> str:
     return "pot_ge_3000"
 
 
+def _raise_delta_band(value: Any) -> str:
+    try:
+        amount = int(value)
+    except (TypeError, ValueError):
+        return "unknown"
+    if amount <= 0:
+        return "non_raise"
+    if amount <= 125:
+        return "raise_le_125"
+    if amount <= 250:
+        return "raise_126_250"
+    if amount <= 500:
+        return "raise_251_500"
+    return "raise_gt_500"
+
+
 def _summarize(probes: list[dict[str, Any]]) -> dict[str, Any]:
     deltas = [float(row["primary_delta"]) for row in probes if row.get("status") == "ok" and row.get("primary_delta") is not None]
     match_deltas = [float(row["match_delta"]) for row in probes if row.get("status") == "ok" and row.get("match_delta") is not None]
@@ -258,6 +274,8 @@ def _summarize(probes: list[dict[str, Any]]) -> dict[str, Any]:
     by_stage: dict[str, list[float]] = {}
     by_stage_kind: dict[str, list[float]] = {}
     by_pot_band: dict[str, list[float]] = {}
+    by_advised_final: dict[str, list[float]] = {}
+    by_raise_delta_band: dict[str, list[float]] = {}
     for row in probes:
         if row.get("status") != "ok":
             continue
@@ -266,6 +284,8 @@ def _summarize(probes: list[dict[str, Any]]) -> dict[str, Any]:
         by_stage.setdefault(str(row.get("stage")), []).append(delta)
         by_stage_kind.setdefault(f"{row.get('stage')}|{row.get('kind')}", []).append(delta)
         by_pot_band.setdefault(_pot_band(row.get("pot")), []).append(delta)
+        by_advised_final.setdefault(str(row.get("advised_final")), []).append(delta)
+        by_raise_delta_band.setdefault(_raise_delta_band(row.get("advised_final")), []).append(delta)
     return {
         "ok_probes": len(deltas),
         "failed_probes": len(probes) - len(deltas),
@@ -276,6 +296,8 @@ def _summarize(probes: list[dict[str, Any]]) -> dict[str, Any]:
         "by_stage": {key: _stats(values) for key, values in sorted(by_stage.items())},
         "by_stage_kind": {key: _stats(values) for key, values in sorted(by_stage_kind.items())},
         "by_pot_band": {key: _stats(values) for key, values in sorted(by_pot_band.items())},
+        "by_advised_final": {key: _stats(values) for key, values in sorted(by_advised_final.items())},
+        "by_raise_delta_band": {key: _stats(values) for key, values in sorted(by_raise_delta_band.items())},
     }
 
 

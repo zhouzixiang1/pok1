@@ -55,6 +55,7 @@ python bots/neural_national_lab/tools/counterfactual_shard_runner.py \
   --version bots/neural_national_lab/versions/v022_v254_sharded_h96_raise_only254 \
   --opponent bots/claude_v279 \
   --shards 8 \
+  --workers 4 \
   --games-per-shard 3 \
   --max-probes-per-shard 8 \
   --stage flop \
@@ -66,9 +67,27 @@ python bots/neural_national_lab/tools/counterfactual_shard_runner.py \
 The shard runner writes per-shard JSON files next to the merged output, so a
 negative bucket or suspicious outlier can be replayed with the same seed range.
 Existing shard files are reused by default; pass `--rerun-existing` when the
-probe code or filters changed and the shards should be regenerated.
+probe code or filters changed and the shards should be regenerated. Increase
+`--workers` to run independent shard subprocesses in parallel.
 The first seeded smoke run (`seed_base=2026070401`, 2 shards, 4 total probes)
 found flop `to_raise` mean primary delta `-64.25` with a very wide confidence
 interval. Treat that as a warning against shipping or training from optimistic
 unseeded micro-samples; it is not enough evidence to reject the bucket by
 itself.
+
+A larger parallel smoke run (`seed_base=2026070410`, 8 shards, 10 total probes)
+found flop `to_raise` mean primary delta `-5.8` with 95 percent CI
+`[-179.39, 167.79]`. The largest negative outlier used `advised_final=200`,
+while most `advised_final=101` probes were neutral or positive, so scale-up
+analysis should check `by_advised_final` and `by_raise_delta_band` before
+training or shipping a raise gate.
+
+`versions/v025_v254_low_raise_gate_h96_254` is a narrow v022 fork created from
+that observation. It keeps the same h96 policy weights but limits neural raise
+interventions to low-size raises (`max_raise_delta=125`,
+`max_raise_pot_ratio=0.65`). It is an experiment candidate, not a validated
+successor, until paired battles and larger counterfactual shards are positive.
+On the same p16 seed range, v025 produced 9 low-raise flop probes with mean
+primary delta `+111.11` and no high-raise probes. A one-pair common-deck mirror
+smoke against `claude_v279` was roughly neutral versus v022 (`-82` chips over
+140 hands). This supports keeping v025 for larger tests, not promoting it.
