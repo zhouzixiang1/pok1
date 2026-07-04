@@ -1,0 +1,84 @@
+{
+  "base_input": "bots/neural_national_lab/data/advantage_counterfactual_v025_flop_botrng_p260_nonneg_group_pair03.jsonl",
+  "rows": 266,
+  "base_rows": 260,
+  "trace_rows": 6,
+  "input_dim": 70,
+  "positive": 234,
+  "negative": 32,
+  "positive_rate": 0.8796992481203008,
+  "trace_added": [
+    {
+      "source": "bots/neural_national_lab/data/trace_v034_vs_v279_pair03_seed2026071303_botrng.json",
+      "side": "mirror",
+      "hand": 11,
+      "decision_index": 25,
+      "target": 0,
+      "weight": 5.0,
+      "top_conf": 0.9193226311947834,
+      "advantage_score": 0.9307911996605324,
+      "interaction_score": null,
+      "label_source": "trace_pair03_v034_negative"
+    },
+    {
+      "source": "bots/neural_national_lab/data/trace_v034_vs_v279_pair03_seed2026071303_botrng.json",
+      "side": "mirror",
+      "hand": 46,
+      "decision_index": 93,
+      "target": 0,
+      "weight": 5.0,
+      "top_conf": 0.8915690131349684,
+      "advantage_score": 0.9129959304492525,
+      "interaction_score": null,
+      "label_source": "trace_pair03_v034_negative"
+    },
+    {
+      "source": "bots/neural_national_lab/data/trace_v034_vs_v279_pair03_seed2026071303_botrng.json",
+      "side": "mirror",
+      "hand": 69,
+      "decision_index": 137,
+      "target": 0,
+      "weight": 5.0,
+      "top_conf": 0.9109483176467058,
+      "advantage_score": 0.9488355467965086,
+      "interaction_score": null,
+      "label_source": "trace_pair03_v034_negative"
+    },
+    {
+      "source": "bots/neural_national_lab/data/trace_v034_vs_v279_pair11_seed2026071311_botrng.json",
+      "side": "normal",
+      "hand": 24,
+      "decision_index": 49,
+      "target": 1,
+      "weight": 5.0,
+      "top_conf": 0.8803607467879805,
+      "advantage_score": 0.9136694935364565,
+      "interaction_score": null,
+      "label_source": "trace_pair11_v034_positive"
+    },
+    {
+      "source": "bots/neural_national_lab/data/trace_v034_vs_v279_pair11_seed2026071311_botrng.json",
+      "side": "mirror",
+      "hand": 23,
+      "decision_index": 41,
+      "target": 1,
+      "weight": 5.0,
+      "top_conf": 0.9074833467578598,
+      "advantage_score": 0.9899452876165804,
+      "interaction_score": null,
+      "label_source": "trace_pair11_v034_positive"
+    },
+    {
+      "source": "bots/neural_national_lab/data/trace_v039_vs_v279_pair11_seed2026071311_botrng.json",
+      "side": "mirror",
+      "hand": 55,
+      "decision_index": 112,
+      "target": 0,
+      "weight": 5.0,
+      "top_conf": 0.938376131478317,
+      "advantage_score": 0.9737240292807507,
+      "interaction_score": 0.8353776848774422,
+      "label_source": "trace_pair11_v039_negative"
+    }
+  ]
+}
