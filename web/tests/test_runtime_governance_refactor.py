@@ -637,6 +637,38 @@ def test_runtime_guard_allows_execute_workers_after_master_planned_head_drift(mo
     assert payload["current_head"] == "new456"
 
 
+def test_runtime_guard_allows_crossover_after_selected_head_drift(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshots = iter([
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": []},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": []},
+    ])
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
+        "next_v": 300,
+        "source_v": 250,
+        "stage": "selected",
+        "parent2_v": 240,
+        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "selected"},
+    })
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_crossover",
+        {"next_v": 300, "source_v": 250, "parent2_v": 240},
+    )
+
+    assert ok is True
+    assert payload["head_drift_resume_allowed"] is True
+    assert payload["head_drift_repair_allowed"] is False
+    assert payload["resume_kind"] == "selected"
+    assert payload["stage"] == "selected"
+    assert payload["baseline_head"] == "old123"
+    assert payload["current_head"] == "new456"
+
+
 def test_runtime_guard_allows_quality_after_workers_done_head_drift(monkeypatch):
     import tool_runtime_guard
 

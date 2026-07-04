@@ -24,6 +24,7 @@ _HEAD_DRIFT_REPAIR_STAGES = {
     "rework_running",
 }
 _HEAD_DRIFT_TOOL_BY_STAGE = {
+    "selected": {"prepare_next_gen", "run_crossover"},
     "master_planned": {"execute_workers"},
     "workers_done": {"run_quality_gates"},
     "quality_failed": {"execute_workers"},
@@ -138,7 +139,9 @@ def _head_change_allowed_for_checkpoint_resume(
     unexpected = _unexpected_entries(snapshot, candidate_v)
     if unexpected:
         return False, {"unexpected_entries": unexpected[:40]}
-    if stage == "master_planned":
+    if stage == "selected":
+        resume_kind = "selected"
+    elif stage == "master_planned":
         resume_kind = "initial_workers"
     elif stage == "workers_done":
         resume_kind = "gate"
