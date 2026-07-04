@@ -34,6 +34,7 @@ if str(ENGINE) not in sys.path:
 
 from analyze_advice import _classify_change, _load_bot, _neural_probs  # noqa: E402
 from engine.battle import _PersistentBot, _call_bot  # noqa: E402
+from feature_spec import LABELS, encode_features  # noqa: E402
 from judge import judge as judge_func  # noqa: E402
 from seeded_process import SeededPersistentBot, match_bot_seeds  # noqa: E402
 
@@ -52,6 +53,26 @@ def _branch_bot_seeds(bot_seed_base: int | None, probe_index: int) -> tuple[int,
         return None
     base = int(bot_seed_base) + 100_000_000 + int(probe_index) * 2
     return base, base + 1
+
+
+def _decision_analysis_seed(scan_bot_seeds: tuple[int, int] | None, fallback_seed: int | None, decision_index: int) -> int | None:
+    if scan_bot_seeds is not None:
+        return int(scan_bot_seeds[0]) + 200_000_000 + int(decision_index)
+    if fallback_seed is not None:
+        return int(fallback_seed) + 200_000_000 + int(decision_index)
+    return None
+
+
+def _seed_analysis_rng(seed: int | None) -> None:
+    if seed is None:
+        return
+    random.seed(int(seed))
+    try:
+        import numpy as np
+
+        np.random.seed(int(seed) % (2**32 - 1))
+    except Exception:
+        pass
 
 
 def _rel(path: Path) -> str:
@@ -112,6 +133,65 @@ def _final_label(action: int) -> str:
     return "raise"
 
 
+def _rule_label_id(action: int) -> int:
+    if action == -1:
+        return 0
+    if action == -2:
+        return 5
+    if action == 0:
+        return 1
+    return 3
+
+
+def _clip01(value: float) -> float:
+    return 0.0 if value < 0.0 else 1.0 if value > 1.0 else value
+
+
+def _advantage_features(
+    req: dict[str, Any],
+    state: dict[str, Any],
+    rule_action: int,
+    label: int | None,
+    conf: float,
+    probs: list[float] | None,
+) -> list[float] | None:
+    if label is None or probs is None:
+        return None
+    feature_req = dict(req)
+    for key in ("pot", "to_call", "my_stage_bet", "opponent_stage_bet", "opponent_allin"):
+        if key in state:
+            feature_req[key] = state[key]
+    top_onehot = [1.0 if i == int(label) else 0.0 for i in range(len(LABELS))]
+    rule = _rule_label_id(rule_action)
+    rule_onehot = [1.0 if i == rule else 0.0 for i in range(len(LABELS))]
+    to_call = float(state.get("to_call", 0.0) or 0.0)
+    pot = float(state.get("pot", 150.0) or 150.0)
+    my_chips = float(req.get("my_chips", 20000) or 20000)
+    stage_name = _stage_name(list(req.get("public_cards") or []))
+    stage_onehot = [
+        1.0 if stage_name == "preflop" else 0.0,
+        1.0 if stage_name == "flop" else 0.0,
+        1.0 if stage_name == "turn" else 0.0,
+        1.0 if stage_name == "river" else 0.0,
+    ]
+    extras = [
+        float(conf),
+        float(probs[1]) if len(probs) > 1 else 0.0,
+        _clip01(to_call / 20000.0),
+        _clip01(pot / 20000.0),
+        1.0 if to_call <= 0.0 else 0.0,
+        _clip01(my_chips / 20000.0),
+        *stage_onehot,
+    ]
+    return encode_features(feature_req, None) + top_onehot + rule_onehot + extras
+
+
+def _advantage_weight(delta: float | None) -> float | None:
+    if delta is None:
+        return None
+    return max(0.05, min(5.0, abs(float(delta)) / 100.0))
+
+
 def _label_matches_kind(label_name: str | None, kind: str) -> bool:
     if kind == "any":
         return True
@@ -137,6 +217,8 @@ def _advisor_signal(neural_mod, req: dict[str, Any], state: dict[str, Any]) -> d
     )
     signal: dict[str, Any] = {
         "probs": probs,
+        "raw_probs": probs,
+        "masked_probs": probs,
         "top_label": top_label,
         "top_name": top_name,
         "top_conf": float(top_conf),
@@ -158,6 +240,8 @@ def _advisor_signal(neural_mod, req: dict[str, Any], state: dict[str, Any]) -> d
         signal.update(
             {
                 "probs": masked_probs,
+                "raw_probs": raw_probs,
+                "masked_probs": masked_probs,
                 "top_label": label,
                 "top_name": neural_mod.LABELS[label],
                 "top_conf": float(conf),
@@ -418,6 +502,7 @@ def _candidate_passes(kind: str, stage: str, args: argparse.Namespace) -> bool:
 def _probe_side(
     side_name: str,
     initdata: dict[str, Any],
+    deck_seed: int | None,
     version_dir: Path,
     bot0: Path,
     bot1: Path,
@@ -472,6 +557,8 @@ def _probe_side(
                 signal = _advisor_signal(neural_mod, req, state)
 
                 if _cheap_candidate_possible(signal, stage, args):
+                    analysis_seed = _decision_analysis_seed(scan_bot_seeds, deck_seed, decisions)
+                    _seed_analysis_rng(analysis_seed)
                     with contextlib.redirect_stderr(io.StringIO()):
                         rule_action = strategy_mod.get_action(req, list(analysis_requests))
                         base_final = main_mod.sanitize_action(rule_action, state, req["my_chips"])
@@ -538,10 +625,20 @@ def _probe_side(
                         else:
                             status = "ok" if match_delta is not None else "branch_failed"
                             primary_delta = match_delta
+                        advantage_features = _advantage_features(
+                            req,
+                            state,
+                            int(rule_action),
+                            int(signal["top_label"]) if signal.get("top_label") is not None else None,
+                            float(signal.get("top_conf") or 0.0),
+                            signal.get("raw_probs"),
+                        )
+                        advantage_weight = _advantage_weight(primary_delta)
                         probe = {
                             "probe_index": probe_index,
                             "side": side_name,
                             "decision_index": decisions,
+                            "analysis_seed": analysis_seed,
                             "hand": hand,
                             "stage": stage,
                             "kind": kind,
@@ -556,10 +653,13 @@ def _probe_side(
                             "advised_raw": int(advised_raw),
                             "advised_final": int(advised_final),
                             "advised_label": _final_label(int(advised_final)),
+                            "candidate_label_id": int(signal["top_label"]) if signal.get("top_label") is not None else None,
+                            "rule_label_id": _rule_label_id(int(rule_action)),
                             "top_label": signal.get("top_name"),
                             "top_conf": float(signal.get("top_conf") or 0.0),
                             "call_conf": signal.get("call_conf"),
                             "raise_conf": signal.get("raise_conf"),
+                            "advantage_features": advantage_features,
                             "status": status,
                             "baseline_status": baseline.get("status"),
                             "candidate_status": candidate.get("status"),
@@ -571,6 +671,8 @@ def _probe_side(
                             "candidate_hand_delta": candidate_hand,
                             "hand_delta": hand_delta,
                             "primary_delta": primary_delta,
+                            "advantage_target": 1 if primary_delta is not None and float(primary_delta) > 0.0 else 0,
+                            "advantage_weight": advantage_weight,
                         }
                         probes.append(probe)
                         print(
@@ -685,6 +787,7 @@ def main() -> None:
             probes, match_summary = _probe_side(
                 f"g{idx}:{side_name}",
                 side_initdata,
+                seed,
                 version_dir,
                 bot0,
                 bot1,
