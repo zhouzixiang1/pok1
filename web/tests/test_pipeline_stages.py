@@ -1682,6 +1682,29 @@ class TestWorkerFailureCircuitBreaker:
             "strategy_helpers.py",
         ]
 
+    def test_quality_gate_declared_scope_expands_crossover_diff(self):
+        import tool_gates
+        from worker_boundary import audit_changed_files_against_plan
+
+        plan = {
+            "strategy": "crossover",
+            "tasks": [{"target_files": ["strategy_helpers.py"]}],
+            "repair_scope_files": ["strategy_helpers.py"],
+        }
+        ckpt = {"parent2_v": 9, "master_plan": plan}
+        changed_files = ["constants.py", "state.py", "strategy_helpers.py"]
+
+        expanded = tool_gates._master_plan_with_crossover_scope(plan, ckpt, changed_files)
+        tasks = tool_gates._declared_scope_tasks_from_plan(expanded)
+        result = audit_changed_files_against_plan(changed_files, tasks, next_v=11)
+
+        assert result.passed is True
+        assert expanded["repair_scope_files"] == [
+            "constants.py",
+            "state.py",
+            "strategy_helpers.py",
+        ]
+
     def test_declared_scope_failure_is_ledger_not_worker_contract(self):
         """Declared-scope misses should update scope accounting, not spawn edit tasks."""
         import tool_planning
