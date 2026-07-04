@@ -2307,6 +2307,54 @@ class TestWorkerFailureCircuitBreaker:
         assert ckpt["master_plan"]["tasks"][0]["repair_blocker"] == "precommit_regression"
         assert ckpt["master_plan"]["work_item"]["kind"] == "precommit_repair"
         assert "Precommit FAILED" in ckpt["reviewer_feedback"]
+        assert ckpt["precommit_rework_count"] == 1
+
+    def test_precommit_rework_circuit_breaker_blocks_repeated_repairs(self, tmp_path, monkeypatch):
+        """Repeated precommit repair rounds should abandon instead of looping forever."""
+        import asyncio
+        import fix_injection
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        (source_dir / "opponent.py").write_text("def opp():\n    return 0\n")
+        (next_dir / "opponent.py").write_text("def opp():\n    return 1\n")
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, stage="precommit_failed")
+        state = json.loads(ckpt_file.read_text())
+        state["precommit_rework_count"] = 2
+        state["reviewer_feedback"] = "Precommit FAILED vs parent"
+        state["master_plan"] = {"strategy": "single", "tasks": []}
+        state["gate_results"] = {
+            "quality": {"all_passed": True},
+            "precommit_eval": {
+                "passed": False,
+                "blockers": [{"reason": "aggregate_negative_chip_ev"}],
+            },
+        }
+        ckpt_file.write_text(json.dumps(state))
+
+        monkeypatch.setattr(tool_planning, "MAX_PRECOMMIT_REWORK_ROUNDS", 2)
+        monkeypatch.setattr(tool_planning, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec:
+                result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
+                return result, mock_exec
+
+        result, mock_exec = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+
+        assert data["error"] == "PRECOMMIT_REWORK_CIRCUIT_BREAKER"
+        assert data["precommit_rework_count"] == 2
+        mock_exec.assert_not_called()
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["stage"] == "precommit_failed"
+        assert ckpt["precommit_rework_count"] == 2
 
     def test_precommit_failed_refreshes_stale_quality_tasks(self, tmp_path, monkeypatch):
         """precommit_failed must not reuse stale quality-repair tasks from checkpoint."""

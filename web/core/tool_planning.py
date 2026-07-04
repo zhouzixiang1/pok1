@@ -21,6 +21,7 @@ from evolution_core import (
     EXPERIENCE_FILE,
     write_pipeline_checkpoint,
     check_code_size,
+    MAX_PRECOMMIT_REWORK_ROUNDS,
 )
 from tool_helpers import (
     _get_ui, _json_tool_result,
@@ -4204,6 +4205,7 @@ async def execute_workers(args):
     force_sequential_rework = False
     task_skipper = None
     rework_plan_metadata = None
+    precommit_rework_count_for_write = None
     if reviewer_feedback and ckpt.get("stage") in (
         "workers_done", "quality_failed", "quality_passed", "reviewed", "critic_checked",
         "precommit_failed", "repair_planned", "rework_running"
@@ -4223,6 +4225,38 @@ async def execute_workers(args):
             and existing_work_item.get("kind")
         ):
             rework_kind = str(existing_work_item.get("kind"))
+        is_precommit_rework = rework_kind == "precommit_repair" or _is_precommit_rework_checkpoint(ckpt)
+        if is_precommit_rework:
+            prior_rework_count = int(ckpt.get("precommit_rework_count") or 0)
+            precommit_rework_count_for_write = prior_rework_count + 1
+            if precommit_rework_count_for_write > MAX_PRECOMMIT_REWORK_ROUNDS:
+                message = (
+                    f"PRECOMMIT_REWORK_CIRCUIT_BREAKER: v{next_v} already used "
+                    f"{prior_rework_count} precommit repair round(s) (max {MAX_PRECOMMIT_REWORK_ROUNDS}). "
+                    "Abandon this generation and start a fresh direction."
+                )
+                log_system_event(
+                    "pipeline.precommit_rework_circuit_breaker",
+                    "error",
+                    message,
+                    {
+                        "next_v": next_v,
+                        "source_v": source_v,
+                        "stage": ckpt.get("stage"),
+                        "precommit_rework_count": prior_rework_count,
+                        "max_rework_rounds": MAX_PRECOMMIT_REWORK_ROUNDS,
+                        "task_targets": sorted(_task_target_filenames(tasks)),
+                    },
+                )
+                return _json_tool_result({
+                    "error": "PRECOMMIT_REWORK_CIRCUIT_BREAKER",
+                    "message": message,
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "precommit_rework_count": prior_rework_count,
+                    "max_rework_rounds": MAX_PRECOMMIT_REWORK_ROUNDS,
+                    "directive": "Abandon this generation; repeated precommit repair did not converge.",
+                })
         source_dir_r = get_bot_dir(source_v)
         reset_before_rework = _should_reset_before_rework(ckpt, tasks)
         if reset_before_rework and source_dir_r.exists() and next_dir.exists():
@@ -4309,7 +4343,8 @@ async def execute_workers(args):
         write_pipeline_checkpoint(next_v, source_v, "repair_planned",
                                   master_plan=retry_plan,
                                   reviewer_feedback=reviewer_feedback,
-                                  worker_failure_count=ckpt.get("worker_failure_count", 0))
+                                  worker_failure_count=ckpt.get("worker_failure_count", 0),
+                                  precommit_rework_count=precommit_rework_count_for_write)
         task_kinds = {
             str(task.get("task_kind") or "")
             for task in tasks or []
@@ -4388,7 +4423,8 @@ async def execute_workers(args):
         write_pipeline_checkpoint(next_v, source_v, "rework_running",
                                   master_plan=running_plan,
                                   reviewer_feedback=reviewer_feedback,
-                                  worker_failure_count=ckpt.get("worker_failure_count", 0) if ckpt else 0)
+                                  worker_failure_count=ckpt.get("worker_failure_count", 0) if ckpt else 0,
+                                  precommit_rework_count=precommit_rework_count_for_write)
 
     ui = _get_ui()
     success, worker_snapshots, audit_focus_areas = await _execute_workers(
@@ -4473,7 +4509,8 @@ async def execute_workers(args):
         write_pipeline_checkpoint(next_v, source_v, "workers_done",
                                   master_plan=plan, reviewer_feedback=reviewer_feedback,
                                   worker_failure_count=failure_count,
-                                  audit_context=_audit_ctx)
+                                  audit_context=_audit_ctx,
+                                  precommit_rework_count=precommit_rework_count_for_write)
     else:
         # Increment failure count on worker failure; successful batches do not consume the budget.
         # Always set stage to 'master_planned' on failure — this clearly indicates
@@ -4502,7 +4539,8 @@ async def execute_workers(args):
         write_pipeline_checkpoint(next_v, source_v,
                                   "repair_planned" if reviewer_feedback else "master_planned",
                                   master_plan=plan, reviewer_feedback=reviewer_feedback,
-                                  worker_failure_count=failure_count + 1)
+                                  worker_failure_count=failure_count + 1,
+                                  precommit_rework_count=precommit_rework_count_for_write)
 
     sev = "success" if success else "error"
     log_system_event("pipeline.workers_done", sev,
