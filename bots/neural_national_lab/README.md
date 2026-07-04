@@ -185,6 +185,15 @@ single-action hand-scoped labels are not enough: some seeds need grouped or
 match-scope interaction tests because locally positive raises can combine into
 bad match paths.
 
+`build_group_interaction_advantage_data.py` adds the first reusable path for
+that issue: it maps paired mirror deltas back onto probe features so grouped
+failures can become training rows. The first p260 attempt (`v035`-`v037`) found
+a threshold conflict rather than a new winner. `v035`/`v037` repaired pair03
+but destroyed the pair11 repair, while `v036` preserved pair11 but left pair03
+unchanged. This means grouped labels should probably become a separate
+interaction-veto head, not more examples inside the same single-action
+advantage classifier.
+
 This machine has 32 CPU threads, so deterministic paired evaluation and
 counterfactual shards can use `--workers 12` to `--workers 16` for practical
 speedups. Avoid blindly using all 32 workers: each worker launches multiple bot
