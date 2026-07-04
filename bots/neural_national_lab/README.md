@@ -387,6 +387,12 @@ Deep-CFR/PokerRL/ReBeL implementations
 (`https://github.com/EricSteinberger/Deep-CFR`,
 `https://github.com/EricSteinberger/PokerRL`,
 `https://github.com/facebookresearch/REBEL`).
+The July 2026 follow-up scan also points to AutoCFR-style meta-search
+(`https://www.sciencedirect.com/science/article/abs/pii/S0004370224001681`)
+and Robust Deep MCCFR diagnostics
+(`https://arxiv.org/abs/2509.00923`) as useful constraints: do not trust one
+small neural gate unless it survives variance, target-shift, and action-support
+checks across opponents.
 
 This machine has 32 CPU threads, so deterministic paired evaluation and
 counterfactual shards can use `--workers 12` to `--workers 16` for practical
@@ -400,6 +406,34 @@ For the current neural workflow, spend multicore budget on
 `counterfactual_rollout_probe.py --workers`; do not use the trace tool as the
 large-scale loop. Trace runs are for explaining exact outliers after the
 parallel paired/counterfactual samplers identify them.
+
+`multi_opponent_paired_evaluate.py` wraps `paired_evaluate.py` for the next
+scale step: it runs the same baseline/candidate comparison against multiple
+strong opponents, writes one resumable paired file per opponent, and writes an
+aggregate JSON with concatenated paired deltas plus per-opponent splits. Use it
+when a candidate looks neutral-positive against one bot but may be overfitted:
+
+```bash
+python bots/neural_national_lab/tools/multi_opponent_paired_evaluate.py \
+  --baseline bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050 \
+  --candidate bots/neural_national_lab/versions/v052_v254_cf_value_veto_mix_p063_h32_bm050 \
+  --opponent bots/claude_v279 \
+  --opponent bots/claude_v283 \
+  --opponent bots/claude_v284 \
+  --games 16 \
+  --workers 8 \
+  --seed-base 2026072200 \
+  --bot-seed-base 202611220000 \
+  --resume \
+  --summary-output bots/neural_national_lab/data/multiopponent_v043_v052_seed2026072200.json
+```
+
+A smoke run with two paired samples each against `claude_v279`, `claude_v283`,
+and `claude_v284` wrote
+`data/multiopponent_v043_v052_vs_v279_v283_v284_seed2026072200_smoke.json`.
+All six deltas were zero, which is useful tooling evidence: v052's conservative
+value veto is too sparse to be a reliable next search direction unless active
+sampling first finds states where it actually changes decisions.
 
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops

@@ -1,0 +1,117 @@
+{
+  "mode": "multi_opponent_common_deck_mirror_pair",
+  "baseline": {
+    "label": "v043_v254_cf_handstrength_veto_p268_h32_t050",
+    "path": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050/main.py"
+  },
+  "candidates": {
+    "v052_v254_cf_value_veto_mix_p063_h32_bm050": {
+      "path": "bots/neural_national_lab/versions/v052_v254_cf_value_veto_mix_p063_h32_bm050/main.py"
+    }
+  },
+  "opponents": [
+    {
+      "label": "claude_v279",
+      "path": "bots/claude_v279/main.py",
+      "output": "bots/neural_national_lab/data/multi_opponent_runs/paired_v043_v254_cf_handstrength_veto_p268_h32_t050_vs_v052_v254_cf_value_veto_mix_p063_h32_bm050_opp_claude_v279.json",
+      "seed_offset": 0,
+      "bot_seed_base": 202611220000
+    },
+    {
+      "label": "claude_v283",
+      "path": "bots/claude_v283/main.py",
+      "output": "bots/neural_national_lab/data/multi_opponent_runs/paired_v043_v254_cf_handstrength_veto_p268_h32_t050_vs_v052_v254_cf_value_veto_mix_p063_h32_bm050_opp_claude_v283.json",
+      "seed_offset": 100000,
+      "bot_seed_base": 202621220000
+    },
+    {
+      "label": "claude_v284",
+      "path": "bots/claude_v284/main.py",
+      "output": "bots/neural_national_lab/data/multi_opponent_runs/paired_v043_v254_cf_handstrength_veto_p268_h32_t050_vs_v052_v254_cf_value_veto_mix_p063_h32_bm050_opp_claude_v284.json",
+      "seed_offset": 200000,
+      "bot_seed_base": 202631220000
+    }
+  ],
+  "games_per_opponent": 2,
+  "workers_per_opponent": 2,
+  "seed_base": 2026072200,
+  "seed_offset": 0,
+  "seed_stride": 1,
+  "opponent_seed_stride": 100000,
+  "bot_seed_base": 202611220000,
+  "bot_seed_stride": 10000,
+  "opponent_bot_seed_stride": 10000000,
+  "max_hands": 70,
+  "aggregate_vs_baseline": {
+    "v052_v254_cf_value_veto_mix_p063_h32_bm050": {
+      "baseline": "v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "candidate": "v052_v254_cf_value_veto_mix_p063_h32_bm050",
+      "delta_net_chips": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "split": {
+        "positive": 0,
+        "zero": 6,
+        "negative": 0
+      },
+      "by_opponent": [
+        {
+          "opponent": "claude_v279",
+          "output": "bots/neural_national_lab/data/multi_opponent_runs/paired_v043_v254_cf_handstrength_veto_p268_h32_t050_vs_v052_v254_cf_value_veto_mix_p063_h32_bm050_opp_claude_v279.json",
+          "samples": 2,
+          "mean_per_70_hands": 0.0,
+          "ci95_low_per_70_hands": 0.0,
+          "ci95_high_per_70_hands": 0.0,
+          "split": {
+            "positive": 0,
+            "zero": 2,
+            "negative": 0
+          }
+        },
+        {
+          "opponent": "claude_v283",
+          "output": "bots/neural_national_lab/data/multi_opponent_runs/paired_v043_v254_cf_handstrength_veto_p268_h32_t050_vs_v052_v254_cf_value_veto_mix_p063_h32_bm050_opp_claude_v283.json",
+          "samples": 2,
+          "mean_per_70_hands": 0.0,
+          "ci95_low_per_70_hands": 0.0,
+          "ci95_high_per_70_hands": 0.0,
+          "split": {
+            "positive": 0,
+            "zero": 2,
+            "negative": 0
+          }
+        },
+        {
+          "opponent": "claude_v284",
+          "output": "bots/neural_national_lab/data/multi_opponent_runs/paired_v043_v254_cf_handstrength_veto_p268_h32_t050_vs_v052_v254_cf_value_veto_mix_p063_h32_bm050_opp_claude_v284.json",
+          "samples": 2,
+          "mean_per_70_hands": 0.0,
+          "ci95_low_per_70_hands": 0.0,
+          "ci95_high_per_70_hands": 0.0,
+          "split": {
+            "positive": 0,
+            "zero": 2,
+            "negative": 0
+          }
+        }
+      ],
+      "samples": 6,
+      "mean_net": 0.0,
+      "median_net": 0.0,
+      "stddev_net": 0.0,
+      "stderr_net": 0.0,
+      "ci95_low": 0.0,
+      "ci95_high": 0.0,
+      "mean_per_70_hands": 0.0,
+      "ci95_low_per_70_hands": 0.0,
+      "ci95_high_per_70_hands": 0.0,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  }
+}
