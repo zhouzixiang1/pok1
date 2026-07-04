@@ -1568,6 +1568,8 @@ async def _runtime_branch_guard_coroutine(
     *,
     expected_branch: str,
     expected_head: str,
+    owner_task=None,
+    hard_stop_event=None,
     check_interval: float = RUNTIME_BRANCH_GUARD_INTERVAL,
 ):
     """Stop in-place evolution if another actor changes this worktree's branch.
@@ -1621,8 +1623,15 @@ async def _runtime_branch_guard_coroutine(
                 log.error(msg)
             log_system_event("repo.runtime_branch_drift_shutdown", "error", msg, payload)
             _clear_orchestrator_session(reason="runtime_branch_drift")
+            if hard_stop_event is not None:
+                try:
+                    hard_stop_event.set()
+                except Exception:
+                    pass
             if shutdown_mgr:
                 shutdown_mgr.request_shutdown()
+            if owner_task is not None and not owner_task.done():
+                owner_task.cancel()
             return
         except asyncio.CancelledError:
             return
@@ -1667,6 +1676,7 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
         EVOLUTION_BRANCH = "main"
     _runtime_identity = _runtime_git_identity()
     _branch_guard_task = None
+    _runtime_hard_stop_event = asyncio.Event()
     if _runtime_branch_guard_enabled():
         _branch_guard_task = asyncio.create_task(
             _runtime_branch_guard_coroutine(
@@ -1677,6 +1687,8 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                     _runtime_identity.get("head", "")
                     if _runtime_identity.get("branch") == EVOLUTION_BRANCH else ""
                 ),
+                owner_task=asyncio.current_task(),
+                hard_stop_event=_runtime_hard_stop_event,
             )
         )
         log_system_event(
@@ -2052,8 +2064,25 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                 pass
         if _daemon_stop is not None:
             _daemon_stop.set()
-        # Don't stop daemon — it runs independently and survives orchestrator restarts
-        # Daemon is only stopped on full process exit (app.py lifespan) or explicit stop
+        if _runtime_hard_stop_event.is_set():
+            try:
+                from daemon_management import stop_daemon
+                await asyncio.to_thread(stop_daemon)
+                log_system_event(
+                    "repo.runtime_branch_drift_cleanup",
+                    "info",
+                    "Stopped daemon after runtime branch drift",
+                )
+            except Exception as e:
+                log_system_event(
+                    "repo.runtime_branch_drift_cleanup_failed",
+                    "warn",
+                    f"Failed to stop daemon after runtime branch drift: {e}",
+                    {"error": str(e)[:300]},
+                )
+        # For normal orchestrator exits, don't stop daemon — it runs independently
+        # and survives orchestrator restarts. Full process exit/app shutdown and
+        # runtime branch-drift hard stop are the exceptions.
 
 
 async def _prepare_or_fail(shutdown_mgr, ui, min_games=None):

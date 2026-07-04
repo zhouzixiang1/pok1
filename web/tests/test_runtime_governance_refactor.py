@@ -1201,17 +1201,33 @@ def test_runtime_branch_guard_requests_shutdown_on_branch_drift(monkeypatch):
             self.requested = True
             self.is_shutting_down = True
 
+    class DummyOwnerTask:
+        def __init__(self):
+            self.cancelled = False
+
+        def done(self):
+            return False
+
+        def cancel(self):
+            self.cancelled = True
+
     shutdown = DummyShutdown()
+    owner = DummyOwnerTask()
+    hard_stop = asyncio.Event()
 
     asyncio.run(orchestrator._runtime_branch_guard_coroutine(
         None,
         shutdown,
         expected_branch="main",
         expected_head="abc123",
+        owner_task=owner,
+        hard_stop_event=hard_stop,
         check_interval=0.001,
     ))
 
     assert shutdown.requested is True
+    assert owner.cancelled is True
+    assert hard_stop.is_set() is True
     assert cleared == [{"reason": "runtime_branch_drift"}]
     assert events[0][0] == "repo.runtime_branch_drift_shutdown"
     assert events[0][3]["reason"] == "branch_drift"
