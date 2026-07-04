@@ -208,7 +208,7 @@ web/core/results/
   ├── llm_costs.jsonl        ← Cumulative LLM cost log (WebUI writes)
   ├── system_events.jsonl    ← Structured event log (system_log.py writes)
   ├── elo_daemon_stats.json  ← Daemon performance statistics (daemon writes)
-  ├── priority_eval.json     ← Priority evaluation queue (daemon reads/writes)
+  ├── pipeline_state.json    ← Pipeline checkpoint for crash recovery (tools write)
   ├── daemon_crash.log       ← Daemon crash log (daemon writes on error)
   ├── .daemon_pid            ← Daemon PID tracking file (daemon_management writes)
   └── archive/               ← Archived generation files (archivist writes)
@@ -227,7 +227,7 @@ React frontend:
 
 ### Backend (FastAPI)
 
-Entry point: `web/main.py` → `web/server/app.py`. Nine route modules in `server/routes/`:
+Entry point: `web/main.py` → `web/server/app.py`. Ten route modules in `server/routes/` (excluding `__init__.py` and `_helpers.py`): `ratings`, `matches`, `evolution`, `logs`, `control`, `bots`, `pipeline`, `prompts`, `data_stream`, `scheduler`:
 
 - `/api/data/stream` — Periodic SSE pushing dashboard data at 3s/10s/15s intervals.
 - `/api/evolution/stream` — Event-driven SSE from `EventBroadcaster` (ring buffer 500 events, per-client asyncio.Queue).
@@ -415,7 +415,7 @@ Additional daemon constants (in `elo_daemon.py`):
 | `MAX_REPLAY_FILES` | 2000 | Replay file cap (raised from 200; match_replay/ holds ~1900 files). Note: code value is authoritative, doc was stale. |
 | `SAVE_EVERY_N_GAMES` | 20 | Daemon save frequency (games) |
 | `SAVE_INTERVAL_SEC` | 60 | Daemon save frequency (seconds) |
-| `UNDER_EVAL_BASELINE` | 50 | Baseline for under-evaluated calculation |
+| `UNDER_EVAL_BASELINE` | 90 | Baseline for under-evaluated calculation |
 | `UNDER_EVAL_WEIGHT` | 0.6 | Weight for under-evaluated pair selection |
 | `DIVERSITY_WEIGHT` | 0.4 | Weight for rating-diverse pair selection |
 | `RATING_GAP_SCALE` | 200 | Diversity calculation scale |
@@ -431,57 +431,108 @@ Defaults: `r=1500`, `rd=350`, `sigma=0.06`, `tau=0.5`. Confidence levels: rd<50 
 
 - **ShutdownManager** (`shutdown_manager.py`): Asyncio-native SIGINT/SIGTERM handler. Double-signal kills process. All three generation phases check `shutdown_mgr.is_shutting_down` between operations.
 - **Orchestrator session persistence**: `orchestrator_session.json` stores the session ID. On restart, the Orchestrator resumes the exact LLM conversation. Cleared on natural cycle completion.
-- **Pipeline checkpoint**: `STAGE_ORDER` in `evolution_infra.py` defines stage flow (`prepared` → `direction_audited` → `master_planned` → `workers_done` → `quality_failed` → `quality_passed` → `reviewed` → `critic_checked` → `verified` → `archived`). `STAGE_GATE_ALLOWLIST` enforces stage ordering — `run_review` blocks if quality gates haven't passed, `commit_bot` blocks if any gate is missing or if quality/precommit code fingerprints no longer match the candidate code.
+- **Pipeline checkpoint**: `STAGE_ORDER` (authentically defined in `pipeline_state.py`, re-exported by `evolution_infra.py` for compatibility) defines the 16-stage state machine: `selected` → `preparing` → `prepared` → `crossover_running` → `direction_audited` → `master_planned` → `workers_done` → `quality_failed` → `quality_passed` → `reviewed` → `critic_checked` → `precommit_failed` → `repair_planned` → `rework_running` → `verified` → `archived`. `STAGE_GATE_ALLOWLIST` enforces cumulative gate requirements per stage — `run_review` blocks if quality gates haven't passed, `commit_bot` blocks if any gate is missing or if quality/precommit code fingerprints no longer match the candidate code. `pipeline_state.json` persists the current stage for crash recovery.
 - **Daemon lifecycle**: `start_daemon()` spawns `elo_daemon.py` as subprocess. `daemon_monitor_thread()` watches for crashes and auto-restarts. Daemon auto-exits on parent death via `getppid()==1` check.
 - **Orphan detection**: JSON PID file (`.daemon_pid`) for daemon process tracking. 5s orphan detection interval.
 
 ### Web Core Module Map
 
+Line counts are point-in-time snapshots (`wc -l`); they drift as code evolves, so treat them as approximate ordering cues, not contracts. Sorted by line count descending. Excludes `__init__.py`, `reference_bots/`, and `__pycache__/`.
+
 | File | Lines | Role |
 |---|---|---|
-| `elo_daemon.py` | 738 | Background mirror battle subprocess with Glicko-2 updates |
-| `evolution_infra.py` | 742 | Constants, git ops, file locking, checkpoints, bot directory, ratings, archiving |
-| `orchestrator.py` | 601 | LLM-driven orchestrator loop, three-phase generation cycle |
-| `combined_analyst.py` | 330 | Merged stagnation + performance verification (single LLM call) |
-| `tool_status.py` | 504 | Non-pipeline MCP tools (queries, daemon control, analysis) |
-| `tool_helpers.py` | 551 | Shared helpers: UI injection, checkpoint gates, H2H utilities, boundary validation |
-| `tool_gates.py` | 466 | Pipeline tools: quality gates, prepare_next_gen, review, critic |
-| `tool_planning.py` | 431 | Pipeline tools: direction audit, master, workers |
-| `tool_commit.py` | 411 | Pipeline tools: commit, archivist, crossover |
-| `tool_eval.py` | 371 | Pipeline tools: precommit eval, inline eval |
-| `generation_scheduler.py` | 358 | Three-phase cycle: prepare, run, post-cleanup |
-| `web_ui.py` | 292 | `EventBroadcaster` (ring buffer 500) + `WebUI` (terminal + SSE dual output) |
-| `orchestrator_context.py` | 303 | Context string builder + PreCompact hook |
-| `agent_review.py` | 288 | Critic, Performance Verification, Crossover agents |
-| `reset.py` | 282 | Wipe evolution state to baseline |
-| `llm_query.py` | 259 | `run_claude_query()`, `parse_json_output()`, prompt budgeting |
-| `glicko2.py` | 222 | Pure Glicko-2 rating algorithm |
-| `daemon_management.py` | 233 | Daemon subprocess lifecycle: start, stop, monitor, orphan detection |
-| `agent_workers.py` | 212 | Worker execution: parallel/serial dispatch, timeout isolation, retry logic |
-| `tool_bot_management.py` | 216 | Bot reaping, cleanup, abandonment, experience pool tools |
-| `decision_tester.py` | 202 | Predefined scenario tests against bots |
-| `agent_master.py` | 173 | Master Architect + match analysis |
-| `replay_analysis.py` | 178 | Replay data summarization (pure data, no LLM) |
-| `stagnation_analyzer.py` | 162 | Rating trend stagnation analysis via LLM (called via combined_analyst) |
-| `direction_auditor.py` | 151 | Pre-Master repetition detection via LLM |
-| `orchestrator_session.py` | 148 | Session persistence, startup recovery, log rotation |
-| `output_schema.py` | 139 | Pydantic models for validating structured LLM output |
-| `experience_archivist.py` | 132 | Experience pool consolidation + archivist analysis |
-| `commentary.py` | 129 | Deterministic match replay commentary (no LLM) |
-| `logging_config.py` | 121 | Structured logging: colored console, rotating file, SSE handler |
-| `tools.py` | 107 | MCP server registration + tool aggregation |
-| `code_verification.py` | 92 | Compile check, file size, smoke test, decision tests |
-| `evolution_core.py` | 83 | Re-export facade: aggregates all sub-modules for backward compatibility |
-| `shutdown_manager.py` | 56 | Asyncio-native SIGINT/SIGTERM handler |
-| `smoke_tester.py` | 36 | Run 1 mirror match as sanity check |
-| `system_log.py` | 33 | Structured JSONL event logger |
-| `experience_pool.py` | 40 | Experience pool trim logic (keep under 120 lines) |
+| `tool_planning.py` | 4558 | Pipeline tools: direction audit, master planning, worker execution |
+| `llm_query.py` | 2332 | `run_claude_query()` primitive + JSON output parsing, prompt budgeting |
+| `orchestrator.py` | 2295 | LLM-driven Orchestrator: evolution pipeline loop, three-phase cycle |
+| `tool_eval.py` | 2263 | Pipeline tools: pre-commit and inline (battle-based) evaluation |
+| `generation_scheduler.py` | 1924 | Three-phase evolution cycle scheduler (prepare/run/cleanup) |
+| `tool_gates.py` | 1859 | Pipeline tools: quality gates, code prep, review, critic |
+| `elo_daemon.py` | 1827 | Background rating daemon: mirror battles, per-game Glicko-2, H2H matrix |
+| `evolution_infra.py` | 1584 | Shared infra: constants, file/git utils, checkpoints, ratings helpers |
+| `decision_tester.py` | 1237 | Decision scenario tester + dynamic regression test generation |
+| `agent_workers.py` | 1166 | Worker agent execution with retries/timeout isolation |
+| `national_native.py` | 1120 | Native national TCP execution backend for evolved bots |
+| `battle_experience.py` | 1106 | Incremental match analysis via background LLM thread |
+| `tool_commit.py` | 939 | Pipeline tools: commit, archivist, crossover |
+| `orchestrator_context.py` | 930 | Orchestrator context building and PreCompact hook |
+| `code_verification.py` | 904 | Code verification: compile check, size, smoke, decision tests |
+| `engine/battle.py` | 883 | General bot battle runner with persistent-process mode |
+| `tool_helpers.py` | 783 | Shared MCP tool helpers: UI injection, gates, validation |
+| `audit_agents.py` | 771 | LLM audit agents (prompt+schema-gated) for the pipeline |
+| `bot_action_stats.py` | 666 | Bot action statistics extraction from replay files |
+| `candidate_store.py` | 653 | Candidate ledger (JSONL audit log) + SQLite query store |
+| `agent_review.py` | 600 | Review-stage agents: Critic, Perf Verification, Crossover |
+| `engine/judge.py` | 592 | Poker hand judge: suits, hand types, game engine rules |
+| `tool_runtime_guard.py` | 575 | Runtime git/worktree guard for mutating pipeline MCP tools |
+| `national_acceptance.py` | 569 | In-process national-platform acceptance runner (gate API) |
+| `daemon_management.py` | 525 | Daemon subprocess lifecycle: start/stop/monitor/orphan detect |
+| `tool_status.py` | 506 | Non-pipeline MCP tools: status, daemon control, analysis |
+| `event_bus.py` | 497 | Unified event bus with correlation schema |
+| `engine/aivat.py` | 488 | AIVAT all-in variance reduction for heads-up mirror battles |
+| `map_elites.py` | 474 | MAP-Elites 5x5 behavior archive (advisory diversity signal) |
+| `exploitability_prober.py` | 474 | Exploitability probe scoring across strategic axes |
+| `replay_spotlight.py` | 463 | Replay spotlight: identify critical chip-swing hands |
+| `battle_scheduler.py` | 454 | File-based (fcntl-locked JSONL) battle job queue for daemon |
+| `behavior_diversity.py` | 440 | Behavior diversity metrics via fingerprints and Vendi Score |
+| `qd_async_eval.py` | 429 | Phase 4 async fire-and-forget QD background fitness eval |
+| `replay_analysis.py` | 425 | Replay stats + behavior fingerprints (no LLM, pure transform) |
+| `agent_master.py` | 423 | Master Architect agent: plans worker tasks per generation |
+| `combined_analyst.py` | 408 | Combined analyst: merges stagnation + perf verification |
+| `spot_analyzer.py` | 396 | Diff analyzer identifying changed .py files/functions in bot dirs |
+| `rating_snapshot.py` | 395 | Unified strength snapshot normalizing Glicko/H2H/history |
+| `tool_bot_management.py` | 394 | Bot management MCP tools: reap, cleanup, abandon, exp pool |
+| `pipeline_state.py` | 388 | Authoritative pipeline state machine (STAGE_ORDER, gate policy) |
+| `psro_meta_solver.py` | 350 | PSRO meta-solver (fictitious play / uniform) over H2H payoffs |
+| `orchestrator_session.py` | 349 | Orchestrator session persistence and startup recovery |
+| `research_governance.py` | 342 | Ratchet-style governance for web-retrieved strategy candidates |
+| `eval_rounds.py` | 340 | Cycle-based deterministic evaluation rounds for Glicko daemon |
+| `pipeline_recovery.py` | 324 | Shared recovery diagnostics for active evolution checkpoints |
+| `experience_archivist.py` | 317 | Experience pool consolidation and archivist analysis |
+| `web_ui.py` | 314 | `EventBroadcaster` (ring buffer 500) + `WebUI` (terminal + SSE) |
+| `fix_verification.py` | 291 | Structural/runtime verification of mandatory bot fixes |
+| `output_schema.py` | 283 | Pydantic models validating structured LLM output per agent |
+| `reset.py` | 282 | Reset evolution state to baseline (v1-v6 only) |
+| `glicko2.py` | 275 | Glicko-2 rating system implementation (real-time RD decay) |
+| `experience_attribution.py` | 266 | Experience-pool Ratchet retirement for lessons |
+| `national_eval.py` | 259 | National-platform performance eval backend for evolution gates |
+| `stagnation_analyzer.py` | 238 | Stagnation analysis: detect local-optimum traps via LLM |
+| `logging_config.py` | 232 | Centralized logging: color console, rotating files, SSE |
+| `direction_auditor.py` | 231 | Direction Auditor: detect repetitive evolution directions via LLM |
+| `pipeline_schema.py` | 221 | Structured pipeline records (Pydantic) for gates/candidates |
+| `rate_limiter.py` | 216 | Global 429 rate-limit handler for LLM API quota exhaustion |
+| `fix_injection.py` | 211 | Centralized fix registry and idempotent application engine |
+| `qd_fitness.py` | 192 | Phase 4 QD k=3 fitness: median over 3 mirror-battle evals |
+| `repo_state.py` | 181 | Git/worktree observability helpers for the pipeline |
+| `skill_library.py` | 174 | Offline poker skill-library metadata for prompts/harnesses/gates |
+| `worker_boundary.py` | 173 | Worker/candidate editable-boundary file checks |
+| `evolution_scope.py` | 168 | Path ownership rules for evolution in a shared worktree |
+| `eval_stats.py` | 158 | Precommit eval stats: paired bootstrap CI + anytime-valid CS |
+| `nemesis_archive.py` | 134 | FAMOU nemesis archive: persistent nemesis/champion relationships |
+| `commentary.py` | 129 | Lightweight deterministic match commentary generator (no LLM) |
+| `tools.py` | 120 | MCP tools re-export facade + server registration (17 tools) |
+| `protected_contracts.py` | 120 | Protocol-boundary checks for legacy Botzone JSON bot entries |
+| `plan_compiler.py` | 117 | Deterministic Master-plan compilation (brief-file offload) |
+| `pipeline_contracts.py` | 111 | Code-level stage contracts registry (single source of truth) |
+| `workflow_profiles.py` | 106 | Conservative workflow profiles for the evolution pipeline |
+| `system_log.py` | 105 | Structured system event logger (`system_events.jsonl`) |
+| `evolution_core.py` | 98 | Core business logic re-export facade for backward compatibility |
+| `api_concurrency.py` | 88 | Adaptive concurrency control under API rate-limiting/backoff |
+| `observe_policy.py` | 72 | Event classification policy for restart/observe runs |
+| `shutdown_manager.py` | 63 | Asyncio-native SIGINT/SIGTERM shutdown coordinator |
+| `frontier.py` | 62 | Read-side MAP-Elites frontier summaries for Master planning |
+| `llm_failure.py` | 50 | LLM infra error classification (SDK/timeout vs business rejection) |
+| `smoke_tester.py` | 46 | Bot smoke tester via entry import probe + mirror battle |
+| `failure_classification.py` | 45 | Shared failure classification for pipeline gates |
+| `candidate_hygiene.py` | 45 | Candidate directory hygiene for in-progress bot generations |
+| `experience_pool.py` | 40 | Experience pool management: trim/maintain `experience_pool.md` |
+| `pipeline_intents.py` | 26 | Structured machine-readable MCP tool intents |
 | `tool_pipeline.py` | 6 | Re-export shim: `from tool_planning/gates/eval/commit import *` |
 
 **Supporting subdirectories:**
-- `engine/` — Copy of `engine/battle.py` + modified `engine/judge.py` for web context
+- `engine/` — Copy of `engine/battle.py` + modified `engine/judge.py` + `aivat.py` for web context
+- `probe_bots/` — Probe bots (always_caller, check_raiser, min_bettor, overbettor) for exploitability scoring
 - `reference_bots/bot1`-`bot6` — Reference bot implementations used by the evolution pipeline
-- `prompts/` — LLM prompt templates for orchestration, planning, workers, review, critic, crossover, audits, experience updates, and dynamic tests. Use the files present in `web/core/prompts/` as authoritative; this directory currently contains more than the original 14 templates.
+- `prompts/` — LLM prompt templates for orchestration, planning, workers, review, critic, crossover, audits, experience updates, and dynamic tests. Use the files present in `web/core/prompts/` as authoritative; this directory currently contains 28 templates (grown from an original 14).
 
 ### Reinforcement Learning Module (`rl/`)
 
@@ -506,9 +557,10 @@ DanLM-inspired DMC self-play training framework. Wraps `engine/judge.py` as a Gy
 | File | Lines | Role |
 |---|---|---|
 | `engine/ladder.py` | 954 | Round-robin ELO tournament with checkpoint/restore, rank titles |
-| `engine/battle.py` | 727 | CLI battle runner, mirror_battle, battle_generator, human_battle_generator |
-| `engine/judge.py` | 576 | Stateless Holdem judge: Holdem class, Suit/HandType/Card enums, judge() function |
+| `engine/battle.py` | 833 | CLI battle runner, mirror_battle, battle_generator, human_battle_generator |
+| `engine/judge.py` | 592 | Stateless Holdem judge: Holdem class, Suit/HandType/Card enums, judge() function |
 | `engine/anchor_runner.py` | 642 | One bot vs all others, supports --dry-run, --exclude, per-opponent parallel workers |
+| `engine/aivat.py` | 488 | AIVAT all-in variance reduction for heads-up mirror battles |
 
 ### Scripts
 
