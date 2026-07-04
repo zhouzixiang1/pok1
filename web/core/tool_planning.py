@@ -2794,11 +2794,22 @@ def _task_target_filenames(tasks):
     return files
 
 
+def _quality_contract_signature(contract):
+    if not isinstance(contract, dict):
+        return ("", "")
+    blocker = _normalize_repair_blocker(contract.get("blocker"))
+    filename = Path(str(contract.get("file", ""))).name
+    return (blocker, filename) if blocker and filename else ("", "")
+
+
 def _quality_contract_signatures(ckpt, reviewer_feedback=""):
     return {
-        (_normalize_repair_blocker(contract.get("blocker")), Path(str(contract.get("file", ""))).name)
-        for contract in _quality_repair_contracts(ckpt, reviewer_feedback)
-        if contract.get("blocker") and Path(str(contract.get("file", ""))).name
+        signature
+        for signature in (
+            _quality_contract_signature(contract)
+            for contract in _quality_repair_contracts(ckpt, reviewer_feedback)
+        )
+        if all(signature)
     }
 
 
@@ -2836,6 +2847,44 @@ def _task_quality_contract_signatures(tasks):
             for filename in files:
                 signatures.add(("quality_gate", filename))
     return signatures
+
+
+def _int_or_none(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _quality_task_contract_refresh_reason(task, current_contract):
+    """Return why a saved quality repair task should be regenerated."""
+    if not isinstance(task, dict) or not isinstance(current_contract, dict):
+        return ""
+    signature = _quality_contract_signature(current_contract)
+    blocker, filename = signature
+    if blocker != "file_size":
+        return ""
+
+    saved = task.get("repair_contract") if isinstance(task.get("repair_contract"), dict) else {}
+    saved_current = _int_or_none(saved.get("current_lines"))
+    saved_limit = _int_or_none(saved.get("line_limit"))
+    current_lines = _int_or_none(current_contract.get("current_lines"))
+    line_limit = _int_or_none(current_contract.get("line_limit"))
+
+    if line_limit is not None and saved_limit != line_limit:
+        return f"{blocker}:{filename}:line_limit_changed"
+    if current_lines is not None and saved_current != current_lines:
+        return f"{blocker}:{filename}:current_lines_changed"
+
+    prompt = str(task.get("worker_prompt", task.get("instruction", "")))
+    if (
+        current_lines is not None
+        and line_limit is not None
+        and current_lines - line_limit >= 200
+        and "Large-overage requirement" not in prompt
+    ):
+        return f"{blocker}:{filename}:large_overage_prompt_outdated"
+    return ""
 
 
 def _is_file_size_repair_task(task):
@@ -2876,13 +2925,27 @@ def _stale_quality_task_reason(tasks, ckpt, reviewer_feedback=""):
         or ckpt.get("stage") not in {"quality_failed", "repair_planned", "rework_running"}
     ):
         return ""
-    current = _quality_contract_signatures(ckpt, reviewer_feedback)
+    current_contracts = {
+        signature: contract
+        for contract in _quality_repair_contracts(ckpt, reviewer_feedback)
+        for signature in [_quality_contract_signature(contract)]
+        if all(signature)
+    }
+    current = set(current_contracts)
     if not current:
         return ""
     task_signatures = _task_quality_contract_signatures(tasks)
     missing = sorted(current - task_signatures)
     if not missing:
-        return ""
+        stale = []
+        for task in tasks or []:
+            for signature in sorted(_task_quality_contract_signatures([task]) & current):
+                reason = _quality_task_contract_refresh_reason(task, current_contracts[signature])
+                if reason:
+                    stale.append(reason)
+        if not stale:
+            return ""
+        return "stale current quality repair contract(s): " + ", ".join(sorted(set(stale)))
     return "missing current quality repair contract(s): " + ", ".join(
         f"{blocker}:{filename}" for blocker, filename in missing
     )

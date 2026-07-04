@@ -2309,6 +2309,48 @@ class TestWorkerFailureCircuitBreaker:
         assert "<= 2493 lines" in tasks[-1]["worker_prompt"]
         assert "print() emits TCP action text" in tasks[-2]["worker_prompt"]
 
+    def test_quality_rework_refreshes_outdated_file_size_contract_prompt(self):
+        import tool_planning
+
+        ckpt = {
+            "next_v": 282,
+            "source_v": 28,
+            "parent2_v": 235,
+            "stage": "rework_running",
+            "master_plan": {
+                "strategy": "crossover",
+                "tasks": [
+                    {
+                        "worker_id": "auto_quality_repair_file_size_strategy_py",
+                        "role": "Algorithmic Logic Architect",
+                        "target_files": ["strategy.py"],
+                        "must_change_files": ["strategy.py"],
+                        "worker_prompt": "old file-size repair",
+                        "task_kind": "quality_repair",
+                        "repair_blocker": "file_size",
+                        "repair_contract": {"blocker": "file_size", "file": "strategy.py"},
+                    }
+                ],
+            },
+            "gate_results": {
+                "quality": {
+                    "all_passed": False,
+                    "failed_gates": ["file_size(strategy.py:2483L/2000L)"],
+                    "oversized_files": {"strategy.py": 2483},
+                }
+            },
+        }
+
+        old_tasks = ckpt["master_plan"]["tasks"]
+        reason = tool_planning._stale_quality_task_reason(old_tasks, ckpt, "")
+        refreshed = tool_planning._synthesize_rework_tasks_from_checkpoint(ckpt)
+        file_size_task = next(task for task in refreshed if task["repair_blocker"] == "file_size")
+
+        assert "stale current quality repair contract" in reason
+        assert "file_size:strategy.py" in reason
+        assert "Large-overage requirement" in file_size_task["worker_prompt"]
+        assert file_size_task["repair_contract"]["line_limit"] == 2000
+
     def test_quality_repair_synthesizes_national_native_contract_task(self):
         import tool_planning
 
