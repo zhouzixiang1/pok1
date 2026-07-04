@@ -729,6 +729,80 @@ def test_deterministic_route_abandons_after_worker_circuit_breaker(monkeypatch):
     assert not any(e[0] == "pipeline.deterministic_route_failed" for e in events)
 
 
+def test_deterministic_route_abandons_after_precommit_rework_circuit_breaker(monkeypatch):
+    """Precommit repair loop breaker should force abandon through recovery."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import orchestrator
+
+    events = []
+    abandoned = []
+    fake_execute = SimpleNamespace(
+        handler=AsyncMock(
+            return_value={
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "error": "PRECOMMIT_REWORK_CIRCUIT_BREAKER",
+                        "precommit_rework_count": 3,
+                        "max_rework_rounds": 3,
+                    }),
+                }]
+            }
+        )
+    )
+
+    async def _fake_abandon(reason="abandon_generation"):
+        abandoned.append(reason)
+        return {"abandoned": True, "reason": reason, "abandoned_v": 277}
+
+    monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "pipeline_state",
+        SimpleNamespace(route_policy=lambda _ckpt: {"next_tool": "execute_workers"}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_planning",
+        SimpleNamespace(execute_workers=fake_execute),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_bot_management",
+        SimpleNamespace(_do_abandon_generation=_fake_abandon),
+    )
+
+    recovery = {
+        "action": "resume",
+        "checkpoint": {
+            "stage": "precommit_failed",
+            "next_v": 277,
+            "source_v": 276,
+            "precommit_rework_count": 3,
+        },
+    }
+    ui = _FakeUI()
+
+    handled = asyncio.new_event_loop().run_until_complete(
+        orchestrator._try_deterministic_checkpoint_route(recovery, ui)
+    )
+
+    assert handled is True
+    fake_execute.handler.assert_awaited_once_with({"next_v": 277, "source_v": 276})
+    assert abandoned == ["precommit_rework_circuit_breaker"]
+    assert any(e[0] == "pipeline.deterministic_route_abandoned" for e in events)
+    assert not any(e[0] == "pipeline.deterministic_route_failed" for e in events)
+
+
 def test_actionable_stage_handoff_interrupts_active_stream(tmp_path, monkeypatch):
     """A gate-produced quality_failed checkpoint should hand off before Bash wandering."""
     from claude_agent_sdk import AssistantMessage, TextBlock

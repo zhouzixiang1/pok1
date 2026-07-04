@@ -1231,6 +1231,12 @@ def _is_worker_circuit_breaker_result(data):
     )
 
 
+def _is_precommit_rework_circuit_breaker_result(data):
+    if not isinstance(data, dict):
+        return False
+    return str(data.get("error") or "") == "PRECOMMIT_REWORK_CIRCUIT_BREAKER"
+
+
 async def _try_deterministic_checkpoint_route(recovery, ui=None):
     """Execute safe checkpoint routes without asking the Orchestrator LLM again."""
     if not recovery or recovery.get("action") != "resume":
@@ -1285,13 +1291,18 @@ async def _try_deterministic_checkpoint_route(recovery, ui=None):
     error = data.get("error")
     success = data.get("success")
     if error:
-        if _is_worker_circuit_breaker_result(data):
+        if _is_worker_circuit_breaker_result(data) or _is_precommit_rework_circuit_breaker_result(data):
             from tool_bot_management import _do_abandon_generation
 
-            abandon_result = await _do_abandon_generation(reason="worker_circuit_breaker")
+            abandon_reason = (
+                "precommit_rework_circuit_breaker"
+                if _is_precommit_rework_circuit_breaker_result(data)
+                else "worker_circuit_breaker"
+            )
+            abandon_result = await _do_abandon_generation(reason=abandon_reason)
             abandoned = bool(abandon_result.get("abandoned"))
             msg_abandon = (
-                f"Worker circuit breaker reached for v{next_v}; "
+                f"{abandon_reason} reached for v{next_v}; "
                 f"{'abandoned generation' if abandoned else 'abandon did not complete'}."
             )
             if ui:
