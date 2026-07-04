@@ -1,0 +1,66 @@
+[
+  {
+    "mode": "battle",
+    "version": "bots/neural_national_lab/versions/v007_v254_call_rescue254/main.py",
+    "opponent": "bots/claude_v279/main.py",
+    "games": 2,
+    "played": 2,
+    "wins": [
+      1,
+      1
+    ],
+    "draws": 0,
+    "net_chips": [
+      630.0,
+      -51.0
+    ],
+    "mean_net": 289.5,
+    "median_net": 289.5,
+    "per_game": [
+      {
+        "idx": 0,
+        "winner": 0,
+        "bot0_chips": 630.0,
+        "bot1_chips": -630.0
+      },
+      {
+        "idx": 1,
+        "winner": 1,
+        "bot0_chips": -51.0,
+        "bot1_chips": 51.0
+      }
+    ]
+  },
+  {
+    "mode": "battle",
+    "version": "bots/claude_v254/main.py",
+    "opponent": "bots/claude_v279/main.py",
+    "games": 2,
+    "played": 2,
+    "wins": [
+      1,
+      1
+    ],
+    "draws": 0,
+    "net_chips": [
+      -136.0,
+      16100.0
+    ],
+    "mean_net": 7982.0,
+    "median_net": 7982.0,
+    "per_game": [
+      {
+        "idx": 0,
+        "winner": 1,
+        "bot0_chips": -136.0,
+        "bot1_chips": 136.0
+      },
+      {
+        "idx": 1,
+        "winner": 0,
+        "bot0_chips": 16100.0,
+        "bot1_chips": -16100.0
+      }
+    ]
+  }
+]

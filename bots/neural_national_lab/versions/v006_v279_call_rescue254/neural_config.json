@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "weights": "policy_weights.json",
+  "fold_conf": 1.01,
+  "call_conf": 0.94,
+  "raise_conf": 1.01,
+  "allin_conf": 1.01,
+  "max_call_ratio": 0.18,
+  "max_call_chips": 550,
+  "max_call_pot_ratio": 0.18,
+  "allow_fold": false,
+  "allow_call": true,
+  "allow_raise": false,
+  "allow_allin": false,
+  "max_fold_proxy": 0.0
+}
