@@ -11,6 +11,7 @@ continues both branches on the same deck prefix.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import contextlib
 import copy
 import io
@@ -499,6 +500,119 @@ def _candidate_passes(kind: str, stage: str, args: argparse.Namespace) -> bool:
     return True
 
 
+def _task_initdata(seed: int | None, side_name: str, max_hands: int) -> dict[str, Any]:
+    initdata = _seeded_initdata(seed, max_hands) if seed is not None else _fresh_initdata()
+    if side_name == "mirror":
+        return _mirror_initdata(initdata)
+    return initdata
+
+
+def _probe_task(task: dict[str, Any]) -> dict[str, Any]:
+    args = argparse.Namespace(**task["args"])
+    version_dir = _resolve(args.version)
+    bot0 = _main_path(version_dir)
+    bot1 = _main_path(_resolve(args.opponent))
+    loaded_bot = _load_bot(version_dir)
+    task_index = int(task["task_index"])
+    game_idx = int(task["game_idx"])
+    seed = task["seed"]
+    side_name = str(task["side_name"])
+    start_probe_index = int(task["start_probe_index"])
+    side_initdata = _task_initdata(seed, side_name, args.max_hands)
+    scan_bot_seeds = match_bot_seeds(args.bot_seed_base, args.bot_seed_stride, game_idx, side_name)
+    probes, match_summary = _probe_side(
+        f"g{game_idx}:{side_name}",
+        side_initdata,
+        seed,
+        version_dir,
+        bot0,
+        bot1,
+        loaded_bot,
+        args,
+        start_probe_index,
+        scan_bot_seeds,
+    )
+    return {
+        "task_index": task_index,
+        "game": game_idx,
+        "seed": seed,
+        "side_name": side_name,
+        "probes": probes,
+        "match": {"game": game_idx, "seed": seed, **match_summary},
+    }
+
+
+def _args_for_worker(args: argparse.Namespace, max_probes_per_task: int, start_probe_index: int) -> dict[str, Any]:
+    worker_args = vars(copy.copy(args)).copy()
+    worker_args["output"] = None
+    worker_args["max_probes"] = int(start_probe_index) + int(max_probes_per_task)
+    return worker_args
+
+
+def _build_tasks(args: argparse.Namespace) -> list[dict[str, Any]]:
+    sides = ["normal"] if args.no_mirror else ["normal", "mirror"]
+    max_probes_per_task = args.max_probes_per_task or max(1, args.max_probes)
+    tasks: list[dict[str, Any]] = []
+    task_index = 0
+    for idx in range(args.games):
+        seed = (
+            args.seed_base + args.seed_offset + idx * args.seed_stride
+            if args.seed_base is not None
+            else None
+        )
+        for side_name in sides:
+            start_probe_index = task_index * max_probes_per_task
+            tasks.append(
+                {
+                    "task_index": task_index,
+                    "game_idx": idx,
+                    "seed": seed,
+                    "side_name": side_name,
+                    "start_probe_index": start_probe_index,
+                    "args": _args_for_worker(args, max_probes_per_task, start_probe_index),
+                }
+            )
+            task_index += 1
+    return tasks
+
+
+def _merge_task_results(payload: dict[str, Any], results: list[dict[str, Any]], max_probes: int) -> None:
+    payload["matches"] = []
+    payload["probes"] = []
+    for result in sorted(results, key=lambda row: int(row["task_index"])):
+        payload["matches"].append(result["match"])
+        remaining = int(max_probes) - len(payload["probes"])
+        if remaining <= 0:
+            continue
+        payload["probes"].extend(result["probes"][:remaining])
+    payload["summary"] = _summarize(payload["probes"])
+
+
+def _run_parallel(args: argparse.Namespace, payload: dict[str, Any]) -> None:
+    tasks = _build_tasks(args)
+    if not tasks:
+        payload["summary"] = _summarize(payload["probes"])
+        return
+    workers = min(max(1, int(args.workers)), len(tasks))
+    completed: list[dict[str, Any]] = []
+    print(f"parallel probe tasks={len(tasks)} workers={workers}")
+    with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
+        future_map = {executor.submit(_probe_task, task): task for task in tasks}
+        for future in concurrent.futures.as_completed(future_map):
+            task = future_map[future]
+            result = future.result()
+            completed.append(result)
+            _merge_task_results(payload, completed, args.max_probes)
+            _write(args.output, payload)
+            print(
+                f"task {task['task_index'] + 1}/{len(tasks)} "
+                f"g{task['game_idx']}:{task['side_name']} done: "
+                f"task_probes={len(result['probes'])} merged_probes={len(payload['probes'])} "
+                f"mean={payload['summary'].get('primary_delta', {}).get('mean', 0.0):.1f}"
+            )
+    _merge_task_results(payload, completed, args.max_probes)
+
+
 def _probe_side(
     side_name: str,
     initdata: dict[str, Any],
@@ -728,6 +842,12 @@ def main() -> None:
     parser.add_argument("--bot-seed-base", type=int)
     parser.add_argument("--bot-seed-stride", type=int, default=10000)
     parser.add_argument("--max-hands", type=int, default=70)
+    parser.add_argument("--workers", type=int, default=1, help="parallel game/side probe workers")
+    parser.add_argument(
+        "--max-probes-per-task",
+        type=int,
+        help="per game/side probe cap when --workers > 1; defaults to global --max-probes",
+    )
     parser.add_argument("--no-scan-persistent", action="store_true")
     parser.add_argument("--no-mirror", action="store_true")
     parser.add_argument("--output", type=Path)
@@ -757,6 +877,8 @@ def main() -> None:
         "bot_seed_base": args.bot_seed_base,
         "bot_seed_stride": args.bot_seed_stride,
         "max_hands": args.max_hands,
+        "workers": args.workers,
+        "max_probes_per_task": args.max_probes_per_task,
         "branch_scope": args.branch_scope,
         "scan_persistent": args.scan_persistent,
         "filters": {
@@ -769,6 +891,12 @@ def main() -> None:
         "summary": {},
     }
     _write(args.output, payload)
+
+    if args.workers > 1:
+        _run_parallel(args, payload)
+        _write(args.output, payload)
+        print(json.dumps(payload["summary"], indent=2))
+        return
 
     for idx in range(args.games):
         seed = (
