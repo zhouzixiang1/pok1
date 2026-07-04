@@ -1,0 +1,12 @@
+{
+  "input": "bots/neural_national_lab/data/advantage_counterfactual_v025_flop_botrng_p268_base_pair05_pair15.jsonl",
+  "rows": 278,
+  "input_dim": 88,
+  "base_dim": 70,
+  "extra_dim": 18,
+  "positive": 240,
+  "negative": 38,
+  "positive_rate": 0.8633093525179856,
+  "missing_context": 0,
+  "extra_trace_changes": 10
+}
