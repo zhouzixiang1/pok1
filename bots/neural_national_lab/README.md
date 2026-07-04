@@ -160,3 +160,25 @@ over-filtering failure: v029 restored v025's 3 neural raises on the outlier
 trace. It still did not beat v025 over 16 paired mirrors (`-2.25` chips per
 70 hands, 95 percent CI `[-12.45, 7.95]`). Treat v029 as a diagnostic repair,
 not a stronger bot.
+
+The next broader dataset, `counterfactual_v025_flop_botrng_p192.json`, added
+190 reproducible flop low-raise probes with mean primary delta `+95.74` and
+95 percent CI `[79.05, 112.42]`. Combining it with the earlier p64 and pair11
+focus runs produced 255 runtime-compatible advantage rows. The nonnegative
+h32 gate trained from those rows became `v030_v254_cf_nonneg_gate_h32_t085`.
+It was positive versus v025 after 16 paired mirrors, but extending the same
+deck plus bot-RNG run to 64 pairs reduced the edge to `+189.90` chips per
+70 hands with 95 percent CI `[-484.94, 864.74]` and median delta `0`. This is
+enough evidence to scale data collection, not enough evidence to scale model
+size or promote the bot.
+
+Move toward large scale in stages:
+
+- now: larger reproducible counterfactual data shards for disputed gates,
+  multiple opponents, and active-learning outlier seeds;
+- after a candidate is positive over at least 64 paired mirrors with median
+  above zero and no large negative bucket: larger offline value or advantage
+  training on GPU;
+- only after the larger model distills back into a compact JSON runtime and
+  beats the rule base with a confidence interval above zero: broader promotion
+  runs and national-platform stress testing.

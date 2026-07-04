@@ -1,0 +1,14 @@
+{
+  "samples": 255,
+  "input_dim": 70,
+  "hidden_dim": 32,
+  "positive": 129,
+  "negative": 126,
+  "positive_rate": 0.5058823529411764,
+  "train_acc": 0.5637255311012268,
+  "val_acc": 0.4901961088180542,
+  "avg_good_prob": 0.8664757609367371,
+  "device": "cuda",
+  "batch_size": 32,
+  "contract": "blueprint_policy_v1"
+}

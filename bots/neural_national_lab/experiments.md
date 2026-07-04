@@ -285,6 +285,30 @@
   `[-12.45, 7.95]`). It is not a successor, but it proves targeted
   counterfactual resampling can repair a gate regression.
 
+## v030_v254_cf_nonneg_gate_h32_t085
+
+- Base: `v029_v254_cf_advantage_pair11_h32_t090`.
+- Change: adds a broader 190-probe shard run
+  (`counterfactual_v025_flop_botrng_p192.json`) and retrains the h32 gate on
+  255 total counterfactual rows. Unlike v027-v029, zero-delta rows are treated
+  as acceptable, so the classifier learns to filter negative raises rather than
+  suppress all non-positive outcomes. Runtime uses `advantage_min=0.85`.
+- Result: promising but not significant. A 16-pair check versus v025 was
+  positive (`+535.59` chips per 70 hands) but still crossed zero. Extending the
+  same deterministic run to 64 pairs reduced the mean to `+189.90` chips per
+  70 hands with 95 percent CI `[-484.94, 864.74]`, median delta `0`, and
+  29 positive / 4 zero / 31 negative paired deltas. v030 is a stronger
+  candidate than v027-v029, but it is not yet a proven improvement.
+
+## v031_v254_cf_nonneg_gate_h32_t090
+
+- Base: `v030_v254_cf_nonneg_gate_h32_t085`.
+- Change: same nonnegative-good h32 weights as v030, with a stricter
+  `advantage_min=0.90`.
+- Result: weaker than v030 in the 16-pair check versus v025 (`+459.25` chips
+  per 70 hands, 95 percent CI `[-373.12, 1291.62]`) and had a larger early
+  negative outlier. It was not extended.
+
 ## Round 1 Notes
 
 - Training data: `teacher214_round1.jsonl`, 272 teacher decisions from

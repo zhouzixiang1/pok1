@@ -177,6 +177,14 @@ Practical takeaways for this repo:
   same 16-pair check. This is progress in the data loop, not a strategic edge:
   single-outlier replay can fix a known miss, but a useful advantage model needs
   systematic active learning over many disputed gates and opponents.
+- The p192 counterfactual expansion and v030 nonnegative-good h32 gate show the
+  current scale boundary. Action-level labels are now reproducible and strongly
+  positive in the narrow flop low-raise bucket, but the first 64-pair
+  deterministic end-to-end check against v025 still crossed zero
+  (`+189.90` chips per 70 hands, 95 percent CI `[-484.94, 864.74]`, median
+  `0`). Scale data coverage now; postpone larger models until a candidate
+  clears paired promotion with a positive median and a confidence interval
+  above zero.
 
 ## Scale-Up Gate
 
@@ -190,10 +198,12 @@ Practical takeaways for this repo:
   look good in-sample while blocking the very raises that carried v025's best
   paired outcomes. The v029 result narrows the next step further: collect
   disputed-gate counterfactuals from many outlier seeds, not just random
-  accepted interventions.
+  accepted interventions. The v030 result means this is the only scale-up that
+  is currently justified.
 - Promotion gate before larger models: a candidate should stay positive over
-  at least 20 common-deck mirror pairs against its rule base, with median delta
-  above zero and no protocol/illegal-action regression.
+  at least 64 common-deck mirror pairs against its rule base, with median delta
+  above zero, no large negative bucket, and no protocol/illegal-action
+  regression.
 - Larger-model step: replace the pure policy classifier with a value or
   advantage head trained from outcome/self-play data. Deep-CFR-style regret
   replay is the preferred direction; direct LLM calls during play are not
