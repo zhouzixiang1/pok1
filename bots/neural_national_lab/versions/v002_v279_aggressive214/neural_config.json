@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "weights": "policy_weights.json",
+  "fold_conf": 0.72,
+  "call_conf": 0.78,
+  "raise_conf": 0.86,
+  "allin_conf": 0.975,
+  "max_call_ratio": 0.36,
+  "max_fold_proxy": 0.64
+}
