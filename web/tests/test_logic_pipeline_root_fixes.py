@@ -991,9 +991,11 @@ def test_scheduler_stall_reason_treats_claimed_jobs_as_running():
 
 
 def test_subagent_guard_allows_readonly_parent_probe_but_blocks_writes():
+    import evolution_infra
     import llm_query
 
-    allowed = "/home/zzx/project/pok/bots/claude_v234"
+    project_root = evolution_infra.PROJECT_ROOT
+    allowed = str(project_root / "bots" / "claude_v234")
     readonly_ls = "ls -d bots/claude_v224 bots/claude_v206 2>&1"
     readonly_python = (
         "python -c \"from pathlib import Path; "
@@ -1115,13 +1117,26 @@ wc -l bots/claude_v234/strategy.py
     assert llm_query._subagent_bash_write_scope_violation(
         rm_relative_other_bot_after_cd, allowed
     ).startswith("rm:")
-    file_scope = {"files": ["/home/zzx/project/pok/bots/claude_v234/strategy.py"]}
+    scoped_strategy = project_root / "bots" / "claude_v234" / "strategy.py"
+    file_scope = {"files": [str(scoped_strategy)]}
     assert llm_query._subagent_is_outside_allowed(
-        "/home/zzx/project/pok/bots/claude_v234/strategy.py",
+        str(scoped_strategy),
+        file_scope,
+    ) is False
+    assert llm_query._subagent_is_outside_allowed(
+        "file:" + str(scoped_strategy),
+        file_scope,
+    ) is False
+    assert llm_query._subagent_is_outside_allowed(
+        scoped_strategy.as_uri(),
         file_scope,
     ) is False
     assert llm_query._subagent_bash_write_scope_violation(
         "sed -i 's/a/b/' bots/claude_v234/strategy.py",
+        file_scope,
+    ) is None
+    assert llm_query._subagent_bash_write_scope_violation(
+        "sed -i 's/a/b/' file:" + str(scoped_strategy),
         file_scope,
     ) is None
     assert llm_query._subagent_bash_write_scope_violation(
@@ -1138,6 +1153,10 @@ wc -l bots/claude_v234/strategy.py
     ).startswith("write_redirect:")
     assert llm_query._subagent_is_outside_allowed(
         "Path('bots/claude_v234/notes.txt').write_text('x')",
+        file_scope,
+    ) is True
+    assert llm_query._subagent_is_outside_allowed(
+        "file:" + str(project_root / "bots" / "claude_v235" / "strategy.py"),
         file_scope,
     ) is True
     assert llm_query._subagent_bash_write_scope_violation(copy_into_other_bot, allowed).startswith("cp_dest:")
@@ -1162,11 +1181,14 @@ wc -l bots/claude_v234/strategy.py
 def test_subagent_write_guard_uses_structured_scope_for_decisions():
     """The hook's human-readable scope label must not be used as a path."""
     import asyncio
+    import evolution_infra
     import llm_query
+
+    project_root = evolution_infra.PROJECT_ROOT
 
     async def _run():
         hooks = llm_query._make_subagent_write_guard(
-            "/home/zzx/project/pok/bots/claude_v266"
+            str(project_root / "bots" / "claude_v266")
         )
         handler = hooks["PreToolUse"][0].hooks[0]
         allowed = await handler({
@@ -1187,14 +1209,21 @@ def test_subagent_write_guard_uses_structured_scope_for_decisions():
         edit_allowed = await handler({
             "tool_name": "Edit",
             "tool_input": {
-                "file_path": "/home/zzx/project/pok/bots/claude_v266/strategy.py"
+                "file_path": str(project_root / "bots" / "claude_v266" / "strategy.py")
             },
         }, "tool-use-3", {})
-        return allowed, denied, edit_allowed
+        edit_file_uri_allowed = await handler({
+            "tool_name": "Edit",
+            "tool_input": {
+                "file_path": "file:" + str(project_root / "bots" / "claude_v266" / "strategy.py")
+            },
+        }, "tool-use-4", {})
+        return allowed, denied, edit_allowed, edit_file_uri_allowed
 
-    allowed, denied, edit_allowed = asyncio.run(_run())
+    allowed, denied, edit_allowed, edit_file_uri_allowed = asyncio.run(_run())
     assert allowed == {}
     assert edit_allowed == {}
+    assert edit_file_uri_allowed == {}
     decision = denied["hookSpecificOutput"]
     assert decision["permissionDecision"] == "deny"
     assert "bots/claude_v267" in decision["permissionDecisionReason"]
