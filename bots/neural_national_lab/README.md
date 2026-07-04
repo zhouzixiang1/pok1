@@ -328,6 +328,36 @@ single-action full-match deltas is still too noisy. The next implementation
 should collect paired trajectory credit/value targets before another runtime
 gate.
 
+`v052_v254_cf_value_veto_mix_p063_h32_bm050` tried that value-target variant.
+`train_value_gate.py` trains a tiny one-hidden-layer regressor on
+`tanh(delta / 1000)` instead of a binary good/bad label and exports the same
+JSON-only stdlib runtime artifact shape as the previous gates. The first p49
+v279-only value models were too weak, so a 16-worker v043 versus `claude_v283`
+match-scope probe was attempted with early stopping. Probe density was low:
+after 140 completed match-side tasks it had only 14 probes, so the valid
+partial output was kept but not expanded. Merging those rows with the existing
+p49 v279 rows produced a 63-row mixed dataset with 25 positive and 38
+non-positive labels. The h32 CUDA value model had validation sign accuracy
+`0.77`, validation MAE `0.62`, and average prediction `-0.053`, so it was
+wrapped as a high-confidence auxiliary veto: only neural actions with policy
+confidence at least `0.94` can be blocked, and only when the predicted value is
+below `-0.5`.
+
+The targeted trace looked useful but the end-to-end gate still did not promote.
+On pairs42..52 against `claude_v279`, v052 improved the traced aggregate from
+v051's `-6816` to `-4986` chips and repaired pair48 from `-1602` to `+125`
+while preserving the earlier pair42/pair51/pair52 behavior. The broader
+64-pair deterministic mirror run versus v043 was effectively neutral:
+`-11.47` chips per 70 hands with 95 percent CI `[-68.17, 45.24]`. The nonzero
+paired deltas were pair21 `-3243`, pair29 `+150`, pair38 `-102`, and pair48
+`+1727`. Replaying pair21 with the exact paired bot RNG seeds showed
+`final_changed=0`, so that large loss is not a value-veto action; it is an
+inherited strategy-path difference relative to v043. Keep v052 as the first
+value-regression artifact, not as a stronger bot. The next iteration should
+train and evaluate against the immediate parent as well as v043, then use
+paired trajectory credit or an ensemble/variance-aware value target before
+adding another runtime gate.
+
 Recent literature and open-source scans point to the next useful local
 direction:
 
@@ -364,6 +394,12 @@ speedups when the evolution daemon is quiet. During concurrent daemon runs,
 keep ad-hoc paired evaluation lower, such as `--workers 4`, because each worker
 launches multiple bot subprocesses and full saturation can increase timeout
 risk and scheduling overhead.
+
+For the current neural workflow, spend multicore budget on
+`paired_evaluate.py`, `counterfactual_shard_runner.py`, and
+`counterfactual_rollout_probe.py --workers`; do not use the trace tool as the
+large-scale loop. Trace runs are for explaining exact outliers after the
+parallel paired/counterfactual samplers identify them.
 
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
