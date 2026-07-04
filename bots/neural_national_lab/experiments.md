@@ -179,6 +179,27 @@
   mostly positive flop free-action raises. v021 isolates that narrower signal
   while preserving v019 and v020 as replayable comparison points.
 
+## v022_v254_sharded_h96_raise_only254
+
+- Base: `v021_v254_outcome_raise_only254`.
+- Change: keeps the narrow raise-only runtime gate but replaces the weights
+  with a 96-hidden-unit model trained from a sharded 5608-row outcome-weighted
+  dataset. The trainer now supports mini-batches and `--device auto/cpu/cuda`;
+  this run used CUDA and exported JSON weights for the stdlib runtime.
+- Rationale: v021 had a positive but outlier-sensitive signal. v022 tests
+  whether a larger multi-teacher dataset and modestly wider MLP can make the
+  same narrow gate more stable without changing protocol behavior.
+
+## v023_v254_flop_resize_h96_254
+
+- Base: `v022_v254_sharded_h96_raise_only254`.
+- Change: keeps the same h96 weights but makes the gate flop-only and allows
+  neural raise proposals when the rule action is already a raise. Preflop,
+  turn, paid-call, fold, and all-in neural interventions remain disabled.
+- Rationale: v022 trace showed actual flop free-action raises were positive
+  while many blocked turn/preflop candidates were dangerous. v023 tests only
+  the smallest safe-looking resize expansion.
+
 ## Round 1 Notes
 
 - Training data: `teacher214_round1.jsonl`, 272 teacher decisions from
@@ -426,3 +447,44 @@
   evaluation first: target 50k-200k decisions, multi-teacher/multi-opponent
   sampling, and at least 20 common-deck mirror pairs before increasing model
   complexity or GPU training.
+
+## Round 9 Notes
+
+- Added `collect_outcome_shards.py`, a parallel sampler that splits
+  teacher/opponent mirror battles into independent shards while preserving the
+  same `blueprint_policy_v1` JSONL contract. This moves the pipeline toward
+  large datasets without changing the runtime bot protocol.
+- Updated `train_policy_mlp.py` with mini-batch training and optional device
+  selection. The round-2 h96 run used `--device auto`, selected CUDA, and still
+  exported plain JSON weights for the portable runtime.
+- `teacher_outcome_weighted_round2_sharded.jsonl`: 5608 samples from
+  `claude_v254`, `claude_v279`, and `v021` teachers against `claude_v279`,
+  `claude_v254`, and `claude_v214`. Label counts were `fold=1394`,
+  `call=2789`, `raise_half=652`, `raise_pot=613`, `raise_2pot=101`,
+  `allin=59`.
+- `teacher_outcome_weighted_round2_h96_metrics.json`: 96-hidden-unit MLP,
+  validation accuracy `0.645`, masked validation accuracy `0.645`, average
+  confidence `0.814`, trained with batch size `512` on CUDA.
+- `v022` advisor analysis, 2 ordinary games vs `claude_v279`:
+  `final_changed=7/257`, all `to_raise`.
+- Common-deck 4-pair comparison on the same decks, both against `claude_v279`:
+  `v021` deltas `[-5132, -2491, 159, 273]`, mean `-898.9 chips/70`;
+  `v022` deltas `[785, 2419, 338, -13]`, mean `+441.1 chips/70`, 95 percent
+  CI `[-85.8, +968.0]`. v022 is clearly better than v021 on this deck set, but
+  not yet significant.
+- `v022` larger 8-pair run vs `claude_v254`, both against `claude_v279`:
+  deltas `[185, 6293, -137, -100, 251, -8730, 267, 18804]`, median `+218`,
+  mean `+1052.1 chips/70`, 95 percent CI `[-1676.7, +3780.8]`. The mean is
+  positive but dominated by both positive and negative outliers.
+- `v022` 4-pair trace vs `claude_v279`: 14 actual changes out of 983 decisions,
+  all `to_raise`; changed-hand delta sum `+1400` while total hand delta was
+  `-19012`. Actual gated flop/preflop free-action raises were positive in this
+  trace, but blocked preflop and turn raise candidates were strongly negative.
+- `v023` advisor analysis, 2 ordinary games vs `claude_v279`:
+  `final_changed=5/269`, all `to_raise`. Paired 4-pair result:
+  deltas `[-119, 1734, 28, -1351]`, median `-45.5`, mean `+36.5 chips/70`,
+  95 percent CI `[-585.0, +658.0]`. Allowing flop resize did not improve v022.
+- Current status: v022 is the best scale-up candidate so far by median/trace,
+  but still not a statistically clear edge. The next useful step is not more
+  gate widening; it is a real value/advantage target that can separate positive
+  neural raises from outlier-driven match results.

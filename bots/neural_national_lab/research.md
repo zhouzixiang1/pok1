@@ -104,6 +104,18 @@ Practical takeaways for this repo:
   tens of thousands of rows with held-out paired validation. The runtime should
   remain small and protocol-safe: train larger value/advantage models offline,
   then distill or export compact weights for the national-native bot.
+- The sharded h96 run confirms the split: CUDA/mini-batch training is useful
+  offline, but the national bot should still load compact JSON weights and use
+  sanitizer-owned action conversion at runtime.
+- v022 trace showed the actual narrow-gate neural raises were positive, while
+  the full match score still had large outliers. This means aggregate
+  outcome-weighting is too noisy as the only target. The next trainer should
+  predict local action advantage or value deltas so the model can learn which
+  raises are causally good instead of inheriting whole-hand variance.
+- Recent CFR work points in the same direction: keep explicit legal-action
+  search/control around the model, and use neural networks for batched value or
+  advantage approximation. Directly increasing the policy classifier or asking
+  an LLM during play does not address the credit-assignment problem.
 
 ## Scale-Up Gate
 
