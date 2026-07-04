@@ -510,6 +510,31 @@ blind ranges; add or use a cheaper action-divergence prefilter to find seeds
 where v043 and v052 actually choose different actions, then run full delta
 labeling only on those hits.
 
+`action_divergence_prefilter.py` is that cheaper prefilter. It synchronously
+replays baseline and candidate only until our first action differs, then stops
+without computing final paired chip deltas. Use it to find candidate seed hits,
+then feed those hit indices into `active_divergence_scan.py` for full delta
+labels:
+
+```bash
+python bots/neural_national_lab/tools/action_divergence_prefilter.py \
+  --baseline bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050 \
+  --candidate bots/neural_national_lab/versions/v052_v254_cf_value_veto_mix_p063_h32_bm050 \
+  --opponent bots/claude_v279 \
+  --games 64 \
+  --workers 8 \
+  --stop-after-hits 16 \
+  --stop-pair-after-first-side \
+  --seed-base 2026072400 \
+  --bot-seed-base 202611240000 \
+  --output bots/neural_national_lab/data/action_prefilter_v043_v052_vs_v279_seed2026072400.json
+```
+
+A target-1 smoke on the known pair21/pair48 range submitted one task, skipped
+one, and found pair21's mirror-side divergence after only 8 compared own
+decisions on that side. This confirms the prefilter is suitable for locating
+decision-changing seeds before paying for full match-delta labels.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass
