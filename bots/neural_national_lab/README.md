@@ -498,6 +498,18 @@ across `claude_v279`, `claude_v283`, and `claude_v284`, then train a local
 value head or nearest-neighbor veto and evaluate it with
 `multi_opponent_paired_evaluate.py`.
 
+The first cross-opponent expansion shows why this must be active rather than
+blind. Replaying the same pair indices (`21/29/38/48`) against `claude_v283`
+and `claude_v284` produced only one extra divergence row, `claude_v283` pair21,
+and its paired delta was exactly zero. The merged dataset
+`divergence_value_v043_v052_crossopponent_p005_seed2026071503.jsonl` therefore
+has only 5 rows: 2 positive, 1 zero, and 2 negative. A fresh `claude_v279`
+search over 8 new seeded pairs (`seed_base=2026072300`) found no divergences at
+all. The next scale step should not spend full match-delta scans on broad
+blind ranges; add or use a cheaper action-divergence prefilter to find seeds
+where v043 and v052 actually choose different actions, then run full delta
+labeling only on those hits.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass
