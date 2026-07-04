@@ -1132,18 +1132,14 @@ def test_checkpoint_recovery_diagnostics_blocks_verified_branch_alias(tmp_path, 
     assert "repo_not_on_evolution_branch" in diag["issues"]
 
 
-def test_checkpoint_recovery_diagnostics_allows_main_resume_from_alias_after_external_head_advance(
+def test_checkpoint_recovery_diagnostics_allows_main_resume_from_alias_after_ancestor_head_advance(
     tmp_path,
     monkeypatch,
 ):
     import pipeline_recovery
 
     monkeypatch.setenv("POK_FORCE_PIPELINE_RECOVERY_GUARD", "1")
-    monkeypatch.setattr(
-        pipeline_recovery,
-        "changed_paths_between_heads",
-        lambda *_args: ["bots/neural_national_lab/data/run.json"],
-    )
+    monkeypatch.setattr(pipeline_recovery, "_head_is_ancestor", lambda *_args: True)
     (tmp_path / "bots" / "claude_v281").mkdir(parents=True)
     checkpoint = {
         "next_v": 281,
@@ -1166,21 +1162,17 @@ def test_checkpoint_recovery_diagnostics_allows_main_resume_from_alias_after_ext
     assert "repo_baseline_head_mismatch_gate_resume" in diag["warnings"]
     assert diag["repo"]["baseline_branch_alias_allowed"] is True
     assert diag["repo"]["baseline_head_mismatch_allowed"] is True
-    assert diag["repo"]["baseline_branch_alias_reason"] == "main_resume_external_head_drift"
+    assert diag["repo"]["baseline_branch_alias_reason"] == "main_resume_ancestor_head_drift"
 
 
-def test_checkpoint_recovery_diagnostics_blocks_main_resume_from_alias_after_critical_head_advance(
+def test_checkpoint_recovery_diagnostics_blocks_main_resume_from_alias_after_non_ancestor_head_advance(
     tmp_path,
     monkeypatch,
 ):
     import pipeline_recovery
 
     monkeypatch.setenv("POK_FORCE_PIPELINE_RECOVERY_GUARD", "1")
-    monkeypatch.setattr(
-        pipeline_recovery,
-        "changed_paths_between_heads",
-        lambda *_args: ["web/core/orchestrator.py"],
-    )
+    monkeypatch.setattr(pipeline_recovery, "_head_is_ancestor", lambda *_args: False)
     (tmp_path / "bots" / "claude_v281").mkdir(parents=True)
     checkpoint = {
         "next_v": 281,
@@ -1199,7 +1191,7 @@ def test_checkpoint_recovery_diagnostics_blocks_main_resume_from_alias_after_cri
     assert diag["recoverable"] is False
     assert "repo_baseline_branch_mismatch" in diag["issues"]
     assert "repo_baseline_head_mismatch" in diag["issues"]
-    assert diag["repo"]["head_blocking_entries"] == ["?? web/core/orchestrator.py"]
+    assert diag["repo"]["baseline_branch_alias_reason"] == "non_ancestor_head_drift"
 
 
 def test_checkpoint_recovery_diagnostics_allows_master_planned_head_mismatch(tmp_path):
