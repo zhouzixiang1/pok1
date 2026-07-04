@@ -601,6 +601,41 @@ Generate or replay neighborhoods around the known hit contexts, then run
 `active_divergence_scan.py` only on the candidates that actually reproduce a
 decision-changing state.
 
+That targeted path now has a first working loop. `template_neighborhood_prefilter.py`
+loads template hits, reconstructs the exact seeded side deck, mutates one
+hole/flop card at a time within a rank-neighborhood, and reuses the template
+scan to keep only variants that still reproduce `raise 101 -> 0`. On the
+known pair21/pair48 contexts it generated 103 variants before early stop and
+found 33 hits, a 33 percent hit rate versus zero hits in the prior blind
+64-seed search. `label_neighborhood_divergences.py` then full-labeled all 33
+hits as active-scan-compatible rows: pair21 contributed 14 negative examples
+at `-3243`, while pair48 contributed 19 positive examples at `+1727`.
+
+The 48-dimension divergence feature dataset
+`divergence_value_v043_v052_neighborhood_p044_seed2026071503_2026072500.jsonl`
+has 44 rows: 24 positive, 2 zero, and 18 negative. That file is useful for
+offline analysis, but it is not directly runtime-compatible with the current
+value veto, whose feature contract is the 70-dimension `_advantage_features`
+shape. `build_runtime_value_data_from_divergence.py` fixes that gap by loading
+the bot's neural policy, recomputing the actual top label/confidence, and
+training on `baseline_minus_candidate` value for the neural action. Merging
+the 33 runtime neighborhood rows with the earlier 63 matchscope rows produced
+`runtime_value_v043_v052_mix_p096_seed2026071503_2026072500.jsonl`.
+
+`v053_v254_cf_neighborhood_value_veto_p096_h32_b050` is the first runtime bot
+from that loop. It is a v052 copy with only `value_veto_weights.json` replaced
+by the CUDA-trained h32 p096 value model (`val_sign_acc=0.75`,
+`val_mae=0.51`). Targeted replay against `claude_v279` fixed the known bad
+pair21 path (`v043` vs `v053` had no divergence) while preserving the known
+good pair48 veto (`+1727`). A fresh 32-pair common-deck smoke against
+`claude_v279` was positive but not significant: `+73.48` chips per 70 hands,
+95 percent CI `[-65.91, 212.88]`, median `0`, with only two nonzero deltas
+(`+4554`, `+149`). This is meaningful progress from blind sparse sampling to a
+runtime-compatible local repair, but it is not a clear promotion. The next
+step is multi-opponent and larger-seed validation of v053, plus collecting
+more runtime-feature neighborhoods so the model is not dominated by two source
+contexts.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass
