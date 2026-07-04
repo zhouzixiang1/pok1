@@ -1119,6 +1119,19 @@ wc -l bots/claude_v234/strategy.py
     ).startswith("rm:")
     scoped_strategy = project_root / "bots" / "claude_v234" / "strategy.py"
     file_scope = {"files": [str(scoped_strategy)]}
+    python_open_allowed = (
+        f"python3 -c \"lines = open('{scoped_strategy}').readlines()\\n"
+        f"with open('{scoped_strategy}', 'w') as f:\\n"
+        "    f.writelines(lines)\""
+    )
+    python_open_relative_allowed = (
+        "cd bots/claude_v234 && "
+        "python3 -c \"with open('strategy.py', 'w') as f: f.write('x')\""
+    )
+    python_open_other_file = (
+        f"python3 -c \"with open('{project_root / 'bots' / 'claude_v234' / 'opponent.py'}', 'w') as f: "
+        "f.write('x')\""
+    )
     assert llm_query._subagent_is_outside_allowed(
         str(scoped_strategy),
         file_scope,
@@ -1143,6 +1156,18 @@ wc -l bots/claude_v234/strategy.py
         "cd bots/claude_v234 && sed -i 's/a/b/' strategy.py",
         file_scope,
     ) is None
+    assert llm_query._subagent_bash_write_scope_violation(
+        python_open_allowed,
+        file_scope,
+    ) is None
+    assert llm_query._subagent_bash_write_scope_violation(
+        python_open_relative_allowed,
+        file_scope,
+    ) is None
+    assert llm_query._subagent_bash_write_scope_violation(
+        python_open_other_file,
+        file_scope,
+    ).startswith("python_open_write:")
     assert llm_query._subagent_bash_write_scope_violation(
         "echo x > bots/claude_v234/notes.txt",
         file_scope,
