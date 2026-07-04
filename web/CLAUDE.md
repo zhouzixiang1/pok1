@@ -159,7 +159,7 @@ Do not revert, reset, restore, or checkout unrelated changes unless the user exp
 `web/` 改代码规范：
 
 - 先确认变更属于 Web 进化系统、FastAPI 后端、React 前端、还是国赛 adapter 边界；不要把本地 JSON battle 和 TCP 协议混成一个输出协议。
-- 改代码前先从 `main` 开任务分支，默认命名 `codex/<task-name>`；在分支内完成修改和提交，再切回 `main` 合并并 push。
+- 改代码前先从 `main` 开任务分支，默认命名 `codex/<task-name>`；在分支内完成修改和提交，再切回 `main` 合并、push，然后删除该任务分支。任务分支只用于隔离开发，合并后即失去意义，不要长期保留已合并的 `codex/*` 分支。
 - 只改当前任务需要的文件，不顺手重构、不统一无关风格、不碰运行产物。
 - 进化逻辑变更要同步检查 Python 工具、prompt、quality gates 和测试，避免 LLM 继续按旧规则生成代码。
 - 涉及国赛兼容时，必须保持 evolved bot 的 JSON stdout 协议，并通过 `sever/bot_adapter.py` 对接 TCP。
@@ -180,6 +180,7 @@ git commit -m "<descriptive message>"
 git switch main
 git merge --no-ff codex/<task-name>
 git push
+git branch -d codex/<task-name>   # 合并并推送后删除任务分支，已合并分支用 -d 安全删除
 ```
 
 If the repository is dirty before the task, mention that in the final response and avoid mixing unrelated files into the commit. If commit or push fails because of credentials, remote state, hooks, or network problems, report the exact failure and leave the worktree otherwise intact.

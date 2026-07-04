@@ -387,7 +387,7 @@ Do not revert, reset, restore, or checkout unrelated changes unless the user exp
 本仓库改代码规范：
 
 - 先确认模块边界再改代码：`engine/` 是本地 JSON battle，`web/` 是进化系统，`sever/` 是国赛 TCP 平台，`rl/` 是实验；不要把协议和职责混在一起。
-- 改代码前先从 `main` 开任务分支，默认命名 `codex/<task-name>`；在分支内完成修改和提交，再切回 `main` 合并并 push。
+- 改代码前先从 `main` 开任务分支，默认命名 `codex/<task-name>`；在分支内完成修改和提交，再切回 `main` 合并、push，然后删除该任务分支。任务分支只用于隔离开发，合并后即失去意义，不要长期保留已合并的 `codex/*` 分支。
 - 只改当前任务需要的文件，不顺手重构、不统一无关风格、不碰运行产物。
 - 协议、adapter、THP、card mapping、质量门、进化提示词等边界变更必须配套测试或至少明确的冒烟验证。
 - Web 进化相关变更要同时检查 Python 逻辑、prompt 文档、quality gates，避免旧提示词继续生成旧行为。
@@ -410,6 +410,7 @@ git commit -m "<descriptive message>"
 git switch main
 git merge --no-ff codex/<task-name>
 git push
+git branch -d codex/<task-name>   # 合并并推送后删除任务分支，已合并分支用 -d 安全删除
 ```
 
 If the repository is dirty before the task, mention that in the final response and avoid mixing unrelated files into the commit. If commit or push fails because of credentials, remote state, hooks, or network problems, report the exact failure and leave the worktree otherwise intact.
