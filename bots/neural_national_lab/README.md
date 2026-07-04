@@ -245,9 +245,16 @@ common-deck mirror pairs against `claude_v279`, v043 was `+971.44` chips per
 70 hands versus v025 with 95 percent CI `[-376.65, 2319.52]`. That is a
 stronger signal than v040/v041, but still not statistically clear because the
 interval crosses zero and one very large positive pair contributes heavily.
-The next scale step should extend this exact paired run to at least 64 pairs
-using resumable multi-worker evaluation, then inspect the remaining negative
-outliers before increasing model size.
+The 64-pair multi-worker rerun confirmed that caution: v043 dropped to
+`+221.27` chips per 70 hands versus v025 with 95 percent CI
+`[-350.43, 792.97]` and a `30/8/26` positive/zero/negative split. Against v040
+on the same 64 seeds, v043 was only `+173.95` chips per 70 hands with 95
+percent CI `[-128.07, 475.98]`; 53 of 64 pairs were identical. The largest
+v025-relative negative outliers were pair18 (`-20407` raw), pair23 (`-11119`),
+and pair47 (`-6790`). Exact bot-RNG trace files for those outliers show actual
+neural raises in the bad paths, but v043 is not a promotion candidate. The next
+experiment should convert those exact trace contexts into match-scope
+interaction rows and require better robustness before increasing model size.
 
 Recent literature and open-source scans point to the next useful local
 direction:
