@@ -146,6 +146,15 @@ def _probe_cmd(args: argparse.Namespace, shard_idx: int, shard_output: Path) -> 
         "--output",
         str(shard_output),
     ]
+    if args.bot_seed_base is not None:
+        cmd.extend(
+            [
+                "--bot-seed-base",
+                str(args.bot_seed_base + shard_idx * args.games_per_shard * args.bot_seed_stride * 2),
+                "--bot-seed-stride",
+                str(args.bot_seed_stride),
+            ]
+        )
     if args.min_conf > 0:
         cmd.extend(["--min-conf", str(args.min_conf)])
     if args.no_mirror:
@@ -257,6 +266,8 @@ def main() -> None:
     parser.add_argument("--seed-base", type=int, default=20260704)
     parser.add_argument("--seed-offset", type=int, default=0)
     parser.add_argument("--seed-stride", type=int, default=1)
+    parser.add_argument("--bot-seed-base", type=int)
+    parser.add_argument("--bot-seed-stride", type=int, default=10000)
     parser.add_argument("--max-hands", type=int, default=70)
     parser.add_argument("--shard-timeout-sec", type=int, default=0)
     parser.add_argument("--rerun-existing", action="store_true")
@@ -279,6 +290,8 @@ def main() -> None:
         "seed_base": args.seed_base,
         "seed_offset": args.seed_offset,
         "seed_stride": args.seed_stride,
+        "bot_seed_base": args.bot_seed_base,
+        "bot_seed_stride": args.bot_seed_stride,
         "filters": {
             "kind": args.kind,
             "stage": args.stage,

@@ -61,6 +61,7 @@ python bots/neural_national_lab/tools/counterfactual_shard_runner.py \
   --stage flop \
   --kind to_raise \
   --seed-base 20260704 \
+  --bot-seed-base 202607040000 \
   --output bots/neural_national_lab/data/counterfactual_v022_flop_seeded_shards.json
 ```
 
@@ -68,7 +69,10 @@ The shard runner writes per-shard JSON files next to the merged output, so a
 negative bucket or suspicious outlier can be replayed with the same seed range.
 Existing shard files are reused by default; pass `--rerun-existing` when the
 probe code or filters changed and the shards should be regenerated. Increase
-`--workers` to run independent shard subprocesses in parallel.
+`--workers` to run independent shard subprocesses in parallel. Pass
+`--bot-seed-base` when either bot uses process-local randomness; the probe
+runner seeds the scanned match and gives each baseline/candidate forced branch
+the same branch-local bot RNG seeds, so action-value labels are replayable.
 The first seeded smoke run (`seed_base=2026070401`, 2 shards, 4 total probes)
 found flop `to_raise` mean primary delta `-64.25` with a very wide confidence
 interval. Treat that as a warning against shipping or training from optimistic
@@ -122,6 +126,13 @@ neutral versus v022: `+95.09` chips per 70 hands, 95 percent CI
 `[-701.02, 891.21]`, median paired delta `0`, with 11 positive, 11 zero, and
 10 negative samples. Do not spend the next scale step on more v025 threshold
 tuning; move to better action-value targets.
+
+The counterfactual target generator now also supports deck plus bot RNG seeds.
+A v025 flop `to_raise` smoke (`seed_base=2026070900`,
+`bot_seed_base=202607090000`, 2 probes) reran byte-identical and wrote scan
+`bot_seeds` plus per-probe `branch_bot_seeds`. This is the minimum data
+contract before larger sampling: expand probes only from reproducible
+action-value labels, not from unseeded trace outliers.
 
 `versions/v026_v254_flop_low_raise_h96_254` narrows v025 to the only bucket
 covered by the p120 counterfactual evidence: low-size flop free-action raises.
