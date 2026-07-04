@@ -194,6 +194,22 @@ def _optional_gate_score(neural_mod, model_func: str, features: list[float] | No
         return None
 
 
+def _optional_interaction_scores(neural_mod, features: list[float] | None) -> list[float] | None:
+    if neural_mod is None or features is None:
+        return None
+    try:
+        load_models = getattr(neural_mod, "_interaction_models", None)
+        predict = getattr(neural_mod, "_predict_advantage", None)
+        if load_models is None or predict is None:
+            return None
+        models = load_models()
+        if not models:
+            return None
+        return [float(predict(model, features)) for model in models]
+    except Exception:
+        return None
+
+
 def _hand_deltas(log: list[dict[str, Any]]) -> dict[int, float]:
     deltas: dict[int, float] = {}
     for row in log:
@@ -282,6 +298,13 @@ def _analyze_log(
         )
         advantage_score = _optional_gate_score(neural_mod, "_advantage_model", advantage_features)
         interaction_score = _optional_gate_score(neural_mod, "_interaction_model", advantage_features)
+        interaction_scores = _optional_interaction_scores(neural_mod, advantage_features)
+        interaction_mean_score = (
+            sum(interaction_scores) / len(interaction_scores)
+            if interaction_scores
+            else None
+        )
+        interaction_min_score = min(interaction_scores) if interaction_scores else None
         if (
             top_name is not None
             and float(top_conf) >= candidate_conf
@@ -307,6 +330,9 @@ def _analyze_log(
                     "call_conf": float(probs[1]) if probs is not None and len(probs) > 1 else None,
                     "advantage_score": advantage_score,
                     "interaction_score": interaction_score,
+                    "interaction_scores": interaction_scores,
+                    "interaction_mean_score": interaction_mean_score,
+                    "interaction_min_score": interaction_min_score,
                     "advantage_features": advantage_features,
                 }
             )
@@ -339,6 +365,9 @@ def _analyze_log(
                 "call_conf": float(probs[1]) if probs is not None and len(probs) > 1 else None,
                 "advantage_score": advantage_score,
                 "interaction_score": interaction_score,
+                "interaction_scores": interaction_scores,
+                "interaction_mean_score": interaction_mean_score,
+                "interaction_min_score": interaction_min_score,
                 "advantage_features": advantage_features,
             }
         )

@@ -194,6 +194,74 @@ unchanged. This means grouped labels should probably become a separate
 interaction-veto head, not more examples inside the same single-action
 advantage classifier.
 
+`v038` and `v039` implemented that separate interaction-veto head. They used
+the p260 grouped model after the main p257 advantage gate, with `v039` adding
+an interaction confidence floor so lower-confidence useful repairs could skip
+the second gate. This fixed the pair03 disaster (`v034` was `-5699` raw chips
+versus v025 on the targeted pair; `v039` was `-227`) but exposed a new pair11
+path failure (`v039` was `-19119` raw). The parallel trace tool now exports the
+70-dimension advantage feature vector plus both gate scores for every candidate
+and actual intervention, so these failures can become direct training rows
+instead of hand-written threshold rules.
+
+`v040_v254_cf_trace_veto_p266_h32_t070` trained an interaction-veto model on
+the p260 rows plus six trace-supervised rows: the three pair03 `v034` raises as
+negative examples, the two pair11 `v034` repairs as positives, and the pair11
+`v039` mirror hand55 raise as a negative. It repaired the exact pair11 collapse
+from `-19119` raw to `-14` raw while preserving the pair03 fix (`-227` raw).
+Over 16 deterministic common-deck mirror pairs against `claude_v279`, v040 was
+`+344.56` chips per 70 hands versus v025 with 95 percent CI
+`[-348.15, 1037.28]`. This is a real repair and a better candidate than v039,
+but still not a statistically clear successor.
+
+`v041_v254_cf_ensemble_veto_p266_h32_m070_min040` tested a four-seed
+interaction ensemble. High-confidence actions had to pass both mean score
+`>=0.70` and member minimum `>=0.40`; lower-confidence actions still used the
+v040 bypass. The ensemble repaired one small negative 16-pair sample
+(`pair5: -185 -> +6` raw delta) but introduced a matching small regression
+(`pair15: 0 -> -200` raw delta). Its 16-pair result was effectively unchanged
+from v040: `+344.31` chips per 70 hands, 95 percent CI
+`[-348.48, 1037.05]`.
+
+`v042_v254_cf_ensemble_veto_p266_h32_m063_min050` tried to resolve that
+pair5/pair15 boundary by lowering the mean threshold to `0.63` and raising the
+member minimum to `0.50`. It preserved pair03 and pair5 and restored pair15,
+but broke pair11 (`17542 -> -3594` raw trace result). This confirms the current
+feature set is under-specified around high-confidence mirror raises: tiny
+threshold movements can flip different seeds in opposite directions. Do not
+scale this ensemble threshold family further without adding better context
+features or a branch-level value target for mirror-side high-confidence raises.
+
+Recent literature and open-source scans point to the next useful local
+direction:
+
+- Deep CFR and Single Deep CFR use neural approximators for cumulative
+  counterfactual regrets/strategies rather than a one-shot policy classifier.
+  Full adoption would require a dedicated traversal environment, but the
+  immediate lesson is to train on replayable counterfactual advantages and to
+  keep action-value targets separate from policy imitation.
+- DeepStack and ReBeL both combine neural value estimates with search or
+  re-solving at decision time. A full public-belief-state search is outside the
+  current compact runtime, but the local analogue is a cheap value/veto head
+  that only allows a neural action when the value evidence is robust.
+- Pluribus showed that large off-tree search can be reduced by distilling into
+  compact runtime policies. For this repo, any heavier PyTorch/GPU experiment
+  should still distill back into JSON weights and stdlib-only runtime code.
+- Robust Deep MCCFR-style work highlights variance, non-stationary labels, and
+  action-support collapse as practical failure modes. The next experiment
+  should therefore test seed ensembles or variance-aware gates before scaling a
+  single p266 classifier.
+
+References used for this direction include Deep CFR
+(`https://arxiv.org/abs/1811.00164`), DeepStack
+(`https://arxiv.org/abs/1701.01724`), ReBeL
+(`https://arxiv.org/abs/2007.13544`), Pluribus
+(`https://www.science.org/doi/10.1126/science.aay2400`), and the open-source
+Deep-CFR/PokerRL/ReBeL implementations
+(`https://github.com/EricSteinberger/Deep-CFR`,
+`https://github.com/EricSteinberger/PokerRL`,
+`https://github.com/facebookresearch/REBEL`).
+
 This machine has 32 CPU threads, so deterministic paired evaluation and
 counterfactual shards can use `--workers 12` to `--workers 16` for practical
 speedups. Avoid blindly using all 32 workers: each worker launches multiple bot
