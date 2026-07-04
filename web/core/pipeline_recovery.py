@@ -40,6 +40,7 @@ HEAD_DRIFT_POST_QUALITY_STAGES = {
     "verified",
 }
 HEAD_DRIFT_GATE_STAGES = {
+    "master_planned",
     "workers_done",
 }
 HEAD_DRIFT_RESUME_STAGES = (
@@ -139,6 +140,8 @@ def checkpoint_recovery_diagnostics(
         if can_resume:
             if stage in HEAD_DRIFT_REPAIR_STAGES:
                 warnings.append("repo_baseline_head_mismatch_repair_resume")
+            elif stage == "master_planned":
+                warnings.append("repo_baseline_head_mismatch_initial_workers_resume")
             elif stage in HEAD_DRIFT_GATE_STAGES:
                 warnings.append("repo_baseline_head_mismatch_gate_resume")
             else:

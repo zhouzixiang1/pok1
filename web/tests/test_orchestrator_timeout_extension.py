@@ -653,6 +653,57 @@ def test_actionable_recovery_deterministically_calls_execute_workers(monkeypatch
     assert stage in ui.events[0][1]
 
 
+def test_master_planned_deterministic_route_clears_stale_session(monkeypatch):
+    """A saved LLM session at master_planned must not resume into free-form Bash."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import orchestrator
+
+    cleared = []
+    fake_execute = SimpleNamespace(
+        handler=AsyncMock(
+            return_value={
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({"success": True}),
+                }]
+            }
+        )
+    )
+    monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: "stale-session-id")
+    monkeypatch.setattr(orchestrator, "_clear_orchestrator_session", lambda reason="": cleared.append(reason))
+    monkeypatch.setattr(orchestrator, "log_system_event", lambda *a, **kw: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "pipeline_state",
+        SimpleNamespace(route_policy=lambda _ckpt: {"next_tool": "execute_workers"}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_planning",
+        SimpleNamespace(execute_workers=fake_execute),
+    )
+
+    recovery = {
+        "action": "resume",
+        "checkpoint": {
+            "stage": "master_planned",
+            "next_v": 280,
+            "source_v": 279,
+            "master_plan": {"tasks": [{"worker_id": "w1", "target_files": ["strategy.py"]}]},
+        },
+    }
+
+    handled = asyncio.new_event_loop().run_until_complete(
+        orchestrator._try_deterministic_checkpoint_route(recovery, _FakeUI())
+    )
+
+    assert handled is True
+    assert cleared == ["deterministic_master_planned_route"]
+    fake_execute.handler.assert_awaited_once_with({"next_v": 280, "source_v": 279})
+
+
 def test_deterministic_route_abandons_after_worker_circuit_breaker(monkeypatch):
     """Worker circuit breaker must not loop repair_planned back into execute_workers."""
     from types import SimpleNamespace
