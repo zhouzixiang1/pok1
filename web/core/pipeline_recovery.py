@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from evolution_infra import EVOLUTION_BRANCH, PROJECT_ROOT
-from evolution_scope import classify_status_entries
+from evolution_scope import changed_paths_between_heads, classify_paths, classify_status_entries
 from repo_state import git_worktree_snapshot
 
 INACTIVE_STAGES = {None, "archived", "abandoned", "timed_out"}
@@ -113,6 +113,48 @@ def _current_branch_alias_resume_allowed(
         and target_available
         and not blocking_entries
     )
+
+
+def _current_branch_unrelated_head_resume_allowed(
+    *,
+    root: Path,
+    stage: str | None,
+    next_v: int | None,
+    current_branch: str,
+    current_head: str,
+    baseline_head: str,
+    target_available: bool,
+    blocking_entries: list[str],
+) -> tuple[bool, dict[str, Any]]:
+    """Allow checkpoint recovery on a temporary branch with unrelated HEAD drift."""
+    if not (
+        stage in HEAD_DRIFT_RESUME_STAGES
+        and stage != "verified"
+        and current_branch
+        and current_branch != EVOLUTION_BRANCH
+        and current_head
+        and baseline_head
+        and current_head != baseline_head
+        and target_available
+        and not blocking_entries
+    ):
+        return False, {}
+    changed_paths = changed_paths_between_heads(root, baseline_head, current_head)
+    if changed_paths is None:
+        return False, {"current_branch_head_paths_available": False}
+    path_scope = classify_paths(changed_paths, next_v)
+    blocking = list(path_scope.get("blocking_entries") or [])
+    candidate_entries = list(path_scope.get("candidate_entries") or [])
+    payload = {
+        "current_branch_head_paths_available": True,
+        "current_branch_head_changed_paths": changed_paths[:80],
+        "current_branch_head_blocking_entries": blocking[:40],
+        "current_branch_head_candidate_entries": candidate_entries[:40],
+        "current_branch_head_ignored_entries": (path_scope.get("ignored_entries") or [])[:40],
+    }
+    if blocking or candidate_entries:
+        return False, payload
+    return True, payload
 
 
 def _head_is_ancestor(root: Path, ancestor_head: str, descendant_head: str) -> bool:
@@ -243,6 +285,23 @@ def checkpoint_recovery_diagnostics(
     if current_branch_alias_allowed:
         warnings.append("repo_current_branch_alias_resume")
         repo_diag["current_branch_alias_allowed"] = True
+    current_branch_unrelated_head_allowed, current_branch_unrelated_head_diag = (
+        _current_branch_unrelated_head_resume_allowed(
+            root=root,
+            stage=stage,
+            next_v=next_v,
+            current_branch=current_branch,
+            current_head=current_head,
+            baseline_head=baseline_head,
+            target_available=target_available,
+            blocking_entries=blocking_entries,
+        )
+    )
+    if current_branch_unrelated_head_allowed:
+        warnings.append("repo_current_branch_unrelated_head_resume")
+        repo_diag["current_branch_unrelated_head_allowed"] = True
+    if current_branch_unrelated_head_diag:
+        repo_diag.update(current_branch_unrelated_head_diag)
     baseline_branch_alias_allowed, baseline_branch_alias_diag = _baseline_branch_alias_resume_allowed(
         root=root,
         stage=stage,
@@ -266,6 +325,7 @@ def checkpoint_recovery_diagnostics(
         and current_branch
         and current_branch != EVOLUTION_BRANCH
         and not current_branch_alias_allowed
+        and not current_branch_unrelated_head_allowed
     ):
         issues.append("repo_not_on_evolution_branch")
     if (
@@ -273,6 +333,7 @@ def checkpoint_recovery_diagnostics(
         and current_branch
         and baseline_branch != current_branch
         and not baseline_branch_alias_allowed
+        and not current_branch_unrelated_head_allowed
     ):
         issues.append("repo_baseline_branch_mismatch")
     if baseline_head and current_head and baseline_head != current_head:
@@ -280,7 +341,7 @@ def checkpoint_recovery_diagnostics(
         branch_compatible = (
             current_branch == EVOLUTION_BRANCH
             and (not baseline_branch or baseline_branch == current_branch or baseline_branch_alias_allowed)
-        )
+        ) or current_branch_unrelated_head_allowed
         can_resume = (
             stage in HEAD_DRIFT_RESUME_STAGES
             and branch_compatible
