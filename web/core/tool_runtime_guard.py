@@ -38,7 +38,7 @@ _HEAD_DRIFT_TOOL_BY_STAGE = {
     "precommit_failed": {"execute_workers"},
     "repair_planned": {"execute_workers"},
     "rework_running": {"execute_workers"},
-    "quality_passed": {"run_review"},
+    "quality_passed": {"run_review", "execute_workers"},
     "reviewed": {"run_critic"},
     "critic_checked": {"run_precommit_eval"},
     "verified": {"commit_bot"},

@@ -868,6 +868,36 @@ def test_runtime_guard_allows_review_after_post_quality_head_drift(monkeypatch):
     assert payload["current_head"] == "new456"
 
 
+def test_runtime_guard_allows_review_repair_workers_after_post_quality_head_drift(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshots = iter([
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+    ])
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
+        "next_v": 300,
+        "source_v": 299,
+        "stage": "quality_passed",
+        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "quality_passed"},
+    })
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "execute_workers",
+        {"version": 300, "source_v": 299},
+    )
+
+    assert ok is True
+    assert payload["head_drift_resume_allowed"] is True
+    assert payload["head_drift_repair_allowed"] is False
+    assert payload["resume_kind"] == "post_quality"
+    assert payload["baseline_head"] == "old123"
+    assert payload["current_head"] == "new456"
+
+
 def test_runtime_guard_allows_commit_after_verified_head_drift(monkeypatch):
     import tool_runtime_guard
 
