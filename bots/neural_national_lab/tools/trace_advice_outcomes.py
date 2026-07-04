@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import copy
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import io
 import json
 import random
@@ -33,6 +34,7 @@ if str(ENGINE) not in sys.path:
     sys.path.insert(0, str(ENGINE))
 
 from analyze_advice import _classify_change, _load_bot, _neural_probs  # noqa: E402
+from counterfactual_rollout_probe import _advantage_features  # noqa: E402
 from engine.battle import _PersistentBot, _call_bot  # noqa: E402
 from judge import judge as judge_func  # noqa: E402
 from seeded_process import SeededPersistentBot, match_bot_seeds  # noqa: E402
@@ -176,6 +178,22 @@ def _final_label(action: int) -> str:
     return "raise"
 
 
+def _optional_gate_score(neural_mod, model_func: str, features: list[float] | None) -> float | None:
+    if neural_mod is None or features is None:
+        return None
+    try:
+        load_model = getattr(neural_mod, model_func, None)
+        predict = getattr(neural_mod, "_predict_advantage", None)
+        if load_model is None or predict is None:
+            return None
+        model = load_model()
+        if model is None:
+            return None
+        return float(predict(model, features))
+    except Exception:
+        return None
+
+
 def _hand_deltas(log: list[dict[str, Any]]) -> dict[int, float]:
     deltas: dict[int, float] = {}
     for row in log:
@@ -254,6 +272,16 @@ def _analyze_log(
             if neural_mod is not None and top_label is not None
             else None
         )
+        advantage_features = _advantage_features(
+            req,
+            state,
+            int(rule_action),
+            int(top_label) if top_label is not None else None,
+            float(top_conf),
+            probs,
+        )
+        advantage_score = _optional_gate_score(neural_mod, "_advantage_model", advantage_features)
+        interaction_score = _optional_gate_score(neural_mod, "_interaction_model", advantage_features)
         if (
             top_name is not None
             and float(top_conf) >= candidate_conf
@@ -277,6 +305,9 @@ def _analyze_log(
                     "top_label": top_name,
                     "top_conf": float(top_conf),
                     "call_conf": float(probs[1]) if probs is not None and len(probs) > 1 else None,
+                    "advantage_score": advantage_score,
+                    "interaction_score": interaction_score,
+                    "advantage_features": advantage_features,
                 }
             )
 
@@ -306,6 +337,9 @@ def _analyze_log(
                 "top_label": top_name,
                 "top_conf": float(top_conf),
                 "call_conf": float(probs[1]) if probs is not None and len(probs) > 1 else None,
+                "advantage_score": advantage_score,
+                "interaction_score": interaction_score,
+                "advantage_features": advantage_features,
             }
         )
 
@@ -357,6 +391,48 @@ def _group_candidates(candidates: list[dict[str, Any]]) -> dict[str, dict[str, A
     return dict(sorted(out.items(), key=lambda item: (item[1]["sum_hand_delta"], item[0])))
 
 
+def _trace_pair(
+    idx: int,
+    args: argparse.Namespace,
+    version_dir: Path,
+    version_main: Path,
+    opponent: Path,
+) -> dict[str, Any]:
+    seed = (
+        args.seed_base + args.seed_offset + idx * args.seed_stride
+        if args.seed_base is not None
+        else None
+    )
+    initdata = _seeded_initdata(seed, args.max_hands) if seed is not None else _fresh_initdata()
+    mirror = _mirror_initdata(initdata)
+    normal_bot_seeds = match_bot_seeds(args.bot_seed_base, args.bot_seed_stride, idx, "normal")
+    mirror_bot_seeds = match_bot_seeds(args.bot_seed_base, args.bot_seed_stride, idx, "mirror")
+    row: dict[str, Any] = {
+        "idx": idx,
+        "seed": seed,
+        "dealer": initdata["dealer"],
+        "bot_seeds": {},
+        "normal": {},
+        "mirror": {},
+    }
+    if normal_bot_seeds is not None:
+        row["bot_seeds"]["normal"] = list(normal_bot_seeds)
+        row["bot_seeds"]["mirror"] = list(mirror_bot_seeds)
+    for name, deck in (("normal", initdata), ("mirror", mirror)):
+        bot_seeds = normal_bot_seeds if name == "normal" else mirror_bot_seeds
+        match = _play_match(version_main, opponent, deck, bot_seeds)
+        analysis = _analyze_log(version_dir, match["log"], seat=0, candidate_conf=args.candidate_conf)
+        row[name] = {
+            "winner": match["winner"],
+            "bot0_chips": match["bot0_chips"],
+            "bot1_chips": match["bot1_chips"],
+            "summary": analysis["summary"],
+            "changes": analysis["changes"],
+            "candidates": analysis["candidates"],
+        }
+    return row
+
+
 def _write(output: Path | None, payload: dict[str, Any]) -> None:
     if output is None:
         return
@@ -370,6 +446,7 @@ def main() -> None:
     parser.add_argument("--version", required=True)
     parser.add_argument("--opponent", required=True)
     parser.add_argument("--games", type=int, default=4)
+    parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--candidate-conf", type=float, default=0.85)
     parser.add_argument("--seed-base", type=int)
     parser.add_argument("--seed-offset", type=int, default=0)
@@ -386,6 +463,7 @@ def main() -> None:
     payload: dict[str, Any] = {
         "mode": "common_deck_advice_trace",
         "games": args.games,
+        "workers": args.workers,
         "seed_base": args.seed_base,
         "seed_offset": args.seed_offset,
         "seed_stride": args.seed_stride,
@@ -410,65 +488,57 @@ def main() -> None:
 
     all_changes: list[dict[str, Any]] = []
     all_candidates: list[dict[str, Any]] = []
-    for idx in range(args.games):
-        seed = (
-            args.seed_base + args.seed_offset + idx * args.seed_stride
-            if args.seed_base is not None
-            else None
-        )
-        initdata = _seeded_initdata(seed, args.max_hands) if seed is not None else _fresh_initdata()
-        mirror = _mirror_initdata(initdata)
-        normal_bot_seeds = match_bot_seeds(args.bot_seed_base, args.bot_seed_stride, idx, "normal")
-        mirror_bot_seeds = match_bot_seeds(args.bot_seed_base, args.bot_seed_stride, idx, "mirror")
-        row: dict[str, Any] = {
-            "idx": idx,
-            "seed": seed,
-            "dealer": initdata["dealer"],
-            "bot_seeds": {},
-            "normal": {},
-            "mirror": {},
-        }
-        if normal_bot_seeds is not None:
-            row["bot_seeds"]["normal"] = list(normal_bot_seeds)
-            row["bot_seeds"]["mirror"] = list(mirror_bot_seeds)
-        for name, deck in (("normal", initdata), ("mirror", mirror)):
-            bot_seeds = normal_bot_seeds if name == "normal" else mirror_bot_seeds
-            match = _play_match(version_main, opponent, deck, bot_seeds)
-            analysis = _analyze_log(version_dir, match["log"], seat=0, candidate_conf=args.candidate_conf)
-            row[name] = {
-                "winner": match["winner"],
-                "bot0_chips": match["bot0_chips"],
-                "bot1_chips": match["bot1_chips"],
-                "summary": analysis["summary"],
-                "changes": analysis["changes"],
-                "candidates": analysis["candidates"],
-            }
-            all_changes.extend({**change, "pair": idx, "side": name} for change in analysis["changes"])
-            all_candidates.extend(
-                {**candidate, "pair": idx, "side": name}
-                for candidate in analysis["candidates"]
-            )
-        payload["pairs"].append(row)
+    pending_rows: dict[int, dict[str, Any]] = {}
+    next_idx = 0
 
-        total = payload["total"]
-        for side in ("normal", "mirror"):
-            summary = row[side]["summary"]
-            total["decisions"] += int(summary["decisions"])
-            total["final_changed"] += int(summary["final_changed"])
-            total["counterfactual_candidates"] += int(summary["counterfactual_candidates"])
-            total["changed_hand_delta_sum"] += float(summary["changed_hand_delta_sum"])
-            total["all_hand_delta_sum"] += float(summary["all_hand_delta_sum"])
-            for key, value in (summary.get("change_types") or {}).items():
-                total["change_types"][key] = total["change_types"].get(key, 0) + int(value)
-        payload["change_groups"] = _group_changes(all_changes)
-        payload["candidate_groups"] = _group_candidates(all_candidates)
-        _write(args.output, payload)
-        print(
-            f"pair {idx + 1}/{args.games}: changes={payload['total']['final_changed']} "
-            f"candidates={payload['total']['counterfactual_candidates']} "
-            f"changed_delta={payload['total']['changed_hand_delta_sum']:.1f} "
-            f"all_delta={payload['total']['all_hand_delta_sum']:.1f}"
-        )
+    def _consume(row: dict[str, Any]) -> None:
+        nonlocal next_idx
+        pending_rows[int(row["idx"])] = row
+        while next_idx in pending_rows:
+            row = pending_rows.pop(next_idx)
+            payload["pairs"].append(row)
+            for side_name in ("normal", "mirror"):
+                all_changes.extend(
+                    {**change, "pair": int(row["idx"]), "side": side_name}
+                    for change in row[side_name]["changes"]
+                )
+                all_candidates.extend(
+                    {**candidate, "pair": int(row["idx"]), "side": side_name}
+                    for candidate in row[side_name]["candidates"]
+                )
+
+            total = payload["total"]
+            for side in ("normal", "mirror"):
+                summary = row[side]["summary"]
+                total["decisions"] += int(summary["decisions"])
+                total["final_changed"] += int(summary["final_changed"])
+                total["counterfactual_candidates"] += int(summary["counterfactual_candidates"])
+                total["changed_hand_delta_sum"] += float(summary["changed_hand_delta_sum"])
+                total["all_hand_delta_sum"] += float(summary["all_hand_delta_sum"])
+                for key, value in (summary.get("change_types") or {}).items():
+                    total["change_types"][key] = total["change_types"].get(key, 0) + int(value)
+            payload["change_groups"] = _group_changes(all_changes)
+            payload["candidate_groups"] = _group_candidates(all_candidates)
+            _write(args.output, payload)
+            print(
+                f"pair {next_idx + 1}/{args.games}: changes={payload['total']['final_changed']} "
+                f"candidates={payload['total']['counterfactual_candidates']} "
+                f"changed_delta={payload['total']['changed_hand_delta_sum']:.1f} "
+                f"all_delta={payload['total']['all_hand_delta_sum']:.1f}"
+            )
+            next_idx += 1
+
+    if args.workers <= 1:
+        for idx in range(args.games):
+            _consume(_trace_pair(idx, args, version_dir, version_main, opponent))
+    else:
+        with ProcessPoolExecutor(max_workers=max(1, args.workers)) as executor:
+            futures = {
+                executor.submit(_trace_pair, idx, args, version_dir, version_main, opponent): idx
+                for idx in range(args.games)
+            }
+            for future in as_completed(futures):
+                _consume(future.result())
 
 
 if __name__ == "__main__":
