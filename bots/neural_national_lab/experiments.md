@@ -115,6 +115,26 @@
   free-only mode. v014 tests whether the larger weighted model finds more
   free-check mistakes without taking paid-call risk.
 
+## v015_v254_flop_band_rescue254
+
+- Base: `v011_v254_wide_call_rescue254`.
+- Change: disables free check rescue and narrows paid rescue to flop-only,
+  `to_call` in `[120, 140]`, `call_conf >= 0.90`.
+- Rationale: `trace_advice_outcomes.py` found one positive v011 flop rescue
+  around `to_call=136`, while preflop/free rescue and several small flop calls
+  were negative. v015 tests whether keeping only that narrow band still creates
+  measurable activity.
+
+## v016_v254_call_fold_veto254
+
+- Base: `v011_v254_wide_call_rescue254`.
+- Change: disables call rescue and enables a high-confidence neural fold veto
+  only when the rule strategy's final action is call and `to_call` is in
+  `[100, 1200]`.
+- Rationale: counterfactual trace showed several high-confidence
+  `rule call -> neural fold` candidates on large losing hands. v016 tests that
+  veto separately from the earlier fold-to-call advisor.
+
 ## Round 1 Notes
 
 - Training data: `teacher214_round1.jsonl`, 272 teacher decisions from
@@ -279,3 +299,34 @@
   repo's heads-up engine with a small fixed action abstraction, export a pure
   JSON/NumPy-or-stdlib runtime policy, and add leak diagnostics by position,
   street, amount owed, and changed-action type before promoting any version.
+
+## Round 7 Notes
+
+- Added `trace_advice_outcomes.py`. It runs common-deck normal/mirror matches,
+  attaches neural-advisor changes to per-hand chip deltas, and records
+  high-confidence counterfactual candidates that were blocked by the runtime
+  gate. This is modeled after the Fullhouse-style leak diagnosis workflow.
+- `v011_v254_wide_call_rescue254` trace, 6 normal/mirror pairs vs
+  `claude_v279`: 7 actual `fold_to_call` changes, changed-hand delta sum
+  `-414`, while total bot0 delta was `-25387`. The actual advisor changes are
+  sparse and slightly negative; most losses are not caused by the neural layer.
+- `v011_v254_wide_call_rescue254` counterfactual trace, 4 pairs with
+  `candidate_conf >= 0.90`: 28 actual `fold_to_call` changes with changed-hand
+  delta sum `-3134`. It also exposed high-confidence `rule call -> neural fold`
+  candidates on losing hands, which motivated v016.
+- `v015_v254_flop_band_rescue254` advisor analysis and 6-pair trace: 0 final
+  changes. The narrow positive-sample band became a no-op, so no paired
+  promotion run was useful.
+- `v016_v254_call_fold_veto254` advisor analysis, 3 ordinary games vs
+  `claude_v279`: 2 final changes, both `to_fold`. Trace over 6 pairs found 8
+  vetoes, all on small losing folded hands, but paired evaluation against
+  `claude_v254` failed badly.
+- `v016_v254_call_fold_veto254` vs `claude_v254`, common-deck mirror 6 pairs
+  against `claude_v279`: paired deltas
+  `[-20035, 684, -3817, -5751, 125, -1906]`, mean `-2558.3 chips/70`,
+  95 percent CI `[-5637.0, +520.4]`. This rejects simple call-fold veto as an
+  improvement.
+- Current status: v011 is still the best neural-advisor candidate by paired
+  mean, but it is not significant. The advisor approach is producing sparse,
+  noisy, hard-to-credit interventions. The next serious attempt should move to
+  a native fixed-contract blueprint trainer rather than more threshold tuning.

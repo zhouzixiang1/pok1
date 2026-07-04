@@ -1,0 +1,5235 @@
+{
+  "mode": "common_deck_advice_trace",
+  "games": 4,
+  "version": "bots/neural_national_lab/versions/v011_v254_wide_call_rescue254/main.py",
+  "opponent": "bots/claude_v279/main.py",
+  "pairs": [
+    {
+      "idx": 0,
+      "normal": {
+        "winner": 0,
+        "bot0_chips": 5367.0,
+        "bot1_chips": -5367.0,
+        "summary": {
+          "decisions": 125,
+          "final_changed": 4,
+          "counterfactual_candidates": 19,
+          "change_types": {
+            "fold_to_call": 4
+          },
+          "changed_hand_count": 4,
+          "changed_hand_delta_sum": -501.0,
+          "all_hand_delta_sum": 5367.0
+        },
+        "changes": [
+          {
+            "decision_index": 19,
+            "hand": 11,
+            "hand_delta": -201.0,
+            "stage": "flop",
+            "public_cards": [
+              39,
+              24,
+              6
+            ],
+            "my_cards": [
+              20,
+              16
+            ],
+            "to_call": 101,
+            "pot": 301,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.9260428737410616,
+            "call_conf": 0.9260428737410616
+          },
+          {
+            "decision_index": 107,
+            "hand": 55,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              15,
+              17
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.80175201960813,
+            "call_conf": 0.80175201960813
+          },
+          {
+            "decision_index": 110,
+            "hand": 57,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              8,
+              15
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.7175288503855676,
+            "call_conf": 0.7175288503855676
+          },
+          {
+            "decision_index": 117,
+            "hand": 63,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              8,
+              4
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.8016594503461365,
+            "call_conf": 0.8016594503461365
+          }
+        ],
+        "candidates": [
+          {
+            "decision_index": 0,
+            "hand": 1,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              42,
+              45
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 101,
+            "base_final": 201,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.921689312386098,
+            "call_conf": 0.07394685898923124
+          },
+          {
+            "decision_index": 3,
+            "hand": 3,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              9,
+              25
+            ],
+            "to_call": 240,
+            "pot": 440,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "rule_label": "fold",
+            "top_label": "call",
+            "top_conf": 0.9332495249857394,
+            "call_conf": 0.9332495249857394
+          },
+          {
+            "decision_index": 8,
+            "hand": 5,
+            "hand_delta": 345.0,
+            "stage": "flop",
+            "public_cards": [
+              33,
+              0,
+              11
+            ],
+            "my_cards": [
+              7,
+              6
+            ],
+            "to_call": 0,
+            "pot": 690,
+            "my_chips": 19655,
+            "rule_action": 372,
+            "base_final": 372,
+            "rule_label": "raise",
+            "top_label": "call",
+            "top_conf": 0.987077358616214,
+            "call_conf": 0.987077358616214
+          },
+          {
+            "decision_index": 12,
+            "hand": 8,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              17,
+              50,
+              2
+            ],
+            "my_cards": [
+              36,
+              16
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 134,
+            "base_final": 134,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9608655443600942,
+            "call_conf": 0.018566431384557
+          },
+          {
+            "decision_index": 16,
+            "hand": 10,
+            "hand_delta": -100.0,
+            "stage": "turn",
+            "public_cards": [
+              48,
+              51,
+              16,
+              13
+            ],
+            "my_cards": [
+              26,
+              45
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9261107997875588,
+            "call_conf": 0.07388340952304022
+          },
+          {
+            "decision_index": 19,
+            "hand": 11,
+            "hand_delta": -201.0,
+            "stage": "flop",
+            "public_cards": [
+              39,
+              24,
+              6
+            ],
+            "my_cards": [
+              20,
+              16
+            ],
+            "to_call": 101,
+            "pot": 301,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "rule_label": "fold",
+            "top_label": "call",
+            "top_conf": 0.9260428737410616,
+            "call_conf": 0.9260428737410616
+          },
+          {
+            "decision_index": 23,
+            "hand": 12,
+            "hand_delta": 231.0,
+            "stage": "turn",
+            "public_cards": [
+              46,
+              47,
+              18,
+              22
+            ],
+            "my_cards": [
+              49,
+              42
+            ],
+            "to_call": 0,
+            "pot": 462,
+            "my_chips": 19769,
+            "rule_action": 187,
+            "base_final": 187,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9856405712887858,
+            "call_conf": 0.014355388677270299
+          },
+          {
+            "decision_index": 28,
+            "hand": 15,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              20,
+              4,
+              51
+            ],
+            "my_cards": [
+              5,
+              46
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9664405038275923,
+            "call_conf": 0.03346644694500832
+          },
+          {
+            "decision_index": 39,
+            "hand": 19,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              11,
+              42,
+              0
+            ],
+            "my_cards": [
+              41,
+              16
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9174201132482073,
+            "call_conf": 0.08245081859390195
+          },
+          {
+            "decision_index": 45,
+            "hand": 25,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              36,
+              47
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 101,
+            "base_final": 201,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9100451583265737,
+            "call_conf": 0.047838766038664125
+          },
+          {
+            "decision_index": 51,
+            "hand": 28,
+            "hand_delta": 100.0,
+            "stage": "turn",
+            "public_cards": [
+              39,
+              5,
+              36,
+              13
+            ],
+            "my_cards": [
+              41,
+              20
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9308377776114537,
+            "call_conf": 0.06909633493623545
+          },
+          {
+            "decision_index": 56,
+            "hand": 30,
+            "hand_delta": 100.0,
+            "stage": "turn",
+            "public_cards": [
+              9,
+              2,
+              4,
+              21
+            ],
+            "my_cards": [
+              34,
+              23
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9961935793164957,
+            "call_conf": 0.0024240633652225976
+          },
+          {
+            "decision_index": 60,
+            "hand": 32,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              4,
+              12,
+              26
+            ],
+            "my_cards": [
+              22,
+              27
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9561458799198486,
+            "call_conf": 0.01827322419083918
+          },
+          {
+            "decision_index": 64,
+            "hand": 34,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              17,
+              9,
+              49
+            ],
+            "my_cards": [
+              16,
+              35
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_pot",
+            "top_conf": 0.9180620056936418,
+            "call_conf": 0.049210842979332606
+          },
+          {
+            "decision_index": 80,
+            "hand": 42,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              12,
+              33,
+              41
+            ],
+            "my_cards": [
+              25,
+              43
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.950463921964442,
+            "call_conf": 0.023601195976108047
+          },
+          {
+            "decision_index": 86,
+            "hand": 46,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              42,
+              27,
+              17
+            ],
+            "my_cards": [
+              36,
+              8
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_pot",
+            "top_conf": 0.956747449015072,
+            "call_conf": 0.030451030254268673
+          },
+          {
+            "decision_index": 91,
+            "hand": 48,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              28,
+              1,
+              13
+            ],
+            "my_cards": [
+              33,
+              47
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_pot",
+            "top_conf": 0.9971051558370134,
+            "call_conf": 0.0004024536826091783
+          },
+          {
+            "decision_index": 92,
+            "hand": 48,
+            "hand_delta": -100.0,
+            "stage": "turn",
+            "public_cards": [
+              28,
+              1,
+              13,
+              8
+            ],
+            "my_cards": [
+              33,
+              47
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9721004086144764,
+            "call_conf": 0.005740741145253179
+          },
+          {
+            "decision_index": 104,
+            "hand": 53,
+            "hand_delta": 5861.0,
+            "stage": "turn",
+            "public_cards": [
+              19,
+              43,
+              40,
+              32
+            ],
+            "my_cards": [
+              41,
+              8
+            ],
+            "to_call": 1584,
+            "pot": 2758,
+            "my_chips": 19413,
+            "rule_action": 5274,
+            "base_final": 5274,
+            "rule_label": "raise",
+            "top_label": "fold",
+            "top_conf": 0.9999125935428832,
+            "call_conf": 4.617693909341777e-05
+          }
+        ]
+      },
+      "mirror": {
+        "winner": 1,
+        "bot0_chips": -4.0,
+        "bot1_chips": 4.0,
+        "summary": {
+          "decisions": 123,
+          "final_changed": 0,
+          "counterfactual_candidates": 23,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": -4.0
+        },
+        "changes": [],
+        "candidates": [
+          {
+            "decision_index": 5,
+            "hand": 2,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              37,
+              51
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 101,
+            "base_final": 201,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9355776028807681,
+            "call_conf": 0.06061414256219842
+          },
+          {
+            "decision_index": 7,
+            "hand": 4,
+            "hand_delta": -467.0,
+            "stage": "flop",
+            "public_cards": [
+              39,
+              31,
+              44
+            ],
+            "my_cards": [
+              43,
+              30
+            ],
+            "to_call": 0,
+            "pot": 402,
+            "my_chips": 19799,
+            "rule_action": 273,
+            "base_final": 273,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9985484251611089,
+            "call_conf": 0.0014515478361947192
+          },
+          {
+            "decision_index": 8,
+            "hand": 4,
+            "hand_delta": -467.0,
+            "stage": "turn",
+            "public_cards": [
+              39,
+              31,
+              44,
+              1
+            ],
+            "my_cards": [
+              43,
+              30
+            ],
+            "to_call": 0,
+            "pot": 934,
+            "my_chips": 19533,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9988264417853475,
+            "call_conf": 0.0011725397811369143
+          },
+          {
+            "decision_index": 14,
+            "hand": 7,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              5,
+              30,
+              21
+            ],
+            "my_cards": [
+              7,
+              47
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 112,
+            "base_final": 112,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9435763434646515,
+            "call_conf": 0.0032208595691823523
+          },
+          {
+            "decision_index": 26,
+            "hand": 13,
+            "hand_delta": 291.0,
+            "stage": "flop",
+            "public_cards": [
+              4,
+              42,
+              12
+            ],
+            "my_cards": [
+              32,
+              40
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 185,
+            "base_final": 185,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9988305442628183,
+            "call_conf": 0.0004326616917989872
+          },
+          {
+            "decision_index": 27,
+            "hand": 13,
+            "hand_delta": 291.0,
+            "stage": "turn",
+            "public_cards": [
+              4,
+              42,
+              12,
+              30
+            ],
+            "my_cards": [
+              32,
+              40
+            ],
+            "to_call": 0,
+            "pot": 582,
+            "my_chips": 19709,
+            "rule_action": 262,
+            "base_final": 262,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9809187548810078,
+            "call_conf": 0.008895026112047275
+          },
+          {
+            "decision_index": 33,
+            "hand": 16,
+            "hand_delta": -201.0,
+            "stage": "flop",
+            "public_cards": [
+              38,
+              11,
+              46
+            ],
+            "my_cards": [
+              48,
+              13
+            ],
+            "to_call": 0,
+            "pot": 402,
+            "my_chips": 19799,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9992514041727911,
+            "call_conf": 0.0007483701884758082
+          },
+          {
+            "decision_index": 38,
+            "hand": 18,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              30,
+              9,
+              21
+            ],
+            "my_cards": [
+              40,
+              17
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9492199442844601,
+            "call_conf": 0.0480276344569769
+          },
+          {
+            "decision_index": 41,
+            "hand": 19,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              11,
+              42,
+              0
+            ],
+            "my_cards": [
+              21,
+              37
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_pot",
+            "top_conf": 0.9570090535752513,
+            "call_conf": 0.023262239638379617
+          },
+          {
+            "decision_index": 42,
+            "hand": 19,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              11,
+              42,
+              0
+            ],
+            "my_cards": [
+              21,
+              37
+            ],
+            "to_call": 101,
+            "pot": 301,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "rule_label": "fold",
+            "top_label": "raise_pot",
+            "top_conf": 0.9404384123635638,
+            "call_conf": 0.011154570917497058
+          },
+          {
+            "decision_index": 51,
+            "hand": 24,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              51,
+              47
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 101,
+            "base_final": 201,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9921319805570047,
+            "call_conf": 0.005195816004606361
+          },
+          {
+            "decision_index": 63,
+            "hand": 29,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              47,
+              35,
+              15
+            ],
+            "my_cards": [
+              38,
+              20
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_pot",
+            "top_conf": 0.9487765109478351,
+            "call_conf": 0.023961383299024093
+          },
+          {
+            "decision_index": 66,
+            "hand": 30,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              9,
+              2,
+              4
+            ],
+            "my_cards": [
+              29,
+              24
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.96759559928651,
+            "call_conf": 0.031957135728925744
+          },
+          {
+            "decision_index": 84,
+            "hand": 43,
+            "hand_delta": -220.0,
+            "stage": "flop",
+            "public_cards": [
+              4,
+              32,
+              31
+            ],
+            "my_cards": [
+              42,
+              23
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_pot",
+            "top_conf": 0.962535367794317,
+            "call_conf": 0.00479993741047719
+          },
+          {
+            "decision_index": 85,
+            "hand": 43,
+            "hand_delta": -220.0,
+            "stage": "turn",
+            "public_cards": [
+              4,
+              32,
+              31,
+              29
+            ],
+            "my_cards": [
+              42,
+              23
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9939621137748068,
+            "call_conf": 0.005842466222402314
+          },
+          {
+            "decision_index": 88,
+            "hand": 44,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              12,
+              13,
+              48
+            ],
+            "my_cards": [
+              41,
+              0
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9456073715070648,
+            "call_conf": 0.054391034428599785
+          },
+          {
+            "decision_index": 97,
+            "hand": 48,
+            "hand_delta": 201.0,
+            "stage": "flop",
+            "public_cards": [
+              28,
+              1,
+              13
+            ],
+            "my_cards": [
+              32,
+              46
+            ],
+            "to_call": 0,
+            "pot": 402,
+            "my_chips": 19799,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9998494401009447,
+            "call_conf": 7.619679615181417e-05
+          },
+          {
+            "decision_index": 98,
+            "hand": 48,
+            "hand_delta": 201.0,
+            "stage": "turn",
+            "public_cards": [
+              28,
+              1,
+              13,
+              8
+            ],
+            "my_cards": [
+              32,
+              46
+            ],
+            "to_call": 0,
+            "pot": 402,
+            "my_chips": 19799,
+            "rule_action": 108,
+            "base_final": 108,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9990890188179875,
+            "call_conf": 0.0008155780409773462
+          },
+          {
+            "decision_index": 105,
+            "hand": 55,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              37,
+              28,
+              27
+            ],
+            "my_cards": [
+              46,
+              0
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9851101236923693,
+            "call_conf": 0.013388620308423606
+          },
+          {
+            "decision_index": 106,
+            "hand": 55,
+            "hand_delta": 100.0,
+            "stage": "turn",
+            "public_cards": [
+              37,
+              28,
+              27,
+              31
+            ],
+            "my_cards": [
+              46,
+              0
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9983391361176703,
+            "call_conf": 0.0006121016932209122
+          },
+          {
+            "decision_index": 107,
+            "hand": 55,
+            "hand_delta": 100.0,
+            "stage": "river",
+            "public_cards": [
+              37,
+              28,
+              27,
+              31,
+              43
+            ],
+            "my_cards": [
+              46,
+              0
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9942538584276392,
+            "call_conf": 0.005158112394395455
+          },
+          {
+            "decision_index": 111,
+            "hand": 57,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              31,
+              0,
+              7
+            ],
+            "my_cards": [
+              11,
+              41
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_pot",
+            "top_conf": 0.9645832359967922,
+            "call_conf": 0.003439391105011539
+          },
+          {
+            "decision_index": 117,
+            "hand": 61,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              22,
+              2,
+              24
+            ],
+            "my_cards": [
+              50,
+              45
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 229,
+            "base_final": 229,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9996076089074,
+            "call_conf": 2.9921400523376892e-05
+          }
+        ]
+      }
+    },
+    {
+      "idx": 1,
+      "normal": {
+        "winner": 1,
+        "bot0_chips": -9883.0,
+        "bot1_chips": 9883.0,
+        "summary": {
+          "decisions": 96,
+          "final_changed": 1,
+          "counterfactual_candidates": 27,
+          "change_types": {
+            "fold_to_call": 1
+          },
+          "changed_hand_count": 1,
+          "changed_hand_delta_sum": -201.0,
+          "all_hand_delta_sum": -9883.0
+        },
+        "changes": [
+          {
+            "decision_index": 25,
+            "hand": 11,
+            "hand_delta": -201.0,
+            "stage": "flop",
+            "public_cards": [
+              46,
+              45,
+              23
+            ],
+            "my_cards": [
+              25,
+              9
+            ],
+            "to_call": 101,
+            "pot": 301,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.912516003487167,
+            "call_conf": 0.912516003487167
+          }
+        ],
+        "candidates": [
+          {
+            "decision_index": 0,
+            "hand": 0,
+            "hand_delta": -201.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              48,
+              16
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 101,
+            "base_final": 201,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9189594074248065,
+            "call_conf": 0.0776410404677065
+          },
+          {
+            "decision_index": 1,
+            "hand": 0,
+            "hand_delta": -201.0,
+            "stage": "flop",
+            "public_cards": [
+              13,
+              32,
+              7
+            ],
+            "my_cards": [
+              48,
+              16
+            ],
+            "to_call": 300,
+            "pot": 702,
+            "my_chips": 19799,
+            "rule_action": -1,
+            "base_final": -1,
+            "rule_label": "fold",
+            "top_label": "raise_half",
+            "top_conf": 0.9703836606169338,
+            "call_conf": 0.02347989894861997
+          },
+          {
+            "decision_index": 11,
+            "hand": 6,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              24,
+              49,
+              0
+            ],
+            "my_cards": [
+              40,
+              19
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9113325404297896,
+            "call_conf": 0.0885199493900833
+          },
+          {
+            "decision_index": 16,
+            "hand": 7,
+            "hand_delta": 201.0,
+            "stage": "flop",
+            "public_cards": [
+              50,
+              43,
+              23
+            ],
+            "my_cards": [
+              51,
+              36
+            ],
+            "to_call": 101,
+            "pot": 301,
+            "my_chips": 19900,
+            "rule_action": 486,
+            "base_final": 486,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9578062446160557,
+            "call_conf": 0.006532392281828399
+          },
+          {
+            "decision_index": 25,
+            "hand": 11,
+            "hand_delta": -201.0,
+            "stage": "flop",
+            "public_cards": [
+              46,
+              45,
+              23
+            ],
+            "my_cards": [
+              25,
+              9
+            ],
+            "to_call": 101,
+            "pot": 301,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "rule_label": "fold",
+            "top_label": "call",
+            "top_conf": 0.912516003487167,
+            "call_conf": 0.912516003487167
+          },
+          {
+            "decision_index": 39,
+            "hand": 16,
+            "hand_delta": 201.0,
+            "stage": "turn",
+            "public_cards": [
+              33,
+              50,
+              22,
+              18
+            ],
+            "my_cards": [
+              2,
+              10
+            ],
+            "to_call": 101,
+            "pot": 301,
+            "my_chips": 19900,
+            "rule_action": 261,
+            "base_final": 261,
+            "rule_label": "raise",
+            "top_label": "fold",
+            "top_conf": 0.9952475512635983,
+            "call_conf": 0.004594715198705599
+          },
+          {
+            "decision_index": 41,
+            "hand": 17,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              27,
+              3,
+              47
+            ],
+            "my_cards": [
+              33,
+              45
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 174,
+            "base_final": 174,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9998792076229436,
+            "call_conf": 3.187172997700406e-05
+          },
+          {
+            "decision_index": 60,
+            "hand": 27,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              21,
+              27,
+              35
+            ],
+            "my_cards": [
+              13,
+              30
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9843696195128211,
+            "call_conf": 0.014851587059535395
+          },
+          {
+            "decision_index": 61,
+            "hand": 27,
+            "hand_delta": 100.0,
+            "stage": "turn",
+            "public_cards": [
+              21,
+              27,
+              35,
+              26
+            ],
+            "my_cards": [
+              13,
+              30
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9976732700763661,
+            "call_conf": 0.0022872971073673153
+          },
+          {
+            "decision_index": 65,
+            "hand": 30,
+            "hand_delta": 201.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              41,
+              49
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 101,
+            "base_final": 201,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9839472944528187,
+            "call_conf": 0.007856582334298238
+          },
+          {
+            "decision_index": 66,
+            "hand": 30,
+            "hand_delta": 201.0,
+            "stage": "flop",
+            "public_cards": [
+              45,
+              19,
+              15
+            ],
+            "my_cards": [
+              41,
+              49
+            ],
+            "to_call": 0,
+            "pot": 402,
+            "my_chips": 19799,
+            "rule_action": 202,
+            "base_final": 202,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9915028086943395,
+            "call_conf": 0.00025127332542038567
+          },
+          {
+            "decision_index": 69,
+            "hand": 31,
+            "hand_delta": 0.0,
+            "stage": "turn",
+            "public_cards": [
+              5,
+              18,
+              4,
+              36
+            ],
+            "my_cards": [
+              13,
+              31
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9439453884443835,
+            "call_conf": 0.05592828965671685
+          },
+          {
+            "decision_index": 72,
+            "hand": 32,
+            "hand_delta": 201.0,
+            "stage": "flop",
+            "public_cards": [
+              20,
+              6,
+              34
+            ],
+            "my_cards": [
+              18,
+              19
+            ],
+            "to_call": 0,
+            "pot": 402,
+            "my_chips": 19799,
+            "rule_action": 208,
+            "base_final": 208,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9651747584388072,
+            "call_conf": 0.019238025861487994
+          },
+          {
+            "decision_index": 74,
+            "hand": 34,
+            "hand_delta": -12300.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              43,
+              35
+            ],
+            "to_call": 385,
+            "pot": 787,
+            "my_chips": 19799,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "fold",
+            "top_conf": 0.9689264198887114,
+            "call_conf": 0.029347433512819238
+          },
+          {
+            "decision_index": 75,
+            "hand": 34,
+            "hand_delta": -12300.0,
+            "stage": "flop",
+            "public_cards": [
+              19,
+              15,
+              40
+            ],
+            "my_cards": [
+              43,
+              35
+            ],
+            "to_call": 1022,
+            "pot": 2194,
+            "my_chips": 19414,
+            "rule_action": 3782,
+            "base_final": 3782,
+            "rule_label": "raise",
+            "top_label": "fold",
+            "top_conf": 0.9514654224818131,
+            "call_conf": 0.003341198535749521
+          },
+          {
+            "decision_index": 76,
+            "hand": 34,
+            "hand_delta": -12300.0,
+            "stage": "flop",
+            "public_cards": [
+              19,
+              15,
+              40
+            ],
+            "my_cards": [
+              43,
+              35
+            ],
+            "to_call": 7828,
+            "pot": 16772,
+            "my_chips": 15528,
+            "rule_action": -2,
+            "base_final": -2,
+            "rule_label": "allin",
+            "top_label": "fold",
+            "top_conf": 0.9999531616774584,
+            "call_conf": 4.676474263287812e-05
+          },
+          {
+            "decision_index": 81,
+            "hand": 40,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              33,
+              6
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 504,
+            "base_final": 604,
+            "rule_label": "raise",
+            "top_label": "raise_2pot",
+            "top_conf": 0.9644325416941696,
+            "call_conf": 0.029978336308716175
+          },
+          {
+            "decision_index": 83,
+            "hand": 44,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              24,
+              15
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 504,
+            "base_final": 604,
+            "rule_label": "raise",
+            "top_label": "raise_2pot",
+            "top_conf": 0.9767653550390967,
+            "call_conf": 0.02000237744680917
+          },
+          {
+            "decision_index": 84,
+            "hand": 46,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              50,
+              51
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 555,
+            "base_final": 655,
+            "rule_label": "raise",
+            "top_label": "raise_2pot",
+            "top_conf": 0.9181226787425313,
+            "call_conf": 0.0003699301748140987
+          },
+          {
+            "decision_index": 85,
+            "hand": 48,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              29,
+              1
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 504,
+            "base_final": 604,
+            "rule_label": "raise",
+            "top_label": "raise_2pot",
+            "top_conf": 0.9383926159825094,
+            "call_conf": 0.057848139896198275
+          },
+          {
+            "decision_index": 86,
+            "hand": 50,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              18,
+              11
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 504,
+            "base_final": 604,
+            "rule_label": "raise",
+            "top_label": "raise_2pot",
+            "top_conf": 0.9697613962735144,
+            "call_conf": 0.01978591677679499
+          },
+          {
+            "decision_index": 89,
+            "hand": 56,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              7,
+              17
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 504,
+            "base_final": 604,
+            "rule_label": "raise",
+            "top_label": "raise_2pot",
+            "top_conf": 0.9380057568314258,
+            "call_conf": 0.018227812821047976
+          },
+          {
+            "decision_index": 90,
+            "hand": 58,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              16,
+              47
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 455,
+            "base_final": 555,
+            "rule_label": "raise",
+            "top_label": "raise_2pot",
+            "top_conf": 0.979788380379834,
+            "call_conf": 0.0045916933717531526
+          },
+          {
+            "decision_index": 91,
+            "hand": 60,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              23,
+              41
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 458,
+            "base_final": 558,
+            "rule_label": "raise",
+            "top_label": "raise_2pot",
+            "top_conf": 0.9795478935450872,
+            "call_conf": 0.004743181813106298
+          },
+          {
+            "decision_index": 92,
+            "hand": 62,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              24,
+              38
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 459,
+            "base_final": 559,
+            "rule_label": "raise",
+            "top_label": "raise_2pot",
+            "top_conf": 0.9742530952230368,
+            "call_conf": 0.004979870191308961
+          },
+          {
+            "decision_index": 93,
+            "hand": 64,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              48,
+              0
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 456,
+            "base_final": 556,
+            "rule_label": "raise",
+            "top_label": "raise_2pot",
+            "top_conf": 0.9600740848920295,
+            "call_conf": 0.010747771542934003
+          },
+          {
+            "decision_index": 94,
+            "hand": 66,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              31,
+              51
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 481,
+            "base_final": 581,
+            "rule_label": "raise",
+            "top_label": "raise_2pot",
+            "top_conf": 0.9481515119523234,
+            "call_conf": 0.0025823424407191995
+          }
+        ]
+      },
+      "mirror": {
+        "winner": 0,
+        "bot0_chips": 2320.0,
+        "bot1_chips": -2320.0,
+        "summary": {
+          "decisions": 120,
+          "final_changed": 7,
+          "counterfactual_candidates": 12,
+          "change_types": {
+            "fold_to_call": 7
+          },
+          "changed_hand_count": 7,
+          "changed_hand_delta_sum": -700.0,
+          "all_hand_delta_sum": 2320.0
+        },
+        "changes": [
+          {
+            "decision_index": 78,
+            "hand": 35,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              45,
+              18
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.6731721639711832,
+            "call_conf": 0.6731721639711832
+          },
+          {
+            "decision_index": 83,
+            "hand": 39,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              4,
+              39
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.8339011941139305,
+            "call_conf": 0.8339011941139305
+          },
+          {
+            "decision_index": 88,
+            "hand": 43,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              33,
+              14
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.7482022084931389,
+            "call_conf": 0.7482022084931389
+          },
+          {
+            "decision_index": 93,
+            "hand": 47,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              14,
+              37
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.6407117606563945,
+            "call_conf": 0.6407117606563945
+          },
+          {
+            "decision_index": 96,
+            "hand": 49,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              30,
+              22
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.6217019782678519,
+            "call_conf": 0.6217019782678519
+          },
+          {
+            "decision_index": 99,
+            "hand": 51,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              10,
+              2
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.8866800097482487,
+            "call_conf": 0.8866800097482487
+          },
+          {
+            "decision_index": 104,
+            "hand": 55,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              21,
+              2
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.6003748509598592,
+            "call_conf": 0.6003748509598592
+          }
+        ],
+        "candidates": [
+          {
+            "decision_index": 10,
+            "hand": 4,
+            "hand_delta": -270.0,
+            "stage": "turn",
+            "public_cards": [
+              20,
+              26,
+              9,
+              24
+            ],
+            "my_cards": [
+              13,
+              41
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9610433192965835,
+            "call_conf": 0.03887989829414206
+          },
+          {
+            "decision_index": 15,
+            "hand": 6,
+            "hand_delta": 100.0,
+            "stage": "turn",
+            "public_cards": [
+              24,
+              49,
+              0,
+              3
+            ],
+            "my_cards": [
+              13,
+              36
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9249917275439677,
+            "call_conf": 0.07500025091163239
+          },
+          {
+            "decision_index": 23,
+            "hand": 9,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              10,
+              24,
+              33
+            ],
+            "my_cards": [
+              45,
+              27
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 115,
+            "base_final": 115,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9069814132917856,
+            "call_conf": 0.09265672643725512
+          },
+          {
+            "decision_index": 25,
+            "hand": 10,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              17,
+              9,
+              35
+            ],
+            "my_cards": [
+              50,
+              18
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 135,
+            "base_final": 135,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9873547910995067,
+            "call_conf": 0.0006294611845118435
+          },
+          {
+            "decision_index": 44,
+            "hand": 21,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              41,
+              46
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 101,
+            "base_final": 201,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9607654365601178,
+            "call_conf": 0.021451082965797643
+          },
+          {
+            "decision_index": 45,
+            "hand": 23,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              49,
+              48
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 121,
+            "base_final": 221,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9595935869667549,
+            "call_conf": 0.005507138185547467
+          },
+          {
+            "decision_index": 47,
+            "hand": 24,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              28,
+              33,
+              0
+            ],
+            "my_cards": [
+              35,
+              48
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9410477707080083,
+            "call_conf": 0.006908689561829002
+          },
+          {
+            "decision_index": 52,
+            "hand": 27,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              21,
+              27,
+              35
+            ],
+            "my_cards": [
+              38,
+              12
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9950728326745963,
+            "call_conf": 0.0049236380314872505
+          },
+          {
+            "decision_index": 56,
+            "hand": 28,
+            "hand_delta": -100.0,
+            "stage": "turn",
+            "public_cards": [
+              3,
+              11,
+              42,
+              2
+            ],
+            "my_cards": [
+              49,
+              30
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9867015992938041,
+            "call_conf": 0.013246292939886264
+          },
+          {
+            "decision_index": 73,
+            "hand": 34,
+            "hand_delta": 6607.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              46,
+              44
+            ],
+            "to_call": 226,
+            "pot": 326,
+            "my_chips": 19900,
+            "rule_action": 802,
+            "base_final": 852,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9920789264519687,
+            "call_conf": 0.004916163929147882
+          },
+          {
+            "decision_index": 76,
+            "hand": 34,
+            "hand_delta": 6607.0,
+            "stage": "turn",
+            "public_cards": [
+              19,
+              15,
+              40,
+              34
+            ],
+            "my_cards": [
+              46,
+              44
+            ],
+            "to_call": 0,
+            "pot": 26607,
+            "my_chips": 0,
+            "rule_action": -2,
+            "base_final": -2,
+            "rule_label": "allin",
+            "top_label": "fold",
+            "top_conf": 0.9825788436322905,
+            "call_conf": 0.013197704946937037
+          },
+          {
+            "decision_index": 77,
+            "hand": 34,
+            "hand_delta": 6607.0,
+            "stage": "river",
+            "public_cards": [
+              19,
+              15,
+              40,
+              34,
+              13
+            ],
+            "my_cards": [
+              46,
+              44
+            ],
+            "to_call": 0,
+            "pot": 26607,
+            "my_chips": 0,
+            "rule_action": -2,
+            "base_final": -2,
+            "rule_label": "allin",
+            "top_label": "call",
+            "top_conf": 0.9827591103853694,
+            "call_conf": 0.9827591103853694
+          }
+        ]
+      }
+    },
+    {
+      "idx": 2,
+      "normal": {
+        "winner": 0,
+        "bot0_chips": 180.0,
+        "bot1_chips": -180.0,
+        "summary": {
+          "decisions": 144,
+          "final_changed": 0,
+          "counterfactual_candidates": 28,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": 180.0
+        },
+        "changes": [],
+        "candidates": [
+          {
+            "decision_index": 5,
+            "hand": 3,
+            "hand_delta": 682.0,
+            "stage": "river",
+            "public_cards": [
+              5,
+              51,
+              26,
+              50,
+              49
+            ],
+            "my_cards": [
+              43,
+              3
+            ],
+            "to_call": 188,
+            "pot": 388,
+            "my_chips": 19900,
+            "rule_action": 582,
+            "base_final": 582,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9503912877094582,
+            "call_conf": 0.04843119624978917
+          },
+          {
+            "decision_index": 7,
+            "hand": 4,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              23,
+              29,
+              9
+            ],
+            "my_cards": [
+              12,
+              24
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_pot",
+            "top_conf": 0.9738238732062993,
+            "call_conf": 0.01150105275921607
+          },
+          {
+            "decision_index": 13,
+            "hand": 6,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              17,
+              31,
+              26
+            ],
+            "my_cards": [
+              39,
+              50
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9893933720137138,
+            "call_conf": 0.010468973696784232
+          },
+          {
+            "decision_index": 14,
+            "hand": 6,
+            "hand_delta": -100.0,
+            "stage": "turn",
+            "public_cards": [
+              17,
+              31,
+              26,
+              8
+            ],
+            "my_cards": [
+              39,
+              50
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9986271563026794,
+            "call_conf": 0.0013561586736649056
+          },
+          {
+            "decision_index": 15,
+            "hand": 6,
+            "hand_delta": -100.0,
+            "stage": "river",
+            "public_cards": [
+              17,
+              31,
+              26,
+              8,
+              2
+            ],
+            "my_cards": [
+              39,
+              50
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9971336169280451,
+            "call_conf": 0.002662040813230636
+          },
+          {
+            "decision_index": 22,
+            "hand": 10,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              8,
+              11,
+              29
+            ],
+            "my_cards": [
+              36,
+              22
+            ],
+            "to_call": 101,
+            "pot": 301,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "rule_label": "fold",
+            "top_label": "raise_half",
+            "top_conf": 0.9278443396242819,
+            "call_conf": 0.04178021692442519
+          },
+          {
+            "decision_index": 32,
+            "hand": 16,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              22,
+              19,
+              2
+            ],
+            "my_cards": [
+              0,
+              16
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 200,
+            "base_final": 200,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9400653106814895,
+            "call_conf": 0.0444198891512014
+          },
+          {
+            "decision_index": 44,
+            "hand": 22,
+            "hand_delta": -581.0,
+            "stage": "flop",
+            "public_cards": [
+              16,
+              5,
+              22
+            ],
+            "my_cards": [
+              25,
+              15
+            ],
+            "to_call": 196,
+            "pot": 396,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "fold",
+            "top_conf": 0.9979226891318695,
+            "call_conf": 0.0010651715227095395
+          },
+          {
+            "decision_index": 51,
+            "hand": 25,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              2,
+              6,
+              16
+            ],
+            "my_cards": [
+              24,
+              41
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9750201723872503,
+            "call_conf": 0.023826321946611467
+          },
+          {
+            "decision_index": 62,
+            "hand": 30,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              42,
+              11,
+              23
+            ],
+            "my_cards": [
+              40,
+              49
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_pot",
+            "top_conf": 0.9864139076459207,
+            "call_conf": 0.004567663182746706
+          },
+          {
+            "decision_index": 74,
+            "hand": 34,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              31,
+              32,
+              36
+            ],
+            "my_cards": [
+              24,
+              19
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9806356733112336,
+            "call_conf": 0.019254242294519882
+          },
+          {
+            "decision_index": 76,
+            "hand": 35,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              36,
+              50
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 101,
+            "base_final": 201,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9346639438275083,
+            "call_conf": 0.014997627821099079
+          },
+          {
+            "decision_index": 80,
+            "hand": 37,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              35,
+              47,
+              12
+            ],
+            "my_cards": [
+              28,
+              17
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9686421358394811,
+            "call_conf": 0.030250755334008655
+          },
+          {
+            "decision_index": 87,
+            "hand": 41,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              47,
+              25,
+              21
+            ],
+            "my_cards": [
+              18,
+              15
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9422282179030455,
+            "call_conf": 0.05719580721470601
+          },
+          {
+            "decision_index": 90,
+            "hand": 42,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              31,
+              35,
+              29
+            ],
+            "my_cards": [
+              51,
+              9
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 132,
+            "base_final": 132,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9799261959686579,
+            "call_conf": 0.018188646591034793
+          },
+          {
+            "decision_index": 94,
+            "hand": 43,
+            "hand_delta": -100.0,
+            "stage": "river",
+            "public_cards": [
+              33,
+              40,
+              4,
+              17,
+              22
+            ],
+            "my_cards": [
+              1,
+              3
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_pot",
+            "top_conf": 0.923859437300617,
+            "call_conf": 0.07023392137735086
+          },
+          {
+            "decision_index": 99,
+            "hand": 46,
+            "hand_delta": -100.0,
+            "stage": "turn",
+            "public_cards": [
+              10,
+              8,
+              15,
+              6
+            ],
+            "my_cards": [
+              37,
+              29
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9960228998380541,
+            "call_conf": 0.0014818128094674923
+          },
+          {
+            "decision_index": 103,
+            "hand": 49,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              31,
+              30
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 101,
+            "base_final": 201,
+            "rule_label": "raise",
+            "top_label": "raise_2pot",
+            "top_conf": 0.9267905169592433,
+            "call_conf": 0.026987333003430484
+          },
+          {
+            "decision_index": 112,
+            "hand": 53,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              6,
+              41,
+              14
+            ],
+            "my_cards": [
+              26,
+              11
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9764274372750098,
+            "call_conf": 0.022649085762065962
+          },
+          {
+            "decision_index": 116,
+            "hand": 56,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              47,
+              49,
+              18
+            ],
+            "my_cards": [
+              48,
+              4
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9588056829517709,
+            "call_conf": 0.027447020838783164
+          },
+          {
+            "decision_index": 118,
+            "hand": 57,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              4,
+              3,
+              51
+            ],
+            "my_cards": [
+              19,
+              1
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 112,
+            "base_final": 112,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9839913898906268,
+            "call_conf": 0.01588863612537255
+          },
+          {
+            "decision_index": 127,
+            "hand": 63,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              1,
+              7,
+              16
+            ],
+            "my_cards": [
+              24,
+              14
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9962240192990252,
+            "call_conf": 0.0035274742402344877
+          },
+          {
+            "decision_index": 128,
+            "hand": 63,
+            "hand_delta": 100.0,
+            "stage": "turn",
+            "public_cards": [
+              1,
+              7,
+              16,
+              37
+            ],
+            "my_cards": [
+              24,
+              14
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.937859849486209,
+            "call_conf": 0.03247930193334549
+          },
+          {
+            "decision_index": 130,
+            "hand": 64,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              2,
+              15,
+              22
+            ],
+            "my_cards": [
+              26,
+              18
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 145,
+            "base_final": 145,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9992686841173773,
+            "call_conf": 0.00046987429634158865
+          },
+          {
+            "decision_index": 135,
+            "hand": 66,
+            "hand_delta": -100.0,
+            "stage": "turn",
+            "public_cards": [
+              32,
+              39,
+              18,
+              44
+            ],
+            "my_cards": [
+              24,
+              2
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "fold",
+            "top_conf": 0.907862718472558,
+            "call_conf": 0.02077969849745698
+          },
+          {
+            "decision_index": 138,
+            "hand": 67,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              35,
+              4,
+              43
+            ],
+            "my_cards": [
+              22,
+              28
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9854694981649675,
+            "call_conf": 0.006025938118888647
+          },
+          {
+            "decision_index": 140,
+            "hand": 68,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              16,
+              27
+            ],
+            "to_call": 50,
+            "pot": 150,
+            "my_chips": 19900,
+            "rule_action": -2,
+            "base_final": -2,
+            "rule_label": "allin",
+            "top_label": "call",
+            "top_conf": 0.999694254048438,
+            "call_conf": 0.999694254048438
+          },
+          {
+            "decision_index": 143,
+            "hand": 69,
+            "hand_delta": 201.0,
+            "stage": "flop",
+            "public_cards": [
+              18,
+              40,
+              21
+            ],
+            "my_cards": [
+              22,
+              27
+            ],
+            "to_call": 0,
+            "pot": 402,
+            "my_chips": 19799,
+            "rule_action": 267,
+            "base_final": 267,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9992577055695364,
+            "call_conf": 0.0007400171524421832
+          }
+        ]
+      },
+      "mirror": {
+        "winner": 1,
+        "bot0_chips": -19.0,
+        "bot1_chips": 19.0,
+        "summary": {
+          "decisions": 127,
+          "final_changed": 2,
+          "counterfactual_candidates": 25,
+          "change_types": {
+            "fold_to_call": 2
+          },
+          "changed_hand_count": 2,
+          "changed_hand_delta_sum": -332.0,
+          "all_hand_delta_sum": -19.0
+        },
+        "changes": [
+          {
+            "decision_index": 33,
+            "hand": 20,
+            "hand_delta": -232.0,
+            "stage": "flop",
+            "public_cards": [
+              6,
+              23,
+              7
+            ],
+            "my_cards": [
+              27,
+              12
+            ],
+            "to_call": 132,
+            "pot": 332,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.8567904688962882,
+            "call_conf": 0.8567904688962882
+          },
+          {
+            "decision_index": 124,
+            "hand": 69,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              3,
+              2
+            ],
+            "to_call": 50,
+            "pot": 150,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.9993287443717614,
+            "call_conf": 0.9993287443717614
+          }
+        ],
+        "candidates": [
+          {
+            "decision_index": 3,
+            "hand": 2,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              22,
+              28,
+              26
+            ],
+            "my_cards": [
+              30,
+              8
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9822752451633787,
+            "call_conf": 0.017723394313156997
+          },
+          {
+            "decision_index": 7,
+            "hand": 3,
+            "hand_delta": -270.0,
+            "stage": "river",
+            "public_cards": [
+              5,
+              51,
+              26,
+              50,
+              49
+            ],
+            "my_cards": [
+              12,
+              22
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 170,
+            "base_final": 170,
+            "rule_label": "raise",
+            "top_label": "call",
+            "top_conf": 0.9950760898762561,
+            "call_conf": 0.9950760898762561
+          },
+          {
+            "decision_index": 8,
+            "hand": 4,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              47,
+              41
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 101,
+            "base_final": 201,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9338921741941658,
+            "call_conf": 0.06076315064008315
+          },
+          {
+            "decision_index": 16,
+            "hand": 8,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              23,
+              13,
+              32
+            ],
+            "my_cards": [
+              4,
+              6
+            ],
+            "to_call": 151,
+            "pot": 351,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "rule_label": "fold",
+            "top_label": "call",
+            "top_conf": 0.979445828623327,
+            "call_conf": 0.979445828623327
+          },
+          {
+            "decision_index": 26,
+            "hand": 16,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              31,
+              47
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 101,
+            "base_final": 201,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9414947808305626,
+            "call_conf": 0.05115071684575248
+          },
+          {
+            "decision_index": 31,
+            "hand": 19,
+            "hand_delta": 100.0,
+            "stage": "turn",
+            "public_cards": [
+              3,
+              18,
+              0,
+              15
+            ],
+            "my_cards": [
+              5,
+              11
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9130071944974681,
+            "call_conf": 0.08673013172508758
+          },
+          {
+            "decision_index": 37,
+            "hand": 22,
+            "hand_delta": 558.0,
+            "stage": "flop",
+            "public_cards": [
+              16,
+              5,
+              22
+            ],
+            "my_cards": [
+              20,
+              19
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 182,
+            "base_final": 182,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9510423331189879,
+            "call_conf": 0.04891909479278954
+          },
+          {
+            "decision_index": 38,
+            "hand": 22,
+            "hand_delta": 558.0,
+            "stage": "turn",
+            "public_cards": [
+              16,
+              5,
+              22,
+              33
+            ],
+            "my_cards": [
+              20,
+              19
+            ],
+            "to_call": 274,
+            "pot": 842,
+            "my_chips": 19716,
+            "rule_action": 1222,
+            "base_final": 1222,
+            "rule_label": "raise",
+            "top_label": "fold",
+            "top_conf": 0.9956472403429646,
+            "call_conf": 0.00020590498474976873
+          },
+          {
+            "decision_index": 41,
+            "hand": 23,
+            "hand_delta": -100.0,
+            "stage": "turn",
+            "public_cards": [
+              5,
+              35,
+              34,
+              31
+            ],
+            "my_cards": [
+              0,
+              40
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9823251865199527,
+            "call_conf": 0.016237380483244697
+          },
+          {
+            "decision_index": 47,
+            "hand": 25,
+            "hand_delta": 100.0,
+            "stage": "turn",
+            "public_cards": [
+              2,
+              6,
+              16,
+              38
+            ],
+            "my_cards": [
+              30,
+              40
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9623401377758716,
+            "call_conf": 0.030207919915893628
+          },
+          {
+            "decision_index": 48,
+            "hand": 26,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              38,
+              42
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 101,
+            "base_final": 201,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9190757266440567,
+            "call_conf": 0.055663748719268026
+          },
+          {
+            "decision_index": 53,
+            "hand": 30,
+            "hand_delta": -338.0,
+            "stage": "flop",
+            "public_cards": [
+              42,
+              11,
+              23
+            ],
+            "my_cards": [
+              36,
+              33
+            ],
+            "to_call": 0,
+            "pot": 676,
+            "my_chips": 19662,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9145629263091208,
+            "call_conf": 0.07169150053282665
+          },
+          {
+            "decision_index": 69,
+            "hand": 40,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              50,
+              38
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 101,
+            "base_final": 201,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9606974223128811,
+            "call_conf": 0.012824252683215461
+          },
+          {
+            "decision_index": 74,
+            "hand": 42,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              31,
+              35,
+              29
+            ],
+            "my_cards": [
+              46,
+              37
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9351730461396855,
+            "call_conf": 0.06445980246965877
+          },
+          {
+            "decision_index": 83,
+            "hand": 47,
+            "hand_delta": 201.0,
+            "stage": "flop",
+            "public_cards": [
+              28,
+              40,
+              2
+            ],
+            "my_cards": [
+              0,
+              30
+            ],
+            "to_call": 101,
+            "pot": 301,
+            "my_chips": 19900,
+            "rule_action": 492,
+            "base_final": 492,
+            "rule_label": "raise",
+            "top_label": "fold",
+            "top_conf": 0.9998291955818833,
+            "call_conf": 0.00012958041954454777
+          },
+          {
+            "decision_index": 90,
+            "hand": 51,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              10,
+              36,
+              47
+            ],
+            "my_cards": [
+              21,
+              29
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_pot",
+            "top_conf": 0.9570279396900955,
+            "call_conf": 0.041595924271843235
+          },
+          {
+            "decision_index": 93,
+            "hand": 52,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              42,
+              38,
+              24
+            ],
+            "my_cards": [
+              20,
+              18
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9728591022080705,
+            "call_conf": 0.027048926244654076
+          },
+          {
+            "decision_index": 98,
+            "hand": 55,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              43,
+              34,
+              2
+            ],
+            "my_cards": [
+              28,
+              0
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_pot",
+            "top_conf": 0.9809314731978563,
+            "call_conf": 0.01634274813975634
+          },
+          {
+            "decision_index": 99,
+            "hand": 55,
+            "hand_delta": 100.0,
+            "stage": "turn",
+            "public_cards": [
+              43,
+              34,
+              2,
+              1
+            ],
+            "my_cards": [
+              28,
+              0
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.959465002016123,
+            "call_conf": 0.03567575294540335
+          },
+          {
+            "decision_index": 109,
+            "hand": 60,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              34,
+              49,
+              3
+            ],
+            "my_cards": [
+              11,
+              41
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.992402755723291,
+            "call_conf": 0.007462879186039071
+          },
+          {
+            "decision_index": 110,
+            "hand": 60,
+            "hand_delta": 100.0,
+            "stage": "turn",
+            "public_cards": [
+              34,
+              49,
+              3,
+              24
+            ],
+            "my_cards": [
+              11,
+              41
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.935918547488108,
+            "call_conf": 0.046730939751627544
+          },
+          {
+            "decision_index": 112,
+            "hand": 62,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              43,
+              37,
+              1
+            ],
+            "my_cards": [
+              48,
+              10
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9891575452872378,
+            "call_conf": 0.008119623478146633
+          },
+          {
+            "decision_index": 113,
+            "hand": 62,
+            "hand_delta": 100.0,
+            "stage": "turn",
+            "public_cards": [
+              43,
+              37,
+              1,
+              18
+            ],
+            "my_cards": [
+              48,
+              10
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9327996666890925,
+            "call_conf": 0.037033498459411715
+          },
+          {
+            "decision_index": 117,
+            "hand": 65,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              7,
+              31,
+              0
+            ],
+            "my_cards": [
+              15,
+              17
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_pot",
+            "top_conf": 0.9376840910613938,
+            "call_conf": 0.045137288116425395
+          },
+          {
+            "decision_index": 124,
+            "hand": 69,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              3,
+              2
+            ],
+            "to_call": 50,
+            "pot": 150,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "rule_label": "fold",
+            "top_label": "call",
+            "top_conf": 0.9993287443717614,
+            "call_conf": 0.9993287443717614
+          }
+        ]
+      }
+    },
+    {
+      "idx": 3,
+      "normal": {
+        "winner": 0,
+        "bot0_chips": 722.0,
+        "bot1_chips": -722.0,
+        "summary": {
+          "decisions": 103,
+          "final_changed": 14,
+          "counterfactual_candidates": 11,
+          "change_types": {
+            "fold_to_call": 14
+          },
+          "changed_hand_count": 14,
+          "changed_hand_delta_sum": -1400.0,
+          "all_hand_delta_sum": 722.0
+        },
+        "changes": [
+          {
+            "decision_index": 41,
+            "hand": 22,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              21,
+              34
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.8915591493865825,
+            "call_conf": 0.8915591493865825
+          },
+          {
+            "decision_index": 44,
+            "hand": 24,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              13,
+              20
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.9533825941006264,
+            "call_conf": 0.9533825941006264
+          },
+          {
+            "decision_index": 47,
+            "hand": 26,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              19,
+              39
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.714289875621315,
+            "call_conf": 0.714289875621315
+          },
+          {
+            "decision_index": 52,
+            "hand": 30,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              11,
+              36
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.8906779691661606,
+            "call_conf": 0.8906779691661606
+          },
+          {
+            "decision_index": 55,
+            "hand": 32,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              32,
+              14
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.8552580738179795,
+            "call_conf": 0.8552580738179795
+          },
+          {
+            "decision_index": 60,
+            "hand": 36,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              40,
+              0
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.817613498777302,
+            "call_conf": 0.817613498777302
+          },
+          {
+            "decision_index": 65,
+            "hand": 40,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              5,
+              0
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.8778743235948798,
+            "call_conf": 0.8778743235948798
+          },
+          {
+            "decision_index": 70,
+            "hand": 44,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              17,
+              23
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.7110065575128989,
+            "call_conf": 0.7110065575128989
+          },
+          {
+            "decision_index": 73,
+            "hand": 46,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              8,
+              22
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.7073597384003022,
+            "call_conf": 0.7073597384003022
+          },
+          {
+            "decision_index": 76,
+            "hand": 48,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              0,
+              31
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.6076460912385343,
+            "call_conf": 0.6076460912385343
+          },
+          {
+            "decision_index": 79,
+            "hand": 50,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              13,
+              22
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.6106358033626244,
+            "call_conf": 0.6106358033626244
+          },
+          {
+            "decision_index": 82,
+            "hand": 52,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              19,
+              0
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.6043812045186607,
+            "call_conf": 0.6043812045186607
+          },
+          {
+            "decision_index": 86,
+            "hand": 55,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              38,
+              19
+            ],
+            "to_call": 50,
+            "pot": 150,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.9999352427444943,
+            "call_conf": 0.9999352427444943
+          },
+          {
+            "decision_index": 101,
+            "hand": 69,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              34,
+              9
+            ],
+            "to_call": 50,
+            "pot": 150,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "advised_raw": 0,
+            "advised_final": 0,
+            "actual": 0,
+            "kind": "fold_to_call",
+            "top_label": "call",
+            "top_conf": 0.9993056804067765,
+            "call_conf": 0.9993056804067765
+          }
+        ],
+        "candidates": [
+          {
+            "decision_index": 7,
+            "hand": 2,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              13,
+              1
+            ],
+            "to_call": 245,
+            "pot": 445,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "rule_label": "fold",
+            "top_label": "call",
+            "top_conf": 0.9186361541908702,
+            "call_conf": 0.9186361541908702
+          },
+          {
+            "decision_index": 16,
+            "hand": 6,
+            "hand_delta": -201.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              50,
+              22
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 101,
+            "base_final": 201,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9530813245311208,
+            "call_conf": 0.04426993924523249
+          },
+          {
+            "decision_index": 17,
+            "hand": 6,
+            "hand_delta": -201.0,
+            "stage": "flop",
+            "public_cards": [
+              5,
+              37,
+              7
+            ],
+            "my_cards": [
+              50,
+              22
+            ],
+            "to_call": 327,
+            "pot": 729,
+            "my_chips": 19799,
+            "rule_action": -1,
+            "base_final": -1,
+            "rule_label": "fold",
+            "top_label": "raise_half",
+            "top_conf": 0.9447308421572264,
+            "call_conf": 0.055126707788311045
+          },
+          {
+            "decision_index": 19,
+            "hand": 7,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              12,
+              15,
+              42
+            ],
+            "my_cards": [
+              23,
+              22
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 115,
+            "base_final": 115,
+            "rule_label": "raise",
+            "top_label": "call",
+            "top_conf": 0.988226133265187,
+            "call_conf": 0.988226133265187
+          },
+          {
+            "decision_index": 20,
+            "hand": 8,
+            "hand_delta": 100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              38,
+              44
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": 101,
+            "base_final": 201,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9063004521669659,
+            "call_conf": 0.08178280609473862
+          },
+          {
+            "decision_index": 30,
+            "hand": 18,
+            "hand_delta": -201.0,
+            "stage": "flop",
+            "public_cards": [
+              44,
+              41,
+              32
+            ],
+            "my_cards": [
+              13,
+              14
+            ],
+            "to_call": 0,
+            "pot": 402,
+            "my_chips": 19799,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9536539744307139,
+            "call_conf": 0.0463432031376903
+          },
+          {
+            "decision_index": 38,
+            "hand": 21,
+            "hand_delta": 5224.0,
+            "stage": "turn",
+            "public_cards": [
+              7,
+              5,
+              28,
+              22
+            ],
+            "my_cards": [
+              14,
+              4
+            ],
+            "to_call": 0,
+            "pot": 644,
+            "my_chips": 19678,
+            "rule_action": 395,
+            "base_final": 395,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9336427098543432,
+            "call_conf": 0.0661678718174773
+          },
+          {
+            "decision_index": 44,
+            "hand": 24,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              13,
+              20
+            ],
+            "to_call": 0,
+            "pot": 150,
+            "my_chips": 19950,
+            "rule_action": -1,
+            "base_final": -1,
+            "rule_label": "fold",
+            "top_label": "call",
+            "top_conf": 0.9533825941006264,
+            "call_conf": 0.9533825941006264
+          },
+          {
+            "decision_index": 86,
+            "hand": 55,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              38,
+              19
+            ],
+            "to_call": 50,
+            "pot": 150,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "rule_label": "fold",
+            "top_label": "call",
+            "top_conf": 0.9999352427444943,
+            "call_conf": 0.9999352427444943
+          },
+          {
+            "decision_index": 87,
+            "hand": 55,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              22,
+              6,
+              32
+            ],
+            "my_cards": [
+              38,
+              19
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "rule_label": "fold",
+            "top_label": "raise_pot",
+            "top_conf": 0.9821449671271419,
+            "call_conf": 0.003739693863965273
+          },
+          {
+            "decision_index": 101,
+            "hand": 69,
+            "hand_delta": -100.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              34,
+              9
+            ],
+            "to_call": 50,
+            "pot": 150,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "rule_label": "fold",
+            "top_label": "call",
+            "top_conf": 0.9993056804067765,
+            "call_conf": 0.9993056804067765
+          }
+        ]
+      },
+      "mirror": {
+        "winner": 1,
+        "bot0_chips": -186.0,
+        "bot1_chips": 186.0,
+        "summary": {
+          "decisions": 137,
+          "final_changed": 0,
+          "counterfactual_candidates": 29,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": -186.0
+        },
+        "changes": [],
+        "candidates": [
+          {
+            "decision_index": 8,
+            "hand": 2,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              24,
+              23,
+              2
+            ],
+            "my_cards": [
+              48,
+              43
+            ],
+            "to_call": 107,
+            "pot": 307,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "rule_label": "fold",
+            "top_label": "raise_pot",
+            "top_conf": 0.977337237210728,
+            "call_conf": 0.0005555614707171702
+          },
+          {
+            "decision_index": 15,
+            "hand": 5,
+            "hand_delta": -201.0,
+            "stage": "flop",
+            "public_cards": [
+              15,
+              23,
+              51
+            ],
+            "my_cards": [
+              38,
+              45
+            ],
+            "to_call": 0,
+            "pot": 402,
+            "my_chips": 19799,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.99905213410801,
+            "call_conf": 0.0009415174033420248
+          },
+          {
+            "decision_index": 27,
+            "hand": 10,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              7,
+              27,
+              13
+            ],
+            "my_cards": [
+              30,
+              31
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 184,
+            "base_final": 184,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9988858539878605,
+            "call_conf": 0.001097531127418745
+          },
+          {
+            "decision_index": 30,
+            "hand": 11,
+            "hand_delta": 364.0,
+            "stage": "flop",
+            "public_cards": [
+              22,
+              25,
+              2
+            ],
+            "my_cards": [
+              3,
+              1
+            ],
+            "to_call": 0,
+            "pot": 728,
+            "my_chips": 19636,
+            "rule_action": 717,
+            "base_final": 717,
+            "rule_label": "raise",
+            "top_label": "call",
+            "top_conf": 0.9103761442642677,
+            "call_conf": 0.9103761442642677
+          },
+          {
+            "decision_index": 35,
+            "hand": 13,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              30,
+              32,
+              21
+            ],
+            "my_cards": [
+              22,
+              1
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.973135523684142,
+            "call_conf": 0.02686126809912609
+          },
+          {
+            "decision_index": 50,
+            "hand": 20,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              32,
+              20,
+              14
+            ],
+            "my_cards": [
+              33,
+              9
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9853572493541672,
+            "call_conf": 0.004381695272796206
+          },
+          {
+            "decision_index": 53,
+            "hand": 21,
+            "hand_delta": -4203.0,
+            "stage": "turn",
+            "public_cards": [
+              7,
+              5,
+              28,
+              22
+            ],
+            "my_cards": [
+              38,
+              29
+            ],
+            "to_call": 390,
+            "pot": 1026,
+            "my_chips": 19682,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "fold",
+            "top_conf": 0.9770492239698951,
+            "call_conf": 0.01617785005564979
+          },
+          {
+            "decision_index": 56,
+            "hand": 22,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              2,
+              49,
+              46
+            ],
+            "my_cards": [
+              11,
+              6
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 256,
+            "base_final": 256,
+            "rule_label": "raise",
+            "top_label": "call",
+            "top_conf": 0.9851952500231305,
+            "call_conf": 0.9851952500231305
+          },
+          {
+            "decision_index": 58,
+            "hand": 23,
+            "hand_delta": 550.0,
+            "stage": "flop",
+            "public_cards": [
+              3,
+              32,
+              1
+            ],
+            "my_cards": [
+              48,
+              7
+            ],
+            "to_call": 0,
+            "pot": 1100,
+            "my_chips": 19450,
+            "rule_action": 1265,
+            "base_final": 1265,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9991226582906639,
+            "call_conf": 0.0008773379614979413
+          },
+          {
+            "decision_index": 66,
+            "hand": 26,
+            "hand_delta": 620.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              22,
+              51
+            ],
+            "to_call": 50,
+            "pot": 150,
+            "my_chips": 19900,
+            "rule_action": 570,
+            "base_final": 620,
+            "rule_label": "raise",
+            "top_label": "call",
+            "top_conf": 0.9995099996684523,
+            "call_conf": 0.9995099996684523
+          },
+          {
+            "decision_index": 67,
+            "hand": 26,
+            "hand_delta": 620.0,
+            "stage": "flop",
+            "public_cards": [
+              7,
+              14,
+              40
+            ],
+            "my_cards": [
+              22,
+              51
+            ],
+            "to_call": 0,
+            "pot": 1240,
+            "my_chips": 19380,
+            "rule_action": 1426,
+            "base_final": 1426,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9986849607487115,
+            "call_conf": 0.0013149477761198996
+          },
+          {
+            "decision_index": 77,
+            "hand": 33,
+            "hand_delta": 570.0,
+            "stage": "flop",
+            "public_cards": [
+              13,
+              10,
+              30
+            ],
+            "my_cards": [
+              28,
+              46
+            ],
+            "to_call": 0,
+            "pot": 1140,
+            "my_chips": 19430,
+            "rule_action": 1311,
+            "base_final": 1311,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9998145692337367,
+            "call_conf": 0.00017750382229515674
+          },
+          {
+            "decision_index": 83,
+            "hand": 36,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              5,
+              34,
+              19
+            ],
+            "my_cards": [
+              15,
+              31
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_pot",
+            "top_conf": 0.9782162875059421,
+            "call_conf": 0.00988239977135865
+          },
+          {
+            "decision_index": 84,
+            "hand": 36,
+            "hand_delta": 100.0,
+            "stage": "turn",
+            "public_cards": [
+              5,
+              34,
+              19,
+              2
+            ],
+            "my_cards": [
+              15,
+              31
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9344622765261386,
+            "call_conf": 0.011409867558887772
+          },
+          {
+            "decision_index": 86,
+            "hand": 37,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              22,
+              35,
+              39
+            ],
+            "my_cards": [
+              16,
+              6
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9701977281692273,
+            "call_conf": 0.02977201342219394
+          },
+          {
+            "decision_index": 88,
+            "hand": 38,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              35,
+              24,
+              16
+            ],
+            "my_cards": [
+              45,
+              2
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9711109545234289,
+            "call_conf": 0.009645853288237355
+          },
+          {
+            "decision_index": 89,
+            "hand": 38,
+            "hand_delta": -100.0,
+            "stage": "turn",
+            "public_cards": [
+              35,
+              24,
+              16,
+              8
+            ],
+            "my_cards": [
+              45,
+              2
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_half",
+            "top_conf": 0.9785659571624102,
+            "call_conf": 0.000674323752254756
+          },
+          {
+            "decision_index": 97,
+            "hand": 44,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              3,
+              19,
+              13
+            ],
+            "my_cards": [
+              45,
+              37
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 0,
+            "base_final": 0,
+            "rule_label": "call",
+            "top_label": "raise_pot",
+            "top_conf": 0.9984832197911102,
+            "call_conf": 5.111193359740986e-05
+          },
+          {
+            "decision_index": 98,
+            "hand": 44,
+            "hand_delta": -100.0,
+            "stage": "flop",
+            "public_cards": [
+              3,
+              19,
+              13
+            ],
+            "my_cards": [
+              45,
+              37
+            ],
+            "to_call": 101,
+            "pot": 301,
+            "my_chips": 19900,
+            "rule_action": -1,
+            "base_final": -1,
+            "rule_label": "fold",
+            "top_label": "raise_pot",
+            "top_conf": 0.9995290045087143,
+            "call_conf": 3.0108204715693564e-06
+          },
+          {
+            "decision_index": 102,
+            "hand": 47,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              12,
+              41,
+              2
+            ],
+            "my_cards": [
+              37,
+              16
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9831497337173388,
+            "call_conf": 0.01647709030747178
+          },
+          {
+            "decision_index": 104,
+            "hand": 49,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              30,
+              27,
+              2
+            ],
+            "my_cards": [
+              19,
+              8
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9804007072798524,
+            "call_conf": 0.016610755181214992
+          },
+          {
+            "decision_index": 109,
+            "hand": 53,
+            "hand_delta": -201.0,
+            "stage": "flop",
+            "public_cards": [
+              20,
+              18,
+              0
+            ],
+            "my_cards": [
+              8,
+              13
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9717616609522522,
+            "call_conf": 0.02055426639529558
+          },
+          {
+            "decision_index": 111,
+            "hand": 54,
+            "hand_delta": 620.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              19,
+              16
+            ],
+            "to_call": 50,
+            "pot": 150,
+            "my_chips": 19900,
+            "rule_action": 570,
+            "base_final": 620,
+            "rule_label": "raise",
+            "top_label": "call",
+            "top_conf": 0.9996784712645641,
+            "call_conf": 0.9996784712645641
+          },
+          {
+            "decision_index": 112,
+            "hand": 54,
+            "hand_delta": 620.0,
+            "stage": "flop",
+            "public_cards": [
+              1,
+              20,
+              0
+            ],
+            "my_cards": [
+              19,
+              16
+            ],
+            "to_call": 0,
+            "pot": 1240,
+            "my_chips": 19380,
+            "rule_action": 1426,
+            "base_final": 1426,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9306989996315508,
+            "call_conf": 0.06892807787651452
+          },
+          {
+            "decision_index": 114,
+            "hand": 55,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              22,
+              6,
+              32
+            ],
+            "my_cards": [
+              9,
+              3
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9730860890009503,
+            "call_conf": 0.026065412438233727
+          },
+          {
+            "decision_index": 121,
+            "hand": 58,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              15,
+              21,
+              19
+            ],
+            "my_cards": [
+              20,
+              2
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 101,
+            "base_final": 101,
+            "rule_label": "raise",
+            "top_label": "raise_half",
+            "top_conf": 0.9754824736524143,
+            "call_conf": 0.01919466891563958
+          },
+          {
+            "decision_index": 125,
+            "hand": 60,
+            "hand_delta": 100.0,
+            "stage": "flop",
+            "public_cards": [
+              38,
+              28,
+              7
+            ],
+            "my_cards": [
+              48,
+              39
+            ],
+            "to_call": 0,
+            "pot": 200,
+            "my_chips": 19900,
+            "rule_action": 184,
+            "base_final": 184,
+            "rule_label": "raise",
+            "top_label": "raise_pot",
+            "top_conf": 0.9930286770831672,
+            "call_conf": 0.0017823737276773841
+          },
+          {
+            "decision_index": 129,
+            "hand": 64,
+            "hand_delta": 281.0,
+            "stage": "preflop",
+            "public_cards": [],
+            "my_cards": [
+              42,
+              9
+            ],
+            "to_call": 231,
+            "pot": 331,
+            "my_chips": 19900,
+            "rule_action": -2,
+            "base_final": -2,
+            "rule_label": "allin",
+            "top_label": "fold",
+            "top_conf": 0.9999941799059734,
+            "call_conf": 5.790072786523416e-06
+          },
+          {
+            "decision_index": 130,
+            "hand": 64,
+            "hand_delta": 281.0,
+            "stage": "flop",
+            "public_cards": [
+              41,
+              15,
+              25
+            ],
+            "my_cards": [
+              42,
+              9
+            ],
+            "to_call": 0,
+            "pot": 20281,
+            "my_chips": 0,
+            "rule_action": -2,
+            "base_final": -2,
+            "rule_label": "allin",
+            "top_label": "fold",
+            "top_conf": 0.9999961678797719,
+            "call_conf": 3.8299738479540465e-06
+          }
+        ]
+      }
+    }
+  ],
+  "total": {
+    "decisions": 975,
+    "final_changed": 28,
+    "counterfactual_candidates": 174,
+    "changed_hand_delta_sum": -3134.0,
+    "all_hand_delta_sum": -1503.0,
+    "change_types": {
+      "fold_to_call": 28
+    }
+  },
+  "change_groups": {
+    "fold_to_call|preflop|to_call=0": {
+      "n": 22,
+      "mean_hand_delta": -100.0,
+      "sum_hand_delta": -2200.0,
+      "min_hand_delta": -100.0,
+      "max_hand_delta": -100.0
+    },
+    "fold_to_call|flop|to_call=101": {
+      "n": 2,
+      "mean_hand_delta": -201.0,
+      "sum_hand_delta": -402.0,
+      "min_hand_delta": -201.0,
+      "max_hand_delta": -201.0
+    },
+    "fold_to_call|preflop|to_call=50": {
+      "n": 3,
+      "mean_hand_delta": -100.0,
+      "sum_hand_delta": -300.0,
+      "min_hand_delta": -100.0,
+      "max_hand_delta": -100.0
+    },
+    "fold_to_call|flop|to_call=132": {
+      "n": 1,
+      "mean_hand_delta": -232.0,
+      "sum_hand_delta": -232.0,
+      "min_hand_delta": -232.0,
+      "max_hand_delta": -232.0
+    }
+  },
+  "candidate_groups": {
+    "allin->fold|flop|to_call=7828": {
+      "n": 1,
+      "mean_hand_delta": -12300.0,
+      "sum_hand_delta": -12300.0,
+      "min_hand_delta": -12300.0,
+      "max_hand_delta": -12300.0
+    },
+    "call->fold|preflop|to_call=385": {
+      "n": 1,
+      "mean_hand_delta": -12300.0,
+      "sum_hand_delta": -12300.0,
+      "min_hand_delta": -12300.0,
+      "max_hand_delta": -12300.0
+    },
+    "raise->fold|flop|to_call=1022": {
+      "n": 1,
+      "mean_hand_delta": -12300.0,
+      "sum_hand_delta": -12300.0,
+      "min_hand_delta": -12300.0,
+      "max_hand_delta": -12300.0
+    },
+    "call->fold|turn|to_call=390": {
+      "n": 1,
+      "mean_hand_delta": -4203.0,
+      "sum_hand_delta": -4203.0,
+      "min_hand_delta": -4203.0,
+      "max_hand_delta": -4203.0
+    },
+    "call->raise_half|turn|to_call=0": {
+      "n": 14,
+      "mean_hand_delta": -96.92857142857143,
+      "sum_hand_delta": -1357.0,
+      "min_hand_delta": -467.0,
+      "max_hand_delta": 100.0
+    },
+    "call->raise_half|flop|to_call=0": {
+      "n": 25,
+      "mean_hand_delta": -45.6,
+      "sum_hand_delta": -1140.0,
+      "min_hand_delta": -338.0,
+      "max_hand_delta": 201.0
+    },
+    "call->raise_pot|flop|to_call=0": {
+      "n": 14,
+      "mean_hand_delta": -65.71428571428571,
+      "sum_hand_delta": -920.0,
+      "min_hand_delta": -220.0,
+      "max_hand_delta": 100.0
+    },
+    "call->fold|flop|to_call=196": {
+      "n": 1,
+      "mean_hand_delta": -581.0,
+      "sum_hand_delta": -581.0,
+      "min_hand_delta": -581.0,
+      "max_hand_delta": -581.0
+    },
+    "fold->call|flop|to_call=101": {
+      "n": 2,
+      "mean_hand_delta": -201.0,
+      "sum_hand_delta": -402.0,
+      "min_hand_delta": -201.0,
+      "max_hand_delta": -201.0
+    },
+    "fold->call|preflop|to_call=50": {
+      "n": 3,
+      "mean_hand_delta": -100.0,
+      "sum_hand_delta": -300.0,
+      "min_hand_delta": -100.0,
+      "max_hand_delta": -100.0
+    },
+    "raise->call|river|to_call=0": {
+      "n": 1,
+      "mean_hand_delta": -270.0,
+      "sum_hand_delta": -270.0,
+      "min_hand_delta": -270.0,
+      "max_hand_delta": -270.0
+    },
+    "fold->raise_half|flop|to_call=300": {
+      "n": 1,
+      "mean_hand_delta": -201.0,
+      "sum_hand_delta": -201.0,
+      "min_hand_delta": -201.0,
+      "max_hand_delta": -201.0
+    },
+    "fold->raise_half|flop|to_call=327": {
+      "n": 1,
+      "mean_hand_delta": -201.0,
+      "sum_hand_delta": -201.0,
+      "min_hand_delta": -201.0,
+      "max_hand_delta": -201.0
+    },
+    "fold->raise_pot|flop|to_call=101": {
+      "n": 2,
+      "mean_hand_delta": -100.0,
+      "sum_hand_delta": -200.0,
+      "min_hand_delta": -100.0,
+      "max_hand_delta": -100.0
+    },
+    "call->fold|turn|to_call=0": {
+      "n": 1,
+      "mean_hand_delta": -100.0,
+      "sum_hand_delta": -100.0,
+      "min_hand_delta": -100.0,
+      "max_hand_delta": -100.0
+    },
+    "call->raise_pot|river|to_call=0": {
+      "n": 1,
+      "mean_hand_delta": -100.0,
+      "sum_hand_delta": -100.0,
+      "min_hand_delta": -100.0,
+      "max_hand_delta": -100.0
+    },
+    "fold->call|flop|to_call=151": {
+      "n": 1,
+      "mean_hand_delta": -100.0,
+      "sum_hand_delta": -100.0,
+      "min_hand_delta": -100.0,
+      "max_hand_delta": -100.0
+    },
+    "fold->call|preflop|to_call=0": {
+      "n": 1,
+      "mean_hand_delta": -100.0,
+      "sum_hand_delta": -100.0,
+      "min_hand_delta": -100.0,
+      "max_hand_delta": -100.0
+    },
+    "fold->call|preflop|to_call=240": {
+      "n": 1,
+      "mean_hand_delta": -100.0,
+      "sum_hand_delta": -100.0,
+      "min_hand_delta": -100.0,
+      "max_hand_delta": -100.0
+    },
+    "fold->call|preflop|to_call=245": {
+      "n": 1,
+      "mean_hand_delta": -100.0,
+      "sum_hand_delta": -100.0,
+      "min_hand_delta": -100.0,
+      "max_hand_delta": -100.0
+    },
+    "fold->raise_half|flop|to_call=101": {
+      "n": 1,
+      "mean_hand_delta": -100.0,
+      "sum_hand_delta": -100.0,
+      "min_hand_delta": -100.0,
+      "max_hand_delta": -100.0
+    },
+    "fold->raise_pot|flop|to_call=0": {
+      "n": 1,
+      "mean_hand_delta": -100.0,
+      "sum_hand_delta": -100.0,
+      "min_hand_delta": -100.0,
+      "max_hand_delta": -100.0
+    },
+    "fold->raise_pot|flop|to_call=107": {
+      "n": 1,
+      "mean_hand_delta": -100.0,
+      "sum_hand_delta": -100.0,
+      "min_hand_delta": -100.0,
+      "max_hand_delta": -100.0
+    },
+    "call->raise_half|river|to_call=0": {
+      "n": 2,
+      "mean_hand_delta": 0.0,
+      "sum_hand_delta": 0.0,
+      "min_hand_delta": -100.0,
+      "max_hand_delta": 100.0
+    },
+    "allin->call|preflop|to_call=50": {
+      "n": 1,
+      "mean_hand_delta": 100.0,
+      "sum_hand_delta": 100.0,
+      "min_hand_delta": 100.0,
+      "max_hand_delta": 100.0
+    },
+    "raise->fold|flop|to_call=101": {
+      "n": 1,
+      "mean_hand_delta": 201.0,
+      "sum_hand_delta": 201.0,
+      "min_hand_delta": 201.0,
+      "max_hand_delta": 201.0
+    },
+    "raise->fold|turn|to_call=101": {
+      "n": 1,
+      "mean_hand_delta": 201.0,
+      "sum_hand_delta": 201.0,
+      "min_hand_delta": 201.0,
+      "max_hand_delta": 201.0
+    },
+    "raise->raise_pot|flop|to_call=101": {
+      "n": 1,
+      "mean_hand_delta": 201.0,
+      "sum_hand_delta": 201.0,
+      "min_hand_delta": 201.0,
+      "max_hand_delta": 201.0
+    },
+    "allin->fold|flop|to_call=0": {
+      "n": 1,
+      "mean_hand_delta": 281.0,
+      "sum_hand_delta": 281.0,
+      "min_hand_delta": 281.0,
+      "max_hand_delta": 281.0
+    },
+    "allin->fold|preflop|to_call=231": {
+      "n": 1,
+      "mean_hand_delta": 281.0,
+      "sum_hand_delta": 281.0,
+      "min_hand_delta": 281.0,
+      "max_hand_delta": 281.0
+    },
+    "raise->fold|turn|to_call=274": {
+      "n": 1,
+      "mean_hand_delta": 558.0,
+      "sum_hand_delta": 558.0,
+      "min_hand_delta": 558.0,
+      "max_hand_delta": 558.0
+    },
+    "raise->raise_pot|river|to_call=188": {
+      "n": 1,
+      "mean_hand_delta": 682.0,
+      "sum_hand_delta": 682.0,
+      "min_hand_delta": 682.0,
+      "max_hand_delta": 682.0
+    },
+    "raise->call|flop|to_call=0": {
+      "n": 4,
+      "mean_hand_delta": 227.25,
+      "sum_hand_delta": 909.0,
+      "min_hand_delta": 100.0,
+      "max_hand_delta": 364.0
+    },
+    "raise->raise_pot|preflop|to_call=0": {
+      "n": 15,
+      "mean_hand_delta": 66.6,
+      "sum_hand_delta": 999.0,
+      "min_hand_delta": -201.0,
+      "max_hand_delta": 201.0
+    },
+    "raise->raise_2pot|preflop|to_call=0": {
+      "n": 12,
+      "mean_hand_delta": 100.0,
+      "sum_hand_delta": 1200.0,
+      "min_hand_delta": 100.0,
+      "max_hand_delta": 100.0
+    },
+    "raise->call|preflop|to_call=50": {
+      "n": 2,
+      "mean_hand_delta": 620.0,
+      "sum_hand_delta": 1240.0,
+      "min_hand_delta": 620.0,
+      "max_hand_delta": 620.0
+    },
+    "raise->raise_pot|flop|to_call=0": {
+      "n": 15,
+      "mean_hand_delta": 112.73333333333333,
+      "sum_hand_delta": 1691.0,
+      "min_hand_delta": 100.0,
+      "max_hand_delta": 291.0
+    },
+    "raise->raise_half|flop|to_call=0": {
+      "n": 22,
+      "mean_hand_delta": 184.22727272727272,
+      "sum_hand_delta": 4053.0,
+      "min_hand_delta": -467.0,
+      "max_hand_delta": 620.0
+    },
+    "raise->fold|turn|to_call=1584": {
+      "n": 1,
+      "mean_hand_delta": 5861.0,
+      "sum_hand_delta": 5861.0,
+      "min_hand_delta": 5861.0,
+      "max_hand_delta": 5861.0
+    },
+    "allin->call|river|to_call=0": {
+      "n": 1,
+      "mean_hand_delta": 6607.0,
+      "sum_hand_delta": 6607.0,
+      "min_hand_delta": 6607.0,
+      "max_hand_delta": 6607.0
+    },
+    "allin->fold|turn|to_call=0": {
+      "n": 1,
+      "mean_hand_delta": 6607.0,
+      "sum_hand_delta": 6607.0,
+      "min_hand_delta": 6607.0,
+      "max_hand_delta": 6607.0
+    },
+    "raise->raise_pot|preflop|to_call=226": {
+      "n": 1,
+      "mean_hand_delta": 6607.0,
+      "sum_hand_delta": 6607.0,
+      "min_hand_delta": 6607.0,
+      "max_hand_delta": 6607.0
+    },
+    "raise->raise_half|turn|to_call=0": {
+      "n": 13,
+      "mean_hand_delta": 526.6923076923077,
+      "sum_hand_delta": 6847.0,
+      "min_hand_delta": 100.0,
+      "max_hand_delta": 5224.0
+    }
+  }
+}

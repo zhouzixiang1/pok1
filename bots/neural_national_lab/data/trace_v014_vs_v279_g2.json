@@ -1,0 +1,78 @@
+{
+  "mode": "common_deck_advice_trace",
+  "games": 2,
+  "version": "bots/neural_national_lab/versions/v014_v254_weighted_free_only254/main.py",
+  "opponent": "bots/claude_v279/main.py",
+  "pairs": [
+    {
+      "idx": 0,
+      "normal": {
+        "winner": 0,
+        "bot0_chips": 78.0,
+        "bot1_chips": -78.0,
+        "summary": {
+          "decisions": 148,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": 78.0
+        },
+        "changes": []
+      },
+      "mirror": {
+        "winner": 1,
+        "bot0_chips": -7.0,
+        "bot1_chips": 7.0,
+        "summary": {
+          "decisions": 116,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": -7.0
+        },
+        "changes": []
+      }
+    },
+    {
+      "idx": 1,
+      "normal": {
+        "winner": 1,
+        "bot0_chips": -11.0,
+        "bot1_chips": 11.0,
+        "summary": {
+          "decisions": 109,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": -11.0
+        },
+        "changes": []
+      },
+      "mirror": {
+        "winner": 0,
+        "bot0_chips": 1377.0,
+        "bot1_chips": -1377.0,
+        "summary": {
+          "decisions": 156,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": 1377.0
+        },
+        "changes": []
+      }
+    }
+  ],
+  "total": {
+    "decisions": 529,
+    "final_changed": 0,
+    "changed_hand_delta_sum": 0.0,
+    "all_hand_delta_sum": 1437.0,
+    "change_types": {}
+  },
+  "change_groups": {}
+}

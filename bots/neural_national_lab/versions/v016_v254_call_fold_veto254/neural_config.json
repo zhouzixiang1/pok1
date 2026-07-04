@@ -1,0 +1,21 @@
+{
+  "enabled": true,
+  "weights": "policy_weights.json",
+  "fold_conf": 0.9,
+  "fold_rule_actions": ["call"],
+  "min_fold_to_call": 100,
+  "max_fold_to_call": 1200,
+  "call_conf": 0.78,
+  "raise_conf": 1.01,
+  "allin_conf": 1.01,
+  "max_call_ratio": 0.3,
+  "max_call_chips": 500,
+  "max_call_pot_ratio": 0.07,
+  "free_check_conf": 0.6,
+  "allow_free_check_rescue": false,
+  "allow_fold": true,
+  "allow_call": false,
+  "allow_raise": false,
+  "allow_allin": false,
+  "max_fold_proxy": 0.15
+}

@@ -91,3 +91,17 @@ Updated design consequence:
 - Keep overlays explicitly labelled. A push/fold chart, preflop table, or
   rule-based safety fallback can be useful, but it should not hide whether the
   learned blueprint itself improved.
+
+## Advisor-Line Findings
+
+- `trace_advice_outcomes.py` is now the preferred advisor diagnostic. It
+  prevents threshold tuning from relying on aggregate match score alone by
+  joining each neural intervention to that hand's actual chip delta.
+- v011/v015/v016 show that sparse advisor overlays are not yet a reliable path
+  to a clear edge. Fold-to-call rescue was usually negative in traced hands;
+  narrowing it made v015 inactive; high-confidence call-to-fold veto looked
+  plausible in counterfactual trace but failed paired evaluation.
+- The next research branch should spend effort on data generation and native
+  training targets: regret/advantage samples, legal action masks, and a stable
+  action abstraction. More hand-written gates around the current imitation MLP
+  are unlikely to produce a significant result.

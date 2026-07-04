@@ -1,0 +1,202 @@
+{
+  "mode": "common_deck_advice_trace",
+  "games": 6,
+  "version": "bots/neural_national_lab/versions/v015_v254_flop_band_rescue254/main.py",
+  "opponent": "bots/claude_v279/main.py",
+  "pairs": [
+    {
+      "idx": 0,
+      "normal": {
+        "winner": 1,
+        "bot0_chips": -48.0,
+        "bot1_chips": 48.0,
+        "summary": {
+          "decisions": 137,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": -48.0
+        },
+        "changes": []
+      },
+      "mirror": {
+        "winner": 0,
+        "bot0_chips": 99.0,
+        "bot1_chips": -99.0,
+        "summary": {
+          "decisions": 149,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": 99.0
+        },
+        "changes": []
+      }
+    },
+    {
+      "idx": 1,
+      "normal": {
+        "winner": 0,
+        "bot0_chips": 1281.0,
+        "bot1_chips": -1281.0,
+        "summary": {
+          "decisions": 135,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": 1281.0
+        },
+        "changes": []
+      },
+      "mirror": {
+        "winner": 1,
+        "bot0_chips": -14800.0,
+        "bot1_chips": 14800.0,
+        "summary": {
+          "decisions": 41,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": -14800.0
+        },
+        "changes": []
+      }
+    },
+    {
+      "idx": 2,
+      "normal": {
+        "winner": 0,
+        "bot0_chips": 977.0,
+        "bot1_chips": -977.0,
+        "summary": {
+          "decisions": 130,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": 977.0
+        },
+        "changes": []
+      },
+      "mirror": {
+        "winner": 1,
+        "bot0_chips": -7933.0,
+        "bot1_chips": 7933.0,
+        "summary": {
+          "decisions": 124,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": -7933.0
+        },
+        "changes": []
+      }
+    },
+    {
+      "idx": 3,
+      "normal": {
+        "winner": 0,
+        "bot0_chips": 875.0,
+        "bot1_chips": -875.0,
+        "summary": {
+          "decisions": 144,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": 875.0
+        },
+        "changes": []
+      },
+      "mirror": {
+        "winner": 0,
+        "bot0_chips": 47.0,
+        "bot1_chips": -47.0,
+        "summary": {
+          "decisions": 144,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": 47.0
+        },
+        "changes": []
+      }
+    },
+    {
+      "idx": 4,
+      "normal": {
+        "winner": 0,
+        "bot0_chips": 1942.0,
+        "bot1_chips": -1942.0,
+        "summary": {
+          "decisions": 143,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": 1942.0
+        },
+        "changes": []
+      },
+      "mirror": {
+        "winner": 0,
+        "bot0_chips": 20003.0,
+        "bot1_chips": -20003.0,
+        "summary": {
+          "decisions": 128,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": 20003.0
+        },
+        "changes": []
+      }
+    },
+    {
+      "idx": 5,
+      "normal": {
+        "winner": 1,
+        "bot0_chips": -1397.0,
+        "bot1_chips": 1397.0,
+        "summary": {
+          "decisions": 76,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": -1397.0
+        },
+        "changes": []
+      },
+      "mirror": {
+        "winner": 0,
+        "bot0_chips": 2536.0,
+        "bot1_chips": -2536.0,
+        "summary": {
+          "decisions": 119,
+          "final_changed": 0,
+          "change_types": {},
+          "changed_hand_count": 0,
+          "changed_hand_delta_sum": 0,
+          "all_hand_delta_sum": 2536.0
+        },
+        "changes": []
+      }
+    }
+  ],
+  "total": {
+    "decisions": 1470,
+    "final_changed": 0,
+    "changed_hand_delta_sum": 0.0,
+    "all_hand_delta_sum": 3582.0,
+    "change_types": {}
+  },
+  "change_groups": {}
+}
