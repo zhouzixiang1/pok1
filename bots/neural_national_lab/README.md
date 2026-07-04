@@ -636,6 +636,24 @@ step is multi-opponent and larger-seed validation of v053, plus collecting
 more runtime-feature neighborhoods so the model is not dominated by two source
 contexts.
 
+The first multi-opponent validation confirmed that caution. Against
+`claude_v279`, `claude_v283`, `claude_v284`, and `claude_v285`, with 8 paired
+common-deck samples per opponent, v053 had 31 zero deltas and one small
+negative delta. The aggregate was `-1.30` chips per 70 hands with 95 percent
+CI `[-3.84, 1.24]`; only `claude_v279` changed at all, with idx3 producing
+`-83`. Active replay of that seed showed the same flop free-action template:
+v043 raised to `101`, while v053 checked `0`, but this context was a slight
+loss for the veto.
+
+`v054_v254_cf_neighborhood_regression_repair_p097_h32_b050` is the recorded
+attempt to add that one v053 regression as a runtime positive row and retrain
+the value head. It did not work: the p097 h32 model's validation sign accuracy
+dropped to `0.50`, and targeted replay of the exact idx3 seed still produced
+`-83`. Keep v054 as a failed boundary-repair artifact. The next useful move is
+not another one-row retrain; collect a larger set of true v043-v053 runtime
+divergences across opponents, then retrain only if the new rows cover multiple
+positive and negative contexts instead of a single seed.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass
