@@ -501,6 +501,56 @@ def test_runtime_guard_blocks_unexpected_system_dirty(monkeypatch):
     assert " M web/core/tool_gates.py" in payload["unexpected_entries"]
 
 
+def test_runtime_guard_allows_unrelated_inplace_dirty_entries(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshot = {
+        "ok": True,
+        "branch": "main...origin/main",
+        "head": "abc123",
+        "entries": [
+            " M docs/notes.md",
+            "?? bots/neural_national_lab/data/run.jsonl",
+            "?? bots/claude_v300/",
+        ],
+    }
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "execute_workers",
+        {"next_v": 300, "source_v": 299},
+    )
+
+    assert ok is True
+    assert payload["ignored_count"] == 2
+    assert " M docs/notes.md" in payload["ignored_entries"]
+
+
+def test_runtime_guard_blocks_foreign_claude_bot_dir(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshot = {
+        "ok": True,
+        "branch": "main...origin/main",
+        "head": "abc123",
+        "entries": ["?? bots/claude_v299/", "?? bots/claude_v300/"],
+    }
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "execute_workers",
+        {"next_v": 300, "source_v": 299},
+    )
+
+    assert ok is False
+    assert payload["reason"] == "unexpected_worktree_entries"
+    assert "?? bots/claude_v299/" in payload["unexpected_entries"]
+
+
 def test_runtime_guard_blocks_truncated_snapshot(monkeypatch):
     import tool_runtime_guard
 
@@ -548,6 +598,32 @@ def test_runtime_guard_blocks_head_drift(monkeypatch):
     assert payload["reason"] == "head_changed_during_generation"
     assert payload["baseline_head"] == "old123"
     assert payload["current_head"] == "new456"
+
+
+def test_runtime_guard_allows_unrelated_head_drift(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshots = iter([
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+    ])
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "old123"})
+    monkeypatch.setattr(
+        tool_runtime_guard,
+        "changed_paths_between_heads",
+        lambda *_args, **_kwargs: ["docs/experiment-notes.md", "bots/neural_national_lab/data/run.jsonl"],
+    )
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_quality_gates",
+        {"version": 300, "source_v": 299},
+    )
+
+    assert ok is True
+    assert payload["head_drift_unrelated_allowed"] is True
+    assert "docs/experiment-notes.md" in "\n".join(payload["head_changed_paths"])
 
 
 def test_runtime_guard_uses_persisted_checkpoint_baseline_after_restart(monkeypatch):
@@ -1039,6 +1115,66 @@ def test_checkpoint_recovery_diagnostics_allows_matching_active_checkpoint(tmp_p
     assert diag["active"] is True
     assert diag["recoverable"] is True
     assert diag["issues"] == []
+
+
+def test_checkpoint_recovery_diagnostics_ignores_unrelated_dirty_entries(tmp_path):
+    import pipeline_recovery
+
+    (tmp_path / "bots" / "claude_v258").mkdir(parents=True)
+    checkpoint = {
+        "next_v": 258,
+        "source_v": 254,
+        "stage": "workers_done",
+        "repo_baseline": {"branch": "main", "head": "same123"},
+    }
+    snapshot = {
+        "ok": True,
+        "branch": "main...origin/main",
+        "head": "same123",
+        "entries": [
+            " M docs/notes.md",
+            "?? bots/neural_national_lab/data/run.jsonl",
+            "?? bots/claude_v258/",
+        ],
+    }
+
+    diag = pipeline_recovery.checkpoint_recovery_diagnostics(
+        checkpoint,
+        snapshot=snapshot,
+        project_root=tmp_path,
+    )
+
+    assert diag["recoverable"] is True
+    assert "repo_unrelated_worktree_entries_ignored" in diag["warnings"]
+    assert diag["worktree_scope"]["ignored_count"] == 2
+
+
+def test_checkpoint_recovery_diagnostics_blocks_critical_dirty_entries(tmp_path):
+    import pipeline_recovery
+
+    (tmp_path / "bots" / "claude_v258").mkdir(parents=True)
+    checkpoint = {
+        "next_v": 258,
+        "source_v": 254,
+        "stage": "workers_done",
+        "repo_baseline": {"branch": "main", "head": "same123"},
+    }
+    snapshot = {
+        "ok": True,
+        "branch": "main...origin/main",
+        "head": "same123",
+        "entries": [" M sever/server/tcp_server.py", "?? bots/claude_v258/"],
+    }
+
+    diag = pipeline_recovery.checkpoint_recovery_diagnostics(
+        checkpoint,
+        snapshot=snapshot,
+        project_root=tmp_path,
+    )
+
+    assert diag["recoverable"] is False
+    assert "repo_blocking_worktree_entries" in diag["issues"]
+    assert " M sever/server/tcp_server.py" in diag["worktree_scope"]["blocking_entries"]
 
 
 def test_checkpoint_recovery_diagnostics_tracks_rework_target_dirs(tmp_path):

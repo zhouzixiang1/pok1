@@ -14,6 +14,11 @@ from claude_agent_sdk import tool as sdk_tool
 
 from evolution_infra import EVOLUTION_BRANCH, PROJECT_ROOT, read_pipeline_checkpoint
 from repo_state import get_last_snapshot, git_worktree_snapshot, is_generated_bot_dir_entry
+from evolution_scope import (
+    changed_paths_between_heads,
+    classify_paths,
+    classify_status_entries,
+)
 
 _BOT_DIR_RE = re.compile(r"^\?\? bots/claude_v(?P<version>\d+)/$")
 _HEAD_CHANGE_ALLOWED_TOOLS = {"run_archivist"}
@@ -77,11 +82,25 @@ def _entry_allowed(line: str, candidate_v: int | None) -> bool:
     return False
 
 
+def _snapshot() -> dict[str, Any]:
+    """Capture enough status lines for in-place shared worktrees."""
+    try:
+        return git_worktree_snapshot(max_lines=10000)
+    except TypeError:
+        # Tests commonly monkeypatch git_worktree_snapshot with a zero-arg lambda.
+        return git_worktree_snapshot()
+
+
+def _scope(snapshot: dict[str, Any], candidate_v: int | None) -> dict[str, Any]:
+    return classify_status_entries(snapshot.get("entries") or [], candidate_v)
+
+
 def _unexpected_entries(snapshot: dict[str, Any], candidate_v: int | None) -> list[str]:
-    return [
-        line for line in snapshot.get("entries", []) or []
-        if not _entry_allowed(line, candidate_v)
-    ]
+    return list(_scope(snapshot, candidate_v).get("blocking_entries") or [])
+
+
+def _ignored_entries(snapshot: dict[str, Any], candidate_v: int | None) -> list[str]:
+    return list(_scope(snapshot, candidate_v).get("ignored_entries") or [])
 
 
 def _checkpoint_repo_baseline(candidate_v: int | None) -> dict[str, Any] | None:
@@ -181,6 +200,32 @@ def _branch_name(branch_status: str) -> str:
     return (branch_status or "").split("...", 1)[0].split()[0]
 
 
+def _unrelated_head_drift_allowed(
+    *,
+    candidate_v: int | None,
+    baseline_head: str,
+    current_head: str,
+) -> tuple[bool, dict[str, Any]]:
+    changed_paths = changed_paths_between_heads(PROJECT_ROOT, baseline_head, current_head)
+    if changed_paths is None:
+        return False, {"head_drift_paths_available": False}
+    path_scope = classify_paths(changed_paths, candidate_v)
+    blocking = list(path_scope.get("blocking_entries") or [])
+    candidate_entries = list(path_scope.get("candidate_entries") or [])
+    if blocking or candidate_entries:
+        return False, {
+            "head_drift_paths_available": True,
+            "head_changed_paths": changed_paths[:80],
+            "head_blocking_entries": blocking[:40],
+            "head_candidate_entries": candidate_entries[:40],
+        }
+    return True, {
+        "head_drift_paths_available": True,
+        "head_changed_paths": changed_paths[:80],
+        "head_ignored_entries": (path_scope.get("ignored_entries") or [])[:40],
+    }
+
+
 def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None) -> tuple[bool, dict[str, Any]]:
     """Ensure mutating pipeline tools run on the canonical branch and clean codebase."""
     args = args or {}
@@ -188,7 +233,7 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
         return True, {"guard": "disabled"}
 
     candidate_v = _candidate_version(tool_name, args)
-    before = git_worktree_snapshot()
+    before = _snapshot()
     current_branch = _branch_name(str(before.get("branch") or ""))
 
     if before.get("truncated"):
@@ -237,7 +282,7 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
         )
         return False, payload
 
-    snapshot = git_worktree_snapshot()
+    snapshot = _snapshot()
     if snapshot.get("truncated"):
         payload = {
             "blocked": True,
@@ -269,6 +314,32 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
         and current_head
         and baseline_head != current_head
     ):
+        unrelated_allowed, unrelated_payload = _unrelated_head_drift_allowed(
+            candidate_v=candidate_v,
+            baseline_head=baseline_head,
+            current_head=current_head,
+        )
+        if unrelated_allowed:
+            _log_guard_event(
+                "repo.runtime_guard_head_drift_unrelated_allowed",
+                "warn",
+                f"Runtime git guard allowed {tool_name} after unrelated HEAD change",
+                {
+                    "tool": tool_name,
+                    "candidate_v": candidate_v,
+                    "baseline_head": baseline_head,
+                    "current_head": current_head,
+                    **unrelated_payload,
+                },
+            )
+            return True, {
+                "guard": "ok",
+                "head_drift_unrelated_allowed": True,
+                "candidate_v": candidate_v,
+                "baseline_head": baseline_head,
+                "current_head": current_head,
+                **unrelated_payload,
+            }
         allowed, allowed_payload = _head_change_allowed_for_checkpoint_resume(
             tool_name=tool_name,
             candidate_v=candidate_v,
@@ -298,6 +369,7 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
             "current_head": current_head,
             "baseline_source": "checkpoint" if baseline.get("captured_stage") else "process_snapshot",
             "branch": snapshot.get("branch"),
+            **unrelated_payload,
             "directive": "A git commit changed the runtime code during this generation. Abandon and restart from a fresh baseline.",
         }
         _log_guard_event("repo.runtime_guard_blocked", "error", "Runtime git guard blocked HEAD drift", payload)
@@ -305,6 +377,7 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
 
     unexpected = _unexpected_entries(snapshot, candidate_v)
     if unexpected:
+        ignored = _ignored_entries(snapshot, candidate_v)
         payload = {
             "blocked": True,
             "reason": "unexpected_worktree_entries",
@@ -313,6 +386,8 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
             "branch": snapshot.get("branch"),
             "head": snapshot.get("head"),
             "unexpected_entries": unexpected[:40],
+            "ignored_entries": ignored[:40],
+            "ignored_count": len(ignored),
             "generated_bot_dirs": [
                 line for line in snapshot.get("entries", []) or []
                 if is_generated_bot_dir_entry(line)
@@ -322,12 +397,15 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
         _log_guard_event("repo.runtime_guard_blocked", "error", "Runtime git guard blocked unexpected worktree entries", payload)
         return False, payload
 
+    ignored = _ignored_entries(snapshot, candidate_v)
     return True, {
         "guard": "ok",
         "tool": tool_name,
         "candidate_v": candidate_v,
         "branch": snapshot.get("branch"),
         "head": snapshot.get("head"),
+        "ignored_entries": ignored[:40],
+        "ignored_count": len(ignored),
     }
 
 

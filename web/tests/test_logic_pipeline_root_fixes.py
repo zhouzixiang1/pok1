@@ -1459,7 +1459,7 @@ def test_git_push_refs_reports_failure(monkeypatch):
     assert ("push", "origin", "bot-v999") in calls
 
 
-def test_git_commit_bot_refuses_preexisting_staged_files(monkeypatch):
+def test_git_commit_bot_refuses_preexisting_blocking_staged_files(monkeypatch):
     import evolution_infra
 
     calls = []
@@ -1469,13 +1469,49 @@ def test_git_commit_bot_refuses_preexisting_staged_files(monkeypatch):
         if args == ("rev-parse", "--abbrev-ref", "HEAD"):
             return "main\n"
         if args == ("diff", "--cached", "--name-only"):
-            return "unrelated.py\n"
+            return "web/core/tool_gates.py\n"
         raise AssertionError(args)
 
     monkeypatch.setattr(evolution_infra, "_git", fake_git)
 
-    with __import__("pytest").raises(RuntimeError, match="pre-existing staged"):
+    with __import__("pytest").raises(RuntimeError, match="pre-existing blocking staged"):
         evolution_infra.git_commit_bot(999, 998, "test")
 
     assert not any(call[:1] == ("add",) for call in calls)
     assert not any(call[:1] == ("commit",) for call in calls)
+
+
+def test_git_commit_bot_preserves_unrelated_staged_files(monkeypatch):
+    import evolution_infra
+
+    calls = []
+    staged = ["docs/user-notes.md"]
+
+    def fake_git(*args, **_kwargs):
+        calls.append(args)
+        if args == ("rev-parse", "--abbrev-ref", "HEAD"):
+            return "main\n"
+        if args == ("diff", "--cached", "--name-only"):
+            return "\n".join(staged) + ("\n" if staged else "")
+        if args == ("add", "--", "bots/claude_v999"):
+            staged.append("bots/claude_v999/main.py")
+            return ""
+        if args[:2] == ("commit", "-m"):
+            assert args[-2:] == ("--", "bots/claude_v999")
+            return ""
+        if args == ("rev-parse", "HEAD"):
+            return "abc123456789\n"
+        if args == ("tag", "-d", "bot-v999"):
+            return ""
+        if args == ("tag", "bot-v999", "-m", "Bot v999: test"):
+            return ""
+        raise AssertionError(args)
+
+    monkeypatch.setattr(evolution_infra, "_git", fake_git)
+
+    push_ok = evolution_infra.git_commit_bot(999, 998, "test")
+
+    assert push_ok is False
+    assert ("add", "--", "bots/claude_v999") in calls
+    assert any(call[:1] == ("commit",) for call in calls)
+    assert not any("docs/user-notes.md" in call for call in calls if call[:1] == ("commit",))

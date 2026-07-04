@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from evolution_infra import EVOLUTION_BRANCH, PROJECT_ROOT
+from evolution_scope import classify_status_entries
 from repo_state import git_worktree_snapshot
 
 INACTIVE_STAGES = {None, "archived", "abandoned", "timed_out"}
@@ -73,6 +74,13 @@ def _enforce_evolution_branch() -> bool:
     return True
 
 
+def _snapshot_for_recovery(root: Path) -> dict[str, Any]:
+    try:
+        return git_worktree_snapshot(root, max_lines=10000)
+    except TypeError:
+        return git_worktree_snapshot(root)
+
+
 def checkpoint_recovery_diagnostics(
     checkpoint: dict[str, Any] | None,
     *,
@@ -106,7 +114,7 @@ def checkpoint_recovery_diagnostics(
     if not active:
         return diag
 
-    snapshot = snapshot if snapshot is not None else git_worktree_snapshot(root)
+    snapshot = snapshot if snapshot is not None else _snapshot_for_recovery(root)
     baseline = checkpoint.get("repo_baseline")
     baseline = baseline if isinstance(baseline, dict) else {}
     current_branch = branch_name(str(snapshot.get("branch") or ""))
@@ -124,8 +132,20 @@ def checkpoint_recovery_diagnostics(
         "snapshot_error": snapshot.get("error"),
     }
     diag["repo"] = repo_diag
+    worktree_scope = classify_status_entries(snapshot.get("entries") or [], next_v)
+    diag["worktree_scope"] = {
+        "blocking_entries": (worktree_scope.get("blocking_entries") or [])[:40],
+        "ignored_entries": (worktree_scope.get("ignored_entries") or [])[:40],
+        "candidate_entries": (worktree_scope.get("candidate_entries") or [])[:40],
+        "blocking_count": worktree_scope.get("blocking_count", 0),
+        "ignored_count": worktree_scope.get("ignored_count", 0),
+    }
     if snapshot.get("truncated"):
         issues.append("worktree_snapshot_truncated")
+    if worktree_scope.get("blocking_entries"):
+        issues.append("repo_blocking_worktree_entries")
+    if worktree_scope.get("ignored_entries"):
+        warnings.append("repo_unrelated_worktree_entries_ignored")
     if _enforce_evolution_branch() and current_branch and current_branch != EVOLUTION_BRANCH:
         issues.append("repo_not_on_evolution_branch")
     if baseline_branch and current_branch and baseline_branch != current_branch:
@@ -136,6 +156,7 @@ def checkpoint_recovery_diagnostics(
             stage in HEAD_DRIFT_RESUME_STAGES
             and current_branch == EVOLUTION_BRANCH
             and (not baseline_branch or baseline_branch == current_branch)
+            and not worktree_scope.get("blocking_entries")
             and target_dir is not None
             and (stage in HEAD_DRIFT_SELECTED_STAGES or target_dir.exists())
         )
