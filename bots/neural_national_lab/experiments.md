@@ -150,6 +150,35 @@
   when `to_call == 0`; v018 isolates that slice while preserving v017 for
   replay.
 
+## v019_v254_outcome_blueprint_mix254
+
+- Base: `v018_v254_flop_raise_blueprint254`.
+- Change: replaces the teacher-imitation blueprint weights with
+  `policy_outcome_weighted_round1.json`, trained from teacher decisions weighted
+  by the teacher's final hand outcome. Runtime re-enables bounded neural folds
+  and preflop/flop free-action raises, while keeping calls and all-ins disabled.
+- Rationale: v017 showed that broad imitation was harmful and v018 was nearly
+  inactive. v019 tests whether outcome-weighted labels can make the learned
+  action prior useful without changing the fixed contract or native TCP path.
+
+## v020_v254_outcome_raise_resize254
+
+- Base: `v019_v254_outcome_blueprint_mix254`.
+- Change: disables neural folds, widens raise sizing, and allows turn
+  free-action raises plus `raise_pot` rule-label resizing.
+- Rationale: v019 trace showed positive-looking blocked raise candidates,
+  especially around free-action pressure. v020 deliberately tests whether
+  broader raise resizing is a scalable path.
+
+## v021_v254_outcome_raise_only254
+
+- Base: `v019_v254_outcome_blueprint_mix254`.
+- Change: keeps the outcome-weighted model but disables neural folds, leaving
+  only high-confidence preflop/flop free-action raises from rule call/check.
+- Rationale: v019 trace showed two neural folds on small losing hands and
+  mostly positive flop free-action raises. v021 isolates that narrower signal
+  while preserving v019 and v020 as replayable comparison points.
+
 ## Round 1 Notes
 
 - Training data: `teacher214_round1.jsonl`, 272 teacher decisions from
@@ -357,3 +386,43 @@
   edge. The next useful step is better targets, not another round of manual
   gate tuning: collect counterfactual/regret-style outcomes or train on larger
   self-play/teacher pools with held-out common-deck evaluation.
+
+## Round 8 Notes
+
+- Added `collect_outcome_teacher_data.py`. It keeps the same
+  `blueprint_policy_v1` feature/action/mask contract, but assigns each teacher
+  decision a sample weight from the teacher's final hand chip delta. This is a
+  lightweight advantage-style target, not pure action imitation.
+- `teacher_outcome_weighted_round1.jsonl`: 919 samples from `claude_v254` and
+  `claude_v279` teachers against `claude_v279`, `claude_v254`, and
+  `claude_v214`. Label counts were `fold=242`, `call=437`,
+  `raise_half=71`, `raise_pot=93`, `raise_2pot=60`, `allin=16`.
+- `teacher_outcome_weighted_round1_metrics.json`: 64-hidden-unit MLP,
+  validation accuracy `0.592`, masked validation accuracy `0.592`, average
+  confidence `0.771`. Accuracy is lower than the imitation model because the
+  weighting deliberately de-emphasizes actions from losing hands.
+- `v019` advisor analysis, 2 ordinary games vs `claude_v279`:
+  `final_changed=14/257`, with `11` `to_raise` and `3` `to_fold` changes.
+  Paired common-deck 4 mirror pairs vs `claude_v254`, both against
+  `claude_v279`: deltas `[6706, 2767, 1896, -3959]`, mean `+926.2 chips/70`,
+  95 percent CI `[-1231.4, +3083.9]`. This is positive but not significant.
+- `v019` trace, 2 common-deck pairs vs `claude_v279`: 20 actual changes,
+  changed-hand delta sum `+396`, total hand delta sum `-965`. Actual flop
+  free-action raises were the only useful-looking slice; neural folds were
+  small negative.
+- `v020` advisor analysis, 2 ordinary games vs `claude_v279`:
+  `final_changed=12/242`, all `to_raise`. Paired common-deck 4 mirror pairs:
+  deltas `[830, -16234, -5780, -16347]`, mean `-4691.4 chips/70`, 95 percent
+  CI `[-8817.5, -565.3]`. This significantly rejects broad turn/raise-pot
+  resizing.
+- `v021` advisor analysis, 2 ordinary games vs `claude_v279`:
+  `final_changed=8/275`, all `to_raise`. Paired common-deck 4 mirror pairs:
+  deltas `[102, 357, 309, 10760]`, median `+333`, mean `+1441.0 chips/70`,
+  95 percent CI `[-1133.1, +4015.1]`. This is the best current outcome-weighted
+  signal, but it is outlier-sensitive and not significant at 4 pairs.
+- Current status: outcome-weighting plus a narrow free-action raise gate is
+  more promising than teacher imitation and broad hand-tuned gates, but it is
+  not yet a proven edge. The next scale step should enlarge data and paired
+  evaluation first: target 50k-200k decisions, multi-teacher/multi-opponent
+  sampling, and at least 20 common-deck mirror pairs before increasing model
+  complexity or GPU training.
