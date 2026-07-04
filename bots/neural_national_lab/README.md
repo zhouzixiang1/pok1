@@ -172,10 +172,30 @@ deck plus bot-RNG run to 64 pairs reduced the edge to `+189.90` chips per
 enough evidence to scale data collection, not enough evidence to scale model
 size or promote the bot.
 
+The drop-zero follow-up (`v032`/`v033`) tested whether removing zero-delta
+training rows would avoid over-suppressing useful raises. It did not produce a
+promotable bot: `v032_v254_cf_dropzero_h16_t095` repaired some small positives
+but had a 16-pair result of only `+233.56` chips per 70 hands with 95 percent
+CI `[-2109.38, 2576.51]`; `v033_v254_cf_dropzero_h32_t050` was negative
+(`-242.09`, 95 percent CI `[-590.94, 106.75]`). A targeted p257 repair
+(`v034_v254_cf_pair11_p257_h32_t090`) fixed one catastrophic over-filtered
+seed, but its 16-pair result still crossed zero (`+693.72`, 95 percent CI
+`[-738.72, 2126.16]`) and had a negative median. The new lesson is that
+single-action hand-scoped labels are not enough: some seeds need grouped or
+match-scope interaction tests because locally positive raises can combine into
+bad match paths.
+
+This machine has 32 CPU threads, so deterministic paired evaluation and
+counterfactual shards can use `--workers 12` to `--workers 16` for practical
+speedups. Avoid blindly using all 32 workers: each worker launches multiple bot
+subprocesses, and full saturation can increase timeout risk and scheduling
+overhead.
+
 Move toward large scale in stages:
 
 - now: larger reproducible counterfactual data shards for disputed gates,
-  multiple opponents, and active-learning outlier seeds;
+  multiple opponents, active-learning outlier seeds, and grouped/match-scope
+  checks for high-interaction seeds;
 - after a candidate is positive over at least 64 paired mirrors with median
   above zero and no large negative bucket: larger offline value or advantage
   training on GPU;

@@ -309,6 +309,43 @@
   per 70 hands, 95 percent CI `[-373.12, 1291.62]`) and had a larger early
   negative outlier. It was not extended.
 
+## v032_v254_cf_dropzero_h16_t095
+
+- Base: `v030_v254_cf_nonneg_gate_h32_t085`.
+- Change: trains a drop-zero h16 gate from the p255 counterfactual set, removing
+  zero-delta rows so the model sees only positive and negative local action
+  deltas. Runtime uses `advantage_min=0.95`.
+- Result: not a successor. In the shared 16-pair deck+bot-RNG check versus
+  v025, v032 averaged `+233.56` chips per 70 hands but had 95 percent CI
+  `[-2109.38, 2576.51]`. It fixed some over-filtering, but one outlier was
+  `-28174` raw chips versus v025 before targeted repair.
+
+## v033_v254_cf_dropzero_h32_t050
+
+- Base: `v030_v254_cf_nonneg_gate_h32_t085`.
+- Change: same drop-zero dataset as v032, but h32 weights and a much looser
+  `advantage_min=0.50` to test whether more accepted local positives would
+  help.
+- Result: failed. The same 16-pair check versus v025 was negative
+  (`-242.09` chips per 70 hands, 95 percent CI `[-590.94, 106.75]`) with a
+  negative median, so this path should not be expanded.
+
+## v034_v254_cf_pair11_p257_h32_t090
+
+- Base: `v030_v254_cf_nonneg_gate_h32_t085`.
+- Change: adds a targeted counterfactual focus run for the v032 worst seed
+  (`seed=2026071311`, bot-RNG block `202607350000`) and retrains a nonnegative
+  h32 gate on 257 rows. Runtime uses `advantage_min=0.90`.
+- Result: repaired the targeted outlier but did not become a clear improvement.
+  On that seed, v034 restored the outcome from v032's `-10618` raw chips to
+  `+17542`, essentially matching v025 (`+17556`). Across the full 16-pair
+  check, however, v034 averaged `+693.72` chips per 70 hands with 95 percent CI
+  `[-738.72, 2126.16]` and a negative median. A follow-up match-scope probe on
+  pair03 showed the next bottleneck: individual raise probes were locally
+  positive, while the combined match path was bad. The next version needs
+  grouped or interaction-aware counterfactual targets, not only more
+  single-action samples.
+
 ## Round 1 Notes
 
 - Training data: `teacher214_round1.jsonl`, 272 teacher decisions from
