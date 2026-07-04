@@ -47,6 +47,12 @@ def test_national_native_is_default_profile(monkeypatch):
     assert "national_execution_mode=native_tcp" in profile_summary(profile)
 
 
+def test_web_launcher_defaults_to_national_native():
+    launcher = Path(__file__).resolve().parents[1] / "main.py"
+
+    assert 'setdefault("POK_WORKFLOW_PROFILE", "national_native")' in launcher.read_text(encoding="utf-8")
+
+
 def test_native_entry_contract_allows_template_and_rejects_legacy_tokens(tmp_path):
     bot_dir = tmp_path / "BotA"
     _write_minimal_strategy_bot(bot_dir)
