@@ -95,6 +95,15 @@
   active neural-call prior while still blocking raises, all-ins, and neural
   folds.
 
+## v012_v254_free_only_rescue254
+
+- Base: `v011_v254_wide_call_rescue254`.
+- Change: adds an `allow_paid_call_rescue` runtime switch and disables paid
+  call rescue for this version. Free check/call rescue remains enabled.
+- Rationale: v011's paired delta was positive but noisy. Its advisor examples
+  suggested many interventions were free check/call rescues, so v012 isolates
+  that safer part of the neural prior from paid call risk.
+
 ## Round 1 Notes
 
 - Training data: `teacher214_round1.jsonl`, 272 teacher decisions from
@@ -206,3 +215,33 @@
   mean, but it is not statistically significant and does not yet prove an edge
   over the v254 base. Next step is common-deck paired evaluation and a trainer
   that learns action-bucket/regret targets rather than only a call-rescue prior.
+
+## Round 5 Notes
+
+- `paired_evaluate.py` was added for common-deck mirror-pair evaluation. It
+  generates one `initdata`, runs the baseline and candidate over the exact same
+  normal and mirrored decks, and reports paired delta CI normalized to 70 hands.
+  This directly measures whether the neural layer improves its rule base.
+- Smoke paired run, `v011_v254_wide_call_rescue254` vs `claude_v254`, both
+  against `claude_v279`, 2 mirror pairs: paired deltas `[101, 306]`, mean
+  `+101.8 chips/70`, 95 percent CI `[+1.3, +202.2]`. This was treated only as
+  a smoke because the sample was too small.
+- Larger paired run, same setup, 6 mirror pairs: deltas
+  `[-1358, 674, -61, 12489, -1298, -1557]`, mean `+740.8 chips/70`,
+  95 percent CI `[-1444.9, +2926.4]`. v011 has a positive paired mean but is
+  driven by one large outlier and is not yet significant.
+- `v012_v254_free_only_rescue254` advisor analysis, 3 ordinary games vs
+  `claude_v279`: `final_changed=0/350`. This sample showed that free-only
+  rescue can be inactive for long stretches.
+- Smoke paired run, `v012_v254_free_only_rescue254` vs `claude_v254`, 2 mirror
+  pairs: deltas `[5278, 1068]`, mean `+1586.5 chips/70`, but the result did not
+  reproduce.
+- Larger paired run, same v012 setup, 6 mirror pairs:
+  `[-8585, -2210, -80, 1208, 1156, -838]`, mean `-779.1 chips/70`,
+  95 percent CI `[-2249.3, +691.2]`. This rejects the free-only hypothesis for
+  now.
+- Current status: v011 remains the best neural-advisor candidate by paired mean,
+  but the evidence is not yet strong enough to claim a clear edge. The next
+  productive direction is a richer trainer: more teacher/self-play data plus
+  action-bucket or regret-style targets, then paired evaluation against v254 and
+  v279 on common decks.
