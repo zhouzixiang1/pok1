@@ -313,8 +313,8 @@ or targeted match-scope branch data, before changing the runtime gate again.
 `v051_v254_cf_matchscope_aux_veto_p049_h16_b030` tested that next step in a
 small form. A 24-worker match-scope probe run was stopped after valid partial
 output because full-match branch sampling was too slow; it still produced 49
-usable single-action full-match probes. The important result was the split between
-scopes: the same probes had hand_delta mean `+93.78` with 95 percent CI
+usable single-action full-match probes. The important result was the split
+between scopes: the same probes had hand_delta mean `+93.78` with 95 percent CI
 `[61.69, 125.86]`, but match_delta mean `-603.04` with 95 percent CI
 `[-1957.60, 751.52]`. h8/h16/h32 CUDA classifiers trained from those rows had
 validation accuracy `0.50`, `0.50`, and `0.40`. The h16 model was nevertheless
@@ -325,8 +325,8 @@ rejected it: v051 versus v043 over 64 mirror pairs was `-1.32` chips per
 70 hands with 95 percent CI `[-434.58, 431.94]`. The conclusion is not that
 match-scope labels are useless; it is that a tiny binary classifier over sparse
 single-action full-match deltas is still too noisy. The next implementation
-should collect paired trajectory credit/value targets and add sampler early
-stop/cancellation before another runtime gate.
+should collect paired trajectory credit/value targets before another runtime
+gate.
 
 Recent literature and open-source scans point to the next useful local
 direction:
@@ -364,6 +364,15 @@ speedups when the evolution daemon is quiet. During concurrent daemon runs,
 keep ad-hoc paired evaluation lower, such as `--workers 4`, because each worker
 launches multiple bot subprocesses and full saturation can increase timeout
 risk and scheduling overhead.
+
+`counterfactual_rollout_probe.py` now uses bounded parallel submission. With
+`--workers > 1`, it only keeps one batch of worker tasks in flight and stops
+submitting new game/side tasks once merged probes reach `--max-probes`; pass
+`--no-parallel-early-stop` to force the old exhaustive behavior. Smoke
+validation with `--workers 4 --max-probes 2 --max-probes-per-task 1` reached
+2 probes after submitting 12 of 32 tasks and skipped the remaining 20. This
+does not make match-scope labels less noisy, but it removes the main CPU waste
+seen in the v051 partial run.
 
 Move toward large scale in stages:
 
