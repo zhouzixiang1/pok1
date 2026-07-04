@@ -35,6 +35,7 @@ if str(ENGINE) not in sys.path:
 from analyze_advice import _classify_change, _load_bot, _neural_probs  # noqa: E402
 from engine.battle import _PersistentBot, _call_bot  # noqa: E402
 from judge import judge as judge_func  # noqa: E402
+from seeded_process import SeededPersistentBot, match_bot_seeds  # noqa: E402
 
 
 def _resolve(path: str) -> Path:
@@ -44,6 +45,13 @@ def _resolve(path: str) -> Path:
 
 def _main_path(path: Path) -> Path:
     return path / "main.py" if path.is_dir() else path
+
+
+def _branch_bot_seeds(bot_seed_base: int | None, probe_index: int) -> tuple[int, int] | None:
+    if bot_seed_base is None:
+        return None
+    base = int(bot_seed_base) + 100_000_000 + int(probe_index) * 2
+    return base, base + 1
 
 
 def _rel(path: Path) -> str:
@@ -310,6 +318,7 @@ def _continue_after_response(
     bot_data: list[Any],
     max_steps: int,
     stop_after_hand: int | None = None,
+    persistent_procs: list[Any] | None = None,
 ) -> dict[str, Any]:
     try:
         result = json.loads(judge_func(json.dumps({"log": log, "initdata": initdata})))
@@ -336,7 +345,7 @@ def _continue_after_response(
             bot_requests,
             bot_responses,
             bot_data=bot_data,
-            persistent_procs=None,
+            persistent_procs=persistent_procs,
         )
         log.append({str(player_id): {"response": str(response), "verdict": verdict}, "output": None})
         try:
@@ -361,6 +370,7 @@ def _forced_branch(
     forced_action: int,
     max_steps: int,
     stop_after_hand: int | None,
+    bot_seeds: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
     log = copy.deepcopy(prefix_log)
     requests = copy.deepcopy(bot_requests)
@@ -368,19 +378,33 @@ def _forced_branch(
     data = copy.deepcopy(bot_data)
     responses[0].append(int(forced_action))
     log.append({"0": {"response": str(int(forced_action)), "verdict": "OK"}, "output": None})
-    branch = _continue_after_response(
-        log,
-        initdata,
-        bot_paths,
-        requests,
-        responses,
-        data,
-        max_steps,
-        stop_after_hand=stop_after_hand,
-    )
-    result = branch.get("result")
-    branch["bot0_chips"] = _final_bot0_chips(result) if isinstance(result, dict) else None
-    return branch
+    persistent = None
+    if bot_seeds is not None:
+        persistent = [
+            SeededPersistentBot(bot_paths[0], bot_seeds[0]),
+            SeededPersistentBot(bot_paths[1], bot_seeds[1]),
+        ]
+    try:
+        branch = _continue_after_response(
+            log,
+            initdata,
+            bot_paths,
+            requests,
+            responses,
+            data,
+            max_steps,
+            stop_after_hand=stop_after_hand,
+            persistent_procs=persistent,
+        )
+        result = branch.get("result")
+        branch["bot0_chips"] = _final_bot0_chips(result) if isinstance(result, dict) else None
+        if bot_seeds is not None:
+            branch["bot_seeds"] = list(bot_seeds)
+        return branch
+    finally:
+        if persistent:
+            for proc in persistent:
+                proc.close()
 
 
 def _candidate_passes(kind: str, stage: str, args: argparse.Namespace) -> bool:
@@ -400,6 +424,7 @@ def _probe_side(
     loaded_bot: tuple[Any, Any, Any, Any, Any],
     args: argparse.Namespace,
     start_probe_index: int,
+    scan_bot_seeds: tuple[int, int] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     main_mod, state_mod, strategy_mod, neural_mod, apply_neural_advice = loaded_bot
     bot_paths = [str(bot0.resolve()), str(bot1.resolve())]
@@ -412,7 +437,14 @@ def _probe_side(
     analysis_requests: list[dict[str, Any]] = []
     probes: list[dict[str, Any]] = []
     decisions = 0
-    persistent = [_PersistentBot(bot_paths[0]), _PersistentBot(bot_paths[1])] if args.scan_persistent else None
+    persistent = None
+    if scan_bot_seeds is not None:
+        persistent = [
+            SeededPersistentBot(bot_paths[0], scan_bot_seeds[0]),
+            SeededPersistentBot(bot_paths[1], scan_bot_seeds[1]),
+        ]
+    elif args.scan_persistent:
+        persistent = [_PersistentBot(bot_paths[0]), _PersistentBot(bot_paths[1])]
 
     try:
         while result.get("command") == "request":
@@ -459,6 +491,8 @@ def _probe_side(
                         branch_responses = copy.deepcopy(bot_responses)
                         branch_data = copy.deepcopy(bot_data)
                         stop_after_hand = int(req.get("hand", -1)) if args.branch_scope == "hand" else None
+                        probe_index = start_probe_index + len(probes)
+                        branch_bot_seeds = _branch_bot_seeds(args.bot_seed_base, probe_index)
                         baseline = _forced_branch(
                             log,
                             game_initdata,
@@ -469,6 +503,7 @@ def _probe_side(
                             int(base_final),
                             args.max_branch_steps,
                             stop_after_hand,
+                            branch_bot_seeds,
                         )
                         candidate = _forced_branch(
                             log,
@@ -480,6 +515,7 @@ def _probe_side(
                             int(advised_final),
                             args.max_branch_steps,
                             stop_after_hand,
+                            branch_bot_seeds,
                         )
                         baseline_chips = baseline.get("bot0_chips")
                         candidate_chips = candidate.get("bot0_chips")
@@ -503,7 +539,7 @@ def _probe_side(
                             status = "ok" if match_delta is not None else "branch_failed"
                             primary_delta = match_delta
                         probe = {
-                            "probe_index": start_probe_index + len(probes),
+                            "probe_index": probe_index,
                             "side": side_name,
                             "decision_index": decisions,
                             "hand": hand,
@@ -527,6 +563,7 @@ def _probe_side(
                             "status": status,
                             "baseline_status": baseline.get("status"),
                             "candidate_status": candidate.get("status"),
+                            "branch_bot_seeds": list(branch_bot_seeds) if branch_bot_seeds is not None else None,
                             "baseline_chips": baseline_chips,
                             "candidate_chips": candidate_chips,
                             "match_delta": match_delta,
@@ -567,6 +604,7 @@ def _probe_side(
         "decisions": decisions,
         "bot0_chips": final_chips,
         "version": _rel(version_dir),
+        "bot_seeds": list(scan_bot_seeds) if scan_bot_seeds is not None else None,
     }
 
 
@@ -585,6 +623,8 @@ def main() -> None:
     parser.add_argument("--seed-base", type=int)
     parser.add_argument("--seed-offset", type=int, default=0)
     parser.add_argument("--seed-stride", type=int, default=1)
+    parser.add_argument("--bot-seed-base", type=int)
+    parser.add_argument("--bot-seed-stride", type=int, default=10000)
     parser.add_argument("--max-hands", type=int, default=70)
     parser.add_argument("--no-scan-persistent", action="store_true")
     parser.add_argument("--no-mirror", action="store_true")
@@ -612,6 +652,8 @@ def main() -> None:
         "seed_base": args.seed_base,
         "seed_offset": args.seed_offset,
         "seed_stride": args.seed_stride,
+        "bot_seed_base": args.bot_seed_base,
+        "bot_seed_stride": args.bot_seed_stride,
         "max_hands": args.max_hands,
         "branch_scope": args.branch_scope,
         "scan_persistent": args.scan_persistent,
@@ -639,6 +681,7 @@ def main() -> None:
         for side_name, side_initdata in sides:
             if len(payload["probes"]) >= args.max_probes:
                 break
+            scan_bot_seeds = match_bot_seeds(args.bot_seed_base, args.bot_seed_stride, idx, side_name)
             probes, match_summary = _probe_side(
                 f"g{idx}:{side_name}",
                 side_initdata,
@@ -648,6 +691,7 @@ def main() -> None:
                 loaded_bot,
                 args,
                 len(payload["probes"]),
+                scan_bot_seeds,
             )
             payload["matches"].append({"game": idx, "seed": seed, **match_summary})
             payload["probes"].extend(probes)

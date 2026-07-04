@@ -137,14 +137,21 @@ Practical takeaways for this repo:
   per 70 hands, 95 percent CI `[-701.02, 891.21]`). Larger 96/128-pair
   promotion runs should use both seed families, but v025 itself no longer
   merits that spend.
+- `counterfactual_rollout_probe.py` and `counterfactual_shard_runner.py` now
+  accept `--bot-seed-base` as well. The scanned match uses seeded subprocesses,
+  and every sampled decision gives the baseline and candidate forced branches
+  the same branch-local bot RNG seeds. This closes the main reproducibility gap
+  in the action-value target path; scaling data before this point would mix
+  policy effects with random simulation drift.
 
 ## Scale-Up Gate
 
 - Immediate scale step: collect value or advantage targets instead of more
   threshold-tuning data for v025. Use deck plus bot RNG seeds for all new
-  promotion runs, and collect 50k-200k decisions from multiple teachers,
-  opponents, and seeds only after the target generator can produce local
-  action-value labels with legal masks and JSON export.
+  promotion and counterfactual-target runs, and collect 50k-200k decisions from
+  multiple teachers, opponents, and seeds only after the target generator can
+  produce reproducible local action-value labels with legal masks and JSON
+  export.
 - Promotion gate before larger models: a candidate should stay positive over
   at least 20 common-deck mirror pairs against its rule base, with median delta
   above zero and no protocol/illegal-action regression.

@@ -1,0 +1,246 @@
+{
+  "mode": "single_decision_counterfactual_rollout",
+  "target": "forced_action_primary_delta",
+  "notes": [
+    "Branches force one bot0 action with verdict OK, then continue the same local judge match.",
+    "hand scope stops after the forked hand settles and uses hand_delta as primary_delta.",
+    "match scope continues the full local judge match and uses match_delta as primary_delta."
+  ],
+  "version": "bots/neural_national_lab/versions/v025_v254_low_raise_gate_h96_254/main.py",
+  "opponent": "bots/claude_v279/main.py",
+  "games": 1,
+  "max_probes": 2,
+  "max_scan_decisions": 120,
+  "seed_base": 2026070900,
+  "seed_offset": 0,
+  "seed_stride": 1,
+  "bot_seed_base": 202607090000,
+  "bot_seed_stride": 10000,
+  "max_hands": 70,
+  "branch_scope": "hand",
+  "scan_persistent": true,
+  "filters": {
+    "kind": "to_raise",
+    "stage": "flop",
+    "min_conf": 0.0
+  },
+  "matches": [
+    {
+      "game": 0,
+      "seed": 2026070900,
+      "side": "g0:normal",
+      "decisions": 38,
+      "bot0_chips": null,
+      "version": "bots/neural_national_lab/versions/v025_v254_low_raise_gate_h96_254",
+      "bot_seeds": [
+        202607090000,
+        202607090001
+      ]
+    }
+  ],
+  "probes": [
+    {
+      "probe_index": 0,
+      "side": "g0:normal",
+      "decision_index": 14,
+      "hand": 6,
+      "stage": "flop",
+      "kind": "to_raise",
+      "public_cards": [
+        28,
+        9,
+        36
+      ],
+      "my_cards": [
+        2,
+        12
+      ],
+      "to_call": 0,
+      "pot": 200,
+      "my_chips": 19900,
+      "rule_action": 0,
+      "base_final": 0,
+      "base_label": "call",
+      "advised_raw": 101,
+      "advised_final": 101,
+      "advised_label": "raise",
+      "top_label": "raise_half",
+      "top_conf": 0.9624034323890172,
+      "call_conf": 0.028331039277333214,
+      "raise_conf": 0.9624034323890172,
+      "status": "ok",
+      "baseline_status": "ok",
+      "candidate_status": "ok",
+      "branch_bot_seeds": [
+        202707090000,
+        202707090001
+      ],
+      "baseline_chips": null,
+      "candidate_chips": null,
+      "match_delta": null,
+      "baseline_hand_delta": -100.0,
+      "candidate_hand_delta": 100.0,
+      "hand_delta": 200.0,
+      "primary_delta": 200.0
+    },
+    {
+      "probe_index": 1,
+      "side": "g0:normal",
+      "decision_index": 37,
+      "hand": 22,
+      "stage": "flop",
+      "kind": "to_raise",
+      "public_cards": [
+        13,
+        33,
+        23
+      ],
+      "my_cards": [
+        43,
+        16
+      ],
+      "to_call": 0,
+      "pot": 200,
+      "my_chips": 19900,
+      "rule_action": 0,
+      "base_final": 0,
+      "base_label": "call",
+      "advised_raw": 101,
+      "advised_final": 101,
+      "advised_label": "raise",
+      "top_label": "raise_half",
+      "top_conf": 0.9223939857122186,
+      "call_conf": 0.07066118669794981,
+      "raise_conf": 0.9223939857122186,
+      "status": "ok",
+      "baseline_status": "ok",
+      "candidate_status": "ok",
+      "branch_bot_seeds": [
+        202707090002,
+        202707090003
+      ],
+      "baseline_chips": null,
+      "candidate_chips": null,
+      "match_delta": null,
+      "baseline_hand_delta": 100.0,
+      "candidate_hand_delta": 100.0,
+      "hand_delta": 0.0,
+      "primary_delta": 0.0
+    }
+  ],
+  "summary": {
+    "ok_probes": 2,
+    "failed_probes": 0,
+    "primary_delta": {
+      "samples": 2,
+      "mean": 100.0,
+      "median": 100.0,
+      "stddev": 141.4213562373095,
+      "stderr": 100.0,
+      "ci95_low": -96.0,
+      "ci95_high": 296.0,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    },
+    "match_delta": {
+      "samples": 0,
+      "mean": 0.0,
+      "median": 0.0,
+      "stddev": 0.0,
+      "stderr": 0.0,
+      "ci95_low": null,
+      "ci95_high": null,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    },
+    "hand_delta": {
+      "samples": 2,
+      "mean": 100.0,
+      "median": 100.0,
+      "stddev": 141.4213562373095,
+      "stderr": 100.0,
+      "ci95_low": -96.0,
+      "ci95_high": 296.0,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    },
+    "by_kind": {
+      "to_raise": {
+        "samples": 2,
+        "mean": 100.0,
+        "median": 100.0,
+        "stddev": 141.4213562373095,
+        "stderr": 100.0,
+        "ci95_low": -96.0,
+        "ci95_high": 296.0,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      }
+    },
+    "by_stage": {
+      "flop": {
+        "samples": 2,
+        "mean": 100.0,
+        "median": 100.0,
+        "stddev": 141.4213562373095,
+        "stderr": 100.0,
+        "ci95_low": -96.0,
+        "ci95_high": 296.0,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      }
+    },
+    "by_stage_kind": {
+      "flop|to_raise": {
+        "samples": 2,
+        "mean": 100.0,
+        "median": 100.0,
+        "stddev": 141.4213562373095,
+        "stderr": 100.0,
+        "ci95_low": -96.0,
+        "ci95_high": 296.0,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      }
+    },
+    "by_pot_band": {
+      "pot_lt_300": {
+        "samples": 2,
+        "mean": 100.0,
+        "median": 100.0,
+        "stddev": 141.4213562373095,
+        "stderr": 100.0,
+        "ci95_low": -96.0,
+        "ci95_high": 296.0,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      }
+    },
+    "by_advised_final": {
+      "101": {
+        "samples": 2,
+        "mean": 100.0,
+        "median": 100.0,
+        "stddev": 141.4213562373095,
+        "stderr": 100.0,
+        "ci95_low": -96.0,
+        "ci95_high": 296.0,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      }
+    },
+    "by_raise_delta_band": {
+      "raise_le_125": {
+        "samples": 2,
+        "mean": 100.0,
+        "median": 100.0,
+        "stddev": 141.4213562373095,
+        "stderr": 100.0,
+        "ci95_low": -96.0,
+        "ci95_high": 296.0,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      }
+    }
+  }
+}
