@@ -15,6 +15,7 @@ import contextlib
 import copy
 import io
 import json
+import random
 import statistics
 import sys
 from pathlib import Path
@@ -59,6 +60,20 @@ def _rel(path: Path) -> str:
 def _fresh_initdata() -> dict[str, Any]:
     result = json.loads(judge_func(json.dumps({"log": []})))
     return copy.deepcopy(result["initdata"])
+
+
+def _seeded_initdata(seed: int, max_hands: int = 70) -> dict[str, Any]:
+    rng = random.Random(int(seed))
+    decks = []
+    for _ in range(max_hands):
+        deck = list(range(52))
+        rng.shuffle(deck)
+        decks.append(deck)
+    return {
+        "max_hand": max_hands,
+        "dealer": rng.randint(0, 1),
+        "decks": decks,
+    }
 
 
 def _mirror_initdata(initdata: dict[str, Any]) -> dict[str, Any]:
@@ -344,6 +359,10 @@ def main() -> None:
     parser.add_argument("--opponent", required=True)
     parser.add_argument("--games", type=int, default=4)
     parser.add_argument("--candidate-conf", type=float, default=0.85)
+    parser.add_argument("--seed-base", type=int)
+    parser.add_argument("--seed-offset", type=int, default=0)
+    parser.add_argument("--seed-stride", type=int, default=1)
+    parser.add_argument("--max-hands", type=int, default=70)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
@@ -353,6 +372,10 @@ def main() -> None:
     payload: dict[str, Any] = {
         "mode": "common_deck_advice_trace",
         "games": args.games,
+        "seed_base": args.seed_base,
+        "seed_offset": args.seed_offset,
+        "seed_stride": args.seed_stride,
+        "max_hands": args.max_hands,
         "version": _rel(version_main),
         "opponent": _rel(opponent),
         "pairs": [],
@@ -372,9 +395,14 @@ def main() -> None:
     all_changes: list[dict[str, Any]] = []
     all_candidates: list[dict[str, Any]] = []
     for idx in range(args.games):
-        initdata = _fresh_initdata()
+        seed = (
+            args.seed_base + args.seed_offset + idx * args.seed_stride
+            if args.seed_base is not None
+            else None
+        )
+        initdata = _seeded_initdata(seed, args.max_hands) if seed is not None else _fresh_initdata()
         mirror = _mirror_initdata(initdata)
-        row: dict[str, Any] = {"idx": idx, "normal": {}, "mirror": {}}
+        row: dict[str, Any] = {"idx": idx, "seed": seed, "dealer": initdata["dealer"], "normal": {}, "mirror": {}}
         for name, deck in (("normal", initdata), ("mirror", mirror)):
             match = _play_match(version_main, opponent, deck)
             analysis = _analyze_log(version_dir, match["log"], seat=0, candidate_conf=args.candidate_conf)

@@ -121,12 +121,24 @@ Practical takeaways for this repo:
   search/control around the model, and use neural networks for batched value or
   advantage approximation. Directly increasing the policy classifier or asking
   an LLM during play does not address the credit-assignment problem.
+- v025 crossed the action-level counterfactual gate but not the end-to-end
+  paired gate: after 64 common-deck mirror pairs its mean stayed positive but
+  the confidence interval still crossed zero. v026 showed that narrowing the
+  runtime gate to the counterfactual-supported flop bucket alone did not create
+  a reliable improvement. The next useful model change should improve target
+  quality or action-value estimation, not only tighten thresholds.
+- Replaying v025 trace diagnostics with fixed deck seeds did not reproduce the
+  exact paired-match outliers. The deck is deterministic, but the rule bot
+  simulation layer still uses process-local randomness. Before larger
+  96/128-pair promotion runs, the evaluator should seed bot subprocess RNGs or
+  report that the result is deck-paired but not fully deterministic.
 
 ## Scale-Up Gate
 
-- Immediate scale step: collect 50k-200k decisions from multiple teachers,
-  opponents, and seeds; keep the six-action abstraction, legal masks, sample
-  weights, and JSON export.
+- Immediate scale step: first make large paired evaluation reproducible enough
+  by controlling bot subprocess randomness, then collect 50k-200k decisions
+  from multiple teachers, opponents, and seeds; keep the six-action
+  abstraction, legal masks, sample weights, and JSON export.
 - Promotion gate before larger models: a candidate should stay positive over
   at least 20 common-deck mirror pairs against its rule base, with median delta
   above zero and no protocol/illegal-action regression.

@@ -1,0 +1,1232 @@
+{
+  "mode": "common_deck_mirror_pair",
+  "games": 32,
+  "workers": 8,
+  "seed_base": 2026070600,
+  "seed_offset": 0,
+  "seed_stride": 1,
+  "max_hands": 70,
+  "baseline_label": "v022_v254_sharded_h96_raise_only254",
+  "entries": {
+    "v022_v254_sharded_h96_raise_only254": {
+      "path": "bots/neural_national_lab/versions/v022_v254_sharded_h96_raise_only254/main.py",
+      "opponent": "bots/claude_v279/main.py"
+    },
+    "v026_v254_flop_low_raise_h96_254": {
+      "path": "bots/neural_national_lab/versions/v026_v254_flop_low_raise_h96_254/main.py",
+      "opponent": "bots/claude_v279/main.py"
+    }
+  },
+  "pairs": [
+    {
+      "idx": 0,
+      "seed": 2026070600,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -8162.0,
+        "v026_v254_flop_low_raise_h96_254": -9945.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -10339.0,
+          "bot1_chips": 10339.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -10142.0,
+          "bot1_chips": 10142.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 2177.0,
+          "bot1_chips": -2177.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 197.0,
+          "bot1_chips": -197.0
+        }
+      }
+    },
+    {
+      "idx": 1,
+      "seed": 2026070601,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 13963.0,
+        "v026_v254_flop_low_raise_h96_254": -19658.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 131.0,
+          "bot1_chips": -131.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 169.0,
+          "bot1_chips": -169.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 13832.0,
+          "bot1_chips": -13832.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -19827.0,
+          "bot1_chips": 19827.0
+        }
+      }
+    },
+    {
+      "idx": 2,
+      "seed": 2026070602,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -902.0,
+        "v026_v254_flop_low_raise_h96_254": 1157.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -881.0,
+          "bot1_chips": 881.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 1137.0,
+          "bot1_chips": -1137.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -21.0,
+          "bot1_chips": 21.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 20.0,
+          "bot1_chips": -20.0
+        }
+      }
+    },
+    {
+      "idx": 3,
+      "seed": 2026070603,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -1453.0,
+        "v026_v254_flop_low_raise_h96_254": -5984.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -9996.0,
+          "bot1_chips": 9996.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -9977.0,
+          "bot1_chips": 9977.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 8543.0,
+          "bot1_chips": -8543.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 3993.0,
+          "bot1_chips": -3993.0
+        }
+      }
+    },
+    {
+      "idx": 4,
+      "seed": 2026070604,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 18.0,
+        "v026_v254_flop_low_raise_h96_254": -1233.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -91.0,
+          "bot1_chips": 91.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -1309.0,
+          "bot1_chips": 1309.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 109.0,
+          "bot1_chips": -109.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 76.0,
+          "bot1_chips": -76.0
+        }
+      }
+    },
+    {
+      "idx": 5,
+      "seed": 2026070605,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 111.0,
+        "v026_v254_flop_low_raise_h96_254": 426.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -134.0,
+          "bot1_chips": 134.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -86.0,
+          "bot1_chips": 86.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 245.0,
+          "bot1_chips": -245.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 512.0,
+          "bot1_chips": -512.0
+        }
+      }
+    },
+    {
+      "idx": 6,
+      "seed": 2026070606,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 13538.0,
+        "v026_v254_flop_low_raise_h96_254": 13330.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -5300.0,
+          "bot1_chips": 5300.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -5300.0,
+          "bot1_chips": 5300.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 18838.0,
+          "bot1_chips": -18838.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 18630.0,
+          "bot1_chips": -18630.0
+        }
+      }
+    },
+    {
+      "idx": 7,
+      "seed": 2026070607,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -366.0,
+        "v026_v254_flop_low_raise_h96_254": 2183.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -2210.0,
+          "bot1_chips": 2210.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -30.0,
+          "bot1_chips": 30.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 1844.0,
+          "bot1_chips": -1844.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 2213.0,
+          "bot1_chips": -2213.0
+        }
+      }
+    },
+    {
+      "idx": 8,
+      "seed": 2026070608,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 17292.0,
+        "v026_v254_flop_low_raise_h96_254": -10.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 17192.0,
+          "bot1_chips": -17192.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -95.0,
+          "bot1_chips": 95.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 100.0,
+          "bot1_chips": -100.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 85.0,
+          "bot1_chips": -85.0
+        }
+      }
+    },
+    {
+      "idx": 9,
+      "seed": 2026070609,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 9827.0,
+        "v026_v254_flop_low_raise_h96_254": -7339.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 8029.0,
+          "bot1_chips": -8029.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 8016.0,
+          "bot1_chips": -8016.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 1798.0,
+          "bot1_chips": -1798.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -15355.0,
+          "bot1_chips": 15355.0
+        }
+      }
+    },
+    {
+      "idx": 10,
+      "seed": 2026070610,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 107.0,
+        "v026_v254_flop_low_raise_h96_254": 9259.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 16214.0,
+          "bot1_chips": -16214.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 9122.0,
+          "bot1_chips": -9122.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -16107.0,
+          "bot1_chips": 16107.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 137.0,
+          "bot1_chips": -137.0
+        }
+      }
+    },
+    {
+      "idx": 11,
+      "seed": 2026070611,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -24.0,
+        "v026_v254_flop_low_raise_h96_254": 1310.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -94.0,
+          "bot1_chips": 94.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -81.0,
+          "bot1_chips": 81.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 70.0,
+          "bot1_chips": -70.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 1391.0,
+          "bot1_chips": -1391.0
+        }
+      }
+    },
+    {
+      "idx": 12,
+      "seed": 2026070612,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 19042.0,
+        "v026_v254_flop_low_raise_h96_254": 10152.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -37.0,
+          "bot1_chips": 37.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -41.0,
+          "bot1_chips": 41.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 19079.0,
+          "bot1_chips": -19079.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 10193.0,
+          "bot1_chips": -10193.0
+        }
+      }
+    },
+    {
+      "idx": 13,
+      "seed": 2026070613,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 5214.0,
+        "v026_v254_flop_low_raise_h96_254": 15878.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 19265.0,
+          "bot1_chips": -19265.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 19658.0,
+          "bot1_chips": -19658.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -14051.0,
+          "bot1_chips": 14051.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -3780.0,
+          "bot1_chips": 3780.0
+        }
+      }
+    },
+    {
+      "idx": 14,
+      "seed": 2026070614,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -166.0,
+        "v026_v254_flop_low_raise_h96_254": 17398.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 17234.0,
+          "bot1_chips": -17234.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 17425.0,
+          "bot1_chips": -17425.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -17400.0,
+          "bot1_chips": 17400.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -27.0,
+          "bot1_chips": 27.0
+        }
+      }
+    },
+    {
+      "idx": 15,
+      "seed": 2026070615,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 6186.0,
+        "v026_v254_flop_low_raise_h96_254": 6275.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 6239.0,
+          "bot1_chips": -6239.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 6373.0,
+          "bot1_chips": -6373.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -53.0,
+          "bot1_chips": 53.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -98.0,
+          "bot1_chips": 98.0
+        }
+      }
+    },
+    {
+      "idx": 16,
+      "seed": 2026070616,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -15235.0,
+        "v026_v254_flop_low_raise_h96_254": -21157.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -15350.0,
+          "bot1_chips": 15350.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -15350.0,
+          "bot1_chips": 15350.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 115.0,
+          "bot1_chips": -115.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -5807.0,
+          "bot1_chips": 5807.0
+        }
+      }
+    },
+    {
+      "idx": 17,
+      "seed": 2026070617,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 5402.0,
+        "v026_v254_flop_low_raise_h96_254": 5329.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 4868.0,
+          "bot1_chips": -4868.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 4512.0,
+          "bot1_chips": -4512.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 534.0,
+          "bot1_chips": -534.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 817.0,
+          "bot1_chips": -817.0
+        }
+      }
+    },
+    {
+      "idx": 18,
+      "seed": 2026070618,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -224.0,
+        "v026_v254_flop_low_raise_h96_254": 10548.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -199.0,
+          "bot1_chips": 199.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 10990.0,
+          "bot1_chips": -10990.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -25.0,
+          "bot1_chips": 25.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -442.0,
+          "bot1_chips": 442.0
+        }
+      }
+    },
+    {
+      "idx": 19,
+      "seed": 2026070619,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -18429.0,
+        "v026_v254_flop_low_raise_h96_254": -142.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 1456.0,
+          "bot1_chips": -1456.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 19751.0,
+          "bot1_chips": -19751.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -19885.0,
+          "bot1_chips": 19885.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -19893.0,
+          "bot1_chips": 19893.0
+        }
+      }
+    },
+    {
+      "idx": 20,
+      "seed": 2026070620,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 149.0,
+        "v026_v254_flop_low_raise_h96_254": 161.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 166.0,
+          "bot1_chips": -166.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 176.0,
+          "bot1_chips": -176.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -17.0,
+          "bot1_chips": 17.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -15.0,
+          "bot1_chips": 15.0
+        }
+      }
+    },
+    {
+      "idx": 21,
+      "seed": 2026070621,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -22.0,
+        "v026_v254_flop_low_raise_h96_254": 6760.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 82.0,
+          "bot1_chips": -82.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 200.0,
+          "bot1_chips": -200.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -104.0,
+          "bot1_chips": 104.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 6560.0,
+          "bot1_chips": -6560.0
+        }
+      }
+    },
+    {
+      "idx": 22,
+      "seed": 2026070622,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -74.0,
+        "v026_v254_flop_low_raise_h96_254": 19963.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -69.0,
+          "bot1_chips": 69.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -43.0,
+          "bot1_chips": 43.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -5.0,
+          "bot1_chips": 5.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 20006.0,
+          "bot1_chips": -20006.0
+        }
+      }
+    },
+    {
+      "idx": 23,
+      "seed": 2026070623,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 262.0,
+        "v026_v254_flop_low_raise_h96_254": 4080.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 72.0,
+          "bot1_chips": -72.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -7.0,
+          "bot1_chips": 7.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 190.0,
+          "bot1_chips": -190.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 4087.0,
+          "bot1_chips": -4087.0
+        }
+      }
+    },
+    {
+      "idx": 24,
+      "seed": 2026070624,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 8495.0,
+        "v026_v254_flop_low_raise_h96_254": 6742.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 8512.0,
+          "bot1_chips": -8512.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 8495.0,
+          "bot1_chips": -8495.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -17.0,
+          "bot1_chips": 17.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -1753.0,
+          "bot1_chips": 1753.0
+        }
+      }
+    },
+    {
+      "idx": 25,
+      "seed": 2026070625,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 16802.0,
+        "v026_v254_flop_low_raise_h96_254": 15264.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 16846.0,
+          "bot1_chips": -16846.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 16846.0,
+          "bot1_chips": -16846.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -44.0,
+          "bot1_chips": 44.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -1582.0,
+          "bot1_chips": 1582.0
+        }
+      }
+    },
+    {
+      "idx": 26,
+      "seed": 2026070626,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 2542.0,
+        "v026_v254_flop_low_raise_h96_254": -3969.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 2543.0,
+          "bot1_chips": -2543.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -4061.0,
+          "bot1_chips": 4061.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -1.0,
+          "bot1_chips": 1.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 92.0,
+          "bot1_chips": -92.0
+        }
+      }
+    },
+    {
+      "idx": 27,
+      "seed": 2026070627,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 5360.0,
+        "v026_v254_flop_low_raise_h96_254": 5300.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 4064.0,
+          "bot1_chips": -4064.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 3977.0,
+          "bot1_chips": -3977.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 1296.0,
+          "bot1_chips": -1296.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 1323.0,
+          "bot1_chips": -1323.0
+        }
+      }
+    },
+    {
+      "idx": 28,
+      "seed": 2026070628,
+      "dealer": 0,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 24231.0,
+        "v026_v254_flop_low_raise_h96_254": 700.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 15800.0,
+          "bot1_chips": -15800.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 15800.0,
+          "bot1_chips": -15800.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 8431.0,
+          "bot1_chips": -8431.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -15100.0,
+          "bot1_chips": 15100.0
+        }
+      }
+    },
+    {
+      "idx": 29,
+      "seed": 2026070629,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 388.0,
+        "v026_v254_flop_low_raise_h96_254": 446.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 401.0,
+          "bot1_chips": -401.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 477.0,
+          "bot1_chips": -477.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -13.0,
+          "bot1_chips": 13.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -31.0,
+          "bot1_chips": 31.0
+        }
+      }
+    },
+    {
+      "idx": 30,
+      "seed": 2026070630,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": -79.0,
+        "v026_v254_flop_low_raise_h96_254": -56.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -148.0,
+          "bot1_chips": 148.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 1,
+          "bot0_chips": -116.0,
+          "bot1_chips": 116.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 69.0,
+          "bot1_chips": -69.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 60.0,
+          "bot1_chips": -60.0
+        }
+      }
+    },
+    {
+      "idx": 31,
+      "seed": 2026070631,
+      "dealer": 1,
+      "net_chips": {
+        "v022_v254_sharded_h96_raise_only254": 56.0,
+        "v026_v254_flop_low_raise_h96_254": 1396.0
+      },
+      "normal": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 1,
+          "bot0_chips": -52.0,
+          "bot1_chips": 52.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 877.0,
+          "bot1_chips": -877.0
+        }
+      },
+      "mirror": {
+        "v022_v254_sharded_h96_raise_only254": {
+          "winner": 0,
+          "bot0_chips": 108.0,
+          "bot1_chips": -108.0
+        },
+        "v026_v254_flop_low_raise_h96_254": {
+          "winner": 0,
+          "bot0_chips": 519.0,
+          "bot1_chips": -519.0
+        }
+      }
+    }
+  ],
+  "results": {
+    "v022_v254_sharded_h96_raise_only254": {
+      "path": "bots/neural_national_lab/versions/v022_v254_sharded_h96_raise_only254/main.py",
+      "opponent": "bots/claude_v279/main.py",
+      "net_chips": [
+        -8162.0,
+        13963.0,
+        -902.0,
+        -1453.0,
+        18.0,
+        111.0,
+        13538.0,
+        -366.0,
+        17292.0,
+        9827.0,
+        107.0,
+        -24.0,
+        19042.0,
+        5214.0,
+        -166.0,
+        6186.0,
+        -15235.0,
+        5402.0,
+        -224.0,
+        -18429.0,
+        149.0,
+        -22.0,
+        -74.0,
+        262.0,
+        8495.0,
+        16802.0,
+        2542.0,
+        5360.0,
+        24231.0,
+        388.0,
+        -79.0,
+        56.0
+      ],
+      "samples": 32,
+      "mean_net": 3245.28125,
+      "median_net": 130.0,
+      "stddev_net": 9002.890063695764,
+      "stderr_net": 1591.5011535790659,
+      "ci95_low": 125.93898898503085,
+      "ci95_high": 6364.623511014969,
+      "mean_per_70_hands": 1622.640625,
+      "ci95_low_per_70_hands": 62.96949449251542,
+      "ci95_high_per_70_hands": 3182.3117555074846,
+      "significant_positive_95": true,
+      "significant_negative_95": false
+    },
+    "v026_v254_flop_low_raise_h96_254": {
+      "path": "bots/neural_national_lab/versions/v026_v254_flop_low_raise_h96_254/main.py",
+      "opponent": "bots/claude_v279/main.py",
+      "net_chips": [
+        -9945.0,
+        -19658.0,
+        1157.0,
+        -5984.0,
+        -1233.0,
+        426.0,
+        13330.0,
+        2183.0,
+        -10.0,
+        -7339.0,
+        9259.0,
+        1310.0,
+        10152.0,
+        15878.0,
+        17398.0,
+        6275.0,
+        -21157.0,
+        5329.0,
+        10548.0,
+        -142.0,
+        161.0,
+        6760.0,
+        19963.0,
+        4080.0,
+        6742.0,
+        15264.0,
+        -3969.0,
+        5300.0,
+        700.0,
+        446.0,
+        -56.0,
+        1396.0
+      ],
+      "samples": 32,
+      "mean_net": 2642.625,
+      "median_net": 1353.0,
+      "stddev_net": 9323.6346635156,
+      "stderr_net": 1648.2013239694588,
+      "ci95_low": -587.849594980139,
+      "ci95_high": 5873.099594980139,
+      "mean_per_70_hands": 1321.3125,
+      "ci95_low_per_70_hands": -293.9247974900695,
+      "ci95_high_per_70_hands": 2936.5497974900695,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  },
+  "paired_vs_baseline": {
+    "v026_v254_flop_low_raise_h96_254": {
+      "baseline": "v022_v254_sharded_h96_raise_only254",
+      "candidate": "v026_v254_flop_low_raise_h96_254",
+      "delta_net_chips": [
+        -1783.0,
+        -33621.0,
+        2059.0,
+        -4531.0,
+        -1251.0,
+        315.0,
+        -208.0,
+        2549.0,
+        -17302.0,
+        -17166.0,
+        9152.0,
+        1334.0,
+        -8890.0,
+        10664.0,
+        17564.0,
+        89.0,
+        -5922.0,
+        -73.0,
+        10772.0,
+        18287.0,
+        12.0,
+        6782.0,
+        20037.0,
+        3818.0,
+        -1753.0,
+        -1538.0,
+        -6511.0,
+        -60.0,
+        -23531.0,
+        58.0,
+        23.0,
+        1340.0
+      ],
+      "samples": 32,
+      "mean_net": -602.65625,
+      "median_net": 17.5,
+      "stddev_net": 11197.133598091435,
+      "stderr_net": 1979.392274265545,
+      "ci95_low": -4482.265107560468,
+      "ci95_high": 3276.952607560468,
+      "mean_per_70_hands": -301.328125,
+      "ci95_low_per_70_hands": -2241.132553780234,
+      "ci95_high_per_70_hands": 1638.476303780234,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  }
+}
