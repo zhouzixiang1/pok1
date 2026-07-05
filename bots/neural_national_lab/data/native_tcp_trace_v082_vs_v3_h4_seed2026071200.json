@@ -1,0 +1,719 @@
+{
+  "execution_mode": "native_tcp",
+  "candidate_path": "/home/zzx/project/pok/bots/neural_national_lab/versions/v082_national_v17_trace_force_tcp",
+  "opponent_paths": [
+    "/home/zzx/project/pok/bots/national_v3"
+  ],
+  "hands_per_match": 4,
+  "seeds": [
+    2026071200
+  ],
+  "workers": 1,
+  "paired": false,
+  "requires_native_opponents": true,
+  "bot_seed_base": 202607120000,
+  "trace_decisions": true,
+  "force": {
+    "hand": null,
+    "decision": null,
+    "action": null
+  },
+  "elapsed_sec": 1.429,
+  "rows": [
+    {
+      "candidate": "v082_national_v17_trace_force_tcp",
+      "opponent": "national_v3",
+      "opponent_path": "/home/zzx/project/pok/bots/national_v3",
+      "match_idx": 0,
+      "leg": "forward",
+      "deck_seed_base": 2026071200,
+      "bot_seed_base": 202607120000,
+      "hands_played": 4,
+      "net_chips": 0,
+      "net_chips_per_hand": 0.0,
+      "hand_net_chips": [
+        -100,
+        100,
+        -100,
+        100
+      ],
+      "passed_compliance": true,
+      "issues": [],
+      "candidate_illegal": 0,
+      "candidate_timeouts": 0,
+      "opponent_illegal": 0,
+      "opponent_timeouts": 0,
+      "adapter_actions_candidate": 0,
+      "adapter_actions_opponent": 0,
+      "candidate_native": {
+        "returncode": 0,
+        "bot_seed": 202607120000,
+        "stdout_tail": "",
+        "stderr_tail": "t\":{\"num_players\":2,\"dealer_id\":0,\"my_id\":0,\"my_chips\":19900,\"my_cards\":[6,22],\"public_cards\":[37,43,10],\"history\":[{\"round\":0,\"player_id\":0,\"action\":0,\"action_type\":\"call\",\"stage_bet\":100,\"chips_after\":19900,\"committed\":50},{\"round\":0,\"player_id\":1,\"action\":0,\"action_type\":\"check\"},{\"round\":1,\"player_id\":1,\"action\":101,\"action_type\":\"raise\",\"stage_bet\":101,\"chips_after\":19799,\"committed\":101}],\"hand\":2,\"max_hand\":70,\"total_win_chips\":[0,0],\"total_win_games\":[1,1],\"opponent_showdowns\":[],\"opponent_chips\":19799,\"my_stage_bet\":0,\"opponent_stage_bet\":101,\"pot\":301,\"to_call\":101,\"opponent_allin\":false,\"remaining_hands\":68},\"state\":{\"round\":1,\"round_bet\":101,\"round_raise\":101,\"judge_round_raise\":101,\"min_raise_action\":203,\"round_contrib\":[0,101],\"player_bets\":[0,101],\"stacks\":[19900,19799],\"committed\":[100,201],\"pot\":301,\"to_call\":101,\"opponent_allin\":false,\"allin_call_amount\":101,\"my_round_bet\":0}}\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nPOK_TRACE_DECISION {\"type\":\"decision\",\"name\":\"v082_national_v17_trace_force_tcp\",\"hand\":4,\"decision_serial\":6,\"hand_decision_index\":0,\"stage\":\"preflop\",\"round\":0,\"is_small_blind\":false,\"rule_action\":236,\"advised_action\":236,\"sanitized_action\":336,\"final_action\":336,\"forced\":false,\"force_action\":null,\"request\":{\"num_players\":2,\"dealer_id\":1,\"my_id\":0,\"my_chips\":19900,\"my_cards\":[26,22],\"public_cards\":[],\"history\":[{\"round\":0,\"player_id\":1,\"action\":0,\"action_type\":\"call\",\"stage_bet\":100,\"chips_after\":19900,\"committed\":50}],\"hand\":3,\"max_hand\":70,\"total_win_chips\":[-100,100],\"total_win_games\":[1,2],\"opponent_showdowns\":[],\"opponent_chips\":19900,\"my_stage_bet\":100,\"opponent_stage_bet\":100,\"pot\":200,\"to_call\":0,\"opponent_allin\":false,\"remaining_hands\":67},\"state\":{\"round\":0,\"round_bet\":100,\"round_raise\":100,\"judge_round_raise\":100,\"min_raise_action\":101,\"round_contrib\":[100,100],\"player_bets\":[100,100],\"stacks\":[19900,19900],\"committed\":[100,100],\"pot\":200,\"to_call\":0,\"opponent_allin\":false,\"allin_call_amount\":0,\"my_round_bet\":100}}\n",
+        "decision_trace": [
+          {
+            "type": "decision",
+            "name": "v082_national_v17_trace_force_tcp",
+            "hand": 1,
+            "decision_serial": 0,
+            "hand_decision_index": 0,
+            "stage": "preflop",
+            "round": 0,
+            "is_small_blind": true,
+            "rule_action": 0,
+            "advised_action": 0,
+            "sanitized_action": 0,
+            "final_action": 0,
+            "forced": false,
+            "force_action": null,
+            "request": {
+              "num_players": 2,
+              "dealer_id": 0,
+              "my_id": 0,
+              "my_chips": 19950,
+              "my_cards": [
+                28,
+                0
+              ],
+              "public_cards": [],
+              "history": [],
+              "hand": 0,
+              "max_hand": 70,
+              "total_win_chips": [
+                0,
+                0
+              ],
+              "total_win_games": [
+                0,
+                0
+              ],
+              "opponent_showdowns": [],
+              "opponent_chips": 19900,
+              "my_stage_bet": 50,
+              "opponent_stage_bet": 100,
+              "pot": 150,
+              "to_call": 50,
+              "opponent_allin": false,
+              "remaining_hands": 70
+            },
+            "state": {
+              "round": 0,
+              "round_bet": 100,
+              "round_raise": 100,
+              "judge_round_raise": 100,
+              "min_raise_action": 151,
+              "round_contrib": [
+                50,
+                100
+              ],
+              "player_bets": [
+                50,
+                100
+              ],
+              "stacks": [
+                19950,
+                19900
+              ],
+              "committed": [
+                50,
+                100
+              ],
+              "pot": 150,
+              "to_call": 50,
+              "opponent_allin": false,
+              "allin_call_amount": 50,
+              "my_round_bet": 50
+            }
+          },
+          {
+            "type": "decision",
+            "name": "v082_national_v17_trace_force_tcp",
+            "hand": 1,
+            "decision_serial": 1,
+            "hand_decision_index": 1,
+            "stage": "flop",
+            "round": 1,
+            "is_small_blind": true,
+            "rule_action": -1,
+            "advised_action": -1,
+            "sanitized_action": -1,
+            "final_action": -1,
+            "forced": false,
+            "force_action": null,
+            "request": {
+              "num_players": 2,
+              "dealer_id": 0,
+              "my_id": 0,
+              "my_chips": 19900,
+              "my_cards": [
+                28,
+                0
+              ],
+              "public_cards": [
+                51,
+                5,
+                34
+              ],
+              "history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call",
+                  "stage_bet": 100,
+                  "chips_after": 19900,
+                  "committed": 50
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 159,
+                  "action_type": "raise",
+                  "stage_bet": 159,
+                  "chips_after": 19741,
+                  "committed": 159
+                }
+              ],
+              "hand": 0,
+              "max_hand": 70,
+              "total_win_chips": [
+                0,
+                0
+              ],
+              "total_win_games": [
+                0,
+                0
+              ],
+              "opponent_showdowns": [],
+              "opponent_chips": 19741,
+              "my_stage_bet": 0,
+              "opponent_stage_bet": 159,
+              "pot": 359,
+              "to_call": 159,
+              "opponent_allin": false,
+              "remaining_hands": 70
+            },
+            "state": {
+              "round": 1,
+              "round_bet": 159,
+              "round_raise": 159,
+              "judge_round_raise": 159,
+              "min_raise_action": 319,
+              "round_contrib": [
+                0,
+                159
+              ],
+              "player_bets": [
+                0,
+                159
+              ],
+              "stacks": [
+                19900,
+                19741
+              ],
+              "committed": [
+                100,
+                259
+              ],
+              "pot": 359,
+              "to_call": 159,
+              "opponent_allin": false,
+              "allin_call_amount": 159,
+              "my_round_bet": 0
+            }
+          },
+          {
+            "type": "decision",
+            "name": "v082_national_v17_trace_force_tcp",
+            "hand": 2,
+            "decision_serial": 2,
+            "hand_decision_index": 0,
+            "stage": "preflop",
+            "round": 0,
+            "is_small_blind": false,
+            "rule_action": 0,
+            "advised_action": 0,
+            "sanitized_action": 0,
+            "final_action": 0,
+            "forced": false,
+            "force_action": null,
+            "request": {
+              "num_players": 2,
+              "dealer_id": 1,
+              "my_id": 0,
+              "my_chips": 19900,
+              "my_cards": [
+                7,
+                32
+              ],
+              "public_cards": [],
+              "history": [
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "call",
+                  "stage_bet": 100,
+                  "chips_after": 19900,
+                  "committed": 50
+                }
+              ],
+              "hand": 1,
+              "max_hand": 70,
+              "total_win_chips": [
+                -100,
+                100
+              ],
+              "total_win_games": [
+                0,
+                1
+              ],
+              "opponent_showdowns": [],
+              "opponent_chips": 19900,
+              "my_stage_bet": 100,
+              "opponent_stage_bet": 100,
+              "pot": 200,
+              "to_call": 0,
+              "opponent_allin": false,
+              "remaining_hands": 69
+            },
+            "state": {
+              "round": 0,
+              "round_bet": 100,
+              "round_raise": 100,
+              "judge_round_raise": 100,
+              "min_raise_action": 101,
+              "round_contrib": [
+                100,
+                100
+              ],
+              "player_bets": [
+                100,
+                100
+              ],
+              "stacks": [
+                19900,
+                19900
+              ],
+              "committed": [
+                100,
+                100
+              ],
+              "pot": 200,
+              "to_call": 0,
+              "opponent_allin": false,
+              "allin_call_amount": 0,
+              "my_round_bet": 100
+            }
+          },
+          {
+            "type": "decision",
+            "name": "v082_national_v17_trace_force_tcp",
+            "hand": 2,
+            "decision_serial": 3,
+            "hand_decision_index": 1,
+            "stage": "flop",
+            "round": 1,
+            "is_small_blind": false,
+            "rule_action": 141,
+            "advised_action": 141,
+            "sanitized_action": 141,
+            "final_action": 141,
+            "forced": false,
+            "force_action": null,
+            "request": {
+              "num_players": 2,
+              "dealer_id": 1,
+              "my_id": 0,
+              "my_chips": 19900,
+              "my_cards": [
+                7,
+                32
+              ],
+              "public_cards": [
+                34,
+                1,
+                50
+              ],
+              "history": [
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "call",
+                  "stage_bet": 100,
+                  "chips_after": 19900,
+                  "committed": 50
+                },
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ],
+              "hand": 1,
+              "max_hand": 70,
+              "total_win_chips": [
+                -100,
+                100
+              ],
+              "total_win_games": [
+                0,
+                1
+              ],
+              "opponent_showdowns": [],
+              "opponent_chips": 19900,
+              "my_stage_bet": 0,
+              "opponent_stage_bet": 0,
+              "pot": 200,
+              "to_call": 0,
+              "opponent_allin": false,
+              "remaining_hands": 69
+            },
+            "state": {
+              "round": 1,
+              "round_bet": 0,
+              "round_raise": 50,
+              "judge_round_raise": 50,
+              "min_raise_action": 101,
+              "round_contrib": [
+                0,
+                0
+              ],
+              "player_bets": [
+                0,
+                0
+              ],
+              "stacks": [
+                19900,
+                19900
+              ],
+              "committed": [
+                100,
+                100
+              ],
+              "pot": 200,
+              "to_call": 0,
+              "opponent_allin": false,
+              "allin_call_amount": 0,
+              "my_round_bet": 0
+            }
+          },
+          {
+            "type": "decision",
+            "name": "v082_national_v17_trace_force_tcp",
+            "hand": 3,
+            "decision_serial": 4,
+            "hand_decision_index": 0,
+            "stage": "preflop",
+            "round": 0,
+            "is_small_blind": true,
+            "rule_action": 0,
+            "advised_action": 0,
+            "sanitized_action": 0,
+            "final_action": 0,
+            "forced": false,
+            "force_action": null,
+            "request": {
+              "num_players": 2,
+              "dealer_id": 0,
+              "my_id": 0,
+              "my_chips": 19950,
+              "my_cards": [
+                6,
+                22
+              ],
+              "public_cards": [],
+              "history": [],
+              "hand": 2,
+              "max_hand": 70,
+              "total_win_chips": [
+                0,
+                0
+              ],
+              "total_win_games": [
+                1,
+                1
+              ],
+              "opponent_showdowns": [],
+              "opponent_chips": 19900,
+              "my_stage_bet": 50,
+              "opponent_stage_bet": 100,
+              "pot": 150,
+              "to_call": 50,
+              "opponent_allin": false,
+              "remaining_hands": 68
+            },
+            "state": {
+              "round": 0,
+              "round_bet": 100,
+              "round_raise": 100,
+              "judge_round_raise": 100,
+              "min_raise_action": 151,
+              "round_contrib": [
+                50,
+                100
+              ],
+              "player_bets": [
+                50,
+                100
+              ],
+              "stacks": [
+                19950,
+                19900
+              ],
+              "committed": [
+                50,
+                100
+              ],
+              "pot": 150,
+              "to_call": 50,
+              "opponent_allin": false,
+              "allin_call_amount": 50,
+              "my_round_bet": 50
+            }
+          },
+          {
+            "type": "decision",
+            "name": "v082_national_v17_trace_force_tcp",
+            "hand": 3,
+            "decision_serial": 5,
+            "hand_decision_index": 1,
+            "stage": "flop",
+            "round": 1,
+            "is_small_blind": true,
+            "rule_action": -1,
+            "advised_action": -1,
+            "sanitized_action": -1,
+            "final_action": -1,
+            "forced": false,
+            "force_action": null,
+            "request": {
+              "num_players": 2,
+              "dealer_id": 0,
+              "my_id": 0,
+              "my_chips": 19900,
+              "my_cards": [
+                6,
+                22
+              ],
+              "public_cards": [
+                37,
+                43,
+                10
+              ],
+              "history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call",
+                  "stage_bet": 100,
+                  "chips_after": 19900,
+                  "committed": 50
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 101,
+                  "action_type": "raise",
+                  "stage_bet": 101,
+                  "chips_after": 19799,
+                  "committed": 101
+                }
+              ],
+              "hand": 2,
+              "max_hand": 70,
+              "total_win_chips": [
+                0,
+                0
+              ],
+              "total_win_games": [
+                1,
+                1
+              ],
+              "opponent_showdowns": [],
+              "opponent_chips": 19799,
+              "my_stage_bet": 0,
+              "opponent_stage_bet": 101,
+              "pot": 301,
+              "to_call": 101,
+              "opponent_allin": false,
+              "remaining_hands": 68
+            },
+            "state": {
+              "round": 1,
+              "round_bet": 101,
+              "round_raise": 101,
+              "judge_round_raise": 101,
+              "min_raise_action": 203,
+              "round_contrib": [
+                0,
+                101
+              ],
+              "player_bets": [
+                0,
+                101
+              ],
+              "stacks": [
+                19900,
+                19799
+              ],
+              "committed": [
+                100,
+                201
+              ],
+              "pot": 301,
+              "to_call": 101,
+              "opponent_allin": false,
+              "allin_call_amount": 101,
+              "my_round_bet": 0
+            }
+          },
+          {
+            "type": "decision",
+            "name": "v082_national_v17_trace_force_tcp",
+            "hand": 4,
+            "decision_serial": 6,
+            "hand_decision_index": 0,
+            "stage": "preflop",
+            "round": 0,
+            "is_small_blind": false,
+            "rule_action": 236,
+            "advised_action": 236,
+            "sanitized_action": 336,
+            "final_action": 336,
+            "forced": false,
+            "force_action": null,
+            "request": {
+              "num_players": 2,
+              "dealer_id": 1,
+              "my_id": 0,
+              "my_chips": 19900,
+              "my_cards": [
+                26,
+                22
+              ],
+              "public_cards": [],
+              "history": [
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "call",
+                  "stage_bet": 100,
+                  "chips_after": 19900,
+                  "committed": 50
+                }
+              ],
+              "hand": 3,
+              "max_hand": 70,
+              "total_win_chips": [
+                -100,
+                100
+              ],
+              "total_win_games": [
+                1,
+                2
+              ],
+              "opponent_showdowns": [],
+              "opponent_chips": 19900,
+              "my_stage_bet": 100,
+              "opponent_stage_bet": 100,
+              "pot": 200,
+              "to_call": 0,
+              "opponent_allin": false,
+              "remaining_hands": 67
+            },
+            "state": {
+              "round": 0,
+              "round_bet": 100,
+              "round_raise": 100,
+              "judge_round_raise": 100,
+              "min_raise_action": 101,
+              "round_contrib": [
+                100,
+                100
+              ],
+              "player_bets": [
+                100,
+                100
+              ],
+              "stacks": [
+                19900,
+                19900
+              ],
+              "committed": [
+                100,
+                100
+              ],
+              "pot": 200,
+              "to_call": 0,
+              "opponent_allin": false,
+              "allin_call_amount": 0,
+              "my_round_bet": 100
+            }
+          }
+        ],
+        "process_failures": 0,
+        "json_response_stdout": 0
+      },
+      "opponent_native": {
+        "returncode": 0,
+        "bot_seed": 202607120001,
+        "stdout_tail": "",
+        "stderr_tail": "STATION_SIZING delta_milli=-10 reason=station_downsize round=1 vmi=0.434 ftb=0.440 conf=0.00\nTURN_PROBE_SIZING delta_milli=+0 reason=not_turn_probe round=1 to_call=0 flop_aggr=0.000 conf=0.00\nCALL_MARGIN_FINAL margin_milli=+66 reason=standard_arm round=1 bucket=medium\nSTATION_SIZING delta_milli=-10 reason=station_downsize round=1 vmi=0.434 ftb=0.440 conf=0.00\nTURN_PROBE_SIZING delta_milli=+0 reason=not_turn_probe round=1 to_call=0 flop_aggr=0.000 conf=0.00\nPREFLOP_OFFSUIT_GATE spot=sb_vs_iso_raise hand=trash action=fold\n",
+        "decision_trace": [],
+        "process_failures": 0,
+        "json_response_stdout": 0
+      }
+    }
+  ],
+  "combined": {
+    "matches": 1,
+    "hands": 4,
+    "compliant_matches": 1,
+    "total_net_chips": 0,
+    "mean_per_hand": 0.0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 1
+  },
+  "opponents": {
+    "national_v3": {
+      "matches": 1,
+      "hands": 4,
+      "compliant_matches": 1,
+      "total_net_chips": 0,
+      "mean_net_chips": 0,
+      "median_net_chips": 0,
+      "mean_per_hand": 0.0,
+      "wins": 0,
+      "losses": 0,
+      "draws": 1,
+      "samples": [
+        0
+      ],
+      "issues": [],
+      "candidate_illegal_total": 0,
+      "candidate_timeouts_total": 0,
+      "opponent_illegal_total": 0,
+      "opponent_timeouts_total": 0,
+      "adapter_actions_candidate_total": 0,
+      "adapter_actions_opponent_total": 0
+    }
+  }
+}
