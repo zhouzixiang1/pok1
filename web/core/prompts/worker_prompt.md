@@ -148,6 +148,15 @@ Do not broaden scope. Only modify your assigned `target_files`.
 {worker_prompt}
 </master_prompt>
 
+<battle_evidence_contract>
+If the Master task cites `battle_lesson_*` or `ev_*` identifiers, treat them as
+the evidence scope for the task. Keep the code change focused on the cited
+failure pattern and mention in your final `changed_functions` / `checks_run`
+how the change addresses that lesson or evidence row. Do not generalize a
+single pending summary into a broad strategy rewrite unless the prompt also
+cites H2H, replay spotlight, or repeated evidence.
+</battle_evidence_contract>
+
 <verification>
 After editing:
 

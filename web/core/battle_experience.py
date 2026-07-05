@@ -1,13 +1,14 @@
 """Battle Experience — incremental match analysis via background thread.
 
 Per-match deterministic tagging + serial background thread that consumes
-unanalyzed matches one by one via LLM, maintaining a single
-battle_experience.md file.
+unanalyzed matches, persists replay evidence first, and optionally asks an LLM
+to turn accumulated summaries into reusable lessons.
 
 The thread wakes every POLL_INTERVAL seconds, finds unanalyzed matches in
 match_history.jsonl, loads their replay files, summarizes them from both
 perspectives, and feeds the summaries to an LLM that incrementally updates
-the experience file.
+the legacy experience file plus structured battle_evidence / battle_lessons
+sidecars.
 
 All file I/O uses fcntl locking.  LLM failures are non-fatal — the thread
 breaks out of the current batch and retries next cycle.
@@ -29,6 +30,7 @@ import threading
 import time
 from pathlib import Path
 
+import battle_memory
 from evolution_infra import (
     BaseUI,
     RESULTS_DIR,
@@ -75,6 +77,9 @@ def _log_llm_failure(message: str, kind: str, exc) -> None:
 # ──────────────────────────────────────────────
 
 BATTLE_EXPERIENCE_FILE = RESULTS_DIR / "battle_experience.md"
+BATTLE_EVIDENCE_FILE = RESULTS_DIR / "battle_evidence.jsonl"
+BATTLE_PENDING_SUMMARIES_FILE = RESULTS_DIR / "battle_pending_summaries.jsonl"
+BATTLE_LESSONS_FILE = RESULTS_DIR / "battle_lessons.jsonl"
 ANALYSIS_MARKER_FILE = RESULTS_DIR / ".battle_analysis_progress.json"
 POLL_INTERVAL = 20  # seconds between background thread wake-ups
 TARGET_BATCH = 6  # P2: was 16 — smaller batches cut per-call latency + SIGTERM data loss
@@ -97,6 +102,17 @@ BATTLE_PROMPT_MATCH_SECTION_BUDGET = int(os.environ.get("POK_BATTLE_EXP_SECTION_
 BATTLE_PROMPT_MAX_CHARS = int(os.environ.get("POK_BATTLE_EXP_MAX_PROMPT_CHARS", "30000"))
 BATTLE_EXPERIENCE_LLM_ENABLED = os.environ.get("POK_BATTLE_EXPERIENCE_LLM", "0") == "1"
 _NO_EXPERIENCE_UPDATE = object()
+_SUMMARY_READY_STATUS = "summary_ready"
+_DONE_STATUS = "done"
+_FORCE_SKIPPED_STATUS = "force_skipped"
+
+
+def _memory_paths() -> battle_memory.BattleMemoryPaths:
+    return battle_memory.BattleMemoryPaths(
+        evidence_file=BATTLE_EVIDENCE_FILE,
+        pending_file=BATTLE_PENDING_SUMMARIES_FILE,
+        lessons_file=BATTLE_LESSONS_FILE,
+    )
 
 # ──────────────────────────────────────────────
 # SilentUI
@@ -134,19 +150,29 @@ class SilentUI(BaseUI):
 
 
 def is_analyzed(match_id: str) -> bool:
-    """True if the match is DONE (success, fail_count==0) or force-skipped (>=3).
+    """True if the replay no longer needs deterministic summary extraction.
 
-    Transient failures (fail_count 1-2) return False so they get RETRIED.
+    A match can be terminally done, force-skipped, or summary_ready. The last
+    state means deterministic evidence was captured and queued for later lesson
+    extraction; it is intentionally not the same as a completed LLM lesson.
+    Transient failures (fail_count 1-2) return False so they get retried.
     """
     markers = _read_markers()
     entry = markers.get(match_id)
     if entry is None:
         return False
     if isinstance(entry, dict):
-        fc = entry.get("fail_count", 0)
-        return fc == 0 or fc >= 3
+        return _marker_is_closed(entry)
     # legacy list form: plain string ID — treated as analyzed
     return True
+
+
+def _marker_is_closed(entry: dict) -> bool:
+    status = entry.get("status")
+    if status in {_DONE_STATUS, _SUMMARY_READY_STATUS, _FORCE_SKIPPED_STATUS}:
+        return True
+    fc = entry.get("fail_count", 0)
+    return fc == 0 or fc >= 3
 
 
 def _read_markers() -> dict:
@@ -175,7 +201,20 @@ def mark_analyzed(match_id: str, *, fail_count: int = 0):
         fail_count: 0 = successfully analyzed (done); >=3 = force-skipped poison.
     """
     markers = _read_markers()
-    markers[match_id] = {"fail_count": fail_count}
+    status = _DONE_STATUS if fail_count == 0 else _FORCE_SKIPPED_STATUS
+    markers[match_id] = {"fail_count": fail_count, "status": status}
+    _write_markers(markers)
+
+
+def mark_summary_ready(match_id: str, *, evidence_ids: list[str] | None = None):
+    """Mark deterministic replay evidence as captured, with LLM lessons pending."""
+    markers = _read_markers()
+    markers[match_id] = {
+        "fail_count": 0,
+        "status": _SUMMARY_READY_STATUS,
+        "llm_pending": True,
+        "evidence_ids": list(evidence_ids or []),
+    }
     _write_markers(markers)
 
 
@@ -186,7 +225,10 @@ def increment_fail_count(match_id: str) -> int:
     if not isinstance(entry, dict):
         entry = {}
     new_count = entry.get("fail_count", 0) + 1
-    markers[match_id] = {"fail_count": new_count}
+    markers[match_id] = {
+        "fail_count": new_count,
+        "status": _FORCE_SKIPPED_STATUS if new_count >= 3 else "llm_failed",
+    }
     _write_markers(markers)
     return new_count
 
@@ -226,10 +268,9 @@ def get_unanalyzed_matches(n: int = TARGET_BATCH) -> list[dict]:
             continue
         marker = markers.get(match_id)
         if isinstance(marker, dict):
-            fc = marker.get("fail_count", 0)
-            if fc == 0 or fc >= 3:
+            if _marker_is_closed(marker):
                 continue  # done or force-skipped
-            # fc in 1-2: transient failure — retry (fall through)
+            # transient failure — retry (fall through)
         elif marker is not None:
             continue  # legacy string form — already analyzed
         # Skip if replay file has been evicted
@@ -387,15 +428,15 @@ def _experience_loop():
             log.warning("Experience thread error: %s", e)
 
 
-def _process_one_match_safe(entry: dict) -> str | None:
+def _process_one_match_safe(entry: dict) -> dict | None:
     """Extract the new-match summary for one match (pure-data, parallel-safe).
 
-    Returns the concatenated bot-perspective summary string, or None if the
-    replay is missing/corrupt/empty. Does NOT touch the experience file or run
-    the LLM — the LLM merge is done ONCE over the combined batch in
-    _apply_batch_results. This avoids the parallel read-modify-write data-loss
-    bug where each worker would read the same stale baseline and the sequential
-    writes would clobber N-1 of the merges.
+    Returns {"summary": str, "evidence": list[dict]}, or None if the replay is
+    missing/corrupt/empty. Does NOT touch the experience file or run the LLM —
+    the LLM merge is done ONCE over the combined batch in _apply_batch_results.
+    This avoids the parallel read-modify-write data-loss bug where each worker
+    would read the same stale baseline and the sequential writes would clobber
+    N-1 of the merges.
     """
     match_id = entry.get("id", "")
     bot0 = entry.get("bot0", "")
@@ -414,18 +455,90 @@ def _process_one_match_safe(entry: dict) -> str | None:
         return None
 
     summary_parts = []
+    evidence_records = []
     for bot_name in (bot0, bot1):
         if not bot_name:
             continue
         summary = replay_analysis.summarize_replay_for_analysis(replay_data, bot_name)
         if summary:
             summary_parts.append(summary)
+        evidence = replay_analysis.extract_replay_evidence_for_analysis(
+            replay_data,
+            bot_name,
+            match_id=match_id,
+        )
+        if evidence:
+            evidence_records.append(evidence)
 
     if not summary_parts:
         log.debug("Empty summaries for %s — will skip", match_id)
         return None
 
-    return "\n\n".join(summary_parts)
+    return {
+        "summary": "\n\n".join(summary_parts),
+        "evidence": evidence_records,
+    }
+
+
+def _summary_payload_parts(payload) -> tuple[str, list[dict]]:
+    """Normalize legacy string summaries and new structured summary payloads."""
+    if isinstance(payload, dict):
+        summary = str(payload.get("summary") or "")
+        evidence = payload.get("evidence") or []
+        if not isinstance(evidence, list):
+            evidence = []
+        return summary, [row for row in evidence if isinstance(row, dict)]
+    return str(payload or ""), []
+
+
+def _record_structured_batch_memory(success_payloads: list[tuple[dict, str, list[dict]]]) -> dict[str, list[str]]:
+    """Persist deterministic evidence and pending summaries for a batch.
+
+    Returns match_id -> evidence_ids for marker updates and lesson attribution.
+    """
+    paths = _memory_paths()
+    all_evidence = []
+    evidence_by_match: dict[str, list[str]] = {}
+    for entry, _summary, evidence_records in success_payloads:
+        match_id = str(entry.get("id", ""))
+        ids = []
+        for record in evidence_records:
+            if record:
+                all_evidence.append(record)
+                if record.get("evidence_id"):
+                    ids.append(str(record["evidence_id"]))
+        evidence_by_match[match_id] = list(dict.fromkeys(ids))
+    if all_evidence:
+        try:
+            battle_memory.append_evidence(all_evidence, paths=paths)
+        except Exception as e:
+            log.warning("Structured battle evidence write failed: %s", e)
+
+    for entry, summary, _evidence_records in success_payloads:
+        match_id = str(entry.get("id", ""))
+        try:
+            battle_memory.append_pending_summary(
+                match_entry=entry,
+                summary=summary,
+                evidence_ids=evidence_by_match.get(match_id, []),
+                paths=paths,
+                status="llm_pending",
+            )
+        except Exception as e:
+            log.warning("Structured pending battle summary write failed for %s: %s", match_id, e)
+    return evidence_by_match
+
+
+def _record_lessons_from_markdown(markdown: str, evidence_ids: list[str]):
+    try:
+        records = battle_memory.markdown_lessons_to_records(
+            markdown,
+            evidence_ids=evidence_ids,
+        )
+        if records:
+            battle_memory.append_lessons(records, paths=_memory_paths())
+    except Exception as e:
+        log.warning("Structured battle lesson write failed: %s", e)
 
 
 def _apply_batch_results(results: list):
@@ -439,18 +552,22 @@ def _apply_batch_results(results: list):
     (force-skip after 3).
     """
     summaries = []
-    success_entries = []
+    success_payloads = []
     for entry, success, summary in results:
         match_id = entry.get("id", "")
         if not success or summary is None:
             # Already bumped in caller; skip duplicate bump
             continue
-        summaries.append(summary)
-        success_entries.append(entry)
+        summary_text, evidence_records = _summary_payload_parts(summary)
+        if not summary_text:
+            continue
+        summaries.append(summary_text)
+        success_payloads.append((entry, summary_text, evidence_records))
 
     if not summaries:
         return
 
+    evidence_by_match = _record_structured_batch_memory(success_payloads)
     combined = "\n\n---\n\n".join(summaries)
     current = _read_experience_file()
 
@@ -458,8 +575,12 @@ def _apply_batch_results(results: list):
     # which is then appended to the existing document rather than replacing it.
     new_section = _run_llm_incremental(current, combined)
     if new_section is _NO_EXPERIENCE_UPDATE:
-        for entry in success_entries:
-            mark_analyzed(entry.get("id", ""), fail_count=0)
+        for entry, _summary, _evidence_records in success_payloads:
+            match_id = entry.get("id", "")
+            mark_summary_ready(
+                match_id,
+                evidence_ids=evidence_by_match.get(str(match_id), []),
+            )
     elif new_section is not None:
         if current.strip():
             # Append new observations after existing content
@@ -468,12 +589,16 @@ def _apply_batch_results(results: list):
             # First-ever analysis — write as-is
             updated = new_section + "\n"
         _write_experience_file(updated)
-        for entry in success_entries:
+        all_evidence_ids = []
+        for ids in evidence_by_match.values():
+            all_evidence_ids.extend(ids)
+        _record_lessons_from_markdown(new_section, list(dict.fromkeys(all_evidence_ids)))
+        for entry, _summary, _evidence_records in success_payloads:
             mark_analyzed(entry.get("id", ""), fail_count=0)
     else:
         # LLM merge failed: bump fail_count for every successful-summary match
         # so they stay retryable (and force-skip after 3 LLM failures).
-        for entry in success_entries:
+        for entry, _summary, _evidence_records in success_payloads:
             increment_fail_count(entry.get("id", ""))
 
 
@@ -515,12 +640,20 @@ def _process_one_match(entry: dict):
 
     # 3. Summarize from both perspectives
     summary_parts = []
+    evidence_records = []
     for bot_name in (bot0, bot1):
         if not bot_name:
             continue
         summary = replay_analysis.summarize_replay_for_analysis(replay_data, bot_name)
         if summary:
             summary_parts.append(summary)
+        evidence = replay_analysis.extract_replay_evidence_for_analysis(
+            replay_data,
+            bot_name,
+            match_id=match_id,
+        )
+        if evidence:
+            evidence_records.append(evidence)
 
     if not summary_parts:
         log.debug("Empty summaries for %s — marking as analyzed", match_id)
@@ -528,6 +661,9 @@ def _process_one_match(entry: dict):
         return
 
     new_match_summary = "\n\n".join(summary_parts)
+    evidence_by_match = _record_structured_batch_memory([
+        (entry, new_match_summary, evidence_records)
+    ])
 
     # 4. Read current experience
     current_experience = _read_experience_file()
@@ -536,6 +672,10 @@ def _process_one_match(entry: dict):
     updated = _run_llm_update(current_experience, new_match_summary)
     if updated is not None:
         _write_experience_file(updated)
+        _record_lessons_from_markdown(
+            updated,
+            evidence_by_match.get(str(match_id), []),
+        )
         # 7. Mark analyzed ONLY on success
         mark_analyzed(match_id, fail_count=0)
     else:
@@ -881,7 +1021,7 @@ def _prepare_prompt_inputs(current_experience: str, new_match_data: str, *, mode
 # ──────────────────────────────────────────────
 
 
-def get_battle_experience() -> str:
+def get_battle_experience(source_bot: str = "") -> str:
     """Return the current battle experience content.
 
     Called from generation_scheduler at generation start.
@@ -897,10 +1037,25 @@ def get_battle_experience() -> str:
     discarding actionable strategic lessons.
     """
     raw = _read_experience_file()
+    structured = ""
+    try:
+        structured = battle_memory.format_battle_memory_for_master(
+            paths=_memory_paths(),
+            source_bot=source_bot,
+            max_lessons=8,
+            max_pending=6,
+            max_evidence=8,
+        )
+    except Exception as e:
+        log.warning("Structured battle memory read failed: %s", e)
+        structured = ""
     if not raw:
-        return raw
+        return structured
     tagged = _tag_stale_observations(raw)
-    return _compress_dup_sections(tagged)
+    compact = _compress_dup_sections(tagged)
+    if structured:
+        return compact.rstrip() + "\n\n" + structured + "\n"
+    return compact
 
 
 # Section types that accumulate via incremental-append (many near-duplicate

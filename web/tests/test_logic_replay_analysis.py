@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
 from replay_analysis import (
     _num_public_cards_to_street,
     extract_behavior_fingerprint,
+    extract_replay_evidence_for_analysis,
     extract_street_patterns,
     summarize_replay_for_analysis,
 )
@@ -284,3 +285,29 @@ class TestSummarizeReplayForAnalysis:
         assert "Preflop" in summary
         assert "Flop" in summary
         assert "Turn" in summary
+
+    def test_extract_replay_evidence_for_analysis(self):
+        games = [{
+            "bot_a": "A",
+            "bot_b": "B",
+            "repeat": 0,
+            "net_chips_a": -6000,
+            "net_chips_b": 6000,
+            "events_tail": [
+                {"type": "action", "player_idx": 0, "action": "fold", "stage": "flop", "pot": 800},
+                {"type": "action", "player_idx": 0, "action": "raise", "stage": "river", "amount": 1800, "pot": 1200},
+            ],
+        }]
+        replay = self._make_replay("A", "B", games)
+
+        evidence = extract_replay_evidence_for_analysis(replay, "A", match_id="m-evidence")
+
+        assert evidence["evidence_id"].startswith("ev_")
+        assert evidence["match_id"] == "m-evidence"
+        assert evidence["bot"] == "A"
+        assert evidence["opponent"] == "B"
+        assert evidence["sample_n"] == 1
+        assert evidence["avg_delta"] == -6000
+        assert evidence["actions"]["fold"] == 1
+        assert evidence["actions"]["raise"] == 1
+        assert "big_pot_losses" in evidence["spot_tags"]

@@ -463,7 +463,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     battle_experience_text = ""
     try:
         from battle_experience import get_battle_experience
-        battle_experience_text = get_battle_experience()
+        battle_experience_text = get_battle_experience(source_bot=bot_name(source_v))
     except Exception as e:
         log.warning("Battle experience read failed: %s", e)
 
