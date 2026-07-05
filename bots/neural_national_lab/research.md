@@ -173,6 +173,73 @@ Practical takeaways for this repo:
   seeds, multi-opponent smoke, median and CI checks, and national protocol
   alignment tests.
 
+## Literature Refresh 2026-07-05
+
+The current v066-v070 path is in a threshold-tuning plateau. v068 and v070 both
+sit near `+93` chips per 70 hands versus v064 over the same g032x5 five-opponent
+panel, but both confidence intervals cross zero and the average is dominated by
+rare v285/v288 outliers. This is enough to keep the artifacts for replay and
+active learning, not enough to keep widening scalar gates.
+
+New literature and repository scans point to four stronger directions:
+
+- Deep CFR (`https://arxiv.org/abs/1811.00164`) and Single Deep CFR
+  (`https://arxiv.org/abs/1901.07621`) support training advantage/regret targets
+  from repeated traversals instead of predicting a single binary pass/fail gate.
+  The local equivalent should be a six-label legal-action value/regret vector
+  plus an off-menu rule-action baseline.
+- DecisionHoldem (`https://arxiv.org/abs/2201.11580`) and its released
+  `AI-Decision/DecisionHoldem` code show the practical HUNL structure:
+  blueprint strategy from hand/action abstraction plus real-time depth-limited
+  subgame search using opponent private-hand ranges. Its README reports 48 CPU
+  cores for 3-4 days for blueprint training, which is a useful scale reference
+  for local CPU parallelism.
+- AlphaHoldem (`https://ojs.aaai.org/index.php/AAAI/article/view/20394`) and
+  the `AlphaNLHoldem` clone show a model-free self-play/league path, but the
+  clone also warns that its RLCard environment differs from ACPC/national HUNL
+  and that even roughly one billion self-play games had not clearly converged.
+  This makes it a reference for league infrastructure, not an immediate runtime
+  transplant.
+- RL-CFR (`https://arxiv.org/abs/2403.04344`) is the closest match to the
+  local bottleneck: learn action abstraction choices, then solve with CFR. The
+  cloned `lbn187/RL-CFR` implementation exports TorchScript actors/critics and
+  uses C++/libtorch CFR code to choose raise abstractions. For this repo, the
+  practical first step is to learn raise-size buckets from branch deltas, then
+  let the national sanitizer translate them into raise-to-total strings.
+
+Additional clone takeaways:
+
+- `g5-poker-bot` is not a neural approach; it won ACPC categories with Bayesian
+  opponent modeling plus expectiminimax/Miximax search. That is directly useful
+  for range and opponent-frequency features in a national-native bot.
+- `deepbot-poker` is neuroevolution/LSTM opponent exploitation. It is useful as
+  a reminder that pure evolutionary neural policy search needs many full games
+  and careful opponent tables; it does not address this repo's current sparse
+  disputed-action credit assignment.
+- `Talibus-Deep-CFR-Poker-AI` is a modern engineering reference for Deep CFR
+  pipelines: reservoir buffers, ONNX export, cluster files, parallel league
+  evaluation, and proof gates. Its structure is more valuable than its exact
+  model weights because the local protocol and action semantics are different.
+- `EricSteinberger/Deep-CFR` remains the cleanest small reference for splitting
+  traversal actors, learner actors, replay buffers, and exported evaluation
+  agents.
+
+Recommended next architecture:
+
+- Keep old Botzone-style bots runnable through adapters, but build the new bot
+  as national-native: string protocol, exact raise-to-total semantics, card suit
+  mapping, and sanitizer-owned action conversion.
+- Add a lightweight actor/learner loop under `bots/neural_national_lab`: many
+  CPU actor workers enumerate legal abstract actions on disputed states; CUDA
+  learner trains value/regret heads from JSONL reservoir shards; runtime exports
+  compact JSON weights only.
+- Add public range features before increasing model width: hand bucket,
+  street/action history, pot/stack geometry, last raise size, board texture,
+  opponent frequency priors, and showdown-revealed range corrections.
+- Treat LLMs as offline research and code/data-analysis drivers only. Direct
+  LLM play is too slow, hard to make deterministic, and poorly aligned with the
+  national 60-second TCP protocol.
+
 ## Advisor-Line Findings
 
 - `trace_advice_outcomes.py` is now the preferred advisor diagnostic. It

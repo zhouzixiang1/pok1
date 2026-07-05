@@ -1071,6 +1071,42 @@ a statistically clear successor. The next useful work is to add richer active
 rows or context features that recover suppressed positives without reopening
 the large v279/v284 negative windows.
 
+The all-divergence follow-up tested whether replacing the p087 head with a
+broader p112 value head could recover those suppressed positives safely. The
+new `multiaction_value_v068_all_divergence_p099...jsonl` file contains 39 rows
+from all recorded v066-v068 paired-divergence windows; mixing it with the p073
+boundary set produced the p112 no-allin clipped target file. CUDA training
+exported h16/h32/h64 heads, with h64 selected for
+`versions/v069_v254_alldiv_value_h64_p112_min020`. Targeted replay showed the
+new head was safer on v279 by closing the remaining `-80` window, but it also
+blocked v068's known `+290` v279 recovery. On the same five-opponent g032x5
+evaluation, v069 averaged `+91.69` chips per 70 hands versus v064 with CI
+`[-11.62, +195.01]`, split 8 positive, 151 zero, and 1 negative sample. This
+is more conservative than v068, not stronger.
+
+`versions/v070_v254_dual_value_support_p087_p112` keeps v068's primary p087
+h32 value head and `multi_action_value_min=0.40`, then adds the p112 h64 head
+as a support fallback with `multi_action_value_support_min=0.50`. The intent is
+to allow only p112-supported positives that v068 would otherwise suppress.
+Targeted replay preserved the v279 `+290` and `+95` recoveries, kept the v279
+`-796` window closed, restored the v284 `+89` window, and kept the known v288
+`-90` small regression. The full g032x5 result is only marginally above v068:
+v070 averaged `+93.48` chips per 70 hands versus v064 with CI
+`[-9.84, +196.79]`, split 11 positive, 147 zero, and 2 negative samples.
+Against individual opponents it stayed sparse: v279 `+5.05`, v283 `+7.41`,
+v284 `+3.00`, v285 `+252.61`, v288 `+199.31`, all with intervals that are too
+wide or driven by rare outliers. v070 is therefore a recorded safety/support
+repair, not a significant successor.
+
+This v066-v070 sequence is a local-tuning plateau. The best artifacts reduce
+known bad windows and preserve some large positive outliers, but none clear the
+paired promotion bar and the aggregate mean is dominated by rare v285/v288
+samples. Do not keep spending cycles on scalar threshold sweeps in this family.
+The next useful branch should move to richer action-value targets: legal action
+masks, public/range features, branch-level value or regret vectors, and an
+actor/learner data loop that can produce many more reproducible disputed-gate
+rows before another runtime bot is promoted.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass

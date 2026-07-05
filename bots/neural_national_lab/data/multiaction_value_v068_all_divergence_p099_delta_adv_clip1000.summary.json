@@ -1,0 +1,77 @@
+{
+  "inputs": [
+    "bots/neural_national_lab/data/active_divergence_v066_vs_v064_v279_g032_nonzero_seed2026091300.json",
+    "bots/neural_national_lab/data/active_divergence_v066_vs_v064_v283_g032_nonzero_seed2026091400.json",
+    "bots/neural_national_lab/data/active_divergence_v066_vs_v064_v284_g032_nonzero_seed2026091500.json",
+    "bots/neural_national_lab/data/active_divergence_v066_vs_v064_v285_g032_nonzero_seed2026091600.json",
+    "bots/neural_national_lab/data/active_divergence_v066_vs_v064_v288_g032_nonzero_seed2026091700.json",
+    "bots/neural_national_lab/data/active_divergence_v067_vs_v064_v279_g032_nonzero_seed2026091300.json",
+    "bots/neural_national_lab/data/active_divergence_v067_vs_v064_v283_g032_nonzero_seed2026091400.json",
+    "bots/neural_national_lab/data/active_divergence_v067_vs_v064_v284_g032_nonzero_seed2026091500.json",
+    "bots/neural_national_lab/data/active_divergence_v067_vs_v064_v285_g032_nonzero_seed2026091600.json",
+    "bots/neural_national_lab/data/active_divergence_v067_vs_v064_v288_g032_nonzero_seed2026091700.json",
+    "bots/neural_national_lab/data/active_divergence_v067_vs_v064_v279_new_nonzero_seed2026091300.json",
+    "bots/neural_national_lab/data/active_divergence_v068_vs_v064_v279_new_nonzero_seed2026091300.json",
+    "bots/neural_national_lab/data/active_divergence_v068_vs_v064_v279_old_nonzero_seed2026091300.json"
+  ],
+  "version": "/home/zzx/project/pok/bots/neural_national_lab/versions/v068_v254_outlier_boundary_h32_p087_min040",
+  "rows": 39,
+  "input_dim": 70,
+  "label": "raise_half",
+  "positive": 20,
+  "zero": 0,
+  "negative": 19,
+  "mean_target": 74.25641025641026,
+  "median_target": 14.0,
+  "min_target": -1000.0,
+  "max_target": 1000.0,
+  "action_templates": {
+    "0->101|mirror": 13,
+    "0->101|normal": 12,
+    "0->120|mirror": 2,
+    "101->0|mirror": 5,
+    "101->0|normal": 7
+  },
+  "by_opponent": {
+    "claude_v279": {
+      "rows": 23,
+      "positive": 8,
+      "negative": 15,
+      "mean_target": -65.78260869565217,
+      "min_target": -1000.0,
+      "max_target": 564.0
+    },
+    "claude_v283": {
+      "rows": 5,
+      "positive": 3,
+      "negative": 2,
+      "mean_target": 60.2,
+      "min_target": -274.0,
+      "max_target": 301.0
+    },
+    "claude_v284": {
+      "rows": 3,
+      "positive": 2,
+      "negative": 1,
+      "mean_target": 45.0,
+      "min_target": -43.0,
+      "max_target": 89.0
+    },
+    "claude_v285": {
+      "rows": 3,
+      "positive": 3,
+      "negative": 0,
+      "mean_target": 672.3333333333334,
+      "min_target": 17.0,
+      "max_target": 1000.0
+    },
+    "claude_v288": {
+      "rows": 5,
+      "positive": 4,
+      "negative": 1,
+      "mean_target": 391.2,
+      "min_target": -224.0,
+      "max_target": 1000.0
+    }
+  }
+}
