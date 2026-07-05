@@ -508,6 +508,42 @@ def test_P1_guard_hook_blocks_readonly_bash_at_actionable_stage(tmp_path, monkey
     assert "Built-in Bash/Edit/Write are disabled" in reason
 
 
+def test_P1_guard_hook_routes_critic_checked_to_precommit(tmp_path, monkeypatch):
+    """critic_checked is an actionable precommit route, not an execute_workers route."""
+    import asyncio
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
+    import evolution_infra
+    import event_bus
+    import orchestrator_context as oc
+
+    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", tmp_path / "pipeline_state.json")
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
+    monkeypatch.setattr(event_bus, "EVENTS_FILE", tmp_path / "events.jsonl")
+    evolution_infra.write_pipeline_checkpoint(
+        327,
+        310,
+        "critic_checked",
+        master_plan={"strategy": "crossover", "tasks": []},
+        gate_results={},
+    )
+
+    hook = oc._make_bot_dir_guard_hook()["PreToolUse"][0].hooks[0]
+    output = asyncio.run(hook(
+        {"tool_name": "Bash", "tool_input": {"command": "grep -n BB_DEFENSE bots/national_v327/strategy.py"}},
+        "call_test_precommit_route_guard",
+        None,
+    ))
+
+    decision = output["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "deny"
+    reason = decision["permissionDecisionReason"]
+    assert "Actionable checkpoint route is locked" in reason
+    assert "next MCP tool=run_precommit_eval" in reason
+    assert "execute_workers" not in reason
+
+
 # ──────────────────────────────────────────────
 # P2: abandoned version reuse prevention
 # ──────────────────────────────────────────────

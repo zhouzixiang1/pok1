@@ -162,6 +162,12 @@ _DETERMINISTIC_RECOVERY_TOOLS = frozenset({
     "execute_workers",
     "prepare_next_gen",
     "run_crossover",
+    "run_quality_gates",
+    "run_review",
+    "run_critic",
+    "run_precommit_eval",
+    "commit_bot",
+    "run_archivist",
 })
 
 
@@ -186,6 +192,96 @@ def _resolve_recovery_route(checkpoint):
         "parent2_v": checkpoint.get("parent2_v"),
         "route": route,
     }
+
+
+def _checkpoint_master_plan_arg(checkpoint):
+    """Return the saved plan context for deterministic review/critic routes."""
+    if not isinstance(checkpoint, dict):
+        return []
+    master_plan = checkpoint.get("master_plan")
+    if isinstance(master_plan, (dict, list)):
+        return master_plan
+    return []
+
+
+def _checkpoint_reviewer_feedback(checkpoint):
+    if not isinstance(checkpoint, dict):
+        return ""
+    feedback = checkpoint.get("reviewer_feedback")
+    if isinstance(feedback, str) and feedback.strip():
+        return feedback
+    gate = (checkpoint.get("gate_results") or {}).get("review") or {}
+    feedback = gate.get("feedback")
+    return feedback if isinstance(feedback, str) else ""
+
+
+def _checkpoint_commit_strategy(checkpoint):
+    if not isinstance(checkpoint, dict):
+        return ""
+    master_plan = checkpoint.get("master_plan") or {}
+    if isinstance(master_plan, dict) and master_plan.get("strategy"):
+        return str(master_plan.get("strategy"))
+    return "crossover" if checkpoint.get("parent2_v") is not None else "master"
+
+
+def _deterministic_route_handler_and_args(next_tool, checkpoint, next_v, source_v, parent2_v):
+    """Return the MCP handler and canonical args for a deterministic checkpoint route."""
+    if next_tool == "execute_workers":
+        args = {"next_v": next_v, "source_v": source_v}
+        from tool_planning import execute_workers
+        return execute_workers.handler, args
+    if next_tool == "prepare_next_gen":
+        args = {"source_v": source_v, "next_v": next_v}
+        from tool_gates import prepare_next_gen
+        return prepare_next_gen.handler, args
+    if next_tool == "run_crossover":
+        args = {
+            "parent_a": source_v,
+            "parent_b": parent2_v,
+            "target_v": next_v,
+        }
+        from tool_commit import run_crossover
+        return run_crossover.handler, args
+    if next_tool == "run_quality_gates":
+        args = {"version": next_v, "source_v": source_v}
+        from tool_gates import run_quality_gates
+        return run_quality_gates.handler, args
+    if next_tool == "run_review":
+        args = {
+            "version": next_v,
+            "source_v": source_v,
+            "plan": _checkpoint_master_plan_arg(checkpoint),
+        }
+        from tool_gates import run_review
+        return run_review.handler, args
+    if next_tool == "run_critic":
+        args = {
+            "version": next_v,
+            "source_v": source_v,
+            "plan": _checkpoint_master_plan_arg(checkpoint),
+            "reviewer_feedback": _checkpoint_reviewer_feedback(checkpoint),
+            "force_advance": True,
+        }
+        from tool_gates import run_critic
+        return run_critic.handler, args
+    if next_tool == "run_precommit_eval":
+        args = {"version": next_v, "source_v": source_v}
+        from tool_eval import run_precommit_eval
+        return run_precommit_eval.handler, args
+    if next_tool == "commit_bot":
+        args = {
+            "version": next_v,
+            "source_v": source_v,
+            "strategy": _checkpoint_commit_strategy(checkpoint),
+            "review_approved": True,
+        }
+        from tool_commit import commit_bot
+        return commit_bot.handler, args
+    if next_tool == "run_archivist":
+        args = {"version": next_v, "source_v": source_v}
+        from tool_commit import run_archivist
+        return run_archivist.handler, args
+    return None, None
 
 
 def _detect_actionable_stage_stall(timeout_sec=None):
@@ -1302,34 +1398,16 @@ async def _try_deterministic_checkpoint_route(recovery, ui=None):
         if parent2_v is None:
             return False
 
-    if next_tool == "execute_workers":
-        handler = None
-        args = {"next_v": next_v, "source_v": source_v}
-        try:
-            from tool_planning import execute_workers
-            handler = execute_workers.handler
-        except Exception:
-            handler = None
-    elif next_tool == "prepare_next_gen":
-        args = {"source_v": source_v, "next_v": next_v}
-        try:
-            from tool_gates import prepare_next_gen
-            handler = prepare_next_gen.handler
-        except Exception:
-            handler = None
-    elif next_tool == "run_crossover":
-        args = {
-            "parent_a": source_v,
-            "parent_b": parent2_v,
-            "target_v": next_v,
-        }
-        try:
-            from tool_commit import run_crossover
-            handler = run_crossover.handler
-        except Exception:
-            handler = None
-    else:
-        return False
+    try:
+        handler, args = _deterministic_route_handler_and_args(
+            next_tool,
+            checkpoint,
+            next_v,
+            source_v,
+            parent2_v,
+        )
+    except Exception:
+        handler, args = None, None
 
     if not callable(handler):
         return False
