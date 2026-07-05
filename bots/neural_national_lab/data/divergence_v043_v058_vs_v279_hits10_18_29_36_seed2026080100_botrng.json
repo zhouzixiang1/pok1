@@ -1,0 +1,1393 @@
+{
+  "mode": "active_divergence_scan_v1",
+  "baseline": {
+    "label": "v043_v254_cf_handstrength_veto_p268_h32_t050",
+    "path": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050/main.py"
+  },
+  "candidate": {
+    "label": "v058_v254_cf_support_guard_p059_h16_s064",
+    "path": "bots/neural_national_lab/versions/v058_v254_cf_support_guard_p059_h16_s064/main.py"
+  },
+  "opponents": [
+    {
+      "label": "claude_v279",
+      "path": "bots/claude_v279/main.py"
+    }
+  ],
+  "indices": [
+    10,
+    18,
+    29,
+    36
+  ],
+  "workers": 8,
+  "seed_base": 2026080100,
+  "seed_offset": 0,
+  "seed_stride": 1,
+  "opponent_seed_stride": 100000,
+  "bot_seed_base": 202612010000,
+  "bot_seed_stride": 10000,
+  "opponent_bot_seed_stride": 10000000,
+  "max_hands": 70,
+  "max_divergences_per_side": 3,
+  "stop_after_divergence_pairs": 0,
+  "parallel_early_stop": true,
+  "tasks_total": 4,
+  "tasks_submitted": 4,
+  "tasks_skipped": 0,
+  "early_stopped": false,
+  "pairs": [
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 10,
+      "seed": 2026080110,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202612210000,
+          202612210001
+        ],
+        "mirror": [
+          202612220000,
+          202612220001
+        ]
+      },
+      "baseline_net_chips": -159.0,
+      "candidate_net_chips": -149.0,
+      "delta_net_chips": 10.0,
+      "has_divergence": true,
+      "normal": {
+        "baseline": {
+          "winner": 1,
+          "bot0_chips": -229.0,
+          "bot1_chips": 229.0
+        },
+        "candidate": {
+          "winner": 1,
+          "bot0_chips": -229.0,
+          "bot1_chips": 229.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 114,
+          "candidate_decisions": 114,
+          "compared_decisions": 114,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 70.0,
+          "bot1_chips": -70.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 80.0,
+          "bot1_chips": -80.0
+        },
+        "delta_chips": 10.0,
+        "action_compare": {
+          "baseline_decisions": 134,
+          "candidate_decisions": 134,
+          "compared_decisions": 134,
+          "divergence_count_capped": 3,
+          "has_divergence": true,
+          "length_mismatch": false,
+          "first_divergence": {
+            "decision_index": 21,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "same_request": true,
+            "baseline_request": {
+              "hand": 11,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                21,
+                16,
+                7
+              ],
+              "my_cards": [
+                47,
+                1
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            },
+            "candidate_request": {
+              "hand": 11,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                21,
+                16,
+                7
+              ],
+              "my_cards": [
+                47,
+                1
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          },
+          "divergences": [
+            {
+              "decision_index": 21,
+              "baseline_action": 101,
+              "candidate_action": 0,
+              "same_request": true,
+              "baseline_request": {
+                "hand": 11,
+                "round": null,
+                "my_id": 0,
+                "dealer_id": 0,
+                "stage": "flop",
+                "public_cards": [
+                  21,
+                  16,
+                  7
+                ],
+                "my_cards": [
+                  47,
+                  1
+                ],
+                "pot": null,
+                "to_call": null,
+                "my_stage_bet": null,
+                "opponent_stage_bet": null,
+                "my_chips": 19900,
+                "opponent_allin": null,
+                "history_len": 3,
+                "last_history": [
+                  {
+                    "round": 0,
+                    "player_id": 0,
+                    "action": 0,
+                    "action_type": "call"
+                  },
+                  {
+                    "round": 0,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "check"
+                  },
+                  {
+                    "round": 1,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "check"
+                  }
+                ]
+              },
+              "candidate_request": {
+                "hand": 11,
+                "round": null,
+                "my_id": 0,
+                "dealer_id": 0,
+                "stage": "flop",
+                "public_cards": [
+                  21,
+                  16,
+                  7
+                ],
+                "my_cards": [
+                  47,
+                  1
+                ],
+                "pot": null,
+                "to_call": null,
+                "my_stage_bet": null,
+                "opponent_stage_bet": null,
+                "my_chips": 19900,
+                "opponent_allin": null,
+                "history_len": 3,
+                "last_history": [
+                  {
+                    "round": 0,
+                    "player_id": 0,
+                    "action": 0,
+                    "action_type": "call"
+                  },
+                  {
+                    "round": 0,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "check"
+                  },
+                  {
+                    "round": 1,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "check"
+                  }
+                ]
+              }
+            },
+            {
+              "decision_index": 23,
+              "baseline_action": 114,
+              "candidate_action": 0,
+              "same_request": false,
+              "baseline_request": {
+                "hand": 12,
+                "round": null,
+                "my_id": 0,
+                "dealer_id": 1,
+                "stage": "flop",
+                "public_cards": [
+                  37,
+                  40,
+                  26
+                ],
+                "my_cards": [
+                  47,
+                  32
+                ],
+                "pot": null,
+                "to_call": null,
+                "my_stage_bet": null,
+                "opponent_stage_bet": null,
+                "my_chips": 19900,
+                "opponent_allin": null,
+                "history_len": 2,
+                "last_history": [
+                  {
+                    "round": 0,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "call"
+                  },
+                  {
+                    "round": 0,
+                    "player_id": 0,
+                    "action": 0,
+                    "action_type": "check"
+                  }
+                ]
+              },
+              "candidate_request": {
+                "hand": 11,
+                "round": null,
+                "my_id": 0,
+                "dealer_id": 0,
+                "stage": "river",
+                "public_cards": [
+                  21,
+                  16,
+                  7,
+                  18,
+                  22
+                ],
+                "my_cards": [
+                  47,
+                  1
+                ],
+                "pot": null,
+                "to_call": null,
+                "my_stage_bet": null,
+                "opponent_stage_bet": null,
+                "my_chips": 19900,
+                "opponent_allin": null,
+                "history_len": 7,
+                "last_history": [
+                  {
+                    "round": 2,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "check"
+                  },
+                  {
+                    "round": 2,
+                    "player_id": 0,
+                    "action": 0,
+                    "action_type": "call"
+                  },
+                  {
+                    "round": 3,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "check"
+                  }
+                ]
+              }
+            },
+            {
+              "decision_index": 25,
+              "baseline_action": 494,
+              "candidate_action": 116,
+              "same_request": false,
+              "baseline_request": {
+                "hand": 12,
+                "round": null,
+                "my_id": 0,
+                "dealer_id": 1,
+                "stage": "turn",
+                "public_cards": [
+                  37,
+                  40,
+                  26,
+                  2
+                ],
+                "my_cards": [
+                  47,
+                  32
+                ],
+                "pot": null,
+                "to_call": null,
+                "my_stage_bet": null,
+                "opponent_stage_bet": null,
+                "my_chips": 19393,
+                "opponent_allin": null,
+                "history_len": 5,
+                "last_history": [
+                  {
+                    "round": 1,
+                    "player_id": 0,
+                    "action": 114,
+                    "action_type": "raise"
+                  },
+                  {
+                    "round": 1,
+                    "player_id": 1,
+                    "action": 507,
+                    "action_type": "raise"
+                  },
+                  {
+                    "round": 1,
+                    "player_id": 0,
+                    "action": 0,
+                    "action_type": "call"
+                  }
+                ]
+              },
+              "candidate_request": {
+                "hand": 12,
+                "round": null,
+                "my_id": 0,
+                "dealer_id": 1,
+                "stage": "flop",
+                "public_cards": [
+                  37,
+                  40,
+                  26
+                ],
+                "my_cards": [
+                  47,
+                  32
+                ],
+                "pot": null,
+                "to_call": null,
+                "my_stage_bet": null,
+                "opponent_stage_bet": null,
+                "my_chips": 19900,
+                "opponent_allin": null,
+                "history_len": 2,
+                "last_history": [
+                  {
+                    "round": 0,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "call"
+                  },
+                  {
+                    "round": 0,
+                    "player_id": 0,
+                    "action": 0,
+                    "action_type": "check"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 18,
+      "seed": 2026080118,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202612370000,
+          202612370001
+        ],
+        "mirror": [
+          202612380000,
+          202612380001
+        ]
+      },
+      "baseline_net_chips": -3748.0,
+      "candidate_net_chips": 418.0,
+      "delta_net_chips": 4166.0,
+      "has_divergence": true,
+      "normal": {
+        "baseline": {
+          "winner": 1,
+          "bot0_chips": -3762.0,
+          "bot1_chips": 3762.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 404.0,
+          "bot1_chips": -404.0
+        },
+        "delta_chips": 4166.0,
+        "action_compare": {
+          "baseline_decisions": 100,
+          "candidate_decisions": 110,
+          "compared_decisions": 100,
+          "divergence_count_capped": 3,
+          "has_divergence": true,
+          "length_mismatch": true,
+          "first_divergence": {
+            "decision_index": 21,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "same_request": true,
+            "baseline_request": {
+              "hand": 12,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                13,
+                34,
+                8
+              ],
+              "my_cards": [
+                39,
+                4
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            },
+            "candidate_request": {
+              "hand": 12,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                13,
+                34,
+                8
+              ],
+              "my_cards": [
+                39,
+                4
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          },
+          "divergences": [
+            {
+              "decision_index": 21,
+              "baseline_action": 101,
+              "candidate_action": 0,
+              "same_request": true,
+              "baseline_request": {
+                "hand": 12,
+                "round": null,
+                "my_id": 0,
+                "dealer_id": 0,
+                "stage": "flop",
+                "public_cards": [
+                  13,
+                  34,
+                  8
+                ],
+                "my_cards": [
+                  39,
+                  4
+                ],
+                "pot": null,
+                "to_call": null,
+                "my_stage_bet": null,
+                "opponent_stage_bet": null,
+                "my_chips": 19900,
+                "opponent_allin": null,
+                "history_len": 3,
+                "last_history": [
+                  {
+                    "round": 0,
+                    "player_id": 0,
+                    "action": 0,
+                    "action_type": "call"
+                  },
+                  {
+                    "round": 0,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "check"
+                  },
+                  {
+                    "round": 1,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "check"
+                  }
+                ]
+              },
+              "candidate_request": {
+                "hand": 12,
+                "round": null,
+                "my_id": 0,
+                "dealer_id": 0,
+                "stage": "flop",
+                "public_cards": [
+                  13,
+                  34,
+                  8
+                ],
+                "my_cards": [
+                  39,
+                  4
+                ],
+                "pot": null,
+                "to_call": null,
+                "my_stage_bet": null,
+                "opponent_stage_bet": null,
+                "my_chips": 19900,
+                "opponent_allin": null,
+                "history_len": 3,
+                "last_history": [
+                  {
+                    "round": 0,
+                    "player_id": 0,
+                    "action": 0,
+                    "action_type": "call"
+                  },
+                  {
+                    "round": 0,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "check"
+                  },
+                  {
+                    "round": 1,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "check"
+                  }
+                ]
+              }
+            },
+            {
+              "decision_index": 22,
+              "baseline_action": -1,
+              "candidate_action": 0,
+              "same_request": false,
+              "baseline_request": {
+                "hand": 13,
+                "round": null,
+                "my_id": 0,
+                "dealer_id": 1,
+                "stage": "preflop",
+                "public_cards": [],
+                "my_cards": [
+                  27,
+                  12
+                ],
+                "pot": null,
+                "to_call": null,
+                "my_stage_bet": null,
+                "opponent_stage_bet": null,
+                "my_chips": 19900,
+                "opponent_allin": null,
+                "history_len": 1,
+                "last_history": [
+                  {
+                    "round": 0,
+                    "player_id": 1,
+                    "action": 266,
+                    "action_type": "raise"
+                  }
+                ]
+              },
+              "candidate_request": {
+                "hand": 12,
+                "round": null,
+                "my_id": 0,
+                "dealer_id": 0,
+                "stage": "turn",
+                "public_cards": [
+                  13,
+                  34,
+                  8,
+                  14
+                ],
+                "my_cards": [
+                  39,
+                  4
+                ],
+                "pot": null,
+                "to_call": null,
+                "my_stage_bet": null,
+                "opponent_stage_bet": null,
+                "my_chips": 19900,
+                "opponent_allin": null,
+                "history_len": 5,
+                "last_history": [
+                  {
+                    "round": 1,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "check"
+                  },
+                  {
+                    "round": 1,
+                    "player_id": 0,
+                    "action": 0,
+                    "action_type": "call"
+                  },
+                  {
+                    "round": 2,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "check"
+                  }
+                ]
+              }
+            },
+            {
+              "decision_index": 24,
+              "baseline_action": 101,
+              "candidate_action": -1,
+              "same_request": false,
+              "baseline_request": {
+                "hand": 14,
+                "round": null,
+                "my_id": 0,
+                "dealer_id": 0,
+                "stage": "flop",
+                "public_cards": [
+                  31,
+                  4,
+                  34
+                ],
+                "my_cards": [
+                  22,
+                  32
+                ],
+                "pot": null,
+                "to_call": null,
+                "my_stage_bet": null,
+                "opponent_stage_bet": null,
+                "my_chips": 19900,
+                "opponent_allin": null,
+                "history_len": 3,
+                "last_history": [
+                  {
+                    "round": 0,
+                    "player_id": 0,
+                    "action": 0,
+                    "action_type": "call"
+                  },
+                  {
+                    "round": 0,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "check"
+                  },
+                  {
+                    "round": 1,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "check"
+                  }
+                ]
+              },
+              "candidate_request": {
+                "hand": 13,
+                "round": null,
+                "my_id": 0,
+                "dealer_id": 1,
+                "stage": "preflop",
+                "public_cards": [],
+                "my_cards": [
+                  27,
+                  12
+                ],
+                "pot": null,
+                "to_call": null,
+                "my_stage_bet": null,
+                "opponent_stage_bet": null,
+                "my_chips": 19900,
+                "opponent_allin": null,
+                "history_len": 1,
+                "last_history": [
+                  {
+                    "round": 0,
+                    "player_id": 1,
+                    "action": 266,
+                    "action_type": "raise"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 14.0,
+          "bot1_chips": -14.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 14.0,
+          "bot1_chips": -14.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 138,
+          "candidate_decisions": 138,
+          "compared_decisions": 138,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 29,
+      "seed": 2026080129,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202612590000,
+          202612590001
+        ],
+        "mirror": [
+          202612600000,
+          202612600001
+        ]
+      },
+      "baseline_net_chips": -490.0,
+      "candidate_net_chips": 6100.0,
+      "delta_net_chips": 6590.0,
+      "has_divergence": true,
+      "normal": {
+        "baseline": {
+          "winner": 1,
+          "bot0_chips": -462.0,
+          "bot1_chips": 462.0
+        },
+        "candidate": {
+          "winner": 1,
+          "bot0_chips": -462.0,
+          "bot1_chips": 462.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 120,
+          "candidate_decisions": 120,
+          "compared_decisions": 120,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 1,
+          "bot0_chips": -28.0,
+          "bot1_chips": 28.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 6562.0,
+          "bot1_chips": -6562.0
+        },
+        "delta_chips": 6590.0,
+        "action_compare": {
+          "baseline_decisions": 132,
+          "candidate_decisions": 138,
+          "compared_decisions": 132,
+          "divergence_count_capped": 3,
+          "has_divergence": true,
+          "length_mismatch": true,
+          "first_divergence": {
+            "decision_index": 34,
+            "baseline_action": 101,
+            "candidate_action": 0,
+            "same_request": true,
+            "baseline_request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                29,
+                0,
+                15
+              ],
+              "my_cards": [
+                38,
+                4
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            },
+            "candidate_request": {
+              "hand": 14,
+              "round": null,
+              "my_id": 0,
+              "dealer_id": 0,
+              "stage": "flop",
+              "public_cards": [
+                29,
+                0,
+                15
+              ],
+              "my_cards": [
+                38,
+                4
+              ],
+              "pot": null,
+              "to_call": null,
+              "my_stage_bet": null,
+              "opponent_stage_bet": null,
+              "my_chips": 19900,
+              "opponent_allin": null,
+              "history_len": 3,
+              "last_history": [
+                {
+                  "round": 0,
+                  "player_id": 0,
+                  "action": 0,
+                  "action_type": "call"
+                },
+                {
+                  "round": 0,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                },
+                {
+                  "round": 1,
+                  "player_id": 1,
+                  "action": 0,
+                  "action_type": "check"
+                }
+              ]
+            }
+          },
+          "divergences": [
+            {
+              "decision_index": 34,
+              "baseline_action": 101,
+              "candidate_action": 0,
+              "same_request": true,
+              "baseline_request": {
+                "hand": 14,
+                "round": null,
+                "my_id": 0,
+                "dealer_id": 0,
+                "stage": "flop",
+                "public_cards": [
+                  29,
+                  0,
+                  15
+                ],
+                "my_cards": [
+                  38,
+                  4
+                ],
+                "pot": null,
+                "to_call": null,
+                "my_stage_bet": null,
+                "opponent_stage_bet": null,
+                "my_chips": 19900,
+                "opponent_allin": null,
+                "history_len": 3,
+                "last_history": [
+                  {
+                    "round": 0,
+                    "player_id": 0,
+                    "action": 0,
+                    "action_type": "call"
+                  },
+                  {
+                    "round": 0,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "check"
+                  },
+                  {
+                    "round": 1,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "check"
+                  }
+                ]
+              },
+              "candidate_request": {
+                "hand": 14,
+                "round": null,
+                "my_id": 0,
+                "dealer_id": 0,
+                "stage": "flop",
+                "public_cards": [
+                  29,
+                  0,
+                  15
+                ],
+                "my_cards": [
+                  38,
+                  4
+                ],
+                "pot": null,
+                "to_call": null,
+                "my_stage_bet": null,
+                "opponent_stage_bet": null,
+                "my_chips": 19900,
+                "opponent_allin": null,
+                "history_len": 3,
+                "last_history": [
+                  {
+                    "round": 0,
+                    "player_id": 0,
+                    "action": 0,
+                    "action_type": "call"
+                  },
+                  {
+                    "round": 0,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "check"
+                  },
+                  {
+                    "round": 1,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "check"
+                  }
+                ]
+              }
+            },
+            {
+              "decision_index": 35,
+              "baseline_action": 305,
+              "candidate_action": -1,
+              "same_request": false,
+              "baseline_request": {
+                "hand": 15,
+                "round": null,
+                "my_id": 0,
+                "dealer_id": 1,
+                "stage": "preflop",
+                "public_cards": [],
+                "my_cards": [
+                  38,
+                  36
+                ],
+                "pot": null,
+                "to_call": null,
+                "my_stage_bet": null,
+                "opponent_stage_bet": null,
+                "my_chips": 19900,
+                "opponent_allin": null,
+                "history_len": 1,
+                "last_history": [
+                  {
+                    "round": 0,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "call"
+                  }
+                ]
+              },
+              "candidate_request": {
+                "hand": 14,
+                "round": null,
+                "my_id": 0,
+                "dealer_id": 0,
+                "stage": "turn",
+                "public_cards": [
+                  29,
+                  0,
+                  15,
+                  16
+                ],
+                "my_cards": [
+                  38,
+                  4
+                ],
+                "pot": null,
+                "to_call": null,
+                "my_stage_bet": null,
+                "opponent_stage_bet": null,
+                "my_chips": 19900,
+                "opponent_allin": null,
+                "history_len": 5,
+                "last_history": [
+                  {
+                    "round": 1,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "check"
+                  },
+                  {
+                    "round": 1,
+                    "player_id": 0,
+                    "action": 0,
+                    "action_type": "call"
+                  },
+                  {
+                    "round": 2,
+                    "player_id": 1,
+                    "action": 155,
+                    "action_type": "raise"
+                  }
+                ]
+              }
+            },
+            {
+              "decision_index": 36,
+              "baseline_action": 0,
+              "candidate_action": 306,
+              "same_request": false,
+              "baseline_request": {
+                "hand": 16,
+                "round": null,
+                "my_id": 0,
+                "dealer_id": 0,
+                "stage": "preflop",
+                "public_cards": [],
+                "my_cards": [
+                  9,
+                  21
+                ],
+                "pot": null,
+                "to_call": null,
+                "my_stage_bet": null,
+                "opponent_stage_bet": null,
+                "my_chips": 19950,
+                "opponent_allin": null,
+                "history_len": 0,
+                "last_history": []
+              },
+              "candidate_request": {
+                "hand": 15,
+                "round": null,
+                "my_id": 0,
+                "dealer_id": 1,
+                "stage": "preflop",
+                "public_cards": [],
+                "my_cards": [
+                  38,
+                  36
+                ],
+                "pot": null,
+                "to_call": null,
+                "my_stage_bet": null,
+                "opponent_stage_bet": null,
+                "my_chips": 19900,
+                "opponent_allin": null,
+                "history_len": 1,
+                "last_history": [
+                  {
+                    "round": 0,
+                    "player_id": 1,
+                    "action": 0,
+                    "action_type": "call"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 36,
+      "seed": 2026080136,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202612730000,
+          202612730001
+        ],
+        "mirror": [
+          202612740000,
+          202612740001
+        ]
+      },
+      "baseline_net_chips": 9942.0,
+      "candidate_net_chips": 9942.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 1,
+          "bot0_chips": -13.0,
+          "bot1_chips": 13.0
+        },
+        "candidate": {
+          "winner": 1,
+          "bot0_chips": -13.0,
+          "bot1_chips": 13.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 133,
+          "candidate_decisions": 133,
+          "compared_decisions": 133,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 9955.0,
+          "bot1_chips": -9955.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 9955.0,
+          "bot1_chips": -9955.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 128,
+          "candidate_decisions": 128,
+          "compared_decisions": 128,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    }
+  ],
+  "summary": {
+    "pairs": 4,
+    "divergence_pairs": 3,
+    "divergence_rate": 0.75,
+    "positive": 3,
+    "zero": 1,
+    "negative": 0,
+    "delta_stats": {
+      "samples": 4,
+      "mean_net": 2691.5,
+      "median_net": 2088.0,
+      "stddev_net": 3256.1258677555243,
+      "stderr_net": 1628.0629338777621,
+      "ci95_low": -499.50335040041364,
+      "ci95_high": 5882.503350400413,
+      "mean_per_70_hands": 1345.75,
+      "ci95_low_per_70_hands": -249.75167520020682,
+      "ci95_high_per_70_hands": 2941.2516752002066,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    },
+    "by_opponent": {
+      "claude_v279": {
+        "pairs": 4,
+        "positive": 3,
+        "zero": 1,
+        "negative": 0,
+        "delta_stats": {
+          "samples": 4,
+          "mean_net": 2691.5,
+          "median_net": 2088.0,
+          "stddev_net": 3256.1258677555243,
+          "stderr_net": 1628.0629338777621,
+          "ci95_low": -499.50335040041364,
+          "ci95_high": 5882.503350400413,
+          "mean_per_70_hands": 1345.75,
+          "ci95_low_per_70_hands": -249.75167520020682,
+          "ci95_high_per_70_hands": 2941.2516752002066,
+          "significant_positive_95": false,
+          "significant_negative_95": false
+        }
+      }
+    },
+    "largest_abs_deltas": [
+      {
+        "opponent": "claude_v279",
+        "idx": 29,
+        "delta_net_chips": 6590.0,
+        "has_divergence": true
+      },
+      {
+        "opponent": "claude_v279",
+        "idx": 18,
+        "delta_net_chips": 4166.0,
+        "has_divergence": true
+      },
+      {
+        "opponent": "claude_v279",
+        "idx": 10,
+        "delta_net_chips": 10.0,
+        "has_divergence": true
+      },
+      {
+        "opponent": "claude_v279",
+        "idx": 36,
+        "delta_net_chips": 0.0,
+        "has_divergence": false
+      }
+    ]
+  }
+}

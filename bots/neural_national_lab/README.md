@@ -755,6 +755,37 @@ the proven v056 p117 ensemble wholesale; instead, add a secondary positive
 support model or source-specific confidence guard around idx18/idx29 while
 leaving the v056 repair gate in place.
 
+`build_runtime_value_data_from_divergence.py` now has an explicit
+`--rule-action-source {baseline,candidate}` switch so runtime value rows can
+encode the action context intended for a gate instead of silently assuming the
+candidate's final action. Rebuilding the v056 positive-support rows with
+baseline/candidate-minus-baseline semantics produced
+`runtime_support_v043_v056_positive_guard_p059_rulebase_seed2026071503_2026080100.jsonl`:
+59 rows, 70 input features, 53 positive, 6 negative, mean delta `+3751.44`.
+The CUDA h16 support head (`support_gate_v043_v056_p059_rulebase_h16_seed621`)
+had validation MAE `0.1150` and sign accuracy `0.9167`; h8 was retained as a
+comparison artifact.
+
+`v058_v254_cf_support_guard_p059_h16_s064` keeps the v056 ensemble intact and
+adds only a narrow low-support override around value-vetoed flop free-action
+small raises. If the original v056 gates pass, v058 does nothing. If the v056
+value ensemble would block a `raise_half` candidate from a call/check rule
+action, v058 scores the p059 support head using the candidate raise context; a
+score below `0.64` allows the raise to recover, while supported blocks remain
+blocked. This is deliberately an override for the known `101->0` family, not a
+general replacement for the p117 ensemble.
+
+Targeted v058 replay repaired the known v056 negative without losing the
+positive pockets: idx6 stayed `0`, pair21 stayed `0`, pair48 stayed `+1727`,
+idx3 stayed `0`, and the v279 hit set became idx10 `+10`, idx18 `+4166`,
+idx29 `+6590`, idx36 `0`. The same 48-pair v279 window improved only
+microscopically versus v056 because the fix removes a single `-50` pair:
+`+112.15` chips per 70 hands with CI `[-45.49, +269.78]`. A four-opponent
+8-pair smoke against `claude_v279`, `claude_v283`, `claude_v284`, and
+`claude_v285` produced 32 zero deltas, so no cross-opponent regression was
+observed. Treat v058 as a cleaner/safely guarded v056-family artifact, not as
+a statistically promoted bot.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass
