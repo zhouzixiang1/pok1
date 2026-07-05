@@ -1066,6 +1066,19 @@ def test_worktree_scope_keeps_observability_nonblocking_but_gate_logic_blocking(
     ]
 
 
+def test_evolution_scope_is_exact_file_scoped():
+    import evolution_scope
+
+    assert evolution_scope.CRITICAL_PREFIXES == ()
+    assert evolution_scope.classify_path("web/core/replay_spotlight.py", candidate_v=300) == "external"
+    assert evolution_scope.classify_path("web/core/eval_stats.py", candidate_v=300) == "critical"
+    assert evolution_scope.classify_path("sever/main.py", candidate_v=300) == "external"
+    assert evolution_scope.classify_path("sever/server/tcp_server.py", candidate_v=300) == "critical"
+    assert evolution_scope.classify_path("sever/国赛平台/通信协议.docx", candidate_v=300) == "external"
+    assert evolution_scope.classify_path("bots/national_v300/postflop.py", candidate_v=300) == "candidate"
+    assert evolution_scope.classify_path("bots/national_v299/postflop.py", candidate_v=300) == "foreign_active_bot"
+
+
 def test_evaluation_contract_hash_ignores_non_contract_national_docs(tmp_path, monkeypatch):
     import evaluation_contract
 

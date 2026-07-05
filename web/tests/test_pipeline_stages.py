@@ -1540,6 +1540,86 @@ class TestWorkerFailureCircuitBreaker:
         assert ckpt["master_plan"]["tasks"][0]["repair_blocker"] == "file_size"
         assert ckpt["master_plan"]["work_item"]["reset_performed"] is False
 
+    def test_quality_failed_refreshes_stale_precommit_tasks(self, tmp_path, monkeypatch):
+        """quality_failed must rebuild tasks if checkpoint still holds a precommit repair."""
+        import asyncio
+        import fix_injection
+        import tool_planning
+
+        source_dir = tmp_path / "claude_v10"
+        next_dir = tmp_path / "claude_v11"
+        source_dir.mkdir()
+        next_dir.mkdir()
+        for directory in (source_dir, next_dir):
+            (directory / "postflop.py").write_text("def old_gate():\n    return 0\n")
+            (directory / "strategy.py").write_text("def act():\n    return 0\n")
+        (next_dir / "postflop.py").write_text(
+            "def old_gate():\n    return 1\n\n"
+            "def spr_commitment_gate():\n    return 0\n"
+        )
+
+        ckpt_file = self._setup_checkpoint(tmp_path, monkeypatch, stage="quality_failed")
+        state = json.loads(ckpt_file.read_text())
+        state["parent2_v"] = 9
+        state["master_plan"] = {
+            "strategy": "crossover",
+            "tasks": [{
+                "worker_id": "auto_precommit_repair_postflop_py",
+                "role": "Strategic Regression Repair Architect",
+                "target_files": ["postflop.py"],
+                "must_change_files": ["postflop.py"],
+                "worker_prompt": "old precommit regression repair",
+                "task_kind": "precommit_repair",
+                "repair_blocker": "precommit_regression",
+            }],
+        }
+        state["gate_results"] = {
+            "quality": {
+                "all_passed": False,
+                "failed_gates": [
+                    (
+                        "reachability(postflop.py:L1080: reachability - new top-level "
+                        "function 'spr_commitment_gate' has no non-import references)"
+                    )
+                ],
+            }
+        }
+        ckpt_file.write_text(json.dumps(state))
+
+        monkeypatch.setattr(tool_planning, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+        monkeypatch.setattr(fix_injection, "apply_known_fixes", lambda _path: ([], []))
+        monkeypatch.setattr(fix_injection, "log_fix_application", lambda *_a, **_k: None)
+
+        def _reset_must_not_run(*_args, **_kwargs):
+            raise AssertionError("quality repair should stay in-place")
+
+        monkeypatch.setattr(tool_planning, "_incremental_reset_next_dir", _reset_must_not_run)
+
+        async def _run():
+            with patch.object(tool_planning, "_execute_workers", new_callable=AsyncMock) as mock_exec, \
+                 patch.object(tool_planning, "_validate_worker_boundaries", return_value=[]), \
+                 patch.object(tool_planning, "_py_files_changed_between", return_value=["postflop.py"]):
+                mock_exec.return_value = (True, {}, [])
+                result = await tool_planning.execute_workers.handler({"next_v": 11, "source_v": 10})
+                return result, mock_exec
+
+        result, mock_exec = asyncio.run(_run())
+        data = json.loads(result["content"][0]["text"])
+        assert data["success"] is True
+        tasks = mock_exec.call_args.args[0]
+        assert [task["worker_id"] for task in tasks] == ["auto_quality_repair_gate_postflop_py"]
+        assert tasks[0]["task_kind"] == "quality_repair"
+        assert tasks[0]["repair_blocker"] == "quality_gate"
+        assert tasks[0]["target_files"] == ["postflop.py"]
+        assert "old precommit regression repair" not in tasks[0]["worker_prompt"]
+        assert "reachability" in tasks[0]["worker_prompt"]
+
+        ckpt = json.loads(ckpt_file.read_text())
+        assert ckpt["stage"] == "workers_done"
+        assert ckpt["master_plan"]["tasks"][0]["worker_id"] == "auto_quality_repair_gate_postflop_py"
+        assert ckpt["master_plan"]["work_item"]["kind"] == "crossover_quality_repair"
+        assert ckpt["master_plan"]["work_item"]["reset_performed"] is False
+
     def test_refreshed_quality_repair_preserves_accumulated_declared_scope(self, tmp_path, monkeypatch):
         """Refreshing to one new blocker must not forget earlier in-place repair files."""
         import asyncio
