@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from bot_namespace import ACTIVE_BOT_PREFIX, bot_relpath, parse_bot_version
+
 CRITICAL_PREFIXES = (
     "engine/",
     "sever/",
@@ -32,7 +34,7 @@ RUNTIME_PREFIXES = (
     "bots/graveyard/",
 )
 
-_CLAUDE_BOT_RE = re.compile(r"^bots/claude_v(?P<version>\d+)(?:/|$)")
+_ACTIVE_BOT_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)(?:/|$)")
 
 
 def normalize_repo_path(path: str) -> str:
@@ -67,24 +69,21 @@ def is_non_contract_path(path: str) -> bool:
     return any(path == prefix.rstrip("/") or path.startswith(prefix) for prefix in NON_CONTRACT_PREFIXES)
 
 
-def claude_bot_version(path: str) -> int | None:
-    match = _CLAUDE_BOT_RE.match(normalize_repo_path(path))
+def active_bot_version(path: str) -> int | None:
+    match = _ACTIVE_BOT_RE.match(normalize_repo_path(path))
     if not match:
         return None
-    try:
-        return int(match.group("version"))
-    except ValueError:
-        return None
+    return parse_bot_version(f"{ACTIVE_BOT_PREFIX}{match.group('version')}")
 
 
 def is_candidate_bot_path(path: str, candidate_v: int | None) -> bool:
     if candidate_v is None:
         return False
-    return claude_bot_version(path) == int(candidate_v)
+    return normalize_repo_path(path).startswith(bot_relpath(candidate_v) + "/")
 
 
-def is_foreign_claude_bot_path(path: str, candidate_v: int | None) -> bool:
-    version = claude_bot_version(path)
+def is_foreign_active_bot_path(path: str, candidate_v: int | None) -> bool:
+    version = active_bot_version(path)
     return version is not None and (candidate_v is None or version != int(candidate_v))
 
 
@@ -106,8 +105,8 @@ def classify_path(path: str, candidate_v: int | None) -> str:
         return "external"
     if is_candidate_bot_path(path, candidate_v):
         return "candidate"
-    if is_foreign_claude_bot_path(path, candidate_v):
-        return "foreign_claude_bot"
+    if is_foreign_active_bot_path(path, candidate_v):
+        return "foreign_active_bot"
     if is_critical_evolution_path(path):
         return "critical"
     return "external"
@@ -134,7 +133,7 @@ def classify_status_entries(entries: list[str] | tuple[str, ...] | None, candida
         entry_classes.append(item)
         if "critical" in classes:
             groups["critical_entries"].append(str(entry))
-        elif "foreign_claude_bot" in classes:
+        elif "foreign_active_bot" in classes:
             groups["foreign_bot_entries"].append(str(entry))
         elif "candidate" in classes:
             groups["candidate_entries"].append(str(entry))

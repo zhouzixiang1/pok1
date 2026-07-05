@@ -330,7 +330,7 @@ def find_critical_hands(bot_name, replays_dir, max_hands=10, recent_n_files=20):
     ``_iter_hands``).
 
     Args:
-        bot_name: Name of the bot to analyze (e.g. "claude_v27")
+        bot_name: Name of the bot to analyze (e.g. "national_v27")
         replays_dir: Directory containing replay JSON files
         max_hands: Max number of critical hands to return (default 10)
         recent_n_files: Number of most recent replay files to scan (default 20)

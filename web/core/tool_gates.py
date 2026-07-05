@@ -9,6 +9,7 @@ import shutil
 import time
 from pathlib import Path
 
+from bot_namespace import bot_name, bot_tag
 from tool_runtime_guard import tool
 
 from logging_config import get_logger
@@ -337,7 +338,7 @@ async def run_quality_gates(args):
                     "workflow_profile_id": workflow_profile.profile_id,
                 },
             )
-    candidate_id = f"claude_v{v}_from_v{source_v}" if source_v is not None else f"claude_v{v}"
+    candidate_id = f"{bot_name(v)}_from_{bot_name(source_v)}" if source_v is not None else bot_name(v)
     if append_candidate_event:
         try:
             append_candidate_event(
@@ -349,7 +350,7 @@ async def run_quality_gates(args):
                 workflow_profile_id=workflow_profile.profile_id,
                 run_id=f"{v}#0",
                 stage="quality",
-                parent_ids=[f"claude_v{source_v}"] if source_v is not None else [],
+                parent_ids=[bot_name(source_v)] if source_v is not None else [],
             )
         except Exception as e:
             _log.warning("candidate ledger quality_started write failed: %s", e)
@@ -1177,7 +1178,7 @@ async def run_quality_gates(args):
                 workflow_profile_id=workflow_profile.profile_id,
                 run_id=f"{v}#0",
                 stage="quality_passed" if all_passed else "quality_failed",
-                parent_ids=[f"claude_v{source_v}"] if source_v is not None else [],
+                parent_ids=[bot_name(source_v)] if source_v is not None else [],
                 changed_files=changed_files_list,
                 skill_layers=declared_skill_layers,
                 diff_hash=diff_hash,
@@ -1316,7 +1317,7 @@ async def prepare_next_gen(args):
     # Guard: verify git tag exists for source bot (authoritative commit proof)
     from evolution_infra import copy_bot_tree_for_candidate, git_has_tag, git_dir_is_committed
     if not git_has_tag(source_v):
-        return _json_tool_result({"error": f"Source bot v{source_v} has .completed but no git tag 'bot-v{source_v}'. Cannot evolve from uncommitted code. Try a different source version."})
+        return _json_tool_result({"error": f"Source bot v{source_v} has .completed but no git tag '{bot_tag(source_v)}'. Cannot evolve from uncommitted code. Try a different source version."})
 
     # Guard: refuse to overwrite a completed bot
     if next_dir.exists() and (next_dir / ".completed").exists():
@@ -1326,7 +1327,7 @@ async def prepare_next_gen(args):
     # v117 repeated-regeneration loop, 2026-06-18; mirrors run_crossover).
     if next_dir.exists() and git_dir_is_committed(next_v) and not git_has_tag(next_v):
         return _json_tool_result({
-            "error": f"Target v{next_v} is git-committed but has no bot-v{next_v} tag (bare commit bypassing commit_bot). "
+            "error": f"Target v{next_v} is git-committed but has no {bot_tag(next_v)} tag (bare commit bypassing commit_bot). "
                      f"Refusing to overwrite — re-preparing here causes infinite regeneration. "
                      f"Run commit_bot for v{next_v} to finalize it, or abandon/clear the untagged dir first."
         })

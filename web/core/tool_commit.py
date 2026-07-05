@@ -8,6 +8,7 @@ from typing import Annotated, TypedDict
 from logging_config import get_logger
 _log = get_logger("commit")
 
+from bot_namespace import bot_name, bot_tag
 from tool_runtime_guard import tool
 
 from evolution_core import (
@@ -292,11 +293,12 @@ async def commit_bot(args):
             load_fingerprints, save_fingerprint,
         )
         from evolution_infra import get_active_bots
-        new_fp = compute_decision_fingerprint(f"claude_v{v}")
+        candidate_bot = bot_name(v)
+        new_fp = compute_decision_fingerprint(candidate_bot)
         pool_bots = get_active_bots()
         # Build pool fingerprints from stored data
         stored = load_fingerprints()
-        pool_fps = [stored[b] for b in pool_bots if b in stored and b != f"claude_v{v}"]
+        pool_fps = [stored[b] for b in pool_bots if b in stored and b != candidate_bot]
         if pool_fps:
             import numpy as np
             pool_arr = np.stack(pool_fps)
@@ -315,15 +317,15 @@ async def commit_bot(args):
                     v, delta_vs,
                 )
         # Save the new bot's fingerprint for future novelty checks
-        save_fingerprint(f"claude_v{v}", new_fp)
+        save_fingerprint(candidate_bot, new_fp)
     except Exception as e:
         _log.warning("Novelty gate skipped (non-fatal): %s", e)
 
     ratings = load_ratings()
-    p = ratings.get(f"claude_v{v}")
+    p = ratings.get(bot_name(v))
     h2h_wr = None
     try:
-        h2h_wr = compute_h2h_avg_winrate(f"claude_v{v}", _load_h2h_data())
+        h2h_wr = compute_h2h_avg_winrate(bot_name(v), _load_h2h_data())
     except Exception as e:
         _log.warning("H2H win rate computation failed for v%d: %s", v, e)
     wr_str = f" h2h_avg_wr={h2h_wr:.2%}" if h2h_wr is not None else ""
@@ -335,7 +337,7 @@ async def commit_bot(args):
     # Verify tag was created
     if not git_has_tag(v):
         return _json_tool_result({
-            "error": f"Git tag bot-v{v} not found after commit. Git operations may have failed.",
+            "error": f"Git tag {bot_tag(v)} not found after commit. Git operations may have failed.",
             "version": v,
         })
 
@@ -349,7 +351,7 @@ async def commit_bot(args):
     priority_file = RESULTS_DIR / "priority_eval.json"
     try:
         with locked_file(priority_file, "w") as f:
-            json.dump({"bot": f"claude_v{v}", "min_games": 500, "since": time.time()}, f)
+            json.dump({"bot": bot_name(v), "min_games": 500, "since": time.time()}, f)
     except Exception as e:
         _log.warning("Priority eval signal write failed for v%d: %s", v, e)
 
@@ -682,9 +684,9 @@ async def run_archivist(args):
     if not (bot_dir / ".completed").exists():
         consistency_issues.append(f".completed missing for v{v}")
     if not git_has_tag(v):
-        consistency_issues.append(f"git tag bot-v{v} missing")
+        consistency_issues.append(f"git tag {bot_tag(v)} missing")
     ratings = load_ratings()
-    if f"claude_v{v}" not in ratings:
+    if bot_name(v) not in ratings:
         consistency_issues.append(f"v{v} not in glicko_ratings.json")
 
     # 2. Auto-reap if pool exceeds limit
@@ -848,7 +850,7 @@ async def run_crossover(args):
 
     # Guard: refuse to overwrite a BARE-COMMITTED target (root-cause fix for the
     # v117 repeated-regeneration loop, 2026-06-18). A target dir that is
-    # git-tracked but lacks a bot-v{N} tag was created by a bare `git commit`
+    # git-tracked but lacks an active-epoch tag was created by a bare `git commit`
     # bypassing commit_bot. Silently re-running crossover on it regenerates the
     # same version forever — find_current_v() only trusts tags, so it stays
     # stale and the orchestrator keeps picking the same target_v. Require
@@ -857,7 +859,7 @@ async def run_crossover(args):
     # previously lacked — the deepest root cause per adversarial verification.)
     if target_dir.exists() and git_dir_is_committed(target_v) and not git_has_tag(target_v):
         return _json_tool_result({
-            "error": f"Target v{target_v} is git-committed but has no bot-v{target_v} tag (bare commit bypassing commit_bot). "
+            "error": f"Target v{target_v} is git-committed but has no {bot_tag(target_v)} tag (bare commit bypassing commit_bot). "
                      f"Refusing to overwrite — re-running crossover here causes infinite regeneration. "
                      f"Run commit_bot for v{target_v} to finalize it, or abandon/clear the untagged dir first."
         })
@@ -877,9 +879,9 @@ async def run_crossover(args):
 
     # Guard: both parents must have git tags (authoritative commit proof)
     if not git_has_tag(parent_a):
-        return _json_tool_result({"error": f"Parent A v{parent_a} has no git tag 'bot-v{parent_a}'. Cannot use uncommitted code."})
+        return _json_tool_result({"error": f"Parent A v{parent_a} has no git tag '{bot_tag(parent_a)}'. Cannot use uncommitted code."})
     if not git_has_tag(parent_b):
-        return _json_tool_result({"error": f"Parent B v{parent_b} has no git tag 'bot-v{parent_b}'. Cannot use uncommitted code."})
+        return _json_tool_result({"error": f"Parent B v{parent_b} has no git tag '{bot_tag(parent_b)}'. Cannot use uncommitted code."})
 
     ui = _get_ui()
 

@@ -40,6 +40,7 @@ governance failure must never block the evolution pipeline or daemon.
 import time
 
 import evolution_infra
+from bot_namespace import bot_name
 from evolution_infra import read_locked_json, write_locked_json
 
 
@@ -183,9 +184,9 @@ def reconcile_lesson_outcomes(ratings, bot_stats, rd_threshold=60, min_games=100
         if entry.get("last_reconciled_gen") == gen:
             continue
 
-        bot_name = f"claude_v{gen}"
-        bot_player = ratings.get(bot_name)
-        bot_games = bot_stats.get(bot_name, {}).get("games", 0)
+        gen_bot_name = bot_name(gen)
+        bot_player = ratings.get(gen_bot_name)
+        bot_games = bot_stats.get(gen_bot_name, {}).get("games", 0)
         if bot_player is None or bot_games < min_games:
             continue
         if bot_player.rd >= rd_threshold:
@@ -194,7 +195,7 @@ def reconcile_lesson_outcomes(ratings, bot_stats, rd_threshold=60, min_games=100
         # Converged — compute real rating delta vs a reference.
         # Prefer the gen's own source_v if recorded; else vs baseline 1500.
         source_v = entry.get("source_v")
-        source_name = f"claude_v{source_v}" if source_v is not None else None
+        source_name = bot_name(source_v) if source_v is not None else None
         source_player = ratings.get(source_name) if source_name else None
         if source_player is not None:
             delta = bot_player.r - source_player.r

@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from bot_namespace import bot_name
 from evolution_infra import (
     CORE_DIR, PROJECT_ROOT, REFERENCE_DIR, RESULTS_DIR,
     MAX_LINES_PER_FILE, MAX_LINES_HELPER, MAX_LINES_HARD_CAP,
@@ -949,13 +950,13 @@ def run_national_protocol_tests():
 
 
 def seed_initial_bots(ui):
-    """Seed claude_v1 through claude_v6 with bot1 through bot6 if they don't exist."""
+    """Seed active-epoch bot v1 through v6 with reference bot1 through bot6 if needed."""
     seeded = False
     for i in range(1, 7):
         target_dir = get_bot_dir(i)
         source_dir = REFERENCE_DIR / f"bot{i}"
         if not target_dir.exists() and source_dir.exists():
-            ui.log_history(f"Seeding claude_v{i} from reference bot{i}...", "info")
+            ui.log_history(f"Seeding {bot_name(i)} from reference bot{i}...", "info")
             shutil.copytree(source_dir, target_dir, ignore=_COPY_IGNORE)
             # Apply known fixes to seeded bot
             from fix_injection import apply_known_fixes, log_fix_application

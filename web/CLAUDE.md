@@ -73,7 +73,7 @@ Each tool function receives an `args` dict, executes business logic (often spawn
 ## Data Flow
 
 ```
-Workers edit bots/claude_v{N}/  (LLM-driven code changes)
+Workers edit bots/national_v{N}/  (LLM-driven code changes)
         ↓
 elo_daemon.py  ← Background subprocess, mirror battles via engine/battle.py
         ↓           ProcessPoolExecutor, per-game Glicko-2 updates
@@ -174,7 +174,7 @@ Do not revert, reset, restore, or checkout unrelated changes unless the user exp
 
 Stage only the files changed for the current task. Do not use `git add -A` unless the user explicitly asks for a full repository snapshot. Runtime/generated paths such as `web/core/results/`, `web/logs/`, `web/frontend/dist/`, `web/server/static/`, `results/*.json`, `ladder_results/`, `bots/graveyard/`, and `.completed` sentinels should not be staged unless the task is specifically about them.
 
-Evolution-generated bot versions are complete only when the orchestrator `commit_bot` flow has passed its gates, committed the bot, and created the annotated `bot-v{N}` tag. Do not hand-edit bot lineage tags or `.completed` sentinels unless the task is explicitly about evolution recovery.
+Evolution-generated bot versions are complete only when the orchestrator `commit_bot` flow has passed its gates, committed the bot, and created the annotated `national-bot-v{N}` tag. Do not hand-edit bot lineage tags or `.completed` sentinels unless the task is explicitly about evolution recovery.
 
 After a task that changes files, commit and push task-related changes:
 

@@ -6,6 +6,7 @@ worker failures to determine if the evolution strategy needs adjustment.
 
 import json
 
+from bot_namespace import bot_name, bot_tag_glob, parse_tag_version
 from evolution_infra import (
     run_claude_query, parse_json_output, substitute_template,
     locked_file, get_logs_dir,
@@ -28,8 +29,8 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui, prev_critic_in
     coverage_data = load_h2h_avg_winrates_with_coverage()
 
     # ── Data sufficiency check ──
-    bot_name = f"claude_v{source_v}"
-    bot_cov = coverage_data.get(bot_name, {})
+    source_bot_name = bot_name(source_v)
+    bot_cov = coverage_data.get(source_bot_name, {})
     opp_coverage = bot_cov.get("opponent_coverage", 1.0)
     opp_eval = bot_cov.get("opponents_evaluated", 0)
     opp_total = bot_cov.get("opponents_total", 0)
@@ -47,14 +48,15 @@ async def _analyze_stagnation(source_v, active_bots, ratings, ui, prev_critic_in
     gen_trend_lines = []
     try:
         from evolution_core import _git
-        tag_output = _git("tag", "-l", "bot-v*", "--sort=version:refname", check=False)
+        tag_output = _git("tag", "-l", bot_tag_glob(), "--sort=version:refname", check=False)
         tags = [t.strip() for t in tag_output.splitlines() if t.strip()]
         recent_tags = tags[-8:] if len(tags) > 8 else tags
         for tag in recent_tags:
             try:
-                v_str = tag.replace("bot-v", "")
-                v = int(v_str)
-                v_name = f"claude_v{v}"
+                v = parse_tag_version(tag)
+                if v is None:
+                    continue
+                v_name = bot_name(v)
                 cov = coverage_data.get(v_name, {})
                 wr = cov.get("h2h_avg_wr", h2h_winrates.get(v_name, 0.0))
                 score = cov.get("leaderboard_score", strength_scores.get(v_name, 0.0))

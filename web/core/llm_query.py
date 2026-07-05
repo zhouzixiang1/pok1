@@ -30,6 +30,7 @@ from claude_agent_sdk import (
     ThinkingBlock,
     ClaudeSDKError,
 )
+from bot_namespace import ACTIVE_BOT_PREFIX
 from llm_failure import is_shutdown_cancel_error, is_success_error_result
 
 log = logging.getLogger("pok.infra")
@@ -1002,10 +1003,10 @@ def _subagent_is_outside_allowed(path_or_cmd, allowed_dir):
         if protected in low and not any(protected in marker for marker in allowed_markers):
             return True
 
-    bot_refs = set(re.findall(r"bots[/\\]claude_v\d+", low))
+    bot_refs = set(re.findall(rf"bots[/\\]{re.escape(ACTIVE_BOT_PREFIX)}\d+", low))
     allowed_bot_refs = {
         marker for marker in allowed_markers
-        if "bots/claude_v" in marker or "bots\\claude_v" in marker
+        if f"bots/{ACTIVE_BOT_PREFIX}" in marker or f"bots\\{ACTIVE_BOT_PREFIX}" in marker
     }
     for ref in bot_refs:
         ref_norm = ref.replace("\\", "/")
@@ -1014,7 +1015,7 @@ def _subagent_is_outside_allowed(path_or_cmd, allowed_dir):
 
     if allowed_markers and any(marker and marker in low for marker in allowed_markers):
         return False
-    if "bots/claude_v" in low or "bots\\claude_v" in low:
+    if f"bots/{ACTIVE_BOT_PREFIX}" in low or f"bots\\{ACTIVE_BOT_PREFIX}" in low:
         return True
     return bool(allowed_markers)
 
@@ -2129,7 +2130,7 @@ async def run_claude_query(prompt, context_files, ui, role_name, log_file_path, 
     options_kwargs = dict(
         model=model,
         permission_mode="bypassPermissions",
-        cwd=str(PROJECT_ROOT),  # pok/ — workers use relative paths like bots/claude_vN/
+        cwd=str(PROJECT_ROOT),  # pok/ — workers use relative paths like bots/national_vN/
         mcp_servers={},
         strict_mcp_config=True,  # Direct sub-agents must not auto-start user/global MCP servers.
         tools=tools,

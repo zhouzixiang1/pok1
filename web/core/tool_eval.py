@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 
+from bot_namespace import bot_name as active_bot_name, parse_bot_version
 from tool_runtime_guard import tool
 
 from evolution_core import (
@@ -392,7 +393,7 @@ async def _run_national_precommit_backend(
                 workflow_profile_id=workflow_profile.profile_id,
                 run_id=f"{v}#0",
                 stage="verified" if passed else "precommit_failed",
-                parent_ids=[f"claude_v{source_v}"],
+                parent_ids=[active_bot_name(source_v)],
                 gate="precommit_eval",
                 scorecard=scorecard,
                 gate_results=scorecard.gates,
@@ -443,7 +444,7 @@ def _maybe_add_mixture_opponent(v: int, source_v: int):
             active = get_active_bots() or []
         except Exception:
             active = []
-        candidate = f"claude_v{v}"
+        candidate = active_bot_name(v)
         population = [b for b in active if b != candidate][:MIXTURE_MAX_POPULATION]
         if len(population) < 2:
             log.info("PSRO: population < 2, skipping meta-opponent")
@@ -452,7 +453,9 @@ def _maybe_add_mixture_opponent(v: int, source_v: int):
         bot_paths = {}
         for b in population:
             try:
-                bv = int(str(b).replace("claude_v", ""))
+                bv = parse_bot_version(str(b))
+                if bv is None:
+                    continue
             except (ValueError, TypeError):
                 continue
             d = get_bot_dir(bv)
@@ -881,8 +884,8 @@ async def run_precommit_eval(args):
                 v, requested, n_games,
             )
 
-    candidate_name = f"claude_v{v}"
-    parent_name = f"claude_v{source_v}"
+    candidate_name = active_bot_name(v)
+    parent_name = active_bot_name(source_v)
     candidate_dir = get_bot_dir(v)
     candidate_main = _bot_main(candidate_name)
     try:
@@ -953,7 +956,7 @@ async def run_precommit_eval(args):
                 workflow_profile_id=workflow_profile.profile_id,
                 run_id=f"{v}#0",
                 stage="precommit_eval",
-                parent_ids=[f"claude_v{source_v}"],
+                parent_ids=[active_bot_name(source_v)],
                 gate="precommit_eval",
                 metrics={"n_games": n_games},
             )
@@ -991,7 +994,7 @@ async def run_precommit_eval(args):
     opponents = _select_precommit_opponents(v, source_v)
     # Add crossover parent_b if applicable
     if ckpt and ckpt.get("parent2_v"):
-        parent2_name = f"claude_v{ckpt['parent2_v']}"
+        parent2_name = active_bot_name(ckpt["parent2_v"])
         parent2_main = _bot_main(parent2_name)
         if parent2_main.exists() and not any(o["name"] == parent2_name for o in opponents):
             opponents.append({"name": parent2_name, "reason": "crossover_parent_b"})
@@ -2090,7 +2093,7 @@ async def run_precommit_eval(args):
                 workflow_profile_id=workflow_profile.profile_id,
                 run_id=f"{v}#0",
                 stage="verified" if passed else "precommit_failed",
-                parent_ids=[f"claude_v{source_v}"],
+                parent_ids=[active_bot_name(source_v)],
                 gate="precommit_eval",
                 scorecard=scorecard,
                 gate_results=scorecard.gates,
@@ -2121,7 +2124,7 @@ async def run_inline_eval(args):
         return {"content": [{"type": "text", "text": json.dumps({"error": "Missing version and no active pipeline checkpoint"})}]}
     v = int(v)
     n_games = args.get("n_games", 5)
-    bot_name = f"claude_v{v}"
+    bot_name = active_bot_name(v)
 
     _set_pipeline_status(f"Running inline eval for v{v}")
 

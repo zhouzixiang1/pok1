@@ -18,6 +18,7 @@ import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
+from bot_namespace import ACTIVE_BOT_PREFIX, bot_name, bot_tag, parse_bot_version
 from system_log import log_system_event, SYSTEM_EVENTS_FILE
 
 log = logging.getLogger("pok.scheduler")
@@ -39,17 +40,17 @@ def _save_committed_bot_fingerprint(committed_v: int) -> str:
     """Compute and persist the behavior fingerprint for a committed bot."""
     from behavior_diversity import compute_decision_fingerprint, save_fingerprint
 
-    bot_name = f"claude_v{int(committed_v)}"
-    fp = compute_decision_fingerprint(bot_name)
-    save_fingerprint(bot_name, fp)
-    log.info("Behavior fingerprint saved for %s", bot_name)
+    committed_bot = bot_name(int(committed_v))
+    fp = compute_decision_fingerprint(committed_bot)
+    save_fingerprint(committed_bot, fp)
+    log.info("Behavior fingerprint saved for %s", committed_bot)
     log_system_event(
         "pipeline.fingerprint_saved",
         "info",
-        f"Behavior fingerprint saved for {bot_name}",
-        {"version": int(committed_v), "bot": bot_name},
+        f"Behavior fingerprint saved for {committed_bot}",
+        {"version": int(committed_v), "bot": committed_bot},
     )
-    return bot_name
+    return committed_bot
 
 
 def _wilson_lower_bound(wins, games, z=1.96):
@@ -203,9 +204,9 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
             {"active_v": active_v, "active_bots": active_bots, "planned_next_v": _planned_next_v},
         )
         if ui:
-            ui.log_history("没有可用的 tagged active bot，跳过本轮 prepare，避免等待 claude_v0。", "error")
+            ui.log_history("没有可用的 tagged active bot，跳过本轮 prepare，避免等待 national_v000。", "error")
         return None
-    bot_name = f"claude_v{active_v}"   # 等待活跃 bot 的 eval（核心 fix）
+    active_bot_name = bot_name(active_v)   # 等待活跃 bot 的 eval（核心 fix）
 
     # Reap bots if pool exceeds limit — reduces starvation in match selection
     if len(active_bots) > MAX_ACTIVE_BOTS:
@@ -238,7 +239,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         log.warning("Workflow profile eval wait settings unavailable; using defaults")
     if min_games is not None:
         eval_kwargs["min_games"] = min_games
-    eval_ok = await wait_for_daemon_eval(bot_name, **eval_kwargs)
+    eval_ok = await wait_for_daemon_eval(active_bot_name, **eval_kwargs)
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         return None
     if not eval_ok:
@@ -319,7 +320,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
             try:
                 import subprocess
                 result = subprocess.run(
-                    ["git", "log", f"bot-v{active_v}", "-5", "--format=%h %s%n%b"],
+                    ["git", "log", bot_tag(active_v), "-5", "--format=%h %s%n%b"],
                     capture_output=True, text=True, timeout=10,
                     cwd=str(Path(__file__).resolve().parent.parent.parent),
                 )
@@ -372,7 +373,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         from evolution_infra import RESULTS_DIR
         replays_dir = str(RESULTS_DIR / "match_replay")
         spotlight_text = find_critical_hands(
-            bot_name=f"claude_v{active_v}",
+            bot_name=bot_name(active_v),
             replays_dir=replays_dir,
             max_hands=10,
             recent_n_files=20,
@@ -385,7 +386,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     # win rate of the lexicographically-FIRST bot in the pair_key (see
     # elo_daemon pair_key: "a vs b" if a < b), NOT necessarily active_v's win
     # rate. Reading it directly inverts the sign when active_v is the "b" side
-    # (e.g. "claude_v104 vs claude_v114" stores 0.35 = v104's rate, which was
+    # (e.g. "national_v104 vs national_v114" stores 0.35 = v104's rate, which was
     # mis-attributed to v114 as a fake regression). Fix: recompute active_v's
     # win rate from a_wins/b_wins by pair position — the same perspective
     # correction compute_h2h_avg_winrate (tool_helpers) already applies.
@@ -396,7 +397,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                 h2h_data = json.loads(H2H_FILE.read_text())
                 regressions = []    # active_v LOSING — genuine concern for Master
                 dominations = []    # active_v WINNING — informational only, NOT "attention"
-                v_key = f"claude_v{active_v}"
+                v_key = bot_name(active_v)
                 for pair_key, pair_data in h2h_data.items():
                     parts = pair_key.split(" vs ")
                     if len(parts) != 2 or v_key not in parts:
@@ -586,7 +587,7 @@ def _log_crossover_decision(trigger, source_v, parents, cons_a=None, cons_b=None
 
 
 def _strength_payload(version):
-    name = f"claude_v{version}"
+    name = bot_name(version)
     try:
         from tool_helpers import load_h2h_avg_winrates_with_coverage, load_strength_scores
         coverage = load_h2h_avg_winrates_with_coverage().get(name, {})
@@ -732,7 +733,7 @@ def _decide_strategy(combined, current_v, ratings):
         # which bots are treated as "strongest"/"weakest" crossover parents.
         osc_ratings = {}
         for sv in oscillating:
-            bot_key = f"claude_v{sv}"
+            bot_key = bot_name(sv)
             if bot_key in ratings:
                 osc_ratings[sv] = ratings[bot_key].conservative_rating()
         # E2: convergence guard. If the Glicko leader (strongest active bot by
@@ -1040,7 +1041,7 @@ def _pick_oscillation_breakout_source(oscillating: set[int], current_v: int) -> 
 
     osc_scores = []
     for sv in oscillating:
-        osc_metrics = metrics.get(f"claude_v{sv}")
+        osc_metrics = metrics.get(bot_name(sv))
         if osc_metrics:
             osc_scores.append(_score(osc_metrics))
     if not osc_scores:
@@ -1260,7 +1261,7 @@ def _bare_commit_gate_ledger_ok(v, ckpt):
 def _finalize_bare_commit(v, ckpt=None):
     """H3 (2026-06-29): finalize a bare-committed generation.
 
-    A bare commit (code landed via `git commit` but no bot-v{N} tag and no
+    A bare commit (code landed via `git commit` but no active-epoch tag and no
     .completed sentinel) happens when CYCLE_TIMEOUT/503 interrupts commit_bot
     mid-way (e.g. crossover's git_commit_bot ran the commit but not the tag).
     Previously `_cleanup_incomplete` would rmtree such a dir on the next restart,
@@ -1336,11 +1337,10 @@ def _cleanup_incomplete():
     if not bots_dir.exists():
         return
     for d in sorted(bots_dir.iterdir()):
-        if d.is_dir() and d.name.startswith("claude_v"):
+        if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX):
             if not (d / ".completed").exists():
-                try:
-                    v = int(d.name.split("_v")[1])
-                except (ValueError, IndexError):
+                v = parse_bot_version(d.name)
+                if v is None:
                     continue
                 if not git_has_tag(v):
                     # H3 (2026-06-29): a bare-commit dir (git-tracked files but no
@@ -1520,8 +1520,8 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
     committed_generation = ctx.next_v > 0 and git_has_tag(ctx.next_v)
     if not committed_generation:
         log.info(
-            "Post-cleanup skipped for v%s: no bot-v%s tag (abandoned or uncommitted cycle)",
-            ctx.next_v, ctx.next_v,
+            "Post-cleanup skipped for v%s: no %s tag (abandoned or uncommitted cycle)",
+            ctx.next_v, bot_tag(ctx.next_v),
         )
         log_system_event(
             "pipeline.post_cleanup_skipped_uncommitted",
@@ -1765,7 +1765,7 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
             )
             _finish("skipped", "uncommitted_or_abandoned_before_exploitability")
             return
-        new_bot_dir = get_bot_dir(ctx.next_v)  # P2: pass bare int — get_bot_dir already prefixes "claude_v"
+        new_bot_dir = get_bot_dir(ctx.next_v)
         new_bot_main = new_bot_dir / "main.py"
         if not new_bot_main.exists():
             log.warning("Exploitability probe skipped: %s missing", new_bot_main)
@@ -1898,7 +1898,7 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
             log_system_event(
                 "pipeline.qd_eval_skipped", "info",
                 f"v{ctx.next_v} QD eval skipped: not committed "
-                f"(no bot-v{ctx.next_v} tag - abandoned/uncleaned cycle)",
+                f"(no {bot_tag(ctx.next_v)} tag - abandoned/uncleaned cycle)",
                 {"version": ctx.next_v, "reason": "not_committed",
                  "source_v": ctx.source_v},
             )
@@ -1917,7 +1917,7 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
         log_system_event(
             "pipeline.post_cleanup_fingerprint_start",
             "info",
-            f"Behavior fingerprint starting for claude_v{ctx.next_v}",
+            f"Behavior fingerprint starting for {bot_name(ctx.next_v)}",
             {"version": ctx.next_v, "source_v": ctx.source_v},
         )
         _save_committed_bot_fingerprint(ctx.next_v)
@@ -1926,7 +1926,7 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
         log_system_event(
             "pipeline.post_cleanup_fingerprint_failed",
             "warn",
-            f"Behavior fingerprint failed for claude_v{ctx.next_v}: {str(e)[:180]}",
+            f"Behavior fingerprint failed for {bot_name(ctx.next_v)}: {str(e)[:180]}",
             {"version": ctx.next_v, "source_v": ctx.source_v, "error": str(e)[:500]},
         )
 

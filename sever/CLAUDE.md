@@ -24,7 +24,7 @@ python test_client.py 127.0.0.1 10001 BotA
 python test_client.py 127.0.0.1 10001 BotB
 
 # Bot 桥接（将本地 bot 连接到 TCP 服务器）
-python bot_adapter.py --bot ../bots/claude_v5 --name test
+python bot_adapter.py --bot ../archive/evolution_epochs/<epoch>/legacy_bots/claude_v5 --name legacy-test
 
 # 协议对齐回归测试
 python -m pytest tests -q

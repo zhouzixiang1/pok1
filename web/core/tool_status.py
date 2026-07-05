@@ -15,6 +15,7 @@ from typing import Annotated, TypedDict
 
 from claude_agent_sdk import tool
 
+from bot_namespace import ACTIVE_BOT_PREFIX, active_bot_glob, bot_name as active_bot_name, parse_bot_version
 from evolution_core import (
     MAX_ACTIVE_BOTS,
     get_active_bots,
@@ -78,12 +79,13 @@ async def get_status(args):
     incomplete_next_v = next_v if (next_dir.exists() and not (next_dir / ".completed").exists()) else None
 
     # Current bot rating reliability
-    cur_p = ratings.get(f"claude_v{current_v}")
+    current_bot_name = active_bot_name(current_v)
+    cur_p = ratings.get(current_bot_name)
     current_bot_rd = round(cur_p.rd, 1) if cur_p else None
 
     # Load bot stats for current bot
     bot_stats_data = read_locked_json(BOT_STATS_FILE, default={})
-    cur_bs = bot_stats_data.get(f"claude_v{current_v}", {})
+    cur_bs = bot_stats_data.get(current_bot_name, {})
     games_played = cur_bs.get("games", 0)
     rating_reliable = games_played >= 100
 
@@ -103,8 +105,8 @@ async def get_status(args):
         "current_bot_rd": current_bot_rd,
         "current_bot_games": games_played,
         "current_bot_win_rate": cur_bs.get("win_rate", 0.0),
-        "current_bot_leaderboard_score": load_strength_scores().get(f"claude_v{current_v}", 0.5),
-        "current_bot_h2h_avg_wr": load_h2h_avg_winrates().get(f"claude_v{current_v}", 0.5),
+        "current_bot_leaderboard_score": load_strength_scores().get(current_bot_name, 0.5),
+        "current_bot_h2h_avg_wr": load_h2h_avg_winrates().get(current_bot_name, 0.5),
         "rating_reliable": rating_reliable,
         "recent_worker_failures": recent_failures,
     }
@@ -118,7 +120,7 @@ class GetBotInfoInput(TypedDict):
 @tool("get_bot_info", "Get detailed info about a specific bot version: rating, parent, files, code size.", {"version": int})
 async def get_bot_info(args):
     v = args["version"]
-    bot_name = f"claude_v{v}"
+    bot_name = active_bot_name(v)
     bot_dir = get_bot_dir(v)
 
     if not bot_dir.exists():
@@ -130,7 +132,8 @@ async def get_bot_info(args):
     parent_v = None
     if parent is not None:
         try:
-            parent_v = int(str(parent).replace("claude_v", "").replace("v", ""))
+            parsed_parent = parse_bot_version(str(parent))
+            parent_v = parsed_parent if parsed_parent is not None else int(str(parent).replace("v", ""))
         except ValueError:
             parent_v = None
 
@@ -168,7 +171,7 @@ class GetMatchHistoryInput(TypedDict):
 async def get_match_history(args):
     v = args["version"]
     n = args.get("n", 5)
-    bot_name = f"claude_v{v}"
+    bot_name = active_bot_name(v)
 
     history_file = MATCH_HISTORY_FILE
     if not history_file.exists():
@@ -247,7 +250,7 @@ async def wait_for_eval(args):
     v = args["version"]
     timeout = args.get("timeout", 600)
     min_games = args.get("min_games", 100)
-    bot_name = f"claude_v{v}"
+    bot_name = active_bot_name(v)
 
     success = await wait_for_daemon_eval(bot_name, timeout=timeout, min_games=min_games)
     ratings = load_ratings()
@@ -308,7 +311,7 @@ async def run_performance_verification(args):
 
 
 class GetH2HInput(TypedDict):
-    bot_name: Annotated[str, "Bot name (e.g. claude_v14)"]
+    bot_name: Annotated[str, "Bot name (e.g. national_v14)"]
     opponent: Annotated[str, "Optional: specific opponent name. If omitted, returns all opponents."]
 
 
@@ -353,7 +356,7 @@ async def get_h2h(args):
 
 
 class GetBotStatsInput(TypedDict):
-    bot_name: Annotated[str, "Bot name (e.g. claude_v14)"]
+    bot_name: Annotated[str, "Bot name (e.g. national_v14)"]
 
 
 @tool("get_bot_stats", "Get per-bot stats: total wins, losses, games, win rate.", {"bot_name": str})
@@ -399,11 +402,9 @@ async def diagnose_environment(args):
 
     # Incomplete bot directories
     incomplete = []
-    for d in sorted(PROJECT_ROOT.joinpath("bots").glob("claude_v*")):
-        v_num = d.name.replace("claude_v", "")
-        try:
-            v_int = int(v_num)
-        except ValueError:
+    for d in sorted(PROJECT_ROOT.joinpath("bots").glob(active_bot_glob())):
+        v_int = parse_bot_version(d.name)
+        if v_int is None:
             continue
         if not d.joinpath(".completed").exists() and not git_has_tag(v_int):
             incomplete.append(v_int)
@@ -453,15 +454,15 @@ async def diagnose_environment(args):
     # so high-RD bots with inflated point estimates don't top the list shown to
     # the LLM diagnostic. Display r/rd alongside for transparency.
     sorted_bots = sorted(
-        [(name, p) for name, p in ratings.items() if name.startswith("claude_v")],
+        [(name, p) for name, p in ratings.items() if name.startswith(ACTIVE_BOT_PREFIX)],
         key=lambda x: x[1].conservative_rating(), reverse=True,
     )[:10]
     if sorted_bots:
         snapshot_lines.append("")
         snapshot_lines.append("Top 10 rated bots (by conservative r-2*rd):")
         for name, p in sorted_bots:
-            v_str = name.replace("claude_v", "")
-            tag = "✓" if git_has_tag(int(v_str)) else "✗"
+            v_int = parse_bot_version(name)
+            tag = "✓" if v_int is not None and git_has_tag(v_int) else "✗"
             snapshot_lines.append(f"  {name}: r={p.r:.0f} rd={p.rd:.0f} cons={p.conservative_rating():.0f} {tag}")
 
     # Daemon status

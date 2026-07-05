@@ -6,6 +6,7 @@ import shutil
 import time
 from typing import Annotated, TypedDict
 
+from bot_namespace import ACTIVE_BOT_PREFIX, bot_name, parse_bot_version
 from tool_runtime_guard import tool
 
 from evolution_core import (
@@ -51,7 +52,7 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
     ratings = load_ratings()
     h2h_winrates = load_h2h_avg_winrates()
     strength_scores = load_strength_scores()
-    current_bot = f"claude_v{find_latest_active_v()}"
+    current_bot = bot_name(find_latest_active_v())
 
     # Load bot stats to protect untested bots from reaping
     from tool_helpers import _read_json
@@ -106,7 +107,7 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
             if not bot_src.exists():
                 return {"reaped": False, "reason": f"{culled_name} already moved"}
             # Keep git-tracked bot source in place. Active membership is the
-            # runtime .completed sentinel plus bot-vN tag, so removing the
+            # runtime .completed sentinel plus active-epoch tag, so removing the
             # sentinel deactivates the bot without dirtying the worktree.
             sentinel = bot_src / ".completed"
             if sentinel.exists():
@@ -201,11 +202,10 @@ async def cleanup_incomplete(args):
             except Exception:
                 pass
         for d in sorted(bots_dir.iterdir()):
-            if d.is_dir() and d.name.startswith("claude_v"):
+            if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX):
                 if not (d / ".completed").exists():
-                    try:
-                        v = int(d.name.split("_v")[1])
-                    except (ValueError, IndexError):
+                    v = parse_bot_version(d.name)
+                    if v is None:
                         continue
                     if v == active_next_v:
                         continue
@@ -309,7 +309,7 @@ async def _do_abandon_generation(reason: str = "abandon_generation") -> dict:
                     )
                 else:
                     shutil.rmtree(next_dir)
-                    removed_dir = f"claude_v{next_v}"
+                    removed_dir = bot_name(next_v)
     else:
         # No checkpoint — clean up any incomplete dir for authoritative next
         # version. Do not reuse current_v + 1 after abandoned generations.
@@ -331,7 +331,7 @@ async def _do_abandon_generation(reason: str = "abandon_generation") -> dict:
                 )
             else:
                 shutil.rmtree(next_dir)
-                removed_dir = f"claude_v{next_v}"
+                removed_dir = bot_name(next_v)
 
     # P2 (2026-06-29 reboot analysis): record the abandoned version number so the
     # next prepare_generation skips it. Without this, the same next_v is reused
@@ -375,7 +375,7 @@ async def trim_experience(args):
     return {"content": [{"type": "text", "text": json.dumps({"trimmed": True})}]}
 
 
-@tool("seed_initial_bots", "Seed claude_v1 through claude_v6 from reference bots if they don't exist. Call this when get_status() returns current_v=0 or no completed bots.", {})
+@tool("seed_initial_bots", "Seed national_v001 through national_v006 from reference bots if they don't exist. Call this when get_status() returns current_v=0 or no completed bots.", {})
 async def seed_initial_bots_tool(args):
     ui = _get_ui()
     seeded = seed_initial_bots(ui)

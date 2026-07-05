@@ -11,6 +11,7 @@ import logging
 
 log = logging.getLogger('pok.analyst')
 
+from bot_namespace import bot_name, bot_tag_glob, parse_tag_version
 from evolution_infra import (
     run_claude_query, parse_json_output, substitute_template,
     locked_file, get_logs_dir, load_ratings, get_active_bots,
@@ -77,7 +78,7 @@ def _statistical_stagnation_check(source_v, ratings):
     if not history_file.exists():
         return None
 
-    bot_name = f"claude_v{source_v}"
+    source_bot_name = bot_name(source_v)
     # E1: use daemon_run_id-isolated snapshots (cross-run period jumps would
     # otherwise corrupt the recent-vs-previous delta).
     snaps = _isolated_recent_snaps(max_n=10)
@@ -86,7 +87,7 @@ def _statistical_stagnation_check(source_v, ratings):
     recent_ratings = []
     for snap in snaps:
         try:
-            bot_rating = snap.get("ratings", {}).get(bot_name, {})
+            bot_rating = snap.get("ratings", {}).get(source_bot_name, {})
             r = bot_rating.get("r")
             if r is not None:
                 recent_ratings.append(r)
@@ -101,7 +102,7 @@ def _statistical_stagnation_check(source_v, ratings):
     previous_avg = sum(recent_ratings[-6:-3]) / 3
     delta = recent_avg - previous_avg
 
-    bot_rd = ratings.get(bot_name, Glicko2Player()).rd if ratings else 350
+    bot_rd = ratings.get(source_bot_name, Glicko2Player()).rd if ratings else 350
 
     # High RD means rating is unreliable — statistical check is not trustworthy
     if bot_rd > 150:
@@ -153,8 +154,8 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
     coverage_data = load_h2h_avg_winrates_with_coverage()
 
     # ── Data sufficiency check ──
-    bot_name = f"claude_v{source_v}"
-    bot_cov = coverage_data.get(bot_name, {})
+    source_bot_name = bot_name(source_v)
+    bot_cov = coverage_data.get(source_bot_name, {})
     opp_coverage = bot_cov.get("opponent_coverage", 1.0)
     opp_eval = bot_cov.get("opponents_evaluated", 0)
     opp_total = bot_cov.get("opponents_total", 0)
@@ -194,14 +195,15 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
     gen_trend_lines = []
     try:
         from evolution_infra import _git, git_get_parent
-        tag_output = _git("tag", "-l", "bot-v*", "--sort=version:refname", check=False)
+        tag_output = _git("tag", "-l", bot_tag_glob(), "--sort=version:refname", check=False)
         tags = [t.strip() for t in tag_output.splitlines() if t.strip()]
         recent_tags = tags[-8:] if len(tags) > 8 else tags
         for tag in recent_tags:
             try:
-                v_str = tag.replace("bot-v", "")
-                v = int(v_str)
-                v_name = f"claude_v{v}"
+                v = parse_tag_version(tag)
+                if v is None:
+                    continue
+                v_name = bot_name(v)
                 cov = coverage_data.get(v_name, {})
                 wr = cov.get("h2h_avg_wr", h2h_winrates.get(v_name, 0.0))
                 score = cov.get("leaderboard_score", strength_scores.get(v_name, 0.0))
@@ -271,11 +273,11 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
         try:
             with locked_file(bot_stats_file, "r") as f:
                 bs_data = json.load(f)
-            bs = bs_data.get(bot_name, {})
+            bs = bs_data.get(source_bot_name, {})
             g = bs.get("games", 0)
             wr = bs.get("win_rate", 0.0)
             if g > 0:
-                bot_stats_line = f"  {bot_name}: {wr:.0%} overall ({g} games)"
+                bot_stats_line = f"  {source_bot_name}: {wr:.0%} overall ({g} games)"
         except Exception as e:
             log.debug('Bot stats computation failed: %s', e)
 
@@ -291,11 +293,11 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
                 if len(parts) != 2:
                     continue
                 a_name, b_name = parts
-                if bot_name not in (a_name, b_name):
+                if source_bot_name not in (a_name, b_name):
                     continue
-                opponent = b_name if bot_name == a_name else a_name
-                bot_w = v.get("a_wins", 0) if bot_name == a_name else v.get("b_wins", 0)
-                opp_w = v.get("b_wins", 0) if bot_name == a_name else v.get("a_wins", 0)
+                opponent = b_name if source_bot_name == a_name else a_name
+                bot_w = v.get("a_wins", 0) if source_bot_name == a_name else v.get("b_wins", 0)
+                opp_w = v.get("b_wins", 0) if source_bot_name == a_name else v.get("a_wins", 0)
                 total = bot_w + opp_w
                 if total > 0:
                     wr = bot_w / total
@@ -306,7 +308,7 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
             log.debug('H2H per-opponent analysis failed: %s', e)
 
     # RD warning
-    bot_rd = ratings.get(bot_name, Glicko2Player()).rd if ratings else 350
+    bot_rd = ratings.get(source_bot_name, Glicko2Player()).rd if ratings else 350
     rd_warning = ""
     if bot_rd > 200:
         rd_warning = (
@@ -326,7 +328,7 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
 
     prompt = template_file.read_text()
     prompt = substitute_template(prompt, {
-        "bot_name": bot_name,
+        "bot_name": source_bot_name,
         "opp_eval": str(opp_eval),
         "opp_total": str(opp_total),
         "opp_coverage": f"{opp_coverage:.0%}",

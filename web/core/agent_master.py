@@ -7,6 +7,7 @@ live in their own modules. This module keeps the core Master and match analysis.
 import json
 import time
 
+from bot_namespace import bot_name, bot_relpath
 from evolution_infra import (
     run_claude_query, parse_json_output, substitute_template,
     locked_file, get_logs_dir, load_ratings, get_active_bots,
@@ -137,7 +138,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
     try:
         from eval_rounds import EvalRoundManager
         _erm = EvalRoundManager()
-        _eval_summary = _erm.get_last_round_summary(f"claude_v{source_v}")
+        _eval_summary = _erm.get_last_round_summary(bot_name(source_v))
         if _eval_summary:
             eval_round_summary = _eval_summary
     except Exception:
@@ -159,8 +160,8 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
     })
     master_ctx = (
         f"Current evolution: v{source_v} → v{next_v}\n"
-        f"Source bot directory (read-only parent): bots/claude_v{source_v}/\n"
-        f"Target bot directory (workers edit/verify): bots/claude_v{next_v}/\n"
+        f"Source bot directory (read-only parent): {bot_relpath(source_v)}/\n"
+        f"Target bot directory (workers edit/verify): {bot_relpath(next_v)}/\n"
         f"Ratings file: web/core/results/glicko_ratings.json\n"
         f"Rating history: web/core/results/rating_history.jsonl\n"
         f"Head-to-Head data: web/core/results/head_to_head.json\n"
@@ -323,7 +324,7 @@ async def _analyze_recent_matches(source_v, ui, max_matches=8):
     Returns a match analysis string to inject into Master's context, or ""
     if no replay data is available.
     """
-    bot_name = f"claude_v{source_v}"
+    source_bot_name = bot_name(source_v)
 
     if not MATCH_HISTORY_FILE.exists():
         return ""
@@ -344,9 +345,9 @@ async def _analyze_recent_matches(source_v, ui, max_matches=8):
             b0, b1 = entry.get("bot0"), entry.get("bot1")
             w0, w1 = entry.get("bot0_wins", 0), entry.get("bot1_wins", 0)
 
-            if b0 == bot_name:
+            if b0 == source_bot_name:
                 bot_wins, opp_wins = w0, w1
-            elif b1 == bot_name:
+            elif b1 == source_bot_name:
                 bot_wins, opp_wins = w1, w0
             else:
                 continue

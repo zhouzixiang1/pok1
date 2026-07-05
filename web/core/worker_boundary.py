@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from bot_namespace import bot_relpath
+
 
 @dataclass
 class BoundaryAuditResult:
@@ -34,7 +36,7 @@ def _normalize_rel(path: str | Path, next_v: int | None = None) -> str | None:
     if not text:
         return None
     text = text.replace("\\", "/")
-    marker = f"bots/claude_v{next_v}/" if next_v is not None else ""
+    marker = bot_relpath(next_v) + "/" if next_v is not None else ""
     if marker and marker in text:
         text = text.split(marker, 1)[1]
     if text.startswith("./"):

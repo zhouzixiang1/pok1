@@ -13,6 +13,8 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from bot_namespace import parse_bot_version
+
 log = logging.getLogger("pok.fixes")
 
 
@@ -213,12 +215,7 @@ def log_fix_application(
     """Log fix application results to system events."""
     from system_log import log_system_event
 
-    target_v = None
-    if bot_dir.name.startswith("claude_v"):
-        try:
-            target_v = int(bot_dir.name.split("claude_v", 1)[1])
-        except (TypeError, ValueError, IndexError):
-            target_v = None
+    target_v = parse_bot_version(bot_dir.name)
 
     severity = "warn" if skipped and applied else "info"
     msg_parts = []

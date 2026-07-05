@@ -34,6 +34,21 @@ from experience_pool import trim_experience_pool
 from evaluation_contract import build_evaluation_contract
 from evolution_scope import classify_status_entries
 from publish_reconcile import reconcile_push_refs
+from bot_namespace import (
+    ACTIVE_BOT_PREFIX,
+    ACTIVE_TAG_PREFIX,
+    EVALUATION_EPOCH,
+    active_bot_glob,
+    bot_name,
+    bot_relpath,
+    bot_tag,
+    bot_tag_glob,
+    format_version,
+    parse_bot_version,
+    parse_tag_version,
+    strip_bot_path_prefix,
+    version_sort_key,
+)
 
 # ──────────────────────────────────────────────
 # Constants
@@ -702,10 +717,10 @@ def pair_key(a, b):
 
 
 def get_bot_dir(version):
-    primary = BOTS_DIR / f"claude_v{version}"
+    primary = BOTS_DIR / bot_name(version)
     if primary.exists():
         return primary
-    graveyard = GRAVEYARD_DIR / f"claude_v{version}"
+    graveyard = GRAVEYARD_DIR / bot_name(version)
     if graveyard.exists():
         return graveyard
     return primary
@@ -718,23 +733,17 @@ def get_logs_dir(version):
 
 
 def _tagged_bot_versions():
-    """Return versions backed by authoritative bot-vN git tags."""
+    """Return versions backed by authoritative active-epoch git tags."""
     tag_versions = set()
-    for tag in _git("tag", "-l", "bot-v*", check=False).strip().splitlines():
-        try:
-            tag_versions.add(int(tag.replace("bot-v", "")))
-        except ValueError:
-            pass
+    for tag in _git("tag", "-l", bot_tag_glob(), check=False).strip().splitlines():
+        version = parse_tag_version(tag)
+        if version is not None:
+            tag_versions.add(version)
     return tag_versions
 
 
 def _bot_version_from_name(bot_name):
-    try:
-        if isinstance(bot_name, str) and bot_name.startswith("claude_v"):
-            return int(bot_name.split("_v", 1)[1])
-    except (TypeError, ValueError, IndexError):
-        return None
-    return None
+    return parse_bot_version(bot_name)
 
 
 def load_reaped_bot_versions():
@@ -780,7 +789,7 @@ def _ensure_completed_sentinels_for_tagged_bots(tag_versions=None, reaped_versio
     """Restore local .completed sentinels for bot dirs that already have tags.
 
     The sentinel is runtime metadata and may be absent in isolated clones because
-    it is gitignored. The bot-vN tag remains the authoritative completion proof,
+    it is gitignored. The active-epoch tag remains the authoritative completion proof,
     so restoring the local sentinel keeps runtime active-bot discovery consistent
     without trusting untagged or abandoned directories. Intentionally reaped bots
     are skipped because they are tagged but no longer active.
@@ -796,15 +805,15 @@ def _ensure_completed_sentinels_for_tagged_bots(tag_versions=None, reaped_versio
     for version in sorted(tag_versions):
         if version in reaped_versions:
             continue
-        bot_dir = BOTS_DIR / f"claude_v{version}"
+        bot_dir = BOTS_DIR / bot_name(version)
         sentinel = bot_dir / ".completed"
         if not bot_dir.is_dir() or sentinel.exists():
             continue
         try:
-            sentinel.write_text("restored from bot-v tag\n", encoding="utf-8")
+            sentinel.write_text(f"restored from {bot_tag(version)} tag\n", encoding="utf-8")
             restored.append(version)
         except OSError as exc:
-            log.warning("Failed to restore .completed sentinel for claude_v%s: %s", version, exc)
+            log.warning("Failed to restore .completed sentinel for %s: %s", bot_name(version), exc)
 
     if restored:
         try:
@@ -826,23 +835,22 @@ def _target_rel(path, version):
         return ""
     raw = raw.replace("\\", "/")
     raw = _TARGET_ANNOTATION_RE.sub("", raw).strip()
-    # 循环剥离任意层 bots/claude_v{N}/ 前缀（含 source_v + 双重嵌套）。
+    # 循环剥离任意层 bots/{active_bot}{N}/ 前缀（含 source_v + 双重嵌套）。
     # root-cause-audit 2026-06-21: Master context (agent_master.py:100) 注入
-    # bots/claude_v{source_v}/ 路径，worker 非确定性地把它写进 target_files，甚至双重嵌套
-    # bots/claude_v{src}/bots/claude_v{src}/... (gen132 3×, gen137 4×)。单层正则只剥一层仍残留；
+    # bots/{bot}{source_v}/ 路径，worker 非确定性地把它写进 target_files，甚至双重嵌套。
     # 循环剥离直到无版本前缀。
     while True:
-        m = re.match(r'(?:\./)?(?:bots/)?claude_v\d+/(.+)$', raw)
-        if not m:
+        stripped = strip_bot_path_prefix(raw)
+        if stripped == raw:
             break
-        raw = m.group(1)
+        raw = stripped
     return raw
 
 
 def get_active_bots():
     """Active bots = those with BOTH a .completed sentinel AND a git tag.
 
-    Trust model mirrors find_current_v(): the git tag 'bot-v{N}' is the single
+    Trust model mirrors find_current_v(): the git tag for the active epoch is the single
     authoritative completion proof. A bare .completed file (written by prepare
     or left behind by a crashed/never-committed generation) is NOT trusted —
     it is exactly how a "ghost bot" like v107 (completed-but-untagged) leaked
@@ -858,58 +866,49 @@ def get_active_bots():
     bots = []
     if BOTS_DIR.exists():
         for d in os.listdir(BOTS_DIR):
-            if d.startswith("claude_v") and os.path.isdir(BOTS_DIR / d):
-                if (BOTS_DIR / d / ".completed").exists():
-                    try:
-                        v = int(d.split("_v")[1])
-                    except (ValueError, IndexError):
-                        continue
-                    if v in tag_versions and v not in reaped_versions:
-                        bots.append(d)
-    return sorted(bots, key=lambda x: int(x.split("_v")[1]))
+            v = parse_bot_version(d)
+            if v is None or not d.startswith(ACTIVE_BOT_PREFIX):
+                continue
+            if os.path.isdir(BOTS_DIR / d) and (BOTS_DIR / d / ".completed").exists():
+                if v in tag_versions and v not in reaped_versions:
+                    bots.append(d)
+    return sorted(bots, key=version_sort_key)
 
 
 def find_current_v():
     """Find the latest completed bot version.
 
-    Cascading sources: git tags > .completed sentinel files (backed by tag) > directory names.
+    Cascading sources: active-epoch git tags > .completed sentinel files (backed by tag) > directory names.
     .completed files without a corresponding git tag are NOT trusted as complete.
     """
     versions = set()
     tag_versions = set()
 
     # Source 1: git tags (most authoritative)
-    tags = _git("tag", "-l", "bot-v*", check=False).strip().splitlines()
+    tags = _git("tag", "-l", bot_tag_glob(), check=False).strip().splitlines()
     for tag in tags:
-        try:
-            v = int(tag.replace("bot-v", ""))
+        v = parse_tag_version(tag)
+        if v is not None:
             versions.add(v)
             tag_versions.add(v)
-        except ValueError:
-            pass
 
     # Source 2: .completed sentinel files — only trust if backed by a git tag
     if BOTS_DIR.exists():
         for d in os.listdir(BOTS_DIR):
-            if d.startswith("claude_v") and (BOTS_DIR / d / ".completed").exists():
-                try:
-                    v = int(d.split("_v")[1])
-                    if v in tag_versions:
-                        versions.add(v)
-                except (ValueError, IndexError):
-                    pass
+            v = parse_bot_version(d)
+            if v is not None and d.startswith(ACTIVE_BOT_PREFIX) and (BOTS_DIR / d / ".completed").exists():
+                if v in tag_versions:
+                    versions.add(v)
 
     if versions:
         return max(versions)
 
-    # Source 3: any claude_v* directory (fallback for version numbering only)
+    # Source 3: any active-epoch bot directory (fallback for version numbering only)
     if BOTS_DIR.exists():
         for d in os.listdir(BOTS_DIR):
-            if d.startswith("claude_v") and os.path.isdir(BOTS_DIR / d):
-                try:
-                    versions.add(int(d.split("_v")[1]))
-                except (ValueError, IndexError):
-                    pass
+            v = parse_bot_version(d)
+            if v is not None and d.startswith(ACTIVE_BOT_PREFIX) and os.path.isdir(BOTS_DIR / d):
+                versions.add(v)
 
     return max(versions) if versions else 0
 
@@ -921,7 +920,7 @@ def find_latest_active_v():
     active = get_active_bots()
     if not active:
         return 0
-    return max(int(b.split("_v")[1]) for b in active)
+    return max(version_sort_key(b) for b in active)
 
 
 # ──────────────────────────────────────────────
@@ -1184,8 +1183,9 @@ def git_push_refs(*refs: str) -> bool:
         source_v = checkpoint.get("source_v")
     if candidate_v is None:
         for ref in refs:
-            if isinstance(ref, str) and ref.startswith("bot-v") and ref[5:].isdigit():
-                candidate_v = int(ref[5:])
+            parsed = parse_tag_version(ref) if isinstance(ref, str) else None
+            if parsed is not None:
+                candidate_v = parsed
                 break
 
     def _log_event(event_type, severity, message, data):
@@ -1250,16 +1250,16 @@ def _git_ensure_main_branch():
 
 
 def git_has_tag(version):
-    """Check if a bot-v{version} tag exists (authoritative completion proof)."""
-    return bool(_git("tag", "-l", f"bot-v{version}", check=False).strip())
+    """Check if the active-epoch tag exists (authoritative completion proof)."""
+    return bool(_git("tag", "-l", bot_tag(version), check=False).strip())
 
 
 def git_dir_is_committed(version):
-    """True if bots/claude_v{version}/ has any git-tracked file.
+    """True if the active bot directory has any git-tracked file.
 
     Detects BARE COMMITS — code that landed in git via a direct `git commit`
     (e.g. an LLM running git in Bash) but was never finalized through commit_bot,
-    so it lacks both the bot-v{N} tag and the .completed sentinel. This is the
+    so it lacks both the active-epoch tag and the .completed sentinel. This is the
     root-cause signal of the v117 repeated-regeneration loop (2026-06-18): v117
     was bare-committed twice (f6bcccf/f6c4eb7) without a tag, so find_current_v()
     kept returning 116 and the orchestrator regenerated v117 five times until
@@ -1268,7 +1268,7 @@ def git_dir_is_committed(version):
     dir (safe to overwrite); a directory with tracked files is committed state.
     """
     try:
-        return bool(_git("ls-files", "--", f"bots/claude_v{version}/", check=False).strip())
+        return bool(_git("ls-files", "--", bot_relpath(version) + "/", check=False).strip())
     except Exception:
         return False
 
@@ -1281,25 +1281,24 @@ def find_max_committed_v():
     including bare commits bypassing commit_bot. prepare_generation() uses
     max(find_current_v(), find_max_committed_v()) + 1 as the next_v floor so a
     bare-committed version number is never regenerated/overwritten. Returns 0
-    if no claude_v* dir is git-tracked.
+    if no active-epoch bot dir is git-tracked.
 
-    Implementation: a SINGLE `git ls-files bots/claude_v*` call (not one
+    Implementation: a SINGLE `git ls-files bots/{active prefix}*` call (not one
     subprocess per directory) keeps this O(1 git call)/generation regardless
     of how many bot dirs (~125 incl. graveyard) exist.
     """
     try:
-        out = _git("ls-files", "--", "bots/claude_v*", check=False)
+        out = _git("ls-files", "--", f"bots/{active_bot_glob()}", check=False)
     except Exception:
         return 0
     max_v = 0
     for line in out.splitlines():
-        # line like "bots/claude_v117/card_utils.py" — extract the dir version
+        # line like "bots/national_v001/card_utils.py" — extract the dir version
         parts = line.split("/")
-        if len(parts) < 2 or not parts[1].startswith("claude_v"):
+        if len(parts) < 2 or not parts[1].startswith(ACTIVE_BOT_PREFIX):
             continue
-        try:
-            v = int(parts[1].split("_v")[1])
-        except (ValueError, IndexError):
+        v = parse_bot_version(parts[1])
+        if v is None:
             continue
         if v > max_v:
             max_v = v
@@ -1390,16 +1389,16 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
     must not leak into evolution commits.
     """
     _git_ensure_main_branch()
-    parent_line = f"parent: claude_v{source_v}"
+    parent_line = f"parent: {bot_name(source_v)}"
     if parent2_v is not None:
-        parent_line += f"\nparent2: claude_v{parent2_v}"
+        parent_line += f"\nparent2: {bot_name(parent2_v)}"
     msg = (
         f"evolve: v{source_v} → v{version}\n\n"
         f"{parent_line}\n"
         f"strategy: {strategy_tag}\n"
         f"{rating_info}"
     )
-    bot_path = f"bots/claude_v{version}"
+    bot_path = bot_relpath(version)
     preexisting_staged = [
         p for p in _git("diff", "--cached", "--name-only", check=False).splitlines()
         if p
@@ -1439,7 +1438,7 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
     # Capture the staged file list right before commit for auditability.
     _staged_files = _git("diff", "--cached", "--name-only", check=False).strip().splitlines()
     allowed_exact = set(allowed_paths)
-    allowed_prefixes = [p.rstrip("/") + "/" for p in allowed_paths if p.endswith(f"claude_v{version}")]
+    allowed_prefixes = [p.rstrip("/") + "/" for p in allowed_paths if p.endswith(bot_name(version))]
     commit_staged_files = [
         p for p in _staged_files
         if p in allowed_exact or any(p.startswith(prefix) for prefix in allowed_prefixes)
@@ -1492,9 +1491,9 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
     _git("commit", "-m", msg, "--", *allowed_paths)
     _commit_hash = _git("rev-parse", "HEAD", check=False).strip()[:12]
     publish_runtime_expected_head("bot_commit", version=version)
-    tag = f"bot-v{version}"
+    tag = bot_tag(version)
     _git("tag", "-d", tag, check=False)
-    _git("tag", tag, "-m", f"Bot v{version}: {strategy_tag}")
+    _git("tag", tag, "-m", f"National bot v{format_version(version)}: {strategy_tag}")
     try:
         from system_log import log_system_event
         log_system_event(
@@ -1514,7 +1513,7 @@ def git_commit_bot(version, source_v, strategy_tag, rating_info="", parent2_v=No
 
 def git_get_parent(version):
     """从 tag/commit message 解析 parent。"""
-    tag = f"bot-v{version}"
+    tag = bot_tag(version)
     tags = _git("tag", "-l", tag, check=False)
     if tags:
         commit_hash = _git("rev-list", "-n", "1", tag, check=False).strip()
@@ -1523,7 +1522,7 @@ def git_get_parent(version):
         msg = _git("show", "-s", "--format=%B", commit_hash, check=False)
     else:
         log = _git("log", "--diff-filter=A", "--oneline", "-1", "--",
-                    f"bots/claude_v{version}/", check=False)
+                    bot_relpath(version) + "/", check=False)
         if not log:
             return None
         commit_hash = log.split()[0]
@@ -1531,10 +1530,8 @@ def git_get_parent(version):
     for line in (msg or "").split("\n"):
         if line.strip().startswith("parent:"):
             parent = line.split(":", 1)[1].strip()
-            try:
-                return int(parent.replace("claude_v", "").replace("v", ""))
-            except ValueError:
-                return parent
+            parsed = parse_bot_version(parent)
+            return parsed if parsed is not None else parent
     return None
 
 
@@ -1552,22 +1549,24 @@ def archive_generation(version, source_v, ckpt):
         "version": version,
         "source_v": source_v,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "git_tag": f"bot-v{version}",
+        "git_tag": bot_tag(version),
+        "evaluation_epoch": EVALUATION_EPOCH,
+        "bot_name": bot_name(version),
     }
 
     try:
-        snapshot["git_commit"] = _git("rev-parse", "--short", f"bot-v{version}", check=False)
+        snapshot["git_commit"] = _git("rev-parse", "--short", bot_tag(version), check=False)
     except Exception:
         pass
 
     ratings = load_ratings()
-    p = ratings.get(f"claude_v{version}")
+    p = ratings.get(bot_name(version))
     if p:
         snapshot["rating"] = {"r": round(p.r, 1), "rd": round(p.rd, 1)}
 
     try:
         from tool_helpers import compute_h2h_avg_winrate, _load_h2h_data
-        h2h_wr = compute_h2h_avg_winrate(f"claude_v{version}", _load_h2h_data())
+        h2h_wr = compute_h2h_avg_winrate(bot_name(version), _load_h2h_data())
         snapshot["h2h_avg_wr"] = round(h2h_wr, 4)
     except Exception:
         pass
@@ -1591,8 +1590,8 @@ def archive_generation(version, source_v, ckpt):
             snapshot["precommit_eval"] = {"passed": precommit.get("passed", False)}
 
     try:
-        diff_stat = _git("diff", "--stat", f"bot-v{source_v}..bot-v{version}",
-                         "--", f"bots/claude_v{version}/", check=False)
+        diff_stat = _git("diff", "--stat", f"{bot_tag(source_v)}..{bot_tag(version)}",
+                         "--", bot_relpath(version) + "/", check=False)
         if diff_stat:
             last_line = diff_stat.strip().split("\n")[-1]
             snapshot["diff_stats_raw"] = last_line.strip()

@@ -58,6 +58,9 @@ bots/graveyard/
 archive/logs/
 archive/forensic/
 archive/clutter/
+archive/evolution_epochs/*/
+!archive/evolution_epochs/
+!archive/evolution_epochs/README.md
 
 # Local third-party reference checkouts. Keep these repos on disk for research,
 # but do not stage their nested git histories or vendored source trees.

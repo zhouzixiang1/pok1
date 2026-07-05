@@ -22,6 +22,7 @@ import textwrap
 from typing import Any
 
 from eval_stats import paired_bootstrap_ci
+from bot_namespace import ACTIVE_BOT_PREFIX, active_bot_glob, bot_name, parse_bot_version, version_sort_key
 from pipeline_schema import NationalAcceptanceResult
 
 
@@ -573,8 +574,7 @@ def _handler_catches_broad_exception(handler: ast.ExceptHandler) -> bool:
 
 
 def _bot_version(label: str) -> int:
-    suffix = label.removeprefix("claude_v").removeprefix("v")
-    return int(suffix) if suffix.isdigit() else -1
+    return parse_bot_version(label) or -1
 
 
 def resolve_bot(token: str | Path) -> tuple[str, Path]:
@@ -584,11 +584,11 @@ def resolve_bot(token: str | Path) -> tuple[str, Path]:
     if raw.exists():
         candidates.append(raw)
     if token_str.startswith("v") and token_str[1:].isdigit():
-        candidates.append(ROOT / "bots" / f"claude_v{token_str[1:]}")
+        candidates.append(ROOT / "bots" / bot_name(token_str[1:]))
     if token_str.isdigit():
-        candidates.append(ROOT / "bots" / f"claude_v{token_str}")
+        candidates.append(ROOT / "bots" / bot_name(token_str))
         candidates.append(ROOT / "bots" / f"bot{token_str}")
-    if token_str.startswith("claude_v") or token_str.startswith("bot"):
+    if token_str.startswith(ACTIVE_BOT_PREFIX) or token_str.startswith("claude_v") or token_str.startswith("bot"):
         candidates.append(ROOT / "bots" / token_str)
     for path in candidates:
         if path.is_dir() and (path / "main.py").exists():
@@ -598,12 +598,12 @@ def resolve_bot(token: str | Path) -> tuple[str, Path]:
     raise ValueError(f"bot not found or missing main.py: {token_str}")
 
 
-def _completed_claude_bots() -> list[tuple[str, Path]]:
+def _completed_active_bots() -> list[tuple[str, Path]]:
     specs: list[tuple[str, Path]] = []
-    for path in (ROOT / "bots").glob("claude_v*"):
+    for path in (ROOT / "bots").glob(active_bot_glob()):
         if path.is_dir() and (path / "main.py").exists() and (path / ".completed").exists():
             specs.append((path.name, path.resolve()))
-    return sorted(specs, key=lambda item: _bot_version(item[0]), reverse=True)
+    return sorted(specs, key=lambda item: version_sort_key(item[0]), reverse=True)
 
 
 def select_acceptance_opponents(candidate_label: str, source_v: int | None, limit: int = 2) -> list[tuple[str, Path]]:
@@ -617,10 +617,10 @@ def select_acceptance_opponents(candidate_label: str, source_v: int | None, limi
 
     if source_v is not None:
         try:
-            add(resolve_bot(f"claude_v{source_v}"))
+            add(resolve_bot(bot_name(source_v)))
         except ValueError:
             pass
-    for spec in _completed_claude_bots():
+    for spec in _completed_active_bots():
         add(spec)
         if len(chosen) >= limit:
             break

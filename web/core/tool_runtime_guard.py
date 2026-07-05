@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from claude_agent_sdk import tool as sdk_tool
 
+from bot_namespace import ACTIVE_BOT_PREFIX, bot_relpath
 from evolution_infra import EVOLUTION_BRANCH, PROJECT_ROOT, read_pipeline_checkpoint
 from evaluation_contract import evaluate_head_drift
 from repo_state import get_last_snapshot, git_worktree_snapshot, is_generated_bot_dir_entry
@@ -19,7 +20,7 @@ from evolution_scope import (
     classify_status_entries,
 )
 
-_BOT_DIR_RE = re.compile(r"^\?\? bots/claude_v(?P<version>\d+)/$")
+_BOT_DIR_RE = re.compile(rf"^\?\? bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)/$")
 _HEAD_CHANGE_ALLOWED_TOOLS = {"run_archivist"}
 _HEAD_DRIFT_REPAIR_STAGES = {
     "quality_failed",
@@ -256,7 +257,7 @@ def _unrelated_head_drift_allowed(
         checkpoint=checkpoint if isinstance(checkpoint, dict) else None,
     )
     contract_paths = list(payload.get("head_contract_paths") or [])
-    candidate_prefix = f"bots/claude_v{candidate_v}/" if candidate_v is not None else ""
+    candidate_prefix = bot_relpath(candidate_v) + "/" if candidate_v is not None else ""
     candidate_entries = [
         f"?? {path}" for path in contract_paths
         if candidate_prefix and path.startswith(candidate_prefix)

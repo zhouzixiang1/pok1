@@ -12,6 +12,7 @@ import time
 import tokenize
 from pathlib import Path
 
+from bot_namespace import bot_name, bot_relpath
 from tool_runtime_guard import tool
 
 from logging_config import get_logger
@@ -469,7 +470,7 @@ def _normalize_master_plan_paths(plan, source_v, next_v):
 
     Master can inspect the source bot, but worker edit and verification paths
     must point at the prepared target directory. Keep the rewrite path-scoped so
-    prose such as "claude_v206 is weak vs underbets" remains intact.
+    prose such as "national_v206 is weak vs underbets" remains intact.
     """
     meta = {
         "source_v": source_v,
@@ -487,8 +488,8 @@ def _normalize_master_plan_paths(plan, source_v, next_v):
     if source_i == next_i:
         return plan, meta
 
-    source_bot = f"claude_v{source_i}"
-    target_bot = f"claude_v{next_i}"
+    source_bot = bot_name(source_i)
+    target_bot = bot_name(next_i)
     rel_source = f"bots/{source_bot}"
     rel_target = f"bots/{target_bot}"
     win_source = f"bots\\{source_bot}"
@@ -572,8 +573,8 @@ def _normalize_and_log_master_plan_paths(plan, source_v, next_v):
             log_system_event(
                 "pipeline.master_plan_paths_normalized", "warn",
                 f"Normalized {meta['replacements']} parent-path reference(s) "
-                f"in Master plan v{next_v}: bots/claude_v{source_v} -> "
-                f"bots/claude_v{next_v}",
+                f"in Master plan v{next_v}: {bot_relpath(source_v)} -> "
+                f"{bot_relpath(next_v)}",
                 meta,
             )
         except Exception:
@@ -1104,7 +1105,7 @@ async def run_master(args):
         from evolution_infra import RESULTS_DIR
         replays_dir = str(RESULTS_DIR / "match_replay")
         replay_spotlight = find_critical_hands(
-            bot_name=f"claude_v{source_v}",
+            bot_name=bot_name(source_v),
             replays_dir=replays_dir,
             max_hands=10,
             recent_n_files=20,
@@ -1158,7 +1159,8 @@ async def run_master(args):
         if _stats_file.exists():
             with open(_stats_file, "r") as _f:
                 _all_stats = json.load(_f)
-            _bot_stats = _all_stats.get(f"claude_v{source_v}")
+            _source_bot_name = bot_name(source_v)
+            _bot_stats = _all_stats.get(_source_bot_name)
             if _bot_stats:
                 # Format as compact text for prompt injection
                 _parts = []
@@ -1174,7 +1176,7 @@ async def run_master(args):
                         )
                 if _parts:
                     bot_action_stats = (
-                        f"Action frequencies for claude_v{source_v}:\n"
+                        f"Action frequencies for {_source_bot_name}:\n"
                         + "\n".join(_parts)
                     )
     except Exception:
@@ -1193,7 +1195,7 @@ async def run_master(args):
         if _per_opp_file.exists():
             with open(_per_opp_file, "r") as _f:
                 _per_opp_all = json.load(_f)
-            _source_bot = f"claude_v{source_v}"
+            _source_bot = bot_name(source_v)
             _opp_map = _per_opp_all.get(_source_bot, {}) or {}
             # Rank opponents by h2h win_rate (most-beaten and most-beating) to
             # avoid prompt bloat: keep the K most extreme matchups.
@@ -1260,7 +1262,7 @@ async def run_master(args):
                     )
             if _lines:
                 opponent_profiles = (
-                    f"Per-opponent behavior profiles for claude_v{source_v} "
+                    f"Per-opponent behavior profiles for {_source_bot} "
                     f"(top extreme matchups by h2h win_rate):\n"
                     + "\n".join(_lines)
                 )
@@ -1290,7 +1292,7 @@ async def run_master(args):
             _weak_list = _exploit.get("weaknesses", []) or []
             _games = _exploit.get("num_hands")
             _bot_path = _exploit.get("bot_path", "")
-            _source_bot = f"claude_v{source_v}"
+            _source_bot = bot_name(source_v)
             # Stale-safe: only inject the cached probe data if it was actually
             # run for the CURRENT source bot. The post-gen probe refreshes this
             # file per generation; if it hasn't run the file holds stale data for
@@ -1299,8 +1301,8 @@ async def run_master(args):
             # Stale-safe + reliability gate (defense in depth):
             # (a) Inject cached data ONLY when the cached bot_path's parent dir
             #     is EXACTLY the current source bot. A substring match
-            #     (_source_bot in _bot_path) would mis-fire on e.g. claude_v80
-            #     vs claude_v800, and a cached result for a DIFFERENT bot would
+            #     (_source_bot in _bot_path) would mis-fire on similarly named
+            #     bot directories, and a cached result for a DIFFERENT bot would
             #     mislabel another bot's weaknesses as this bot's (active
             #     misinformation into Master).
             # (b) Require enough hands per probe to be statistically meaningful.
@@ -3759,7 +3761,7 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             f"- Edit `{filename}`. This file is listed in `must_change_files`; a no-op or editing only other files is failure.\n"
             "- Prefer deleting duplicated/dead comments, stale historical notes, or redundant helper wrappers before touching active decisions.\n"
             "- Do not remove active strategy branches just to save lines.\n"
-            f"- Verify with `wc -l bots/claude_v{next_v}/{filename}` before finishing.\n"
+            f"- Verify with `wc -l bots/national_v{next_v}/{filename}` before finishing.\n"
             "- End your output with the exact line count you observed."
         )
         return {
@@ -4048,14 +4050,14 @@ def _precommit_repair_task(filename, ckpt, feedback):
 
     prompt = (
         "This is one file-scoped precommit regression repair from a failed native "
-        f"national TCP final gate for bots/claude_v{next_v}.\n\n"
+        f"national TCP final gate for bots/national_v{next_v}.\n\n"
         f"Target file: `{filename}`\n"
-        f"Source parent for diff: bots/claude_v{source_v}/\n"
-        f"Failed candidate: bots/claude_v{next_v}/\n\n"
+        f"Source parent for diff: bots/national_v{source_v}/\n"
+        f"Failed candidate: bots/national_v{next_v}/\n\n"
         f"Exact precommit feedback:\n{feedback}\n\n"
         "Required method:\n"
         f"- Only edit `{filename}`. Other files are intentionally out of scope for this worker.\n"
-        f"- First inspect `diff bots/claude_v{source_v}/{filename} bots/claude_v{next_v}/{filename}` "
+        f"- First inspect `diff bots/national_v{source_v}/{filename} bots/national_v{next_v}/{filename}` "
         "and identify which changed behavior could explain the losing 70-hand national TCP matchups.\n"
         "- Make one bounded EV/matchup correction in this file. Prefer tightening, gating, or partially "
         "rolling back a risky new branch over adding broad new logic.\n"
@@ -4173,7 +4175,7 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
     if is_crossover and stage in {"quality_failed", "repair_planned", "rework_running"}:
         preservation = (
             "This is a crossover quality repair. Preserve the current candidate's "
-            "crossover behavior in bots/claude_v{next_v}; fix only the blocking "
+            "crossover behavior in bots/national_v{next_v}; fix only the blocking "
             "quality-gate issues unless a tiny local cleanup is required."
         )
         method = (
@@ -4602,11 +4604,11 @@ async def execute_workers(args):
     # NOTE (P1 root-cause analysis, 2026-06-29): this breaker only guards the
     # execute_workers MCP tool. The v218 logs showed that after the breaker
     # tripped and execute_workers returned an error, the orchestrator LLM used
-    # its BUILT-IN Bash/Edit tools to write bot code directly into bots/claude_v218/,
+    # its BUILT-IN Bash/Edit tools to write bot code directly into active bot dirs,
     # completely bypassing execute_workers (and thus this breaker, boundary
     # validation, CoT audit, etc.). The breaker is therefore necessary but NOT
     # sufficient. The real fix is a PreToolUse hook that blocks the orchestrator's
-    # Bash/Edit/Write from touching bots/claude_v* — see _make_bot_dir_guard_hook
+    # Bash/Edit/Write from touching active bot dirs — see _make_bot_dir_guard_hook
     # in orchestrator_context.py. The breaker here stays as defense-in-depth.
     _H6_CROSS_GEN_THRESHOLD = 2
     try:
@@ -4836,27 +4838,27 @@ async def execute_workers(args):
 
         if reset_before_rework:
             reviewer_feedback += (
-                f"\n\nNOTE: This is a retry. The code in bots/claude_v{next_v}/ has been ACTUALLY RESET "
-                f"from source bots/claude_v{source_v}/. Any modifications described in the feedback "
+                f"\n\nNOTE: This is a retry. The code in bots/national_v{next_v}/ has been ACTUALLY RESET "
+                f"from source bots/national_v{source_v}/. Any modifications described in the feedback "
                 f"above no longer exist in the code — you must re-implement them from scratch."
             )
         elif rework_kind == "precommit_repair" or _is_precommit_rework_checkpoint(ckpt):
             reviewer_feedback += (
                 f"\n\nNOTE: This is an in-place precommit regression repair. The current code in "
-                f"bots/claude_v{next_v}/ is the candidate that failed precommit; preserve it except "
+                f"bots/national_v{next_v}/ is the candidate that failed precommit; preserve it except "
                 f"for targeted EV/matchup regression fixes."
             )
         else:
             if rework_kind.startswith("crossover_") or ckpt.get("parent2_v") is not None:
                 reviewer_feedback += (
                     f"\n\nNOTE: This is an in-place crossover quality repair. The current code in "
-                    f"bots/claude_v{next_v}/ is the generated crossover candidate and must be preserved "
+                    f"bots/national_v{next_v}/ is the generated crossover candidate and must be preserved "
                     f"except for the exact quality-gate blockers above."
                 )
             else:
                 reviewer_feedback += (
                     f"\n\nNOTE: This is an in-place quality repair. The current code in "
-                    f"bots/claude_v{next_v}/ is the generated candidate and must be preserved "
+                    f"bots/national_v{next_v}/ is the generated candidate and must be preserved "
                     f"except for the exact quality-gate blockers above."
                 )
         changed_trims = [item for item in mechanical_trim_results if item.get("changed")]

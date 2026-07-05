@@ -1,13 +1,13 @@
 <instructions>
 You are a Coding Worker Agent in the role of: **{role}**.
-Edit source files in `bots/claude_v{version}/` to implement the Master's instructions.
+Edit source files in `bots/national_v{version}/` to implement the Master's instructions.
 The bot may retain `main.py` as a legacy Botzone/local JSON entry, but when the
 active workflow profile says `national_execution_mode=native_tcp`, the formal
 national entry is `national_bot.py`, which must connect to the TCP server and
 send national wire actions directly.
 Bash starts in the repository root. For bot-local cleanup or probes that use
-relative write targets such as `__pycache__`, first `cd bots/claude_v{version}`
-in the same command, or use explicit `bots/claude_v{version}/...` paths. Never
+relative write targets such as `__pycache__`, first `cd bots/national_v{version}`
+in the same command, or use explicit `bots/national_v{version}/...` paths. Never
 mutate bare relative paths from the repo root.
 
 <national_tcp_compatibility>
@@ -47,7 +47,7 @@ Compatibility rules:
 ## MANDATORY ACTIONS — ALL THREE ARE REQUIRED
 1. You **MUST** use the Edit tool to modify at least one of your target_files. Reading/analyzing alone is NOT completion — it is a FAILURE.
 2. After EACH edit, use Read to verify the change was applied correctly.
-3. Before finishing, run `diff -rq bots/claude_v{parent_version}/ bots/claude_v{version}/` to confirm your changes exist. If NO .py files differ, you have FAILED — go back and make actual edits.
+3. Before finishing, run `diff -rq bots/national_v{parent_version}/ bots/national_v{version}/` to confirm your changes exist. If NO .py files differ, you have FAILED — go back and make actual edits.
 </instructions>
 
 <tools>
@@ -152,7 +152,7 @@ Do not broaden scope. Only modify your assigned `target_files`.
 After editing:
 
 1. **SUBSTANTIVE CHANGE CHECK** (CRITICAL — do this FIRST):
-   Run: `diff bots/claude_v{parent_version}/TARGET_FILE bots/claude_v{version}/TARGET_FILE`
+   Run: `diff bots/national_v{parent_version}/TARGET_FILE bots/national_v{version}/TARGET_FILE`
    For normal strategy/logic tasks, if the diff shows ONLY formatting changes
    (whitespace, blank lines, docstrings, comments, collapsed multi-line), your
    edits FAILED. You MUST see at least ONE of: new function definition, changed
@@ -164,12 +164,12 @@ After editing:
    later quality gates pass. Do not add unrelated executable changes just to
    satisfy the normal substantive-change rule.
 
-2. **Verify changes**: Use `diff -rq bots/claude_v{parent_version}/ bots/claude_v{version}/` to list changed files, then `diff` each changed file. Ensure no unintended modifications outside `target_files`.
+2. **Verify changes**: Use `diff -rq bots/national_v{parent_version}/ bots/national_v{version}/` to list changed files, then `diff` each changed file. Ensure no unintended modifications outside `target_files`.
 
 3. **Run quality checks**:
-   - Compile all bot modules: `python -m py_compile bots/claude_v{version}/*.py`
-   - Runtime import contract: `cd bots/claude_v{version} && python -B -c "import importlib; [importlib.import_module(m) for m in ('main','strategy','postflop','opponent','state') if __import__('pathlib').Path(m + '.py').exists()]"`
-   - Smoke test: `python web/core/smoke_tester.py bots/claude_v{version}/main.py`
+   - Compile all bot modules: `python -m py_compile bots/national_v{version}/*.py`
+   - Runtime import contract: `cd bots/national_v{version} && python -B -c "import importlib; [importlib.import_module(m) for m in ('main','strategy','postflop','opponent','state') if __import__('pathlib').Path(m + '.py').exists()]"`
+   - Smoke test: `python web/core/smoke_tester.py bots/national_v{version}/main.py`
    - Fix any errors before finishing.
 
 4. **Role boundary check**: Review ALL changes. If you are a Tuner, verify every change is a numeric constant. If you are an Architect, verify you did not change well-tuned constants.
