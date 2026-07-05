@@ -189,6 +189,8 @@ def test_native_tcp_pair_runs_without_adapter(tmp_path):
 
     assert result["execution_mode"] == "native_tcp"
     assert result["hands_played"] == 2
+    assert len(result["settlements"]) == 2
+    assert all(len(row["earnings"]) == 2 for row in result["settlements"])
     assert result["passed_compliance"] is True
     assert result["issues"] == []
     assert all(

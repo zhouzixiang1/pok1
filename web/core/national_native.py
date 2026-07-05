@@ -799,6 +799,18 @@ async def _run_tcp_server_with_processes(
     }
     earnings = getattr(engine, "total_earnings", [0, 0]) if engine is not None else [0, 0]
     hands_played = int(getattr(engine, "hand_num", 0) or 0) if engine is not None else 0
+    settlements = [
+        {
+            "hand": int(event.get("hand", 0) or 0),
+            "earnings": [int(value) for value in event.get("earnings", [0, 0])],
+            "pot": int(event.get("pot", 0) or 0),
+            "is_showdown": bool(event.get("is_showdown", False)),
+            "winner_idx": event.get("winner_idx"),
+            "reason": event.get("reason", ""),
+        }
+        for event in events
+        if event.get("type") == "settle"
+    ]
     per_player = {}
     issues: list[str] = []
     if run_error:
@@ -851,6 +863,7 @@ async def _run_tcp_server_with_processes(
         "execution_mode": "native_tcp",
         "deck_seed_base": deck_seed_base,
         "bot_seed_base": bot_seed_base,
+        "settlements": settlements,
         "passed_compliance": not issues,
         "issues": issues,
         "events_tail": events[-20:],

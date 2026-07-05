@@ -105,7 +105,13 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         opponent_label = bot_b if candidate_is_a else bot_a
         candidate_key = bot_a if candidate_is_a else bot_b
         opponent_key = bot_b if candidate_is_a else bot_a
+        candidate_idx = 0 if candidate_is_a else 1
         net_chips = int(result["net_chips_a"] if candidate_is_a else result["net_chips_b"])
+        hand_net_chips = [
+            int(row["earnings"][candidate_idx])
+            for row in result.get("settlements", [])
+            if isinstance(row.get("earnings"), list) and len(row["earnings"]) >= 2
+        ]
         return {
             "candidate": candidate_label,
             "opponent": opponent_label,
@@ -117,6 +123,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             "hands_played": int(result["hands_played"]),
             "net_chips": net_chips,
             "net_chips_per_hand": round(net_chips / max(1, int(result["hands_played"])), 3),
+            "hand_net_chips": hand_net_chips,
             "passed_compliance": bool(result["passed_compliance"]),
             "issues": result["issues"],
             "candidate_illegal": result["per_player"][candidate_key]["illegal_actions"],
@@ -172,6 +179,12 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             )
             hands_played = int(forward_row["hands_played"]) + int(swapped_row["hands_played"])
             net_chips = int(forward_row["net_chips"]) + int(swapped_row["net_chips"])
+            forward_hands = list(forward_row.get("hand_net_chips", []))
+            swapped_hands = list(swapped_row.get("hand_net_chips", []))
+            paired_hand_net_chips = [
+                int(forward_hands[idx]) + int(swapped_hands[idx])
+                for idx in range(min(len(forward_hands), len(swapped_hands)))
+            ]
             issues = (
                 [f"forward:{issue}" for issue in forward_row["issues"]]
                 + [f"swapped:{issue}" for issue in swapped_row["issues"]]
@@ -187,6 +200,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                 "hands_played": hands_played,
                 "net_chips": net_chips,
                 "net_chips_per_hand": round(net_chips / max(1, hands_played), 3),
+                "hand_net_chips": paired_hand_net_chips,
                 "passed_compliance": bool(forward_row["passed_compliance"] and swapped_row["passed_compliance"]),
                 "issues": issues,
                 "candidate_illegal": int(forward_row["candidate_illegal"]) + int(swapped_row["candidate_illegal"]),
