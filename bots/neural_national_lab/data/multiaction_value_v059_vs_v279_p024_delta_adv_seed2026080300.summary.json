@@ -1,0 +1,54 @@
+{
+  "inputs": [
+    "bots/neural_national_lab/data/multiaction_shards_v059_vs_v279_p024_seed2026080300.json"
+  ],
+  "feature_set": "advantage",
+  "target": "delta_vs_rule",
+  "require_full_vector": true,
+  "scanned_rows": 24,
+  "skipped_rows": 0,
+  "rows": 24,
+  "input_dim": 70,
+  "label_count": 6,
+  "target_samples": 144,
+  "target_mean": -387.40972222222223,
+  "target_median": 0.0,
+  "positive_targets": 43,
+  "zero_targets": 77,
+  "negative_targets": 24,
+  "off_menu_rule_rows": 5,
+  "best_label_counts": {
+    "call": 11,
+    "fold": 2,
+    "raise_half": 11
+  },
+  "stage_counts": {
+    "flop": 24
+  },
+  "target_samples_by_label": {
+    "fold": {
+      "samples": 24,
+      "mean": -81.20833333333333
+    },
+    "call": {
+      "samples": 24,
+      "mean": -18.666666666666668
+    },
+    "raise_half": {
+      "samples": 24,
+      "mean": 85.04166666666667
+    },
+    "raise_pot": {
+      "samples": 24,
+      "mean": 67.625
+    },
+    "raise_2pot": {
+      "samples": 24,
+      "mean": 32.708333333333336
+    },
+    "allin": {
+      "samples": 24,
+      "mean": -2409.9583333333335
+    }
+  }
+}

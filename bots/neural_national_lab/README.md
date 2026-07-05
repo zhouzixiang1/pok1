@@ -871,6 +871,22 @@ off-menu rule baseline (`raise 107`). Off-menu rule raises are evaluated as
 `rule_branch` for a correct `delta_vs_rule` baseline, but they are not added to
 the fixed six-label training vector.
 
+`build_multi_action_value_data.py` and `train_multi_action_value.py` are the
+first learner side of the same path. The builder turns multi-action rows into
+JSONL records with a fixed six-output target vector and target mask; the
+trainer fits a compact JSON-exported MLP with one value/regret output per
+abstract label. A first p024 CUDA run used eight shards, four workers, and
+`seed_base=2026080300` against `claude_v279`. It produced 24 ok flop rows,
+including five off-menu rule baselines. The delta-vs-rule data had a positive
+`raise_half` bucket (`+85.04` chips/hand-scope decision, 95 percent CI
+`[+9.67, +160.41]`) and a very noisy negative all-in bucket. The h16 delta
+model (`multiaction_value_v059_vs_v279_p024_delta_adv_h16_seed701_weights.json`)
+trained on CUDA with validation MAE `0.1777`; the regret-target comparison was
+weaker (`val_best_label_acc=0.20`). Treat these as learner-contract artifacts,
+not as runtime bot weights. The next v060 attempt needs larger multi-opponent
+vector shards before wiring a multi-action head into the already conservative
+v059 gate stack.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass

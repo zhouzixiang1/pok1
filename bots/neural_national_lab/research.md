@@ -96,6 +96,11 @@ Practical takeaways for this repo:
   path. It preserves the fixed six-label target contract while separately
   evaluating off-menu rule raises as the `delta_vs_rule` baseline, which avoids
   confusing action abstraction with protocol or rule-strategy raise sizing.
+- `tools/build_multi_action_value_data.py` and
+  `tools/train_multi_action_value.py` are the matching learner prototype. The
+  first p024 CUDA run was useful for validating the six-output target contract
+  and showing a local `raise_half` signal, but it is too small and too
+  single-opponent to justify a runtime bot change.
 - Build a lightweight actor-learner loop before reaching for Ray: actor workers
   scan divergence windows, enumerate abstract legal actions, run
   counterfactual branches, and append reservoir-style JSONL shards; the learner
