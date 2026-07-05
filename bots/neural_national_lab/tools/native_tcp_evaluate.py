@@ -90,40 +90,112 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     semaphore = asyncio.Semaphore(max(1, int(args.workers)))
     started = time.time()
 
+    def result_row(
+        result: dict[str, Any],
+        opponent: Path,
+        match_idx: int,
+        deck_seed: int | None,
+        *,
+        candidate_is_a: bool,
+        leg: str,
+    ) -> dict[str, Any]:
+        bot_a = result["bot_a"]
+        bot_b = result["bot_b"]
+        candidate_label = bot_a if candidate_is_a else bot_b
+        opponent_label = bot_b if candidate_is_a else bot_a
+        candidate_key = bot_a if candidate_is_a else bot_b
+        opponent_key = bot_b if candidate_is_a else bot_a
+        net_chips = int(result["net_chips_a"] if candidate_is_a else result["net_chips_b"])
+        return {
+            "candidate": candidate_label,
+            "opponent": opponent_label,
+            "opponent_path": str(opponent),
+            "match_idx": match_idx,
+            "leg": leg,
+            "deck_seed_base": deck_seed,
+            "bot_seed_base": result.get("bot_seed_base"),
+            "hands_played": int(result["hands_played"]),
+            "net_chips": net_chips,
+            "net_chips_per_hand": round(net_chips / max(1, int(result["hands_played"])), 3),
+            "passed_compliance": bool(result["passed_compliance"]),
+            "issues": result["issues"],
+            "candidate_illegal": result["per_player"][candidate_key]["illegal_actions"],
+            "candidate_timeouts": result["per_player"][candidate_key]["timeouts"],
+            "opponent_illegal": result["per_player"][opponent_key]["illegal_actions"],
+            "opponent_timeouts": result["per_player"][opponent_key]["timeouts"],
+            "adapter_actions_candidate": result["per_player"][candidate_key]["adapter"]["actions_sent"],
+            "adapter_actions_opponent": result["per_player"][opponent_key]["adapter"]["actions_sent"],
+            "candidate_native": result["per_player"][candidate_key]["native"],
+            "opponent_native": result["per_player"][opponent_key]["native"],
+        }
+
     async def one(opponent_idx: int, opponent: Path, match_idx: int, deck_seed: int | None) -> dict[str, Any]:
         async with semaphore:
-            result = await run_native_tcp_pair(
+            bot_seed_base = _bot_seed(args, match_idx, opponent_idx)
+            forward = await run_native_tcp_pair(
                 candidate,
                 opponent,
                 int(args.hands),
                 require_native_a=True,
                 require_native_b=not args.allow_generated_opponent_entry,
                 deck_seed_base=deck_seed,
-                bot_seed_base=_bot_seed(args, match_idx, opponent_idx),
+                bot_seed_base=bot_seed_base,
                 timeout_sec=float(args.timeout_sec),
             )
-            bot_a = result["bot_a"]
-            bot_b = result["bot_b"]
+            forward_row = result_row(
+                forward,
+                opponent,
+                match_idx,
+                deck_seed,
+                candidate_is_a=True,
+                leg="forward",
+            )
+            if not args.paired:
+                return forward_row
+            swapped = await run_native_tcp_pair(
+                opponent,
+                candidate,
+                int(args.hands),
+                require_native_a=not args.allow_generated_opponent_entry,
+                require_native_b=True,
+                deck_seed_base=deck_seed,
+                bot_seed_base=bot_seed_base,
+                timeout_sec=float(args.timeout_sec),
+            )
+            swapped_row = result_row(
+                swapped,
+                opponent,
+                match_idx,
+                deck_seed,
+                candidate_is_a=False,
+                leg="swapped",
+            )
+            hands_played = int(forward_row["hands_played"]) + int(swapped_row["hands_played"])
+            net_chips = int(forward_row["net_chips"]) + int(swapped_row["net_chips"])
+            issues = (
+                [f"forward:{issue}" for issue in forward_row["issues"]]
+                + [f"swapped:{issue}" for issue in swapped_row["issues"]]
+            )
             return {
-                "candidate": bot_a,
-                "opponent": bot_b,
+                "candidate": forward_row["candidate"],
+                "opponent": forward_row["opponent"],
                 "opponent_path": str(opponent),
                 "match_idx": match_idx,
+                "leg": "paired",
                 "deck_seed_base": deck_seed,
-                "bot_seed_base": result.get("bot_seed_base"),
-                "hands_played": int(result["hands_played"]),
-                "net_chips": int(result["net_chips_a"]),
-                "net_chips_per_hand": result["net_chips_a_per_hand"],
-                "passed_compliance": bool(result["passed_compliance"]),
-                "issues": result["issues"],
-                "candidate_illegal": result["per_player"][bot_a]["illegal_actions"],
-                "candidate_timeouts": result["per_player"][bot_a]["timeouts"],
-                "opponent_illegal": result["per_player"][bot_b]["illegal_actions"],
-                "opponent_timeouts": result["per_player"][bot_b]["timeouts"],
-                "adapter_actions_candidate": result["per_player"][bot_a]["adapter"]["actions_sent"],
-                "adapter_actions_opponent": result["per_player"][bot_b]["adapter"]["actions_sent"],
-                "candidate_native": result["per_player"][bot_a]["native"],
-                "opponent_native": result["per_player"][bot_b]["native"],
+                "bot_seed_base": bot_seed_base,
+                "hands_played": hands_played,
+                "net_chips": net_chips,
+                "net_chips_per_hand": round(net_chips / max(1, hands_played), 3),
+                "passed_compliance": bool(forward_row["passed_compliance"] and swapped_row["passed_compliance"]),
+                "issues": issues,
+                "candidate_illegal": int(forward_row["candidate_illegal"]) + int(swapped_row["candidate_illegal"]),
+                "candidate_timeouts": int(forward_row["candidate_timeouts"]) + int(swapped_row["candidate_timeouts"]),
+                "opponent_illegal": int(forward_row["opponent_illegal"]) + int(swapped_row["opponent_illegal"]),
+                "opponent_timeouts": int(forward_row["opponent_timeouts"]) + int(swapped_row["opponent_timeouts"]),
+                "adapter_actions_candidate": int(forward_row["adapter_actions_candidate"]) + int(swapped_row["adapter_actions_candidate"]),
+                "adapter_actions_opponent": int(forward_row["adapter_actions_opponent"]) + int(swapped_row["adapter_actions_opponent"]),
+                "legs": [forward_row, swapped_row],
             }
 
     tasks = [
@@ -144,6 +216,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "hands_per_match": int(args.hands),
         "seeds": seed_values,
         "workers": int(args.workers),
+        "paired": bool(args.paired),
         "requires_native_opponents": not args.allow_generated_opponent_entry,
         "bot_seed_base": args.bot_seed_base,
         "elapsed_sec": round(time.time() - started, 3),
@@ -166,6 +239,7 @@ def main() -> int:
     parser.add_argument("--bot-seed-stride", type=int, default=10)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--timeout-sec", type=float, default=90.0)
+    parser.add_argument("--paired", action="store_true", help="For each seed, run candidate/opponent and opponent/candidate, then sum candidate net chips.")
     parser.add_argument("--allow-generated-opponent-entry", action="store_true", help="Allow template native entry for legacy opponents. Off by default.")
     parser.add_argument("--print-rows", action="store_true")
     parser.add_argument("--output", default="", help="Optional JSON output path.")

@@ -27,8 +27,12 @@ The native runner in `web/core/national_native.py` now also:
 - reorders connected clients by their name handshake so result ownership is
   `bot_a`/`bot_b`, not TCP connection race order;
 - disambiguates duplicate labels with `_A`/`_B` suffixes for local eval.
+- `tools/native_tcp_evaluate.py --paired` runs both candidate/opponent and
+  opponent/candidate on the same deck seed, then sums candidate net chips.
+  This is the preferred evidence for strength because it cancels most
+  seat/card-order noise.
 
-Current native TCP evidence:
+Current native TCP evidence, using paired reports where available:
 
 - `v076_v075_no_propose_native_tcp` is the repaired v075 fork on the old v254
   base. It disables the risky preflop fold-to-call proposal and fixes native
@@ -37,21 +41,27 @@ Current native TCP evidence:
   `-113888` chips over 700 hands, with 0 illegal actions, 0 timeouts, and
   0 adapter actions.
 - `v078_national_v17_neural_no_propose_tcp` moves the same conservative neural
-  layer onto the strong national v17 base. Against `bots/national_v17` and
-  `.evolution_pok/bots/national_v18`, the 100-match / 7000-hand report
-  `native_tcp_v078_vs_v17_v18_h70_m50...json` is `-54592` chips with full
-  compliance.
+  layer onto the strong national v17 base. The earlier non-paired report had
+  too much seat/card-order noise. The paired report
+  `native_tcp_paired_v078_vs_v17_v18_h70_m50...json` is `-2517` chips over
+  14000 hands against `national_v17` plus `national_v18`, with 0 illegal
+  actions, 0 timeouts, and 0 adapter actions.
 - `v079_national_v17_neural_off_control_tcp` is the matching v17-base neural
-  ablation. The same 7000-hand report is `-55634` chips. Therefore v078 is
-  `+1042` chips versus its direct control on this fixed native TCP benchmark
-  (`+0.149` chips/hand), with the gain mostly from the `.evolution_pok`
-  `national_v18` opponent.
+  ablation. The paired report on the same seed range is `-334` chips over
+  14000 hands. Therefore v078 is `-2183` chips versus its direct paired
+  control; the current old-data neural advice is not a valid strength path.
+- `v080_national_v18_neural_no_propose_tcp` repeats the same neural advice on
+  the national v18 base. The paired report
+  `native_tcp_paired_v080_vs_v17_v18_h70_m50...json` is `-61031` chips over
+  14000 hands. Its control `v081_national_v18_neural_off_control_tcp` is
+  `-31795`; v080 is `-29236` versus control, driven by a large regression
+  against `national_v17`.
 
-This is a small reproducible neural-integration signal, not a promotion-grade
-strength breakthrough. The next scale step should use paired seat/deck swaps
-and native TCP counterfactual/action-value data; do not keep tuning the old
-v254/Botzone-trained model as if it were already validated for national
-opponents.
+This is not a promotion-grade strength breakthrough. The current evidence says
+the old v254/Botzone-trained action advice does not transfer to native national
+opponents. The next scale step should collect paired native TCP
+counterfactual/action-value data and train a new gate or policy head from that
+data, instead of continuing threshold tweaks on the old model.
 
 ## Scale-Up Gate
 
