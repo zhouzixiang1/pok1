@@ -42,6 +42,9 @@
 - Anti-lock trash gate must be tournament-safe: hands_left>3, my_chips>15BB, low fold_to_raise before suppressing trash jams.
 
 ## RECENT_LESSONS
+- **v20**: Crossover operators must declare which source systems were intentionally dropped vs silently lost — v20 discarded v14's SPR commitment gate and polarized-jam call gate, which are the very systems producing v14's edge over v11/v13, making it impossible to attribute any future rating delta to the 0.41 threshold change.
+- **v20**: BB_CALL_THRESHOLD held at 0.37 from v4 through v18 while v14 still beat v11/v13, so the 0.41 mutation is a hypothesis test against the wrong variable; if v20 underperforms v6 vs v11/v13 on the live daemon, threshold tuning is falsified and the next generation should instrument v11/v13 open-range shapes via stderr telemetry rather than continue sweeping this constant.
+- **v20 归档建议**: Treat v20 as a hypothesis probe of the BB-defense preflop street vs v11/v13: if its live mirror WR clears v6's 44%/46% baseline, re-import v14's SPR commitment gate (preflop commitment heuristic) as the next isolated single-system change; if it does not, abandon BB_CALL_THRESHOLD tuning and profile v11/v13 opening ranges via stderr telemetry before touching constants again.
 - **v18**: Master MUST cite head_to_head.json verbatim before targeting a 'nemesis cluster' — fabricated H2H framings (e.g. v14 framed as v17 underdog when actual is 28W/17L dominant) lead to anti-targeted tuning; require the Master prompt to embed the actual win/loss counts and reject planning if the cited numbers don't match the file.
 - **v18**: Population/read-confidence carve-outs need a minimum-sample floor: confidence>=0.20 means n=4 hands where one early raise flips pfr to 0.25+, misfiring the NEMESIS_TIGHT_OPEN_PFR gate; future read-based carve-outs should require n>=5 and confidence>=0.40, and ship with a stderr-trigger-rate probe to confirm they fire >=5% of eligible spots.
 - **v18 归档建议**: If v10 (the only real underdog at 17W/23L) is the true target, profile v10 specifically across preflop bb_vs_raise spots to derive the +0.030 call-threshold shift from BB's conditional equity distribution vs v10's actual opening range, rather than averaging v10/v6/v14 into one contaminated 'tight-opponent cluster'.
@@ -54,5 +57,6 @@
 - **v295**: v294 leaks vs v287 at 0.40 WR (8W/12L/20g). Track v295 vs v287 over ≥30g paired net-chips; if WR stays <0.50, the fix is correct but UNDERSCOPED — widen the tier gate from 'thin' to include 'mid_weak' (middle_pair/underpair disciplined-barrel leaks) before tuning magnitude.
 - **v294**: v293 confirmed a tight-disciplined cluster leak (20-40% WR vs v286/v287/v291/v284/v269 over 5-15g each) — valid exploitative target, but the fix needs ≥30g vs each member before treating the leak as closed. Prioritize daemon saturation vs v286/v291/v287 (was 0g post-commit for v294).
 - **v294**: Axis-stacking risk at the middle-pair turn-continuation branch — future river-margin deltas must be gated against turn-continuation lines to avoid double-counting (cross-axis disagreement check per v287).
+
 
 
