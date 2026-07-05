@@ -696,6 +696,42 @@ not as a promoted strength improvement yet; the next promotion-quality step is
 more true runtime-divergence collection across opponents and larger
 multi-opponent paired validation.
 
+`v056_v254_cf_value_ensemble_p117_h8_h16_h32_m050_mm105` turns that repair into
+a small variance-aware runtime experiment. It copies v055, adds the h8, h16,
+and h32 p117 value heads, and changes only the value veto path: all three JSON
+MLPs are loaded at runtime and a neural action must pass both the ensemble mean
+threshold (`value_veto_mean_min=-0.5`) and the weakest-member floor
+(`value_veto_member_min=-1.05`). This follows the DeepStack/ReBeL/Deep-CFR
+lesson already noted above: trust compact neural value evidence only when it is
+robust across approximators, while still distilling back to stdlib-only JSON
+runtime artifacts.
+
+The first v056 checks preserved the v055 safety envelope. Targeted replay kept
+the `claude_v279` idx6 fix at zero delta and no divergence, preserved pair21 at
+zero, preserved pair48 at `+1727`, and kept the old idx3 regression seed at
+zero. The same four-opponent 8-pair validation window as v055 was also neutral:
+32 zero deltas across `claude_v279`, `claude_v283`, `claude_v284`, and
+`claude_v285`.
+
+A new multicore template prefilter at `seed_base=2026080100` is the first
+non-neutral v056 window. Over 48 paired seeds per opponent and four strong
+opponents, 16 process workers scanned 192 pair/opponent tasks and found four
+template hits, all against `claude_v279` (hit rate 2.08 percent). Active labels
+for idx10, idx18, idx29, and idx36 across all four opponents showed that only
+`claude_v279` changed: `+10`, `+4166`, `+6590`, and `-50`, for 3 positive and
+1 negative v279 deltas. The cross-opponent replays for the same indexes were
+all zero against `claude_v283`, `claude_v284`, and `claude_v285`.
+
+The full 48-pair common-deck evaluation against `claude_v279` on the same seed
+range confirmed the prefilter signal without proving promotion strength:
+`+111.63` chips per 70 hands with CI `[-46.04, 269.29]`. This is the first
+v056 window with a meaningful positive mean after the previous all-zero smoke,
+but the interval still crosses zero and the effect is concentrated in one
+opponent family. The next useful step is to harvest more v279-like positive
+windows, label nearby neighborhoods around idx18/idx29, and then test whether
+those value patterns survive larger multi-opponent validation rather than
+raising thresholds blindly.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass
