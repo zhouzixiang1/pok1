@@ -512,6 +512,7 @@ def test_runtime_guard_allows_unrelated_inplace_dirty_entries(monkeypatch):
         "head": "abc123",
         "entries": [
             " M docs/notes.md",
+            " M sever/国赛平台/通信协议.docx",
             "?? bots/neural_national_lab/data/run.jsonl",
             "?? bots/claude_v300/",
         ],
@@ -525,8 +526,9 @@ def test_runtime_guard_allows_unrelated_inplace_dirty_entries(monkeypatch):
     )
 
     assert ok is True
-    assert payload["ignored_count"] == 2
+    assert payload["ignored_count"] == 3
     assert " M docs/notes.md" in payload["ignored_entries"]
+    assert " M sever/国赛平台/通信协议.docx" in payload["ignored_entries"]
 
 
 def test_runtime_guard_blocks_foreign_claude_bot_dir(monkeypatch):
@@ -682,6 +684,8 @@ def test_evaluation_contract_classifies_dynamic_bot_versions():
             "bots/claude_v299/main.py",
             "bots/claude_v45/main.py",
             "bots/neural_national_lab/data/run.json",
+            "sever/server/tcp_server.py",
+            "sever/国赛平台/通信协议.docx",
             "docs/notes.md",
         ],
         contract,
@@ -691,8 +695,40 @@ def test_evaluation_contract_classifies_dynamic_bot_versions():
     assert "bots/claude_v300/main.py" in scope["contract_paths"]
     assert "bots/claude_v299/main.py" in scope["contract_paths"]
     assert "bots/claude_v45/main.py" in scope["contract_paths"]
+    assert "sever/server/tcp_server.py" in scope["contract_paths"]
+    assert "sever/国赛平台/通信协议.docx" in scope["external_paths"]
     assert "bots/neural_national_lab/data/run.json" in scope["external_paths"]
     assert "docs/notes.md" in scope["external_paths"]
+
+
+def test_evaluation_contract_hash_ignores_non_contract_national_docs(tmp_path, monkeypatch):
+    import evaluation_contract
+
+    server_file = tmp_path / "sever" / "server" / "tcp_server.py"
+    docs_file = tmp_path / "sever" / "国赛平台" / "通信协议.docx"
+    server_file.parent.mkdir(parents=True)
+    docs_file.parent.mkdir(parents=True)
+    server_file.write_text("server-v1\n", encoding="utf-8")
+    docs_file.write_text("doc-v1\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        evaluation_contract,
+        "_git_ls_files",
+        lambda _root, _pathspecs: [
+            "sever/server/tcp_server.py",
+            "sever/国赛平台/通信协议.docx",
+        ],
+    )
+    contract = evaluation_contract.build_evaluation_contract(tmp_path)
+
+    before = evaluation_contract.evaluation_contract_hash(tmp_path, contract)
+    docs_file.write_text("doc-v2\n", encoding="utf-8")
+    after_doc_change = evaluation_contract.evaluation_contract_hash(tmp_path, contract)
+    server_file.write_text("server-v2\n", encoding="utf-8")
+    after_server_change = evaluation_contract.evaluation_contract_hash(tmp_path, contract)
+
+    assert after_doc_change == before
+    assert after_server_change != before
 
 
 def test_runtime_guard_uses_persisted_checkpoint_baseline_after_restart(monkeypatch):
