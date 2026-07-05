@@ -39,6 +39,9 @@
 - Anti-lock trash gate must be tournament-safe: hands_left>3, my_chips>15BB, low fold_to_raise before suppressing trash jams.
 
 ## RECENT_LESSONS
+- **v293**: POLARIZED_JAM_CALL_OVERRIDE fire-rate validation: at ≥30g vs polarized-jam opponents (v45/v288/v285 lineage), if stderr fire-rate <1% the texture predicate is too narrow and the gate is inert; if <5% reconsider the spr_commitment trigger conditions.
+- **v293**: Before adding opponent_model-aware gating as the next escalation, the fold_to_jam_rate tracking field must be added first — it is currently ABSENT per critic line 21, so any gate depending on it will silently no-op.
+- **v293 归档建议**: If v293 vs v45/v288 still shows <45% wr at ≥30 games, escalate by adding per-opponent fold_to_jam_rate tracking in opponent_model (currently absent) so the polarized_jam_call_gate can distinguish bluff-heavy from value-heavy jamming on turn/river rather than relying solely on raw monte_carlo win_rate.
 - **v292**: Before treating a wiring-fix generation as a strength gain, require ≥30 games vs v286/v288 AND confirm SPR_COMMITMENT_PROBE fires with label=tptk_polarized_jam at ≥5% — if probe fires <1% or downstream fold gates (_marginal_made_river_fold_gate siblings) never rescue, the gate is correct but inert and the next step is an inline polarized-jam call/fold decision rather than reliance on downstream gates.
 - **v292**: Master prompt should cite H2H numbers verbatim from head_to_head.json — v291 vs v286 is 0.36 not 0.30; experience_pool.md line 36 already flags inline H2H fabrication as 4x-recurrent.
 - **v292 归档建议**: After ≥30 v292-vs-v286/v288 games land, verify the tptk_polarized_jam axis is actually rescuing folds on monotone/4-flush/4-straight-window boards (was v291's specific failure mode vs v286); if fold-rate on polarized shoves doesn't rise, escalate from downstream-gate reliance to an explicit inline TPTK-vs-polarized-jam call/fold branch in postflop.py.
@@ -47,4 +50,5 @@
 - **v291 归档建议**: Next: forward board_texture=board_texture into spr_commitment_gate at strategy.py:1300 (gate on flush_pressure>=1.0 OR straight_pressure>=1.0 with factor 3, not 'dynamic' at 2.5) so dynamic TPTK tightening fires vs v286/v288.
 - **v290**: SPR commitment thresholds are a structurally new turn/river axis DISTINCT from the three CLOSED fold-side directions — treat TPTK/overpair/two_pair commitment gating as an open tuning surface.
 - **v290 归档建议**: If v290 loses to polarized jammers, add opponent_model.fold_to_jam_rate gating on the TPTK threshold (drop 4→3 when flush_pressure>=1.0 OR straight_pressure>=1.0) rather than weakening baseline commitment.
+
 
