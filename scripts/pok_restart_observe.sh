@@ -238,6 +238,15 @@ from observe_policy import is_expected_event, is_fatal_event, should_alert
 success_terminal = {
     "pipeline.archivist_done",
 }
+post_commit_activity = {
+    "pipeline.git_commit_done",
+    "pipeline.committed",
+    "pipeline.checkpoint_cleared",
+    "pipeline.commit_done",
+    "pipeline.archivist_git_commit_staged",
+    "pipeline.archivist_git_commit_done",
+    "pipeline.archivist_done",
+}
 failure_terminal = {
     "pipeline.abandoned",
     "pipeline.master_exhausted",
@@ -279,6 +288,12 @@ stage_transitions = []
 last_stage_key = None
 checkpoint_missing_since = None
 selected_generation_key = None
+post_commit_pending_key = None
+post_commit_pending_since = None
+post_commit_last_activity = 0.0
+post_commit_gap_notice_key = None
+post_commit_terminal_limit = 1800
+post_commit_inactive_limit = 600
 quiet_period_sec = 60
 last_event_activity = 0.0
 
@@ -298,6 +313,21 @@ def is_pipeline_activity_event(event):
             "pipeline.verified",
         }
     )
+
+def event_ts(event):
+    try:
+        return float(event.get("ts") or time.time())
+    except Exception:
+        return time.time()
+
+def is_archivist_llm_event(event):
+    etype = event.get("type") or ""
+    if not etype.startswith("pipeline.llm_role_"):
+        return False
+    data = event.get("data") or {}
+    role = str(data.get("role") or "").upper()
+    role_log = str(data.get("role_log") or "").lower()
+    return "ARCHIVIST" in role or role_log == "archivist"
 
 def write_line(msg):
     print(msg)
@@ -385,7 +415,8 @@ def pipeline_snapshot():
     return {key: state.get(key) for key in keys if key in state}
 
 def check_service(force_heartbeat=False):
-    global last_service_check, last_heartbeat, http_fail_count, first_http_fail, last_stage_key, checkpoint_missing_since
+    global last_service_check, last_heartbeat, http_fail_count, first_http_fail, last_stage_key
+    global checkpoint_missing_since, post_commit_gap_notice_key
     now = time.time()
     if now - last_service_check < service_check_interval and not force_heartbeat:
         return
@@ -452,12 +483,34 @@ def check_service(force_heartbeat=False):
         write_line(f"[service-heartbeat] {snapshot}")
     pipeline = (health.get("pipeline") or snapshot.get("pipeline") or {})
     if selected_generation_key and not pipeline.get("exists") and health.get("running"):
-        checkpoint_missing_since = checkpoint_missing_since or now
-        missing_age = now - checkpoint_missing_since
-        if missing_age > 120:
-            write_line(f"[checkpoint-missing] pipeline checkpoint missing for {missing_age:.0f}s after {selected_generation_key} was selected: {snapshot}")
-            write_compact_summary("checkpoint_missing")
-            raise SystemExit(1)
+        if post_commit_pending_key == selected_generation_key:
+            checkpoint_missing_since = None
+            pending_since = post_commit_pending_since or now
+            last_activity = post_commit_last_activity or pending_since
+            pending_age = now - pending_since
+            inactive_age = now - last_activity
+            if post_commit_gap_notice_key != selected_generation_key:
+                post_commit_gap_notice_key = selected_generation_key
+                write_line(
+                    f"[post-commit-checkpoint-gap] checkpoint cleared after {selected_generation_key} commit; "
+                    f"waiting for archivist terminal event (pending_age={pending_age:.0f}s, "
+                    f"inactive_age={inactive_age:.0f}s): {snapshot}"
+                )
+            if pending_age > post_commit_terminal_limit or inactive_age > post_commit_inactive_limit:
+                write_line(
+                    f"[post-commit-terminal-stale] no archivist terminal for {selected_generation_key} "
+                    f"after checkpoint clear (pending_age={pending_age:.0f}s/{post_commit_terminal_limit}s, "
+                    f"inactive_age={inactive_age:.0f}s/{post_commit_inactive_limit}s): {snapshot}"
+                )
+                write_compact_summary("post_commit_terminal_stale")
+                raise SystemExit(1)
+        else:
+            checkpoint_missing_since = checkpoint_missing_since or now
+            missing_age = now - checkpoint_missing_since
+            if missing_age > 120:
+                write_line(f"[checkpoint-missing] pipeline checkpoint missing for {missing_age:.0f}s after {selected_generation_key} was selected: {snapshot}")
+                write_compact_summary("checkpoint_missing")
+                raise SystemExit(1)
     else:
         checkpoint_missing_since = None
     stage = pipeline.get("stage")
@@ -509,6 +562,7 @@ def generation_key(event):
 
 def process_new_events(count_success=True):
     global pos, seen, selected_generation_key, checkpoint_missing_since, last_event_activity
+    global post_commit_pending_key, post_commit_pending_since, post_commit_last_activity, post_commit_gap_notice_key
     processed = False
     if not events_file.exists():
         return processed
@@ -533,6 +587,19 @@ def process_new_events(count_success=True):
             if etype == "pipeline.generation_selected":
                 selected_generation_key = generation_key(event)
                 checkpoint_missing_since = None
+                post_commit_pending_key = None
+                post_commit_pending_since = None
+                post_commit_last_activity = 0.0
+                post_commit_gap_notice_key = None
+            event_key = generation_key(event)
+            if selected_generation_key and event_key == selected_generation_key:
+                if etype in post_commit_activity or is_archivist_llm_event(event):
+                    ts = event_ts(event)
+                    if post_commit_pending_key != selected_generation_key:
+                        post_commit_pending_key = selected_generation_key
+                        post_commit_pending_since = ts
+                    post_commit_last_activity = max(post_commit_last_activity, ts)
+                    checkpoint_missing_since = None
             if should_alert(event):
                 msg = f"[alert] {etype} {event.get('message')} data={event.get('data', {})}"
                 alert_records.append({
@@ -554,9 +621,13 @@ def process_new_events(count_success=True):
                 write_compact_summary("failure_terminal")
                 raise SystemExit(1)
             if count_success and etype in success_terminal:
-                key = generation_key(event)
+                key = event_key
                 selected_generation_key = None
                 checkpoint_missing_since = None
+                post_commit_pending_key = None
+                post_commit_pending_since = None
+                post_commit_last_activity = 0.0
+                post_commit_gap_notice_key = None
                 if key in seen_generations:
                     msg = f"[observe] duplicate success terminal for {key}: {etype} {event.get('message')}"
                     write_line(msg)
