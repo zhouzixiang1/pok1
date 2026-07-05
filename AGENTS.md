@@ -88,7 +88,7 @@ The two checkouts must be synchronized through `origin/main`; never copy files b
 
 Before starting work, update remote state. In a clean checkout on the branch you will edit, run `git pull --ff-only --tags`; if the checkout is dirty, on a user branch, or cannot be fast-forwarded safely, run `git fetch --tags origin` and create a temporary worktree from the updated `origin/main` instead of working from a stale local HEAD.
 
-Do not switch branches, reset, or directly develop infrastructure inside `.evolution_pok` while a generation is running. If an incoming change touches `engine/`, `sever/`, `web/core/`, `web/tests/`, `web/main.py`, or the active candidate/source/opponent bot versions, stop/restart evolution from the new baseline instead of relying on automatic reconciliation. Contract-neutral changes such as docs may be reconciled by the existing `evaluation_contract`/`publish_reconcile` guard.
+Do not switch branches, reset, or directly develop infrastructure inside `.evolution_pok` while a generation is running. Do not use broad directory names such as `engine/`, `sever/`, `web/core/`, or `web/tests/` as automatic stop conditions. The stop/restart decision is owned by the active exact-file contract built in `web/core/evaluation_contract.py`: only changes to files in the current stage contract, or to active candidate/source/parent/opponent bot versions, require restarting from a new baseline. Contract-neutral changes such as docs, frontend, observability, launchers, or unrelated experiment files may be reconciled by the existing `evaluation_contract`/`publish_reconcile` guard.
 
 If stale unfinished bot directories appear in the outer checkout, treat them as
 operator checkout debris unless they have both a committed bot directory and the

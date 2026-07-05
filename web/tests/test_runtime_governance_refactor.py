@@ -1079,7 +1079,7 @@ def test_evaluation_contract_uses_stage_scoped_post_worker_contract(monkeypatch)
     ]
 
 
-def test_evaluation_contract_tracks_generation_files_for_repair_stage(monkeypatch):
+def test_evaluation_contract_tracks_worker_files_for_repair_stage(monkeypatch):
     import evaluation_contract
 
     changed_paths = [
@@ -1103,8 +1103,46 @@ def test_evaluation_contract_tracks_generation_files_for_repair_stage(monkeypatc
 
     assert allowed is False
     assert payload["evaluation_contract"]["stage"] == "precommit_failed"
-    assert payload["head_contract_paths"] == sorted(changed_paths)
-    assert payload["head_external_paths"] == []
+    assert payload["head_contract_paths"] == ["web/core/prompts/worker_prompt.md"]
+    assert payload["head_external_paths"] == ["web/core/agent_master.py"]
+
+
+def test_evaluation_contract_uses_stage_specific_worker_contract(monkeypatch):
+    import evaluation_contract
+
+    changed_paths = [
+        "web/core/agent_master.py",
+        "web/core/agent_workers.py",
+        "web/core/eval_stats.py",
+        "web/core/prompts/master_prompt.md",
+        "web/core/prompts/worker_prompt.md",
+    ]
+    monkeypatch.setattr(
+        evaluation_contract,
+        "changed_paths_between_heads",
+        lambda *_args, **_kwargs: list(changed_paths),
+    )
+
+    allowed, payload = evaluation_contract.evaluate_head_drift(
+        Path.cwd(),
+        "old123",
+        "new456",
+        candidate_v=300,
+        source_v=299,
+        checkpoint={"stage": "master_planned", "next_v": 300, "source_v": 299},
+    )
+
+    assert allowed is False
+    assert payload["evaluation_contract"]["stage"] == "master_planned"
+    assert payload["head_contract_paths"] == [
+        "web/core/agent_workers.py",
+        "web/core/eval_stats.py",
+        "web/core/prompts/worker_prompt.md",
+    ]
+    assert payload["head_external_paths"] == [
+        "web/core/agent_master.py",
+        "web/core/prompts/master_prompt.md",
+    ]
 
 
 def test_evaluation_contract_always_tracks_guard_files_after_workers(monkeypatch):
