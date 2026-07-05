@@ -1184,48 +1184,158 @@ def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
     if len(ranked) < 2:
         return None
 
-    parent_a = ranked[0]
     try:
-        va = int(parent_a.split("_v")[1])
-    except (ValueError, IndexError):
+        from crossover_compat import is_crossover_pair_blocked
+    except Exception:
+        def is_crossover_pair_blocked(_parent_a, _parent_b):
+            return False
+
+    skipped_blocked_pairs = []
+    skipped_seen = set()
+
+    def _bot_version(name):
+        return parse_bot_version(name)
+
+    def _pair_blocked(bot_a, bot_b):
+        va_local = _bot_version(bot_a)
+        vb_local = _bot_version(bot_b)
+        if va_local is None or vb_local is None:
+            return False
+        try:
+            blocked = is_crossover_pair_blocked(va_local, vb_local)
+        except Exception:
+            blocked = False
+        if blocked:
+            key = tuple(sorted((va_local, vb_local)))
+            if key not in skipped_seen:
+                skipped_seen.add(key)
+                skipped_blocked_pairs.append({"parent_a": va_local, "parent_b": vb_local})
+        return blocked
+
+    def _select_parent_b(parent_a_name, *, require_gap=False, require_niche=False):
+        va_local = _bot_version(parent_a_name)
+        if va_local is None:
+            return None
+        parent_a_niche = _niche(parent_a_name) if require_niche else None
+        if require_niche and parent_a_niche is None:
+            return None
+        for candidate in ranked:
+            if candidate == parent_a_name:
+                continue
+            vc = _bot_version(candidate)
+            if vc is None:
+                continue
+            if require_gap and abs(vc - va_local) < 3:
+                continue
+            if require_niche:
+                cand_niche = _niche(candidate)
+                if cand_niche is None or cand_niche == parent_a_niche:
+                    continue
+            if _pair_blocked(parent_a_name, candidate):
+                continue
+            return candidate
         return None
 
-    # Prefer niche-diverse parent_b if MAP-Elites/fingerprint archive is available.
+    parent_a = None
     parent_b = None
+    va = None
+    vb = None
+
+    selection_modes = []
     if archive:
-        parent_a_niche = _niche(parent_a)
-        if parent_a_niche is not None:
-            niche_candidates = []
-            for candidate in ranked[1:]:
-                try:
-                    vc = int(candidate.split("_v")[1])
-                except (ValueError, IndexError):
-                    continue
-                if abs(vc - va) < 3:
-                    continue
-                cand_niche = _niche(candidate)
-                if cand_niche is not None and cand_niche != parent_a_niche:
-                    niche_candidates.append(candidate)
-            if niche_candidates:
-                parent_b = niche_candidates[0]
-
-    # Original logic: find diverse parent B with version gap >= 3
-    if parent_b is None:
-        for candidate in ranked[1:]:
-            try:
-                vc = int(candidate.split("_v")[1])
-            except (ValueError, IndexError):
+        selection_modes.append({"require_gap": True, "require_niche": True})
+    for mode in selection_modes:
+        for candidate_a in ranked:
+            candidate_b = _select_parent_b(candidate_a, **mode)
+            if candidate_b is None:
                 continue
-            if abs(vc - va) >= 3:
-                parent_b = candidate
-                break
+            candidate_va = _bot_version(candidate_a)
+            candidate_vb = _bot_version(candidate_b)
+            if candidate_va is None or candidate_vb is None:
+                continue
+            parent_a = candidate_a
+            parent_b = candidate_b
+            va = candidate_va
+            vb = candidate_vb
+            break
+        if parent_a is not None:
+            break
 
-    # Fallback: second highest if no gap candidate
-    if parent_b is None:
-        parent_b = ranked[1]
+    deferred_adjacent_fallback = []
+    if parent_a is None:
+        for candidate_a in ranked:
+            skipped_before = len(skipped_seen)
+            candidate_b = _select_parent_b(
+                candidate_a,
+                require_gap=True,
+                require_niche=False,
+            )
+            if candidate_b is not None:
+                candidate_va = _bot_version(candidate_a)
+                candidate_vb = _bot_version(candidate_b)
+                if candidate_va is not None and candidate_vb is not None:
+                    parent_a = candidate_a
+                    parent_b = candidate_b
+                    va = candidate_va
+                    vb = candidate_vb
+                    break
+
+            # Preserve the historical "strongest parent A" fallback when it has
+            # no gap candidate at all, but defer adjacent fallback if a gap
+            # candidate existed and was rejected as structurally incompatible.
+            if len(skipped_seen) > skipped_before:
+                deferred_adjacent_fallback.append(candidate_a)
+                continue
+
+            candidate_b = _select_parent_b(
+                candidate_a,
+                require_gap=False,
+                require_niche=False,
+            )
+            if candidate_b is None:
+                continue
+            candidate_va = _bot_version(candidate_a)
+            candidate_vb = _bot_version(candidate_b)
+            if candidate_va is None or candidate_vb is None:
+                continue
+            parent_a = candidate_a
+            parent_b = candidate_b
+            va = candidate_va
+            vb = candidate_vb
+            break
+
+    if parent_a is None:
+        for candidate_a in deferred_adjacent_fallback:
+            candidate_b = _select_parent_b(
+                candidate_a,
+                require_gap=False,
+                require_niche=False,
+            )
+            if candidate_b is None:
+                continue
+            candidate_va = _bot_version(candidate_a)
+            candidate_vb = _bot_version(candidate_b)
+            if candidate_va is None or candidate_vb is None:
+                continue
+            parent_a = candidate_a
+            parent_b = candidate_b
+            va = candidate_va
+            vb = candidate_vb
+            break
+
+    if parent_a is None or parent_b is None or va is None or vb is None:
+        try:
+            log_system_event(
+                "pipeline.crossover_parent_selection_exhausted",
+                "warn",
+                "No crossover parent pair available after skipping incompatible pairs",
+                {"blocked_pairs_skipped": skipped_blocked_pairs[:20]},
+            )
+        except Exception:
+            pass
+        return None
 
     try:
-        vb = int(parent_b.split("_v")[1])
         try:
             event = {
                 "parent_a": parent_a,
@@ -1241,6 +1351,7 @@ def _pick_crossover_parents(ratings, current_v, archive=None) -> tuple | None:
                 "parent_a_elite": map_elites.get(parent_a, {}),
                 "parent_b_elite": map_elites.get(parent_b, {}),
                 "archive_source": "map_elites" if map_niches else ("fingerprints" if legacy_niches else "none"),
+                "blocked_pairs_skipped": skipped_blocked_pairs[:20],
             }
             log_system_event(
                 "pipeline.crossover_parent_selection",

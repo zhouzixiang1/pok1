@@ -76,6 +76,7 @@ CRITICAL_GENERATION_EXACT = frozenset({
     "web/core/bot_action_stats.py",
     "web/core/bot_namespace.py",
     "web/core/combined_analyst.py",
+    "web/core/crossover_compat.py",
     "web/core/direction_auditor.py",
     "web/core/evidence_snapshot.py",
     "web/core/evaluation_contract.py",

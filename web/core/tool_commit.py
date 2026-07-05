@@ -899,11 +899,59 @@ async def run_crossover(args):
                              f"Parents v{parent_a}×v{parent_b} may be incompatible: {compat.get('conflict_areas', [])[:3]}",
                              {"parent_a": parent_a, "parent_b": parent_b, "compat": compat})
             if compat.get("compatibility_score", 10) <= 3:
+                try:
+                    from crossover_compat import record_incompatible_crossover
+                    incompat_record = record_incompatible_crossover(
+                        parent_a,
+                        parent_b,
+                        target_v=target_v,
+                        compatibility=compat,
+                    )
+                except Exception as record_exc:
+                    incompat_record = {"record_error": f"{type(record_exc).__name__}: {record_exc}"}
+                    _log.warning("Failed to record incompatible crossover pair: %s", record_exc)
+
+                try:
+                    from tool_bot_management import _do_abandon_generation
+                    abandon_result = await _do_abandon_generation(
+                        reason=f"crossover_incompatible:v{parent_a}xv{parent_b}"
+                    )
+                except Exception as abandon_exc:
+                    abandon_result = {
+                        "abandoned": False,
+                        "reason": f"{type(abandon_exc).__name__}: {abandon_exc}",
+                    }
+                    _log.warning("Failed to abandon incompatible crossover generation: %s", abandon_exc)
+
+                log_system_event(
+                    "pipeline.crossover_incompatible_abandoned",
+                    "warn" if abandon_result.get("abandoned") else "error",
+                    f"Crossover v{parent_a}×v{parent_b} rejected as incompatible for v{target_v}",
+                    {
+                        "target_v": target_v,
+                        "parent_a": parent_a,
+                        "parent_b": parent_b,
+                        "compat": compat,
+                        "incompat_record": incompat_record,
+                        "abandon_result": abandon_result,
+                    },
+                )
                 return _json_tool_result({
-                    "error": f"Parents v{parent_a} and v{parent_b} are fundamentally incompatible (score={compat.get('compatibility_score')}). "
-                             f"Conflicts: {', '.join(compat.get('conflict_areas', [])[:3])}. "
-                             f"Suggestion: {compat.get('suggested_merge_approach', 'Select different parents.')}",
+                    "error": "CROSSOVER_INCOMPATIBLE",
+                    "success": False,
+                    "abandoned": bool(abandon_result.get("abandoned")),
+                    "directive": (
+                        f"Parents v{parent_a} and v{parent_b} are fundamentally incompatible "
+                        f"(score={compat.get('compatibility_score')}). This pair has been recorded "
+                        "and the generation was abandoned; let prepare_generation select a fresh "
+                        "generation and avoid this pair."
+                    ),
+                    "message": f"Parents v{parent_a} and v{parent_b} are fundamentally incompatible.",
+                    "conflicts": compat.get("conflict_areas", [])[:8],
+                    "suggestion": compat.get("suggested_merge_approach", "Select different parents."),
                     "compatibility": compat,
+                    "incompat_record": incompat_record,
+                    "abandon_result": abandon_result,
                 })
     except Exception as e:
         _log.warning("Crossover compat audit error (skipping): %s", e)
