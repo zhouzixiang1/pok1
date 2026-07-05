@@ -114,6 +114,18 @@ Practical takeaways for this repo:
   validates the loss and metric contract, but it does not solve coverage. The
   p088 active target set is still fold-heavy, and h16/h32 validation remains a
   data-acquisition warning rather than promotion evidence.
+- Active row filtering is the right next sampling primitive. The p045
+  five-opponent active set flips the target mix from fold-heavy diagnostics to
+  mostly positive noallin raise targets, and a conservative v060 runtime gate
+  produced no negative paired smoke samples. The signal is still too sparse and
+  statistically weak, so scale paired volume and active row count before adding
+  a larger model or broader labels.
+- A p045 multi-action value head is too noisy to act as a hard support gate by
+  itself. v060 blocked both a valuable high-interaction v288 raise and a
+  harmful lower-interaction v279 raise with very similar value scores. v061's
+  interaction override fixed the large v288 regression while keeping the v279
+  benefit, but g016x5 remained sparse and not significant. Future active data
+  should target those low-interaction veto cases directly.
 - Build a lightweight actor-learner loop before reaching for Ray: actor workers
   scan divergence windows, enumerate abstract legal actions, run
   counterfactual branches, and append reservoir-style JSONL shards; the learner

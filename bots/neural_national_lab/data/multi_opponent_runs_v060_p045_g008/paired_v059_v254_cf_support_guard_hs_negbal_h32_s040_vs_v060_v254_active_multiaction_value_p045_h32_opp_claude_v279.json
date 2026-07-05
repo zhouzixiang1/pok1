@@ -1,0 +1,450 @@
+{
+  "mode": "common_deck_mirror_pair",
+  "games": 8,
+  "workers": 8,
+  "seed_base": 2026082000,
+  "seed_offset": 0,
+  "seed_stride": 1,
+  "bot_seed_base": 202650200000,
+  "bot_seed_stride": 10000,
+  "max_hands": 70,
+  "baseline_label": "v059_v254_cf_support_guard_hs_negbal_h32_s040",
+  "entries": {
+    "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+      "path": "bots/neural_national_lab/versions/v059_v254_cf_support_guard_hs_negbal_h32_s040/main.py",
+      "opponent": "bots/claude_v279/main.py"
+    },
+    "v060_v254_active_multiaction_value_p045_h32": {
+      "path": "bots/neural_national_lab/versions/v060_v254_active_multiaction_value_p045_h32/main.py",
+      "opponent": "bots/claude_v279/main.py"
+    }
+  },
+  "pairs": [
+    {
+      "idx": 0,
+      "seed": 2026082000,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202650200000,
+          202650200001
+        ],
+        "mirror": [
+          202650210000,
+          202650210001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": -5079.0,
+        "v060_v254_active_multiaction_value_p045_h32": -5079.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -10070.0,
+          "bot1_chips": 10070.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -10070.0,
+          "bot1_chips": 10070.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 0,
+          "bot0_chips": 4991.0,
+          "bot1_chips": -4991.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 4991.0,
+          "bot1_chips": -4991.0
+        }
+      }
+    },
+    {
+      "idx": 1,
+      "seed": 2026082001,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202650220000,
+          202650220001
+        ],
+        "mirror": [
+          202650230000,
+          202650230001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": 3710.0,
+        "v060_v254_active_multiaction_value_p045_h32": 21536.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 0,
+          "bot0_chips": 2082.0,
+          "bot1_chips": -2082.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 19908.0,
+          "bot1_chips": -19908.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 0,
+          "bot0_chips": 1628.0,
+          "bot1_chips": -1628.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 1628.0,
+          "bot1_chips": -1628.0
+        }
+      }
+    },
+    {
+      "idx": 2,
+      "seed": 2026082002,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202650240000,
+          202650240001
+        ],
+        "mirror": [
+          202650250000,
+          202650250001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": -10543.0,
+        "v060_v254_active_multiaction_value_p045_h32": -10543.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -19.0,
+          "bot1_chips": 19.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -19.0,
+          "bot1_chips": 19.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -10524.0,
+          "bot1_chips": 10524.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -10524.0,
+          "bot1_chips": 10524.0
+        }
+      }
+    },
+    {
+      "idx": 3,
+      "seed": 2026082003,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202650260000,
+          202650260001
+        ],
+        "mirror": [
+          202650270000,
+          202650270001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": -1106.0,
+        "v060_v254_active_multiaction_value_p045_h32": -1106.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -860.0,
+          "bot1_chips": 860.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -860.0,
+          "bot1_chips": 860.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -246.0,
+          "bot1_chips": 246.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -246.0,
+          "bot1_chips": 246.0
+        }
+      }
+    },
+    {
+      "idx": 4,
+      "seed": 2026082004,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202650280000,
+          202650280001
+        ],
+        "mirror": [
+          202650290000,
+          202650290001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": 3741.0,
+        "v060_v254_active_multiaction_value_p045_h32": 3741.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 0,
+          "bot0_chips": 12.0,
+          "bot1_chips": -12.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 12.0,
+          "bot1_chips": -12.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 0,
+          "bot0_chips": 3729.0,
+          "bot1_chips": -3729.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 3729.0,
+          "bot1_chips": -3729.0
+        }
+      }
+    },
+    {
+      "idx": 5,
+      "seed": 2026082005,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202650300000,
+          202650300001
+        ],
+        "mirror": [
+          202650310000,
+          202650310001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": 18.0,
+        "v060_v254_active_multiaction_value_p045_h32": 18.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -120.0,
+          "bot1_chips": 120.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -120.0,
+          "bot1_chips": 120.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 0,
+          "bot0_chips": 138.0,
+          "bot1_chips": -138.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 138.0,
+          "bot1_chips": -138.0
+        }
+      }
+    },
+    {
+      "idx": 6,
+      "seed": 2026082006,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202650320000,
+          202650320001
+        ],
+        "mirror": [
+          202650330000,
+          202650330001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": -1827.0,
+        "v060_v254_active_multiaction_value_p045_h32": -1827.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -1807.0,
+          "bot1_chips": 1807.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -1807.0,
+          "bot1_chips": 1807.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -20.0,
+          "bot1_chips": 20.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -20.0,
+          "bot1_chips": 20.0
+        }
+      }
+    },
+    {
+      "idx": 7,
+      "seed": 2026082007,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202650340000,
+          202650340001
+        ],
+        "mirror": [
+          202650350000,
+          202650350001
+        ]
+      },
+      "net_chips": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": -13982.0,
+        "v060_v254_active_multiaction_value_p045_h32": -13982.0
+      },
+      "normal": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 0,
+          "bot0_chips": 5517.0,
+          "bot1_chips": -5517.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 0,
+          "bot0_chips": 5517.0,
+          "bot1_chips": -5517.0
+        }
+      },
+      "mirror": {
+        "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+          "winner": 1,
+          "bot0_chips": -19499.0,
+          "bot1_chips": 19499.0
+        },
+        "v060_v254_active_multiaction_value_p045_h32": {
+          "winner": 1,
+          "bot0_chips": -19499.0,
+          "bot1_chips": 19499.0
+        }
+      }
+    }
+  ],
+  "results": {
+    "v059_v254_cf_support_guard_hs_negbal_h32_s040": {
+      "path": "bots/neural_national_lab/versions/v059_v254_cf_support_guard_hs_negbal_h32_s040/main.py",
+      "opponent": "bots/claude_v279/main.py",
+      "net_chips": [
+        -5079.0,
+        3710.0,
+        -10543.0,
+        -1106.0,
+        3741.0,
+        18.0,
+        -1827.0,
+        -13982.0
+      ],
+      "samples": 8,
+      "mean_net": -3133.5,
+      "median_net": -1466.5,
+      "stddev_net": 6394.38934870697,
+      "stderr_net": 2260.7580350088647,
+      "ci95_low": -7564.5857486173745,
+      "ci95_high": 1297.5857486173745,
+      "mean_per_70_hands": -1566.75,
+      "ci95_low_per_70_hands": -3782.2928743086873,
+      "ci95_high_per_70_hands": 648.7928743086873,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    },
+    "v060_v254_active_multiaction_value_p045_h32": {
+      "path": "bots/neural_national_lab/versions/v060_v254_active_multiaction_value_p045_h32/main.py",
+      "opponent": "bots/claude_v279/main.py",
+      "net_chips": [
+        -5079.0,
+        21536.0,
+        -10543.0,
+        -1106.0,
+        3741.0,
+        18.0,
+        -1827.0,
+        -13982.0
+      ],
+      "samples": 8,
+      "mean_net": -905.25,
+      "median_net": -1466.5,
+      "stddev_net": 10745.414035099546,
+      "stderr_net": 3799.0775654379954,
+      "ci95_low": -8351.44202825847,
+      "ci95_high": 6540.942028258471,
+      "mean_per_70_hands": -452.625,
+      "ci95_low_per_70_hands": -4175.721014129235,
+      "ci95_high_per_70_hands": 3270.4710141292353,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  },
+  "paired_vs_baseline": {
+    "v060_v254_active_multiaction_value_p045_h32": {
+      "baseline": "v059_v254_cf_support_guard_hs_negbal_h32_s040",
+      "candidate": "v060_v254_active_multiaction_value_p045_h32",
+      "delta_net_chips": [
+        0.0,
+        17826.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "samples": 8,
+      "mean_net": 2228.25,
+      "median_net": 0.0,
+      "stddev_net": 6302.442740715698,
+      "stderr_net": 2228.25,
+      "ci95_low": -2139.12,
+      "ci95_high": 6595.62,
+      "mean_per_70_hands": 1114.125,
+      "ci95_low_per_70_hands": -1069.56,
+      "ci95_high_per_70_hands": 3297.81,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  }
+}

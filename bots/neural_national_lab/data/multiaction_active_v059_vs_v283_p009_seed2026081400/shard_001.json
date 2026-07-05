@@ -1,0 +1,1303 @@
+{
+  "mode": "multi_action_counterfactual_probe_v1",
+  "target": "legal_mask_action_values_delta_vs_rule_regret_vs_mean",
+  "notes": [
+    "Each row forks one bot0 decision and enumerates abstract action labels.",
+    "Branches share the same judge prefix, deck seed, and branch bot RNG seed.",
+    "delta_vs_rule uses the sanitized rule action as the baseline value.",
+    "regret_vs_mean subtracts the mean value over successfully evaluated unique final actions.",
+    "Duplicate label-to-final-action mappings are recorded in final_action_counts and share a branch value.",
+    "If the rule baseline uses an off-menu raise size, it is evaluated as rule_branch but not added to the fixed action vector."
+  ],
+  "version": "bots/neural_national_lab/versions/v059_v254_cf_support_guard_hs_negbal_h32_s040/main.py",
+  "opponent": "bots/claude_v283/main.py",
+  "labels": [
+    "fold",
+    "call",
+    "raise_half",
+    "raise_pot",
+    "raise_2pot",
+    "allin"
+  ],
+  "games": 3,
+  "max_rows": 3,
+  "max_scan_decisions": 260,
+  "seed_base": 2026081400,
+  "seed_offset": 3,
+  "seed_stride": 1,
+  "bot_seed_base": 202650200000,
+  "bot_seed_stride": 10000,
+  "max_hands": 70,
+  "branch_scope": "hand",
+  "scan_persistent": true,
+  "filters": {
+    "stage": "flop",
+    "min_unique_actions": 2,
+    "active_target": "delta_vs_rule",
+    "active_drop_label": [
+      "allin"
+    ],
+    "active_min_targets": 1,
+    "active_min_positive_targets": 1,
+    "active_min_abs_target": 1e-09
+  },
+  "matches": [
+    {
+      "game": 0,
+      "seed": 2026081403,
+      "side": "g0:normal",
+      "decisions": 20,
+      "bot0_chips": null,
+      "version": "bots/neural_national_lab/versions/v059_v254_cf_support_guard_hs_negbal_h32_s040",
+      "bot_seeds": [
+        202650200000,
+        202650200001
+      ],
+      "rejected_active_rows": 2,
+      "active_reject_reasons": {
+        "too_few_positive_targets": 2
+      }
+    }
+  ],
+  "rows": [
+    {
+      "row_index": 0,
+      "side": "g0:normal",
+      "decision_index": 3,
+      "analysis_seed": 202850200003,
+      "hand": 0,
+      "stage": "flop",
+      "public_cards": [
+        23,
+        25,
+        35
+      ],
+      "my_cards": [
+        41,
+        50
+      ],
+      "to_call": 4118,
+      "pot": 11606,
+      "my_chips": 16256,
+      "rule_action": -1,
+      "rule_final": -1,
+      "rule_label_id": 0,
+      "rule_label": "fold",
+      "neural_top_label_id": 3,
+      "neural_top_label": "raise_pot",
+      "neural_top_conf": 0.7178929561808772,
+      "neural_raw_probs": [
+        0.04053136108823217,
+        0.24157480096606304,
+        8.817399619526981e-07,
+        0.7178929561808772,
+        2.479842388960824e-11,
+        6.71777161592675e-14
+      ],
+      "neural_masked_probs": [
+        0.04053136108823217,
+        0.24157480096606304,
+        8.817399619526981e-07,
+        0.7178929561808772,
+        2.479842388960824e-11,
+        6.71777161592675e-14
+      ],
+      "state_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        0.8333333333333334,
+        0.0,
+        0.0,
+        0.8049999999999999,
+        0.5803,
+        0.8128,
+        0.2059,
+        0.0,
+        0.0,
+        0.2618926481811244,
+        0.02801309667413407,
+        1.0,
+        0.5,
+        0.0,
+        0.6,
+        0.6666666666666666,
+        0.0,
+        0.0,
+        0.4,
+        0.0,
+        0.5,
+        0.0,
+        0.0,
+        0.3333333333333333,
+        0.0,
+        0.6666666666666666,
+        0.0,
+        0.0375,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0375,
+        1.0,
+        1.0,
+        0.125,
+        0.25,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "advantage_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        0.8333333333333334,
+        0.0,
+        0.0,
+        0.8049999999999999,
+        0.5803,
+        0.8128,
+        0.2059,
+        0.0,
+        0.0,
+        0.2618926481811244,
+        0.02801309667413407,
+        1.0,
+        0.5,
+        0.0,
+        0.6,
+        0.6666666666666666,
+        0.0,
+        0.0,
+        0.4,
+        0.0,
+        0.5,
+        0.0,
+        0.0,
+        0.3333333333333333,
+        0.0,
+        0.6666666666666666,
+        0.0,
+        0.0375,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0375,
+        1.0,
+        1.0,
+        0.125,
+        0.25,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.7178929561808772,
+        0.24157480096606304,
+        0.2059,
+        0.5803,
+        0.0,
+        0.8128,
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "legal_mask": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "unique_final_actions": [
+        -2,
+        -1,
+        0,
+        11980
+      ],
+      "unique_final_action_count": 4,
+      "evaluated_branch_count": 4,
+      "rule_final_in_menu": true,
+      "rule_branch": {
+        "final_action": -1,
+        "status": "ok",
+        "value": -3744.0,
+        "bot0_chips": null,
+        "hand_delta": -3744.0,
+        "branch_bot_seeds": [
+          202750200000,
+          202750200001
+        ]
+      },
+      "final_action_counts": {
+        "-1": 1,
+        "0": 1,
+        "11980": 1,
+        "-2": 3
+      },
+      "final_action_labels": {
+        "-1": [
+          "fold"
+        ],
+        "0": [
+          "call"
+        ],
+        "11980": [
+          "raise_half"
+        ],
+        "-2": [
+          "raise_pot",
+          "raise_2pot",
+          "allin"
+        ]
+      },
+      "actions": [
+        {
+          "label_id": 0,
+          "label": "fold",
+          "legal": true,
+          "raw_action": -1,
+          "final_action": -1,
+          "status": "ok",
+          "value": -3744.0,
+          "bot0_chips": null,
+          "hand_delta": -3744.0,
+          "branch_bot_seeds": [
+            202750200000,
+            202750200001
+          ],
+          "delta_vs_rule": 0.0,
+          "regret_vs_mean": -13704.5
+        },
+        {
+          "label_id": 1,
+          "label": "call",
+          "legal": true,
+          "raw_action": 0,
+          "final_action": 0,
+          "status": "ok",
+          "value": 20000.0,
+          "bot0_chips": null,
+          "hand_delta": 20000.0,
+          "branch_bot_seeds": [
+            202750200000,
+            202750200001
+          ],
+          "delta_vs_rule": 23744.0,
+          "regret_vs_mean": 10039.5
+        },
+        {
+          "label_id": 2,
+          "label": "raise_half",
+          "legal": true,
+          "raw_action": 11980,
+          "final_action": 11980,
+          "status": "ok",
+          "value": 15724.0,
+          "bot0_chips": null,
+          "hand_delta": 15724.0,
+          "branch_bot_seeds": [
+            202750200000,
+            202750200001
+          ],
+          "delta_vs_rule": 19468.0,
+          "regret_vs_mean": 5763.5
+        },
+        {
+          "label_id": 3,
+          "label": "raise_pot",
+          "legal": true,
+          "raw_action": -2,
+          "final_action": -2,
+          "status": "ok",
+          "value": 7862.0,
+          "bot0_chips": null,
+          "hand_delta": 7862.0,
+          "branch_bot_seeds": [
+            202750200000,
+            202750200001
+          ],
+          "delta_vs_rule": 11606.0,
+          "regret_vs_mean": -2098.5
+        },
+        {
+          "label_id": 4,
+          "label": "raise_2pot",
+          "legal": true,
+          "raw_action": -2,
+          "final_action": -2,
+          "status": "ok",
+          "value": 7862.0,
+          "bot0_chips": null,
+          "hand_delta": 7862.0,
+          "branch_bot_seeds": [
+            202750200000,
+            202750200001
+          ],
+          "delta_vs_rule": 11606.0,
+          "regret_vs_mean": -2098.5
+        },
+        {
+          "label_id": 5,
+          "label": "allin",
+          "legal": true,
+          "raw_action": -2,
+          "final_action": -2,
+          "status": "ok",
+          "value": 7862.0,
+          "bot0_chips": null,
+          "hand_delta": 7862.0,
+          "branch_bot_seeds": [
+            202750200000,
+            202750200001
+          ],
+          "delta_vs_rule": 11606.0,
+          "regret_vs_mean": -2098.5
+        }
+      ],
+      "status": "ok",
+      "rule_value": -3744.0,
+      "mean_legal_value": 9960.5,
+      "mean_unique_action_value": 9960.5,
+      "mean_legal_label_value": 9261.0,
+      "best_label_id": 1,
+      "best_label": "call",
+      "action_values": [
+        -3744.0,
+        20000.0,
+        15724.0,
+        7862.0,
+        7862.0,
+        7862.0
+      ],
+      "delta_vs_rule": [
+        0.0,
+        23744.0,
+        19468.0,
+        11606.0,
+        11606.0,
+        11606.0
+      ],
+      "regret_vs_mean": [
+        -13704.5,
+        10039.5,
+        5763.5,
+        -2098.5,
+        -2098.5,
+        -2098.5
+      ],
+      "active_target": "delta_vs_rule",
+      "active_targets": 4,
+      "active_positive_targets": 4,
+      "active_negative_targets": 0,
+      "active_best_label": "call",
+      "active_reject_reason": null
+    },
+    {
+      "row_index": 1,
+      "side": "g0:normal",
+      "decision_index": 17,
+      "analysis_seed": 202850200017,
+      "hand": 9,
+      "stage": "flop",
+      "public_cards": [
+        17,
+        24,
+        11
+      ],
+      "my_cards": [
+        42,
+        2
+      ],
+      "to_call": 0,
+      "pot": 200,
+      "my_chips": 19900,
+      "rule_action": 0,
+      "rule_final": 0,
+      "rule_label_id": 1,
+      "rule_label": "call",
+      "neural_top_label_id": 2,
+      "neural_top_label": "raise_half",
+      "neural_top_conf": 0.923757321481759,
+      "neural_raw_probs": [
+        3.0776806529471675e-09,
+        0.07479808629263751,
+        0.923757321481759,
+        0.00144458914774989,
+        8.644172729131985e-14,
+        8.644172729131985e-14
+      ],
+      "neural_masked_probs": [
+        3.0776806529471675e-09,
+        0.07479808629263751,
+        0.923757321481759,
+        0.00144458914774989,
+        8.644172729131985e-14,
+        8.644172729131985e-14
+      ],
+      "state_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.8333333333333334,
+        0.0,
+        1.0,
+        0.0,
+        0.525,
+        0.01,
+        0.995,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.8714285714285714,
+        0.450075,
+        0.0,
+        0.6,
+        0.5,
+        0.0,
+        0.0,
+        0.2,
+        0.0,
+        0.25,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        0.0,
+        0.25,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "advantage_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.8333333333333334,
+        0.0,
+        1.0,
+        0.0,
+        0.525,
+        0.01,
+        0.995,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.8714285714285714,
+        0.450075,
+        0.0,
+        0.6,
+        0.5,
+        0.0,
+        0.0,
+        0.2,
+        0.0,
+        0.25,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        0.0,
+        0.25,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.923757321481759,
+        0.07479808629263751,
+        0.0,
+        0.01,
+        1.0,
+        0.995,
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "legal_mask": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "unique_final_actions": [
+        -2,
+        -1,
+        0,
+        101,
+        200,
+        400
+      ],
+      "unique_final_action_count": 6,
+      "evaluated_branch_count": 6,
+      "rule_final_in_menu": true,
+      "rule_branch": {
+        "final_action": 0,
+        "status": "ok",
+        "value": -100.0,
+        "bot0_chips": null,
+        "hand_delta": -100.0,
+        "branch_bot_seeds": [
+          202750200002,
+          202750200003
+        ]
+      },
+      "final_action_counts": {
+        "-1": 1,
+        "0": 1,
+        "101": 1,
+        "200": 1,
+        "400": 1,
+        "-2": 1
+      },
+      "final_action_labels": {
+        "-1": [
+          "fold"
+        ],
+        "0": [
+          "call"
+        ],
+        "101": [
+          "raise_half"
+        ],
+        "200": [
+          "raise_pot"
+        ],
+        "400": [
+          "raise_2pot"
+        ],
+        "-2": [
+          "allin"
+        ]
+      },
+      "actions": [
+        {
+          "label_id": 0,
+          "label": "fold",
+          "legal": true,
+          "raw_action": -1,
+          "final_action": -1,
+          "status": "ok",
+          "value": -100.0,
+          "bot0_chips": null,
+          "hand_delta": -100.0,
+          "branch_bot_seeds": [
+            202750200002,
+            202750200003
+          ],
+          "delta_vs_rule": 0.0,
+          "regret_vs_mean": -133.33333333333334
+        },
+        {
+          "label_id": 1,
+          "label": "call",
+          "legal": true,
+          "raw_action": 0,
+          "final_action": 0,
+          "status": "ok",
+          "value": -100.0,
+          "bot0_chips": null,
+          "hand_delta": -100.0,
+          "branch_bot_seeds": [
+            202750200002,
+            202750200003
+          ],
+          "delta_vs_rule": 0.0,
+          "regret_vs_mean": -133.33333333333334
+        },
+        {
+          "label_id": 2,
+          "label": "raise_half",
+          "legal": true,
+          "raw_action": 101,
+          "final_action": 101,
+          "status": "ok",
+          "value": 100.0,
+          "bot0_chips": null,
+          "hand_delta": 100.0,
+          "branch_bot_seeds": [
+            202750200002,
+            202750200003
+          ],
+          "delta_vs_rule": 200.0,
+          "regret_vs_mean": 66.66666666666666
+        },
+        {
+          "label_id": 3,
+          "label": "raise_pot",
+          "legal": true,
+          "raw_action": 200,
+          "final_action": 200,
+          "status": "ok",
+          "value": 100.0,
+          "bot0_chips": null,
+          "hand_delta": 100.0,
+          "branch_bot_seeds": [
+            202750200002,
+            202750200003
+          ],
+          "delta_vs_rule": 200.0,
+          "regret_vs_mean": 66.66666666666666
+        },
+        {
+          "label_id": 4,
+          "label": "raise_2pot",
+          "legal": true,
+          "raw_action": 400,
+          "final_action": 400,
+          "status": "ok",
+          "value": 100.0,
+          "bot0_chips": null,
+          "hand_delta": 100.0,
+          "branch_bot_seeds": [
+            202750200002,
+            202750200003
+          ],
+          "delta_vs_rule": 200.0,
+          "regret_vs_mean": 66.66666666666666
+        },
+        {
+          "label_id": 5,
+          "label": "allin",
+          "legal": true,
+          "raw_action": -2,
+          "final_action": -2,
+          "status": "ok",
+          "value": 100.0,
+          "bot0_chips": null,
+          "hand_delta": 100.0,
+          "branch_bot_seeds": [
+            202750200002,
+            202750200003
+          ],
+          "delta_vs_rule": 200.0,
+          "regret_vs_mean": 66.66666666666666
+        }
+      ],
+      "status": "ok",
+      "rule_value": -100.0,
+      "mean_legal_value": 33.333333333333336,
+      "mean_unique_action_value": 33.333333333333336,
+      "mean_legal_label_value": 33.333333333333336,
+      "best_label_id": 2,
+      "best_label": "raise_half",
+      "action_values": [
+        -100.0,
+        -100.0,
+        100.0,
+        100.0,
+        100.0,
+        100.0
+      ],
+      "delta_vs_rule": [
+        0.0,
+        0.0,
+        200.0,
+        200.0,
+        200.0,
+        200.0
+      ],
+      "regret_vs_mean": [
+        -133.33333333333334,
+        -133.33333333333334,
+        66.66666666666666,
+        66.66666666666666,
+        66.66666666666666,
+        66.66666666666666
+      ],
+      "active_target": "delta_vs_rule",
+      "active_targets": 3,
+      "active_positive_targets": 3,
+      "active_negative_targets": 0,
+      "active_best_label": "raise_half",
+      "active_reject_reason": null
+    },
+    {
+      "row_index": 2,
+      "side": "g0:normal",
+      "decision_index": 19,
+      "analysis_seed": 202850200019,
+      "hand": 10,
+      "stage": "flop",
+      "public_cards": [
+        10,
+        24,
+        3
+      ],
+      "my_cards": [
+        4,
+        32
+      ],
+      "to_call": 101,
+      "pot": 301,
+      "my_chips": 19900,
+      "rule_action": -1,
+      "rule_final": -1,
+      "rule_label_id": 0,
+      "rule_label": "fold",
+      "neural_top_label_id": 0,
+      "neural_top_label": "fold",
+      "neural_top_conf": 0.5627731650017478,
+      "neural_raw_probs": [
+        0.5627731650017478,
+        0.3468699487576656,
+        7.929455253054559e-05,
+        0.09027759168795076,
+        5.266219095067236e-14,
+        5.266219095067236e-14
+      ],
+      "neural_masked_probs": [
+        0.5627731650017478,
+        0.3468699487576656,
+        7.929455253054559e-05,
+        0.09027759168795076,
+        5.266219095067236e-14,
+        5.266219095067236e-14
+      ],
+      "state_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.6666666666666666,
+        0.08333333333333333,
+        1.0,
+        0.0,
+        0.47,
+        0.01505,
+        0.995,
+        0.00505,
+        0.0,
+        0.0,
+        0.2512437810945274,
+        1.0,
+        0.8571428571428571,
+        0.451325,
+        0.0,
+        0.6,
+        0.5,
+        0.0,
+        0.0,
+        0.2,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        0.0,
+        0.5,
+        0.5,
+        0.0,
+        0.025,
+        1.0,
+        1.0,
+        0.125,
+        0.25,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "advantage_features": [
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.6666666666666666,
+        0.08333333333333333,
+        1.0,
+        0.0,
+        0.47,
+        0.01505,
+        0.995,
+        0.00505,
+        0.0,
+        0.0,
+        0.2512437810945274,
+        1.0,
+        0.8571428571428571,
+        0.451325,
+        0.0,
+        0.6,
+        0.5,
+        0.0,
+        0.0,
+        0.2,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0125,
+        0.0,
+        0.0,
+        0.5,
+        0.5,
+        0.0,
+        0.025,
+        1.0,
+        1.0,
+        0.125,
+        0.25,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.5627731650017478,
+        0.3468699487576656,
+        0.00505,
+        0.01505,
+        0.0,
+        0.995,
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "legal_mask": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "unique_final_actions": [
+        -2,
+        -1,
+        0,
+        302,
+        503,
+        905
+      ],
+      "unique_final_action_count": 6,
+      "evaluated_branch_count": 6,
+      "rule_final_in_menu": true,
+      "rule_branch": {
+        "final_action": -1,
+        "status": "ok",
+        "value": -100.0,
+        "bot0_chips": null,
+        "hand_delta": -100.0,
+        "branch_bot_seeds": [
+          202750200004,
+          202750200005
+        ]
+      },
+      "final_action_counts": {
+        "-1": 1,
+        "0": 1,
+        "302": 1,
+        "503": 1,
+        "905": 1,
+        "-2": 1
+      },
+      "final_action_labels": {
+        "-1": [
+          "fold"
+        ],
+        "0": [
+          "call"
+        ],
+        "302": [
+          "raise_half"
+        ],
+        "503": [
+          "raise_pot"
+        ],
+        "905": [
+          "raise_2pot"
+        ],
+        "-2": [
+          "allin"
+        ]
+      },
+      "actions": [
+        {
+          "label_id": 0,
+          "label": "fold",
+          "legal": true,
+          "raw_action": -1,
+          "final_action": -1,
+          "status": "ok",
+          "value": -100.0,
+          "bot0_chips": null,
+          "hand_delta": -100.0,
+          "branch_bot_seeds": [
+            202750200004,
+            202750200005
+          ],
+          "delta_vs_rule": 0.0,
+          "regret_vs_mean": -183.83333333333331
+        },
+        {
+          "label_id": 1,
+          "label": "call",
+          "legal": true,
+          "raw_action": 0,
+          "final_action": 0,
+          "status": "ok",
+          "value": -201.0,
+          "bot0_chips": null,
+          "hand_delta": -201.0,
+          "branch_bot_seeds": [
+            202750200004,
+            202750200005
+          ],
+          "delta_vs_rule": -101.0,
+          "regret_vs_mean": -284.8333333333333
+        },
+        {
+          "label_id": 2,
+          "label": "raise_half",
+          "legal": true,
+          "raw_action": 302,
+          "final_action": 302,
+          "status": "ok",
+          "value": 201.0,
+          "bot0_chips": null,
+          "hand_delta": 201.0,
+          "branch_bot_seeds": [
+            202750200004,
+            202750200005
+          ],
+          "delta_vs_rule": 301.0,
+          "regret_vs_mean": 117.16666666666667
+        },
+        {
+          "label_id": 3,
+          "label": "raise_pot",
+          "legal": true,
+          "raw_action": 503,
+          "final_action": 503,
+          "status": "ok",
+          "value": 201.0,
+          "bot0_chips": null,
+          "hand_delta": 201.0,
+          "branch_bot_seeds": [
+            202750200004,
+            202750200005
+          ],
+          "delta_vs_rule": 301.0,
+          "regret_vs_mean": 117.16666666666667
+        },
+        {
+          "label_id": 4,
+          "label": "raise_2pot",
+          "legal": true,
+          "raw_action": 905,
+          "final_action": 905,
+          "status": "ok",
+          "value": 201.0,
+          "bot0_chips": null,
+          "hand_delta": 201.0,
+          "branch_bot_seeds": [
+            202750200004,
+            202750200005
+          ],
+          "delta_vs_rule": 301.0,
+          "regret_vs_mean": 117.16666666666667
+        },
+        {
+          "label_id": 5,
+          "label": "allin",
+          "legal": true,
+          "raw_action": -2,
+          "final_action": -2,
+          "status": "ok",
+          "value": 201.0,
+          "bot0_chips": null,
+          "hand_delta": 201.0,
+          "branch_bot_seeds": [
+            202750200004,
+            202750200005
+          ],
+          "delta_vs_rule": 301.0,
+          "regret_vs_mean": 117.16666666666667
+        }
+      ],
+      "status": "ok",
+      "rule_value": -100.0,
+      "mean_legal_value": 83.83333333333333,
+      "mean_unique_action_value": 83.83333333333333,
+      "mean_legal_label_value": 83.83333333333333,
+      "best_label_id": 2,
+      "best_label": "raise_half",
+      "action_values": [
+        -100.0,
+        -201.0,
+        201.0,
+        201.0,
+        201.0,
+        201.0
+      ],
+      "delta_vs_rule": [
+        0.0,
+        -101.0,
+        301.0,
+        301.0,
+        301.0,
+        301.0
+      ],
+      "regret_vs_mean": [
+        -183.83333333333331,
+        -284.8333333333333,
+        117.16666666666667,
+        117.16666666666667,
+        117.16666666666667,
+        117.16666666666667
+      ],
+      "active_target": "delta_vs_rule",
+      "active_targets": 4,
+      "active_positive_targets": 3,
+      "active_negative_targets": 1,
+      "active_best_label": "raise_half",
+      "active_reject_reason": null
+    }
+  ],
+  "summary": {
+    "rows": 3,
+    "ok_rows": 3,
+    "failed_rows": 0,
+    "mean_unique_final_action_count": 5.333333333333333,
+    "mean_evaluated_branch_count": 5.333333333333333,
+    "mean_legal_label_count": 6.0,
+    "mean_active_targets": 3.6666666666666665,
+    "mean_active_positive_targets": 3.3333333333333335,
+    "off_menu_rule_rows": 0,
+    "best_label_counts": {
+      "call": 1,
+      "raise_half": 2
+    },
+    "active_best_label_counts": {
+      "call": 1,
+      "raise_half": 2
+    },
+    "delta_vs_rule_by_label": {
+      "fold": {
+        "samples": 3,
+        "mean": 0.0,
+        "median": 0.0,
+        "stddev": 0.0,
+        "stderr": 0.0,
+        "ci95_low": 0.0,
+        "ci95_high": 0.0,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      },
+      "call": {
+        "samples": 3,
+        "mean": 7881.0,
+        "median": 0.0,
+        "stddev": 13737.853798901777,
+        "stderr": 7931.553588883664,
+        "ci95_low": -7664.845034211981,
+        "ci95_high": 23426.845034211983,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      },
+      "raise_half": {
+        "samples": 3,
+        "mean": 6656.333333333333,
+        "median": 301.0,
+        "stddev": 11095.343723081918,
+        "stderr": 6405.8996852727705,
+        "ci95_low": -5899.230049801296,
+        "ci95_high": 19211.896716467963,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      },
+      "raise_pot": {
+        "samples": 3,
+        "mean": 4035.6666666666665,
+        "median": 301.0,
+        "stddev": 6556.2954733090955,
+        "stderr": 3785.278956401731,
+        "ci95_low": -3383.480087880727,
+        "ci95_high": 11454.81342121406,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      },
+      "raise_2pot": {
+        "samples": 3,
+        "mean": 4035.6666666666665,
+        "median": 301.0,
+        "stddev": 6556.2954733090955,
+        "stderr": 3785.278956401731,
+        "ci95_low": -3383.480087880727,
+        "ci95_high": 11454.81342121406,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      },
+      "allin": {
+        "samples": 3,
+        "mean": 4035.6666666666665,
+        "median": 301.0,
+        "stddev": 6556.2954733090955,
+        "stderr": 3785.278956401731,
+        "ci95_low": -3383.480087880727,
+        "ci95_high": 11454.81342121406,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      }
+    },
+    "regret_vs_mean_by_label": {
+      "fold": {
+        "samples": 3,
+        "mean": -4673.888888888889,
+        "median": -183.83333333333331,
+        "stddev": 7820.779394829686,
+        "stderr": 4515.329088877598,
+        "ci95_low": -13523.93390308898,
+        "ci95_high": 4176.156125311203,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      },
+      "call": {
+        "samples": 3,
+        "mean": 3207.1111111111113,
+        "median": -133.33333333333334,
+        "stddev": 5917.507203988793,
+        "stderr": 3416.4743771544795,
+        "ci95_low": -3489.1786681116682,
+        "ci95_high": 9903.40089033389,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      },
+      "raise_half": {
+        "samples": 3,
+        "mean": 1982.4444444444443,
+        "median": 117.16666666666667,
+        "stddev": 3274.5875157259347,
+        "stderr": 1890.5839836893565,
+        "ci95_low": -1723.1001635866942,
+        "ci95_high": 5687.989052475583,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      },
+      "raise_pot": {
+        "samples": 3,
+        "mean": -638.2222222222222,
+        "median": 66.66666666666666,
+        "stddev": 1264.889700212514,
+        "stderr": 730.28440891288,
+        "ci95_low": -2069.579663691467,
+        "ci95_high": 793.1352192470226,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      },
+      "raise_2pot": {
+        "samples": 3,
+        "mean": -638.2222222222222,
+        "median": 66.66666666666666,
+        "stddev": 1264.889700212514,
+        "stderr": 730.28440891288,
+        "ci95_low": -2069.579663691467,
+        "ci95_high": 793.1352192470226,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      },
+      "allin": {
+        "samples": 3,
+        "mean": -638.2222222222222,
+        "median": 66.66666666666666,
+        "stddev": 1264.889700212514,
+        "stderr": 730.28440891288,
+        "ci95_low": -2069.579663691467,
+        "ci95_high": 793.1352192470226,
+        "significant_positive_95": false,
+        "significant_negative_95": false
+      }
+    }
+  }
+}

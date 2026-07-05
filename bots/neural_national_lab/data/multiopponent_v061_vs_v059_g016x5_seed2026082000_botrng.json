@@ -1,0 +1,231 @@
+{
+  "mode": "multi_opponent_common_deck_mirror_pair",
+  "baseline": {
+    "label": "v059_v254_cf_support_guard_hs_negbal_h32_s040",
+    "path": "bots/neural_national_lab/versions/v059_v254_cf_support_guard_hs_negbal_h32_s040/main.py"
+  },
+  "candidates": {
+    "v061_v254_active_value_interaction_override_p045_h32": {
+      "path": "bots/neural_national_lab/versions/v061_v254_active_value_interaction_override_p045_h32/main.py"
+    }
+  },
+  "opponents": [
+    {
+      "label": "claude_v279",
+      "path": "bots/claude_v279/main.py",
+      "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g016/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v279.json",
+      "seed_offset": 0,
+      "bot_seed_base": 202650200000
+    },
+    {
+      "label": "claude_v283",
+      "path": "bots/claude_v283/main.py",
+      "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g016/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v283.json",
+      "seed_offset": 100000,
+      "bot_seed_base": 202660200000
+    },
+    {
+      "label": "claude_v284",
+      "path": "bots/claude_v284/main.py",
+      "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g016/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v284.json",
+      "seed_offset": 200000,
+      "bot_seed_base": 202670200000
+    },
+    {
+      "label": "claude_v285",
+      "path": "bots/claude_v285/main.py",
+      "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g016/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v285.json",
+      "seed_offset": 300000,
+      "bot_seed_base": 202680200000
+    },
+    {
+      "label": "claude_v288",
+      "path": "bots/claude_v288/main.py",
+      "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g016/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v288.json",
+      "seed_offset": 400000,
+      "bot_seed_base": 202690200000
+    }
+  ],
+  "games_per_opponent": 16,
+  "workers_per_opponent": 8,
+  "seed_base": 2026082000,
+  "seed_offset": 0,
+  "seed_stride": 1,
+  "opponent_seed_stride": 100000,
+  "bot_seed_base": 202650200000,
+  "bot_seed_stride": 10000,
+  "opponent_bot_seed_stride": 10000000,
+  "max_hands": 70,
+  "aggregate_vs_baseline": {
+    "v061_v254_active_value_interaction_override_p045_h32": {
+      "baseline": "v059_v254_cf_support_guard_hs_negbal_h32_s040",
+      "candidate": "v061_v254_active_value_interaction_override_p045_h32",
+      "delta_net_chips": [
+        0.0,
+        17826.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -49.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        54.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        26.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        107.0,
+        0.0
+      ],
+      "split": {
+        "positive": 4,
+        "zero": 75,
+        "negative": 1
+      },
+      "by_opponent": [
+        {
+          "opponent": "claude_v279",
+          "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g016/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v279.json",
+          "samples": 16,
+          "mean_per_70_hands": 555.53125,
+          "ci95_low_per_70_hands": -536.5154391491235,
+          "ci95_high_per_70_hands": 1647.5779391491235,
+          "split": {
+            "positive": 1,
+            "zero": 14,
+            "negative": 1
+          }
+        },
+        {
+          "opponent": "claude_v283",
+          "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g016/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v283.json",
+          "samples": 16,
+          "mean_per_70_hands": 0.0,
+          "ci95_low_per_70_hands": 0.0,
+          "ci95_high_per_70_hands": 0.0,
+          "split": {
+            "positive": 0,
+            "zero": 16,
+            "negative": 0
+          }
+        },
+        {
+          "opponent": "claude_v284",
+          "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g016/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v284.json",
+          "samples": 16,
+          "mean_per_70_hands": 0.0,
+          "ci95_low_per_70_hands": 0.0,
+          "ci95_high_per_70_hands": 0.0,
+          "split": {
+            "positive": 0,
+            "zero": 16,
+            "negative": 0
+          }
+        },
+        {
+          "opponent": "claude_v285",
+          "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g016/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v285.json",
+          "samples": 16,
+          "mean_per_70_hands": 1.6875,
+          "ci95_low_per_70_hands": -1.62,
+          "ci95_high_per_70_hands": 4.995,
+          "split": {
+            "positive": 1,
+            "zero": 15,
+            "negative": 0
+          }
+        },
+        {
+          "opponent": "claude_v288",
+          "output": "bots/neural_national_lab/data/multi_opponent_runs_v061_p045_g016/paired_v059_v254_cf_support_guard_hs_negbal_h32_s040_vs_v061_v254_active_value_interaction_override_p045_h32_opp_claude_v288.json",
+          "samples": 16,
+          "mean_per_70_hands": 4.15625,
+          "ci95_low_per_70_hands": -2.484240624130619,
+          "ci95_high_per_70_hands": 10.796740624130619,
+          "split": {
+            "positive": 2,
+            "zero": 14,
+            "negative": 0
+          }
+        }
+      ],
+      "samples": 80,
+      "mean_net": 224.55,
+      "median_net": 0.0,
+      "stddev_net": 1992.8667151377178,
+      "stderr_net": 222.8092722572323,
+      "ci95_low": -212.15617362417527,
+      "ci95_high": 661.2561736241753,
+      "mean_per_70_hands": 112.275,
+      "ci95_low_per_70_hands": -106.07808681208763,
+      "ci95_high_per_70_hands": 330.62808681208764,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  }
+}

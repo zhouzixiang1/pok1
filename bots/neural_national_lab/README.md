@@ -924,6 +924,54 @@ loss contract. On CUDA, h16 reached `val_mae=0.4169` and active-target
 `val_best_label_acc=0.56`). Treat this as a target-processing validation
 artifact, not as v060 runtime weight evidence.
 
+`multi_action_counterfactual_probe.py` and `multi_action_shard_runner.py` now
+also support active row filters: `--active-drop-label`, `--active-min-targets`,
+`--active-min-positive-targets`, and `--active-min-abs-target`. This lets shard
+workers keep scanning until they find rows with nonzero positive noallin action
+values instead of spending the row budget on all-zero or all-in-dominated
+states. A five-opponent active flop collection against v279/v283/v284/v285/v288
+wrote 45 rows and 167 nonzero noallin targets. Compared with the p088
+post-filtered set, the target distribution is more useful: 138 positive, 29
+negative, median `+200`, and masked-best counts of 33 `raise_half`, 7 `call`,
+4 `raise_pot`, and 1 `fold`.
+
+The active p045 h32 CUDA head
+(`multiaction_value_v059_active_multiopponent_p045_delta_adv_noallin_nonzero_clip1000_h32_seed832_weights.json`)
+had the best validation MAE among h16/h32/h64 (`0.2397`, versus `0.2595` and
+`0.2962`) but still weak best-label validation (`0.44`). It became
+`versions/v060_v254_active_multiaction_value_p045_h32`, a conservative v059
+fork that only adds a multi-action value support gate after the existing policy,
+advantage, interaction, value-veto, and support gates have already accepted a
+small flop `raise_half` candidate. It does not expand the runtime action space.
+In paired smoke, v060 was positive but not significant versus v059: against
+v279 over 16 pairs it averaged `+397.25` chips per 70 hands with 95 percent CI
+`[-151.47, +945.97]`; across five opponents at four pairs each it averaged
+`+107.08` with CI `[-64.32, +278.47]`, split 3 positive, 17 zero, 0 negative.
+This is the first multi-action value runtime candidate worth scaling, not a
+completed successor.
+
+Scaling v060 to five opponents at eight pairs each exposed the expected failure
+mode of a hard support gate. It remained positive overall (`+160.76` chips per
+70 hands) but had one v288 negative sample (`-5045` raw chips), making the split
+3 positive, 36 zero, 1 negative and the CI still wide
+(`[-296.14, +617.66]`). Trace replay showed v060 did not add a bad action; it
+blocked a v059 flop `raise_half` that had strong existing interaction support
+(`interaction_score=0.956`) because the new p045 value head scored it just
+below the hard threshold. `versions/v061_v254_active_value_interaction_override_p045_h32`
+therefore keeps the same multi-action value model but lets high interaction
+support (`>=0.90`) override the p045 value veto. It preserves the v279 positive
+veto case where interaction support was weaker (`0.774`) while restoring the
+v288 blocked raise.
+
+The v061 g008 five-opponent check repaired the v288 loss: mean `+223.83`
+chips per 70 hands, CI `[-212.86, +660.51]`, split 3 positive, 37 zero,
+0 negative. Extending the same deterministic run to g016x5 produced 80 paired
+samples with mean `+112.28`, CI `[-106.08, +330.63]`, split 4 positive,
+75 zero, 1 small negative (`-49` raw chips). v061 is safer than v060 and a
+better recorded candidate, but still not a statistically clear successor. The
+next useful step is more active sampling around low-interaction harmful v059
+raises, not a larger model.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass
