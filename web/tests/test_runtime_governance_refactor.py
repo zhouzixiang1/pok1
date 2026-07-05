@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -1882,6 +1883,70 @@ def test_runtime_branch_guard_tolerates_unrelated_head_drift(monkeypatch):
     assert cleared == []
     assert events[0][0] == "repo.runtime_head_drift_unrelated_allowed"
     assert events[0][3]["head_changed_paths"] == ["docs/notes.md"]
+    assert events[0][3]["advanced_expected_head"] == "def456"
+    assert os.environ["POK_RUNTIME_EXPECTED_HEAD"] == "def456"
+
+
+def test_runtime_branch_guard_advances_baseline_for_repeated_unrelated_head_drift(monkeypatch):
+    import asyncio
+    import orchestrator
+
+    monkeypatch.setenv("POK_FORCE_RUNTIME_BRANCH_GUARD", "1")
+    monkeypatch.delenv("POK_RUNTIME_EXPECTED_HEAD", raising=False)
+
+    snapshots = iter([
+        {"branch": "main", "head": "def456", "branch_status": "main"},
+        {"branch": "main", "head": "ghi789", "branch_status": "main"},
+    ])
+    drift_checks = []
+    events = []
+    cleared = []
+    monkeypatch.setattr(orchestrator, "_runtime_git_identity", lambda: next(snapshots))
+
+    def _allow_unrelated(expected_head, current_head):
+        drift_checks.append((expected_head, current_head))
+        return True, {"head_changed_paths": [f"docs/{current_head}.md"]}
+
+    monkeypatch.setattr(orchestrator, "_runtime_head_drift_unrelated_allowed", _allow_unrelated)
+    monkeypatch.setattr(orchestrator, "_clear_orchestrator_session", lambda **kwargs: cleared.append(kwargs))
+
+    class DummyShutdown:
+        def __init__(self):
+            self.is_shutting_down = False
+            self.requested = False
+
+        def request_shutdown(self):
+            self.requested = True
+            self.is_shutting_down = True
+
+    shutdown = DummyShutdown()
+
+    def _fake_log(*args):
+        events.append(args)
+        if len(events) == 2:
+            shutdown.is_shutting_down = True
+
+    monkeypatch.setattr(orchestrator, "log_system_event", _fake_log)
+
+    asyncio.run(orchestrator._runtime_branch_guard_coroutine(
+        None,
+        shutdown,
+        expected_branch="main",
+        expected_head="abc123",
+        check_interval=0.001,
+    ))
+
+    assert shutdown.requested is False
+    assert cleared == []
+    assert [event[0] for event in events] == [
+        "repo.runtime_head_drift_unrelated_allowed",
+        "repo.runtime_head_drift_unrelated_allowed",
+    ]
+    assert drift_checks == [("abc123", "def456"), ("def456", "ghi789")]
+    assert events[0][3]["advanced_expected_head"] == "def456"
+    assert events[1][3]["expected_head"] == "def456"
+    assert events[1][3]["advanced_expected_head"] == "ghi789"
+    assert os.environ["POK_RUNTIME_EXPECTED_HEAD"] == "ghi789"
 
 
 def test_runtime_branch_guard_requests_shutdown_on_head_drift(monkeypatch):

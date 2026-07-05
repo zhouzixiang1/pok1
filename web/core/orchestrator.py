@@ -1614,6 +1614,16 @@ def _runtime_head_drift_unrelated_allowed(expected_head: str, current_head: str)
     return allowed, payload
 
 
+def _set_runtime_expected_head(head: str) -> str:
+    """Publish the current safe runtime HEAD for tool-level guards."""
+    clean_head = (head or "").strip()
+    if clean_head:
+        os.environ["POK_RUNTIME_EXPECTED_HEAD"] = clean_head
+    else:
+        os.environ.pop("POK_RUNTIME_EXPECTED_HEAD", None)
+    return clean_head
+
+
 async def _runtime_branch_guard_coroutine(
     ui,
     shutdown_mgr,
@@ -1634,6 +1644,7 @@ async def _runtime_branch_guard_coroutine(
     """
     allowed_aliases: set[tuple[str, str]] = set()
     allowed_unrelated_heads: set[tuple[str, str, str]] = set()
+    runtime_expected_head = (expected_head or "").strip()
     while True:
         if shutdown_mgr and shutdown_mgr.is_shutting_down:
             return
@@ -1645,7 +1656,11 @@ async def _runtime_branch_guard_coroutine(
             current_branch = current.get("branch") or ""
             current_head = current.get("head") or ""
             reason = ""
-            same_expected_head = bool(expected_head and current_head and current_head == expected_head)
+            same_expected_head = bool(
+                runtime_expected_head
+                and current_head
+                and current_head == runtime_expected_head
+            )
             branch_alias = bool(
                 expected_branch
                 and current_branch
@@ -1661,30 +1676,32 @@ async def _runtime_branch_guard_coroutine(
                         "warn",
                         (
                             "Runtime branch guard tolerated branch alias on the "
-                            f"same HEAD: {expected_branch}@{expected_head} -> "
+                            f"same HEAD: {expected_branch}@{runtime_expected_head} -> "
                             f"{current_branch}@{current_head}"
                         ),
                         {
                             "expected_branch": expected_branch,
                             "current_branch": current_branch,
-                            "expected_head": expected_head,
+                            "expected_head": runtime_expected_head,
                             "current_head": current_head,
                             "branch_status": current.get("branch_status", ""),
                             "directive": (
                                 "Continuing because the worktree HEAD is unchanged. "
-                                "A later HEAD change will stop evolution; commit_bot "
+                                "A later evaluation-contract HEAD change will stop evolution; commit_bot "
                                 "still requires the canonical branch."
                             ),
                         },
                     )
                 continue
-            if expected_head and current_head and current_head != expected_head:
+            if runtime_expected_head and current_head and current_head != runtime_expected_head:
                 unrelated_allowed, unrelated_payload = _runtime_head_drift_unrelated_allowed(
-                    expected_head,
+                    runtime_expected_head,
                     current_head,
                 )
                 if unrelated_allowed:
-                    drift_key = (current_branch, expected_head, current_head)
+                    previous_expected_head = runtime_expected_head
+                    runtime_expected_head = _set_runtime_expected_head(current_head)
+                    drift_key = (current_branch, previous_expected_head, current_head)
                     if drift_key not in allowed_unrelated_heads:
                         allowed_unrelated_heads.add(drift_key)
                         log_system_event(
@@ -1692,21 +1709,24 @@ async def _runtime_branch_guard_coroutine(
                             "warn",
                             (
                                 "Runtime branch guard tolerated unrelated HEAD drift: "
-                                f"{expected_branch}@{expected_head} -> "
+                                f"{expected_branch}@{previous_expected_head} -> "
                                 f"{current_branch}@{current_head}"
                             ),
                             {
                                 "expected_branch": expected_branch,
                                 "current_branch": current_branch,
-                                "expected_head": expected_head,
+                                "expected_head": previous_expected_head,
                                 "current_head": current_head,
+                                "advanced_expected_head": runtime_expected_head,
                                 "branch_status": current.get("branch_status", ""),
                                 **unrelated_payload,
                                 "directive": (
                                     "Continuing because the HEAD change does not touch "
                                     "evolution infrastructure, the national platform, the "
-                                    "local engine, or the active candidate bot. commit_bot "
-                                    "still requires the canonical branch."
+                                    "local engine, or the active candidate bot. The runtime "
+                                    "baseline was advanced so later unrelated commits are "
+                                    "checked incrementally. commit_bot still requires the "
+                                    "canonical branch."
                                 ),
                             },
                         )
@@ -1721,7 +1741,7 @@ async def _runtime_branch_guard_coroutine(
                 "reason": reason,
                 "expected_branch": expected_branch,
                 "current_branch": current_branch,
-                "expected_head": expected_head,
+                "expected_head": runtime_expected_head,
                 "current_head": current_head,
                 "branch_status": current.get("branch_status", ""),
                 "directive": (
@@ -1732,7 +1752,7 @@ async def _runtime_branch_guard_coroutine(
             }
             msg = (
                 "Runtime branch guard stopped evolution: "
-                f"{reason} {expected_branch}@{expected_head} -> "
+                f"{reason} {expected_branch}@{runtime_expected_head} -> "
                 f"{current_branch}@{current_head}"
             )
             if ui:
@@ -1799,10 +1819,7 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
         if _runtime_identity.get("branch") == EVOLUTION_BRANCH else ""
     )
     os.environ["POK_RUNTIME_EXPECTED_BRANCH"] = EVOLUTION_BRANCH
-    if _expected_runtime_head:
-        os.environ["POK_RUNTIME_EXPECTED_HEAD"] = _expected_runtime_head
-    else:
-        os.environ.pop("POK_RUNTIME_EXPECTED_HEAD", None)
+    _expected_runtime_head = _set_runtime_expected_head(_expected_runtime_head)
     _branch_guard_task = None
     _runtime_hard_stop_event = asyncio.Event()
     if _runtime_branch_guard_enabled():
