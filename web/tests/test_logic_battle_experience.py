@@ -20,6 +20,9 @@ def _patch_paths(tmp_path, monkeypatch):
     results = tmp_path / "results"
     results.mkdir()
     monkeypatch.setattr(be, "BATTLE_EXPERIENCE_FILE", results / "battle_experience.md")
+    monkeypatch.setattr(be, "BATTLE_EVIDENCE_FILE", results / "battle_evidence.jsonl")
+    monkeypatch.setattr(be, "BATTLE_PENDING_SUMMARIES_FILE", results / "battle_pending_summaries.jsonl")
+    monkeypatch.setattr(be, "BATTLE_LESSONS_FILE", results / "battle_lessons.jsonl")
     monkeypatch.setattr(be, "ANALYSIS_MARKER_FILE", results / ".battle_analysis_progress.json")
     monkeypatch.setattr(be, "MATCH_HISTORY_FILE", results / "match_history.jsonl")
     monkeypatch.setattr(be, "REPLAY_DIR", results / "match_replay")
@@ -463,6 +466,110 @@ class TestApplyBatchResultsCumulative:
         markers = be._read_markers()
         assert markers["x1"]["fail_count"] == 1
         assert markers["x2"]["fail_count"] == 1
+
+    def test_llm_disabled_records_structured_pending_memory(self, monkeypatch):
+        """LLM-disabled batches must not discard replay summaries/evidence."""
+        monkeypatch.setattr(be, "_run_llm_incremental", lambda c, n: be._NO_EXPERIENCE_UPDATE)
+        payload = {
+            "summary": "Match: national_v16 vs national_v15, Result: 1W/1L out of 2 games",
+            "evidence": [
+                {
+                    "evidence_id": "ev_disabled_001",
+                    "match_id": "p1",
+                    "bot": "national_v16",
+                    "opponent": "national_v15",
+                    "sample_n": 2,
+                    "wins": 1,
+                    "losses": 1,
+                    "draws": 0,
+                    "win_rate": 0.5,
+                    "avg_delta": -100.0,
+                    "spot_tags": ["negative_chip_ev"],
+                }
+            ],
+        }
+
+        be._apply_batch_results([
+            ({"id": "p1", "bot0": "national_v16", "bot1": "national_v15"}, True, payload)
+        ])
+
+        marker = be._read_markers()["p1"]
+        assert marker["status"] == "summary_ready"
+        assert marker["llm_pending"] is True
+        assert marker["evidence_ids"] == ["ev_disabled_001"]
+        assert be.is_analyzed("p1") is True
+        assert not be.BATTLE_EXPERIENCE_FILE.exists()
+
+        evidence_rows = [json.loads(line) for line in be.BATTLE_EVIDENCE_FILE.read_text().splitlines()]
+        pending_rows = [json.loads(line) for line in be.BATTLE_PENDING_SUMMARIES_FILE.read_text().splitlines()]
+        assert evidence_rows[0]["evidence_id"] == "ev_disabled_001"
+        assert pending_rows[0]["match_id"] == "p1"
+        assert pending_rows[0]["status"] == "llm_pending"
+
+    def test_llm_markdown_output_records_structured_lessons(self, monkeypatch):
+        """LLM markdown observations get stable lesson IDs and evidence refs."""
+        monkeypatch.setattr(
+            be,
+            "_run_llm_incremental",
+            lambda c, n: "## ACTIONABLE INSIGHTS\n- national_v16 loses oversized river pots vs national_v15; tighten bluff-catch threshold.",
+        )
+        payload = {
+            "summary": "river big pot loss summary",
+            "evidence": [
+                {
+                    "evidence_id": "ev_lesson_001",
+                    "match_id": "p2",
+                    "bot": "national_v16",
+                    "opponent": "national_v15",
+                    "sample_n": 4,
+                    "wins": 1,
+                    "losses": 3,
+                    "draws": 0,
+                    "win_rate": 0.25,
+                    "avg_delta": -750.0,
+                    "spot_tags": ["river_fold_heavy", "negative_chip_ev"],
+                }
+            ],
+        }
+
+        be._apply_batch_results([
+            ({"id": "p2", "bot0": "national_v16", "bot1": "national_v15"}, True, payload)
+        ])
+
+        lesson_rows = [json.loads(line) for line in be.BATTLE_LESSONS_FILE.read_text().splitlines()]
+        assert len(lesson_rows) == 1
+        lesson = lesson_rows[0]
+        assert lesson["lesson_id"].startswith("battle_lesson_")
+        assert lesson["evidence_ids"] == ["ev_lesson_001"]
+        assert lesson["scope"] == "river"
+        assert be._read_markers()["p2"]["status"] == "done"
+
+    def test_get_battle_experience_includes_structured_memory(self):
+        """Master context sees structured lessons/evidence even without legacy markdown."""
+        be.BATTLE_LESSONS_FILE.write_text(json.dumps({
+            "lesson_id": "battle_lesson_manual",
+            "status": "active",
+            "scope": "flop",
+            "confidence": "medium",
+            "text": "national_v16 overfolds flop probes vs national_v15.",
+            "evidence_ids": ["ev_manual"],
+        }) + "\n")
+        be.BATTLE_EVIDENCE_FILE.write_text(json.dumps({
+            "evidence_id": "ev_manual",
+            "bot": "national_v16",
+            "opponent": "national_v15",
+            "sample_n": 12,
+            "win_rate": 0.42,
+            "avg_delta": -325.0,
+            "spot_tags": ["flop_fold_heavy"],
+        }) + "\n")
+
+        text = be.get_battle_experience(source_bot="national_v16")
+
+        assert "Structured Battle Lessons" in text
+        assert "battle_lesson_manual" in text
+        assert "Replay Evidence Snapshot" in text
+        assert "ev_manual" in text
 
 
 # ── 17. test_get_unanalyzed retries transient failures (fc=1,2) ──

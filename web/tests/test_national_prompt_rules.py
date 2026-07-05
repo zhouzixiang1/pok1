@@ -56,6 +56,20 @@ def test_tuner_prompt_contract_matches_planning_hard_gate():
     assert "search all .py files" not in worker_prompt
 
 
+def test_prompts_require_structured_battle_memory_citations():
+    master_prompt = _prompt("master_prompt.md")
+    worker_prompt = _prompt("worker_prompt.md")
+
+    assert "battle_lessons.jsonl" in master_prompt
+    assert "battle_evidence.jsonl" in master_prompt
+    assert "lesson_id" in master_prompt
+    assert "evidence_id" in master_prompt
+    assert "Pending Battle Summaries" in master_prompt
+
+    assert "battle_lesson_*" in worker_prompt
+    assert "ev_*" in worker_prompt
+
+
 def test_regression_guardian_prompt_matches_current_trigger_contract():
     guardian_prompt = _prompt("regression_guardian.md")
     tool_gates = (ROOT / "web" / "core" / "tool_gates.py").read_text(encoding="utf-8")

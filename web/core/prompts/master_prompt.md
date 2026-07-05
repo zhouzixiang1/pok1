@@ -12,6 +12,9 @@ Read these files FIRST to understand current state:
 - `web/core/results/bot_stats.json` — Per-bot aggregate stats. Useful as a broad signal, but frequency-weighted by scheduler choices.
 - `web/core/results/rating_history.jsonl` — Performance snapshots over time
 - `web/core/experience_pool.md` — Strategic lessons from past generations (prioritise: RECENT_LESSONS, OPPONENT_MODELING, [POSSIBLY EXHAUSTED] entries)
+- `web/core/results/battle_lessons.jsonl` — Structured battle lessons with lesson_id/evidence_id references when available
+- `web/core/results/battle_evidence.jsonl` — Deterministic replay evidence rows extracted before any LLM synthesis
+- `web/core/results/battle_pending_summaries.jsonl` — Replay summaries whose deterministic evidence is captured but LLM lesson extraction is pending
 - `bots/national_v{source_v}/` — Current source bot code; read-only parent/reference
 - `bots/national_v{next_v}/` — Target bot directory; workers must edit and verify this directory
 - `web/core/reference_bots/bot1/` … `bot6/` — 6 reference bots
@@ -32,6 +35,11 @@ Every plan must include:
 - `expected_behavior_change`: what concrete decisions should change at the table
 - `do_not_touch`: files/functions/subsystems workers must avoid
 - `measurement_plan`: how to verify this is not a regression
+- If the Battle Experience section contains `Structured Battle Lessons` or
+  `Replay Evidence Snapshot`, cite the relevant `lesson_id` / `evidence_id` in
+  `analysis`, `targeted_failure`, or the relevant `worker_prompt`. Treat
+  `Pending Battle Summaries` as lower-confidence evidence until supported by
+  sample size, H2H, or repeated replay evidence.
 </attribution>
 
 <game_rules>
@@ -149,7 +157,7 @@ return None
 ## Eval Round Summary
 {eval_round_summary}
 
-## Battle Experience (accumulated from match analysis)
+## Battle Experience (structured lessons/evidence first; legacy markdown second)
 {battle_experience}
 
 ## Exploitability Weaknesses (probe-bot results vs the current source bot)

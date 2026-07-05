@@ -16,6 +16,7 @@ do not silently collapse to all-draw, zero-action defaults when the replay schem
 changes.
 """
 
+import hashlib
 import json
 import math
 from collections import defaultdict
@@ -426,6 +427,145 @@ def _game_label(game, fallback_idx):
     return fallback_idx
 
 
+def _replay_bot_indices(replay_data, bot_name):
+    bot_idx = None
+    opp_idx = None
+    if replay_data.get("bot0") == bot_name:
+        bot_idx, opp_idx = 0, 1
+    elif replay_data.get("bot1") == bot_name:
+        bot_idx, opp_idx = 1, 0
+    return bot_idx, opp_idx
+
+
+def _replay_game_rows(games, bot_idx, opp_idx, bot_name):
+    rows = []
+    for idx, game in enumerate(games):
+        chip_delta = _bot_chip_delta(game, bot_idx, bot_name)
+        outcome = _bot_game_outcome(game, bot_idx, opp_idx, chip_delta)
+        rows.append({
+            "game": game,
+            "delta": chip_delta if chip_delta is not None else 0.0,
+            "outcome": outcome,
+            "label": _game_label(game, idx),
+        })
+    return rows
+
+
+def extract_replay_evidence_for_analysis(replay_data, bot_name, match_id=""):
+    """Return a compact deterministic evidence row for one bot in one replay.
+
+    This is the non-LLM layer for battle memory. It intentionally mirrors the
+    summary signal used by summarize_replay_for_analysis(), but returns
+    structured counters with a stable evidence_id so Master/Worker prompts can
+    cite observations instead of relying on free-form Markdown.
+    """
+    bot_idx, opp_idx = _replay_bot_indices(replay_data, bot_name)
+    if bot_idx is None:
+        return None
+    games = replay_data.get("games", [])
+    total_games = len(games)
+    if total_games == 0:
+        return None
+
+    opponent_name = replay_data.get("bot1" if bot_idx == 0 else "bot0", "")
+    game_rows = _replay_game_rows(games, bot_idx, opp_idx, bot_name)
+    wins = sum(1 for row in game_rows if row["outcome"] > 0)
+    losses = sum(1 for row in game_rows if row["outcome"] < 0)
+    draws = total_games - wins - losses
+    chip_deltas = [row["delta"] for row in game_rows]
+
+    action_counts = {"fold": 0, "raise": 0, "call": 0, "allin": 0}
+    street_counts = {
+        street: {"fold": 0, "raise": 0, "call": 0, "allin": 0, "total": 0}
+        for street in STREETS
+    }
+    raise_size_pot_sum = {street: 0.0 for street in STREETS}
+    raise_size_count = {street: 0 for street in STREETS}
+    for action in _iter_bot_actions(games, bot_idx):
+        street = action["street"]
+        category = action["category"]
+        if category not in action_counts or street not in street_counts:
+            continue
+        action_counts[category] += 1
+        street_counts[street][category] += 1
+        street_counts[street]["total"] += 1
+        if category == "raise":
+            amount = action.get("amount")
+            pot = action.get("pot") or 0
+            if amount is not None and pot > 0:
+                raise_size_pot_sum[street] += float(amount) / float(pot)
+                raise_size_count[street] += 1
+
+    for street in STREETS:
+        if raise_size_count[street] > 0:
+            street_counts[street]["avg_raise_x_pot"] = (
+                raise_size_pot_sum[street] / raise_size_count[street]
+            )
+        else:
+            street_counts[street]["avg_raise_x_pot"] = None
+
+    total_actions = sum(action_counts.values())
+    big_pot_losses = [row for row in game_rows if row["delta"] < -5000]
+    avg_delta = sum(chip_deltas) / len(chip_deltas)
+    spot_tags = []
+    if avg_delta < -250:
+        spot_tags.append("negative_chip_ev")
+    if avg_delta > 250:
+        spot_tags.append("positive_chip_ev")
+    if big_pot_losses:
+        spot_tags.append("big_pot_losses")
+    if total_actions > 0:
+        fold_rate = action_counts["fold"] / total_actions
+        raise_rate = (action_counts["raise"] + action_counts["allin"]) / total_actions
+        if fold_rate >= 0.45:
+            spot_tags.append("high_fold_rate")
+        if raise_rate <= 0.12:
+            spot_tags.append("low_aggression")
+        if raise_rate >= 0.35:
+            spot_tags.append("high_aggression")
+    for street in STREETS:
+        total = street_counts[street]["total"]
+        if total >= 3 and street_counts[street]["fold"] / total >= 0.5:
+            spot_tags.append(f"{street}_fold_heavy")
+        if total >= 3 and (street_counts[street]["raise"] + street_counts[street]["allin"]) / total >= 0.4:
+            spot_tags.append(f"{street}_aggressive")
+
+    evidence_seed = {
+        "match_id": match_id,
+        "bot": bot_name,
+        "opponent": opponent_name,
+        "sample_n": total_games,
+        "wins": wins,
+        "losses": losses,
+        "draws": draws,
+        "avg_delta": round(avg_delta, 3),
+        "actions": action_counts,
+    }
+    evidence_id = "ev_" + hashlib.sha256(
+        json.dumps(evidence_seed, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:16]
+
+    return {
+        "evidence_id": evidence_id,
+        "match_id": match_id,
+        "bot": bot_name,
+        "opponent": opponent_name,
+        "sample_n": total_games,
+        "wins": wins,
+        "losses": losses,
+        "draws": draws,
+        "win_rate": wins / total_games if total_games else None,
+        "avg_delta": avg_delta,
+        "best_delta": max(chip_deltas),
+        "worst_delta": min(chip_deltas),
+        "big_pot_loss_count": len(big_pot_losses),
+        "actions": action_counts,
+        "total_actions": total_actions,
+        "street_actions": street_counts,
+        "spot_tags": sorted(set(spot_tags)),
+    }
+
+
 def summarize_replay_for_analysis(replay_data, bot_name):
     """Extract structured statistics from replay JSON for LLM analysis.
 
@@ -433,12 +573,7 @@ def summarize_replay_for_analysis(replay_data, bot_name):
     win rates, chip distribution, fold frequency, key action patterns,
     and per-street behaviour breakdown.
     """
-    bot_idx = None
-    opp_idx = None
-    if replay_data.get("bot0") == bot_name:
-        bot_idx, opp_idx = 0, 1
-    elif replay_data.get("bot1") == bot_name:
-        bot_idx, opp_idx = 1, 0
+    bot_idx, opp_idx = _replay_bot_indices(replay_data, bot_name)
     if bot_idx is None:
         return ""
 
@@ -447,16 +582,7 @@ def summarize_replay_for_analysis(replay_data, bot_name):
     if total_games == 0:
         return ""
 
-    game_rows = []
-    for idx, game in enumerate(games):
-        chip_delta = _bot_chip_delta(game, bot_idx, bot_name)
-        outcome = _bot_game_outcome(game, bot_idx, opp_idx, chip_delta)
-        game_rows.append({
-            "game": game,
-            "delta": chip_delta if chip_delta is not None else 0.0,
-            "outcome": outcome,
-            "label": _game_label(game, idx),
-        })
+    game_rows = _replay_game_rows(games, bot_idx, opp_idx, bot_name)
 
     wins = sum(1 for row in game_rows if row["outcome"] > 0)
     losses = sum(1 for row in game_rows if row["outcome"] < 0)

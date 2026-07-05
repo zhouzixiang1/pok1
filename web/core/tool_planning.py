@@ -1273,7 +1273,7 @@ async def run_master(args):
     battle_experience = ""
     try:
         from battle_experience import get_battle_experience
-        battle_experience = get_battle_experience()
+        battle_experience = get_battle_experience(source_bot=bot_name(source_v))
     except Exception:
         pass
 
