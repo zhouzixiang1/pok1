@@ -2605,15 +2605,20 @@ def _incremental_reset_next_dir(next_dir, source_dir):
       - parent .completed sentinels are removed; commit_bot is the only writer
         allowed to mark a candidate complete
     """
-    source_names = {item.name for item in source_dir.iterdir()}
+    from evolution_infra import candidate_copy_ignore, is_candidate_copy_ignored_name
+
+    source_names = {
+        item.name
+        for item in source_dir.iterdir()
+        if not is_candidate_copy_ignored_name(item.name)
+    }
     preserved = []
     # Walk next_dir entries: clean stale bytecode, preserve NEW files, remove files
     # that exist in source so the source copy overwrites authoritatively.
     for item in next_dir.iterdir():
-        if item.name == ".completed":
-            item.unlink()
-        elif item.name == "__pycache__" or item.suffix == ".pyc":
-            # Clean stale bytecode
+        if is_candidate_copy_ignored_name(item.name):
+            # Clean parent/runtime artifacts. .task_context is generated per
+            # current plan by plan_compiler and must not survive resets.
             if item.is_dir():
                 shutil.rmtree(item)
             else:
@@ -2627,16 +2632,14 @@ def _incremental_reset_next_dir(next_dir, source_dir):
                 shutil.rmtree(item)
             else:
                 item.unlink()
-    # Copy all source entries into next_dir (skip .completed, __pycache__, .pyc).
+    # Copy all source entries into next_dir (skip parent/runtime artifacts).
     # Source files are recreated/overwritten; NEW files preserved above are untouched.
     for item in source_dir.iterdir():
-        if item.name == ".completed" or item.name == "__pycache__":
-            continue
-        if item.suffix == ".pyc":
+        if is_candidate_copy_ignored_name(item.name):
             continue
         if item.is_dir():
             shutil.copytree(item, next_dir / item.name,
-                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+                            ignore=candidate_copy_ignore)
         else:
             shutil.copy2(item, next_dir / item.name)
     return preserved

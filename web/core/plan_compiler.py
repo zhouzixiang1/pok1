@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,11 @@ def _relative_to_project(path: Path, project_root: Path | None) -> str:
         return str(path)
 
 
+def _reset_task_context_dir(context_dir: Path) -> None:
+    if context_dir.exists():
+        shutil.rmtree(context_dir)
+
+
 def compile_master_plan(
     plan: dict[str, Any],
     *,
@@ -65,10 +71,11 @@ def compile_master_plan(
         "hard_prompt_chars": hard_prompt_chars,
         "context_chars": context_chars,
     }
+    context_dir = Path(target_dir) / ".task_context"
+    _reset_task_context_dir(context_dir)
     if not isinstance(tasks, list):
         return compiled, meta
 
-    context_dir = Path(target_dir) / ".task_context"
     for idx, task in enumerate(tasks):
         if not isinstance(task, dict):
             continue

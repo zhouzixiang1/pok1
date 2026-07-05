@@ -42,6 +42,7 @@ from publish_reconcile import reconcile_push_refs
 CORE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CORE_DIR.parent.parent
 _COPY_IGNORE = shutil.ignore_patterns('__pycache__', '*.pyc')
+CANDIDATE_COPY_IGNORE_NAMES = frozenset({"__pycache__", ".completed", ".task_context"})
 PROMPTS_DIR = CORE_DIR / "prompts"
 RESULTS_DIR = CORE_DIR / "results"
 BOTS_DIR = PROJECT_ROOT / "bots"
@@ -109,6 +110,27 @@ from pipeline_state import (
 )
 
 EVOLUTION_BRANCH = "main"
+
+
+def is_candidate_copy_ignored_name(name: str) -> bool:
+    """Return True for parent artifacts that must not enter a new candidate."""
+
+    return name in CANDIDATE_COPY_IGNORE_NAMES or name.endswith(".pyc")
+
+
+def candidate_copy_ignore(_src: str, names: list[str]) -> set[str]:
+    return {name for name in names if is_candidate_copy_ignored_name(name)}
+
+
+def copy_bot_tree_for_candidate(source_dir: str | Path, target_dir: str | Path) -> None:
+    """Copy a completed parent bot into a mutable candidate directory.
+
+    Runtime/task metadata is deliberately excluded. In particular,
+    ``.task_context`` files are generated per version by ``plan_compiler`` and
+    must never be inherited from an older source bot.
+    """
+
+    shutil.copytree(source_dir, target_dir, ignore=candidate_copy_ignore)
 
 # Watchdog: if no pipeline stage change occurs within this many seconds,
 # the orchestrator watchdog will clear the session and restart from checkpoint.

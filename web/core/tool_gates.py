@@ -1260,7 +1260,7 @@ async def prepare_next_gen(args):
         return _json_tool_result({"error": f"Source bot v{source_v} is not marked completed. Cannot use incomplete code as source."})
 
     # Guard: verify git tag exists for source bot (authoritative commit proof)
-    from evolution_infra import git_has_tag, git_dir_is_committed
+    from evolution_infra import copy_bot_tree_for_candidate, git_has_tag, git_dir_is_committed
     if not git_has_tag(source_v):
         return _json_tool_result({"error": f"Source bot v{source_v} has .completed but no git tag 'bot-v{source_v}'. Cannot evolve from uncommitted code. Try a different source version."})
 
@@ -1308,11 +1308,7 @@ async def prepare_next_gen(args):
             )
             return _json_tool_result({"error": f"Target v{next_v} already exists, prepared from v{prior_source} (not v{source_v}). Refusing silent cross-source overwrite. Call abandon_generation first."})
         shutil.rmtree(next_dir)
-    shutil.copytree(
-        source_dir,
-        next_dir,
-        ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.completed'),
-    )
+    copy_bot_tree_for_candidate(source_dir, next_dir)
 
     # Apply known critical fixes regardless of source bot state
     from fix_injection import apply_known_fixes, log_fix_application

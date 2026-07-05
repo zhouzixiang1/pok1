@@ -244,6 +244,116 @@ def test_plan_compiler_externalizes_oversized_worker_prompt(tmp_path):
     assert compiled["plan_compiler"]["compiled_tasks"][0]["original_chars"] == len(long_prompt)
 
 
+def test_plan_compiler_clears_stale_task_context_for_short_plan(tmp_path):
+    import plan_compiler
+
+    target = tmp_path / "claude_v301"
+    stale_dir = target / ".task_context"
+    stale_dir.mkdir(parents=True)
+    (stale_dir / "w1.md").write_text("stale next_v: 290", encoding="utf-8")
+
+    plan = {
+        "tasks": [
+            {
+                "worker_id": 1,
+                "role": "Hyperparameter Tuner",
+                "target_files": ["constants.py"],
+                "worker_prompt": "Tune one constant.",
+            }
+        ]
+    }
+
+    compiled, meta = plan_compiler.compile_master_plan(
+        plan,
+        next_v=301,
+        target_dir=target,
+        project_root=tmp_path,
+    )
+
+    assert meta["compiled"] is False
+    assert not stale_dir.exists()
+    assert "task_brief_file" not in compiled["tasks"][0]
+
+
+def test_plan_compiler_clears_stale_task_context_for_invalid_task_shape(tmp_path):
+    import plan_compiler
+
+    target = tmp_path / "claude_v302"
+    stale_dir = target / ".task_context"
+    stale_dir.mkdir(parents=True)
+    (stale_dir / "w1.md").write_text("stale next_v: 290", encoding="utf-8")
+
+    compiled, meta = plan_compiler.compile_master_plan(
+        {"tasks": {"not": "a list"}},
+        next_v=302,
+        target_dir=target,
+        project_root=tmp_path,
+    )
+
+    assert meta["compiled"] is False
+    assert compiled["tasks"] == {"not": "a list"}
+    assert not stale_dir.exists()
+
+
+def test_candidate_copy_excludes_task_context_and_parent_artifacts(tmp_path):
+    import evolution_infra
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    (source / ".completed").write_text("", encoding="utf-8")
+    (source / "old.pyc").write_bytes(b"pyc")
+    (source / "__pycache__").mkdir()
+    (source / "__pycache__" / "main.cpython.pyc").write_bytes(b"pyc")
+    (source / ".task_context").mkdir()
+    (source / ".task_context" / "w1.md").write_text("stale next_v: 290", encoding="utf-8")
+    (source / "sub").mkdir()
+    (source / "sub" / "keep.py").write_text("x = 1\n", encoding="utf-8")
+    (source / "sub" / ".task_context").mkdir()
+    (source / "sub" / ".task_context" / "w2.md").write_text("stale", encoding="utf-8")
+
+    target = tmp_path / "target"
+    evolution_infra.copy_bot_tree_for_candidate(source, target)
+
+    assert (target / "main.py").exists()
+    assert (target / "sub" / "keep.py").exists()
+    assert not (target / ".completed").exists()
+    assert not (target / "old.pyc").exists()
+    assert not (target / "__pycache__").exists()
+    assert not (target / ".task_context").exists()
+    assert not (target / "sub" / ".task_context").exists()
+
+
+def test_incremental_reset_removes_stale_task_context(tmp_path):
+    import tool_planning
+
+    source = tmp_path / "source"
+    next_dir = tmp_path / "next"
+    source.mkdir()
+    next_dir.mkdir()
+    (source / "main.py").write_text("source\n", encoding="utf-8")
+    (source / ".task_context").mkdir()
+    (source / ".task_context" / "w1.md").write_text("parent stale", encoding="utf-8")
+    (next_dir / "main.py").write_text("worker edit\n", encoding="utf-8")
+    (next_dir / "new_helper.py").write_text("new file\n", encoding="utf-8")
+    (next_dir / ".task_context").mkdir()
+    (next_dir / ".task_context" / "w1.md").write_text("old next_v: 290", encoding="utf-8")
+
+    preserved = tool_planning._incremental_reset_next_dir(next_dir, source)
+
+    assert preserved == ["new_helper.py"]
+    assert (next_dir / "main.py").read_text(encoding="utf-8") == "source\n"
+    assert (next_dir / "new_helper.py").exists()
+    assert not (next_dir / ".task_context").exists()
+
+
+def test_master_prompt_disallows_manual_task_context_files():
+    text = (CORE / "prompts" / "master_prompt.md").read_text(encoding="utf-8")
+
+    assert "Do not manually create, copy, or reference `.task_context`" in text
+    assert "write it to `.task_context" not in text
+
+
 def test_scheduler_status_excludes_collected_from_missing():
     import tool_eval
 
