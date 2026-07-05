@@ -361,9 +361,15 @@ _REPO_BASELINE_VALIDATION_STAGES = frozenset({
     "precommit_failed",
     "verified",
 })
+_REPO_BASELINE_VALIDATION_GATES = {
+    "quality_failed": "quality",
+    "quality_passed": "quality",
+    "precommit_failed": "precommit_eval",
+    "verified": "precommit_eval",
+}
 
 
-def _stage_refreshes_repo_baseline(old_stage, new_stage) -> bool:
+def _stage_refreshes_repo_baseline(old_stage, new_stage, gate_results=None) -> bool:
     """Return True when a checkpoint stage proves the candidate on this HEAD.
 
     HEAD-drift recovery can legitimately route a candidate through a hard gate
@@ -371,7 +377,12 @@ def _stage_refreshes_repo_baseline(old_stage, new_stage) -> bool:
     baseline must move forward to the HEAD that actually ran the validation;
     otherwise later recovery health checks keep comparing against stale code.
     """
-    return old_stage != new_stage and new_stage in _REPO_BASELINE_VALIDATION_STAGES
+    if new_stage not in _REPO_BASELINE_VALIDATION_STAGES:
+        return False
+    if old_stage != new_stage:
+        return True
+    required_gate = _REPO_BASELINE_VALIDATION_GATES.get(new_stage)
+    return bool(required_gate and required_gate in (gate_results or {}))
 
 
 def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
@@ -542,7 +553,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         rework_resets_counters = is_rework_reset_transition(old_stage, stage)
         refresh_repo_baseline = (
             rework_resets_counters
-            or _stage_refreshes_repo_baseline(old_stage, stage)
+            or _stage_refreshes_repo_baseline(old_stage, stage, existing_gate_results)
         )
         if rework_resets_counters:
             existing_precommit_attempt = 0
