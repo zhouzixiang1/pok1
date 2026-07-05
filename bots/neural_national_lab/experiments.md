@@ -717,3 +717,53 @@
 - The useful product of this round is the native opponent-profile data path
   plus targeted counterfactual filters. The next native round should collect
   broader explicit action-value data before enabling another runtime gate.
+
+## Native TCP Round 2 Notes
+
+- Added `native_tcp_counterfactual_shard_runner.py` for sharded native TCP
+  counterfactual collection. It runs real `national_bot.py` TCP clients,
+  rejects adapter opponents by default through the underlying evaluator path,
+  writes per-shard JSON/JSONL files, and can merge partial runs with
+  `--merge-only`.
+- The first top5 shard batch for `v085` used protocol-native `national_v3`,
+  `national_v9`, `national_v17`, `national_v18`, and `national_v20`. Because
+  some shards were interrupted, the merged report contains 69 rows, 59 ok rows,
+  and 105 target samples. Overall mean delta was `-1272.38` chips with median
+  `0`; `raise_2pot` alternatives were significantly negative, while
+  `raise_pot` remained noisy.
+- `native_tcp_value_v085_profile_fc_top5_d77_context_clip4000.jsonl` combines
+  the new shard output with earlier v085 profile probes: 77 preflop rows,
+  152 clipped fold/call targets, input dimension 60. The h32 model
+  `native_tcp_value_v085_profile_fc_top5_context_h32_seed1512.json` trained on
+  CUDA and was the best small head by validation metrics (`val_mae=0.1616`,
+  `val_best_label_acc=0.8125`).
+- `v088_national_v17_native_context_strict_value_tcp` wired that h32 head into
+  a strict native preflop `raise_pot -> fold/call` gate. On the older
+  outer-checkout top5 same-seed evaluation it improved over v082 by `+43221`
+  chips over 25 paired rows / 3500 hands, but remained absolute negative
+  (`-32580`). This was not robust: on the actual `.evolution_pok`
+  conservative-Glicko top5, v082 scored `+10103` while v088 scored `-353735`;
+  the paired diff was `-363838` with 23 negative rows and no positive rows.
+- `v089_national_v17_native_context_high_precision_tcp` raised the threshold to
+  `0.55` and mostly became inactive (`-1845` versus v082 on the older top5
+  set). `v090_national_v17_native_context_balanced_value_tcp` at threshold
+  `0.40` also failed (`-7159` versus v082).
+- A short same-seed trace showed the concrete v088 failure mode: a spot where
+  v082 converted internal `556` into a legal `raise 656`, while v088 folded.
+  That made `raise_pot -> fold` a protocol-safe but strategically dangerous
+  neural veto.
+- `v091_national_v17_native_context_call_only_tcp` disabled neural fold and
+  allowed only `raise_pot -> call`. It reduced the `.evolution_pok` top5 damage
+  from `-363838` to `-65922` versus v082, but still lost overall. It gained
+  against `national_v10`, `national_v18`, and `national_v3`, while losing large
+  pots versus `national_v1` and `national_v2`.
+- `v092_national_v17_native_context_call_only_early_tcp` added
+  `2 <= opponent_actions_total <= 4`, but produced the same result as v091.
+  The harmful branch is therefore already in the early profile window, and the
+  current 12-feature opponent profile cannot separate the good v10/v18/v3
+  bucket from the bad v1/v2 bucket.
+- Current status: the native neural route has real infrastructure and local
+  signal, but no deployable strength improvement. The strongest actual bot in
+  these tests remains the v082/v17 rule baseline. The next useful experiment is
+  larger explicit counterfactual data including `.evolution_pok` rating leaders
+  and held-out opponent groups, not another scalar threshold sweep on d77.
