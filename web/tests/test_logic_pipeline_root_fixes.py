@@ -1065,6 +1065,9 @@ wc -l bots/claude_v234/strategy.py
     rm_allowed = "rm bots/claude_v234/tmp.py"
     rm_relative_bare = "rm -rf __pycache__"
     rm_relative_after_cd = "cd bots/claude_v234 && rm -rf __pycache__ && python -B -c \"import strategy\" 2>&1"
+    rm_allowed_and_parent_pycache = (
+        "rm -rf bots/claude_v234/__pycache__ bots/claude_v240/__pycache__ 2>&1"
+    )
     redirect_relative_after_cd = "cd bots/claude_v234 && echo x > notes.txt"
     rm_relative_other_bot_after_cd = "cd bots/claude_v240 && rm -rf __pycache__"
     rm_other_bot = "rm bots/claude_v240/tmp.py"
@@ -1112,6 +1115,13 @@ wc -l bots/claude_v234/strategy.py
     assert llm_query._subagent_bash_write_scope_violation(redirect_allowed, allowed) is None
     assert llm_query._subagent_bash_write_scope_violation(rm_allowed, allowed) is None
     assert llm_query._subagent_bash_write_scope_violation(rm_relative_after_cd, allowed) is None
+    assert (
+        llm_query._subagent_bash_write_scope_violation(
+            rm_allowed_and_parent_pycache,
+            allowed,
+        )
+        == "rm:bots/claude_v240/__pycache__"
+    )
     assert llm_query._subagent_bash_write_scope_violation(redirect_relative_after_cd, allowed) is None
     assert llm_query._subagent_bash_write_scope_violation(rm_relative_bare, allowed).startswith("rm:")
     assert llm_query._subagent_bash_write_scope_violation(
