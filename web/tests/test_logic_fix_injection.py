@@ -6,7 +6,9 @@ critical fixes are applied to every new bot generation.
 
 import sys
 import shutil
+import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -221,3 +223,83 @@ def test_embedded_selftest_gate_reports_synthetic_failure(tmp_path):
     assert len(errors) == 1
     assert "postflop.py" in errors[0]
     assert "boom" in errors[0]
+
+
+def test_crossover_reapplies_known_fixes_after_llm_copy(tmp_path, monkeypatch):
+    sys.path.insert(0, str(CORE_DIR))
+    try:
+        import evolution_infra
+        import agent_review
+        import workflow_profiles
+    finally:
+        sys.path.remove(str(CORE_DIR))
+
+    bots_root = tmp_path / "bots"
+    logs_root = tmp_path / "logs"
+    prompts = tmp_path / "prompts"
+    parent = bots_root / "claude_v1"
+    target = bots_root / "claude_v3"
+    parent.mkdir(parents=True)
+    logs_root.mkdir()
+    prompts.mkdir()
+    (prompts / "crossover_prompt.md").write_text("make v{{version}}", encoding="utf-8")
+    (parent / "postflop.py").write_text(
+        '''
+def disciplined_opp_river_margin():
+    """
+    Standard-bucket (vpip>=0.58, pfr>=0.28) returns exactly 0.0 by construction —
+    long-tail H2H is unaffected.
+    """
+
+if __name__ == '__main__':
+    # ── disciplined_opp_river_margin self-test ──────────────────────────────
+    # Fixture A — standard-bucket defaults (vpip/pfr at priors): delta MUST be 0
+    std_om = {"vpip": 0.58, "pfr": 0.28, "confidence": 0.5}
+''',
+        encoding="utf-8",
+    )
+
+    class UI:
+        def log_history(self, *_args, **_kwargs):
+            pass
+
+        def clear_io(self):
+            pass
+
+        def set_status(self, *_args, **_kwargs):
+            pass
+
+    def get_bot_dir(version):
+        return bots_root / f"claude_v{version}"
+
+    def get_logs_dir(version):
+        path = logs_root / f"v{version}"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    async def fake_run_claude_query(*_args, **_kwargs):
+        # Simulate an LLM that rebuilds the child from the stale parent after
+        # the pre-LLM fix injection already ran.
+        shutil.rmtree(target)
+        shutil.copytree(parent, target)
+
+    monkeypatch.setattr(agent_review, "PROMPTS_DIR", prompts)
+    monkeypatch.setattr(agent_review, "get_bot_dir", get_bot_dir)
+    monkeypatch.setattr(agent_review, "get_logs_dir", get_logs_dir)
+    monkeypatch.setattr(agent_review, "run_claude_query", fake_run_claude_query)
+    monkeypatch.setattr(agent_review, "verify_code", lambda _path: [])
+    monkeypatch.setattr(agent_review, "run_import_contract_test", lambda _path: [])
+    monkeypatch.setattr(agent_review, "run_smoke_test", lambda _path: [])
+    monkeypatch.setattr(evolution_infra, "write_pipeline_checkpoint", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        workflow_profiles,
+        "get_workflow_profile",
+        lambda: SimpleNamespace(national_execution_mode="adapter"),
+    )
+
+    ok = asyncio.run(agent_review._run_crossover(1, 2, 3, UI()))
+
+    assert ok is True
+    text = (target / "postflop.py").read_text(encoding="utf-8")
+    assert "Standard-bucket (vpip>=0.62, pfr>=0.32)" in text
+    assert 'std_om = {"vpip": 0.62, "pfr": 0.32, "confidence": 0.5}' in text
