@@ -929,12 +929,14 @@ def _make_subagent_cost_guard(role_name):
                 from system_log import log_system_event
                 log_system_event(
                     "pipeline.subagent_cost_guard_block",
-                    "error",
+                    "warn",
                     f"BLOCKED high-cost {role_name} Bash: {reason}",
                     {
                         "role": role_name,
                         "tool": tool_name,
                         "reason": reason,
+                        "recoverable": True,
+                        "next_action": "retry_with_bounded_inspection",
                         "command_preview": str(cmd)[:2000],
                         "command_truncated": len(str(cmd)) > 2000,
                     },
