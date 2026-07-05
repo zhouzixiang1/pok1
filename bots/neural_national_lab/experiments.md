@@ -692,3 +692,28 @@
   neural raises. The next serious advantage attempt should collect explicit
   single-decision counterfactual rollouts on the same deck, then train from
   action delta rather than from observed hand delta.
+
+## Native TCP Round 1 Notes
+
+- `v085_national_v17_profile_trace_tcp` is the native data-contract fork. It
+  keeps v17 behavior but adds match-level opponent-profile features to each
+  request and trace row.
+- `native_tcp_value_v085_profile_fc_d18_context_clip2000.jsonl` contains 18
+  preflop rows and 35 masked fold/call targets from native TCP
+  counterfactual probes against `national_v3`, `national_v9`, `national_v17`,
+  and `national_v18`.
+- `native_tcp_value_v085_profile_fc_context_h16_seed1301.json` is the first
+  60-feature state-plus-opponent-profile value head. It trained on CUDA with
+  validation MAE `0.0522`, but the dataset is too small to trust broadly.
+- `v086_national_v17_native_context_value_fc_tcp` wired that value head into
+  runtime. It reproduced a local `+292` chip same-seed improvement against
+  `national_v3`, but failed broad paired evaluation versus v082 by `-59926`
+  chips over 20 paired top-rule samples. Do not promote it.
+- `v087_national_v17_native_context_early_veto_tcp` narrowed the intervention
+  to the early small-blind open-raise veto. It preserved the local `+292`
+  diagnostic but was exactly neutral versus v082 on the same 2800-hand
+  top-rule evaluation and additional filtered probes found one matching
+  negative example. Treat it as a scoped diagnostic, not a strength candidate.
+- The useful product of this round is the native opponent-profile data path
+  plus targeted counterfactual filters. The next native round should collect
+  broader explicit action-value data before enabling another runtime gate.

@@ -51,6 +51,8 @@ def _features(row: dict[str, Any], feature_set: str) -> list[float] | None:
         values = row.get("advantage_features")
     elif feature_set == "state":
         values = row.get("state_features")
+    elif feature_set == "native_context":
+        values = row.get("native_context_features")
     else:
         raise ValueError(f"unknown feature set: {feature_set}")
     if not isinstance(values, list):
@@ -211,7 +213,7 @@ def main() -> None:
     parser.add_argument("--input", action="append", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--summary", type=Path)
-    parser.add_argument("--feature-set", choices=["advantage", "state"], default="advantage")
+    parser.add_argument("--feature-set", choices=["advantage", "state", "native_context"], default="advantage")
     parser.add_argument(
         "--target",
         choices=["delta_vs_rule", "regret_vs_mean", "action_values"],

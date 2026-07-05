@@ -1,0 +1,39 @@
+{
+  "execution_mode": "native_tcp_counterfactual",
+  "candidate_path": "/home/zzx/project/pok/bots/neural_national_lab/versions/v085_national_v17_profile_trace_tcp",
+  "opponent_path": "/home/zzx/project/pok/bots/national_v3",
+  "hands": 12,
+  "deck_seed_base": 2026071400,
+  "bot_seed_base": 202607140000,
+  "filters": {
+    "stage": "preflop",
+    "min_hand": 1,
+    "min_opponent_actions": 2,
+    "max_opponent_actions": 3,
+    "max_opponent_raise_rate": 0.0,
+    "rule_labels": [
+      "raise_pot"
+    ],
+    "alternative_labels": [
+      "fold"
+    ],
+    "initial_sb_only": true,
+    "initial_sb_max_to_call": 60.0
+  },
+  "trace_decisions": 21,
+  "baseline_net_chips": -443,
+  "baseline_passed_compliance": true,
+  "baseline_issues": [],
+  "rows": [],
+  "summary": {
+    "rows": 0,
+    "target_samples": 0,
+    "mean_delta": 0.0,
+    "median_delta": 0.0,
+    "positive": 0,
+    "negative": 0,
+    "zero": 0,
+    "status_counts": {},
+    "by_label": {}
+  }
+}
