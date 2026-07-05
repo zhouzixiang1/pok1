@@ -5,6 +5,7 @@ import { useHistory } from "../context/DataProvider";
 import PageMeta from "../components/common/PageMeta";
 import { SegmentedControl } from "../components/shared/SegmentedControl";
 import { Skeleton } from "../components/shared/Skeleton";
+import { compactBotName } from "../lib/utils";
 
 const COLORS = [
   "#465FFF", "#9CB9FF", "#F59E0B", "#10B981", "#EF4444",
@@ -57,7 +58,7 @@ export default function RatingTrends() {
     if (metric === "glicko") {
       names.forEach((name, i) => {
         series.push({
-          name: name.replace("claude_", ""),
+          name: compactBotName(name),
           type: "line" as const,
           data: history.map((e) => e.ratings[name]?.r ?? null),
           color: COLORS[i % COLORS.length],
@@ -66,7 +67,7 @@ export default function RatingTrends() {
     } else {
       names.forEach((name, i) => {
         series.push({
-          name: name.replace("claude_", ""),
+          name: compactBotName(name),
           type: "line" as const,
           data: history.map((e) => {
             const wr = e.win_rates?.[name]?.h2h_avg_wr;
@@ -81,9 +82,6 @@ export default function RatingTrends() {
   }, [history, showConfidence, metric]);
 
   const yTitle = metric === "glicko" ? "Glicko-2 评分" : "H2H 平均胜率";
-  const yFormatter = metric === "h2h_wr"
-    ? (val: number) => `${(val * 100).toFixed(1)}%`
-    : undefined;
 
   const options: ApexOptions = useMemo(
     () => ({
@@ -131,13 +129,13 @@ export default function RatingTrends() {
       yaxis: {
         labels: {
           style: { fontSize: "12px", colors: ["#6B7280"] },
-          formatter: yFormatter as ((val: number) => string) | undefined,
+          formatter: metric === "h2h_wr" ? (val: number) => `${(val * 100).toFixed(1)}%` : undefined,
         },
         title: { text: yTitle, style: { fontSize: "12px" } },
       },
       theme: { mode: "light" },
     }),
-    [categories, showConfidence, metric, yTitle, yFormatter, JSON.stringify(names)]
+    [categories, showConfidence, metric, yTitle, names]
   );
 
   if (history.length === 0) {

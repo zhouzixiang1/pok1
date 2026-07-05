@@ -37,7 +37,9 @@ async function extractError(res: Response): Promise<never> {
   try {
     const b = await res.json();
     if (b.detail) msg += `: ${b.detail}`;
-  } catch {}
+  } catch {
+    // Keep the status-only message when the error body is not JSON.
+  }
   throw new Error(msg);
 }
 

@@ -5,6 +5,7 @@ import { useMatchMatrix, useH2H } from "../context/DataProvider";
 import PageMeta from "../components/common/PageMeta";
 import { SegmentedControl } from "../components/shared/SegmentedControl";
 import { Skeleton } from "../components/shared/Skeleton";
+import { compactBotName } from "../lib/utils";
 
 type ViewMode = "winrate" | "count";
 
@@ -16,7 +17,7 @@ export default function MatchMatrix() {
   const { series, options } = useMemo(() => {
     if (!data || !data.bots.length) return { series: [], options: {} };
 
-    const bots = data.bots.map((b) => b.replace("claude_", ""));
+    const bots = data.bots.map(compactBotName);
     const isH2H = data.source === "h2h";
 
     if (viewMode === "count" && Object.keys(h2hRaw).length > 0) {
@@ -31,7 +32,7 @@ export default function MatchMatrix() {
       );
 
       const series = data.bots.map((botName, i) => ({
-        name: botName.replace("claude_", ""),
+        name: compactBotName(botName),
         data: data.bots.map((_, j) => ({ x: bots[j], y: gamesMatrix[i][j] })),
       }));
 
@@ -78,7 +79,7 @@ export default function MatchMatrix() {
 
     // Default: win rate view
     const series = data.bots.map((botName, i) => ({
-      name: botName.replace("claude_", ""),
+      name: compactBotName(botName),
       data: data.bots.map((_, j) => ({
         x: bots[j],
         y: i === j ? null : data.matrix[i]?.[j] ?? null,

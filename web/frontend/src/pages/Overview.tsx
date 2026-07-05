@@ -8,7 +8,7 @@ import PageMeta from "../components/common/PageMeta";
 import { Badge } from "../components/shared/Badge";
 import { Skeleton } from "../components/shared/Skeleton";
 import { PipelineStepper } from "../components/evolution/PipelineStatus";
-import { cn } from "../lib/utils";
+import { cn, compactBotName } from "../lib/utils";
 
 const strengthConfidenceLabel: Record<string, string> = {
   high: "强度高置信",
@@ -30,8 +30,13 @@ function DaemonToggle() {
 
   const handleToggle = async () => {
     setToggling(true);
-    try { await controlApi.setConfig({ daemon_enabled: !daemon.daemon_enabled }); } catch {}
-    setToggling(false);
+    try {
+      await controlApi.setConfig({ daemon_enabled: !daemon.daemon_enabled });
+    } catch (e) {
+      console.error("[Overview] daemon toggle failed:", e);
+    } finally {
+      setToggling(false);
+    }
   };
 
   return (
@@ -81,7 +86,7 @@ function RecentActivityCard() {
             {recentMatches.map((m) => (
               <div key={m.id} className="flex items-center gap-2 text-xs">
                 <span className="text-gray-600 dark:text-gray-300 truncate">
-                  {m.bot0.replace("claude_", "")} vs {m.bot1.replace("claude_", "")}
+                  {compactBotName(m.bot0)} vs {compactBotName(m.bot1)}
                 </span>
                 <span className="ml-auto flex gap-1.5 text-gray-500 font-mono shrink-0">
                   <span className={cn(m.bot0_wins > m.bot1_wins && "text-success-600 font-medium dark:text-success-400")}>{m.bot0_wins}</span>
@@ -98,7 +103,7 @@ function RecentActivityCard() {
         <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-border-subtle dark:bg-surface-1">
           <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">最悬殊对战</h4>
           <p className="text-sm text-gray-700 dark:text-gray-300 font-medium">
-            {topRivalry.key.split(" vs ").map((n) => n.replace("claude_", "")).join(" vs ")}
+            {topRivalry.key.split(" vs ").map(compactBotName).join(" vs ")}
           </p>
           <p className="text-xs text-gray-500 mt-1">胜率 {(topRivalry.wr * 100).toFixed(0)}% · {topRivalry.games} 场</p>
         </div>
@@ -142,6 +147,7 @@ export default function Overview() {
   const [checkpoint, setCheckpoint] = useState<PipelineCheckpoint | null>(null);
   const [localElapsed, setLocalElapsed] = useState(0);
   const lastDaemonAgeRef = useRef<number | undefined>(undefined);
+  const rateLimit = useRateLimit();
 
   useEffect(() => {
     api.historySummary().then(setSummary).catch((e) => console.error("[Overview] API error:", e));
@@ -202,8 +208,6 @@ export default function Overview() {
   const daemonAgeStr = effectiveAge != null
     ? effectiveAge < 0 ? "从未" : effectiveAge < 60 ? `${Math.round(effectiveAge)}秒前` : `${Math.round(effectiveAge / 60)}分钟前`
     : "—";
-
-  const rateLimit = useRateLimit();
 
   return (
     <>
@@ -272,7 +276,7 @@ export default function Overview() {
                   </div>
                   <div className="pr-10">
                     <Link to="/bots" className="text-lg font-bold text-gray-900 dark:text-white hover:text-brand-600 dark:hover:text-brand-400">
-                      {bot.name.replace("claude_", "")}
+                      {compactBotName(bot.name)}
                     </Link>
                   </div>
                   <div className="mt-2 flex items-baseline gap-2">
@@ -308,7 +312,7 @@ export default function Overview() {
                 <div key={bot.name} className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-border-subtle dark:bg-surface-1">
                   <div className="flex items-center justify-between">
                     <Link to="/bots" className="text-sm font-semibold text-gray-800 dark:text-white hover:text-brand-600 dark:hover:text-brand-400">
-                      {bot.name.replace("claude_", "")}
+                      {compactBotName(bot.name)}
                     </Link>
                     <span className={cn(
                       "inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold",
@@ -399,7 +403,7 @@ export default function Overview() {
                       <td className="px-5 py-2.5 text-gray-400 font-medium text-xs">{bot.rank}</td>
                       <td className="px-5 py-2.5">
                         <Link to="/bots" className="text-sm font-medium text-gray-800 dark:text-gray-200 hover:text-brand-600 dark:hover:text-brand-400">
-                          {bot.name.replace("claude_", "")}
+                          {compactBotName(bot.name)}
                         </Link>
                       </td>
                       <td className="px-5 py-2.5">

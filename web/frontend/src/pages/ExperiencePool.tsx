@@ -39,7 +39,9 @@ export default function ExperiencePool() {
       const text = await api.experience();
       setContent(text);
       if (!isEditingRef.current) setEditContent(text);
-    } catch {}
+    } catch (e) {
+      console.error("[ExperiencePool] experience refresh failed:", e);
+    }
   }, []);
 
   useEffect(() => {
