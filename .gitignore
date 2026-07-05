@@ -34,6 +34,11 @@ bots/graveyard/
 # Claude Code worktrees
 .claude/worktrees/
 
+# Nested evolution runtime clone. This is a separate checkout used only for the
+# autonomous evolution process; sync it through git/origin, never by staging it
+# from the outer checkout.
+.evolution_pok/
+
 # Per-generation worker task briefs — transient (Master LLM writes, Workers
 # read at runtime per master_prompt.md). Stale ones archived to
 # archive/task_context/bots/. Ignore active locations to stop git churn.
