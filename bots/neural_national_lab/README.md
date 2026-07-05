@@ -122,14 +122,53 @@ Current native TCP evidence, using paired reports where available:
   max opponent action filters, opponent raise-rate filters, and an
   `--initial-sb-only` scope. Use those filters for targeted native TCP
   action-value collection before enabling any new runtime neural gate.
+- `tools/native_tcp_counterfactual_shard_runner.py` shards native TCP
+  counterfactual probes across protocol-native opponents and can merge partial
+  shard outputs. The first top5 run for v085 against `national_v3`,
+  `national_v9`, `national_v17`, `national_v18`, and `national_v20` landed
+  69 rows / 105 fold-call targets after interrupted shards. The merged target
+  set was negative on average (`mean=-1272.38`, median `0`), with a clear
+  warning bucket for rule `raise_2pot`.
+- `native_tcp_value_v085_profile_fc_top5_d77_context_clip4000.jsonl` combines
+  that shard output with earlier native profile probes into 77 preflop rows and
+  152 clipped fold/call targets. The best small model was the h32 native-context
+  value head `native_tcp_value_v085_profile_fc_top5_context_h32_seed1512.json`,
+  trained on CUDA with validation MAE `0.1616` and masked best-label accuracy
+  `0.8125`.
+- `v088_national_v17_native_context_strict_value_tcp` wired the h32 head into a
+  strict preflop `raise_pot -> fold/call` proposal gate. It looked promising on
+  the older outer-checkout top5 same-seed set: versus v082 it was `+43221`
+  chips over 25 paired rows / 3500 hands, though still absolute negative
+  (`-32580`). The result did not generalize. Against the actual
+  `.evolution_pok` conservative-Glicko top5 (`national_v2`, `national_v3`,
+  `national_v1`, `national_v18`, `national_v10`), v082 scored `+10103` while
+  v088 scored `-353735`; the paired diff was `-363838`, with 23 negative rows,
+  0 positive rows, and 2 zero rows.
+- `v089_national_v17_native_context_high_precision_tcp` raised the same value
+  threshold to `0.55` and became mostly inactive: on the older outer-checkout
+  top5 set it was `-1845` versus v082. v090 at threshold `0.40` was also worse
+  than v082 (`-7159`).
+- `v091_national_v17_native_context_call_only_tcp` disabled neural fold and
+  kept only `raise_pot -> call` downgrades. This removed most of v088's damage
+  but still lost to v082 on the `.evolution_pok` Glicko top5 (`-65922` diff):
+  it was positive versus `national_v10`, `national_v18`, and `national_v3`,
+  but badly negative versus `national_v1` and `national_v2`.
+- `v092_national_v17_native_context_call_only_early_tcp` added an early-profile
+  cap (`2 <= opponent_actions_total <= 4`) but produced the same diff as v091,
+  so the harmful branch is already in the early window. This is evidence that
+  the current opponent profile is not sufficient to distinguish the positive
+  v10/v18/v3 bucket from the negative v1/v2 bucket.
 
 This is not a promotion-grade strength breakthrough. The current evidence says
 the old v254/Botzone-trained action advice does not transfer to native national
-opponents. The native TCP counterfactual path now works, but the first state
-value model is too small and too poorly conditioned. The next scale step should
-expand native action-value data with opponent/style context and train a gate
-that can avoid v9/v17/v18 regressions while preserving the v3-positive bucket,
-instead of continuing global threshold tweaks.
+opponents, and the first native opponent-conditioned value head is still
+overfit. The native TCP counterfactual path now works, GPU training works, and
+there are real local positive buckets, but no neural runtime version beats the
+strong v082/v17 rule baseline across both outer-checkout rule tests and
+`.evolution_pok` rating leaders. The next scale step should collect much larger
+explicit action-value data that includes the `.evolution_pok` Glicko leaders,
+then train a model with held-out opponent groups; continuing scalar threshold
+tweaks on the d77 dataset is not justified.
 
 ## Scale-Up Gate
 

@@ -1,0 +1,120 @@
+{
+  "candidate_report": "/home/zzx/project/pok/bots/neural_national_lab/versions/v088_national_v17_native_context_strict_value_tcp",
+  "baseline_report": "/home/zzx/project/pok/bots/neural_national_lab/versions/v082_national_v17_trace_force_tcp",
+  "candidate_paired": true,
+  "baseline_paired": true,
+  "hands_per_match": 16,
+  "rows": 1,
+  "combined": {
+    "samples": 1,
+    "sum": 34886,
+    "mean": 34886,
+    "median": 34886,
+    "min": 34886,
+    "max": 34886,
+    "positive": 1,
+    "negative": 0,
+    "zero": 0
+  },
+  "opponents": {
+    "national_v20": {
+      "samples": 1,
+      "sum": 34886,
+      "mean": 34886,
+      "median": 34886,
+      "min": 34886,
+      "max": 34886,
+      "positive": 1,
+      "negative": 0,
+      "zero": 0,
+      "worst": [
+        {
+          "opponent": "national_v20",
+          "match_idx": 0,
+          "deck_seed_base": 2026071514,
+          "candidate_net_chips": 34886,
+          "baseline_net_chips": 0,
+          "delta_net_chips": 34886,
+          "hand_delta_sum": 34886,
+          "largest_hand_delta": 19899,
+          "smallest_hand_delta": -2960
+        }
+      ],
+      "best": [
+        {
+          "opponent": "national_v20",
+          "match_idx": 0,
+          "deck_seed_base": 2026071514,
+          "candidate_net_chips": 34886,
+          "baseline_net_chips": 0,
+          "delta_net_chips": 34886,
+          "hand_delta_sum": 34886,
+          "largest_hand_delta": 19899,
+          "smallest_hand_delta": -2960
+        }
+      ]
+    }
+  },
+  "worst": [
+    {
+      "opponent": "national_v20",
+      "match_idx": 0,
+      "deck_seed_base": 2026071514,
+      "candidate_net_chips": 34886,
+      "baseline_net_chips": 0,
+      "delta_net_chips": 34886,
+      "hand_delta_sum": 34886,
+      "largest_hand_delta": 19899,
+      "smallest_hand_delta": -2960
+    }
+  ],
+  "best": [
+    {
+      "opponent": "national_v20",
+      "match_idx": 0,
+      "deck_seed_base": 2026071514,
+      "candidate_net_chips": 34886,
+      "baseline_net_chips": 0,
+      "delta_net_chips": 34886,
+      "hand_delta_sum": 34886,
+      "largest_hand_delta": 19899,
+      "smallest_hand_delta": -2960
+    }
+  ],
+  "diff_rows": [
+    {
+      "opponent": "national_v20",
+      "match_idx": 0,
+      "deck_seed_base": 2026071514,
+      "candidate_net_chips": 34886,
+      "baseline_net_chips": 0,
+      "delta_net_chips": 34886,
+      "candidate_passed_compliance": true,
+      "baseline_passed_compliance": true,
+      "candidate_issues": [],
+      "baseline_issues": [],
+      "hand_delta_count": 16,
+      "hand_delta_sum": 34886,
+      "largest_hand_delta": 19899,
+      "smallest_hand_delta": -2960,
+      "hand_deltas": [
+        19115,
+        -2960,
+        0,
+        -200,
+        682,
+        -500,
+        50,
+        19899,
+        -150,
+        -150,
+        -150,
+        -150,
+        -150,
+        -150,
+        -150,
+        -150
+      ]
+    }
+  ]
+}
