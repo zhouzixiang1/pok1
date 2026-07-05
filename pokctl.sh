@@ -141,6 +141,22 @@ find_port_from_args() {
     echo "8000"
 }
 
+arg_present() {
+    local needle="$1"
+    shift || true
+    local arg
+    for arg in "$@"; do
+        if [ "$arg" = "$needle" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+frontend_static_ready() {
+    [ -f "web/server/static/index.html" ] && [ -d "web/server/static/assets" ]
+}
+
 kill_orphan() {
     local pid
     pid="$(read_pid)"
@@ -189,6 +205,13 @@ cmd_start() {
         fi
         echo "端口 $port 已被其他 checkout 或外部进程占用 (PID: $port_pid)，不在当前目录启动。"
         echo "请到对应 checkout 运行它自己的 pokctl.sh，或换一个 --port。"
+        exit 1
+    fi
+
+    if arg_present "--no-build" "$@" && ! frontend_static_ready; then
+        echo "✗ --no-build requested, but frontend static build is missing."
+        echo "  Missing: web/server/static/index.html or web/server/static/assets"
+        echo "  Start without --no-build, or run: cd web/frontend && npm ci && npm run build"
         exit 1
     fi
 

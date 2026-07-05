@@ -34,8 +34,8 @@ const TOOL_GROUPS: { label: string; tools: ToolDef[] }[] = [
       { name: "get_status", description: "获取当前进化系统状态、评分、评分引擎状态。", params: [] },
       { name: "get_bot_info", description: "查看 Bot 的详细信息：评分、父代、文件、代码大小。", params: [{ name: "version", type: "int", placeholder: "22" }] },
       { name: "get_match_history", description: "查看指定 Bot 的近期对局结果。", params: [{ name: "version", type: "int", placeholder: "22" }, { name: "n", type: "int", placeholder: "5", optional: true }] },
-      { name: "get_h2h", description: "查看指定 Bot 的 Head-to-Head 胜率数据（按对手）。", params: [{ name: "bot_name", type: "str", placeholder: "claude_v22" }, { name: "opponent", type: "str", placeholder: "claude_v21", optional: true }] },
-      { name: "get_bot_stats", description: "查看指定 Bot 的总战绩：胜/负/平/场数/胜率。", params: [{ name: "bot_name", type: "str", placeholder: "claude_v22" }] },
+      { name: "get_h2h", description: "查看指定 Bot 的 Head-to-Head 胜率数据（按对手）。", params: [{ name: "bot_name", type: "str", placeholder: "national_v16" }, { name: "opponent", type: "str", placeholder: "national_v15", optional: true }] },
+      { name: "get_bot_stats", description: "查看指定 Bot 的总战绩：胜/负/平/场数/胜率。", params: [{ name: "bot_name", type: "str", placeholder: "national_v16" }] },
     ],
   },
   {
@@ -43,7 +43,7 @@ const TOOL_GROUPS: { label: string; tools: ToolDef[] }[] = [
     tools: [
       { name: "run_match_analysis", description: "分析 Bot 的近期败局，返回弱点与模式。", params: [{ name: "source_v", type: "int", placeholder: "22" }] },
       { name: "run_performance_verification", description: "LLM 性能分析：趋势、弱点、多样性。", params: [{ name: "source_v", type: "int", placeholder: "22" }] },
-      { name: "analyze_stagnation", description: "检查进化是否停滞或只是 Glicko 噪声。", params: [{ name: "source_v", type: "int", placeholder: "22" }, { name: "active_bots", type: "list", placeholder: '["claude_v22","claude_v21"]' }] },
+      { name: "analyze_stagnation", description: "检查进化是否停滞或只是 Glicko 噪声。", params: [{ name: "source_v", type: "int", placeholder: "16" }, { name: "active_bots", type: "list", placeholder: '["national_v16","national_v15"]' }] },
     ],
   },
   {
@@ -86,7 +86,7 @@ const TOOL_GROUPS: { label: string; tools: ToolDef[] }[] = [
     label: "维护",
     tools: [
       { name: "cleanup_incomplete", description: "清理未完成的 Bot 目录（无 .completed 标记且无 git tag）。", params: [] },
-      { name: "seed_initial_bots", description: "如果当前无完成的 Bot，从参考 Bot 初始化 claude_v1 到 claude_v6。", params: [] },
+      { name: "seed_initial_bots", description: "如果当前无完成的 Bot，从参考 Bot 初始化 national_v1 到 national_v6。", params: [] },
     ],
   },
 ];

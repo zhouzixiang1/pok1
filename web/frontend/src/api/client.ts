@@ -164,10 +164,12 @@ export const api = {
       throw new Error(msg);
     }
     const blob = await res.blob();
+    const disposition = res.headers.get("Content-Disposition") || res.headers.get("content-disposition") || "";
+    const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `claude_v${version}.zip`;
+    a.download = filenameMatch?.[1] || `national_v${version}.zip`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

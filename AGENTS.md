@@ -138,6 +138,11 @@ python web/core/elo_daemon.py --pairs 5 --workers 12 -v
 python web/core/elo_daemon.py --once
 ```
 
+`--no-build` is valid only when `web/server/static/index.html` and
+`web/server/static/assets/` already exist in that checkout. On a fresh
+`.evolution_pok` clone, start without `--no-build` once so `web/main.py` can run
+`npm ci` if needed and build the React dashboard.
+
 ### Web Tests And Frontend
 
 ```bash

@@ -20,7 +20,9 @@ Important behavior:
 - If `POK_BATTLE_EXPERIENCE_LLM=0`, replay summaries are still preserved as
   evidence and pending summaries. Matches are marked `summary_ready`, not
   `done`, so marker state remains honest while avoiding duplicate replay
-  parsing.
+  parsing. This write happens every polling cycle and does not wait for the
+  LLM merge threshold, so a normal daemon restart cannot lose already parsed
+  deterministic summaries.
 - `run_master` and generation selection inject source-aware structured battle
   memory. Master prompts must cite relevant `lesson_id` / `evidence_id` when
   using battle experience as a planning basis.
@@ -34,4 +36,3 @@ Design sources inspected locally:
 - `ref/llm_evolution/experience_memory/ExpeL`
 - `ref/llm_evolution/experience_memory/voyager`
 - `ref/llm_evolution/experience_memory/Deep-CFR`
-

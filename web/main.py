@@ -31,6 +31,18 @@ def build_frontend() -> bool:
         log.warning("[build] package.json not found, skipping frontend build.")
         return False
 
+    if not (frontend_dir / "node_modules").is_dir():
+        log.info("[build] node_modules missing; installing frontend dependencies with npm ci...")
+        install = subprocess.run(
+            ["npm", "ci"],
+            cwd=str(frontend_dir),
+            capture_output=True,
+            text=True,
+        )
+        if install.returncode != 0:
+            log.error("[build] Frontend dependency install failed: %s", install.stderr)
+            return False
+
     log.info("[build] Building frontend...")
     result = subprocess.run(
         ["npm", "run", "build"],

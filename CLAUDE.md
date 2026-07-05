@@ -67,6 +67,12 @@ Top-level documentation:
 ./pokctl.sh logs web/logs/app.log    # Tail app log
 ```
 
+Use `--no-build` only after `web/server/static/index.html` and
+`web/server/static/assets/` already exist in the same checkout. On a fresh
+`.evolution_pok` runtime clone, start without `--no-build` once so `web/main.py`
+can install frontend dependencies with `npm ci` if needed and build the React
+dashboard.
+
 ### Evolution System
 
 ```bash

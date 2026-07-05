@@ -21,6 +21,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "web" / "server"))
 # Import server.app to create module-level broadcaster and web_ui
 # (some endpoints do `from server.app import web_ui` inside handlers)
 import server.app  # noqa: F401
+from bot_namespace import ACTIVE_BOT_PREFIX, parse_bot_version
 
 from server.routes.ratings import router as ratings_router
 from server.routes.matches import router as matches_router
@@ -65,7 +66,7 @@ def pytest_configure(config):
             d
             for d in bots_dir.iterdir()
             if d.is_dir()
-            and d.name.startswith("claude_v")
+            and d.name.startswith(ACTIVE_BOT_PREFIX)
             and not d.name.endswith(".tmp")
         ]
         _has_active_bot = len(active) > 0
@@ -75,7 +76,7 @@ def pytest_configure(config):
     gy = bots_dir / "graveyard"
     if gy.exists():
         graveyard = [
-            d for d in gy.iterdir() if d.is_dir() and d.name.startswith("claude_v")
+            d for d in gy.iterdir() if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX)
         ]
         _has_graveyard_bot = len(graveyard) > 0
     else:
@@ -184,13 +185,13 @@ def active_bot_version():
         except (json.JSONDecodeError, OSError, ValueError):
             time.sleep(0.1)
     rated_versions = sorted(
-        int(b.split("_v")[1])
+        version
         for b in bots
-        if b in rated and b.split("_v")[1].isdigit()
+        if b in rated and (version := parse_bot_version(b)) is not None
     )
     if rated_versions:
         return rated_versions[len(rated_versions) // 2]
-    versions = sorted(int(b.split("_v")[1]) for b in bots if b.split("_v")[1].isdigit())
+    versions = sorted(version for b in bots if (version := parse_bot_version(b)) is not None)
     return versions[len(versions) // 2]
 
 
@@ -200,14 +201,12 @@ def graveyard_bot_version():
     graveyard = main_bots / "graveyard"
     main_names = set()
     if main_bots.exists():
-        main_names = {d.name for d in main_bots.iterdir() if d.is_dir() and d.name.startswith("claude_v")}
+        main_names = {d.name for d in main_bots.iterdir() if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX)}
     if graveyard.exists():
         for d in sorted(graveyard.iterdir(), reverse=True):
-            if d.is_dir() and d.name.startswith("claude_v") and d.name not in main_names:
-                try:
-                    return int(d.name.split("_v")[1])
-                except (ValueError, IndexError):
-                    pass
+            version = parse_bot_version(d.name)
+            if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX) and d.name not in main_names and version is not None:
+                return version
     return None
 
 
@@ -273,12 +272,12 @@ def isolate_state(tmp_path, monkeypatch):
     real_bots = PROJECT_ROOT / "bots"
     if real_bots.exists():
         for d in real_bots.iterdir():
-            if d.is_dir() and d.name.startswith("claude_v") and not d.name.endswith(".tmp"):
+            if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX) and not d.name.endswith(".tmp"):
                 (bots_dir / d.name).symlink_to(d)
         real_gy = real_bots / "graveyard"
         if real_gy.exists():
             for d in real_gy.iterdir():
-                if d.is_dir() and d.name.startswith("claude_v"):
+                if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX):
                     (graveyard_dir / d.name).symlink_to(d)
 
     # Symlink real data files into isolated results_dir for tests that need
@@ -293,6 +292,34 @@ def isolate_state(tmp_path, monkeypatch):
         src = real_results / fname
         if src.exists():
             (results_dir / fname).symlink_to(src)
+    if not (results_dir / "glicko_ratings.json").exists():
+        import json
+
+        active_names = sorted(
+            (
+                d.name
+                for d in bots_dir.iterdir()
+                if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX)
+            ),
+            key=lambda name: parse_bot_version(name) or 0,
+        )
+        ratings = {
+            name: {"r": 1500 + idx * 5, "rd": 80, "sigma": 0.06, "last_period": "test"}
+            for idx, name in enumerate(active_names)
+        }
+        bot_stats = {
+            name: {"wins": 1, "losses": 1, "draws": 0, "games": 2, "win_rate": 0.5}
+            for name in active_names
+        }
+        h2h = {}
+        if len(active_names) >= 2:
+            a, b = active_names[0], active_names[1]
+            h2h[f"{a} vs {b}"] = {"games": 2, "a_wins": 1, "b_wins": 1, "draws": 0, "win_rate": 0.5}
+        (results_dir / "glicko_ratings.json").write_text(json.dumps(ratings), encoding="utf-8")
+        if not (results_dir / "bot_stats.json").exists():
+            (results_dir / "bot_stats.json").write_text(json.dumps(bot_stats), encoding="utf-8")
+        if not (results_dir / "head_to_head.json").exists():
+            (results_dir / "head_to_head.json").write_text(json.dumps(h2h), encoding="utf-8")
     # match_history.jsonl is copied, not symlinked: some tests append/write a
     # synthetic history file, and a symlink would corrupt production runtime data.
     match_history_src = real_results / "match_history.jsonl"
