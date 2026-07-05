@@ -649,6 +649,7 @@ class TestPostCleanupExperienceCommit:
         exp.write_text("## RECENT_LESSONS\n- changed\n")
         state = {"staged": False, "ensured": False}
         calls = []
+        published = []
 
         def fake_git(*args, check=True):
             calls.append(args)
@@ -669,6 +670,11 @@ class TestPostCleanupExperienceCommit:
         monkeypatch.setattr(evolution_infra, "EXPERIENCE_FILE", exp)
         monkeypatch.setattr(evolution_infra, "_git", fake_git)
         monkeypatch.setattr(evolution_infra, "_git_ensure_main_branch", lambda: state.update(ensured=True))
+        monkeypatch.setattr(
+            evolution_infra,
+            "publish_runtime_expected_head",
+            lambda reason, version=None: published.append((reason, version)) or "abc1234",
+        )
         monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *a, **k: None)
 
         result = generation_scheduler._commit_post_cleanup_experience_change(240, set())
@@ -682,6 +688,7 @@ class TestPostCleanupExperienceCommit:
         assert state["ensured"] is True
         assert ("add", "--", "web/core/experience_pool.md") in calls
         assert any(call[:2] == ("commit", "-m") for call in calls)
+        assert published == [("post_cleanup_experience_commit", 240)]
 
     def test_post_cleanup_experience_commit_honors_push_policy(self, tmp_path, monkeypatch):
         import evolution_infra
@@ -692,6 +699,7 @@ class TestPostCleanupExperienceCommit:
         exp.write_text("## RECENT_LESSONS\n- changed\n")
         state = {"staged": False}
         pushed = []
+        published = []
 
         def fake_git(*args, check=True):
             if args[:3] == ("status", "--porcelain", "--"):
@@ -713,6 +721,11 @@ class TestPostCleanupExperienceCommit:
         monkeypatch.setattr(evolution_infra, "_git", fake_git)
         monkeypatch.setattr(evolution_infra, "_git_ensure_main_branch", lambda: None)
         monkeypatch.setattr(evolution_infra, "git_push_refs", lambda *refs: pushed.append(refs) or True)
+        monkeypatch.setattr(
+            evolution_infra,
+            "publish_runtime_expected_head",
+            lambda reason, version=None: published.append((reason, version)) or "def5678",
+        )
         monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *a, **k: None)
 
         result = generation_scheduler._commit_post_cleanup_experience_change(241, set())
@@ -720,6 +733,10 @@ class TestPostCleanupExperienceCommit:
         assert result["committed"] is True
         assert result["push_ok"] is True
         assert pushed == [("main",)]
+        assert published == [
+            ("post_cleanup_experience_commit", 241),
+            ("post_cleanup_experience_push", 241),
+        ]
 
 
 # ══════════════════════════════════════════════════════════════════════

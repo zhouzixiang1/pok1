@@ -1,4 +1,4 @@
-# logrotate config for the pok web server stdout log.
+# Template for the pok web server stdout logrotate config.
 #
 # WHAT THIS ROTATES
 #   web/logs/server.stdout.log — the uvicorn process stdout+stderr capture,
@@ -15,9 +15,9 @@
 #   Trade-off: a brief window between copy and truncate can lose a log line —
 #   acceptable for a human-inspect-only stdout capture.
 #
-# INSTALL (one-time, needs sudo):
-#   sudo cp scripts/pok.logrotate /etc/logrotate.d/pok
-#   sudo chmod 644 /etc/logrotate.d/pok
+# INSTALL (one-time, usually needs sudo):
+#   scripts/install_pok_logrotate.sh --dry-run
+#   sudo scripts/install_pok_logrotate.sh
 #   # verify it parses + would run:
 #   sudo logrotate -d /etc/logrotate.d/pok
 #   # force a rotation now to confirm it works:
@@ -26,15 +26,17 @@
 #   logrotate runs daily via /etc/cron.daily/logrotate on most distros; no extra
 #   scheduling is needed once the drop-in is installed.
 #
-# Dry-run from the repo (no install, no changes):
-#   logrotate -d scripts/pok.logrotate
+# This file is intentionally a template. Do not copy it directly to
+# /etc/logrotate.d; the installer substitutes the current checkout path and
+# owner/group so the same repository works both from the operator checkout and
+# from .evolution_pok.
 
-/home/zzx/project/pok/web/logs/server.stdout.log {
+__POK_ROOT__/web/logs/server.stdout.log {
     # Run as the directory owner. web/logs/ is group-writable and owned by
-    # zzx:zzx (not root), so logrotate — which defaults to root — refuses to
+    # the checkout user (not root), so logrotate — which defaults to root — refuses to
     # rotate this log with an "insecure permissions" error unless we tell it
     # explicitly which user/group to use via the "su" directive.
-    su zzx zzx
+    su __POK_USER__ __POK_GROUP__
     weekly
     rotate 10
     compress
