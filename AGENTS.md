@@ -76,16 +76,24 @@ Most production-style bots and the local battle engine should stay stdlib-only f
 
 ## Dual-Checkout Evolution Runtime
 
-There are two intended local checkouts under `/home/zzx/project/pok`:
+There are two local checkouts under `/home/zzx/project/pok`, and the runtime
+split is intentional:
 
 - `/home/zzx/project/pok` is the operator/infrastructure checkout. Make normal code, prompt, test, and documentation changes here, or in a temporary ignored worktree under this directory.
-- `/home/zzx/project/pok/.evolution_pok` is a separate clone reserved for the autonomous evolution process. Long-running `web/main.py`, the rating daemon, active candidate bot directories, and runtime result files belong there.
+- `/home/zzx/project/pok/.evolution_pok` is the actual long-running autonomous evolution checkout. The active `web/main.py`, rating daemon, candidate bot directories, and runtime result files belong there. When monitoring or restarting evolution, use this directory unless the user explicitly says otherwise.
 
 The two checkouts must be synchronized through `origin/main`; never copy files between them by hand. Infrastructure changes made from the outer checkout must be pushed, then fetched/merged into `.evolution_pok` at a safe point. Bot versions produced by `.evolution_pok` must be pushed with their `bot-v{N}` tags, then fetched/merged back into the outer checkout before related infrastructure or bot work continues. The detailed policy is in `docs/evolution-dual-checkout-sync-policy.md`.
 
 Before starting work, update remote state. In a clean checkout on the branch you will edit, run `git pull --ff-only --tags`; if the checkout is dirty, on a user branch, or cannot be fast-forwarded safely, run `git fetch --tags origin` and create a temporary worktree from the updated `origin/main` instead of working from a stale local HEAD.
 
 Do not switch branches, reset, or directly develop infrastructure inside `.evolution_pok` while a generation is running. If an incoming change touches `engine/`, `sever/`, `web/core/`, `web/tests/`, `web/main.py`, or the active candidate/source/opponent bot versions, stop/restart evolution from the new baseline instead of relying on automatic reconciliation. Contract-neutral changes such as docs may be reconciled by the existing `evaluation_contract`/`publish_reconcile` guard.
+
+If stale unfinished bot directories appear in the outer checkout, treat them as
+operator checkout debris unless they have both a committed bot directory and the
+matching annotated `bot-v{N}` tag. Do not promote or hand-complete such bots.
+Investigate the checkpoint/logs, then remove the untracked candidate and clear
+any stale active checkpoint so the outer checkout cannot resume an abandoned
+generation by accident.
 
 ---
 

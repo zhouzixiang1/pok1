@@ -30,6 +30,12 @@ python bot_adapter.py --bot ../bots/claude_v5 --name test
 python -m pytest tests -q
 ```
 
+The active autonomous evolution service on this machine runs from
+`/home/zzx/project/pok/.evolution_pok`. Use `sever/` here as the national TCP
+platform implementation and regression target; do not start a second evolution
+loop from the outer `/home/zzx/project/pok` checkout while `.evolution_pok` is
+active.
+
 ## Architecture
 
 ```
@@ -95,7 +101,7 @@ Do not revert, reset, restore, clean, or checkout unrelated files unless the use
 - 改代码前先从 `main` 开任务分支，默认命名 `codex/<task-name>`；在分支内完成修改和提交，再切回 `main` 合并并 push。
 - 只改当前任务需要的文件，不顺手重构、不统一无关风格、不碰 `records/` 等运行产物。
 - 协议行为、下注语义、postflop check/call、all-in runout、card mapping、THP 顺序等变更必须配套 `sever/tests` 回归测试。
-- 改 adapter 时必须记住源 bot 仍是 Botzone/local JSON bot，TCP 文本只由 adapter 生成。
+- 改 adapter 时必须记住它只服务 legacy Botzone/local JSON bot；新进化 bot 的正式提交形态应原生支持国赛 TCP 协议，不应依赖 adapter 生成 TCP 文本。
 - 最终汇报必须说明改了什么、跑了什么验证、提交/推送结果，以及哪些已有脏项未触碰。
 
 Stage only files changed for the current task. Do not use `git add -A` unless the user explicitly asks for a full repository snapshot. Generated `records/`, runtime logs, bot generation sentinels, and unrelated bot directories should not be staged unless the task is specifically about them.
