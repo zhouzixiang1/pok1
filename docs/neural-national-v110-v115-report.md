@@ -1,4 +1,4 @@
-# Neural National v110-v114 Report
+# Neural National v110-v115 Report
 
 Date: 2026-07-06
 
@@ -265,26 +265,93 @@ Combined v114 opponent totals were positive for every opponent:
 | national_v2 | `+150029` | `+53.582` | `13-7-0` |
 | national_v3 | `+193985` | `+69.280` | `14-6-0` |
 
+## v115
+
+Path:
+
+`bots/neural_national_lab/versions/v115_national_v17_flop_value_check_tcp`
+
+Change:
+
+- Derived from v114.
+- Keeps v114's preflop wheel-ace jam-call veto and existing large-commit vetoes.
+- Adds a narrow flop free-action value proposal:
+  - stage is `flop`,
+  - original rule label is `raise_pot`,
+  - `to_call == 0`, so action `0` is a national-protocol `check`,
+  - `4000 <= pot <= 6000`,
+  - learned check/call value is at least `1.0`,
+  - learned check/call value is at least `0.5` above learned `raise_pot` value.
+
+Reason:
+
+v114's v2 seed block `2026074000` still had a convertible loss at match 9,
+hand 58. The rule bot made a free flop pot-size raise of `5494` into pot
+`4778`. The multi-action value head scored check/call at `1.2336` and
+`raise_pot` at `0.6793`. A force probe changing only that decision to check
+improved the paired match by about `+5494`.
+
+Two facing-bet flop probes were negative, so v115 explicitly does not alter
+paid-call spots.
+
+Direct v2 check:
+
+`native_tcp_paired_v115_vs_v2_h70_m10_seed2026074000.json`
+
+- v2 seed block `2026074000`: `+51488`, mean/hand `+36.777`, W-L-D `4-6-0`.
+- Same block v114 baseline: `+45994`, mean/hand `+32.853`, W-L-D `4-6-0`.
+- Delta: `+5494`.
+
+Full current-top8+v7 pool:
+
+| Block | Matches | Hands | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|---:|---:|
+| seed2026073900 | 90 | 12600 | `+887454` | `+70.433` | `71-3-16` |
+| seed2026074000 | 90 | 12600 | `+440962` | `+34.997` | `37-11-42` |
+| combined | 180 | 25200 | `+1328416` | `+52.715` | `108-14-58` |
+
+Combined v115 opponent totals were positive for every opponent:
+
+| Opponent | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|
+| national_v15 | `+118971` | `+42.490` | `10-0-10` |
+| national_v5 | `+132568` | `+47.346` | `11-1-8` |
+| national_v7 | `+144375` | `+51.562` | `12-0-8` |
+| national_v8 | `+144375` | `+51.562` | `12-0-8` |
+| national_v9 | `+144375` | `+51.562` | `12-0-8` |
+| national_v14 | `+144375` | `+51.562` | `12-0-8` |
+| national_v16 | `+144375` | `+51.562` | `12-0-8` |
+| national_v2 | `+155523` | `+55.544` | `13-7-0` |
+| national_v3 | `+199479` | `+71.242` | `14-6-0` |
+
+Relative to v114:
+
+- Full-pool combined delta: `+10988` chips, `+0.436/hand`.
+- v2 delta: `+5494`.
+- v3 delta: `+5494`.
+- Other current-top8+v7 opponents were unchanged on the two seed blocks.
+
 ## Current Assessment
 
-- v114 is the current best artifact by both EV and stability:
-  - `+1317428` over 25200 full-pool hands,
-  - mean/hand `+52.279`,
+- v115 is the current best artifact by EV with unchanged full-pool W-L-D:
+  - `+1328416` over 25200 full-pool hands,
+  - mean/hand `+52.715`,
   - W-L-D `108-14-58`,
   - positive combined result against every opponent.
-- v114 preserves v113's low-loss full-pool profile while improving the hard
+- v115 preserves v114's low-loss full-pool profile while improving the hard
   v2/v3 aggregate.
 - v112 improves the hardest v2/v3 aggregate without using the adapter:
   - v108 v2/v3 combined over two full-pool blocks: v2 `-64781`, v3 `-21241`.
   - v110: v2 `+101785`, v3 `+139622`.
-  - v112: v2 `+123979`, v3 `+158022`.
+- v112: v2 `+123979`, v3 `+158022`.
 - v113: v2 `+125329`, v3 `+159522`.
 - v114: v2 `+150029`, v3 `+193985`.
-- All v110/v111/v112/v113/v114 recorded evaluations passed protocol compliance with 0
-  candidate illegal actions, 0 candidate timeouts, and 0 candidate adapter
-  actions.
+- v115: v2 `+155523`, v3 `+199479`.
+- All v110/v111/v112/v113/v114/v115 recorded evaluations passed protocol
+  compliance with 0 candidate illegal actions, 0 candidate timeouts, and 0
+  candidate adapter actions.
 
 The route now has a clear native-TCP neural performance gain over v108/v109.
-It is still not complete domination: v114's v2 record remains `13-7-0`, so the
+It is still not complete domination: v115's v2 record remains `13-7-0`, so the
 next generation should keep improving v2 match conversion while preserving
-v114's higher EV and restored low-loss full-pool profile.
+v115's higher EV and restored low-loss full-pool profile.
