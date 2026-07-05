@@ -5,6 +5,7 @@ critical fixes are applied to every new bot generation.
 """
 
 import sys
+import shutil
 from pathlib import Path
 
 import pytest
@@ -128,6 +129,7 @@ class TestFixRegistry:
         assert "BOT-002a" in fix_ids
         assert "BOT-002b" in fix_ids
         assert "BOT-004" in fix_ids
+        assert "BOT-005" in fix_ids
 
     def test_all_fixes_are_active(self, fix_injection):
         for fix in fix_injection.MANDATORY_FIXES:
@@ -143,3 +145,79 @@ class TestFixRegistry:
                 assert patch.guard is not None, (
                     f"Patch {fix.fix_id}/{patch.file_rel} should have a guard string"
                 )
+
+
+def test_bot005_updates_disciplined_margin_selftest_fixture(fix_injection, tmp_path):
+    bot_dir = tmp_path / "claude_v99"
+    bot_dir.mkdir()
+    (bot_dir / "postflop.py").write_text(
+        '''
+def disciplined_opp_river_margin():
+    """
+    Standard-bucket (vpip>=0.58, pfr>=0.28) returns exactly 0.0 by construction —
+    long-tail H2H is unaffected.
+    """
+
+if __name__ == '__main__':
+    # ── disciplined_opp_river_margin self-test ──────────────────────────────
+    # Fixture A — standard-bucket defaults (vpip/pfr at priors): delta MUST be 0
+    std_om = {"vpip": 0.58, "pfr": 0.28, "confidence": 0.5}
+''',
+        encoding="utf-8",
+    )
+
+    applied, _skipped = fix_injection.apply_known_fixes(bot_dir)
+
+    text = (bot_dir / "postflop.py").read_text(encoding="utf-8")
+    assert "BOT-005" in applied
+    assert "Standard-bucket (vpip>=0.62, pfr>=0.32)" in text
+    assert 'std_om = {"vpip": 0.62, "pfr": 0.32, "confidence": 0.5}' in text
+
+
+def test_embedded_selftest_gate_catches_and_bot005_repairs_v296(tmp_path):
+    sys.path.insert(0, str(CORE_DIR))
+    try:
+        import evolution_infra  # noqa: F401 - initialize existing re-export import order
+        import code_verification
+        import fix_injection as _fix_injection
+    finally:
+        sys.path.remove(str(CORE_DIR))
+
+    source = CORE_DIR.parents[1] / "bots" / "claude_v296"
+    if not source.exists():
+        pytest.skip("claude_v296 fixture bot is not present in this checkout")
+    bot_dir = tmp_path / "claude_v296"
+    shutil.copytree(source, bot_dir, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".completed"))
+
+    before = code_verification.run_bot_embedded_self_tests(bot_dir)
+    assert any("postflop.py" in err and "standard bucket must be 0" in err for err in before)
+
+    applied, _skipped = _fix_injection.apply_known_fixes(bot_dir)
+    after = code_verification.run_bot_embedded_self_tests(bot_dir)
+
+    assert "BOT-005" in applied
+    assert after == []
+
+
+def test_embedded_selftest_gate_reports_synthetic_failure(tmp_path):
+    sys.path.insert(0, str(CORE_DIR))
+    try:
+        import evolution_infra  # noqa: F401 - initialize existing re-export import order
+        import code_verification
+    finally:
+        sys.path.remove(str(CORE_DIR))
+
+    bot_dir = tmp_path / "claude_v1"
+    bot_dir.mkdir()
+    (bot_dir / "postflop.py").write_text(
+        "if __name__ == '__main__':\n"
+        "    # self-test\n"
+        "    assert False, 'boom'\n",
+        encoding="utf-8",
+    )
+
+    errors = code_verification.run_bot_embedded_self_tests(bot_dir)
+
+    assert len(errors) == 1
+    assert "postflop.py" in errors[0]
+    assert "boom" in errors[0]

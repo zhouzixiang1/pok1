@@ -1634,6 +1634,8 @@ def test_git_commit_bot_preserves_unrelated_staged_files(monkeypatch):
             return ""
         if args == ("rev-parse", "HEAD"):
             return "abc123456789\n"
+        if args == ("rev-parse", "--short=12", "HEAD"):
+            return "abc123456789\n"
         if args == ("tag", "-d", "bot-v999"):
             return ""
         if args == ("tag", "bot-v999", "-m", "Bot v999: test"):

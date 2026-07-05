@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 from evolution_infra import (
     CORE_DIR, PROJECT_ROOT, REFERENCE_DIR, RESULTS_DIR,
@@ -14,12 +15,74 @@ from evolution_infra import (
 )
 
 NEAR_HARD_CAP_RATIO = 0.96
+EMBEDDED_SELFTEST_MODULES = ("strategy.py", "postflop.py", "opponent.py")
 
 
 def _count_file_lines(path):
     """Count lines in a file."""
     with open(path) as fh:
         return sum(1 for _ in fh)
+
+
+def _as_text(value) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value or "")
+
+
+def _compact_process_output(stdout: str, stderr: str, max_chars: int = 1600) -> str:
+    output = "\n".join(
+        part.strip()
+        for part in (_as_text(stdout), _as_text(stderr))
+        if part and part.strip()
+    )
+    if len(output) <= max_chars:
+        return output
+    return output[-max_chars:]
+
+
+def _has_embedded_selftest(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        text = path.read_text(errors="replace")
+    lowered = text.lower()
+    return "__main__" in text and ("self-test" in lowered or "selftest" in lowered)
+
+
+def run_bot_embedded_self_tests(bot_dir, timeout: float = 20.0):
+    """Run safe module-level bot self-tests.
+
+    Only modules with explicit self-test markers are executed. Entry points that
+    are real clients (``main.py`` and ``national_bot.py``) are intentionally not
+    run here.
+    """
+
+    root = Path(bot_dir)
+    errors = []
+    for module_name in EMBEDDED_SELFTEST_MODULES:
+        path = root / module_name
+        if not path.exists() or not _has_embedded_selftest(path):
+            continue
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-B", str(path)],
+                cwd=str(PROJECT_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            output = _compact_process_output(exc.stdout or "", exc.stderr or "")
+            errors.append(f"{module_name}: timeout after {timeout:.0f}s: {output}")
+            continue
+        except Exception as exc:
+            errors.append(f"{module_name}: self-test runner error {type(exc).__name__}: {str(exc)[:300]}")
+            continue
+        if proc.returncode != 0:
+            output = _compact_process_output(proc.stdout, proc.stderr)
+            errors.append(f"{module_name}: exit {proc.returncode}: {output}")
+    return errors
 
 
 def _get_adaptive_limit(filename, base_limit, source_dir=None):

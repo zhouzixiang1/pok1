@@ -102,6 +102,36 @@ MANDATORY_FIXES: list[Fix] = [
             ),
         ],
     ),
+    Fix(
+        fix_id="BOT-005",
+        description="disciplined_opp_river_margin self-test matches widened v296 standard bucket",
+        patches=[
+            Patch(
+                file_rel="postflop.py",
+                search=(
+                    "    Standard-bucket (vpip>=0.58, pfr>=0.28) returns exactly 0.0 by construction —\n"
+                    "    long-tail H2H is unaffected.\n"
+                ),
+                replace=(
+                    "    Standard-bucket (vpip>=0.62, pfr>=0.32) returns exactly 0.0 by construction —\n"
+                    "    long-tail H2H is unaffected.\n"
+                ),
+                guard="Standard-bucket (vpip>=0.62, pfr>=0.32)",
+            ),
+            Patch(
+                file_rel="postflop.py",
+                search=(
+                    "    # Fixture A — standard-bucket defaults (vpip/pfr at priors): delta MUST be 0\n"
+                    "    std_om = {\"vpip\": 0.58, \"pfr\": 0.28, \"confidence\": 0.5}\n"
+                ),
+                replace=(
+                    "    # Fixture A — widened standard-bucket boundary: delta MUST be 0\n"
+                    "    std_om = {\"vpip\": 0.62, \"pfr\": 0.32, \"confidence\": 0.5}\n"
+                ),
+                guard='std_om = {"vpip": 0.62, "pfr": 0.32',
+            ),
+        ],
+    ),
 ]
 
 

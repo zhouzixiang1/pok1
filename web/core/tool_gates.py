@@ -463,6 +463,18 @@ async def run_quality_gates(args):
                 },
             )
             return False
+        if gate.get("embedded_selftests_ok") is not True:
+            log_system_event(
+                "pipeline.quality_cache_embedded_selftests_stale",
+                "warn",
+                f"Quality gate cache stale for v{v}; embedded self-tests were not recorded as passed.",
+                {
+                    "version": v,
+                    "source_v": source_v,
+                    "cached_embedded_selftests_ok": gate.get("embedded_selftests_ok"),
+                },
+            )
+            return False
         cached_fingerprint = gate.get("code_fingerprint")
         if cached_fingerprint and cached_fingerprint == code_fingerprint:
             return True
@@ -504,6 +516,26 @@ async def run_quality_gates(args):
             native_contract_errors = check_native_contract(bot_dir)
         except Exception as e:
             native_contract_errors = [f"native_contract_check_error: {type(e).__name__}: {str(e)[:200]}"]
+    embedded_selftest_errors = []
+    try:
+        from code_verification import run_bot_embedded_self_tests
+        embedded_selftest_errors = run_bot_embedded_self_tests(bot_dir)
+    except Exception as e:
+        embedded_selftest_errors = [f"embedded_selftest_check_error: {type(e).__name__}: {str(e)[:200]}"]
+    if embedded_selftest_errors:
+        log_system_event(
+            "pipeline.embedded_selftests_failed",
+            "error",
+            f"Embedded bot self-tests failed for v{v}: {len(embedded_selftest_errors)} issue(s)",
+            {"version": v, "source_v": source_v, "errors": embedded_selftest_errors[:5]},
+        )
+    else:
+        log_system_event(
+            "pipeline.embedded_selftests_passed",
+            "info",
+            f"Embedded bot self-tests passed for v{v}",
+            {"version": v, "source_v": source_v},
+        )
     if import_errors:
         log_system_event(
             "pipeline.import_contract_failed", "error",
@@ -621,6 +653,7 @@ async def run_quality_gates(args):
             and len(import_errors) == 0
             and len(protected_contract_errors) == 0
             and len(native_contract_errors) == 0
+            and len(embedded_selftest_errors) == 0
             and len(smoke_errors) == 0
             and (bot_dir / "main.py").exists()
             and _bot_under_project_bots
@@ -838,6 +871,7 @@ async def run_quality_gates(args):
         and len(import_errors) == 0
         and len(protected_contract_errors) == 0
         and len(native_contract_errors) == 0
+        and len(embedded_selftest_errors) == 0
         and len(smoke_errors) == 0
         and len(national_protocol_errors) == 0
         and national_acceptance_ok
@@ -864,6 +898,8 @@ async def run_quality_gates(args):
         "national_execution_mode": "native_tcp" if native_tcp_mode else "adapter",
         "national_native_contract_ok": len(native_contract_errors) == 0,
         "national_native_contract_errors": native_contract_errors[:5] if native_contract_errors else [],
+        "embedded_selftests_ok": len(embedded_selftest_errors) == 0,
+        "embedded_selftest_errors": embedded_selftest_errors[:5] if embedded_selftest_errors else [],
         "smoke_ok": len(smoke_errors) == 0,
         "smoke_errors": smoke_errors[:3] if smoke_errors else [],
         "national_protocol_ok": len(national_protocol_errors) == 0,
@@ -928,6 +964,17 @@ async def run_quality_gates(args):
                 "national_native_contract",
                 "native_tcp",
                 f"Native national TCP contract violation: {err}",
+            )
+    if embedded_selftest_errors:
+        failed_gates_detail.append(
+            f"embedded_selftests({'; '.join(e[:120] for e in embedded_selftest_errors[:3])})"
+        )
+        for err in embedded_selftest_errors[:6]:
+            _record_quality_failure(
+                v,
+                "embedded_selftests",
+                "bot_selftest",
+                f"Embedded bot self-test failure: {err[:2000]}",
             )
     if true_shadows:
         failed_gates_detail.append(
@@ -1005,6 +1052,8 @@ async def run_quality_gates(args):
         "national_execution_mode": result["national_execution_mode"],
         "national_native_contract_ok": result["national_native_contract_ok"],
         "national_native_contract_errors": result["national_native_contract_errors"],
+        "embedded_selftests_ok": result["embedded_selftests_ok"],
+        "embedded_selftest_errors": result["embedded_selftest_errors"],
         "smoke_ok": result["smoke_ok"],
         "smoke_errors": result["smoke_errors"],
         "national_protocol_ok": result["national_protocol_ok"],
@@ -1052,6 +1101,11 @@ async def run_quality_gates(args):
         metrics={"execution_mode": "native_tcp" if native_tcp_mode else "adapter"},
         blocking=native_tcp_mode,
         hidden=not native_tcp_mode,
+    ))
+    scorecard.add(GateResult.from_bool(
+        "embedded_selftests",
+        len(embedded_selftest_errors) == 0,
+        failures=embedded_selftest_errors[:5],
     ))
     scorecard.add(GateResult.from_bool("smoke", len(smoke_errors) == 0, failures=smoke_errors[:3]))
     scorecard.add(GateResult.from_bool(
