@@ -1023,6 +1023,17 @@ with CI `[-71.37, +235.26]`, split 4 positive, 73 zero, 3 negative, worst
 sample `-224`, and best sample `+12504`. This is not statistically clear, but
 it is a safer boundary-data successor candidate than v065.
 
+Extending that same five-opponent paired evaluation to g032x5 did not clear
+the promotion bar. Across v279/v283/v284/v285/v288, v066 averaged `+58.52`
+chips per 70 hands versus v064 with CI `[-30.91, +147.96]`, split 8 positive,
+146 zero, and 6 negative paired deltas. The best sample remained a large v288
+gain (`+12504`), while v279 moved negative overall (`-23.38`, CI
+`[-74.72, +27.97]`) and added a `-1429` worst sample. Keep v066 as the safer
+p073 boundary candidate, but do not treat it as a significant upgrade; the
+next data step should replay the v279 negative divergences and the v285/v288
+large positive divergences into targeted active counterfactual rows before
+spending on g064 or larger model families.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass
