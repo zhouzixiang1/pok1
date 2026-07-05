@@ -835,6 +835,18 @@ legal) plus a delta or regret value for every legal action. The national
 raise-to-total sanitizer must remain the only component that turns a raise
 bucket into protocol text.
 
+`multi_action_counterfactual_probe.py` is the first concrete implementation of
+that vector-target path. It enumerates the six fixed abstract labels at one
+bot0 decision, sanitizes each candidate through the version under test, runs
+each legal unique final action from the same judge prefix/deck/bot RNG seeds,
+and exports `state_features`, `advantage_features`, `legal_mask`,
+`action_values`, `delta_vs_rule`, and `regret_vs_mean`. It also records
+`unique_final_actions` and `final_action_counts` so a learner can tell the
+difference between fixed-label training outputs and sanitizer-collapsed branch
+actions. The v059 versus `claude_v279` smoke at `seed_base=2026080100` wrote
+two ok flop rows with six legal labels and six unique final actions per row.
+This validates the data contract only; it is not a performance claim.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass
