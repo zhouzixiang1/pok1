@@ -601,6 +601,7 @@ def test_runtime_guard_blocks_head_drift(monkeypatch):
 
 
 def test_runtime_guard_allows_unrelated_head_drift(monkeypatch):
+    import evaluation_contract
     import tool_runtime_guard
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
@@ -611,7 +612,7 @@ def test_runtime_guard_allows_unrelated_head_drift(monkeypatch):
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "old123"})
     monkeypatch.setattr(
-        tool_runtime_guard,
+        evaluation_contract,
         "changed_paths_between_heads",
         lambda *_args, **_kwargs: ["docs/experiment-notes.md", "bots/neural_national_lab/data/run.jsonl"],
     )
@@ -624,6 +625,73 @@ def test_runtime_guard_allows_unrelated_head_drift(monkeypatch):
     assert ok is True
     assert payload["head_drift_unrelated_allowed"] is True
     assert "docs/experiment-notes.md" in "\n".join(payload["head_changed_paths"])
+
+
+def test_runtime_guard_blocks_source_bot_contract_head_drift(monkeypatch):
+    import evaluation_contract
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshots = iter([
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/claude_v300/"]},
+    ])
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "old123"})
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: None)
+    monkeypatch.setattr(
+        evaluation_contract,
+        "changed_paths_between_heads",
+        lambda *_args, **_kwargs: ["bots/claude_v299/main.py"],
+    )
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_quality_gates",
+        {"version": 300, "source_v": 299},
+    )
+
+    assert ok is False
+    assert payload["reason"] == "head_changed_during_generation"
+    assert payload["evaluation_contract_unchanged"] is False
+    assert "bots/claude_v299/main.py" in payload["head_contract_paths"]
+
+
+def test_evaluation_contract_classifies_dynamic_bot_versions():
+    import evaluation_contract
+
+    contract = evaluation_contract.build_evaluation_contract(
+        Path.cwd(),
+        candidate_v=300,
+        source_v=299,
+        checkpoint={
+            "gate_results": {
+                "precommit_eval": {
+                    "opponents": [
+                        {"name": "claude_v45"},
+                        {"name": "bots/neural_national_lab/versions/v058"},
+                    ]
+                }
+            }
+        },
+    )
+    scope = evaluation_contract.classify_contract_paths(
+        [
+            "engine/battle.py",
+            "bots/claude_v300/main.py",
+            "bots/claude_v299/main.py",
+            "bots/claude_v45/main.py",
+            "bots/neural_national_lab/data/run.json",
+            "docs/notes.md",
+        ],
+        contract,
+    )
+
+    assert "engine/battle.py" in scope["contract_paths"]
+    assert "bots/claude_v300/main.py" in scope["contract_paths"]
+    assert "bots/claude_v299/main.py" in scope["contract_paths"]
+    assert "bots/claude_v45/main.py" in scope["contract_paths"]
+    assert "bots/neural_national_lab/data/run.json" in scope["external_paths"]
+    assert "docs/notes.md" in scope["external_paths"]
 
 
 def test_runtime_guard_uses_persisted_checkpoint_baseline_after_restart(monkeypatch):
@@ -1028,6 +1096,7 @@ def test_runtime_guard_blocks_commit_on_same_head_branch_alias(monkeypatch):
 
 
 def test_runtime_guard_allows_non_commit_tool_on_branch_with_unrelated_head_drift(monkeypatch):
+    import evaluation_contract
     import tool_runtime_guard
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
@@ -1041,7 +1110,7 @@ def test_runtime_guard_allows_non_commit_tool_on_branch_with_unrelated_head_drif
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "old123"})
     monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: None)
     monkeypatch.setattr(
-        tool_runtime_guard,
+        evaluation_contract,
         "changed_paths_between_heads",
         lambda *_args: ["docs/notes.md", "bots/neural_national_lab/data/run.json"],
     )
@@ -1062,6 +1131,7 @@ def test_runtime_guard_allows_non_commit_tool_on_branch_with_unrelated_head_drif
 
 
 def test_runtime_guard_blocks_commit_on_branch_with_unrelated_head_drift(monkeypatch):
+    import evaluation_contract
     import tool_runtime_guard
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
@@ -1070,7 +1140,7 @@ def test_runtime_guard_blocks_commit_on_branch_with_unrelated_head_drift(monkeyp
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "old123"})
     monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: None)
-    monkeypatch.setattr(tool_runtime_guard, "changed_paths_between_heads", lambda *_args: ["docs/notes.md"])
+    monkeypatch.setattr(evaluation_contract, "changed_paths_between_heads", lambda *_args: ["docs/notes.md"])
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "commit_bot",
@@ -1283,11 +1353,12 @@ def test_checkpoint_recovery_diagnostics_allows_branch_with_unrelated_head_drift
     tmp_path,
     monkeypatch,
 ):
+    import evaluation_contract
     import pipeline_recovery
 
     monkeypatch.setenv("POK_FORCE_PIPELINE_RECOVERY_GUARD", "1")
     monkeypatch.setattr(
-        pipeline_recovery,
+        evaluation_contract,
         "changed_paths_between_heads",
         lambda *_args: [
             "bots/neural_national_lab/data/run.json",
@@ -1322,11 +1393,12 @@ def test_checkpoint_recovery_diagnostics_blocks_branch_with_critical_head_drift(
     tmp_path,
     monkeypatch,
 ):
+    import evaluation_contract
     import pipeline_recovery
 
     monkeypatch.setenv("POK_FORCE_PIPELINE_RECOVERY_GUARD", "1")
     monkeypatch.setattr(
-        pipeline_recovery,
+        evaluation_contract,
         "changed_paths_between_heads",
         lambda *_args: ["web/core/orchestrator.py"],
     )

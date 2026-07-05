@@ -42,6 +42,7 @@ from llm_failure import is_llm_infra_error, is_shutdown_cancel_error as _is_shut
 from shutdown_manager import ShutdownManager
 from system_log import log_system_event, set_ui as set_system_log_ui
 from failure_classification import INFRA_BLOCKER_REASONS
+from evaluation_contract import evaluate_head_drift
 import logging
 
 log = logging.getLogger("pok.orchestrator")
@@ -1590,24 +1591,27 @@ def _runtime_head_drift_unrelated_allowed(expected_head: str, current_head: str)
             candidate_v = int(checkpoint.get("next_v"))
         except Exception:
             candidate_v = None
-    try:
-        from evolution_scope import changed_paths_between_heads, classify_paths
-        changed_paths = changed_paths_between_heads(PROJECT_ROOT, expected_head, current_head)
-    except Exception:
-        changed_paths = None
-    if changed_paths is None:
-        return False, {"head_drift_paths_available": False}
-    path_scope = classify_paths(changed_paths, candidate_v)
-    blocking = list(path_scope.get("blocking_entries") or [])
-    candidate_entries = list(path_scope.get("candidate_entries") or [])
-    return not (blocking or candidate_entries), {
-        "head_drift_paths_available": True,
+    allowed, payload = evaluate_head_drift(
+        PROJECT_ROOT,
+        expected_head,
+        current_head,
+        candidate_v=candidate_v,
+        checkpoint=checkpoint if isinstance(checkpoint, dict) else None,
+    )
+    contract_paths = list(payload.get("head_contract_paths") or [])
+    candidate_prefix = f"bots/claude_v{candidate_v}/" if candidate_v is not None else ""
+    payload.update({
         "candidate_v": candidate_v,
-        "head_changed_paths": changed_paths[:80],
-        "head_blocking_entries": blocking[:40],
-        "head_candidate_entries": candidate_entries[:40],
-        "head_ignored_entries": (path_scope.get("ignored_entries") or [])[:40],
-    }
+        "head_candidate_entries": [
+            f"?? {path}" for path in contract_paths
+            if candidate_prefix and path.startswith(candidate_prefix)
+        ][:40],
+        "head_blocking_entries": [
+            f"?? {path}" for path in contract_paths
+            if not candidate_prefix or not path.startswith(candidate_prefix)
+        ][:40],
+    })
+    return allowed, payload
 
 
 async def _runtime_branch_guard_coroutine(

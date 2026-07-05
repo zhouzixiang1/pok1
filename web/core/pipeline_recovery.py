@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from evolution_infra import EVOLUTION_BRANCH, PROJECT_ROOT
-from evolution_scope import changed_paths_between_heads, classify_paths, classify_status_entries
+from evaluation_contract import evaluate_head_drift
+from evolution_scope import classify_status_entries
 from repo_state import git_worktree_snapshot
 
 INACTIVE_STAGES = {None, "archived", "abandoned", "timed_out"}
@@ -118,6 +119,7 @@ def _current_branch_alias_resume_allowed(
 def _current_branch_unrelated_head_resume_allowed(
     *,
     root: Path,
+    checkpoint: dict[str, Any],
     stage: str | None,
     next_v: int | None,
     current_branch: str,
@@ -139,20 +141,34 @@ def _current_branch_unrelated_head_resume_allowed(
         and not blocking_entries
     ):
         return False, {}
-    changed_paths = changed_paths_between_heads(root, baseline_head, current_head)
-    if changed_paths is None:
+    allowed, drift = evaluate_head_drift(
+        root,
+        baseline_head,
+        current_head,
+        candidate_v=next_v,
+        checkpoint=checkpoint,
+    )
+    if not drift.get("head_drift_paths_available"):
         return False, {"current_branch_head_paths_available": False}
-    path_scope = classify_paths(changed_paths, next_v)
-    blocking = list(path_scope.get("blocking_entries") or [])
-    candidate_entries = list(path_scope.get("candidate_entries") or [])
+    contract_paths = list(drift.get("head_contract_paths") or [])
+    candidate_prefix = f"bots/claude_v{next_v}/" if next_v is not None else ""
+    candidate_entries = [
+        f"?? {path}" for path in contract_paths
+        if candidate_prefix and path.startswith(candidate_prefix)
+    ]
+    blocking = [
+        f"?? {path}" for path in contract_paths
+        if not candidate_prefix or not path.startswith(candidate_prefix)
+    ]
     payload = {
         "current_branch_head_paths_available": True,
-        "current_branch_head_changed_paths": changed_paths[:80],
+        "current_branch_head_changed_paths": drift.get("head_changed_paths", [])[:80],
         "current_branch_head_blocking_entries": blocking[:40],
         "current_branch_head_candidate_entries": candidate_entries[:40],
-        "current_branch_head_ignored_entries": (path_scope.get("ignored_entries") or [])[:40],
+        "current_branch_head_ignored_entries": drift.get("head_ignored_entries", [])[:40],
+        "current_branch_evaluation_contract_unchanged": allowed,
     }
-    if blocking or candidate_entries:
+    if not allowed:
         return False, payload
     return True, payload
 
@@ -288,6 +304,7 @@ def checkpoint_recovery_diagnostics(
     current_branch_unrelated_head_allowed, current_branch_unrelated_head_diag = (
         _current_branch_unrelated_head_resume_allowed(
             root=root,
+            checkpoint=checkpoint,
             stage=stage,
             next_v=next_v,
             current_branch=current_branch,
@@ -337,6 +354,23 @@ def checkpoint_recovery_diagnostics(
     ):
         issues.append("repo_baseline_branch_mismatch")
     if baseline_head and current_head and baseline_head != current_head:
+        contract_baseline_present = bool(
+            isinstance(baseline.get("evaluation_contract"), dict)
+            and baseline.get("evaluation_contract")
+        )
+        contract_unchanged = False
+        contract_diag: dict[str, Any] = {}
+        if contract_baseline_present:
+            contract_unchanged, contract_diag = evaluate_head_drift(
+                root,
+                baseline_head,
+                current_head,
+                candidate_v=next_v,
+                checkpoint=checkpoint,
+            )
+            repo_diag["baseline_evaluation_contract_unchanged"] = contract_unchanged
+            repo_diag["baseline_head_contract_paths"] = contract_diag.get("head_contract_paths", [])[:40]
+            repo_diag["baseline_head_external_paths"] = contract_diag.get("head_external_paths", [])[:40]
         target_dir = root / "bots" / f"claude_v{next_v}" if next_v is not None else None
         branch_compatible = (
             current_branch == EVOLUTION_BRANCH
@@ -348,6 +382,7 @@ def checkpoint_recovery_diagnostics(
             and not worktree_scope.get("blocking_entries")
             and target_dir is not None
             and (stage in HEAD_DRIFT_SELECTED_STAGES or target_dir.exists())
+            and (not contract_baseline_present or contract_unchanged or current_branch_unrelated_head_allowed)
         )
         if can_resume:
             if stage in HEAD_DRIFT_REPAIR_STAGES:
