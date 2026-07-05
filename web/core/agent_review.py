@@ -16,7 +16,7 @@ from evolution_infra import (
     locked_file, get_bot_dir, get_logs_dir, get_active_bots,
     verify_code, run_import_contract_test, run_smoke_test,
     PROMPTS_DIR, RESULTS_DIR, MATCH_HISTORY_FILE, H2H_FILE, BOT_STATS_FILE,
-    MAX_CROSSOVER_RETRIES,
+    MAX_CROSSOVER_RETRIES, copy_bot_tree_for_candidate,
     Glicko2Player,
 )
 
@@ -479,11 +479,7 @@ async def _run_crossover(parent_a_v, parent_b_v, target_v, ui):
         # Reset target dir from parent A baseline to avoid corrupted state from previous attempt
         if target_dir.exists():
             shutil.rmtree(target_dir)
-        shutil.copytree(
-            parent_a_dir,
-            target_dir,
-            ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.completed'),
-        )
+        copy_bot_tree_for_candidate(parent_a_dir, target_dir)
 
         # Apply known critical fixes to crossover child
         from fix_injection import apply_known_fixes, log_fix_application

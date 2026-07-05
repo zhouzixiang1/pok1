@@ -91,9 +91,11 @@ If the injected Line budget section marks `strategy.py` or `postflop.py` as `nea
 </worker_guidance>
 
 <worker_prompt_quality>
-Each `worker_prompt` SHOULD target 6000 characters (soft limit); the hard limit is 12000. For longer rationale,
-H2H data, or EXHAUSTED context, write it to `.task_context/w{i}.md` and
-reference via `<task_brief_file>` tag — workers Read that file FIRST.
+Each `worker_prompt` SHOULD target 6000 characters (soft limit); the hard limit is 12000.
+For longer rationale, H2H data, or EXHAUSTED context, keep the worker prompt concise and
+let the deterministic plan compiler externalize oversized context into generated
+`<task_brief_file>` references. Do not manually create, copy, or reference `.task_context`
+files; those files are version-local compiler artifacts.
 Focus on essential changes only:
 - Which function to modify/add (file name + function name)
 - WHY this change is needed (1-2 sentences linking to H2H weakness or match data)
