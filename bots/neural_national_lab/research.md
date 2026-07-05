@@ -147,6 +147,12 @@ Practical takeaways for this repo:
   divergence. Treat boundary-head evaluation as an active-learning loop: turn
   both the new negative v279 windows and the high-positive v285/v288 windows
   into replayable counterfactual rows before increasing games or model size.
+- The first outlier-feedback loop worked as a repair primitive but not as a
+  promotion proof. A p087 h32 head trained from 14 paired-divergence rows
+  reduced negative samples and improved the mean, yet opened a new v279 `-796`
+  window and still missed statistical significance. Keep iterating on
+  divergence rows; do not interpret one repaired outlier set as distributional
+  safety.
 - Build a lightweight actor-learner loop before reaching for Ray: actor workers
   scan divergence windows, enumerate abstract legal actions, run
   counterfactual branches, and append reservoir-style JSONL shards; the learner
