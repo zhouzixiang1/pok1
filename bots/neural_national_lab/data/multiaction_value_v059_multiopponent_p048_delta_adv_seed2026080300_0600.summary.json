@@ -1,0 +1,170 @@
+{
+  "inputs": [
+    "bots/neural_national_lab/data/multiaction_shards_v059_vs_v279_p024_seed2026080300.json",
+    "bots/neural_national_lab/data/multiaction_shards_v059_vs_v283_p008_seed2026080400.json",
+    "bots/neural_national_lab/data/multiaction_shards_v059_vs_v284_p008_seed2026080500.json",
+    "bots/neural_national_lab/data/multiaction_shards_v059_vs_v285_p008_seed2026080600.json"
+  ],
+  "feature_set": "advantage",
+  "target": "delta_vs_rule",
+  "require_full_vector": true,
+  "scanned_rows": 48,
+  "skipped_rows": 0,
+  "rows": 48,
+  "input_dim": 70,
+  "label_count": 6,
+  "target_samples": 288,
+  "target_mean": -232.1875,
+  "target_median": 0.0,
+  "positive_targets": 65,
+  "zero_targets": 168,
+  "negative_targets": 55,
+  "off_menu_rule_rows": 15,
+  "best_label_counts": {
+    "call": 25,
+    "fold": 3,
+    "raise_2pot": 1,
+    "raise_half": 19
+  },
+  "stage_counts": {
+    "flop": 48
+  },
+  "source_counts": {
+    "bots/neural_national_lab/data/multiaction_shards_v059_vs_v279_p024_seed2026080300.json": 24,
+    "bots/neural_national_lab/data/multiaction_shards_v059_vs_v283_p008_seed2026080400.json": 8,
+    "bots/neural_national_lab/data/multiaction_shards_v059_vs_v284_p008_seed2026080500.json": 8,
+    "bots/neural_national_lab/data/multiaction_shards_v059_vs_v285_p008_seed2026080600.json": 8
+  },
+  "target_samples_by_label": {
+    "fold": {
+      "samples": 48,
+      "mean": -196.72916666666666
+    },
+    "call": {
+      "samples": 48,
+      "mean": -525.7708333333334
+    },
+    "raise_half": {
+      "samples": 48,
+      "mean": 25.270833333333332
+    },
+    "raise_pot": {
+      "samples": 48,
+      "mean": -17.145833333333332
+    },
+    "raise_2pot": {
+      "samples": 48,
+      "mean": 454.0208333333333
+    },
+    "allin": {
+      "samples": 48,
+      "mean": -1132.7708333333333
+    }
+  },
+  "target_samples_by_source_label": {
+    "bots/neural_national_lab/data/multiaction_shards_v059_vs_v279_p024_seed2026080300.json": {
+      "fold": {
+        "samples": 24,
+        "mean": -81.20833333333333
+      },
+      "call": {
+        "samples": 24,
+        "mean": -18.666666666666668
+      },
+      "raise_half": {
+        "samples": 24,
+        "mean": 85.04166666666667
+      },
+      "raise_pot": {
+        "samples": 24,
+        "mean": 67.625
+      },
+      "raise_2pot": {
+        "samples": 24,
+        "mean": 32.708333333333336
+      },
+      "allin": {
+        "samples": 24,
+        "mean": -2409.9583333333335
+      }
+    },
+    "bots/neural_national_lab/data/multiaction_shards_v059_vs_v283_p008_seed2026080400.json": {
+      "fold": {
+        "samples": 8,
+        "mean": -469.25
+      },
+      "call": {
+        "samples": 8,
+        "mean": -558.625
+      },
+      "raise_half": {
+        "samples": 8,
+        "mean": -148.875
+      },
+      "raise_pot": {
+        "samples": 8,
+        "mean": -316.125
+      },
+      "raise_2pot": {
+        "samples": 8,
+        "mean": 2685.625
+      },
+      "allin": {
+        "samples": 8,
+        "mean": 352.875
+      }
+    },
+    "bots/neural_national_lab/data/multiaction_shards_v059_vs_v284_p008_seed2026080500.json": {
+      "fold": {
+        "samples": 8,
+        "mean": -200.25
+      },
+      "call": {
+        "samples": 8,
+        "mean": -2512.375
+      },
+      "raise_half": {
+        "samples": 8,
+        "mean": -57.5
+      },
+      "raise_pot": {
+        "samples": 8,
+        "mean": -92.5
+      },
+      "raise_2pot": {
+        "samples": 8,
+        "mean": -162.5
+      },
+      "allin": {
+        "samples": 8,
+        "mean": -22.5
+      }
+    },
+    "bots/neural_national_lab/data/multiaction_shards_v059_vs_v285_p008_seed2026080600.json": {
+      "fold": {
+        "samples": 8,
+        "mean": -267.25
+      },
+      "call": {
+        "samples": 8,
+        "mean": -27.625
+      },
+      "raise_half": {
+        "samples": 8,
+        "mean": 102.875
+      },
+      "raise_pot": {
+        "samples": 8,
+        "mean": 102.875
+      },
+      "raise_2pot": {
+        "samples": 8,
+        "mean": 102.875
+      },
+      "allin": {
+        "samples": 8,
+        "mean": 102.875
+      }
+    }
+  }
+}
