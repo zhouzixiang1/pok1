@@ -1,0 +1,334 @@
+{
+  "eval_json": [
+    "bots/neural_national_lab/data/native_tcp_trace_v109_vs_v2v3_h70_m10_seed2026074000.json"
+  ],
+  "bot_paths": [
+    "bots/neural_national_lab/versions/v109_national_v17_commit_veto_only_tcp"
+  ],
+  "summary": {
+    "sources": {
+      "files": 1,
+      "match_sources": 40,
+      "sources_without_trace": 0,
+      "trace_rows": 3442
+    },
+    "decisions": {
+      "total": 3442,
+      "neural_changed": 0,
+      "sanitizer_changed": 1431,
+      "final_changed": 1431,
+      "neural_change_rate": 0.0,
+      "sanitizer_change_rate": 0.41575,
+      "final_change_rate": 0.41575
+    },
+    "counts": {
+      "by_opponent": {
+        "national_v2": 1743,
+        "national_v3": 1699
+      },
+      "by_stage": {
+        "preflop": 2226,
+        "flop": 933,
+        "turn": 220,
+        "river": 63
+      },
+      "rule_to_advised": {
+        "raise_pot->raise_pot": 1350,
+        "call->call": 909,
+        "fold->fold": 816,
+        "raise_half->raise_half": 190,
+        "raise_2pot->raise_2pot": 134,
+        "allin->allin": 43
+      },
+      "rule_to_final": {
+        "raise_pot->raise_pot": 1050,
+        "call->call": 909,
+        "fold->fold": 816,
+        "raise_pot->raise_2pot": 300,
+        "raise_2pot->raise_2pot": 134,
+        "raise_half->raise_half": 119,
+        "raise_half->raise_pot": 71,
+        "allin->allin": 30,
+        "allin->call": 13
+      },
+      "advised_to_final": {
+        "raise_pot->raise_pot": 1050,
+        "call->call": 909,
+        "fold->fold": 816,
+        "raise_pot->raise_2pot": 300,
+        "raise_2pot->raise_2pot": 134,
+        "raise_half->raise_half": 119,
+        "raise_half->raise_pot": 71,
+        "allin->allin": 30,
+        "allin->call": 13
+      },
+      "policy_top_label": {
+        "call": 1010,
+        "fold": 855,
+        "raise_pot": 654,
+        "raise_2pot": 490,
+        "raise_half": 368,
+        "allin": 65
+      },
+      "multi_action_proposal_label": {},
+      "neural_changed_by_opponent": {},
+      "neural_changed_by_stage": {},
+      "final_changed_by_opponent": {
+        "national_v3": 716,
+        "national_v2": 715
+      },
+      "final_changed_by_stage": {
+        "preflop": 1418,
+        "flop": 13
+      },
+      "sanitizer_changed_by_stage": {
+        "preflop": 1418,
+        "flop": 13
+      }
+    },
+    "outcomes": {
+      "neural_changed": {
+        "count": 0,
+        "sum": 0,
+        "mean": 0.0,
+        "median": 0.0
+      },
+      "neural_unchanged": {
+        "count": 3442,
+        "sum": -1187997.0,
+        "mean": -345.147,
+        "median": -50.0,
+        "min": -20000.0,
+        "max": 20000.0
+      },
+      "final_changed": {
+        "count": 1431,
+        "sum": -346224.0,
+        "mean": -241.945,
+        "median": 100.0,
+        "min": -20000.0,
+        "max": 20000.0
+      },
+      "final_unchanged": {
+        "count": 2011,
+        "sum": -841773.0,
+        "mean": -418.584,
+        "median": -100.0,
+        "min": -20000.0,
+        "max": 20000.0
+      },
+      "by_opponent": {
+        "national_v2": {
+          "neural_changed": {
+            "count": 0,
+            "sum": 0,
+            "mean": 0.0,
+            "median": 0.0
+          },
+          "neural_unchanged": {
+            "count": 1743,
+            "sum": -493544.0,
+            "mean": -283.158,
+            "median": -50.0,
+            "min": -20000.0,
+            "max": 20000.0
+          },
+          "final_changed": {
+            "count": 715,
+            "sum": -156967.0,
+            "mean": -219.534,
+            "median": 100.0,
+            "min": -20000.0,
+            "max": 20000.0
+          },
+          "final_unchanged": {
+            "count": 1028,
+            "sum": -336577.0,
+            "mean": -327.41,
+            "median": -100.0,
+            "min": -20000.0,
+            "max": 20000.0
+          }
+        },
+        "national_v3": {
+          "neural_changed": {
+            "count": 0,
+            "sum": 0,
+            "mean": 0.0,
+            "median": 0.0
+          },
+          "neural_unchanged": {
+            "count": 1699,
+            "sum": -694453.0,
+            "mean": -408.742,
+            "median": -50.0,
+            "min": -20000.0,
+            "max": 20000.0
+          },
+          "final_changed": {
+            "count": 716,
+            "sum": -189257.0,
+            "mean": -264.325,
+            "median": 100.0,
+            "min": -20000.0,
+            "max": 20000.0
+          },
+          "final_unchanged": {
+            "count": 983,
+            "sum": -505196.0,
+            "mean": -513.933,
+            "median": -100.0,
+            "min": -20000.0,
+            "max": 20000.0
+          }
+        }
+      },
+      "by_stage": {
+        "flop": {
+          "neural_changed": {
+            "count": 0,
+            "sum": 0,
+            "mean": 0.0,
+            "median": 0.0
+          },
+          "neural_unchanged": {
+            "count": 933,
+            "sum": -920890.0,
+            "mean": -987.02,
+            "median": -201.0,
+            "min": -20000.0,
+            "max": 20000.0
+          },
+          "final_changed": {
+            "count": 13,
+            "sum": -180000.0,
+            "mean": -13846.154,
+            "median": -20000.0,
+            "min": -20000.0,
+            "max": 20000.0
+          },
+          "final_unchanged": {
+            "count": 920,
+            "sum": -740890.0,
+            "mean": -805.315,
+            "median": -100.0,
+            "min": -20000.0,
+            "max": 20000.0
+          }
+        },
+        "preflop": {
+          "neural_changed": {
+            "count": 0,
+            "sum": 0,
+            "mean": 0.0,
+            "median": 0.0
+          },
+          "neural_unchanged": {
+            "count": 2226,
+            "sum": -234068.0,
+            "mean": -105.152,
+            "median": 100.0,
+            "min": -20000.0,
+            "max": 20000.0
+          },
+          "final_changed": {
+            "count": 1418,
+            "sum": -166224.0,
+            "mean": -117.224,
+            "median": 100.0,
+            "min": -20000.0,
+            "max": 20000.0
+          },
+          "final_unchanged": {
+            "count": 808,
+            "sum": -67844.0,
+            "mean": -83.965,
+            "median": -100.0,
+            "min": -20000.0,
+            "max": 20000.0
+          }
+        },
+        "river": {
+          "neural_changed": {
+            "count": 0,
+            "sum": 0,
+            "mean": 0.0,
+            "median": 0.0
+          },
+          "neural_unchanged": {
+            "count": 63,
+            "sum": -7623.0,
+            "mean": -121.0,
+            "median": 100.0,
+            "min": -4801.0,
+            "max": 360.0
+          },
+          "final_changed": {
+            "count": 0,
+            "sum": 0,
+            "mean": 0.0,
+            "median": 0.0
+          },
+          "final_unchanged": {
+            "count": 63,
+            "sum": -7623.0,
+            "mean": -121.0,
+            "median": 100.0,
+            "min": -4801.0,
+            "max": 360.0
+          }
+        },
+        "turn": {
+          "neural_changed": {
+            "count": 0,
+            "sum": 0,
+            "mean": 0.0,
+            "median": 0.0
+          },
+          "neural_unchanged": {
+            "count": 220,
+            "sum": -25416.0,
+            "mean": -115.527,
+            "median": -100.0,
+            "min": -4801.0,
+            "max": 1042.0
+          },
+          "final_changed": {
+            "count": 0,
+            "sum": 0,
+            "mean": 0.0,
+            "median": 0.0
+          },
+          "final_unchanged": {
+            "count": 220,
+            "sum": -25416.0,
+            "mean": -115.527,
+            "median": -100.0,
+            "min": -4801.0,
+            "max": 1042.0
+          }
+        }
+      }
+    },
+    "neural_value_delta_vs_rule": {
+      "neural_changed": {
+        "count": 0,
+        "sum": 0,
+        "mean": 0.0,
+        "median": 0.0
+      },
+      "neural_unchanged": {
+        "count": 3442,
+        "sum": -134.557,
+        "mean": -0.039,
+        "median": 0.0,
+        "min": -0.599,
+        "max": 1.105
+      }
+    }
+  },
+  "examples": {
+    "worst_neural_changed": [],
+    "best_neural_changed": []
+  }
+}
