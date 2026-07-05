@@ -11,6 +11,7 @@ import asyncio
 import ast
 from dataclasses import dataclass
 from datetime import datetime
+import json
 import os
 from pathlib import Path
 import shutil
@@ -38,6 +39,7 @@ SEEDED_NATIVE_LAUNCHER = (
     "sys.argv = [entry] + sys.argv[1:]\n"
     "runpy.run_path(entry, run_name='__main__')\n"
 )
+TRACE_PREFIX = "POK_TRACE_DECISION "
 
 
 NATIVE_BOT_TEMPLATE = r'''#!/usr/bin/env python3
@@ -661,6 +663,22 @@ def _native_bot_seed(bot_seed_base: int | None, player_idx: int) -> int | None:
     return int(bot_seed_base) + int(player_idx)
 
 
+def _parse_decision_trace(stderr_text: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for raw_line in stderr_text.splitlines():
+        if not raw_line.startswith(TRACE_PREFIX):
+            continue
+        payload = raw_line[len(TRACE_PREFIX):]
+        try:
+            row = json.loads(payload)
+        except Exception:
+            rows.append({"type": "parse_error", "raw": payload[:1000]})
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
 async def _run_tcp_server_with_processes(
     bot_a: NativeBotSpec,
     bot_b: NativeBotSpec,
@@ -785,8 +803,8 @@ async def _run_tcp_server_with_processes(
                     out, err = "", "process did not exit after kill"
             stdout_stderr[label] = {
                 "returncode": proc.returncode,
-                "stdout": out[-2000:] if out else "",
-                "stderr": err[-2000:] if err else "",
+                "stdout": out or "",
+                "stderr": err or "",
             }
 
     illegal = {
@@ -819,6 +837,8 @@ async def _run_tcp_server_with_processes(
         proc_info = stdout_stderr.get(label, {})
         proc_failed = bool(proc_info.get("returncode") not in (0, None))
         stdout_text = str(proc_info.get("stdout") or "")
+        stderr_text = str(proc_info.get("stderr") or "")
+        decision_trace = _parse_decision_trace(stderr_text)
         per_player[label] = {
             "earnings": int(earnings[idx]),
             "illegal_actions": illegal[idx],
@@ -826,8 +846,9 @@ async def _run_tcp_server_with_processes(
             "native": {
                 "returncode": proc_info.get("returncode"),
                 "bot_seed": bot_seeds.get(label),
-                "stdout_tail": stdout_text,
-                "stderr_tail": proc_info.get("stderr") or "",
+                "stdout_tail": stdout_text[-2000:] if stdout_text else "",
+                "stderr_tail": stderr_text[-2000:] if stderr_text else "",
+                "decision_trace": decision_trace,
                 "process_failures": 1 if proc_failed else 0,
                 "json_response_stdout": 1 if '"response"' in stdout_text or "'response'" in stdout_text else 0,
             },
