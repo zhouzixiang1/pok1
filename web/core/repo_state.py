@@ -20,6 +20,38 @@ def is_generated_bot_dir_entry(line: str) -> bool:
     return bool(_GENERATED_BOT_DIR_RE.match(line.strip()))
 
 
+def _classify_entries(entries: list[str]) -> dict:
+    """Classify status entries with the same scope rules used by runtime guards."""
+    try:
+        from evolution_scope import classify_status_entries
+        scope = classify_status_entries(entries, candidate_v=None)
+    except Exception:
+        scope = {
+            "blocking_entries": [],
+            "ignored_entries": [],
+            "entry_classes": [],
+        }
+
+    # A freshly generated candidate directory appears as "?? bots/claude_vN/".
+    # Without a current candidate version, evolution_scope conservatively marks
+    # it foreign. Snapshot logging should keep the existing generated-dir signal
+    # and avoid calling that normal runtime state protected.
+    generated = set(line for line in entries if is_generated_bot_dir_entry(line))
+    blocking = [
+        line for line in scope.get("blocking_entries") or []
+        if line not in generated
+    ]
+    ignored = list(scope.get("ignored_entries") or [])
+    for line in generated:
+        if line not in ignored:
+            ignored.append(line)
+    return {
+        **scope,
+        "blocking_entries": blocking,
+        "ignored_entries": ignored,
+    }
+
+
 def git_worktree_snapshot(root: str | Path | None = None, *, max_lines: int = 40) -> dict:
     """Return a compact, read-only git status snapshot."""
     if root is None:
@@ -45,18 +77,8 @@ def git_worktree_snapshot(root: str | Path | None = None, *, max_lines: int = 40
     dirty = [line for line in entries if not line.startswith("??")]
     untracked = [line for line in entries if line.startswith("??")]
     generated_bot_dirs = [line for line in entries if is_generated_bot_dir_entry(line)]
-    protected = [
-        line for line in entries
-        if (
-            "web/core/" in line
-            or "web/tests/" in line
-            or "sever/" in line
-            or "engine/" in line
-            or "web/logs/" in line
-            or "web/core/results/" in line
-            or ("bots/claude_v" in line and not is_generated_bot_dir_entry(line))
-        )
-    ]
+    worktree_scope = _classify_entries(entries)
+    protected = list(worktree_scope.get("blocking_entries") or [])
     head = ""
     try:
         head_proc = subprocess.run(
@@ -80,6 +102,12 @@ def git_worktree_snapshot(root: str | Path | None = None, *, max_lines: int = 40
         "entry_count": len(entries),
         "generated_bot_dirs": generated_bot_dirs[:max_lines],
         "protected_entries": protected[:max_lines],
+        "ignored_entries": list(worktree_scope.get("ignored_entries") or [])[:max_lines],
+        "worktree_scope": {
+            key: value[:max_lines] if isinstance(value, list) else value
+            for key, value in worktree_scope.items()
+            if key != "entry_classes"
+        },
         "entries": entries[:max_lines],
         "truncated": len(entries) > max_lines,
         "stderr": (proc.stderr or "").strip()[:500],
@@ -127,7 +155,7 @@ def log_git_worktree_snapshot(event_type: str, message: str, *, severity: str = 
                 if delta.get("new_entries") or delta.get("cleared_entries"):
                     log_system_event(
                         "repo.worktree_changed",
-                        "warn" if delta.get("new_protected_entries") or delta.get("new_dirty_entries") else "info",
+                        "warn" if delta.get("new_protected_entries") else "info",
                         "Git worktree entries changed",
                         delta,
                     )
@@ -147,16 +175,8 @@ def git_worktree_delta(previous: dict | None, current: dict) -> dict:
     cleared_entries = sorted(prev_entries - curr_entries)
     new_dirty = [line for line in new_entries if not line.startswith("??")]
     new_generated_bot_dirs = [line for line in new_entries if is_generated_bot_dir_entry(line)]
-    new_protected = [
-        line for line in new_entries
-        if (
-            "web/core/" in line
-            or "web/tests/" in line
-            or "sever/" in line
-            or "engine/" in line
-            or ("bots/claude_v" in line and not is_generated_bot_dir_entry(line))
-        )
-    ]
+    new_scope = _classify_entries(new_entries)
+    new_protected = list(new_scope.get("blocking_entries") or [])
     prev_branch = previous.get("branch", "")
     curr_branch = current.get("branch", "")
     prev_head = previous.get("head", "")
@@ -178,4 +198,5 @@ def git_worktree_delta(previous: dict | None, current: dict) -> dict:
         "new_dirty_entries": new_dirty[:40],
         "new_generated_bot_dirs": new_generated_bot_dirs[:40],
         "new_protected_entries": new_protected[:40],
+        "new_ignored_entries": list(new_scope.get("ignored_entries") or [])[:40],
     }

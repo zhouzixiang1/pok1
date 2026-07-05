@@ -13,6 +13,12 @@ CRITICAL_PREFIXES = (
     "web/core/",
     "web/tests/",
 )
+NON_CONTRACT_PREFIXES = (
+    # Original national-platform documents and Windows reference assets. They
+    # are important references, but changing them does not alter a running
+    # local evaluation unless the Python server/engine code changes too.
+    "sever/国赛平台/",
+)
 CRITICAL_EXACT = {
     "web/main.py",
 }
@@ -56,6 +62,11 @@ def is_runtime_path(path: str) -> bool:
     return any(path == prefix.rstrip("/") or path.startswith(prefix) for prefix in RUNTIME_PREFIXES)
 
 
+def is_non_contract_path(path: str) -> bool:
+    path = normalize_repo_path(path)
+    return any(path == prefix.rstrip("/") or path.startswith(prefix) for prefix in NON_CONTRACT_PREFIXES)
+
+
 def claude_bot_version(path: str) -> int | None:
     match = _CLAUDE_BOT_RE.match(normalize_repo_path(path))
     if not match:
@@ -79,7 +90,7 @@ def is_foreign_claude_bot_path(path: str, candidate_v: int | None) -> bool:
 
 def is_critical_evolution_path(path: str) -> bool:
     path = normalize_repo_path(path)
-    if is_runtime_path(path):
+    if is_runtime_path(path) or is_non_contract_path(path):
         return False
     return path in CRITICAL_EXACT or any(path.startswith(prefix) for prefix in CRITICAL_PREFIXES)
 
@@ -91,6 +102,8 @@ def classify_path(path: str, candidate_v: int | None) -> str:
         return "empty"
     if is_runtime_path(path):
         return "runtime"
+    if is_non_contract_path(path):
+        return "external"
     if is_candidate_bot_path(path, candidate_v):
         return "candidate"
     if is_foreign_claude_bot_path(path, candidate_v):

@@ -7,6 +7,10 @@ export const meta = {
   ],
 }
 
+const workflowCwd = process.cwd().replace(/\/$/, '')
+const REPO_ROOT = workflowCwd.endsWith('/web') ? workflowCwd.slice(0, -'/web'.length) : workflowCwd
+const WEB_DIR = `${REPO_ROOT}/web`
+
 // ╔════════════════════════════════════════════════════════════════╗
 // ║ GLOBAL INTERFACE CONTRACT — every agent MUST follow exactly      ║
 // ╚════════════════════════════════════════════════════════════════╝
@@ -227,7 +231,7 @@ log('Phase 2: pytest full suite + adversarial post-edit bug-check')
 const [pytestRes, bugRes] = await parallel([
   () => agent(
     `Run the full backend test suite and report results. ` +
-    `cd /home/zzx/project/pok/web && python -m pytest tests/ -v 2>&1 | tail -40. ` +
+    `cd ${WEB_DIR} && python -m pytest tests/ -v 2>&1 | tail -40. ` +
     `Report verdict=pass if all tests pass (or only pre-existing skips), fail otherwise. ` +
     `In details give the pass/fail/skip counts and any failure names. ` +
     `In issues list any failing test names with one-line cause. ` +
@@ -240,7 +244,7 @@ const [pytestRes, bugRes] = await parallel([
     `web/core/tool_eval.py (run_precommit_eval increments precommit_attempt + FAILED directive), ` +
     `web/core/orchestrator.py (timeout extension: verified-only + extension counter + sentinel -3.0 + main-loop -3.0 branch), ` +
     `web/core/orchestrator_context.py (inject precommit status into LLM context). ` +
-    `Read all four files (focus on the changed regions) and the git diff: cd /home/zzx/project/pok && git diff --stat && git diff web/core/ | head -400. ` +
+    `Read all four files (focus on the changed regions) and the git diff: cd ${REPO_ROOT} && git diff --stat && git diff web/core/ | head -400. ` +
     `Hunt for: (1) the 4 files' shared interface contract is consistent (field name precommit_attempt, MAX_PRECOMMIT_RETRIES import, sentinel -3.0); ` +
     `(2) orchestrator -3.0 sentinel is not accidentally caught by existing cost<0 branches (auth/-0.5 infra) or causes an unintended backoff; ` +
     `(3) write_pipeline_checkpoint merge doesn't clobber precommit_attempt on unrelated stage writes; ` +

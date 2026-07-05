@@ -126,6 +126,16 @@ Practical takeaways for this repo:
   interaction override fixed the large v288 regression while keeping the v279
   benefit, but g016x5 remained sparse and not significant. Future active data
   should target those low-interaction veto cases directly.
+- Low-interaction active sampling works best as a pre-decision filter, not as
+  post-hoc row selection. The p057 targeted run produced a usable h16 head, but
+  v062 showed that "no sampled negative labels" is not enough: a v284 replayed
+  mirror hand found a `-4502` raw-chip regression at the loose `0.12` runtime
+  threshold. v063's `0.20` threshold removed that replay and kept a small
+  positive g016x5 mean, but g032x5 found a much larger v284 mirror regression
+  when neural confidence landed between `raise_conf` and
+  `interaction_apply_min_conf`. Threshold calibration must include confidence
+  and interaction-gate boundary cases, plus paired divergence replays, before
+  any scale-up.
 - Build a lightweight actor-learner loop before reaching for Ray: actor workers
   scan divergence windows, enumerate abstract legal actions, run
   counterfactual branches, and append reservoir-style JSONL shards; the learner

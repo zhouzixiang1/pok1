@@ -7,8 +7,13 @@ export const meta = {
   ],
 }
 
+const workflowCwd = process.cwd().replace(/\/$/, '')
+const REPO_ROOT = workflowCwd.endsWith('/.claude/workflows')
+  ? workflowCwd.slice(0, -'/.claude/workflows'.length)
+  : workflowCwd
+
 const BACKGROUND = [
-  '项目：德州扑克 AI 自进化框架。路径 /home/zzx/project/pok。',
+  `项目：德州扑克 AI 自进化框架。仓库路径 ${REPO_ROOT}。`,
   '任务：审计【系统重启后】(2026-06-17 15:22 起) 的日志，结合全量代码，找出逻辑问题与 bug，排查到最底层根因（不是表面现象）。',
   '关键日志文件：',
   '  - web/logs/app.log (2.6MB, 重启后 15:22-至今, 主日志)',

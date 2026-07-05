@@ -972,6 +972,39 @@ better recorded candidate, but still not a statistically clear successor. The
 next useful step is more active sampling around low-interaction harmful v059
 raises, not a larger model.
 
+The low-interaction sampler now supports pre-decision filters for rule label,
+top neural label/confidence, free-action spots, and interaction-score bands.
+A five-opponent targeted run collected 57 flop rows where the rule action was
+`call`, the neural top label was `raise_half`, the action was free, and
+interaction support was below `0.90`. Training h16/h32/h64 CUDA value heads on
+the clipped no-allin delta targets showed that h16 was the safest calibrated
+runtime head: at the original `0.12` threshold it passed 26 sampled rows with
+16 known positive raise targets and no known negative raise targets.
+
+`versions/v062_v254_lowint_value_h16_p057` replaced the p045 multi-action
+weights with that h16 low-interaction head, but g016x5 exposed a v284 mirror
+regression: one newly allowed flop `raise_half 101` produced a `-4502` raw-chip
+delta. Raising the gate to `0.20` created
+`versions/v063_v254_lowint_value_h16_p057_min020`, which blocks that replayed
+v284 hand and still keeps seven known-positive sampled raise targets. On the
+same five-opponent g016 run, v063 averaged `+120.41` chips per 70 hands with
+CI `[-21.05, +261.87]`, split 7 positive, 71 zero, 2 small negative, and worst
+sample `-109`.
+
+Scaling v063 to g032x5 exposed another v284 mirror-only boundary failure:
+sample idx31 lost `-28992` raw chips after the first divergent decision changed
+a free flop `check` into `raise 101`. The neural top confidence was `0.8846`,
+above `raise_conf=0.88` but below `interaction_apply_min_conf=0.89`, so the
+low-interaction veto did not apply despite `interaction_score=0.412`.
+`versions/v064_v254_lowint_h16_min020_inter088` keeps the same h16 p057 weights
+and `multi_action_value_min=0.20`, but lowers `interaction_apply_min_conf` to
+`0.88`. Active replay of the v284 idx13 and idx31 failures then produced zero
+delta and no divergence. In the same deterministic g032x5 run, v064 averaged
+`+80.76` chips per 70 hands with CI `[-4.25, +165.77]`, split 12 positive,
+141 zero, 7 negative, and worst sample `-723`; v284 was exactly neutral across
+all 32 pairs. This repairs the v063 safety bug, but the CI still crosses zero;
+treat v064 as the current conservative experiment, not a promoted successor.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass

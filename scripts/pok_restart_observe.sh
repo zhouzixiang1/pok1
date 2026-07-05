@@ -170,6 +170,10 @@ else
     log "releasing restart lock before observe-only loop"
     flock -u 9
     exec 9>&-
+    if [ "$DRY_RUN" = "0" ]; then
+        log "validating observe-only service ownership"
+        ./pokctl.sh status 2>&1 | tee -a "$RUN_LOG"
+    fi
 fi
 
 if [ "$DRY_RUN" = "0" ]; then

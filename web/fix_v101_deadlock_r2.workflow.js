@@ -7,6 +7,10 @@ export const meta = {
   ],
 }
 
+const workflowCwd = process.cwd().replace(/\/$/, '')
+const REPO_ROOT = workflowCwd.endsWith('/web') ? workflowCwd.slice(0, -'/web'.length) : workflowCwd
+const WEB_DIR = `${REPO_ROOT}/web`
+
 const FIX_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -100,7 +104,7 @@ Also harden orchestrator.py's direct-write path (lines ~322-345) by switching it
 
 ## Self-check (run all of these and confirm pass before reporting)
 
-cd /home/zzx/project/pok/web
+cd ${WEB_DIR}
 python -c "import py_compile; py_compile.compile('core/evolution_infra.py', doraise=True); py_compile.compile('core/tool_eval.py', doraise=True); py_compile.compile('core/orchestrator.py', doraise=True)"
 python -m pytest tests/test_precommit_attempt_checkpoint.py tests/test_precommit_eval_directive.py tests/test_orchestrator_timeout_extension.py tests/test_context_precommit_injection.py -v
 
@@ -132,7 +136,7 @@ phase('Verify')
 log('Round 2 verify: full pytest suite + adversarial recheck')
 const [pyt, recheck] = await parallel([
   () => agent(
-    `Run cd /home/zzx/project/pok/web && python -m pytest tests/ -q 2>&1 | tail -30. Report pass/fail counts. ` +
+    `Run cd ${WEB_DIR} && python -m pytest tests/ -q 2>&1 | tail -30. Report pass/fail counts. ` +
     `IMPORTANT: round 1 had 4 failures in tests/test_pipeline_stages.py::TestWorkerFailureCircuitBreaker that PASS when the file is run alone (test isolation issue, NOT a regression). ` +
     `If those 4 are still in the failure list AND test_pipeline_stages.py alone passes, treat them as pre-existing isolation noise and report verdict=pass. ` +
     `Otherwise report fail with concrete failure names. Do NOT edit files.`,
@@ -143,7 +147,7 @@ const [pyt, recheck] = await parallel([
     `(1) precommit_attempt auto-reset now uses STAGE_RANK to detect ANY rework (not just verified->early); ` +
     `(2) tool_eval.run_precommit_eval increment moved AFTER idempotency guard + gate prerequisite checks (only consumes attempt when a real battle is about to run); ` +
     `(3) timeout_extensions is now a first-class merged field in write_pipeline_checkpoint. ` +
-    `Read the latest versions of web/core/evolution_infra.py (write_pipeline_checkpoint), web/core/tool_eval.py (run_precommit_eval start + the moved increment), web/core/orchestrator.py (timeout extension block). Run cd /home/zzx/project/pok && git diff web/core/ | head -500. ` +
+    `Read the latest versions of web/core/evolution_infra.py (write_pipeline_checkpoint), web/core/tool_eval.py (run_precommit_eval start + the moved increment), web/core/orchestrator.py (timeout extension block). Run cd ${REPO_ROOT} && git diff web/core/ | head -500. ` +
     `Verify all 3 bugs are actually fixed (not papered over). Specifically check: ` +
     `(a) STAGE_RANK auto-reset fires on critic_checked->master_planned and on critic_checked->workers_done, but NOT on benign forward progressions or critic_checked->reviewed (same code re-eval); ` +
     `(b) increment is reachable ONLY when a real battle is about to run, never on idempotent-cached return or _state_blocked early return; ` +
