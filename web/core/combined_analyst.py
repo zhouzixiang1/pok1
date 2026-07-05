@@ -15,9 +15,14 @@ from bot_namespace import bot_name, bot_tag_glob, parse_tag_version
 from evolution_infra import (
     run_claude_query, parse_json_output, substitute_template,
     locked_file, get_logs_dir, load_ratings, get_active_bots,
-    RESULTS_DIR, WORKER_FAILURES_FILE, PROMPTS_DIR,
+    WORKER_FAILURES_FILE, PROMPTS_DIR,
     Glicko2Player,
 )
+
+
+def _results_dir():
+    import evolution_infra
+    return evolution_infra.RESULTS_DIR
 
 
 def _isolated_recent_snaps(max_n=10):
@@ -31,7 +36,7 @@ def _isolated_recent_snaps(max_n=10):
     back to the last max_n lines verbatim for legacy data without run ids.
     Returns a list of parsed snapshot dicts (most-recent-last), possibly empty.
     """
-    history_file = RESULTS_DIR / "rating_history.jsonl"
+    history_file = _results_dir() / "rating_history.jsonl"
     if not history_file.exists():
         return []
     try:
@@ -74,7 +79,7 @@ def _statistical_stagnation_check(source_v, ratings):
     - trend_delta > 20: improving (high confidence)
     - trend_delta in [5, 20]: ambiguous — needs LLM analysis
     """
-    history_file = RESULTS_DIR / "rating_history.jsonl"
+    history_file = _results_dir() / "rating_history.jsonl"
     if not history_file.exists():
         return None
 
@@ -222,7 +227,7 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
                 lineage_lines.append(f"  v{check_v} ← parent: v{parent}")
     except Exception as e:
         log.debug('Lineage analysis failed: %s', e)
-    history_file = RESULTS_DIR / "rating_history.jsonl"
+    history_file = _results_dir() / "rating_history.jsonl"
     history_ctx = ""
     if history_file.exists():
         # E1: use daemon_run_id-isolated snapshots so the LLM history context
@@ -268,7 +273,7 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
 
     # Bot stats
     bot_stats_line = "  No stats available"
-    bot_stats_file = RESULTS_DIR / "bot_stats.json"
+    bot_stats_file = _results_dir() / "bot_stats.json"
     if bot_stats_file.exists():
         try:
             with locked_file(bot_stats_file, "r") as f:
@@ -283,7 +288,7 @@ async def _run_combined_analysis(source_v, active_bots, ratings, ui, prev_critic
 
     # H2H per-opponent
     h2h_lines = []
-    h2h_file = RESULTS_DIR / "head_to_head.json"
+    h2h_file = _results_dir() / "head_to_head.json"
     if h2h_file.exists():
         try:
             with locked_file(h2h_file, "r") as f:

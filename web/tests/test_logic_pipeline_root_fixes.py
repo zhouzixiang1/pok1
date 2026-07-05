@@ -577,20 +577,20 @@ def test_normalize_master_plan_paths_rewrites_only_task_path_refs():
 
     source_v = 224
     next_v = 232
-    abs_source = tool_planning.PROJECT_ROOT / "bots" / f"claude_v{source_v}"
+    abs_source = tool_planning.PROJECT_ROOT / "bots" / f"national_v{source_v}"
     plan = {
         "analysis": (
-            "The source path bots/claude_v224/ is discussed here as read-only; "
-            "plain claude_v224 and claude_v2244 should stay untouched."
+            "The source path bots/national_v224/ is discussed here as read-only; "
+            "plain national_v224 and national_v2244 should stay untouched."
         ),
         "source_v": source_v,
         "tasks": [{
-            "target_files": ["bots/claude_v224/strategy.py", "strategy.py"],
+            "target_files": ["bots/national_v224/strategy.py", "strategy.py"],
             "worker_prompt": (
-                "Edit bots/claude_v224/strategy.py, then run "
-                "cd bots/claude_v224 && python -m py_compile strategy.py. "
+                "Edit bots/national_v224/strategy.py, then run "
+                "cd bots/national_v224 && python -m py_compile strategy.py. "
                 f"Also test sys.path.insert(0, '{abs_source}'). "
-                "Do not rewrite plain claude_v224 or claude_v2244 labels."
+                "Do not rewrite plain national_v224 or national_v2244 labels."
             ),
         }],
     }
@@ -601,13 +601,13 @@ def test_normalize_master_plan_paths_rewrites_only_task_path_refs():
 
     task = normalized["tasks"][0]
     prompt = task["worker_prompt"]
-    assert task["target_files"][0] == "bots/claude_v232/strategy.py"
-    assert "bots/claude_v232/strategy.py" in prompt
-    assert "cd bots/claude_v232 &&" in prompt
-    assert f"'{tool_planning.PROJECT_ROOT / 'bots' / 'claude_v232'}'" in prompt
-    assert "bots/claude_v224/" not in json.dumps(normalized["tasks"])
-    assert "plain claude_v224" in prompt
-    assert "claude_v2244" in prompt
+    assert task["target_files"][0] == "bots/national_v232/strategy.py"
+    assert "bots/national_v232/strategy.py" in prompt
+    assert "cd bots/national_v232 &&" in prompt
+    assert f"'{tool_planning.PROJECT_ROOT / 'bots' / 'national_v232'}'" in prompt
+    assert "bots/national_v224/" not in json.dumps(normalized["tasks"])
+    assert "plain national_v224" in prompt
+    assert "national_v2244" in prompt
     assert normalized["analysis"] == plan["analysis"]
     assert meta["replacements"] >= 3
 
@@ -628,10 +628,10 @@ def test_run_master_normalizes_parent_paths_before_audit(monkeypatch):
             "tasks": [{
                 "worker_id": 1,
                 "role": "Algorithmic Logic Architect",
-                "target_files": ["bots/claude_v224/strategy.py"],
+                "target_files": ["bots/national_v224/strategy.py"],
                 "worker_prompt": (
-                    "Modify bots/claude_v224/strategy.py and run "
-                    "python -m py_compile bots/claude_v224/strategy.py"
+                    "Modify bots/national_v224/strategy.py and run "
+                    "python -m py_compile bots/national_v224/strategy.py"
                 ),
             }],
         }
@@ -686,8 +686,8 @@ def test_run_master_normalizes_parent_paths_before_audit(monkeypatch):
     returned_task = data["plan"]["tasks"][0]
     for task in (audited_task, persisted_task, returned_task):
         text = json.dumps(task)
-        assert "bots/claude_v232/strategy.py" in text
-        assert "bots/claude_v224/strategy.py" not in text
+        assert "bots/national_v232/strategy.py" in text
+        assert "bots/national_v224/strategy.py" not in text
     assert captured_audit["next_v"] == 232
 
 
@@ -757,12 +757,12 @@ def test_git_get_parent_reads_annotated_tag_target_commit(monkeypatch):
     import evolution_infra
 
     def fake_git(*args, **_kwargs):
-        if args[:3] == ("tag", "-l", "bot-v202"):
-            return "bot-v202\n"
+        if args[:3] == ("tag", "-l", "national-bot-v202"):
+            return "national-bot-v202\n"
         if args[:3] == ("rev-list", "-n", "1"):
             return "abc123\n"
         if args[:3] == ("show", "-s", "--format=%B"):
-            return "evolve: v201 -> v202\n\nparent: claude_v201\nstrategy: master\n"
+            return "evolve: v201 -> v202\n\nparent: national_v201\nstrategy: master\n"
         raise AssertionError(args)
 
     monkeypatch.setattr(evolution_infra, "_git", fake_git)
@@ -773,14 +773,14 @@ def test_git_get_parent_reads_annotated_tag_target_commit(monkeypatch):
 def test_get_bot_info_handles_parent_and_oversized_triples(tmp_path, monkeypatch):
     import tool_status
 
-    bot_dir = tmp_path / "claude_v202"
+    bot_dir = tmp_path / "national_v202"
     bot_dir.mkdir()
     (bot_dir / "main.py").write_text("print('ok')\n")
 
-    monkeypatch.setattr(tool_status, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+    monkeypatch.setattr(tool_status, "get_bot_dir", lambda v: tmp_path / f"national_v{v}")
     monkeypatch.setattr(tool_status, "load_ratings", lambda: {})
     monkeypatch.setattr(tool_status, "git_has_tag", lambda _v: True)
-    monkeypatch.setattr(tool_status, "git_get_parent", lambda _v: "claude_v201")
+    monkeypatch.setattr(tool_status, "git_get_parent", lambda _v: "national_v201")
     monkeypatch.setattr(tool_status, "check_code_size", lambda *_a, **_k: (
         2501, [("strategy.py", 2501, 2500)]
     ))
@@ -796,7 +796,7 @@ def test_get_status_uses_abandoned_floor_for_next_v(tmp_path, monkeypatch):
     import evolution_core
     import tool_status
 
-    (tmp_path / "claude_v256").mkdir()
+    (tmp_path / "national_v256").mkdir()
     monkeypatch.setattr(tool_status, "get_active_bots", lambda: [])
     monkeypatch.setattr(tool_status, "find_current_v", lambda: 254)
     monkeypatch.setattr(tool_status, "find_max_committed_v", lambda: 254)
@@ -808,7 +808,7 @@ def test_get_status_uses_abandoned_floor_for_next_v(tmp_path, monkeypatch):
             current_v, max_committed_v, abandoned_floor
         ) + 1,
     )
-    monkeypatch.setattr(tool_status, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+    monkeypatch.setattr(tool_status, "get_bot_dir", lambda v: tmp_path / f"national_v{v}")
     monkeypatch.setattr(tool_status, "load_ratings", lambda: {})
     monkeypatch.setattr(tool_status, "load_daemon_stats", lambda: {"total_games": 0})
     monkeypatch.setattr(tool_status, "read_locked_json", lambda *_a, **_k: {})
@@ -829,7 +829,7 @@ def test_orchestrator_context_uses_abandoned_floor_for_next_v(tmp_path, monkeypa
     import evolution_core
     import orchestrator_context
 
-    incomplete = tmp_path / "claude_v256"
+    incomplete = tmp_path / "national_v256"
     incomplete.mkdir()
     monkeypatch.setattr(evolution_core, "get_active_bots", lambda: [])
     monkeypatch.setattr(evolution_core, "load_ratings", lambda: {})
@@ -843,13 +843,13 @@ def test_orchestrator_context_uses_abandoned_floor_for_next_v(tmp_path, monkeypa
             current_v, max_committed_v, abandoned_floor
         ) + 1,
     )
-    monkeypatch.setattr(evolution_core, "get_bot_dir", lambda v: tmp_path / f"claude_v{v}")
+    monkeypatch.setattr(evolution_core, "get_bot_dir", lambda v: tmp_path / f"national_v{v}")
     monkeypatch.setattr(orchestrator_context, "_get_time_budget_info", lambda: "")
 
     text = orchestrator_context._build_context(one_gen=False, dry_run=False, gen_ctx=None)
 
     assert "Next generation will be: v256" in text
-    assert "claude_v256 directory exists but is NOT completed" in text
+    assert "national_v256 directory exists but is NOT completed" in text
     assert "Next generation will be: v255" not in text
 
 
@@ -857,8 +857,8 @@ def test_cleanup_incomplete_preserves_git_tracked_dirs(tmp_path, monkeypatch):
     import tool_bot_management as tbm
 
     bots_dir = tmp_path / "bots"
-    tracked = bots_dir / "claude_v100"
-    scratch = bots_dir / "claude_v101"
+    tracked = bots_dir / "national_v100"
+    scratch = bots_dir / "national_v101"
     tracked.mkdir(parents=True)
     scratch.mkdir()
     (tracked / "main.py").write_text("x=1\n")
@@ -877,8 +877,8 @@ def test_cleanup_incomplete_preserves_git_tracked_dirs(tmp_path, monkeypatch):
 
     assert tracked.exists()
     assert not scratch.exists()
-    assert data["cleaned"] == ["claude_v101"]
-    assert data["preserved_git_tracked"] == ["claude_v100"]
+    assert data["cleaned"] == ["national_v101"]
+    assert data["preserved_git_tracked"] == ["national_v100"]
 
 
 def test_battle_scheduler_status_peeks_pending_claimed_completed(tmp_path, monkeypatch):
@@ -1387,12 +1387,12 @@ def test_post_generation_fingerprint_uses_committed_next_v(monkeypatch):
 
     bot_name = generation_scheduler._save_committed_bot_fingerprint(237)
 
-    assert bot_name == "claude_v237"
-    assert saved == [("claude_v237", ("fingerprint-for", "claude_v237"))]
+    assert bot_name == "national_v237"
+    assert saved == [("national_v237", ("fingerprint-for", "national_v237"))]
     assert events
     assert events[0][0] == "pipeline.fingerprint_saved"
     assert events[0][3]["version"] == 237
-    assert events[0][3]["bot"] == "claude_v237"
+    assert events[0][3]["bot"] == "national_v237"
 
 
 def test_archivist_housekeeping_commit_stages_only_curated_paths(monkeypatch):
@@ -1409,18 +1409,18 @@ def test_archivist_housekeeping_commit_stages_only_curated_paths(monkeypatch):
             path = args[-1]
             if path == "web/core/experience_pool.md":
                 return " M web/core/experience_pool.md\n"
-            if path == "bots/claude_v204":
-                return " D bots/claude_v204/main.py\n"
+            if path == "bots/national_v204":
+                return " D bots/national_v204/main.py\n"
             return ""
         if args[:3] == ("diff", "--cached", "--name-only") and args[-1] == "web/core/experience_pool.md":
             return "web/core/experience_pool.md\n"
-        if args[:3] == ("diff", "--cached", "--name-only") and args[-1] == "bots/claude_v204":
-            return "bots/claude_v204/main.py\n"
+        if args[:3] == ("diff", "--cached", "--name-only") and args[-1] == "bots/national_v204":
+            return "bots/national_v204/main.py\n"
         if args[:1] == ("add",):
             if args[-1] == "web/core/experience_pool.md":
                 staged_after_add.append("web/core/experience_pool.md")
-            if args[-1] == "bots/claude_v204":
-                staged_after_add.append("bots/claude_v204/main.py")
+            if args[-1] == "bots/national_v204":
+                staged_after_add.append("bots/national_v204/main.py")
             return ""
         if args[:1] == ("commit",):
             return ""
@@ -1434,7 +1434,7 @@ def test_archivist_housekeeping_commit_stages_only_curated_paths(monkeypatch):
 
     result = tool_commit._archive_housekeeping_commit(
         234,
-        {"reaped": True, "culled": "claude_v204"},
+        {"reaped": True, "culled": "national_v204"},
         experience_touched=True,
         preexisting_dirty=set(),
     )
@@ -1442,13 +1442,13 @@ def test_archivist_housekeeping_commit_stages_only_curated_paths(monkeypatch):
     assert result["committed"] is True
     assert result["staged_files"] == [
         "web/core/experience_pool.md",
-        "bots/claude_v204/main.py",
+        "bots/national_v204/main.py",
     ]
     assert ("add", "--", "web/core/experience_pool.md") in calls
-    assert ("add", "-u", "--", "bots/claude_v204") in calls
+    assert ("add", "-u", "--", "bots/national_v204") in calls
     assert any(call[:3] == ("commit", "-m", "chore: archive v234 evolution housekeeping") for call in calls)
     assert any(
-        call[-3:] == ("--", "web/core/experience_pool.md", "bots/claude_v204/main.py")
+        call[-3:] == ("--", "web/core/experience_pool.md", "bots/national_v204/main.py")
         for call in calls
     )
     assert not any(call[:2] == ("add", "-A") for call in calls)
@@ -1508,9 +1508,9 @@ def test_git_push_refs_reports_failure(monkeypatch):
 
     monkeypatch.setattr(evolution_infra, "_git", fake_git)
 
-    assert evolution_infra.git_push_refs("main", "bot-v999") is False
+    assert evolution_infra.git_push_refs("main", "national-bot-v999") is False
     assert ("push", "origin", "main") in calls
-    assert ("push", "origin", "bot-v999") in calls
+    assert ("push", "origin", "national-bot-v999") in calls
 
 
 def test_git_push_refs_reconciles_unrelated_remote_main(monkeypatch):
@@ -1527,7 +1527,7 @@ def test_git_push_refs_reconciles_unrelated_remote_main(monkeypatch):
             raise RuntimeError("fetch first")
         if args[:3] == ("push", "origin", "main"):
             return ""
-        if args[:3] == ("push", "origin", "bot-v999"):
+        if args[:3] == ("push", "origin", "national-bot-v999"):
             return ""
         if args == ("fetch", "origin", "--prune", "--tags"):
             return ""
@@ -1551,7 +1551,7 @@ def test_git_push_refs_reconciles_unrelated_remote_main(monkeypatch):
         lambda *_args: ["docs/notes.md", "bots/neural_national_lab/data/run.json"],
     )
 
-    assert evolution_infra.git_push_refs("main", "bot-v999") is True
+    assert evolution_infra.git_push_refs("main", "national-bot-v999") is True
     assert any(call[:3] == ("merge", "--no-ff", "origin/main") for call in calls)
     assert calls.count(("push", "origin", "main")) == 2
 
@@ -1566,7 +1566,7 @@ def test_git_push_refs_blocks_remote_contract_change(monkeypatch):
         calls.append(args)
         if args == ("push", "origin", "main"):
             raise RuntimeError("fetch first")
-        if args == ("push", "origin", "bot-v999"):
+        if args == ("push", "origin", "national-bot-v999"):
             return ""
         if args == ("fetch", "origin", "--prune", "--tags"):
             return ""
@@ -1588,7 +1588,7 @@ def test_git_push_refs_blocks_remote_contract_change(monkeypatch):
         lambda *_args: ["web/core/orchestrator.py"],
     )
 
-    assert evolution_infra.git_push_refs("main", "bot-v999") is False
+    assert evolution_infra.git_push_refs("main", "national-bot-v999") is False
     assert not any(call[:1] == ("merge",) for call in calls)
 
 
@@ -1626,19 +1626,19 @@ def test_git_commit_bot_preserves_unrelated_staged_files(monkeypatch):
             return "main\n"
         if args == ("diff", "--cached", "--name-only"):
             return "\n".join(staged) + ("\n" if staged else "")
-        if args == ("add", "--", "bots/claude_v999"):
-            staged.append("bots/claude_v999/main.py")
+        if args == ("add", "--", "bots/national_v999"):
+            staged.append("bots/national_v999/main.py")
             return ""
         if args[:2] == ("commit", "-m"):
-            assert args[-2:] == ("--", "bots/claude_v999")
+            assert args[-2:] == ("--", "bots/national_v999")
             return ""
         if args == ("rev-parse", "HEAD"):
             return "abc123456789\n"
         if args == ("rev-parse", "--short=12", "HEAD"):
             return "abc123456789\n"
-        if args == ("tag", "-d", "bot-v999"):
+        if args == ("tag", "-d", "national-bot-v999"):
             return ""
-        if args == ("tag", "bot-v999", "-m", "Bot v999: test"):
+        if args == ("tag", "national-bot-v999", "-m", "National bot v999: test"):
             return ""
         raise AssertionError(args)
 
@@ -1647,6 +1647,6 @@ def test_git_commit_bot_preserves_unrelated_staged_files(monkeypatch):
     push_ok = evolution_infra.git_commit_bot(999, 998, "test")
 
     assert push_ok is False
-    assert ("add", "--", "bots/claude_v999") in calls
+    assert ("add", "--", "bots/national_v999") in calls
     assert any(call[:1] == ("commit",) for call in calls)
     assert not any("docs/user-notes.md" in call for call in calls if call[:1] == ("commit",))

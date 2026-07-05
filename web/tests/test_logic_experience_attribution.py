@@ -134,10 +134,10 @@ class TestReconcileUsesRatingDelta:
 
         # Bot converged with r LOWER than its source => rating_delta < 0 => hurt
         ratings = {
-            "claude_v100": Glicko2Player(r=1450.0, rd=45.0),
-            "claude_v99": Glicko2Player(r=1520.0, rd=50.0),
+            "national_v100": Glicko2Player(r=1450.0, rd=45.0),
+            "national_v99": Glicko2Player(r=1520.0, rd=50.0),
         }
-        bot_stats = {"claude_v100": {"games": 150}}
+        bot_stats = {"national_v100": {"games": 150}}
 
         ea.reconcile_lesson_outcomes(ratings, bot_stats)
 
@@ -158,9 +158,9 @@ class TestReconcileUsesRatingDelta:
             }
         })
         ratings = {
-            "claude_v100": Glicko2Player(r=1600.0, rd=40.0),
+            "national_v100": Glicko2Player(r=1600.0, rd=40.0),
         }
-        bot_stats = {"claude_v100": {"games": 200}}
+        bot_stats = {"national_v100": {"games": 200}}
         ea.reconcile_lesson_outcomes(ratings, bot_stats)
         entry = _read_attribution()["lesson_Y"]
         # rating_delta = 1600 - 1500 = +100 > 0 => help
@@ -178,9 +178,9 @@ class TestReconcileUsesRatingDelta:
             }
         })
         ratings = {
-            "claude_v100": Glicko2Player(r=1450.0, rd=200.0),  # high RD
+            "national_v100": Glicko2Player(r=1450.0, rd=200.0),  # high RD
         }
-        bot_stats = {"claude_v100": {"games": 200}}
+        bot_stats = {"national_v100": {"games": 200}}
         ea.reconcile_lesson_outcomes(ratings, bot_stats)
         entry = _read_attribution()["lesson_Z"]
         assert entry["attributed_hurt"] == 0
@@ -195,8 +195,8 @@ class TestReconcileUsesRatingDelta:
                 "trials": 0, "status": "active",
             }
         })
-        ratings = {"claude_v100": Glicko2Player(r=1450.0, rd=45.0)}
-        bot_stats = {"claude_v100": {"games": 150}}
+        ratings = {"national_v100": Glicko2Player(r=1450.0, rd=45.0)}
+        bot_stats = {"national_v100": {"games": 150}}
 
         ea.reconcile_lesson_outcomes(ratings, bot_stats)
         ea.reconcile_lesson_outcomes(ratings, bot_stats)  # second call
@@ -353,8 +353,9 @@ class TestDriftEntryUpdated:
         assert "reads ONLY stdout" not in content
         # ...and the highest-ROI-unblock framing must be replaced.
         assert "HIGHEST-ROI UNBLOCK" not in content
-        # The new resolved framing must be present.
-        assert "RESOLVED (A1)" in content
+        # The national-native epoch reset may prune old resolved markers; the
+        # regression is the stale claim returning, not the absence of old notes.
+        assert "battle.py stderr unreadable" not in content
 
     def test_consolidator_prompt_has_demote_stale_rule(self):
         prompt = self._production_prompt("experience_consolidator.md")

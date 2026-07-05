@@ -88,7 +88,7 @@ def fake_bots(tmp_path, monkeypatch):
     """Create fake bot directories and patch _bot_main to return them."""
     bots_dir = tmp_path / "bots"
     bots_dir.mkdir()
-    for name in ("claude_v99", "claude_v98", "claude_v50"):
+    for name in ("national_v99", "national_v98", "national_v50"):
         d = bots_dir / name
         d.mkdir()
         (d / "main.py").write_text("# fake bot")
@@ -104,8 +104,8 @@ def fake_bots(tmp_path, monkeypatch):
 def fake_opponents(monkeypatch):
     """Patch _select_precommit_opponents to return a deterministic list."""
     ops = [
-        {"name": "claude_v98", "reason": "parent"},
-        {"name": "claude_v50", "reason": "top_opponent"},
+        {"name": "national_v98", "reason": "parent"},
+        {"name": "national_v50", "reason": "top_opponent"},
     ]
     monkeypatch.setattr("tool_eval._select_precommit_opponents", lambda _v, _sv: ops)
     return ops
@@ -255,8 +255,8 @@ class TestSchedulerPathUsedWhenCapable:
         assert event_types.count("pipeline.precommit_eval.fallback_match_start") == 2
         assert event_types.count("pipeline.precommit_eval.fallback_match_done") == 2
         assert {e["extra"]["opponent"] for e in events if e["type"].endswith("_match_done")} == {
-            "claude_v98",
-            "claude_v50",
+            "national_v98",
+            "national_v50",
         }
 
     @pytest.mark.asyncio
@@ -326,9 +326,9 @@ class TestSchedulerPathUsedWhenCapable:
         # One from scheduler, one from serial fallback
         assert len(data["matchups"]) == 2
         assert len(serial_calls) == 1
-        # The scheduler result should be first (claude_v98)
-        scheduler_matchup = next(m for m in data["matchups"] if m["opponent"] == "claude_v98")
-        serial_matchup = next(m for m in data["matchups"] if m["opponent"] == "claude_v50")
+        # The scheduler result should be first (national_v98)
+        scheduler_matchup = next(m for m in data["matchups"] if m["opponent"] == "national_v98")
+        serial_matchup = next(m for m in data["matchups"] if m["opponent"] == "national_v50")
         assert scheduler_matchup["wins"] == 2
         assert serial_matchup["wins"] == 1
 
@@ -806,9 +806,9 @@ class TestPrecommitRegressionGates:
         monkeypatch.setattr("tool_eval._record_gate", lambda *a, **k: True)
 
         def fake_mirror(a, b, n_games=1, verbose=False, save_log=False):
-            # Parent (claude_v98) loses 2-6; top opponent (claude_v50) neutral so it
+            # Parent (national_v98) loses 2-6; top opponent (national_v50) neutral so it
             # does not independently trip the aggregate gate.
-            if "claude_v98" in b:
+            if "national_v98" in b:
                 return ([2, 6], 0, n_games, None)
             return ([3, 3], 0, n_games, None)
 
@@ -857,7 +857,7 @@ class TestPrecommitRegressionGates:
 
         def fake_mirror(a, b, n_games=1, verbose=False, save_log=False):
             # Parent coin-flip 4-3; top opponent balanced so aggregate does not trip
-            if "claude_v98" in b:
+            if "national_v98" in b:
                 return ([4, 3], 0, n_games, None)
             return ([3, 3], 0, n_games, None)
 
@@ -886,7 +886,7 @@ class TestPrecommitRegressionGates:
         monkeypatch.setattr("tool_eval._record_gate", lambda *a, **k: True)
 
         def fake_mirror(a, b, n_games=1, verbose=False, save_log=False):
-            if "claude_v98" in b:
+            if "national_v98" in b:
                 return ([3, 2], 0, n_games, None)  # parent fine
             return ([1, 5], 0, n_games, None)  # top collapse
 

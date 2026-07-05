@@ -80,37 +80,37 @@ class TestNemesisSlot:
 
     def test_find_nemesis_returns_lowest_winrate(self):
         # (opp, parent_wins, games); win rates 0.3/0.2/0.5 exact.
-        h2h = self._h2h_with("claude_v98", [
-            ("claude_vA", 3, 10),
-            ("claude_vB", 2, 10),
-            ("claude_vC", 1, 2),   # below min_games -> filtered
+        h2h = self._h2h_with("national_v98", [
+            ("national_vA", 3, 10),
+            ("national_vB", 2, 10),
+            ("national_vC", 1, 2),   # below min_games -> filtered
         ])
         result = tool_helpers._find_nemesis_opponent(
-            "claude_v98", ["claude_vA", "claude_vB", "claude_vC"], h2h, min_games=4
+            "national_v98", ["national_vA", "national_vB", "national_vC"], h2h, min_games=4
         )
         assert result is not None
         opp, wr = result
-        assert opp == "claude_vB"
+        assert opp == "national_vB"
         assert wr == pytest.approx(0.2)
 
     def test_find_nemesis_none_when_all_above_threshold(self):
-        h2h = self._h2h_with("claude_v98", [
-            ("claude_vA", 6, 10),
-            ("claude_vB", 5, 10),
+        h2h = self._h2h_with("national_v98", [
+            ("national_vA", 6, 10),
+            ("national_vB", 5, 10),
         ])
         # _find_nemesis_opponent returns the lowest regardless of threshold;
         # the threshold filter happens in _select_precommit_opponents.
         result = tool_helpers._find_nemesis_opponent(
-            "claude_v98", ["claude_vA", "claude_vB"], h2h, min_games=4
+            "national_v98", ["national_vA", "national_vB"], h2h, min_games=4
         )
         assert result is not None
-        assert result[0] == "claude_vB"  # lowest wr
+        assert result[0] == "national_vB"  # lowest wr
         assert result[1] > 0.40  # but above the probe threshold
 
     def test_find_nemesis_none_when_no_games(self):
         h2h = {}
         result = tool_helpers._find_nemesis_opponent(
-            "claude_v98", ["claude_vA", "claude_vB"], h2h, min_games=4
+            "national_v98", ["national_vA", "national_vB"], h2h, min_games=4
         )
         assert result is None
 
@@ -118,31 +118,31 @@ class TestNemesisSlot:
         # Build fake bots so _bot_main().exists() is True.
         bots_dir = tmp_path / "bots"
         bots_dir.mkdir()
-        for name in ("claude_v99", "claude_v98", "claude_vA", "claude_vB", "claude_vTop"):
+        for name in ("national_v99", "national_v98", "national_vA", "national_vB", "national_vTop"):
             d = bots_dir / name
             d.mkdir()
             (d / "main.py").write_text("# fake")
         monkeypatch.setattr(tool_helpers, "_bot_main", lambda n: bots_dir / n / "main.py")
         monkeypatch.setattr(tool_helpers, "get_active_bots",
-                            lambda: ["claude_v98", "claude_vA", "claude_vB", "claude_vTop"])
+                            lambda: ["national_v98", "national_vA", "national_vB", "national_vTop"])
         # v98 is the parent. vB (wr 0.1) is the weak-slot pick; vA (wr 0.3)
         # is the nemesis probe (next-worst, distinct from weak). Counts scaled to
         # >=15 games per pair to clear the raised PRECOMMIT_NEMESIS_MIN_GAMES=15
         # floor (win rates preserved).
-        h2h = self._h2h_with("claude_v98", [
-            ("claude_vA", 6, 20),    # wr 0.3
-            ("claude_vB", 2, 20),    # wr 0.1 -> weak slot
-            ("claude_vTop", 14, 20), # wr 0.7 -> top
+        h2h = self._h2h_with("national_v98", [
+            ("national_vA", 6, 20),    # wr 0.3
+            ("national_vB", 2, 20),    # wr 0.1 -> weak slot
+            ("national_vTop", 14, 20), # wr 0.7 -> top
         ])
         monkeypatch.setattr(tool_helpers, "_load_h2h_data", lambda: h2h)
         # Strength ranking + _load_h2h_data both feed opponent selection; patch
         # the public loaders too.
         monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates",
-                            lambda: {"claude_v98": 0.5, "claude_vA": 0.5, "claude_vB": 0.3, "claude_vTop": 0.7})
+                            lambda: {"national_v98": 0.5, "national_vA": 0.5, "national_vB": 0.3, "national_vTop": 0.7})
         monkeypatch.setattr(tool_helpers, "load_strength_scores",
-                            lambda: {"claude_v98": 0.6, "claude_vA": 0.4, "claude_vB": 0.3, "claude_vTop": 0.7})
+                            lambda: {"national_v98": 0.6, "national_vA": 0.4, "national_vB": 0.3, "national_vTop": 0.7})
         monkeypatch.setattr(tool_helpers, "load_selection_scores",
-                            lambda: {"claude_v98": 0.6, "claude_vA": 0.4, "claude_vB": 0.3, "claude_vTop": 0.7})
+                            lambda: {"national_v98": 0.6, "national_vA": 0.4, "national_vB": 0.3, "national_vTop": 0.7})
         monkeypatch.setattr(tool_helpers, "load_ratings", lambda: {})
         monkeypatch.setattr(tool_helpers, "PRECOMMIT_NEMESIS_SLOT", True)
 
@@ -150,30 +150,30 @@ class TestNemesisSlot:
         names = [o["name"] for o in opponents]
         reasons = {o["name"]: o["reason"] for o in opponents}
         # vA is the distinct nemesis (next-worst after vB).
-        assert "claude_vA" in names
-        assert reasons["claude_vA"] == "nemesis_probe"
+        assert "national_vA" in names
+        assert reasons["national_vA"] == "nemesis_probe"
         # vB is the weak slot, not the nemesis.
-        assert reasons.get("claude_vB") == "source_h2h_weakness"
+        assert reasons.get("national_vB") == "source_h2h_weakness"
 
     def test_select_no_nemesis_when_flag_off(self, tmp_path, monkeypatch):
         bots_dir = tmp_path / "bots"
         bots_dir.mkdir()
-        for name in ("claude_v99", "claude_v98", "claude_vA", "claude_vB"):
+        for name in ("national_v99", "national_v98", "national_vA", "national_vB"):
             d = bots_dir / name
             d.mkdir()
             (d / "main.py").write_text("# fake")
         monkeypatch.setattr(tool_helpers, "_bot_main", lambda n: bots_dir / n / "main.py")
         monkeypatch.setattr(tool_helpers, "get_active_bots",
-                            lambda: ["claude_v98", "claude_vA", "claude_vB"])
-        h2h = self._h2h_with("claude_v98", [
-            ("claude_vA", 5, 10),
-            ("claude_vB", 2, 10),
+                            lambda: ["national_v98", "national_vA", "national_vB"])
+        h2h = self._h2h_with("national_v98", [
+            ("national_vA", 5, 10),
+            ("national_vB", 2, 10),
         ])
         monkeypatch.setattr(tool_helpers, "_load_h2h_data", lambda: h2h)
         monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates",
-                            lambda: {"claude_v98": 0.5, "claude_vA": 0.5, "claude_vB": 0.3})
+                            lambda: {"national_v98": 0.5, "national_vA": 0.5, "national_vB": 0.3})
         monkeypatch.setattr(tool_helpers, "load_strength_scores",
-                            lambda: {"claude_v98": 0.6, "claude_vA": 0.5, "claude_vB": 0.3})
+                            lambda: {"national_v98": 0.6, "national_vA": 0.5, "national_vB": 0.3})
         monkeypatch.setattr(tool_helpers, "load_ratings", lambda: {})
         monkeypatch.setattr(tool_helpers, "PRECOMMIT_NEMESIS_SLOT", False)
 
@@ -184,54 +184,54 @@ class TestNemesisSlot:
         """When the nemesis is ALSO the source_h2h_weakness pick, add() dedups."""
         bots_dir = tmp_path / "bots"
         bots_dir.mkdir()
-        for name in ("claude_v99", "claude_v98", "claude_vB"):
+        for name in ("national_v99", "national_v98", "national_vB"):
             d = bots_dir / name
             d.mkdir()
             (d / "main.py").write_text("# fake")
         monkeypatch.setattr(tool_helpers, "_bot_main", lambda n: bots_dir / n / "main.py")
-        monkeypatch.setattr(tool_helpers, "get_active_bots", lambda: ["claude_v98", "claude_vB"])
+        monkeypatch.setattr(tool_helpers, "get_active_bots", lambda: ["national_v98", "national_vB"])
         # vB is both the weakness pick AND the nemesis (same opponent).
-        h2h = self._h2h_with("claude_v98", [("claude_vB", 2, 10)])
+        h2h = self._h2h_with("national_v98", [("national_vB", 2, 10)])
         monkeypatch.setattr(tool_helpers, "_load_h2h_data", lambda: h2h)
         monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates",
-                            lambda: {"claude_v98": 0.5, "claude_vB": 0.3})
+                            lambda: {"national_v98": 0.5, "national_vB": 0.3})
         monkeypatch.setattr(tool_helpers, "load_strength_scores",
-                            lambda: {"claude_v98": 0.6, "claude_vB": 0.3})
+                            lambda: {"national_v98": 0.6, "national_vB": 0.3})
         monkeypatch.setattr(tool_helpers, "load_ratings", lambda: {})
         monkeypatch.setattr(tool_helpers, "PRECOMMIT_NEMESIS_SLOT", True)
 
         opponents = tool_helpers._select_precommit_opponents(99, 98)
         # vB appears exactly once (parent+vB, no duplicate nemesis entry).
         names = [o["name"] for o in opponents]
-        assert names.count("claude_vB") == 1
+        assert names.count("national_vB") == 1
 
     def test_select_nemesis_slot_at_most_one_third(self, tmp_path, monkeypatch):
         """Total opponents >=3 => nemesis count <= 1/3 of total."""
         bots_dir = tmp_path / "bots"
         bots_dir.mkdir()
-        for name in ("claude_v99", "claude_v98", "claude_vA", "claude_vB", "claude_vWeak2", "claude_vTop", "claude_vTop2"):
+        for name in ("national_v99", "national_v98", "national_vA", "national_vB", "national_vWeak2", "national_vTop", "national_vTop2"):
             d = bots_dir / name
             d.mkdir()
             (d / "main.py").write_text("# fake")
         monkeypatch.setattr(tool_helpers, "_bot_main", lambda n: bots_dir / n / "main.py")
         monkeypatch.setattr(tool_helpers, "get_active_bots",
-                            lambda: ["claude_v98", "claude_vA", "claude_vB", "claude_vWeak2", "claude_vTop", "claude_vTop2"])
+                            lambda: ["national_v98", "national_vA", "national_vB", "national_vWeak2", "national_vTop", "national_vTop2"])
         # Counts scaled to >=15 games per pair to clear the raised
         # PRECOMMIT_NEMESIS_MIN_GAMES=15 floor (win rates preserved).
-        h2h = self._h2h_with("claude_v98", [
-            ("claude_vA", 10, 20),
-            ("claude_vB", 2, 20),     # wr 0.1 -> weak
-            ("claude_vWeak2", 6, 20), # wr 0.3 -> nemesis (next-worst)
-            ("claude_vTop", 14, 20),
-            ("claude_vTop2", 12, 20),
+        h2h = self._h2h_with("national_v98", [
+            ("national_vA", 10, 20),
+            ("national_vB", 2, 20),     # wr 0.1 -> weak
+            ("national_vWeak2", 6, 20), # wr 0.3 -> nemesis (next-worst)
+            ("national_vTop", 14, 20),
+            ("national_vTop2", 12, 20),
         ])
         monkeypatch.setattr(tool_helpers, "_load_h2h_data", lambda: h2h)
         monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates",
-                            lambda: {"claude_v98": 0.5, "claude_vA": 0.5, "claude_vB": 0.3,
-                                     "claude_vTop": 0.7, "claude_vTop2": 0.65})
+                            lambda: {"national_v98": 0.5, "national_vA": 0.5, "national_vB": 0.3,
+                                     "national_vTop": 0.7, "national_vTop2": 0.65})
         monkeypatch.setattr(tool_helpers, "load_strength_scores",
-                            lambda: {"claude_v98": 0.6, "claude_vA": 0.5, "claude_vB": 0.3,
-                                     "claude_vWeak2": 0.35, "claude_vTop": 0.7, "claude_vTop2": 0.65})
+                            lambda: {"national_v98": 0.6, "national_vA": 0.5, "national_vB": 0.3,
+                                     "national_vWeak2": 0.35, "national_vTop": 0.7, "national_vTop2": 0.65})
         monkeypatch.setattr(tool_helpers, "load_ratings", lambda: {})
         monkeypatch.setattr(tool_helpers, "PRECOMMIT_NEMESIS_SLOT", True)
 
@@ -277,7 +277,7 @@ def patch_checkpoint_file(monkeypatch, tmp_path):
 def fake_bots(tmp_path, monkeypatch):
     bots_dir = tmp_path / "bots"
     bots_dir.mkdir()
-    for name in ("claude_v99", "claude_v98", "claude_v50", "claude_vNem"):
+    for name in ("national_v99", "national_v98", "national_v50", "national_vNem"):
         d = bots_dir / name
         d.mkdir()
         (d / "main.py").write_text("# fake bot")
@@ -311,18 +311,18 @@ class TestNemesisGateIsolation:
         """Nemesis matchup loses big but parent/top are even => passed=True."""
         monkeypatch.setattr(tool_eval, "PRECOMMIT_SEQUENTIAL_EARLY_STOP", True)
         ops = [
-            {"name": "claude_v98", "reason": "parent"},
-            {"name": "claude_v50", "reason": "top_h2h_wr"},
-            {"name": "claude_vNem", "reason": "nemesis_probe"},
+            {"name": "national_v98", "reason": "parent"},
+            {"name": "national_v50", "reason": "top_h2h_wr"},
+            {"name": "national_vNem", "reason": "nemesis_probe"},
         ]
         monkeypatch.setattr("tool_eval._select_precommit_opponents", lambda _v, _sv: ops)
         _battle_module = sys.modules["engine.battle"]
 
         def fake_gen(a, b, *a2, **k):
-            if "claude_v98" in b:
+            if "national_v98" in b:
                 for x in [100, -100, 100, -100, 100, -100, 100, -100]:
                     yield x
-            elif "claude_v50" in b:
+            elif "national_v50" in b:
                 for x in [50, -50, 50, -50, 50, -50, 50, -50]:
                     yield x
             else:
@@ -339,11 +339,11 @@ class TestNemesisGateIsolation:
         data = _decode(result)
         assert data["passed"] is True
         # Nemesis matchup is in telemetry.
-        nem = next(m for m in data["matchups"] if m["opponent"] == "claude_vNem")
+        nem = next(m for m in data["matchups"] if m["opponent"] == "national_vNem")
         assert nem["reason"] == "nemesis_probe"
         assert nem["losses"] == 8
         # No blocker references the nemesis.
-        assert not any("claude_vNem" in str(b) for b in data["blockers"])
+        assert not any("national_vNem" in str(b) for b in data["blockers"])
 
     @pytest.mark.asyncio
     async def test_nemesis_excluded_from_aggregate_ci(
@@ -352,14 +352,14 @@ class TestNemesisGateIsolation:
         """Nemesis losses must NOT enter aggregate_net_chips."""
         monkeypatch.setattr(tool_eval, "PRECOMMIT_SEQUENTIAL_EARLY_STOP", True)
         ops = [
-            {"name": "claude_v98", "reason": "parent"},
-            {"name": "claude_vNem", "reason": "nemesis_probe"},
+            {"name": "national_v98", "reason": "parent"},
+            {"name": "national_vNem", "reason": "nemesis_probe"},
         ]
         monkeypatch.setattr("tool_eval._select_precommit_opponents", lambda _v, _sv: ops)
         _battle_module = sys.modules["engine.battle"]
 
         def fake_gen(a, b, *a2, **k):
-            if "claude_v98" in b:
+            if "national_v98" in b:
                 for x in [100, -100, 100, -100, 100, -100, 100, -100]:
                     yield x
             else:
@@ -380,7 +380,7 @@ class TestNemesisGateIsolation:
         assert not any(b.get("reason") == "aggregate_precommit_regression"
                        for b in data["blockers"])
         # telemetry still shows the nemesis matchup
-        assert any(m["opponent"] == "claude_vNem" for m in data["matchups"])
+        assert any(m["opponent"] == "national_vNem" for m in data["matchups"])
 
     @pytest.mark.asyncio
     async def test_nemesis_timeout_does_not_block(
@@ -390,14 +390,14 @@ class TestNemesisGateIsolation:
         import asyncio as _aio
         monkeypatch.setattr(tool_eval, "PRECOMMIT_SEQUENTIAL_EARLY_STOP", True)
         ops = [
-            {"name": "claude_v98", "reason": "parent"},
-            {"name": "claude_vNem", "reason": "nemesis_probe"},
+            {"name": "national_v98", "reason": "parent"},
+            {"name": "national_vNem", "reason": "nemesis_probe"},
         ]
         monkeypatch.setattr("tool_eval._select_precommit_opponents", lambda _v, _sv: ops)
         _battle_module = sys.modules["engine.battle"]
 
         def fake_gen(a, b, *a2, **k):
-            if "claude_vNem" in b:
+            if "national_vNem" in b:
                 # Force a timeout for the nemesis matchup.
                 raise _aio.TimeoutError()
             for x in [100, -100, 100, -100, 100, -100, 100, -100]:
@@ -415,7 +415,7 @@ class TestNemesisGateIsolation:
         # Nemesis timeout did not flip the verdict.
         assert data["passed"] is True
         assert not any(b.get("reason") == "match_timeout" for b in data["blockers"])
-        nem = next(m for m in data["matchups"] if m["opponent"] == "claude_vNem")
+        nem = next(m for m in data["matchups"] if m["opponent"] == "national_vNem")
         assert "nemesis_note" in nem or nem.get("error")
 
     @pytest.mark.asyncio
@@ -425,14 +425,14 @@ class TestNemesisGateIsolation:
         """Parent gate is not weakened by the nemesis slot's presence."""
         monkeypatch.setattr(tool_eval, "PRECOMMIT_SEQUENTIAL_EARLY_STOP", True)
         ops = [
-            {"name": "claude_v98", "reason": "parent"},
-            {"name": "claude_vNem", "reason": "nemesis_probe"},
+            {"name": "national_v98", "reason": "parent"},
+            {"name": "national_vNem", "reason": "nemesis_probe"},
         ]
         monkeypatch.setattr("tool_eval._select_precommit_opponents", lambda _v, _sv: ops)
         _battle_module = sys.modules["engine.battle"]
 
         def fake_gen(a, b, *a2, **k):
-            if "claude_v98" in b:
+            if "national_v98" in b:
                 # Parent crushes the candidate -> regression.
                 for x in [-30000] * 8:
                     yield x
@@ -456,15 +456,15 @@ class TestNemesisGateIsolation:
         """Nemesis matchup appears in result['matchups'] with W/L/net_chips."""
         monkeypatch.setattr(tool_eval, "PRECOMMIT_SEQUENTIAL_EARLY_STOP", True)
         ops = [
-            {"name": "claude_v98", "reason": "parent"},
-            {"name": "claude_vNem", "reason": "nemesis_probe"},
+            {"name": "national_v98", "reason": "parent"},
+            {"name": "national_vNem", "reason": "nemesis_probe"},
         ]
         monkeypatch.setattr("tool_eval._select_precommit_opponents", lambda _v, _sv: ops)
         _battle_module = sys.modules["engine.battle"]
         nem_stream = [-5000, -4000, 3000, -6000, 2000, -5500, 1000, -7000]
 
         def fake_gen(a, b, *a2, **k):
-            if "claude_vNem" in b:
+            if "national_vNem" in b:
                 for x in nem_stream:
                     yield x
             else:
@@ -477,7 +477,7 @@ class TestNemesisGateIsolation:
         _common_patches(monkeypatch, mock_ui)
         result = await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 8})
         data = _decode(result)
-        nem = next(m for m in data["matchups"] if m["opponent"] == "claude_vNem")
+        nem = next(m for m in data["matchups"] if m["opponent"] == "national_vNem")
         assert nem["reason"] == "nemesis_probe"
         assert nem["net_chips"] == nem_stream
         assert nem["n_played"] == 8
@@ -604,8 +604,8 @@ class TestOpponentProfileInjectionAsync:
         import evolution_infra
         monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
         per_opp = {
-            "claude_v5": {
-                "claude_v3": {
+            "national_v5": {
+                "national_v3": {
                     "preflop": {"total": 100, "fold": 20, "call": 40, "raise": 40, "check": 0, "allin": 0, "fold_to_bet": 15, "cbet": 0, "barrel": 0},
                     "flop": {"total": 80, "fold": 10, "call": 30, "raise": 40, "check": 0, "allin": 0, "fold_to_bet": 5, "cbet": 20, "barrel": 0},
                     "turn": {"total": 60, "fold": 5, "call": 20, "raise": 35, "check": 0, "allin": 0, "fold_to_bet": 2, "cbet": 0, "barrel": 15},
@@ -616,10 +616,10 @@ class TestOpponentProfileInjectionAsync:
         }
         (tmp_path / "bot_action_stats_per_opp.json").write_text(json.dumps(per_opp))
         # h2h for ranking.
-        h2h = {"claude_v5 vs claude_v3": {"games": 50, "a_wins": 15, "b_wins": 35}}
+        h2h = {"national_v5 vs national_v3": {"games": 50, "a_wins": 15, "b_wins": 35}}
         monkeypatch.setattr(tool_helpers, "_load_h2h_data", lambda: h2h)
         monkeypatch.setattr(tool_helpers, "_h2h_stats",
-                            lambda bot, opp, _h: ({"win_rate": 0.3, "games": 50} if opp == "claude_v3" else None))
+                            lambda bot, opp, _h: ({"win_rate": 0.3, "games": 50} if opp == "national_v3" else None))
 
         ui = MagicMock()
         ui.clear_io = MagicMock()
@@ -629,7 +629,7 @@ class TestOpponentProfileInjectionAsync:
         await tool_planning.run_master.handler({"source_v": 5, "next_v": 6})
         assert len(captured.calls) == 1
         profiles = captured.calls[0].get("opponent_profiles", "")
-        assert "claude_v3" in profiles
+        assert "national_v3" in profiles
         assert "AF=" in profiles
         assert "ftb=" in profiles
 
@@ -667,14 +667,14 @@ class TestOpponentProfileInjectionAsync:
         """When >K opponents exist, the injected text only references <=K of them."""
         import evolution_infra
         monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
-        opps = {f"claude_vOpp{i}": {
+        opps = {f"national_vOpp{i}": {
             "preflop": {"total": 10, "fold": 1, "call": 5, "raise": 4, "check": 0, "allin": 0, "fold_to_bet": 0, "cbet": 0, "barrel": 0},
             "flop": {"total": 8, "fold": 1, "call": 4, "raise": 3, "check": 0, "allin": 0, "fold_to_bet": 0, "cbet": 0, "barrel": 0},
             "turn": {"total": 6, "fold": 1, "call": 3, "raise": 2, "check": 0, "allin": 0, "fold_to_bet": 0, "cbet": 0, "barrel": 0},
             "river": {"total": 4, "fold": 1, "call": 2, "raise": 1, "check": 0, "allin": 0, "fold_to_bet": 0, "cbet": 0, "barrel": 0},
             "total_hands": 5,
         } for i in range(20)}
-        per_opp = {"claude_v5": opps}
+        per_opp = {"national_v5": opps}
         (tmp_path / "bot_action_stats_per_opp.json").write_text(json.dumps(per_opp))
         # No h2h -> fallback path ranks by total actions (all equal) -> top-K.
         monkeypatch.setattr(tool_helpers, "_load_h2h_data", lambda: {})
@@ -683,7 +683,7 @@ class TestOpponentProfileInjectionAsync:
             all_stats = json.load(f)
         # Replicate the K-cap: when no h2h signal, select top-K by total actions.
         K = 6
-        opp_map = all_stats["claude_v5"]
+        opp_map = all_stats["national_v5"]
         selected = sorted(opp_map, key=lambda o: sum(
             opp_map[o].get(s, {}).get("total", 0) for s in ("preflop", "flop", "turn", "river")
         ), reverse=True)[:K]
@@ -860,16 +860,16 @@ class TestFeatureFlagsAndIntegration:
         """End-to-end: nemesis slot runs + telemetry, parent mild => pass, no crash."""
         monkeypatch.setattr(tool_eval, "PRECOMMIT_SEQUENTIAL_EARLY_STOP", True)
         ops = [
-            {"name": "claude_v98", "reason": "parent"},
-            {"name": "claude_v50", "reason": "top_h2h_wr"},
-            {"name": "claude_vNem", "reason": "nemesis_probe"},
+            {"name": "national_v98", "reason": "parent"},
+            {"name": "national_v50", "reason": "top_h2h_wr"},
+            {"name": "national_vNem", "reason": "nemesis_probe"},
         ]
         monkeypatch.setattr("tool_eval._select_precommit_opponents", lambda _v, _sv: ops)
         _battle_module = sys.modules["engine.battle"]
 
         def fake_gen(a, b, *a2, **k):
             # Mild streams everywhere; nemesis slightly worse but excluded from gate.
-            if "claude_vNem" in b:
+            if "national_vNem" in b:
                 for x in [-5000, 5000, -5000, 5000, -5000, 5000, -5000, 5000]:
                     yield x
             else:
@@ -885,5 +885,5 @@ class TestFeatureFlagsAndIntegration:
         # Parent + top mild, nemesis excluded => pass.
         assert data["passed"] is True
         opp_reasons = {m["opponent"]: m["reason"] for m in data["matchups"]}
-        assert opp_reasons.get("claude_vNem") == "nemesis_probe"
+        assert opp_reasons.get("national_vNem") == "nemesis_probe"
         assert len(data["matchups"]) == 3

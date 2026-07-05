@@ -149,18 +149,18 @@ def temp_prompt_dir(tmp_path):
 @pytest.fixture
 def sample_ratings():
     return {
-        "claude_v35": {"r": 1600, "rd": 50, "sigma": 0.06, "last_period": "p10"},
-        "claude_v30": {"r": 1550, "rd": 80, "sigma": 0.06, "last_period": "p10"},
-        "claude_v10": {"r": 1500, "rd": 100, "sigma": 0.06, "last_period": "p9"},
+        "national_v35": {"r": 1600, "rd": 50, "sigma": 0.06, "last_period": "p10"},
+        "national_v30": {"r": 1550, "rd": 80, "sigma": 0.06, "last_period": "p10"},
+        "national_v10": {"r": 1500, "rd": 100, "sigma": 0.06, "last_period": "p9"},
     }
 
 
 @pytest.fixture
 def sample_h2h():
     return {
-        "claude_v35 vs claude_v30": {"games": 50, "a_wins": 30, "b_wins": 20, "win_rate": 0.6},
-        "claude_v35 vs claude_v10": {"games": 50, "a_wins": 35, "b_wins": 15, "win_rate": 0.7},
-        "claude_v30 vs claude_v10": {"games": 50, "a_wins": 28, "b_wins": 22, "win_rate": 0.56},
+        "national_v35 vs national_v30": {"games": 50, "a_wins": 30, "b_wins": 20, "win_rate": 0.6},
+        "national_v35 vs national_v10": {"games": 50, "a_wins": 35, "b_wins": 15, "win_rate": 0.7},
+        "national_v30 vs national_v10": {"games": 50, "a_wins": 28, "b_wins": 22, "win_rate": 0.56},
     }
 
 

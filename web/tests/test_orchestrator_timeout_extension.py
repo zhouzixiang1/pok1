@@ -330,6 +330,12 @@ def test_main_loop_infra_error_resumes_checkpoint_without_prepare(tmp_path, monk
     monkeypatch.setattr(orchestrator, "_prepare_or_fail", _fake_prepare)
     monkeypatch.setattr(orchestrator, "_startup_recovery", lambda ui: None)
     monkeypatch.setattr(orchestrator, "_watchdog_triggered", False)
+    import pipeline_recovery
+    monkeypatch.setattr(
+        pipeline_recovery,
+        "checkpoint_recovery_diagnostics",
+        lambda checkpoint: {"active": True, "recoverable": True, "issues": []},
+    )
 
     async def _no_watchdog(ui, shutdown_mgr, check_interval=60):
         return
@@ -398,6 +404,12 @@ def test_main_loop_success_with_active_checkpoint_skips_cleanup_and_resumes(tmp_
     monkeypatch.setattr(orchestrator, "_run_post_generation_cleanup_with_timeout", _fake_cleanup)
     monkeypatch.setattr(orchestrator, "_startup_recovery", lambda ui: None)
     monkeypatch.setattr(orchestrator, "_watchdog_triggered", False)
+    import pipeline_recovery
+    monkeypatch.setattr(
+        pipeline_recovery,
+        "checkpoint_recovery_diagnostics",
+        lambda checkpoint: {"active": True, "recoverable": True, "issues": []},
+    )
     async def _no_deterministic_route(*_args, **_kwargs):
         return False
 

@@ -203,7 +203,7 @@ def test_H3_cleanup_incomplete_preserves_bare_commit(tmp_path, monkeypatch):
 
     # Set up a fake bots dir with a bare-commit-style v entry.
     fake_bots = tmp_path / "bots"
-    fake_v_dir = fake_bots / "claude_v888"
+    fake_v_dir = fake_bots / "national_v888"
     fake_v_dir.mkdir(parents=True)
     (fake_v_dir / "main.py").write_text("# bare commit code\n")
 
@@ -426,8 +426,8 @@ def test_P1_guard_hook_returns_stage_recovery_and_command_preview():
     evolution_infra.write_pipeline_checkpoint(232, 224, "direction_audited")
     hook = oc._make_bot_dir_guard_hook()["PreToolUse"][0].hooks[0]
     command = (
-        "mkdir -p bots/claude_v232 && "
-        "cp bots/claude_v224/main.py bots/claude_v232/main.py"
+        "mkdir -p bots/national_v232 && "
+        "cp bots/national_v224/main.py bots/national_v232/main.py"
     )
 
     output = asyncio.run(hook(

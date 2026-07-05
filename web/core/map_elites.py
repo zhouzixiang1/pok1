@@ -244,15 +244,19 @@ def _scan_behavior_fingerprints(replays_dir, active_bots):
     if not replays_dir.exists():
         return {}
     active_set = set(active_bots)
+    try:
+        use_persistent_cache = replays_dir.resolve() == Path(REPLAY_DIR).resolve()
+    except Exception:
+        use_persistent_cache = False
 
     cur_etag = _replay_etag(replays_dir)
-    prev_etag = _load_etag_cache(BEHAVIOR_ETAG_FILE)
+    prev_etag = _load_etag_cache(BEHAVIOR_ETAG_FILE) if use_persistent_cache else {}
     cur_files = set(cur_etag)
     prev_files = set(prev_etag)
     changed = [f for f in cur_files if cur_etag[f] != prev_etag.get(f)]
     removed = [f for f in prev_files if f not in cur_files]
 
-    acc_cache = _load_acc_cache()
+    acc_cache = _load_acc_cache() if use_persistent_cache else {}
 
     if removed:
         # A replay was deleted (reap). We can't tell which bot's data to subtract,
@@ -287,9 +291,10 @@ def _scan_behavior_fingerprints(replays_dir, active_bots):
                 _accumulate_fingerprint_counts(games, pidx, acc)
             # games reference dropped here -> memory reclaimed (vs old .extend)
 
-        # Persist updated accumulators + etag so the next call is cheap.
-        _save_acc_cache(acc_cache)
-        _save_etag_cache(BEHAVIOR_ETAG_FILE, cur_etag)
+        # Persist updated accumulators + etag so the next default-runtime call is cheap.
+        if use_persistent_cache:
+            _save_acc_cache(acc_cache)
+            _save_etag_cache(BEHAVIOR_ETAG_FILE, cur_etag)
 
     # Derive finalized fingerprints from accumulators (normalize ratios).
     out = {}
