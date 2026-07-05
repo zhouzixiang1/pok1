@@ -50,12 +50,12 @@ The current implementation uses an evaluation-contract guard rather than a blank
 
 - `web/core/evolution_scope.py` defines file-scoped evaluation-sensitive paths. `CRITICAL_PREFIXES` must stay empty unless a future change has a specific path-pattern reason; do not lock all of `engine/`, `sever/`, `web/core/`, or `web/tests/`.
 - The hard contract is the union of named exact-file groups for local engine semantics, national TCP/platform rule semantics, gate/precommit logic, generation/recovery/publish logic, and active prompt templates. Runtime observability files such as `web/core/event_bus.py`, `web/core/system_log.py`, `web/core/web_ui.py`, launcher files such as `web/main.py` and `sever/main.py`, docs, frontend assets, and unrelated experiments are contract-neutral unless they are promoted into a named exact-file group with tests.
-- `web/core/evaluation_contract.py` builds the active contract from those exact files plus only the active candidate/source/parent/opponent bot versions recorded in the checkpoint. The contract is stage-sensitive: before and during planning/worker/repair stages it tracks generation and prompt files; after worker output exists and the pipeline is only running hard gates/review/precommit/commit, planning and worker prompts are no longer considered part of the current candidate's evaluation contract. Guard files such as `evaluation_contract.py`, `evolution_scope.py`, `tool_runtime_guard.py`, `orchestrator.py`, and `pipeline_recovery.py` stay critical at every active stage.
+- `web/core/evaluation_contract.py` builds the active contract from those exact files plus only the active candidate/source/parent/opponent bot versions recorded in the checkpoint. The contract is stage-sensitive at the level of pipeline logic, not directories: selected/preparing/crossover stages track prepare+crossover files, `prepared` tracks direction-audit files, `direction_audited` tracks master-planning files, `master_planned` and repair stages track worker/repair files, and post-worker stages track only hard evaluation/runtime files. Guard files such as `evaluation_contract.py`, `evolution_scope.py`, `tool_runtime_guard.py`, `orchestrator.py`, and `pipeline_recovery.py` stay critical at every active stage.
 - `web/core/evolution_infra.py` writes that contract into `web/core/results/pipeline_state.json` as `repo_baseline.evaluation_contract`.
 - `web/core/tool_runtime_guard.py`, `web/core/orchestrator.py`, and `web/core/pipeline_recovery.py` allow unrelated HEAD drift only when the changed paths do not touch the active evaluation contract.
 - `web/core/publish_reconcile.py` retries a rejected push by fetching `origin/main`; it auto-merges remote changes only when they are evaluation-contract neutral. If remote changes touch the contract, it blocks with `remote_contract_changed`.
 
-This means documentation-only, observability-only, launcher-only, frontend, or unrelated experiment changes can usually be reconciled automatically. Changes to the named rule/evaluation/generation contract files or active bot versions require an explicit restart/resume decision.
+This means documentation-only, observability-only, launcher-only, frontend, or unrelated experiment changes can usually be reconciled automatically. Changes to named rule/evaluation/generation contract files require an explicit restart/resume decision only when they are in the active stage contract. Changes to active candidate/source/parent/opponent bot versions remain contract-critical.
 
 ## Sync Procedures
 
@@ -78,7 +78,7 @@ git status --short --branch
 git fetch --tags origin
 ```
 
-Do not switch branches or reset this checkout while the evolution service is running. If the service is stopped and the checkout is clean, update it with `git pull --ff-only --tags` before restarting. If the incoming change touches the evaluation contract, stop the evolution service, merge/pull, restart from the new baseline, and observe the next generation. If the incoming change is contract-neutral, it may be merged at the next safe point or reconciled automatically when evolution publishes its next commit.
+Do not switch branches or reset this checkout while the evolution service is running. If the service is stopped and the checkout is clean, update it with `git pull --ff-only --tags` before restarting. If the incoming change touches the active evaluation contract reported by `web/core/evaluation_contract.py`, stop the evolution service, merge/pull, restart from the new baseline, and observe the next generation. If the incoming change is contract-neutral for the active stage, it may be merged at the next safe point or reconciled automatically when evolution publishes its next commit.
 
 After `.evolution_pok` publishes a bot:
 

@@ -30,7 +30,7 @@ from evolution_scope import (
     normalize_repo_path,
 )
 
-CONTRACT_VERSION = 3
+CONTRACT_VERSION = 4
 _BOT_NAME_RE = re.compile(rf"^{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)$")
 _BOT_PATH_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)(?:/|$)")
 
@@ -63,18 +63,111 @@ FULL_PIPELINE_EXACT = frozenset().union(
     CRITICAL_PROMPT_EXACT,
 )
 
-_FULL_PIPELINE_STAGES = frozenset({
-    "selected",
-    "preparing",
-    "prepared",
-    "crossover_running",
-    "direction_audited",
-    "master_planned",
-    "quality_failed",
-    "precommit_failed",
-    "repair_planned",
-    "rework_running",
-})
+PREPARE_STAGE_EXACT = frozenset().union(
+    EVALUATION_RUNTIME_EXACT,
+    {
+        "web/core/agent_review.py",  # owns crossover implementation helpers
+        "web/core/audit_agents.py",
+        "web/core/crossover_compat.py",
+        "web/core/fix_injection.py",
+        "web/core/generation_scheduler.py",
+        "web/core/llm_failure.py",
+        "web/core/llm_query.py",
+        "web/core/output_schema.py",
+        "web/core/tool_bot_management.py",
+        "web/core/tool_helpers.py",
+        "web/core/tool_planning.py",
+        "web/core/prompts/crossover_compatibility.md",
+        "web/core/prompts/crossover_prompt.md",
+    },
+)
+
+DIRECTION_STAGE_EXACT = frozenset().union(
+    EVALUATION_RUNTIME_EXACT,
+    {
+        "web/core/direction_auditor.py",
+        "web/core/llm_failure.py",
+        "web/core/llm_query.py",
+        "web/core/output_schema.py",
+        "web/core/research_governance.py",
+        "web/core/tool_helpers.py",
+        "web/core/tool_planning.py",
+        "web/core/prompts/direction_auditor_prompt.md",
+        "web/core/prompts/literature_probe_prompt.md",
+    },
+)
+
+MASTER_STAGE_EXACT = frozenset().union(
+    EVALUATION_RUNTIME_EXACT,
+    {
+        "web/core/agent_master.py",
+        "web/core/audit_agents.py",
+        "web/core/battle_experience.py",
+        "web/core/battle_memory.py",
+        "web/core/behavior_diversity.py",
+        "web/core/bot_action_stats.py",
+        "web/core/combined_analyst.py",
+        "web/core/evidence_snapshot.py",
+        "web/core/experience_attribution.py",
+        "web/core/experience_pool.py",
+        "web/core/llm_failure.py",
+        "web/core/llm_query.py",
+        "web/core/output_schema.py",
+        "web/core/plan_compiler.py",
+        "web/core/research_governance.py",
+        "web/core/skill_library.py",
+        "web/core/spot_analyzer.py",
+        "web/core/stagnation_analyzer.py",
+        "web/core/tool_helpers.py",
+        "web/core/tool_planning.py",
+        "web/core/prompts/battle_experience_incremental.md",
+        "web/core/prompts/battle_experience_update.md",
+        "web/core/prompts/combined_analyst.md",
+        "web/core/prompts/degeneration_diagnosis.md",
+        "web/core/prompts/dynamic_test_generator.md",
+        "web/core/prompts/experience_pool_audit.md",
+        "web/core/prompts/h2h_anomaly_analysis.md",
+        "web/core/prompts/initial_prompt.md",
+        "web/core/prompts/literature_probe_prompt.md",
+        "web/core/prompts/master_plan_audit.md",
+        "web/core/prompts/master_prompt.md",
+        "web/core/prompts/match_analyst.md",
+        "web/core/prompts/performance_analyst.md",
+        "web/core/prompts/spot_analyzer.md",
+        "web/core/prompts/stagnation_analyzer.md",
+    },
+)
+
+WORKER_REPAIR_STAGE_EXACT = frozenset().union(
+    EVALUATION_RUNTIME_EXACT,
+    {
+        "web/core/agent_workers.py",
+        "web/core/failure_classification.py",
+        "web/core/fix_injection.py",
+        "web/core/llm_failure.py",
+        "web/core/llm_query.py",
+        "web/core/output_schema.py",
+        "web/core/plan_compiler.py",
+        "web/core/tool_helpers.py",
+        "web/core/tool_planning.py",
+        "web/core/prompts/debug_worker_prompt.md",
+        "web/core/prompts/worker_cot_check.md",
+        "web/core/prompts/worker_prompt.md",
+    },
+)
+
+_STAGE_EXACT = {
+    "selected": PREPARE_STAGE_EXACT,
+    "preparing": PREPARE_STAGE_EXACT,
+    "prepared": DIRECTION_STAGE_EXACT,
+    "crossover_running": PREPARE_STAGE_EXACT,
+    "direction_audited": MASTER_STAGE_EXACT,
+    "master_planned": WORKER_REPAIR_STAGE_EXACT,
+    "quality_failed": WORKER_REPAIR_STAGE_EXACT,
+    "precommit_failed": WORKER_REPAIR_STAGE_EXACT,
+    "repair_planned": WORKER_REPAIR_STAGE_EXACT,
+    "rework_running": WORKER_REPAIR_STAGE_EXACT,
+}
 
 _EVALUATION_ONLY_STAGES = frozenset({
     "workers_done",
@@ -174,15 +267,14 @@ def critical_exact_for_stage(stage: str | None = None) -> frozenset[str]:
     """Return exact files that can still affect the current checkpoint.
 
     Without a checkpoint stage we keep the original conservative full-pipeline
-    contract. Once a candidate has passed worker generation, planning prompts
-    and worker-only modules no longer define the meaning of the hard gates that
-    remain for that same candidate.
+    contract. With a checkpoint stage, only the hard evaluator plus the files
+    needed by the stage's remaining deterministic tool are contract-critical.
     """
     stage = str(stage or "")
     if stage in _EVALUATION_ONLY_STAGES:
         return EVALUATION_RUNTIME_EXACT
-    if stage in _FULL_PIPELINE_STAGES:
-        return FULL_PIPELINE_EXACT
+    if stage in _STAGE_EXACT:
+        return _STAGE_EXACT[stage]
     return frozenset(CRITICAL_EXACT)
 
 
