@@ -305,7 +305,7 @@ def test_main_loop_infra_error_resumes_checkpoint_without_prepare(tmp_path, monk
     import orchestrator
     from generation_scheduler import GenerationContext
 
-    _write_checkpoint(tmp_path, "reviewed", timeout_extensions=0)
+    _write_checkpoint(tmp_path, "direction_audited", timeout_extensions=0)
 
     prepare_calls = []
     run_contexts = []
@@ -1020,6 +1020,125 @@ def test_actionable_recovery_run_crossover_requires_parent2(monkeypatch):
 
     assert handled is False
     assert fake_run.handler.await_count == 0
+
+
+def test_critic_checked_deterministic_route_calls_precommit_eval(monkeypatch):
+    """critic_checked recovery must proceed to precommit, not rerun workers."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import orchestrator
+
+    events = []
+    fake_precommit = SimpleNamespace(
+        handler=AsyncMock(
+            return_value={
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({"success": True, "passed": True}),
+                }]
+            }
+        )
+    )
+    fake_workers = SimpleNamespace(handler=AsyncMock(return_value={"content": []}))
+    monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "pipeline_state",
+        SimpleNamespace(route_policy=lambda _ckpt: {"next_tool": "run_precommit_eval"}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_eval",
+        SimpleNamespace(run_precommit_eval=fake_precommit),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_planning",
+        SimpleNamespace(execute_workers=fake_workers),
+    )
+
+    recovery = {
+        "action": "resume",
+        "checkpoint": {
+            "stage": "critic_checked",
+            "next_v": 327,
+            "source_v": 310,
+        },
+    }
+
+    handled = asyncio.new_event_loop().run_until_complete(
+        orchestrator._try_deterministic_checkpoint_route(recovery, _FakeUI())
+    )
+
+    assert handled is True
+    fake_precommit.handler.assert_awaited_once_with({"version": 327, "source_v": 310})
+    assert fake_workers.handler.await_count == 0
+    assert any(e[0] == "pipeline.deterministic_route_run_precommit_eval" for e in events)
+    assert any(e[0] == "pipeline.deterministic_route_done" for e in events)
+
+
+def test_reviewed_deterministic_route_passes_saved_plan_to_critic(monkeypatch):
+    """reviewed recovery should call critic with checkpoint plan and review feedback."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import orchestrator
+
+    master_plan = {"strategy": "crossover", "tasks": [{"target_files": ["strategy.py"]}]}
+    fake_critic = SimpleNamespace(
+        handler=AsyncMock(
+            return_value={
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({"success": True, "approved": True}),
+                }]
+            }
+        )
+    )
+    monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: None)
+    monkeypatch.setattr(orchestrator, "log_system_event", lambda *a, **kw: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "pipeline_state",
+        SimpleNamespace(route_policy=lambda _ckpt: {"next_tool": "run_critic"}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_gates",
+        SimpleNamespace(run_critic=fake_critic),
+    )
+
+    recovery = {
+        "action": "resume",
+        "checkpoint": {
+            "stage": "reviewed",
+            "next_v": 328,
+            "source_v": 310,
+            "master_plan": master_plan,
+            "reviewer_feedback": "approved with notes",
+        },
+    }
+
+    handled = asyncio.new_event_loop().run_until_complete(
+        orchestrator._try_deterministic_checkpoint_route(recovery, _FakeUI())
+    )
+
+    assert handled is True
+    fake_critic.handler.assert_awaited_once_with({
+        "version": 328,
+        "source_v": 310,
+        "plan": master_plan,
+        "reviewer_feedback": "approved with notes",
+        "force_advance": True,
+    })
 
 
 def test_actionable_stage_handoff_interrupts_active_stream(tmp_path, monkeypatch):

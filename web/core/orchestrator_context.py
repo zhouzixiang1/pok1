@@ -767,14 +767,17 @@ def _make_bot_dir_guard_hook():
         "cross_gen_exhausted_history.jsonl",
         "abandoned_versions.jsonl",
     )
-    _ACTIONABLE_ROUTE_STAGES = {
-        "master_planned",
-        "quality_failed",
-        "precommit_failed",
-        "repair_planned",
-        "rework_running",
+    _HARD_ROUTE_TOOLS = {
+        "execute_workers",
+        "prepare_next_gen",
+        "run_crossover",
+        "run_quality_gates",
+        "run_review",
+        "run_critic",
+        "run_precommit_eval",
+        "commit_bot",
+        "run_archivist",
     }
-
     def _targets_protected(text):
         """True if the command/text references a protected path:
         active bot code OR a pipeline-critical state file."""
@@ -823,11 +826,9 @@ def _make_bot_dir_guard_hook():
         except Exception:
             checkpoint = {}
         stage = checkpoint.get("stage")
-        if stage not in _ACTIONABLE_ROUTE_STAGES:
-            return None, {}
         route = route_policy(checkpoint) if checkpoint else {}
         next_step = route.get("next_tool")
-        if next_step != "execute_workers":
+        if not stage or next_step not in _HARD_ROUTE_TOOLS:
             return None, {}
         next_v = checkpoint.get("next_v")
         source_v = checkpoint.get("source_v")
@@ -836,7 +837,7 @@ def _make_bot_dir_guard_hook():
             f"Actionable checkpoint route is locked: v{next_v} from v{source_v}, "
             f"stage={stage}, next MCP tool={next_step}. Built-in Bash/Edit/Write "
             f"are disabled at this stage because they delay or bypass deterministic "
-            f"recovery. Call execute_workers with the checkpoint gate feedback now. "
+            f"recovery. Call {next_step} with the checkpoint context now. "
             f"{route.get('directive', '')}"
         ), {
             "stage": stage,
