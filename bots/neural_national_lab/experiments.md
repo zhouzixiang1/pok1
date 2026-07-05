@@ -843,9 +843,24 @@
   gate opened negative windows against `national_v7` and `national_v11`,
   including `-29880` paired rows. Keep v095's stricter threshold unless new
   counterfactual data explains those buckets.
-- Current status: action-context features are the first native neural route
-  with a reproducible positive diff against the current protocol leader pool.
-  The remaining gap is strength and coverage: v095 is still not a top-pool
-  dominator. The next round should collect larger current-leader action-value
-  shards with held-out opponent groups and should explicitly model v7/v11 as
-  hard negatives before widening any runtime gate.
+- `v097_national_v17_native_context_action_h64_call_t015_rr045_tcp` added an
+  opponent-profile guard to the v096 runtime path: both direct and proposal
+  gates require observed opponent `raise_rate <= 0.45`. The paired
+  hard-negative trace against `national_v7` seed `2026071902` fixed the v096
+  failure (`v095: 0`, `v096: -38880`, `v097: 0`) by blocking three damaging
+  `rule raise -> 0` conversions at raise rates `1.0`, `0.75`, and `0.5`.
+  However, the current-pool paired evaluation rejected v097 as a strength
+  candidate. Against `national_v18`, `national_v3`, `national_v16`,
+  `national_v14`, `national_v5`, `national_v7`, and `national_v11`, with seed
+  base `2026071900`, 5 paired matches per opponent, and 4900 total hands,
+  v097 scored `+41006`; same-seed controls scored v095 `+80486` and v082
+  `+76977`. Diffs were v097-v095 `-39480`, v097-v082 `-35971`, and v095-v082
+  `+3509`; all three reports had 0 illegal actions, 0 timeouts, and 0 adapter
+  actions.
+- Current status: v095 remains the best native action-context neural candidate,
+  but even v095 is only a small current-pool increment over v082 and all
+  measured gains are concentrated against `national_v3`. v097 should be kept
+  as a diagnostic boundary version, not promoted. The next round should collect
+  larger current-leader action-value shards with held-out opponent groups and
+  explicit hard-negative labels instead of adding broader runtime gates around
+  the same small dataset.

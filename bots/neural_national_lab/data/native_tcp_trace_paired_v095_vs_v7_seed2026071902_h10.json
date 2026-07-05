@@ -1,0 +1,3314 @@
+{
+  "execution_mode": "native_tcp",
+  "candidate_path": "/home/zzx/project/pok/bots/neural_national_lab/versions/v095_national_v17_native_context_action_h64_call_t040_tcp",
+  "opponent_paths": [
+    "/home/zzx/project/pok/.evolution_pok/bots/national_v7"
+  ],
+  "hands_per_match": 10,
+  "seeds": [
+    2026071902
+  ],
+  "workers": 1,
+  "paired": true,
+  "requires_native_opponents": true,
+  "bot_seed_base": 202607290020,
+  "trace_decisions": true,
+  "force": {
+    "hand": null,
+    "decision": null,
+    "action": null
+  },
+  "elapsed_sec": 3.29,
+  "rows": [
+    {
+      "candidate": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+      "opponent": "national_v7",
+      "opponent_path": "/home/zzx/project/pok/.evolution_pok/bots/national_v7",
+      "match_idx": 0,
+      "leg": "paired",
+      "deck_seed_base": 2026071902,
+      "bot_seed_base": 202607290020,
+      "hands_played": 20,
+      "net_chips": 0,
+      "net_chips_per_hand": 0.0,
+      "hand_net_chips": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "passed_compliance": true,
+      "issues": [],
+      "candidate_illegal": 0,
+      "candidate_timeouts": 0,
+      "opponent_illegal": 0,
+      "opponent_timeouts": 0,
+      "adapter_actions_candidate": 0,
+      "adapter_actions_opponent": 0,
+      "legs": [
+        {
+          "candidate": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+          "opponent": "national_v7",
+          "opponent_path": "/home/zzx/project/pok/.evolution_pok/bots/national_v7",
+          "match_idx": 0,
+          "leg": "forward",
+          "deck_seed_base": 2026071902,
+          "bot_seed_base": 202607290020,
+          "hands_played": 10,
+          "net_chips": -19350,
+          "net_chips_per_hand": -1935.0,
+          "hand_net_chips": [
+            -20000,
+            50,
+            100,
+            50,
+            100,
+            50,
+            100,
+            50,
+            100,
+            50
+          ],
+          "passed_compliance": true,
+          "issues": [],
+          "candidate_illegal": 0,
+          "candidate_timeouts": 0,
+          "opponent_illegal": 0,
+          "opponent_timeouts": 0,
+          "adapter_actions_candidate": 0,
+          "adapter_actions_opponent": 0,
+          "candidate_native": {
+            "returncode": 0,
+            "bot_seed": 202607290020,
+            "stdout_tail": "",
+            "stderr_tail": "\":0,\"stage\":\"preflop\",\"round\":0,\"is_small_blind\":true,\"rule_action\":273,\"advised_action\":273,\"sanitized_action\":323,\"final_action\":323,\"forced\":false,\"force_action\":null,\"request\":{\"num_players\":2,\"dealer_id\":0,\"my_id\":0,\"my_chips\":19950,\"my_cards\":[38,20],\"public_cards\":[],\"history\":[],\"hand\":8,\"max_hand\":70,\"total_win_chips\":[-19500,19500],\"total_win_games\":[7,1],\"opponent_showdowns\":[{\"hand\":1,\"opponent_cards\":[33,39],\"my_cards\":[49,9],\"public_cards\":[38,21,30,37,40],\"history\":[{\"round\":0,\"player_id\":0,\"action\":319,\"action_type\":\"raise\",\"stage_bet\":319,\"chips_after\":19681,\"committed\":269},{\"round\":0,\"player_id\":1,\"action\":971,\"action_type\":\"raise\",\"stage_bet\":971,\"chips_after\":19029,\"committed\":871},{\"round\":0,\"player_id\":0,\"action\":3103,\"action_type\":\"raise\",\"stage_bet\":3103,\"chips_after\":16897,\"committed\":2784},{\"round\":0,\"player_id\":1,\"action\":9447,\"action_type\":\"raise\",\"stage_bet\":9447,\"chips_after\":10553,\"committed\":8476},{\"round\":0,\"player_id\":0,\"action\":19999,\"action_type\":\"raise\",\"stage_bet\":19999,\"chips_after\":1,\"committed\":16896},{\"round\":0,\"player_id\":1,\"action\":-2,\"action_type\":\"allin\",\"stage_bet\":20000,\"chips_after\":0,\"committed\":10553},{\"round\":0,\"player_id\":0,\"action\":0,\"action_type\":\"call\",\"stage_bet\":20000,\"chips_after\":0,\"committed\":1}],\"earned\":-20000}],\"opponent_profile\":{\"actions_total\":10,\"confidence\":0.5,\"actions_total_norm\":0.25,\"fold_rate\":0.7,\"call_rate\":0.0,\"check_rate\":0.0,\"raise_rate\":0.2,\"allin_rate\":0.1,\"aggression\":0.3,\"preflop_actions_norm\":0.5,\"preflop_raise_rate\":0.3,\"postflop_actions_norm\":0.0,\"postflop_raise_rate\":0.0},\"opponent_chips\":19900,\"my_stage_bet\":50,\"opponent_stage_bet\":100,\"pot\":150,\"to_call\":50,\"opponent_allin\":false,\"remaining_hands\":62},\"state\":{\"round\":0,\"round_bet\":100,\"round_raise\":100,\"judge_round_raise\":100,\"min_raise_action\":151,\"round_contrib\":[50,100],\"player_bets\":[50,100],\"stacks\":[19950,19900],\"committed\":[50,100],\"pot\":150,\"to_call\":50,\"opponent_allin\":false,\"allin_call_amount\":50,\"my_round_bet\":50}}\n",
+            "decision_trace": [
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 1,
+                "decision_serial": 0,
+                "hand_decision_index": 0,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": true,
+                "rule_action": 269,
+                "advised_action": 269,
+                "sanitized_action": 319,
+                "final_action": 319,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 0,
+                  "my_id": 0,
+                  "my_chips": 19950,
+                  "my_cards": [
+                    49,
+                    9
+                  ],
+                  "public_cards": [],
+                  "history": [],
+                  "hand": 0,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    0,
+                    0
+                  ],
+                  "total_win_games": [
+                    0,
+                    0
+                  ],
+                  "opponent_showdowns": [],
+                  "opponent_profile": {
+                    "actions_total": 0,
+                    "confidence": 0.0,
+                    "actions_total_norm": 0.0,
+                    "fold_rate": 0.0,
+                    "call_rate": 0.0,
+                    "check_rate": 0.0,
+                    "raise_rate": 0.0,
+                    "allin_rate": 0.0,
+                    "aggression": 0.0,
+                    "preflop_actions_norm": 0.0,
+                    "preflop_raise_rate": 0.0,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 19900,
+                  "my_stage_bet": 50,
+                  "opponent_stage_bet": 100,
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "remaining_hands": 70
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 100,
+                  "round_raise": 100,
+                  "judge_round_raise": 100,
+                  "min_raise_action": 151,
+                  "round_contrib": [
+                    50,
+                    100
+                  ],
+                  "player_bets": [
+                    50,
+                    100
+                  ],
+                  "stacks": [
+                    19950,
+                    19900
+                  ],
+                  "committed": [
+                    50,
+                    100
+                  ],
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "allin_call_amount": 50,
+                  "my_round_bet": 50
+                }
+              },
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 1,
+                "decision_serial": 1,
+                "hand_decision_index": 1,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": true,
+                "rule_action": 2784,
+                "advised_action": 2784,
+                "sanitized_action": 3103,
+                "final_action": 3103,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 0,
+                  "my_id": 0,
+                  "my_chips": 19681,
+                  "my_cards": [
+                    49,
+                    9
+                  ],
+                  "public_cards": [],
+                  "history": [
+                    {
+                      "round": 0,
+                      "player_id": 0,
+                      "action": 319,
+                      "action_type": "raise",
+                      "stage_bet": 319,
+                      "chips_after": 19681,
+                      "committed": 269
+                    },
+                    {
+                      "round": 0,
+                      "player_id": 1,
+                      "action": 971,
+                      "action_type": "raise",
+                      "stage_bet": 971,
+                      "chips_after": 19029,
+                      "committed": 871
+                    }
+                  ],
+                  "hand": 0,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    0,
+                    0
+                  ],
+                  "total_win_games": [
+                    0,
+                    0
+                  ],
+                  "opponent_showdowns": [],
+                  "opponent_profile": {
+                    "actions_total": 1,
+                    "confidence": 0.05,
+                    "actions_total_norm": 0.025,
+                    "fold_rate": 0.0,
+                    "call_rate": 0.0,
+                    "check_rate": 0.0,
+                    "raise_rate": 1.0,
+                    "allin_rate": 0.0,
+                    "aggression": 1.0,
+                    "preflop_actions_norm": 0.05,
+                    "preflop_raise_rate": 1.0,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 19029,
+                  "my_stage_bet": 319,
+                  "opponent_stage_bet": 971,
+                  "pot": 1290,
+                  "to_call": 652,
+                  "opponent_allin": false,
+                  "remaining_hands": 70
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 971,
+                  "round_raise": 971,
+                  "judge_round_raise": 971,
+                  "min_raise_action": 1624,
+                  "round_contrib": [
+                    319,
+                    971
+                  ],
+                  "player_bets": [
+                    319,
+                    971
+                  ],
+                  "stacks": [
+                    19681,
+                    19029
+                  ],
+                  "committed": [
+                    319,
+                    971
+                  ],
+                  "pot": 1290,
+                  "to_call": 652,
+                  "opponent_allin": false,
+                  "allin_call_amount": 652,
+                  "my_round_bet": 319
+                }
+              },
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 1,
+                "decision_serial": 2,
+                "hand_decision_index": 2,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": true,
+                "rule_action": 16896,
+                "advised_action": 16896,
+                "sanitized_action": 19999,
+                "final_action": 19999,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 0,
+                  "my_id": 0,
+                  "my_chips": 16897,
+                  "my_cards": [
+                    49,
+                    9
+                  ],
+                  "public_cards": [],
+                  "history": [
+                    {
+                      "round": 0,
+                      "player_id": 0,
+                      "action": 319,
+                      "action_type": "raise",
+                      "stage_bet": 319,
+                      "chips_after": 19681,
+                      "committed": 269
+                    },
+                    {
+                      "round": 0,
+                      "player_id": 1,
+                      "action": 971,
+                      "action_type": "raise",
+                      "stage_bet": 971,
+                      "chips_after": 19029,
+                      "committed": 871
+                    },
+                    {
+                      "round": 0,
+                      "player_id": 0,
+                      "action": 3103,
+                      "action_type": "raise",
+                      "stage_bet": 3103,
+                      "chips_after": 16897,
+                      "committed": 2784
+                    },
+                    {
+                      "round": 0,
+                      "player_id": 1,
+                      "action": 9447,
+                      "action_type": "raise",
+                      "stage_bet": 9447,
+                      "chips_after": 10553,
+                      "committed": 8476
+                    }
+                  ],
+                  "hand": 0,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    0,
+                    0
+                  ],
+                  "total_win_games": [
+                    0,
+                    0
+                  ],
+                  "opponent_showdowns": [],
+                  "opponent_profile": {
+                    "actions_total": 2,
+                    "confidence": 0.1,
+                    "actions_total_norm": 0.05,
+                    "fold_rate": 0.0,
+                    "call_rate": 0.0,
+                    "check_rate": 0.0,
+                    "raise_rate": 1.0,
+                    "allin_rate": 0.0,
+                    "aggression": 1.0,
+                    "preflop_actions_norm": 0.1,
+                    "preflop_raise_rate": 1.0,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 10553,
+                  "my_stage_bet": 3103,
+                  "opponent_stage_bet": 9447,
+                  "pot": 12550,
+                  "to_call": 6344,
+                  "opponent_allin": false,
+                  "remaining_hands": 70
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 9447,
+                  "round_raise": 9447,
+                  "judge_round_raise": 9447,
+                  "min_raise_action": 15792,
+                  "round_contrib": [
+                    3103,
+                    9447
+                  ],
+                  "player_bets": [
+                    3103,
+                    9447
+                  ],
+                  "stacks": [
+                    16897,
+                    10553
+                  ],
+                  "committed": [
+                    3103,
+                    9447
+                  ],
+                  "pot": 12550,
+                  "to_call": 6344,
+                  "opponent_allin": false,
+                  "allin_call_amount": 6344,
+                  "my_round_bet": 3103
+                }
+              },
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 1,
+                "decision_serial": 3,
+                "hand_decision_index": 3,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": true,
+                "rule_action": 0,
+                "advised_action": 0,
+                "sanitized_action": 0,
+                "final_action": 0,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 0,
+                  "my_id": 0,
+                  "my_chips": 1,
+                  "my_cards": [
+                    49,
+                    9
+                  ],
+                  "public_cards": [],
+                  "history": [
+                    {
+                      "round": 0,
+                      "player_id": 0,
+                      "action": 319,
+                      "action_type": "raise",
+                      "stage_bet": 319,
+                      "chips_after": 19681,
+                      "committed": 269
+                    },
+                    {
+                      "round": 0,
+                      "player_id": 1,
+                      "action": 971,
+                      "action_type": "raise",
+                      "stage_bet": 971,
+                      "chips_after": 19029,
+                      "committed": 871
+                    },
+                    {
+                      "round": 0,
+                      "player_id": 0,
+                      "action": 3103,
+                      "action_type": "raise",
+                      "stage_bet": 3103,
+                      "chips_after": 16897,
+                      "committed": 2784
+                    },
+                    {
+                      "round": 0,
+                      "player_id": 1,
+                      "action": 9447,
+                      "action_type": "raise",
+                      "stage_bet": 9447,
+                      "chips_after": 10553,
+                      "committed": 8476
+                    },
+                    {
+                      "round": 0,
+                      "player_id": 0,
+                      "action": 19999,
+                      "action_type": "raise",
+                      "stage_bet": 19999,
+                      "chips_after": 1,
+                      "committed": 16896
+                    },
+                    {
+                      "round": 0,
+                      "player_id": 1,
+                      "action": -2,
+                      "action_type": "allin",
+                      "stage_bet": 20000,
+                      "chips_after": 0,
+                      "committed": 10553
+                    }
+                  ],
+                  "hand": 0,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    0,
+                    0
+                  ],
+                  "total_win_games": [
+                    0,
+                    0
+                  ],
+                  "opponent_showdowns": [],
+                  "opponent_profile": {
+                    "actions_total": 3,
+                    "confidence": 0.15,
+                    "actions_total_norm": 0.075,
+                    "fold_rate": 0.0,
+                    "call_rate": 0.0,
+                    "check_rate": 0.0,
+                    "raise_rate": 0.6666666666666666,
+                    "allin_rate": 0.3333333333333333,
+                    "aggression": 1.0,
+                    "preflop_actions_norm": 0.15,
+                    "preflop_raise_rate": 1.0,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 0,
+                  "my_stage_bet": 19999,
+                  "opponent_stage_bet": 20000,
+                  "pot": 39999,
+                  "to_call": 1,
+                  "opponent_allin": true,
+                  "remaining_hands": 70
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 20000,
+                  "round_raise": 19999,
+                  "judge_round_raise": 19999,
+                  "min_raise_action": 20000,
+                  "round_contrib": [
+                    19999,
+                    20000
+                  ],
+                  "player_bets": [
+                    19999,
+                    -2
+                  ],
+                  "stacks": [
+                    1,
+                    0
+                  ],
+                  "committed": [
+                    19999,
+                    20000
+                  ],
+                  "pot": 39999,
+                  "to_call": 1,
+                  "opponent_allin": true,
+                  "allin_call_amount": 1,
+                  "my_round_bet": 19999
+                }
+              },
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 3,
+                "decision_serial": 4,
+                "hand_decision_index": 0,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": true,
+                "rule_action": 285,
+                "advised_action": 285,
+                "sanitized_action": 335,
+                "final_action": 335,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 0,
+                  "my_id": 0,
+                  "my_chips": 19950,
+                  "my_cards": [
+                    30,
+                    26
+                  ],
+                  "public_cards": [],
+                  "history": [],
+                  "hand": 2,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    -19950,
+                    19950
+                  ],
+                  "total_win_games": [
+                    1,
+                    1
+                  ],
+                  "opponent_showdowns": [
+                    {
+                      "hand": 1,
+                      "opponent_cards": [
+                        33,
+                        39
+                      ],
+                      "my_cards": [
+                        49,
+                        9
+                      ],
+                      "public_cards": [
+                        38,
+                        21,
+                        30,
+                        37,
+                        40
+                      ],
+                      "history": [
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 319,
+                          "action_type": "raise",
+                          "stage_bet": 319,
+                          "chips_after": 19681,
+                          "committed": 269
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 971,
+                          "action_type": "raise",
+                          "stage_bet": 971,
+                          "chips_after": 19029,
+                          "committed": 871
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 3103,
+                          "action_type": "raise",
+                          "stage_bet": 3103,
+                          "chips_after": 16897,
+                          "committed": 2784
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 9447,
+                          "action_type": "raise",
+                          "stage_bet": 9447,
+                          "chips_after": 10553,
+                          "committed": 8476
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 19999,
+                          "action_type": "raise",
+                          "stage_bet": 19999,
+                          "chips_after": 1,
+                          "committed": 16896
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": -2,
+                          "action_type": "allin",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 10553
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 0,
+                          "action_type": "call",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 1
+                        }
+                      ],
+                      "earned": -20000
+                    }
+                  ],
+                  "opponent_profile": {
+                    "actions_total": 4,
+                    "confidence": 0.2,
+                    "actions_total_norm": 0.1,
+                    "fold_rate": 0.25,
+                    "call_rate": 0.0,
+                    "check_rate": 0.0,
+                    "raise_rate": 0.5,
+                    "allin_rate": 0.25,
+                    "aggression": 0.75,
+                    "preflop_actions_norm": 0.2,
+                    "preflop_raise_rate": 0.75,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 19900,
+                  "my_stage_bet": 50,
+                  "opponent_stage_bet": 100,
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "remaining_hands": 68
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 100,
+                  "round_raise": 100,
+                  "judge_round_raise": 100,
+                  "min_raise_action": 151,
+                  "round_contrib": [
+                    50,
+                    100
+                  ],
+                  "player_bets": [
+                    50,
+                    100
+                  ],
+                  "stacks": [
+                    19950,
+                    19900
+                  ],
+                  "committed": [
+                    50,
+                    100
+                  ],
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "allin_call_amount": 50,
+                  "my_round_bet": 50
+                }
+              },
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 5,
+                "decision_serial": 5,
+                "hand_decision_index": 0,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": true,
+                "rule_action": 314,
+                "advised_action": 314,
+                "sanitized_action": 364,
+                "final_action": 364,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 0,
+                  "my_id": 0,
+                  "my_chips": 19950,
+                  "my_cards": [
+                    21,
+                    51
+                  ],
+                  "public_cards": [],
+                  "history": [],
+                  "hand": 4,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    -19800,
+                    19800
+                  ],
+                  "total_win_games": [
+                    3,
+                    1
+                  ],
+                  "opponent_showdowns": [
+                    {
+                      "hand": 1,
+                      "opponent_cards": [
+                        33,
+                        39
+                      ],
+                      "my_cards": [
+                        49,
+                        9
+                      ],
+                      "public_cards": [
+                        38,
+                        21,
+                        30,
+                        37,
+                        40
+                      ],
+                      "history": [
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 319,
+                          "action_type": "raise",
+                          "stage_bet": 319,
+                          "chips_after": 19681,
+                          "committed": 269
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 971,
+                          "action_type": "raise",
+                          "stage_bet": 971,
+                          "chips_after": 19029,
+                          "committed": 871
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 3103,
+                          "action_type": "raise",
+                          "stage_bet": 3103,
+                          "chips_after": 16897,
+                          "committed": 2784
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 9447,
+                          "action_type": "raise",
+                          "stage_bet": 9447,
+                          "chips_after": 10553,
+                          "committed": 8476
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 19999,
+                          "action_type": "raise",
+                          "stage_bet": 19999,
+                          "chips_after": 1,
+                          "committed": 16896
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": -2,
+                          "action_type": "allin",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 10553
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 0,
+                          "action_type": "call",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 1
+                        }
+                      ],
+                      "earned": -20000
+                    }
+                  ],
+                  "opponent_profile": {
+                    "actions_total": 6,
+                    "confidence": 0.3,
+                    "actions_total_norm": 0.15,
+                    "fold_rate": 0.5,
+                    "call_rate": 0.0,
+                    "check_rate": 0.0,
+                    "raise_rate": 0.3333333333333333,
+                    "allin_rate": 0.16666666666666666,
+                    "aggression": 0.5,
+                    "preflop_actions_norm": 0.3,
+                    "preflop_raise_rate": 0.5,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 19900,
+                  "my_stage_bet": 50,
+                  "opponent_stage_bet": 100,
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "remaining_hands": 66
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 100,
+                  "round_raise": 100,
+                  "judge_round_raise": 100,
+                  "min_raise_action": 151,
+                  "round_contrib": [
+                    50,
+                    100
+                  ],
+                  "player_bets": [
+                    50,
+                    100
+                  ],
+                  "stacks": [
+                    19950,
+                    19900
+                  ],
+                  "committed": [
+                    50,
+                    100
+                  ],
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "allin_call_amount": 50,
+                  "my_round_bet": 50
+                }
+              },
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 7,
+                "decision_serial": 6,
+                "hand_decision_index": 0,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": true,
+                "rule_action": 251,
+                "advised_action": 251,
+                "sanitized_action": 301,
+                "final_action": 301,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 0,
+                  "my_id": 0,
+                  "my_chips": 19950,
+                  "my_cards": [
+                    19,
+                    29
+                  ],
+                  "public_cards": [],
+                  "history": [],
+                  "hand": 6,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    -19650,
+                    19650
+                  ],
+                  "total_win_games": [
+                    5,
+                    1
+                  ],
+                  "opponent_showdowns": [
+                    {
+                      "hand": 1,
+                      "opponent_cards": [
+                        33,
+                        39
+                      ],
+                      "my_cards": [
+                        49,
+                        9
+                      ],
+                      "public_cards": [
+                        38,
+                        21,
+                        30,
+                        37,
+                        40
+                      ],
+                      "history": [
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 319,
+                          "action_type": "raise",
+                          "stage_bet": 319,
+                          "chips_after": 19681,
+                          "committed": 269
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 971,
+                          "action_type": "raise",
+                          "stage_bet": 971,
+                          "chips_after": 19029,
+                          "committed": 871
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 3103,
+                          "action_type": "raise",
+                          "stage_bet": 3103,
+                          "chips_after": 16897,
+                          "committed": 2784
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 9447,
+                          "action_type": "raise",
+                          "stage_bet": 9447,
+                          "chips_after": 10553,
+                          "committed": 8476
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 19999,
+                          "action_type": "raise",
+                          "stage_bet": 19999,
+                          "chips_after": 1,
+                          "committed": 16896
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": -2,
+                          "action_type": "allin",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 10553
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 0,
+                          "action_type": "call",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 1
+                        }
+                      ],
+                      "earned": -20000
+                    }
+                  ],
+                  "opponent_profile": {
+                    "actions_total": 8,
+                    "confidence": 0.4,
+                    "actions_total_norm": 0.2,
+                    "fold_rate": 0.625,
+                    "call_rate": 0.0,
+                    "check_rate": 0.0,
+                    "raise_rate": 0.25,
+                    "allin_rate": 0.125,
+                    "aggression": 0.375,
+                    "preflop_actions_norm": 0.4,
+                    "preflop_raise_rate": 0.375,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 19900,
+                  "my_stage_bet": 50,
+                  "opponent_stage_bet": 100,
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "remaining_hands": 64
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 100,
+                  "round_raise": 100,
+                  "judge_round_raise": 100,
+                  "min_raise_action": 151,
+                  "round_contrib": [
+                    50,
+                    100
+                  ],
+                  "player_bets": [
+                    50,
+                    100
+                  ],
+                  "stacks": [
+                    19950,
+                    19900
+                  ],
+                  "committed": [
+                    50,
+                    100
+                  ],
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "allin_call_amount": 50,
+                  "my_round_bet": 50
+                }
+              },
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 9,
+                "decision_serial": 7,
+                "hand_decision_index": 0,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": true,
+                "rule_action": 273,
+                "advised_action": 273,
+                "sanitized_action": 323,
+                "final_action": 323,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 0,
+                  "my_id": 0,
+                  "my_chips": 19950,
+                  "my_cards": [
+                    38,
+                    20
+                  ],
+                  "public_cards": [],
+                  "history": [],
+                  "hand": 8,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    -19500,
+                    19500
+                  ],
+                  "total_win_games": [
+                    7,
+                    1
+                  ],
+                  "opponent_showdowns": [
+                    {
+                      "hand": 1,
+                      "opponent_cards": [
+                        33,
+                        39
+                      ],
+                      "my_cards": [
+                        49,
+                        9
+                      ],
+                      "public_cards": [
+                        38,
+                        21,
+                        30,
+                        37,
+                        40
+                      ],
+                      "history": [
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 319,
+                          "action_type": "raise",
+                          "stage_bet": 319,
+                          "chips_after": 19681,
+                          "committed": 269
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 971,
+                          "action_type": "raise",
+                          "stage_bet": 971,
+                          "chips_after": 19029,
+                          "committed": 871
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 3103,
+                          "action_type": "raise",
+                          "stage_bet": 3103,
+                          "chips_after": 16897,
+                          "committed": 2784
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 9447,
+                          "action_type": "raise",
+                          "stage_bet": 9447,
+                          "chips_after": 10553,
+                          "committed": 8476
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 19999,
+                          "action_type": "raise",
+                          "stage_bet": 19999,
+                          "chips_after": 1,
+                          "committed": 16896
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": -2,
+                          "action_type": "allin",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 10553
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 0,
+                          "action_type": "call",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 1
+                        }
+                      ],
+                      "earned": -20000
+                    }
+                  ],
+                  "opponent_profile": {
+                    "actions_total": 10,
+                    "confidence": 0.5,
+                    "actions_total_norm": 0.25,
+                    "fold_rate": 0.7,
+                    "call_rate": 0.0,
+                    "check_rate": 0.0,
+                    "raise_rate": 0.2,
+                    "allin_rate": 0.1,
+                    "aggression": 0.3,
+                    "preflop_actions_norm": 0.5,
+                    "preflop_raise_rate": 0.3,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 19900,
+                  "my_stage_bet": 50,
+                  "opponent_stage_bet": 100,
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "remaining_hands": 62
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 100,
+                  "round_raise": 100,
+                  "judge_round_raise": 100,
+                  "min_raise_action": 151,
+                  "round_contrib": [
+                    50,
+                    100
+                  ],
+                  "player_bets": [
+                    50,
+                    100
+                  ],
+                  "stacks": [
+                    19950,
+                    19900
+                  ],
+                  "committed": [
+                    50,
+                    100
+                  ],
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "allin_call_amount": 50,
+                  "my_round_bet": 50
+                }
+              }
+            ],
+            "process_failures": 0,
+            "json_response_stdout": 0
+          },
+          "opponent_native": {
+            "returncode": 0,
+            "bot_seed": 202607290021,
+            "stdout_tail": "",
+            "stderr_tail": "OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nBB_DEFENSE bucket=standard raise_bb=3.2 call_d=+0.000 v3b_d=+0.000 bluff_freq_d=+0.000\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nBB_DEFENSE bucket=xl raise_bb=31.0 call_d=+0.060 v3b_d=+0.020 bluff_freq_d=-0.200\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nBB_DEFENSE bucket=xl raise_bb=200.0 call_d=+0.060 v3b_d=+0.020 bluff_freq_d=-0.200\n",
+            "decision_trace": [],
+            "process_failures": 0,
+            "json_response_stdout": 0
+          }
+        },
+        {
+          "candidate": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+          "opponent": "national_v7",
+          "opponent_path": "/home/zzx/project/pok/.evolution_pok/bots/national_v7",
+          "match_idx": 0,
+          "leg": "swapped",
+          "deck_seed_base": 2026071902,
+          "bot_seed_base": 202607290020,
+          "hands_played": 10,
+          "net_chips": 19350,
+          "net_chips_per_hand": 1935.0,
+          "hand_net_chips": [
+            20000,
+            -50,
+            -100,
+            -50,
+            -100,
+            -50,
+            -100,
+            -50,
+            -100,
+            -50
+          ],
+          "passed_compliance": true,
+          "issues": [],
+          "candidate_illegal": 0,
+          "candidate_timeouts": 0,
+          "opponent_illegal": 0,
+          "opponent_timeouts": 0,
+          "adapter_actions_candidate": 0,
+          "adapter_actions_opponent": 0,
+          "candidate_native": {
+            "returncode": 0,
+            "bot_seed": 202607290021,
+            "stdout_tail": "",
+            "stderr_tail": "\":0,\"stage\":\"preflop\",\"round\":0,\"is_small_blind\":true,\"rule_action\":-1,\"advised_action\":-1,\"sanitized_action\":-1,\"final_action\":-1,\"forced\":false,\"force_action\":null,\"request\":{\"num_players\":2,\"dealer_id\":0,\"my_id\":0,\"my_chips\":19950,\"my_cards\":[13,2],\"public_cards\":[],\"history\":[],\"hand\":9,\"max_hand\":70,\"total_win_chips\":[19400,-19400],\"total_win_games\":[1,8],\"opponent_showdowns\":[{\"hand\":1,\"opponent_cards\":[49,9],\"my_cards\":[33,39],\"public_cards\":[38,21,30,37,40],\"history\":[{\"round\":0,\"player_id\":1,\"action\":319,\"action_type\":\"raise\",\"stage_bet\":319,\"chips_after\":19681,\"committed\":269},{\"round\":0,\"player_id\":0,\"action\":971,\"action_type\":\"raise\",\"stage_bet\":971,\"chips_after\":19029,\"committed\":871},{\"round\":0,\"player_id\":1,\"action\":3103,\"action_type\":\"raise\",\"stage_bet\":3103,\"chips_after\":16897,\"committed\":2784},{\"round\":0,\"player_id\":0,\"action\":9447,\"action_type\":\"raise\",\"stage_bet\":9447,\"chips_after\":10553,\"committed\":8476},{\"round\":0,\"player_id\":1,\"action\":19999,\"action_type\":\"raise\",\"stage_bet\":19999,\"chips_after\":1,\"committed\":16896},{\"round\":0,\"player_id\":0,\"action\":-2,\"action_type\":\"allin\",\"stage_bet\":20000,\"chips_after\":0,\"committed\":10553},{\"round\":0,\"player_id\":1,\"action\":0,\"action_type\":\"call\",\"stage_bet\":20000,\"chips_after\":0,\"committed\":1}],\"earned\":20000}],\"opponent_profile\":{\"actions_total\":8,\"confidence\":0.4,\"actions_total_norm\":0.2,\"fold_rate\":0.0,\"call_rate\":0.125,\"check_rate\":0.0,\"raise_rate\":0.875,\"allin_rate\":0.0,\"aggression\":0.875,\"preflop_actions_norm\":0.4,\"preflop_raise_rate\":0.875,\"postflop_actions_norm\":0.0,\"postflop_raise_rate\":0.0},\"opponent_chips\":19900,\"my_stage_bet\":50,\"opponent_stage_bet\":100,\"pot\":150,\"to_call\":50,\"opponent_allin\":false,\"remaining_hands\":61},\"state\":{\"round\":0,\"round_bet\":100,\"round_raise\":100,\"judge_round_raise\":100,\"min_raise_action\":151,\"round_contrib\":[50,100],\"player_bets\":[50,100],\"stacks\":[19950,19900],\"committed\":[50,100],\"pot\":150,\"to_call\":50,\"opponent_allin\":false,\"allin_call_amount\":50,\"my_round_bet\":50}}\n",
+            "decision_trace": [
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 1,
+                "decision_serial": 0,
+                "hand_decision_index": 0,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": false,
+                "rule_action": 871,
+                "advised_action": 871,
+                "sanitized_action": 971,
+                "final_action": 971,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 1,
+                  "my_id": 0,
+                  "my_chips": 19900,
+                  "my_cards": [
+                    33,
+                    39
+                  ],
+                  "public_cards": [],
+                  "history": [
+                    {
+                      "round": 0,
+                      "player_id": 1,
+                      "action": 319,
+                      "action_type": "raise",
+                      "stage_bet": 319,
+                      "chips_after": 19681,
+                      "committed": 269
+                    }
+                  ],
+                  "hand": 0,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    0,
+                    0
+                  ],
+                  "total_win_games": [
+                    0,
+                    0
+                  ],
+                  "opponent_showdowns": [],
+                  "opponent_profile": {
+                    "actions_total": 1,
+                    "confidence": 0.05,
+                    "actions_total_norm": 0.025,
+                    "fold_rate": 0.0,
+                    "call_rate": 0.0,
+                    "check_rate": 0.0,
+                    "raise_rate": 1.0,
+                    "allin_rate": 0.0,
+                    "aggression": 1.0,
+                    "preflop_actions_norm": 0.05,
+                    "preflop_raise_rate": 1.0,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 19681,
+                  "my_stage_bet": 100,
+                  "opponent_stage_bet": 319,
+                  "pot": 419,
+                  "to_call": 219,
+                  "opponent_allin": false,
+                  "remaining_hands": 70
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 319,
+                  "round_raise": 319,
+                  "judge_round_raise": 319,
+                  "min_raise_action": 539,
+                  "round_contrib": [
+                    100,
+                    319
+                  ],
+                  "player_bets": [
+                    100,
+                    319
+                  ],
+                  "stacks": [
+                    19900,
+                    19681
+                  ],
+                  "committed": [
+                    100,
+                    319
+                  ],
+                  "pot": 419,
+                  "to_call": 219,
+                  "opponent_allin": false,
+                  "allin_call_amount": 219,
+                  "my_round_bet": 100
+                }
+              },
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 1,
+                "decision_serial": 1,
+                "hand_decision_index": 1,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": false,
+                "rule_action": 8476,
+                "advised_action": 8476,
+                "sanitized_action": 9447,
+                "final_action": 9447,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 1,
+                  "my_id": 0,
+                  "my_chips": 19029,
+                  "my_cards": [
+                    33,
+                    39
+                  ],
+                  "public_cards": [],
+                  "history": [
+                    {
+                      "round": 0,
+                      "player_id": 1,
+                      "action": 319,
+                      "action_type": "raise",
+                      "stage_bet": 319,
+                      "chips_after": 19681,
+                      "committed": 269
+                    },
+                    {
+                      "round": 0,
+                      "player_id": 0,
+                      "action": 971,
+                      "action_type": "raise",
+                      "stage_bet": 971,
+                      "chips_after": 19029,
+                      "committed": 871
+                    },
+                    {
+                      "round": 0,
+                      "player_id": 1,
+                      "action": 3103,
+                      "action_type": "raise",
+                      "stage_bet": 3103,
+                      "chips_after": 16897,
+                      "committed": 2784
+                    }
+                  ],
+                  "hand": 0,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    0,
+                    0
+                  ],
+                  "total_win_games": [
+                    0,
+                    0
+                  ],
+                  "opponent_showdowns": [],
+                  "opponent_profile": {
+                    "actions_total": 2,
+                    "confidence": 0.1,
+                    "actions_total_norm": 0.05,
+                    "fold_rate": 0.0,
+                    "call_rate": 0.0,
+                    "check_rate": 0.0,
+                    "raise_rate": 1.0,
+                    "allin_rate": 0.0,
+                    "aggression": 1.0,
+                    "preflop_actions_norm": 0.1,
+                    "preflop_raise_rate": 1.0,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 16897,
+                  "my_stage_bet": 971,
+                  "opponent_stage_bet": 3103,
+                  "pot": 4074,
+                  "to_call": 2132,
+                  "opponent_allin": false,
+                  "remaining_hands": 70
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 3103,
+                  "round_raise": 3103,
+                  "judge_round_raise": 3103,
+                  "min_raise_action": 5236,
+                  "round_contrib": [
+                    971,
+                    3103
+                  ],
+                  "player_bets": [
+                    971,
+                    3103
+                  ],
+                  "stacks": [
+                    19029,
+                    16897
+                  ],
+                  "committed": [
+                    971,
+                    3103
+                  ],
+                  "pot": 4074,
+                  "to_call": 2132,
+                  "opponent_allin": false,
+                  "allin_call_amount": 2132,
+                  "my_round_bet": 971
+                }
+              },
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 1,
+                "decision_serial": 2,
+                "hand_decision_index": 2,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": false,
+                "rule_action": -2,
+                "advised_action": -2,
+                "sanitized_action": -2,
+                "final_action": -2,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 1,
+                  "my_id": 0,
+                  "my_chips": 10553,
+                  "my_cards": [
+                    33,
+                    39
+                  ],
+                  "public_cards": [],
+                  "history": [
+                    {
+                      "round": 0,
+                      "player_id": 1,
+                      "action": 319,
+                      "action_type": "raise",
+                      "stage_bet": 319,
+                      "chips_after": 19681,
+                      "committed": 269
+                    },
+                    {
+                      "round": 0,
+                      "player_id": 0,
+                      "action": 971,
+                      "action_type": "raise",
+                      "stage_bet": 971,
+                      "chips_after": 19029,
+                      "committed": 871
+                    },
+                    {
+                      "round": 0,
+                      "player_id": 1,
+                      "action": 3103,
+                      "action_type": "raise",
+                      "stage_bet": 3103,
+                      "chips_after": 16897,
+                      "committed": 2784
+                    },
+                    {
+                      "round": 0,
+                      "player_id": 0,
+                      "action": 9447,
+                      "action_type": "raise",
+                      "stage_bet": 9447,
+                      "chips_after": 10553,
+                      "committed": 8476
+                    },
+                    {
+                      "round": 0,
+                      "player_id": 1,
+                      "action": 19999,
+                      "action_type": "raise",
+                      "stage_bet": 19999,
+                      "chips_after": 1,
+                      "committed": 16896
+                    }
+                  ],
+                  "hand": 0,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    0,
+                    0
+                  ],
+                  "total_win_games": [
+                    0,
+                    0
+                  ],
+                  "opponent_showdowns": [],
+                  "opponent_profile": {
+                    "actions_total": 3,
+                    "confidence": 0.15,
+                    "actions_total_norm": 0.075,
+                    "fold_rate": 0.0,
+                    "call_rate": 0.0,
+                    "check_rate": 0.0,
+                    "raise_rate": 1.0,
+                    "allin_rate": 0.0,
+                    "aggression": 1.0,
+                    "preflop_actions_norm": 0.15,
+                    "preflop_raise_rate": 1.0,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 1,
+                  "my_stage_bet": 9447,
+                  "opponent_stage_bet": 19999,
+                  "pot": 29446,
+                  "to_call": 10552,
+                  "opponent_allin": false,
+                  "remaining_hands": 70
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 19999,
+                  "round_raise": 19999,
+                  "judge_round_raise": 19999,
+                  "min_raise_action": 30552,
+                  "round_contrib": [
+                    9447,
+                    19999
+                  ],
+                  "player_bets": [
+                    9447,
+                    19999
+                  ],
+                  "stacks": [
+                    10553,
+                    1
+                  ],
+                  "committed": [
+                    9447,
+                    19999
+                  ],
+                  "pot": 29446,
+                  "to_call": 10552,
+                  "opponent_allin": false,
+                  "allin_call_amount": 10552,
+                  "my_round_bet": 9447
+                }
+              },
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 2,
+                "decision_serial": 3,
+                "hand_decision_index": 0,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": true,
+                "rule_action": -1,
+                "advised_action": -1,
+                "sanitized_action": -1,
+                "final_action": -1,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 0,
+                  "my_id": 0,
+                  "my_chips": 19950,
+                  "my_cards": [
+                    21,
+                    2
+                  ],
+                  "public_cards": [],
+                  "history": [],
+                  "hand": 1,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    20000,
+                    -20000
+                  ],
+                  "total_win_games": [
+                    1,
+                    0
+                  ],
+                  "opponent_showdowns": [
+                    {
+                      "hand": 1,
+                      "opponent_cards": [
+                        49,
+                        9
+                      ],
+                      "my_cards": [
+                        33,
+                        39
+                      ],
+                      "public_cards": [
+                        38,
+                        21,
+                        30,
+                        37,
+                        40
+                      ],
+                      "history": [
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 319,
+                          "action_type": "raise",
+                          "stage_bet": 319,
+                          "chips_after": 19681,
+                          "committed": 269
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 971,
+                          "action_type": "raise",
+                          "stage_bet": 971,
+                          "chips_after": 19029,
+                          "committed": 871
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 3103,
+                          "action_type": "raise",
+                          "stage_bet": 3103,
+                          "chips_after": 16897,
+                          "committed": 2784
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 9447,
+                          "action_type": "raise",
+                          "stage_bet": 9447,
+                          "chips_after": 10553,
+                          "committed": 8476
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 19999,
+                          "action_type": "raise",
+                          "stage_bet": 19999,
+                          "chips_after": 1,
+                          "committed": 16896
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": -2,
+                          "action_type": "allin",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 10553
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 0,
+                          "action_type": "call",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 1
+                        }
+                      ],
+                      "earned": 20000
+                    }
+                  ],
+                  "opponent_profile": {
+                    "actions_total": 4,
+                    "confidence": 0.2,
+                    "actions_total_norm": 0.1,
+                    "fold_rate": 0.0,
+                    "call_rate": 0.25,
+                    "check_rate": 0.0,
+                    "raise_rate": 0.75,
+                    "allin_rate": 0.0,
+                    "aggression": 0.75,
+                    "preflop_actions_norm": 0.2,
+                    "preflop_raise_rate": 0.75,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 19900,
+                  "my_stage_bet": 50,
+                  "opponent_stage_bet": 100,
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "remaining_hands": 69
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 100,
+                  "round_raise": 100,
+                  "judge_round_raise": 100,
+                  "min_raise_action": 151,
+                  "round_contrib": [
+                    50,
+                    100
+                  ],
+                  "player_bets": [
+                    50,
+                    100
+                  ],
+                  "stacks": [
+                    19950,
+                    19900
+                  ],
+                  "committed": [
+                    50,
+                    100
+                  ],
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "allin_call_amount": 50,
+                  "my_round_bet": 50
+                }
+              },
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 3,
+                "decision_serial": 4,
+                "hand_decision_index": 0,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": false,
+                "rule_action": -1,
+                "advised_action": -1,
+                "sanitized_action": -1,
+                "final_action": -1,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 1,
+                  "my_id": 0,
+                  "my_chips": 19900,
+                  "my_cards": [
+                    3,
+                    11
+                  ],
+                  "public_cards": [],
+                  "history": [
+                    {
+                      "round": 0,
+                      "player_id": 1,
+                      "action": 335,
+                      "action_type": "raise",
+                      "stage_bet": 335,
+                      "chips_after": 19665,
+                      "committed": 285
+                    }
+                  ],
+                  "hand": 2,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    19950,
+                    -19950
+                  ],
+                  "total_win_games": [
+                    1,
+                    1
+                  ],
+                  "opponent_showdowns": [
+                    {
+                      "hand": 1,
+                      "opponent_cards": [
+                        49,
+                        9
+                      ],
+                      "my_cards": [
+                        33,
+                        39
+                      ],
+                      "public_cards": [
+                        38,
+                        21,
+                        30,
+                        37,
+                        40
+                      ],
+                      "history": [
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 319,
+                          "action_type": "raise",
+                          "stage_bet": 319,
+                          "chips_after": 19681,
+                          "committed": 269
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 971,
+                          "action_type": "raise",
+                          "stage_bet": 971,
+                          "chips_after": 19029,
+                          "committed": 871
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 3103,
+                          "action_type": "raise",
+                          "stage_bet": 3103,
+                          "chips_after": 16897,
+                          "committed": 2784
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 9447,
+                          "action_type": "raise",
+                          "stage_bet": 9447,
+                          "chips_after": 10553,
+                          "committed": 8476
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 19999,
+                          "action_type": "raise",
+                          "stage_bet": 19999,
+                          "chips_after": 1,
+                          "committed": 16896
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": -2,
+                          "action_type": "allin",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 10553
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 0,
+                          "action_type": "call",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 1
+                        }
+                      ],
+                      "earned": 20000
+                    }
+                  ],
+                  "opponent_profile": {
+                    "actions_total": 5,
+                    "confidence": 0.25,
+                    "actions_total_norm": 0.125,
+                    "fold_rate": 0.0,
+                    "call_rate": 0.2,
+                    "check_rate": 0.0,
+                    "raise_rate": 0.8,
+                    "allin_rate": 0.0,
+                    "aggression": 0.8,
+                    "preflop_actions_norm": 0.25,
+                    "preflop_raise_rate": 0.8,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 19665,
+                  "my_stage_bet": 100,
+                  "opponent_stage_bet": 335,
+                  "pot": 435,
+                  "to_call": 235,
+                  "opponent_allin": false,
+                  "remaining_hands": 68
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 335,
+                  "round_raise": 335,
+                  "judge_round_raise": 335,
+                  "min_raise_action": 571,
+                  "round_contrib": [
+                    100,
+                    335
+                  ],
+                  "player_bets": [
+                    100,
+                    335
+                  ],
+                  "stacks": [
+                    19900,
+                    19665
+                  ],
+                  "committed": [
+                    100,
+                    335
+                  ],
+                  "pot": 435,
+                  "to_call": 235,
+                  "opponent_allin": false,
+                  "allin_call_amount": 235,
+                  "my_round_bet": 100
+                }
+              },
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 4,
+                "decision_serial": 5,
+                "hand_decision_index": 0,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": true,
+                "rule_action": -1,
+                "advised_action": -1,
+                "sanitized_action": -1,
+                "final_action": -1,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 0,
+                  "my_id": 0,
+                  "my_chips": 19950,
+                  "my_cards": [
+                    27,
+                    22
+                  ],
+                  "public_cards": [],
+                  "history": [],
+                  "hand": 3,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    19850,
+                    -19850
+                  ],
+                  "total_win_games": [
+                    1,
+                    2
+                  ],
+                  "opponent_showdowns": [
+                    {
+                      "hand": 1,
+                      "opponent_cards": [
+                        49,
+                        9
+                      ],
+                      "my_cards": [
+                        33,
+                        39
+                      ],
+                      "public_cards": [
+                        38,
+                        21,
+                        30,
+                        37,
+                        40
+                      ],
+                      "history": [
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 319,
+                          "action_type": "raise",
+                          "stage_bet": 319,
+                          "chips_after": 19681,
+                          "committed": 269
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 971,
+                          "action_type": "raise",
+                          "stage_bet": 971,
+                          "chips_after": 19029,
+                          "committed": 871
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 3103,
+                          "action_type": "raise",
+                          "stage_bet": 3103,
+                          "chips_after": 16897,
+                          "committed": 2784
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 9447,
+                          "action_type": "raise",
+                          "stage_bet": 9447,
+                          "chips_after": 10553,
+                          "committed": 8476
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 19999,
+                          "action_type": "raise",
+                          "stage_bet": 19999,
+                          "chips_after": 1,
+                          "committed": 16896
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": -2,
+                          "action_type": "allin",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 10553
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 0,
+                          "action_type": "call",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 1
+                        }
+                      ],
+                      "earned": 20000
+                    }
+                  ],
+                  "opponent_profile": {
+                    "actions_total": 5,
+                    "confidence": 0.25,
+                    "actions_total_norm": 0.125,
+                    "fold_rate": 0.0,
+                    "call_rate": 0.2,
+                    "check_rate": 0.0,
+                    "raise_rate": 0.8,
+                    "allin_rate": 0.0,
+                    "aggression": 0.8,
+                    "preflop_actions_norm": 0.25,
+                    "preflop_raise_rate": 0.8,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 19900,
+                  "my_stage_bet": 50,
+                  "opponent_stage_bet": 100,
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "remaining_hands": 67
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 100,
+                  "round_raise": 100,
+                  "judge_round_raise": 100,
+                  "min_raise_action": 151,
+                  "round_contrib": [
+                    50,
+                    100
+                  ],
+                  "player_bets": [
+                    50,
+                    100
+                  ],
+                  "stacks": [
+                    19950,
+                    19900
+                  ],
+                  "committed": [
+                    50,
+                    100
+                  ],
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "allin_call_amount": 50,
+                  "my_round_bet": 50
+                }
+              },
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 5,
+                "decision_serial": 6,
+                "hand_decision_index": 0,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": false,
+                "rule_action": -1,
+                "advised_action": -1,
+                "sanitized_action": -1,
+                "final_action": -1,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 1,
+                  "my_id": 0,
+                  "my_chips": 19900,
+                  "my_cards": [
+                    39,
+                    27
+                  ],
+                  "public_cards": [],
+                  "history": [
+                    {
+                      "round": 0,
+                      "player_id": 1,
+                      "action": 364,
+                      "action_type": "raise",
+                      "stage_bet": 364,
+                      "chips_after": 19636,
+                      "committed": 314
+                    }
+                  ],
+                  "hand": 4,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    19800,
+                    -19800
+                  ],
+                  "total_win_games": [
+                    1,
+                    3
+                  ],
+                  "opponent_showdowns": [
+                    {
+                      "hand": 1,
+                      "opponent_cards": [
+                        49,
+                        9
+                      ],
+                      "my_cards": [
+                        33,
+                        39
+                      ],
+                      "public_cards": [
+                        38,
+                        21,
+                        30,
+                        37,
+                        40
+                      ],
+                      "history": [
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 319,
+                          "action_type": "raise",
+                          "stage_bet": 319,
+                          "chips_after": 19681,
+                          "committed": 269
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 971,
+                          "action_type": "raise",
+                          "stage_bet": 971,
+                          "chips_after": 19029,
+                          "committed": 871
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 3103,
+                          "action_type": "raise",
+                          "stage_bet": 3103,
+                          "chips_after": 16897,
+                          "committed": 2784
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 9447,
+                          "action_type": "raise",
+                          "stage_bet": 9447,
+                          "chips_after": 10553,
+                          "committed": 8476
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 19999,
+                          "action_type": "raise",
+                          "stage_bet": 19999,
+                          "chips_after": 1,
+                          "committed": 16896
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": -2,
+                          "action_type": "allin",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 10553
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 0,
+                          "action_type": "call",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 1
+                        }
+                      ],
+                      "earned": 20000
+                    }
+                  ],
+                  "opponent_profile": {
+                    "actions_total": 6,
+                    "confidence": 0.3,
+                    "actions_total_norm": 0.15,
+                    "fold_rate": 0.0,
+                    "call_rate": 0.16666666666666666,
+                    "check_rate": 0.0,
+                    "raise_rate": 0.8333333333333334,
+                    "allin_rate": 0.0,
+                    "aggression": 0.8333333333333334,
+                    "preflop_actions_norm": 0.3,
+                    "preflop_raise_rate": 0.8333333333333334,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 19636,
+                  "my_stage_bet": 100,
+                  "opponent_stage_bet": 364,
+                  "pot": 464,
+                  "to_call": 264,
+                  "opponent_allin": false,
+                  "remaining_hands": 66
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 364,
+                  "round_raise": 364,
+                  "judge_round_raise": 364,
+                  "min_raise_action": 629,
+                  "round_contrib": [
+                    100,
+                    364
+                  ],
+                  "player_bets": [
+                    100,
+                    364
+                  ],
+                  "stacks": [
+                    19900,
+                    19636
+                  ],
+                  "committed": [
+                    100,
+                    364
+                  ],
+                  "pot": 464,
+                  "to_call": 264,
+                  "opponent_allin": false,
+                  "allin_call_amount": 264,
+                  "my_round_bet": 100
+                }
+              },
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 6,
+                "decision_serial": 7,
+                "hand_decision_index": 0,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": true,
+                "rule_action": -1,
+                "advised_action": -1,
+                "sanitized_action": -1,
+                "final_action": -1,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 0,
+                  "my_id": 0,
+                  "my_chips": 19950,
+                  "my_cards": [
+                    46,
+                    0
+                  ],
+                  "public_cards": [],
+                  "history": [],
+                  "hand": 5,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    19700,
+                    -19700
+                  ],
+                  "total_win_games": [
+                    1,
+                    4
+                  ],
+                  "opponent_showdowns": [
+                    {
+                      "hand": 1,
+                      "opponent_cards": [
+                        49,
+                        9
+                      ],
+                      "my_cards": [
+                        33,
+                        39
+                      ],
+                      "public_cards": [
+                        38,
+                        21,
+                        30,
+                        37,
+                        40
+                      ],
+                      "history": [
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 319,
+                          "action_type": "raise",
+                          "stage_bet": 319,
+                          "chips_after": 19681,
+                          "committed": 269
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 971,
+                          "action_type": "raise",
+                          "stage_bet": 971,
+                          "chips_after": 19029,
+                          "committed": 871
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 3103,
+                          "action_type": "raise",
+                          "stage_bet": 3103,
+                          "chips_after": 16897,
+                          "committed": 2784
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 9447,
+                          "action_type": "raise",
+                          "stage_bet": 9447,
+                          "chips_after": 10553,
+                          "committed": 8476
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 19999,
+                          "action_type": "raise",
+                          "stage_bet": 19999,
+                          "chips_after": 1,
+                          "committed": 16896
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": -2,
+                          "action_type": "allin",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 10553
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 0,
+                          "action_type": "call",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 1
+                        }
+                      ],
+                      "earned": 20000
+                    }
+                  ],
+                  "opponent_profile": {
+                    "actions_total": 6,
+                    "confidence": 0.3,
+                    "actions_total_norm": 0.15,
+                    "fold_rate": 0.0,
+                    "call_rate": 0.16666666666666666,
+                    "check_rate": 0.0,
+                    "raise_rate": 0.8333333333333334,
+                    "allin_rate": 0.0,
+                    "aggression": 0.8333333333333334,
+                    "preflop_actions_norm": 0.3,
+                    "preflop_raise_rate": 0.8333333333333334,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 19900,
+                  "my_stage_bet": 50,
+                  "opponent_stage_bet": 100,
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "remaining_hands": 65
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 100,
+                  "round_raise": 100,
+                  "judge_round_raise": 100,
+                  "min_raise_action": 151,
+                  "round_contrib": [
+                    50,
+                    100
+                  ],
+                  "player_bets": [
+                    50,
+                    100
+                  ],
+                  "stacks": [
+                    19950,
+                    19900
+                  ],
+                  "committed": [
+                    50,
+                    100
+                  ],
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "allin_call_amount": 50,
+                  "my_round_bet": 50
+                }
+              },
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 7,
+                "decision_serial": 8,
+                "hand_decision_index": 0,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": false,
+                "rule_action": -1,
+                "advised_action": -1,
+                "sanitized_action": -1,
+                "final_action": -1,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 1,
+                  "my_id": 0,
+                  "my_chips": 19900,
+                  "my_cards": [
+                    23,
+                    41
+                  ],
+                  "public_cards": [],
+                  "history": [
+                    {
+                      "round": 0,
+                      "player_id": 1,
+                      "action": 301,
+                      "action_type": "raise",
+                      "stage_bet": 301,
+                      "chips_after": 19699,
+                      "committed": 251
+                    }
+                  ],
+                  "hand": 6,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    19650,
+                    -19650
+                  ],
+                  "total_win_games": [
+                    1,
+                    5
+                  ],
+                  "opponent_showdowns": [
+                    {
+                      "hand": 1,
+                      "opponent_cards": [
+                        49,
+                        9
+                      ],
+                      "my_cards": [
+                        33,
+                        39
+                      ],
+                      "public_cards": [
+                        38,
+                        21,
+                        30,
+                        37,
+                        40
+                      ],
+                      "history": [
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 319,
+                          "action_type": "raise",
+                          "stage_bet": 319,
+                          "chips_after": 19681,
+                          "committed": 269
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 971,
+                          "action_type": "raise",
+                          "stage_bet": 971,
+                          "chips_after": 19029,
+                          "committed": 871
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 3103,
+                          "action_type": "raise",
+                          "stage_bet": 3103,
+                          "chips_after": 16897,
+                          "committed": 2784
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 9447,
+                          "action_type": "raise",
+                          "stage_bet": 9447,
+                          "chips_after": 10553,
+                          "committed": 8476
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 19999,
+                          "action_type": "raise",
+                          "stage_bet": 19999,
+                          "chips_after": 1,
+                          "committed": 16896
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": -2,
+                          "action_type": "allin",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 10553
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 0,
+                          "action_type": "call",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 1
+                        }
+                      ],
+                      "earned": 20000
+                    }
+                  ],
+                  "opponent_profile": {
+                    "actions_total": 7,
+                    "confidence": 0.35,
+                    "actions_total_norm": 0.175,
+                    "fold_rate": 0.0,
+                    "call_rate": 0.14285714285714285,
+                    "check_rate": 0.0,
+                    "raise_rate": 0.8571428571428571,
+                    "allin_rate": 0.0,
+                    "aggression": 0.8571428571428571,
+                    "preflop_actions_norm": 0.35,
+                    "preflop_raise_rate": 0.8571428571428571,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 19699,
+                  "my_stage_bet": 100,
+                  "opponent_stage_bet": 301,
+                  "pot": 401,
+                  "to_call": 201,
+                  "opponent_allin": false,
+                  "remaining_hands": 64
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 301,
+                  "round_raise": 301,
+                  "judge_round_raise": 301,
+                  "min_raise_action": 503,
+                  "round_contrib": [
+                    100,
+                    301
+                  ],
+                  "player_bets": [
+                    100,
+                    301
+                  ],
+                  "stacks": [
+                    19900,
+                    19699
+                  ],
+                  "committed": [
+                    100,
+                    301
+                  ],
+                  "pot": 401,
+                  "to_call": 201,
+                  "opponent_allin": false,
+                  "allin_call_amount": 201,
+                  "my_round_bet": 100
+                }
+              },
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 8,
+                "decision_serial": 9,
+                "hand_decision_index": 0,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": true,
+                "rule_action": -1,
+                "advised_action": -1,
+                "sanitized_action": -1,
+                "final_action": -1,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 0,
+                  "my_id": 0,
+                  "my_chips": 19950,
+                  "my_cards": [
+                    28,
+                    11
+                  ],
+                  "public_cards": [],
+                  "history": [],
+                  "hand": 7,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    19550,
+                    -19550
+                  ],
+                  "total_win_games": [
+                    1,
+                    6
+                  ],
+                  "opponent_showdowns": [
+                    {
+                      "hand": 1,
+                      "opponent_cards": [
+                        49,
+                        9
+                      ],
+                      "my_cards": [
+                        33,
+                        39
+                      ],
+                      "public_cards": [
+                        38,
+                        21,
+                        30,
+                        37,
+                        40
+                      ],
+                      "history": [
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 319,
+                          "action_type": "raise",
+                          "stage_bet": 319,
+                          "chips_after": 19681,
+                          "committed": 269
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 971,
+                          "action_type": "raise",
+                          "stage_bet": 971,
+                          "chips_after": 19029,
+                          "committed": 871
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 3103,
+                          "action_type": "raise",
+                          "stage_bet": 3103,
+                          "chips_after": 16897,
+                          "committed": 2784
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 9447,
+                          "action_type": "raise",
+                          "stage_bet": 9447,
+                          "chips_after": 10553,
+                          "committed": 8476
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 19999,
+                          "action_type": "raise",
+                          "stage_bet": 19999,
+                          "chips_after": 1,
+                          "committed": 16896
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": -2,
+                          "action_type": "allin",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 10553
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 0,
+                          "action_type": "call",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 1
+                        }
+                      ],
+                      "earned": 20000
+                    }
+                  ],
+                  "opponent_profile": {
+                    "actions_total": 7,
+                    "confidence": 0.35,
+                    "actions_total_norm": 0.175,
+                    "fold_rate": 0.0,
+                    "call_rate": 0.14285714285714285,
+                    "check_rate": 0.0,
+                    "raise_rate": 0.8571428571428571,
+                    "allin_rate": 0.0,
+                    "aggression": 0.8571428571428571,
+                    "preflop_actions_norm": 0.35,
+                    "preflop_raise_rate": 0.8571428571428571,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 19900,
+                  "my_stage_bet": 50,
+                  "opponent_stage_bet": 100,
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "remaining_hands": 63
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 100,
+                  "round_raise": 100,
+                  "judge_round_raise": 100,
+                  "min_raise_action": 151,
+                  "round_contrib": [
+                    50,
+                    100
+                  ],
+                  "player_bets": [
+                    50,
+                    100
+                  ],
+                  "stacks": [
+                    19950,
+                    19900
+                  ],
+                  "committed": [
+                    50,
+                    100
+                  ],
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "allin_call_amount": 50,
+                  "my_round_bet": 50
+                }
+              },
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 9,
+                "decision_serial": 10,
+                "hand_decision_index": 0,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": false,
+                "rule_action": -1,
+                "advised_action": -1,
+                "sanitized_action": -1,
+                "final_action": -1,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 1,
+                  "my_id": 0,
+                  "my_chips": 19900,
+                  "my_cards": [
+                    35,
+                    24
+                  ],
+                  "public_cards": [],
+                  "history": [
+                    {
+                      "round": 0,
+                      "player_id": 1,
+                      "action": 323,
+                      "action_type": "raise",
+                      "stage_bet": 323,
+                      "chips_after": 19677,
+                      "committed": 273
+                    }
+                  ],
+                  "hand": 8,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    19500,
+                    -19500
+                  ],
+                  "total_win_games": [
+                    1,
+                    7
+                  ],
+                  "opponent_showdowns": [
+                    {
+                      "hand": 1,
+                      "opponent_cards": [
+                        49,
+                        9
+                      ],
+                      "my_cards": [
+                        33,
+                        39
+                      ],
+                      "public_cards": [
+                        38,
+                        21,
+                        30,
+                        37,
+                        40
+                      ],
+                      "history": [
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 319,
+                          "action_type": "raise",
+                          "stage_bet": 319,
+                          "chips_after": 19681,
+                          "committed": 269
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 971,
+                          "action_type": "raise",
+                          "stage_bet": 971,
+                          "chips_after": 19029,
+                          "committed": 871
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 3103,
+                          "action_type": "raise",
+                          "stage_bet": 3103,
+                          "chips_after": 16897,
+                          "committed": 2784
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 9447,
+                          "action_type": "raise",
+                          "stage_bet": 9447,
+                          "chips_after": 10553,
+                          "committed": 8476
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 19999,
+                          "action_type": "raise",
+                          "stage_bet": 19999,
+                          "chips_after": 1,
+                          "committed": 16896
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": -2,
+                          "action_type": "allin",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 10553
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 0,
+                          "action_type": "call",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 1
+                        }
+                      ],
+                      "earned": 20000
+                    }
+                  ],
+                  "opponent_profile": {
+                    "actions_total": 8,
+                    "confidence": 0.4,
+                    "actions_total_norm": 0.2,
+                    "fold_rate": 0.0,
+                    "call_rate": 0.125,
+                    "check_rate": 0.0,
+                    "raise_rate": 0.875,
+                    "allin_rate": 0.0,
+                    "aggression": 0.875,
+                    "preflop_actions_norm": 0.4,
+                    "preflop_raise_rate": 0.875,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 19677,
+                  "my_stage_bet": 100,
+                  "opponent_stage_bet": 323,
+                  "pot": 423,
+                  "to_call": 223,
+                  "opponent_allin": false,
+                  "remaining_hands": 62
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 323,
+                  "round_raise": 323,
+                  "judge_round_raise": 323,
+                  "min_raise_action": 547,
+                  "round_contrib": [
+                    100,
+                    323
+                  ],
+                  "player_bets": [
+                    100,
+                    323
+                  ],
+                  "stacks": [
+                    19900,
+                    19677
+                  ],
+                  "committed": [
+                    100,
+                    323
+                  ],
+                  "pot": 423,
+                  "to_call": 223,
+                  "opponent_allin": false,
+                  "allin_call_amount": 223,
+                  "my_round_bet": 100
+                }
+              },
+              {
+                "type": "decision",
+                "name": "v095_national_v17_native_context_action_h64_call_t040_tcp",
+                "hand": 10,
+                "decision_serial": 11,
+                "hand_decision_index": 0,
+                "stage": "preflop",
+                "round": 0,
+                "is_small_blind": true,
+                "rule_action": -1,
+                "advised_action": -1,
+                "sanitized_action": -1,
+                "final_action": -1,
+                "forced": false,
+                "force_action": null,
+                "request": {
+                  "num_players": 2,
+                  "dealer_id": 0,
+                  "my_id": 0,
+                  "my_chips": 19950,
+                  "my_cards": [
+                    13,
+                    2
+                  ],
+                  "public_cards": [],
+                  "history": [],
+                  "hand": 9,
+                  "max_hand": 70,
+                  "total_win_chips": [
+                    19400,
+                    -19400
+                  ],
+                  "total_win_games": [
+                    1,
+                    8
+                  ],
+                  "opponent_showdowns": [
+                    {
+                      "hand": 1,
+                      "opponent_cards": [
+                        49,
+                        9
+                      ],
+                      "my_cards": [
+                        33,
+                        39
+                      ],
+                      "public_cards": [
+                        38,
+                        21,
+                        30,
+                        37,
+                        40
+                      ],
+                      "history": [
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 319,
+                          "action_type": "raise",
+                          "stage_bet": 319,
+                          "chips_after": 19681,
+                          "committed": 269
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 971,
+                          "action_type": "raise",
+                          "stage_bet": 971,
+                          "chips_after": 19029,
+                          "committed": 871
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 3103,
+                          "action_type": "raise",
+                          "stage_bet": 3103,
+                          "chips_after": 16897,
+                          "committed": 2784
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": 9447,
+                          "action_type": "raise",
+                          "stage_bet": 9447,
+                          "chips_after": 10553,
+                          "committed": 8476
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 19999,
+                          "action_type": "raise",
+                          "stage_bet": 19999,
+                          "chips_after": 1,
+                          "committed": 16896
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 0,
+                          "action": -2,
+                          "action_type": "allin",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 10553
+                        },
+                        {
+                          "round": 0,
+                          "player_id": 1,
+                          "action": 0,
+                          "action_type": "call",
+                          "stage_bet": 20000,
+                          "chips_after": 0,
+                          "committed": 1
+                        }
+                      ],
+                      "earned": 20000
+                    }
+                  ],
+                  "opponent_profile": {
+                    "actions_total": 8,
+                    "confidence": 0.4,
+                    "actions_total_norm": 0.2,
+                    "fold_rate": 0.0,
+                    "call_rate": 0.125,
+                    "check_rate": 0.0,
+                    "raise_rate": 0.875,
+                    "allin_rate": 0.0,
+                    "aggression": 0.875,
+                    "preflop_actions_norm": 0.4,
+                    "preflop_raise_rate": 0.875,
+                    "postflop_actions_norm": 0.0,
+                    "postflop_raise_rate": 0.0
+                  },
+                  "opponent_chips": 19900,
+                  "my_stage_bet": 50,
+                  "opponent_stage_bet": 100,
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "remaining_hands": 61
+                },
+                "state": {
+                  "round": 0,
+                  "round_bet": 100,
+                  "round_raise": 100,
+                  "judge_round_raise": 100,
+                  "min_raise_action": 151,
+                  "round_contrib": [
+                    50,
+                    100
+                  ],
+                  "player_bets": [
+                    50,
+                    100
+                  ],
+                  "stacks": [
+                    19950,
+                    19900
+                  ],
+                  "committed": [
+                    50,
+                    100
+                  ],
+                  "pot": 150,
+                  "to_call": 50,
+                  "opponent_allin": false,
+                  "allin_call_amount": 50,
+                  "my_round_bet": 50
+                }
+              }
+            ],
+            "process_failures": 0,
+            "json_response_stdout": 0
+          },
+          "opponent_native": {
+            "returncode": 0,
+            "bot_seed": 202607290020,
+            "stdout_tail": "",
+            "stderr_tail": "OPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\nOPP_RIVER_OVERCALL freq=0.550 samples=0 calls=0\n",
+            "decision_trace": [],
+            "process_failures": 0,
+            "json_response_stdout": 0
+          }
+        }
+      ]
+    }
+  ],
+  "combined": {
+    "matches": 1,
+    "hands": 20,
+    "compliant_matches": 1,
+    "total_net_chips": 0,
+    "mean_per_hand": 0.0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 1
+  },
+  "opponents": {
+    "national_v7": {
+      "matches": 1,
+      "hands": 20,
+      "compliant_matches": 1,
+      "total_net_chips": 0,
+      "mean_net_chips": 0,
+      "median_net_chips": 0,
+      "mean_per_hand": 0.0,
+      "wins": 0,
+      "losses": 0,
+      "draws": 1,
+      "samples": [
+        0
+      ],
+      "issues": [],
+      "candidate_illegal_total": 0,
+      "candidate_timeouts_total": 0,
+      "opponent_illegal_total": 0,
+      "opponent_timeouts_total": 0,
+      "adapter_actions_candidate_total": 0,
+      "adapter_actions_opponent_total": 0
+    }
+  }
+}

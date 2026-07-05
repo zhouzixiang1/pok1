@@ -204,17 +204,29 @@ Current native TCP evidence, using paired reports where available:
   `-3767` versus v082 and `-14007` versus v095, with new negative windows
   against `national_v7` and `national_v11`. Keep v095's stricter gate unless
   new data explains those failures.
+- `v097_national_v17_native_context_action_h64_call_t015_rr045_tcp` tested a
+  targeted guard for the v096 failure mode by allowing the `0.15`
+  `raise_pot -> call` gate only when the observed opponent `raise_rate <= 0.45`.
+  A paired v7 hard-negative trace confirmed the guard blocks v096's damaging
+  `rule raise -> 0` conversions and returns that trace to v095's neutral
+  result. It is not a strength improvement: on the current stricter pool
+  (`national_v18`, `national_v3`, `national_v16`, `national_v14`,
+  `national_v5`, `national_v7`, `national_v11`), 35 paired native TCP matches
+  / 4900 hands scored v097 `+41006`, v095 `+80486`, and v082 `+76977`, all
+  with 0 illegal actions, 0 timeouts, and 0 adapter actions. The paired diffs
+  were v097-v095 `-39480`, v097-v082 `-35971`, and v095-v082 `+3509`.
 
 This is not a promotion-grade strength breakthrough. The current evidence says
 the old v254/Botzone-trained action advice does not transfer to native national
 opponents. The native TCP counterfactual path now works, GPU training works,
 and action-context features finally produced a clean positive neural increment
-over v082 on the current `.evolution_pok` leader pool. It still does not meet
-the project strength bar of comprehensive rule-bot domination: v095 has neutral
-opponents, losing rows, and only a modest `+10240` paired diff over 3500 hands.
-The next scale step should collect much larger explicit action-value data that
-includes the `.evolution_pok` Glicko leaders, then train with held-out opponent
-groups and explicit gates for the v7/v11 failure modes.
+over v082 on protocol opponents. It still does not meet the project strength
+bar of comprehensive rule-bot domination: the current-pool retest shows v095's
+increment is modest and concentrated on `national_v3`, while six of seven
+opponents are neutral in the paired report. The next scale step should collect
+much larger explicit action-value data from the `.evolution_pok` Glicko leaders
+and hard-negative buckets, then train with held-out opponent groups instead of
+trying to widen runtime gates around the same small dataset.
 
 ## Scale-Up Gate
 
