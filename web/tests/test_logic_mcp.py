@@ -80,7 +80,7 @@ class TestSelectPrecommitOpponents:
         from tool_helpers import _select_precommit_opponents
         result = _select_precommit_opponents(active_bot_version + 1, active_bot_version)
         names = [o["name"] for o in result]
-        assert f"claude_v{active_bot_version}" in names
+        assert f"national_v{active_bot_version}" in names
 
 
 # ── evolution_infra.py: parse_json_output() ──

@@ -98,9 +98,9 @@ def test_E2_oscillation_suppressed_when_leader_in_set(monkeypatch):
     monkeypatch.setattr(gs, "_read_source_v_history",
                         lambda: [30, 31, 32, 30, 31, 32, 30, 31])
     ratings = {
-        "claude_v30": _FakeRating(1500.0),   # leader (highest cons)
-        "claude_v31": _FakeRating(1400.0),
-        "claude_v32": _FakeRating(1350.0),
+        "national_v30": _FakeRating(1500.0),   # leader (highest cons)
+        "national_v31": _FakeRating(1400.0),
+        "national_v32": _FakeRating(1350.0),
     }
     combined = {"is_stagnant": False, "confidence": "low",
                 "recommended_source": "", "branch_from": None}
@@ -116,10 +116,10 @@ def test_E2_oscillation_forces_crossover_when_leader_outside_set(monkeypatch):
     monkeypatch.setattr(gs, "_read_source_v_history",
                         lambda: [30, 31, 32, 30, 31, 32, 30, 31])
     ratings = {
-        "claude_v30": _FakeRating(1300.0),
-        "claude_v31": _FakeRating(1400.0),
-        "claude_v32": _FakeRating(1350.0),
-        "claude_v40": _FakeRating(1600.0),   # leader, NOT in oscillating set
+        "national_v30": _FakeRating(1300.0),
+        "national_v31": _FakeRating(1400.0),
+        "national_v32": _FakeRating(1350.0),
+        "national_v40": _FakeRating(1600.0),   # leader, NOT in oscillating set
     }
     combined = {"is_stagnant": False, "confidence": "low",
                 "recommended_source": "", "branch_from": None}

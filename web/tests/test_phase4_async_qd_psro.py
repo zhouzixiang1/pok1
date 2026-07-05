@@ -9,8 +9,8 @@ Covers (per the Phase 4 design spec):
      v1 archive, write_behavior_archive preserves k=3 fields.
   D. PSRO meta-solver (psro_meta_solver): fictitious play RPS convergence,
      dominant strategy, payoff symmetry, missing-reverse derivation, uniform.
-  E. MixtureBot (bots/mixture_main/main.py): per-hand weighted dispatch, hand
-     pinning, subprocess passthrough, missing-config safe fold.
+  E. Legacy MixtureBot: per-hand weighted dispatch, hand pinning, subprocess
+     passthrough, missing-config safe fold when an archived component is present.
   F. Engine contract hard gate: PSRO flag OFF default, engine battle signatures
      unchanged, precommit path byte-identical when PSRO off (opponents contain
      no mixture_main).
@@ -391,7 +391,7 @@ class TestQDAsyncEval:
         monkeypatch.setattr(map_elites, "BEHAVIOR_ARCHIVE_FILE", archive_file)
         prior = {"version": 1, "updated_at": "t", "bc_note": "n",
                  "niches": {"agg1_loose1": {
-                     "bot": "claude_v55", "version": 55, "fitness": 0.5,
+                     "bot": "national_v55", "version": 55, "fitness": 0.5,
                      "bc": {}, "last_eval": "t", "eval_mode": "single"}}}
         archive_file.write_text(json.dumps(prior))
 
@@ -400,9 +400,9 @@ class TestQDAsyncEval:
         # Use a real bot dir that exists via symlinked bots in conftest.
         # We point get_bot_dir(55) at a tmp file by patching get_bot_dir.
         monkeypatch.setattr("evolution_infra.get_bot_dir",
-                            lambda v: tmp_path / f"claude_v{v}")
-        (tmp_path / "claude_v55" / "main.py").parent.mkdir(parents=True, exist_ok=True)
-        (tmp_path / "claude_v55" / "main.py").write_text("# stub")
+                            lambda v: tmp_path / f"national_v{v}")
+        (tmp_path / "national_v55" / "main.py").parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "national_v55" / "main.py").write_text("# stub")
 
         # Mock the eval + opponent selection.
         monkeypatch.setattr(qd_async_eval, "_select_eval_opponents",
@@ -441,14 +441,14 @@ class TestQDAsyncEval:
         monkeypatch.setattr(map_elites, "BEHAVIOR_ARCHIVE_FILE", archive_file)
         prior = {"version": 1, "updated_at": "t", "bc_note": "n",
                  "niches": {"agg1_loose1": {
-                     "bot": "claude_v88", "version": 88, "fitness": 0.5,
+                     "bot": "national_v88", "version": 88, "fitness": 0.5,
                      "bc": {}, "last_eval": "t", "eval_mode": "single"}}}
         archive_file.write_text(json.dumps(prior))
 
         monkeypatch.setattr("evolution_infra.get_bot_dir",
-                            lambda v: tmp_path / f"claude_v{v}")
-        (tmp_path / "claude_v88").mkdir(parents=True, exist_ok=True)
-        (tmp_path / "claude_v88" / "main.py").write_text("# stub")
+                            lambda v: tmp_path / f"national_v{v}")
+        (tmp_path / "national_v88").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "national_v88" / "main.py").write_text("# stub")
         monkeypatch.setattr(qd_async_eval, "_select_eval_opponents",
                             lambda src, max_opponents=3: [str(tmp_path / "opp.py")])
 
@@ -551,18 +551,24 @@ class TestQDAsyncEval:
 
 
 # ===========================================================================
-# E. MixtureBot dispatch (offline, mock sub-bots)
+# E. Legacy MixtureBot dispatch (offline, mock sub-bots)
 # ===========================================================================
 
 class TestMixtureBot:
     @pytest.fixture
     def mixture_main(self):
-        return _PROJECT_ROOT / "bots" / "mixture_main" / "main.py"
+        active = _PROJECT_ROOT / "bots" / "mixture_main" / "main.py"
+        if active.exists():
+            return active
+        archives = sorted(_PROJECT_ROOT.glob("archive/evolution_epochs/*/legacy_bots/mixture_main/main.py"))
+        if archives:
+            return archives[-1]
+        pytest.skip("legacy mixture_main is archived out of the active national bot namespace")
 
     @pytest.fixture
-    def write_config(self, tmp_path):
+    def write_config(self, mixture_main):
         """Write a mixture_config.json pointing at tmp sub-bots; cleanup after."""
-        cfg_path = _PROJECT_ROOT / "bots" / "mixture_main" / "mixture_config.json"
+        cfg_path = mixture_main.parent / "mixture_config.json"
 
         def _write(weights, paths):
             cfg = {"strategy_weights": weights, "bot_paths": paths}
@@ -592,7 +598,7 @@ class TestMixtureBot:
     def test_mixture_bot_missing_config_skips(self, mixture_main):
         # No config present -> every decision is a safe fold.
         # Ensure config is absent.
-        cfg_path = _PROJECT_ROOT / "bots" / "mixture_main" / "mixture_config.json"
+        cfg_path = mixture_main.parent / "mixture_config.json"
         had = cfg_path.exists()
         if had:
             cfg_path.unlink()

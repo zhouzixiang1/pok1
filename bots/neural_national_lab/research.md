@@ -275,6 +275,18 @@ Recommended next architecture:
   seeded replay, so workers>1 paired/divergence results produced before the
   process-worker fix are exploratory only. Use process workers or `--workers 1`
   before trusting any action-value label or promotion result.
+- The first scheduler-backed result is v075. A multi-opponent active-positive
+  actor batch against v279/v283/v284/v285/v288 produced 40 legal-mask
+  multi-action rows where v064 folded preflop and call/raise abstractions were
+  consistently better by 150 chips. Training a compact h16 multi-action value
+  head on those rows and adding a direct preflop fold-to-call proposal path
+  yielded `v075_v254_activepos_call_rescue_p040_h16`. Repaired process-worker
+  divergence over five strong opponents hit 80/80 positive samples with mean
+  `+4809.38` chips per 70 hands versus v064 and CI
+  `[+4760.50, +4858.25]`; a direct five-game smoke against v279 was 5-0 for
+  v075. This validates the actor/learner direction but should be expanded to
+  larger, non-overlapping seed ranges before treating the blind-defense rescue
+  as fully promoted.
 
 ## Advisor-Line Findings
 

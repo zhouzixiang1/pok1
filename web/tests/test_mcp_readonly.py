@@ -62,7 +62,7 @@ class TestGetMatchHistory:
 @pytest.mark.requires_active_bot
 class TestGetH2H:
     def test_with_opponent(self, client, active_bot_version):
-        bot_name = f"claude_v{active_bot_version}"
+        bot_name = f"national_v{active_bot_version}"
         resp = client.post("/api/control/tool/get_h2h",
                            json={"args": {"bot_name": bot_name}})
         assert resp.status_code == 200
@@ -71,7 +71,7 @@ class TestGetH2H:
 
     def test_all_opponents(self, client, active_bot_version):
         resp = client.post("/api/control/tool/get_h2h",
-                           json={"args": {"bot_name": f"claude_v{active_bot_version}"}})
+                           json={"args": {"bot_name": f"national_v{active_bot_version}"}})
         assert resp.status_code == 200
         result = json.loads(resp.json()["result"])
         assert "opponents" in result
@@ -80,7 +80,7 @@ class TestGetH2H:
 class TestGetBotStats:
     @pytest.mark.requires_active_bot
     def test_found(self, client, active_bot_version):
-        bot_name = f"claude_v{active_bot_version}"
+        bot_name = f"national_v{active_bot_version}"
         resp = client.post("/api/control/tool/get_bot_stats",
                            json={"args": {"bot_name": bot_name}})
         assert resp.status_code == 200

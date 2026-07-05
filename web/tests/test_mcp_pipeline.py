@@ -14,7 +14,7 @@ class TestPrepareNextGen:
 
         fake_bots = tmp_path / "bots"
         fake_bots.mkdir()
-        src = fake_bots / "claude_v99"
+        src = fake_bots / "national_v99"
         src.mkdir()
         (src / "main.py").write_text("x = 1\n")
         (src / ".completed").touch()
@@ -46,7 +46,7 @@ class TestPrepareNextGen:
         assert result["prepared"] is True
         assert result["source_v"] == 99
         assert result["next_v"] == 100
-        assert (fake_bots / "claude_v100").exists()
+        assert (fake_bots / "national_v100").exists()
 
     def test_missing_source(self, client):
         resp = client.post("/api/control/tool/prepare_next_gen",
@@ -61,7 +61,7 @@ class TestPrepareNextGen:
 
         fake_bots = tmp_path / "bots"
         fake_bots.mkdir()
-        src = fake_bots / "claude_v254"
+        src = fake_bots / "national_v254"
         src.mkdir()
         (src / "main.py").write_text("x = 1\n")
         (src / ".completed").touch()
@@ -90,8 +90,8 @@ class TestPrepareNextGen:
         assert result["prepared"] is True
         assert result["next_v"] == 265
         assert result["source_v"] == 254
-        assert (fake_bots / "claude_v265").exists()
-        assert not (fake_bots / "claude_v255").exists()
+        assert (fake_bots / "national_v265").exists()
+        assert not (fake_bots / "national_v255").exists()
 
     def test_prepare_refuses_active_crossover_checkpoint(self, client, tmp_path, monkeypatch):
         import evolution_infra
@@ -125,7 +125,7 @@ class TestPrepareNextGen:
         assert result["blocked"] is True
         assert result["next_tool"] == "run_crossover"
         assert result["required_args"]["version"] == 266
-        assert not (fake_bots / "claude_v266").exists()
+        assert not (fake_bots / "national_v266").exists()
 
 
 class TestRunQualityGates:

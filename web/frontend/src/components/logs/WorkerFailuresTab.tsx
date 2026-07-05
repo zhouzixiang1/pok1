@@ -42,7 +42,7 @@ function FailureCard({ failure }: { failure: WorkerFailure }) {
           {failure.error.slice(0, 150)}
         </p>
         {expanded && (
-          <pre className="mt-2 text-[10px] font-mono text-gray-500 dark:text-gray-400 whitespace-pre-wrap bg-gray-100 dark:bg-surface-0 rounded p-2 max-h-48 overflow-y-auto">
+          <pre className="mt-2 text-[10px] font-mono text-gray-500 dark:text-gray-400 whitespace-pre-wrap break-words bg-gray-100 dark:bg-surface-0 rounded p-2 max-h-48 overflow-y-auto">
             {failure.error}
           </pre>
         )}

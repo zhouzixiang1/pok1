@@ -5,7 +5,7 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -138,11 +138,29 @@ app.include_router(prompts_router)
 app.include_router(data_stream_router)
 app.include_router(scheduler_router)
 
+def _install_static_spa_routes(target_app: FastAPI, static_dir: Path) -> None:
+    """Serve the built React app without swallowing unknown API/static paths."""
+    if not static_dir.is_dir():
+        return
+
+    assets_dir = static_dir / "assets"
+    if assets_dir.is_dir():
+        target_app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    @target_app.get("/favicon.png")
+    async def serve_favicon():
+        favicon = static_dir / "favicon.png"
+        if not favicon.exists():
+            raise HTTPException(status_code=404, detail="Not Found")
+        return FileResponse(favicon, media_type="image/png")
+
+    @target_app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        if full_path.startswith("api/") or Path(full_path).suffix:
+            raise HTTPException(status_code=404, detail="Not Found")
+        return FileResponse(static_dir / "index.html")
+
+
 # ── Static files (production build) ──
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-if STATIC_DIR.is_dir():
-    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
-
-    @app.get("/{full_path:path}")
-    async def serve_spa(full_path: str):
-        return FileResponse(STATIC_DIR / "index.html")
+_install_static_spa_routes(app, STATIC_DIR)

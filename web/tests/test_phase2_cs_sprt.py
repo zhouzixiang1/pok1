@@ -537,7 +537,7 @@ def patch_checkpoint_file(monkeypatch, tmp_path):
 def fake_bots(tmp_path, monkeypatch):
     bots_dir = tmp_path / "bots"
     bots_dir.mkdir()
-    for name in ("claude_v99", "claude_v98", "claude_v50"):
+    for name in ("national_v99", "national_v98", "national_v50"):
         d = bots_dir / name
         d.mkdir()
         (d / "main.py").write_text("# fake bot")
@@ -548,8 +548,8 @@ def fake_bots(tmp_path, monkeypatch):
 @pytest.fixture
 def fake_opponents(monkeypatch):
     ops = [
-        {"name": "claude_v98", "reason": "parent"},
-        {"name": "claude_v50", "reason": "top_opponent"},
+        {"name": "national_v98", "reason": "parent"},
+        {"name": "national_v50", "reason": "top_opponent"},
     ]
     monkeypatch.setattr("tool_eval._select_precommit_opponents", lambda _v, _sv: ops)
     return ops
@@ -591,7 +591,7 @@ class TestPrecommitGeneratorEarlyStop:
         monkeypatch.setattr(tool_eval, "PRECOMMIT_SEQUENTIAL_EARLY_STOP", False)
         # Patch mirror_battle to return the 4-tuple shape (parent loses 2-6).
         def fake_mirror(a, b, n_games=1, verbose=False, save_log=False):
-            if "claude_v98" in b:
+            if "national_v98" in b:
                 return ([2, 6], 0, n_games, None)
             return ([3, 3], 0, n_games, None)
         _battle_module = sys.modules["engine.battle"]
@@ -602,7 +602,7 @@ class TestPrecommitGeneratorEarlyStop:
         result = await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 8})
         data = _decode(result)
         assert data["passed"] is False
-        parent_matchup = next(m for m in data["matchups"] if m["opponent"] == "claude_v98")
+        parent_matchup = next(m for m in data["matchups"] if m["opponent"] == "national_v98")
         # Flag OFF path never sets cs_meta.
         assert parent_matchup.get("cs_meta") is None
         # lost_to_parent blocker present (regression parity).
@@ -630,7 +630,7 @@ class TestPrecommitGeneratorEarlyStop:
         result = await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 8})
         data = _decode(result)
         # Parent matchup W/L/D derived from stream signs.
-        parent = next(m for m in data["matchups"] if m["opponent"] == "claude_v98")
+        parent = next(m for m in data["matchups"] if m["opponent"] == "national_v98")
         assert parent["wins"] == 3     # 200, 500, 700
         assert parent["losses"] == 3   # -100, -300, -50
         assert parent["draws"] == 2    # 0, 0
@@ -661,7 +661,7 @@ class TestPrecommitGeneratorEarlyStop:
         parent_yielded = {"n": 0}
         def fake_gen(a, b, *a2, **k):
             # Only the parent matchup early-stops; count its yields specifically.
-            counter = parent_yielded if "claude_v98" in b else None
+            counter = parent_yielded if "national_v98" in b else None
             for x in full:
                 if counter is not None:
                     counter["n"] += 1
@@ -677,7 +677,7 @@ class TestPrecommitGeneratorEarlyStop:
         result = await run_precommit_eval({"version": 99, "source_v": 98, "n_games": 16})
         data = _decode(result)
         assert data["passed"] is False
-        parent = next(m for m in data["matchups"] if m["opponent"] == "claude_v98")
+        parent = next(m for m in data["matchups"] if m["opponent"] == "national_v98")
         meta = parent.get("cs_meta")
         assert meta is not None
         assert meta["decision"] == "DECIDE_REJECT"
@@ -690,7 +690,7 @@ class TestPrecommitGeneratorEarlyStop:
         assert any(b.get("reason") == "lost_to_parent" for b in data["blockers"])
         # And early-stop is NOT flagged incomplete.
         assert not any(
-            b.get("reason") == "incomplete_or_timeout" and b.get("opponent") == "claude_v98"
+            b.get("reason") == "incomplete_or_timeout" and b.get("opponent") == "national_v98"
             for b in data["blockers"]
         )
 
@@ -716,7 +716,7 @@ class TestPrecommitGeneratorEarlyStop:
         data = _decode(result)
         parent_blockers = [
             b for b in data["blockers"]
-            if b.get("opponent") == "claude_v98" or "claude_v98" in str(b)
+            if b.get("opponent") == "national_v98" or "national_v98" in str(b)
         ]
         # No incomplete blocker on the parent matchup.
         assert not any(b.get("reason") == "incomplete_or_timeout" for b in parent_blockers)
@@ -730,7 +730,7 @@ class TestPrecommitGeneratorEarlyStop:
         _battle_module = sys.modules["engine.battle"]
         # Both opponents yield mild streams; aggregate must not regress.
         def fake_gen(a, b, *a2, **k):
-            if "claude_v98" in b:
+            if "national_v98" in b:
                 for x in [100, -100, 100, -100, 100, -100, 100, -100]:
                     yield x
             else:

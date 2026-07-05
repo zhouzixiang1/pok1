@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
 import statistics
 import subprocess
@@ -328,6 +328,7 @@ def main() -> None:
         "labels": list(LABELS),
         "shards": args.shards,
         "workers": args.workers,
+        "executor": "process_pool" if args.workers > 1 else "serial",
         "games_per_shard": args.games_per_shard,
         "max_rows_per_shard": args.max_rows_per_shard,
         "max_scan_decisions": args.max_scan_decisions,
@@ -373,7 +374,7 @@ def main() -> None:
     else:
         print(f"running {args.shards} multi-action shards with {args.workers} workers")
         shard_entries = [None] * args.shards
-        with ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
+        with ProcessPoolExecutor(max_workers=max(1, args.workers)) as executor:
             futures = {
                 executor.submit(_run_shard, args, shard_idx, shard_output): shard_idx
                 for shard_idx, shard_output in enumerate(shard_outputs)

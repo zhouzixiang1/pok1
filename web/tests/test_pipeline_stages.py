@@ -202,6 +202,7 @@ class TestCriticEvidenceToExperiencePool:
         pool_file.write_text("## RECENT_LESSONS\n- old lesson\n## POSTFLOP_STRATEGY\n")
         monkeypatch.setattr(evolution_infra, "EXPERIENCE_FILE", pool_file)
         monkeypatch.setattr(tool_commit, "EXPERIENCE_FILE", pool_file)
+        monkeypatch.setattr(tool_commit, "git_has_tag", lambda _v: True)
 
         tool_commit._append_experience_updates(
             version=42,
@@ -478,12 +479,12 @@ class TestStagnationConfidenceStrategy:
         monkeypatch.setattr(generation_scheduler, "_detect_source_oscillation", lambda *a, **k: None)
         monkeypatch.setattr(generation_scheduler, "_log_source_selection_decision", lambda *a, **k: None)
         monkeypatch.setattr(tool_helpers, "load_selection_scores", lambda: {
-            "claude_v206": 0.46,
-            "claude_v237": 0.52,
+            "national_v206": 0.46,
+            "national_v237": 0.52,
         })
         ratings = {
-            "claude_v206": self._Rating(1550.0),
-            "claude_v237": self._Rating(1400.0),
+            "national_v206": self._Rating(1550.0),
+            "national_v237": self._Rating(1400.0),
         }
 
         strategy, source_v, parents = generation_scheduler._decide_strategy(
@@ -511,36 +512,36 @@ class TestStagnationConfidenceStrategy:
         monkeypatch.setattr(generation_scheduler, "_log_source_selection_decision", lambda *a, **k: None)
         monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *a, **k: None)
         monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates_with_coverage", lambda: {
-            "claude_v206": {
+            "national_v206": {
                 "selection_score": 0.3886,
                 "leaderboard_score": 0.3886,
                 "strength_confidence": "medium",
             },
-            "claude_v235": {
+            "national_v235": {
                 "selection_score": 0.4304,
                 "leaderboard_score": 0.4304,
                 "strength_confidence": "medium",
             },
-            "claude_v187": {
+            "national_v187": {
                 "selection_score": 0.5045,
                 "leaderboard_score": 0.5045,
                 "strength_confidence": "high",
             },
-            "claude_v237": {
+            "national_v237": {
                 "selection_score": 0.4891,
                 "leaderboard_score": 0.4891,
                 "strength_confidence": "high",
             },
-            "claude_v238": {
+            "national_v238": {
                 "selection_score": 0.0700,
                 "leaderboard_score": 0.1000,
                 "strength_confidence": "low",
             },
         })
         ratings = {
-            "claude_v206": self._Rating(1178.9),
-            "claude_v235": self._Rating(1225.7),
-            "claude_v237": self._Rating(1443.7),
+            "national_v206": self._Rating(1178.9),
+            "national_v235": self._Rating(1225.7),
+            "national_v237": self._Rating(1443.7),
         }
 
         strategy, source_v, parents = generation_scheduler._decide_strategy(

@@ -78,7 +78,7 @@ function EventCard({ event }: { event: SystemEvent }) {
           </div>
         )}
         {expanded && event.data && Object.keys(event.data).length > 0 && (
-          <pre className="mt-2 text-[10px] font-mono text-gray-500 dark:text-gray-400 whitespace-pre-wrap bg-gray-100 dark:bg-surface-0 rounded p-2 max-h-48 overflow-y-auto">
+          <pre className="mt-2 text-[10px] font-mono text-gray-500 dark:text-gray-400 whitespace-pre-wrap break-words bg-gray-100 dark:bg-surface-0 rounded p-2 max-h-48 overflow-y-auto">
             {JSON.stringify(event.data, null, 2)}
           </pre>
         )}

@@ -389,11 +389,14 @@ def launch_qd_eval(bot_v: int, source_v: int, *, k: int = 3, n_games: int = 8,
                         archive["niches"] = niches
                         archive["cells"] = niches
                         bot_niches = archive.get("bot_niches")
-                        if isinstance(bot_niches, dict) and isinstance(bot_niches.get(bot_name), dict):
-                            bot_niches[bot_name]["fitness_median"] = result["fitness_median"]
-                            bot_niches[bot_name]["fitness_samples"] = result["fitness_samples"]
-                            bot_niches[bot_name]["eval_mode"] = "k3"
-                            bot_niches[bot_name]["fitness"] = result["fitness_median"]
+                        if (
+                            isinstance(bot_niches, dict)
+                            and isinstance(bot_niches.get(archive_bot_name), dict)
+                        ):
+                            bot_niches[archive_bot_name]["fitness_median"] = result["fitness_median"]
+                            bot_niches[archive_bot_name]["fitness_samples"] = result["fitness_samples"]
+                            bot_niches[archive_bot_name]["eval_mode"] = "k3"
+                            bot_niches[archive_bot_name]["fitness"] = result["fitness_median"]
                         write_locked_json(BEHAVIOR_ARCHIVE_FILE, archive)
             except Exception as e:
                 log.warning("QD eval v%s archive merge failed: %s", _bot_v, e)

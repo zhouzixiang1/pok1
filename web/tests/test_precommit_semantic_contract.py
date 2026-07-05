@@ -19,14 +19,14 @@ def _patch_precommit_harness(monkeypatch, tmp_path, mirror_result):
     monkeypatch.setenv("POK_WORKFLOW_PROFILE", "default")
 
     bot_root = tmp_path / "bots"
-    for name in ("claude_v99", "claude_v98"):
+    for name in ("national_v99", "national_v98"):
         bot_dir = bot_root / name
         bot_dir.mkdir(parents=True)
         (bot_dir / "main.py").write_text("# fake bot\n", encoding="utf-8")
 
     monkeypatch.setattr("tool_eval._bot_main", lambda name: bot_root / name / "main.py")
     monkeypatch.setattr("tool_eval._select_precommit_opponents", lambda _v, _sv: [
-        {"name": "claude_v98", "reason": "parent"}
+        {"name": "national_v98", "reason": "parent"}
     ])
     monkeypatch.setattr("tool_eval.is_daemon_scheduler_capable", lambda: False)
     monkeypatch.setattr("tool_eval._matching_checkpoint", lambda _v, _sv: {
@@ -90,7 +90,7 @@ async def test_semantic_block_with_high_confidence_evidence_blocks(monkeypatch, 
             "recommended_action": "block",
             "confidence": "high",
             "regression_semantics": "clear_regression",
-            "block_evidence": ["claude_v98 river all-in loss field: net_chips=-900"],
+            "block_evidence": ["national_v98 river all-in loss field: net_chips=-900"],
         }
 
     monkeypatch.setattr(audit_agents, "_run_precommit_semantic", _supported_block)
@@ -101,4 +101,4 @@ async def test_semantic_block_with_high_confidence_evidence_blocks(monkeypatch, 
     assert data["passed"] is False
     semantic = [b for b in data["blockers"] if b.get("reason") == "semantic_regression"]
     assert semantic
-    assert semantic[0]["evidence"] == ["claude_v98 river all-in loss field: net_chips=-900"]
+    assert semantic[0]["evidence"] == ["national_v98 river all-in loss field: net_chips=-900"]

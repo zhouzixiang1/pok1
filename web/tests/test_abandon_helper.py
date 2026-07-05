@@ -31,7 +31,7 @@ class TestDoAbandonGeneration:
         cleared = []
         monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", lambda: cleared.append(True))
 
-        next_dir = tmp_path / "claude_v100"
+        next_dir = tmp_path / "national_v100"
         next_dir.mkdir()
         (next_dir / "main.py").write_text("x=1")
         monkeypatch.setattr(tbm, "get_bot_dir", lambda v: next_dir)
@@ -42,7 +42,7 @@ class TestDoAbandonGeneration:
 
         assert result["abandoned"] is True
         assert result["cleared_checkpoint"] is True
-        assert result["removed_directory"] == "claude_v100"
+        assert result["removed_directory"] == "national_v100"
         assert result["reason"] == "master_exhausted (4 fails)"
         assert cleared == [True]          # clear_pipeline_checkpoint called
         assert not next_dir.exists()      # incomplete dir removed
@@ -67,7 +67,7 @@ class TestDoAbandonGeneration:
             ) + 1,
         )
 
-        next_dir = tmp_path / "claude_v101"
+        next_dir = tmp_path / "national_v101"
         next_dir.mkdir()
         (next_dir / "main.py").write_text("x=1")
         monkeypatch.setattr(tbm, "get_bot_dir", lambda v: next_dir)
@@ -78,7 +78,7 @@ class TestDoAbandonGeneration:
 
         assert result["abandoned"] is True
         assert result["cleared_checkpoint"] is False
-        assert result["removed_directory"] == "claude_v101"
+        assert result["removed_directory"] == "national_v101"
         assert result["abandoned_v"] == 101
         assert not next_dir.exists()
 
@@ -92,7 +92,7 @@ class TestDoAbandonGeneration:
         monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", fake_state)
         monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", lambda: None)
 
-        next_dir = tmp_path / "claude_v100"
+        next_dir = tmp_path / "national_v100"
         next_dir.mkdir()
         (next_dir / "main.py").write_text("x=1")
         (next_dir / ".completed").touch()  # COMPLETED — must be preserved
@@ -118,7 +118,7 @@ class TestDoAbandonGeneration:
         monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", fake_state)
         monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", lambda: None)
 
-        next_dir = tmp_path / "claude_v100"
+        next_dir = tmp_path / "national_v100"
         next_dir.mkdir()
         (next_dir / "main.py").write_text("x=1")
         monkeypatch.setattr(tbm, "get_bot_dir", lambda v: next_dir)
@@ -143,7 +143,7 @@ class TestDoAbandonGeneration:
         cleared = []
         monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", lambda: cleared.append(True))
 
-        next_dir = tmp_path / "claude_v100"
+        next_dir = tmp_path / "national_v100"
         next_dir.mkdir()
         (next_dir / "main.py").write_text("x=1")
         monkeypatch.setattr(tbm, "get_bot_dir", lambda v: next_dir)
@@ -180,7 +180,7 @@ class TestDoAbandonGeneration:
         cleared = []
         monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", lambda: cleared.append(True))
 
-        next_dir = tmp_path / "claude_v100"
+        next_dir = tmp_path / "national_v100"
         next_dir.mkdir()
         (next_dir / "main.py").write_text("x=1")
         monkeypatch.setattr(tbm, "get_bot_dir", lambda v: next_dir)
@@ -191,6 +191,6 @@ class TestDoAbandonGeneration:
 
         assert result["abandoned"] is True
         assert result["cleared_checkpoint"] is True
-        assert result["removed_directory"] == "claude_v100"
+        assert result["removed_directory"] == "national_v100"
         assert cleared == [True]
         assert not next_dir.exists()

@@ -43,8 +43,11 @@ function DaemonToggle() {
     <button
       onClick={handleToggle}
       disabled={toggling}
+      role="switch"
+      aria-checked={daemon.daemon_enabled}
+      aria-label={daemon.daemon_enabled ? "停止评分守护进程" : "启动评分守护进程"}
       className={cn(
-        "relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none disabled:opacity-50",
+        "relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white disabled:opacity-50 dark:focus-visible:ring-offset-surface-1",
         daemon.daemon_enabled ? "bg-success-500" : "bg-gray-300 dark:bg-gray-600",
       )}
     >
