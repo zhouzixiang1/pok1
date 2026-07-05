@@ -978,6 +978,94 @@ def test_evaluation_contract_allows_noncritical_web_core_head_drift(monkeypatch)
     assert payload["head_external_paths"] == ["web/core/replay_spotlight.py"]
 
 
+def test_evaluation_contract_allows_observability_and_launcher_head_drift(monkeypatch):
+    import evaluation_contract
+
+    non_contract_paths = [
+        "sever/main.py",
+        "web/main.py",
+        "web/core/api_concurrency.py",
+        "web/core/event_bus.py",
+        "web/core/observe_policy.py",
+        "web/core/rate_limiter.py",
+        "web/core/system_log.py",
+        "web/core/web_ui.py",
+    ]
+    monkeypatch.setattr(
+        evaluation_contract,
+        "changed_paths_between_heads",
+        lambda *_args, **_kwargs: list(non_contract_paths),
+    )
+
+    allowed, payload = evaluation_contract.evaluate_head_drift(
+        Path.cwd(),
+        "old123",
+        "new456",
+        candidate_v=300,
+        source_v=299,
+    )
+
+    assert allowed is True
+    assert payload["evaluation_contract_unchanged"] is True
+    assert payload["head_contract_paths"] == []
+    assert payload["head_external_paths"] == sorted(non_contract_paths)
+
+
+def test_evaluation_contract_blocks_gate_and_prompt_head_drift(monkeypatch):
+    import evaluation_contract
+
+    contract_paths = [
+        "web/core/eval_stats.py",
+        "web/core/national_native.py",
+        "web/core/prompts/worker_prompt.md",
+        "web/core/tool_eval.py",
+        "web/core/worker_boundary.py",
+    ]
+    monkeypatch.setattr(
+        evaluation_contract,
+        "changed_paths_between_heads",
+        lambda *_args, **_kwargs: list(contract_paths),
+    )
+
+    allowed, payload = evaluation_contract.evaluate_head_drift(
+        Path.cwd(),
+        "old123",
+        "new456",
+        candidate_v=300,
+        source_v=299,
+    )
+
+    assert allowed is False
+    assert payload["evaluation_contract_unchanged"] is False
+    assert payload["head_contract_paths"] == sorted(contract_paths)
+    assert payload["head_external_paths"] == []
+
+
+def test_worktree_scope_keeps_observability_nonblocking_but_gate_logic_blocking():
+    import evolution_scope
+
+    scope = evolution_scope.classify_status_entries(
+        [
+            " M web/core/event_bus.py",
+            " M web/core/system_log.py",
+            " M web/core/web_ui.py",
+            " M web/core/eval_stats.py",
+            " M web/core/worker_boundary.py",
+        ],
+        candidate_v=300,
+    )
+
+    assert " M web/core/eval_stats.py" in scope["critical_entries"]
+    assert " M web/core/worker_boundary.py" in scope["critical_entries"]
+    assert " M web/core/event_bus.py" in scope["external_entries"]
+    assert " M web/core/system_log.py" in scope["external_entries"]
+    assert " M web/core/web_ui.py" in scope["external_entries"]
+    assert scope["blocking_entries"] == [
+        " M web/core/eval_stats.py",
+        " M web/core/worker_boundary.py",
+    ]
+
+
 def test_evaluation_contract_hash_ignores_non_contract_national_docs(tmp_path, monkeypatch):
     import evaluation_contract
 
