@@ -707,6 +707,7 @@ async def _run_tcp_server_with_processes(
     if run_labels[0] == run_labels[1]:
         run_labels = [f"{run_labels[0]}_A", f"{run_labels[1]}_B"]
     procs: list[subprocess.Popen] = []
+    proc_streams = []
     stdout_stderr: dict[str, dict[str, str | int | None]] = {}
     engine = None
     run_error = ""
@@ -747,12 +748,15 @@ async def _run_tcp_server_with_processes(
                     "--name",
                     label,
                 ]
+            stdout_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+            stderr_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+            proc_streams.append((stdout_file, stderr_file))
             procs.append(subprocess.Popen(
                 cmd,
                 cwd=str(spec.path),
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=stdout_file,
+                stderr=stderr_file,
                 text=True,
                 env=env,
             ))
@@ -792,15 +796,25 @@ async def _run_tcp_server_with_processes(
             await asyncio.wait_for(server.wait_closed(), timeout=process_drain_timeout)
         except asyncio.TimeoutError:
             pass
-        for label, proc in zip(run_labels, procs):
+        for label, proc, streams in zip(run_labels, procs, proc_streams):
+            stdout_file, stderr_file = streams
+            stderr_note = ""
             try:
-                out, err = proc.communicate(timeout=process_drain_timeout)
+                proc.wait(timeout=process_drain_timeout)
             except subprocess.TimeoutExpired:
                 proc.kill()
                 try:
-                    out, err = proc.communicate(timeout=process_drain_timeout)
+                    proc.wait(timeout=process_drain_timeout)
                 except subprocess.TimeoutExpired:
-                    out, err = "", "process did not exit after kill"
+                    stderr_note = "process did not exit after kill"
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            out = stdout_file.read() or ""
+            err = stderr_file.read() or ""
+            if stderr_note:
+                err = (err + "\n" + stderr_note).strip()
+            stdout_file.close()
+            stderr_file.close()
             stdout_stderr[label] = {
                 "returncode": proc.returncode,
                 "stdout": out or "",
