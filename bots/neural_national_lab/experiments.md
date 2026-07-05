@@ -767,3 +767,47 @@
   these tests remains the v082/v17 rule baseline. The next useful experiment is
   larger explicit counterfactual data including `.evolution_pok` rating leaders
   and held-out opponent groups, not another scalar threshold sweep on d77.
+
+## Native TCP Round 3 Notes
+
+- Re-read `.evolution_pok` current conservative-Glicko ratings. The active
+  completed leader pool had shifted to `national_v1`, `national_v7`,
+  `national_v15`, `national_v2`, and `national_v12`; unfinished
+  `national_v24` was ignored.
+- Collected a leader-enriched native counterfactual batch with v085 as the
+  data-contract bot and protocol-native opponents only. The run
+  `native_tcp_cf_shards_v085_evolution_leaders_fc_s4_h14_seed2026071710.json`
+  was interrupted after slow shards, then merged with `--merge-only`: 20/32
+  shard files landed, producing 54 rows, 50 ok rows, and 87 fold/call targets.
+  The useful evidence was mixed: v1 and v2 were significantly negative, v3 was
+  significantly positive, and v7/v15 were high-variance.
+- Fixed the training-data contract to preserve `opponent`, `opponent_path`,
+  `source_report`, `shard_seed_base`, and rule-label metadata in JSONL rows.
+  This does not change features, but it makes gate scans and held-out analysis
+  auditable by opponent.
+- Added `scan_multi_action_value_gate.py`, a stdlib offline scanner that
+  applies the same `label_pred >= threshold` and
+  `label_pred >= rule_pred + threshold` shape used by runtime value gates.
+- Rebuilt two d128 datasets. The important one is
+  `native_tcp_value_v085_profile_fc_leaders_d128_context_rulebase_clip4000.jsonl`;
+  unlike earlier d77 training, it keeps the `raise_pot=0` target in the loss so
+  runtime call-vs-rule margins compare against a supervised baseline.
+- Trained rulebase h64/h32 heads on CUDA. h64 had lower validation MAE
+  (`0.1287`) but weak best-label accuracy (`0.4231`); h32 had higher MAE
+  (`0.1794`) but better best-label accuracy (`0.6154`). Offline gate scan made
+  h64 look best at threshold `0.35` or higher, selecting 13 positive and 0
+  negative call targets at `0.35`.
+- `v093_national_v17_native_context_rulebase_h64_call_tcp` wired the h64 head
+  with a call-only threshold/margin of `0.35`. On current `.evolution_pok`
+  Glicko top5 seed `2026071800`, v093 scored `+132227` chips over 3500 hands
+  but v082 scored `+192047`; the paired diff was `-59820`, with 22 negative
+  rows and 3 positive rows.
+- `v094_national_v17_native_context_rulebase_h64_call_t075_tcp` raised the
+  threshold/margin to `0.75`. It improved only slightly: `+138928` absolute
+  chips but `-53119` versus v082, with 19 negative rows, 6 zero rows, and no
+  positive rows. This rejects scalar threshold tightening as a sufficient fix.
+- Current status: rulebase supervision fixed a real modeling flaw, but the
+  native neural call gate still loses to the v082/v17 rule baseline on current
+  rating leaders. The next serious path needs either richer opponent/range
+  features or a larger held-out counterfactual dataset; the h64 d128 head is
+  not a promotion candidate.

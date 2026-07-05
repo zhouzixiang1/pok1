@@ -158,6 +158,25 @@ Current native TCP evidence, using paired reports where available:
   so the harmful branch is already in the early window. This is evidence that
   the current opponent profile is not sufficient to distinguish the positive
   v10/v18/v3 bucket from the negative v1/v2 bucket.
+- The next leader-enriched batch used `.evolution_pok` conservative-Glicko
+  leaders `national_v1`, `national_v7`, `national_v15`, `national_v2`, and
+  `national_v12`, plus v3/v10/v18 probes. The partial shard merge
+  `native_tcp_cf_shards_v085_evolution_leaders_fc_s4_h14_seed2026071710.json`
+  landed 54 rows / 87 targets from 20 completed shards. It found significant
+  negative call/fold buckets for v1 and v2, and a significant positive bucket
+  for v3.
+- `build_multi_action_value_data.py` now preserves opponent metadata in JSONL
+  rows, and `scan_multi_action_value_gate.py` records runtime-style threshold
+  scans. The rulebase d128 dataset keeps the `raise_pot=0` target supervised so
+  call-vs-rule margins are not compared against an unconstrained output.
+- `v093_national_v17_native_context_rulebase_h64_call_tcp` uses the new h64
+  rulebase head with a `0.35` call-only threshold. On current
+  `.evolution_pok` Glicko top5 seed `2026071800`, it was absolute positive
+  (`+132227` chips / 3500 hands) but still worse than v082 by `-59820`.
+- `v094_national_v17_native_context_rulebase_h64_call_t075_tcp` raised the
+  same threshold to `0.75`. It reduced the loss only slightly: `+138928`
+  absolute chips, but `-53119` versus v082, with no positive diff rows. Higher
+  scalar thresholds are therefore not a strength path for this head.
 
 This is not a promotion-grade strength breakthrough. The current evidence says
 the old v254/Botzone-trained action advice does not transfer to native national

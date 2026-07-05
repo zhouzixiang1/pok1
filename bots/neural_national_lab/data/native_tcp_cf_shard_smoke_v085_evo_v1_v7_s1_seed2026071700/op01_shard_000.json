@@ -1,0 +1,496 @@
+{
+  "execution_mode": "native_tcp_counterfactual",
+  "candidate_path": "/home/zzx/project/pok/bots/neural_national_lab/versions/v085_national_v17_profile_trace_tcp",
+  "opponent_path": "/home/zzx/project/pok/.evolution_pok/bots/national_v7",
+  "hands": 12,
+  "deck_seed_base": 2026072700,
+  "bot_seed_base": 202607270000,
+  "filters": {
+    "stage": "preflop",
+    "min_hand": 2,
+    "min_opponent_actions": 1,
+    "max_opponent_actions": 0,
+    "max_opponent_raise_rate": null,
+    "rule_labels": [
+      "raise_pot"
+    ],
+    "alternative_labels": [
+      "fold",
+      "call"
+    ],
+    "initial_sb_only": false,
+    "initial_sb_max_to_call": 60.0
+  },
+  "trace_decisions": 19,
+  "baseline_net_chips": 19587,
+  "baseline_passed_compliance": true,
+  "baseline_issues": [],
+  "rows": [
+    {
+      "status": "partial",
+      "opponent": "national_v7",
+      "deck_seed_base": 2026072700,
+      "bot_seed_base": 202607270000,
+      "hand": 3,
+      "stage": "preflop",
+      "hand_decision_index": 0,
+      "decision_serial": 6,
+      "rule_final": 342,
+      "rule_label_id": 3,
+      "rule_label": "raise_pot",
+      "rule_value": 20000,
+      "state_features": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        0.5,
+        1.0,
+        0.0,
+        0.6849999999999999,
+        0.0075,
+        0.9975,
+        0.0025,
+        0.0025,
+        0.005,
+        0.25,
+        1.0,
+        0.9714285714285714,
+        0.5035875,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.05,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "opponent_profile_features": [
+        0.35,
+        0.175,
+        0.14285714285714285,
+        0.7142857142857143,
+        0.14285714285714285,
+        0.0,
+        0.0,
+        0.0,
+        0.1,
+        0.0,
+        0.25,
+        0.0
+      ],
+      "native_context_features": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        0.5,
+        1.0,
+        0.0,
+        0.6849999999999999,
+        0.0075,
+        0.9975,
+        0.0025,
+        0.0025,
+        0.005,
+        0.25,
+        1.0,
+        0.9714285714285714,
+        0.5035875,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.05,
+        0.0,
+        0.0,
+        1.0,
+        0.35,
+        0.175,
+        0.14285714285714285,
+        0.7142857142857143,
+        0.14285714285714285,
+        0.0,
+        0.0,
+        0.0,
+        0.1,
+        0.0,
+        0.25,
+        0.0
+      ],
+      "opponent_profile": {
+        "actions_total": 7,
+        "confidence": 0.35,
+        "actions_total_norm": 0.175,
+        "fold_rate": 0.14285714285714285,
+        "call_rate": 0.7142857142857143,
+        "check_rate": 0.14285714285714285,
+        "raise_rate": 0.0,
+        "allin_rate": 0.0,
+        "aggression": 0.0,
+        "preflop_actions_norm": 0.1,
+        "preflop_raise_rate": 0.0,
+        "postflop_actions_norm": 0.25,
+        "postflop_raise_rate": 0.0
+      },
+      "delta_vs_rule": [
+        -20050.0,
+        0.0,
+        null,
+        0.0,
+        null,
+        null
+      ],
+      "action_values": [
+        -50.0,
+        20000.0,
+        null,
+        20000.0,
+        null,
+        null
+      ],
+      "target_mask": [
+        1,
+        1,
+        0,
+        1,
+        0,
+        0
+      ],
+      "legal_mask": [
+        1,
+        1,
+        0,
+        1,
+        0,
+        0
+      ],
+      "features": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        0.5,
+        1.0,
+        0.0,
+        0.6849999999999999,
+        0.0075,
+        0.9975,
+        0.0025,
+        0.0025,
+        0.005,
+        0.25,
+        1.0,
+        0.9714285714285714,
+        0.5035875,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.05,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "targets": [
+        -20050.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "raw_targets": [
+        -20050.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "feature_set": "state",
+      "target": "delta_vs_rule",
+      "weight": 5.0,
+      "request": {
+        "num_players": 2,
+        "dealer_id": 0,
+        "my_id": 0,
+        "my_chips": 19950,
+        "my_cards": [
+          24,
+          48
+        ],
+        "public_cards": [],
+        "history": [],
+        "hand": 2,
+        "max_hand": 70,
+        "total_win_chips": [
+          287,
+          -287
+        ],
+        "total_win_games": [
+          1,
+          0
+        ],
+        "opponent_showdowns": [
+          {
+            "hand": 2,
+            "opponent_cards": [
+              14,
+              35
+            ],
+            "my_cards": [
+              9,
+              21
+            ],
+            "public_cards": [
+              29,
+              25,
+              24,
+              30,
+              43
+            ],
+            "history": [
+              {
+                "round": 0,
+                "player_id": 1,
+                "action": 0,
+                "action_type": "call",
+                "stage_bet": 100,
+                "chips_after": 19900,
+                "committed": 50
+              },
+              {
+                "round": 0,
+                "player_id": 0,
+                "action": 0,
+                "action_type": "check"
+              },
+              {
+                "round": 1,
+                "player_id": 0,
+                "action": 0,
+                "action_type": "check"
+              },
+              {
+                "round": 1,
+                "player_id": 1,
+                "action": 0,
+                "action_type": "call",
+                "stage_bet": 0,
+                "chips_after": 19900,
+                "committed": 0
+              },
+              {
+                "round": 2,
+                "player_id": 0,
+                "action": 140,
+                "action_type": "raise",
+                "stage_bet": 140,
+                "chips_after": 19760,
+                "committed": 140
+              },
+              {
+                "round": 2,
+                "player_id": 1,
+                "action": 0,
+                "action_type": "call",
+                "stage_bet": 140,
+                "chips_after": 19760,
+                "committed": 140
+              },
+              {
+                "round": 3,
+                "player_id": 0,
+                "action": 0,
+                "action_type": "check"
+              },
+              {
+                "round": 3,
+                "player_id": 1,
+                "action": 0,
+                "action_type": "call",
+                "stage_bet": 0,
+                "chips_after": 19760,
+                "committed": 0
+              }
+            ],
+            "earned": 0
+          }
+        ],
+        "opponent_profile": {
+          "actions_total": 7,
+          "confidence": 0.35,
+          "actions_total_norm": 0.175,
+          "fold_rate": 0.14285714285714285,
+          "call_rate": 0.7142857142857143,
+          "check_rate": 0.14285714285714285,
+          "raise_rate": 0.0,
+          "allin_rate": 0.0,
+          "aggression": 0.0,
+          "preflop_actions_norm": 0.1,
+          "preflop_raise_rate": 0.0,
+          "postflop_actions_norm": 0.25,
+          "postflop_raise_rate": 0.0
+        },
+        "opponent_chips": 19900,
+        "my_stage_bet": 50,
+        "opponent_stage_bet": 100,
+        "pot": 150,
+        "to_call": 50,
+        "opponent_allin": false,
+        "remaining_hands": 68
+      },
+      "state": {
+        "round": 0,
+        "round_bet": 100,
+        "round_raise": 100,
+        "judge_round_raise": 100,
+        "min_raise_action": 151,
+        "round_contrib": [
+          50,
+          100
+        ],
+        "player_bets": [
+          50,
+          100
+        ],
+        "stacks": [
+          19950,
+          19900
+        ],
+        "committed": [
+          50,
+          100
+        ],
+        "pot": 150,
+        "to_call": 50,
+        "opponent_allin": false,
+        "allin_call_amount": 50,
+        "my_round_bet": 50
+      },
+      "probes": [
+        {
+          "forced_action": -1,
+          "forced_label": "fold",
+          "forced_hand_earnings": -50,
+          "delta_vs_rule": -20050,
+          "status": "forced_issues",
+          "issues": [
+            "native_tcp_match_error=TimeoutError: ",
+            "v085_national_v17_profile_trace_tcp: timeouts=1",
+            "v085_national_v17_profile_trace_tcp: native_process_returncode=2"
+          ],
+          "illegal_actions": 0
+        },
+        {
+          "forced_action": 0,
+          "forced_label": "call",
+          "forced_hand_earnings": 20000,
+          "delta_vs_rule": 0,
+          "status": "ok",
+          "issues": [],
+          "illegal_actions": 0
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "rows": 1,
+    "target_samples": 2,
+    "mean_delta": -10025.0,
+    "median_delta": -10025.0,
+    "positive": 0,
+    "negative": 1,
+    "zero": 1,
+    "status_counts": {
+      "partial": 1
+    },
+    "by_label": {
+      "call": {
+        "samples": 1,
+        "mean_delta": 0.0,
+        "positive": 0,
+        "negative": 0,
+        "zero": 1
+      },
+      "fold": {
+        "samples": 1,
+        "mean_delta": -20050.0,
+        "positive": 0,
+        "negative": 1,
+        "zero": 0
+      }
+    }
+  }
+}
