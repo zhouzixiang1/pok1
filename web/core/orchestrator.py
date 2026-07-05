@@ -1261,6 +1261,12 @@ def _is_precommit_rework_circuit_breaker_result(data):
     return str(data.get("error") or "") == "PRECOMMIT_REWORK_CIRCUIT_BREAKER"
 
 
+def _is_crossover_incompatible_result(data):
+    if not isinstance(data, dict):
+        return False
+    return str(data.get("error") or "") == "CROSSOVER_INCOMPATIBLE"
+
+
 async def _try_deterministic_checkpoint_route(recovery, ui=None):
     """Execute safe checkpoint routes without asking the Orchestrator LLM again."""
     if not recovery or recovery.get("action") != "resume":
@@ -1389,6 +1395,32 @@ async def _try_deterministic_checkpoint_route(recovery, ui=None):
                         "stage": stage,
                         "result": data,
                         "abandon_result": abandon_result,
+                    },
+                )
+            except Exception:
+                pass
+            return abandoned
+
+        if next_tool == "run_crossover" and _is_crossover_incompatible_result(data):
+            abandoned = bool(data.get("abandoned"))
+            msg_abandon = (
+                f"crossover_incompatible reached for v{next_v}; "
+                f"{'abandoned generation' if abandoned else 'abandon did not complete'}."
+            )
+            if ui:
+                ui.log_history(f"[Recovery] {msg_abandon}", "warn" if abandoned else "error")
+            else:
+                log.warning(msg_abandon) if abandoned else log.error(msg_abandon)
+            try:
+                log_system_event(
+                    "pipeline.deterministic_route_abandoned",
+                    "warn" if abandoned else "error",
+                    msg_abandon,
+                    {
+                        "next_v": next_v,
+                        "source_v": source_v,
+                        "stage": stage,
+                        "result": data,
                     },
                 )
             except Exception:
