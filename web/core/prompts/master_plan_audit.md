@@ -32,7 +32,17 @@ Analyze the Master plan systematically:
 
 ## Direction Audit Result
 {direction_audit}
+
+## Stable H2H Snapshot Contract
+{h2h_snapshot_contract}
 </data>
+
+<h2h_verbatim_rule>
+When checking H2H citations, validate them only against the Stable H2H Snapshot
+above. The live `web/core/results/head_to_head.json` is updated by the rating
+daemon while this audit runs, so live-file drift after snapshot creation is not
+evidence that the Master fabricated or stale-cited H2H data.
+</h2h_verbatim_rule>
 
 <branch_from_semantics>
 ## Branch-From Identity (read before flagging data staleness)

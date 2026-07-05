@@ -132,6 +132,17 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         workflow_profile = None
         workflow_profile_text = "Workflow profile: default"
     line_budget_text = _line_budget_summary(source_v)
+    try:
+        from evidence_snapshot import ensure_generation_h2h_snapshot, h2h_snapshot_contract_text
+        h2h_snapshot = ensure_generation_h2h_snapshot(next_v)
+        h2h_data_file = h2h_snapshot.get("h2h_relpath", "web/core/results/head_to_head.json")
+        h2h_snapshot_contract = h2h_snapshot_contract_text(next_v)
+    except Exception:
+        h2h_data_file = "web/core/results/head_to_head.json"
+        h2h_snapshot_contract = (
+            "Stable H2H snapshot unavailable. Use live H2H only as fallback and "
+            "avoid brittle verbatim-count claims if the daemon is still writing."
+        )
 
     # Build eval round summary BEFORE substitute_template so it's included in one pass
     eval_round_summary = "No eval round data available yet."
@@ -157,6 +168,8 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         "battle_experience": battle_experience_trimmed,
         "exploitability_weaknesses": exploitability_trimmed,
         "research_proposals": research_trimmed,
+        "h2h_data_file": h2h_data_file,
+        "h2h_snapshot_contract": h2h_snapshot_contract,
     })
     master_ctx = (
         f"Current evolution: v{source_v} → v{next_v}\n"
@@ -164,9 +177,11 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         f"Target bot directory (workers edit/verify): {bot_relpath(next_v)}/\n"
         f"Ratings file: web/core/results/glicko_ratings.json\n"
         f"Rating history: web/core/results/rating_history.jsonl\n"
-        f"Head-to-Head data: web/core/results/head_to_head.json\n"
+        f"Head-to-Head data snapshot: {h2h_data_file}\n"
+        f"Live H2H file: web/core/results/head_to_head.json (background only; daemon may update it during planning)\n"
         f"Bot stats: web/core/results/bot_stats.json\n"
         f"Experience pool: web/core/experience_pool.md  ← READ THIS, not evolution_workspace/experience_pool.md\n"
+        f"\n{h2h_snapshot_contract}\n"
         f"\n{workflow_profile_text}\n"
         f"\n{frontier_trimmed}\n"
         f"\n{line_budget_text}\n"

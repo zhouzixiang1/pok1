@@ -6,8 +6,8 @@ You have Read and Bash tools. Use Read for local files, Bash for git commands. D
 
 <data_files>
 Read these files FIRST to understand current state:
-- `web/core/results/head_to_head.json` — H2H matrix for specific matchup strengths/weaknesses. Opponents with WR < 40% = weakness, > 60% = strength only when games and coverage are adequate.
-- `web/core/results/match_history.jsonl` — append-only match results; use it to sanity-check H2H coverage when `head_to_head.json` is sparse.
+- `{h2h_data_file}` — stable generation H2H snapshot for specific matchup strengths/weaknesses. Opponents with WR < 40% = weakness, > 60% = strength only when games and coverage are adequate.
+- `web/core/results/match_history.jsonl` — append-only match results; use it to sanity-check H2H coverage when the stable H2H snapshot is sparse.
 - `web/core/results/glicko_ratings.json` — Glicko-2 ratings and RD uncertainty. Conservative rating (`r - 2*rd`) discounts unreliable raw ratings.
 - `web/core/results/bot_stats.json` — Per-bot aggregate stats. Useful as a broad signal, but frequency-weighted by scheduler choices.
 - `web/core/results/rating_history.jsonl` — Performance snapshots over time
@@ -19,6 +19,10 @@ Read these files FIRST to understand current state:
 - `bots/national_v{next_v}/` — Target bot directory; workers must edit and verify this directory
 - `web/core/reference_bots/bot1/` … `bot6/` — 6 reference bots
 </data_files>
+
+<h2h_snapshot_contract>
+{h2h_snapshot_contract}
+</h2h_snapshot_contract>
 
 <task>
 1. Read H2H, match history, ratings, and stats; evaluate source strength by `leaderboard_score`/coverage/RD when available, and use per-opponent H2H for weakness diagnosis
