@@ -110,6 +110,10 @@ Practical takeaways for this repo:
   `--drop-label allin` better matches the v059 runtime action set, but
   best-label validation remains weak. Next data collection should actively seek
   nonzero noallin rows and stratify by opponent and board texture.
+- Dropping zero targets and clipping active noallin targets to `+/-1000`
+  validates the loss and metric contract, but it does not solve coverage. The
+  p088 active target set is still fold-heavy, and h16/h32 validation remains a
+  data-acquisition warning rather than promotion evidence.
 - Build a lightweight actor-learner loop before reaching for Ray: actor workers
   scan divergence windows, enumerate abstract legal actions, run
   counterfactual branches, and append reservoir-style JSONL shards; the learner

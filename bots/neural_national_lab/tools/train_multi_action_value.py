@@ -119,8 +119,9 @@ def main() -> None:
             denom = torch.clamp(mask.sum(), min=1.0)
             return float(((pred[rows] - y[rows]).abs() * mask).sum().item() / denom.item())
 
-        masked_pred = pred.masked_fill(legal_mask <= 0, -1e9)
-        masked_target = y.masked_fill(legal_mask <= 0, -1e9)
+        metric_mask = target_mask
+        masked_pred = pred.masked_fill(metric_mask <= 0, -1e9)
+        masked_target = y.masked_fill(metric_mask <= 0, -1e9)
         pred_best = masked_pred.argmax(dim=1)
         target_best = masked_target.argmax(dim=1)
         val_pred = pred[va]
@@ -142,6 +143,7 @@ def main() -> None:
             "avg_pred": float(pred.mean().item()),
             "target_mask_density": float(target_mask.mean().item()),
             "legal_mask_density": float(legal_mask.mean().item()),
+            "best_label_metric_mask": "target_mask",
             "device": str(device),
             "batch_size": batch_size,
             "seed": args.seed,
