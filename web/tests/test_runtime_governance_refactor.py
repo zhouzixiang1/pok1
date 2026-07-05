@@ -1554,6 +1554,97 @@ def test_write_pipeline_checkpoint_refreshes_baseline_on_rework(tmp_path, monkey
     assert state["repo_baseline"]["captured_stage"] == "repair_planned"
 
 
+def test_write_pipeline_checkpoint_refreshes_baseline_after_quality_gate(tmp_path, monkeypatch):
+    import evolution_infra
+    import repo_state
+
+    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", tmp_path / "pipeline_state.json")
+    snapshots = iter([
+        {
+            "branch": "main...origin/main",
+            "head": "old123",
+            "entry_count": 1,
+            "dirty_count": 0,
+            "untracked_count": 1,
+            "entries": ["?? bots/national_v300/"],
+            "truncated": False,
+        },
+        {
+            "branch": "main...origin/main",
+            "head": "new456",
+            "entry_count": 1,
+            "dirty_count": 0,
+            "untracked_count": 1,
+            "entries": ["?? bots/national_v300/"],
+            "truncated": False,
+        },
+    ])
+    monkeypatch.setattr(repo_state, "git_worktree_snapshot", lambda: next(snapshots))
+
+    assert evolution_infra.write_pipeline_checkpoint(300, 299, "workers_done") is True
+    assert evolution_infra.write_pipeline_checkpoint(
+        300,
+        299,
+        "quality_passed",
+        gate_results={"quality": {"all_passed": True}},
+    ) is True
+    state = evolution_infra.read_pipeline_checkpoint()
+
+    assert state["repo_baseline"]["head"] == "new456"
+    assert state["repo_baseline"]["captured_stage"] == "quality_passed"
+
+
+def test_write_pipeline_checkpoint_refreshes_baseline_after_precommit_gate(tmp_path, monkeypatch):
+    import evolution_infra
+    import repo_state
+
+    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", tmp_path / "pipeline_state.json")
+    snapshots = iter([
+        {
+            "branch": "main...origin/main",
+            "head": "old123",
+            "entry_count": 1,
+            "dirty_count": 0,
+            "untracked_count": 1,
+            "entries": ["?? bots/national_v300/"],
+            "truncated": False,
+        },
+        {
+            "branch": "main...origin/main",
+            "head": "new456",
+            "entry_count": 1,
+            "dirty_count": 0,
+            "untracked_count": 1,
+            "entries": ["?? bots/national_v300/"],
+            "truncated": False,
+        },
+    ])
+    monkeypatch.setattr(repo_state, "git_worktree_snapshot", lambda: next(snapshots))
+
+    assert evolution_infra.write_pipeline_checkpoint(
+        300,
+        299,
+        "critic_checked",
+        precommit_attempt=2,
+        gate_results={
+            "quality": {"all_passed": True},
+            "review": {"approved": True},
+            "critic": {"approved": True},
+        },
+    ) is True
+    assert evolution_infra.write_pipeline_checkpoint(
+        300,
+        299,
+        "verified",
+        gate_results={"precommit_eval": {"passed": True}},
+    ) is True
+    state = evolution_infra.read_pipeline_checkpoint()
+
+    assert state["repo_baseline"]["head"] == "new456"
+    assert state["repo_baseline"]["captured_stage"] == "verified"
+    assert state["precommit_attempt"] == 2
+
+
 def test_checkpoint_recovery_diagnostics_allows_workers_done_head_mismatch(tmp_path):
     import pipeline_recovery
 

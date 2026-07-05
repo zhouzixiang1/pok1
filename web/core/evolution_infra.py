@@ -355,6 +355,25 @@ def _capture_repo_baseline(stage, *, next_v=None, source_v=None, checkpoint=None
         }
 
 
+_REPO_BASELINE_VALIDATION_STAGES = frozenset({
+    "quality_failed",
+    "quality_passed",
+    "precommit_failed",
+    "verified",
+})
+
+
+def _stage_refreshes_repo_baseline(old_stage, new_stage) -> bool:
+    """Return True when a checkpoint stage proves the candidate on this HEAD.
+
+    HEAD-drift recovery can legitimately route a candidate through a hard gate
+    after infrastructure changes. Once that gate finishes, the persisted
+    baseline must move forward to the HEAD that actually ran the validation;
+    otherwise later recovery health checks keep comparing against stale code.
+    """
+    return old_stage != new_stage and new_stage in _REPO_BASELINE_VALIDATION_STAGES
+
+
 def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                reviewer_feedback="", generation_attempt=0,
                                gate_results=None, worker_failure_count=None,
@@ -520,8 +539,12 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         # AUTO-RESET precommit_attempt and timeout_extensions on true rework.
         # Any regression to a code-regeneration stage means this is new bot code,
         # so counters against the previous code snapshot must restart.
-        refresh_repo_baseline = is_rework_reset_transition(old_stage, stage)
-        if refresh_repo_baseline:
+        rework_resets_counters = is_rework_reset_transition(old_stage, stage)
+        refresh_repo_baseline = (
+            rework_resets_counters
+            or _stage_refreshes_repo_baseline(old_stage, stage)
+        )
+        if rework_resets_counters:
             existing_precommit_attempt = 0
             existing_timeout_extensions = 0
 
