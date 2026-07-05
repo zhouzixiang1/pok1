@@ -1,0 +1,559 @@
+{
+  "inputs": [
+    "bots/neural_national_lab/data/native_tcp_cf_shards_v085_evolution_leaders_fc_s4_h14_seed2026071710.json",
+    "bots/neural_national_lab/data/native_tcp_cf_shard_smoke_v085_evo_v1_v7_s1_seed2026071700.json",
+    "bots/neural_national_lab/data/native_tcp_cf_shards_v085_profile_fc_top5_s8_h16_seed2026071510.json",
+    "bots/neural_national_lab/data/native_tcp_cf_v085_profile_smoke_vs_v3_h6_seed2026071301.json",
+    "bots/neural_national_lab/data/native_tcp_cf_v085_profile_fc_vs_v3_h12_d4_seed2026071350.json",
+    "bots/neural_national_lab/data/native_tcp_cf_v085_profile_fc_vs_v9_h12_d4_seed2026071360.json",
+    "bots/neural_national_lab/data/native_tcp_cf_v085_profile_fc_vs_v17_h12_d4_seed2026071370.json",
+    "bots/neural_national_lab/data/native_tcp_cf_v085_profile_fc_vs_v18_h12_d4_seed2026071380.json"
+  ],
+  "feature_set": "native_context",
+  "target": "delta_vs_rule",
+  "require_full_vector": false,
+  "dropped_labels": [
+    "raise_half",
+    "raise_2pot",
+    "allin"
+  ],
+  "drop_zero_targets": false,
+  "clip_target": 4000.0,
+  "scanned_rows": 144,
+  "skipped_rows": 16,
+  "rows": 128,
+  "input_dim": 60,
+  "label_count": 6,
+  "target_samples": 326,
+  "target_mean": 19.44478527607362,
+  "target_median": 0.0,
+  "positive_targets": 58,
+  "zero_targets": 155,
+  "negative_targets": 113,
+  "off_menu_rule_rows": 0,
+  "best_label_counts": {},
+  "masked_best_label_counts": {
+    "call": 47,
+    "fold": 50,
+    "raise_pot": 31
+  },
+  "stage_counts": {
+    "preflop": 128
+  },
+  "source_counts": {
+    "bots/neural_national_lab/data/native_tcp_cf_shard_smoke_v085_evo_v1_v7_s1_seed2026071700.json": 1,
+    "bots/neural_national_lab/data/native_tcp_cf_shards_v085_evolution_leaders_fc_s4_h14_seed2026071710.json": 50,
+    "bots/neural_national_lab/data/native_tcp_cf_shards_v085_profile_fc_top5_s8_h16_seed2026071510.json": 59,
+    "bots/neural_national_lab/data/native_tcp_cf_v085_profile_fc_vs_v17_h12_d4_seed2026071370.json": 4,
+    "bots/neural_national_lab/data/native_tcp_cf_v085_profile_fc_vs_v18_h12_d4_seed2026071380.json": 4,
+    "bots/neural_national_lab/data/native_tcp_cf_v085_profile_fc_vs_v3_h12_d4_seed2026071350.json": 4,
+    "bots/neural_national_lab/data/native_tcp_cf_v085_profile_fc_vs_v9_h12_d4_seed2026071360.json": 4,
+    "bots/neural_national_lab/data/native_tcp_cf_v085_profile_smoke_vs_v3_h6_seed2026071301.json": 2
+  },
+  "target_samples_by_label": {
+    "fold": {
+      "samples": 113,
+      "mean": -43.75221238938053,
+      "median": -150.0,
+      "min": -4000.0,
+      "max": 4000.0,
+      "p10": -4000.0,
+      "p90": 4000.0
+    },
+    "call": {
+      "samples": 128,
+      "mean": 86.5859375,
+      "median": 0.0,
+      "min": -4000.0,
+      "max": 4000.0,
+      "p10": -588.0,
+      "p90": 734.0
+    },
+    "raise_half": {
+      "samples": 0,
+      "mean": 0.0,
+      "median": 0.0,
+      "min": null,
+      "max": null,
+      "p10": null,
+      "p90": null
+    },
+    "raise_pot": {
+      "samples": 85,
+      "mean": 2.3529411764705883,
+      "median": 0.0,
+      "min": 0.0,
+      "max": 200.0,
+      "p10": 0.0,
+      "p90": 0.0
+    },
+    "raise_2pot": {
+      "samples": 0,
+      "mean": 0.0,
+      "median": 0.0,
+      "min": null,
+      "max": null,
+      "p10": null,
+      "p90": null
+    },
+    "allin": {
+      "samples": 0,
+      "mean": 0.0,
+      "median": 0.0,
+      "min": null,
+      "max": null,
+      "p10": null,
+      "p90": null
+    }
+  },
+  "target_samples_by_source_label": {
+    "bots/neural_national_lab/data/native_tcp_cf_shard_smoke_v085_evo_v1_v7_s1_seed2026071700.json": {
+      "fold": {
+        "samples": 1,
+        "mean": -150.0,
+        "median": -150.0,
+        "min": -150.0,
+        "max": -150.0,
+        "p10": -150.0,
+        "p90": -150.0
+      },
+      "call": {
+        "samples": 1,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "p10": 0.0,
+        "p90": 0.0
+      },
+      "raise_half": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      },
+      "raise_pot": {
+        "samples": 1,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "p10": 0.0,
+        "p90": 0.0
+      },
+      "raise_2pot": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      },
+      "allin": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      }
+    },
+    "bots/neural_national_lab/data/native_tcp_cf_shards_v085_evolution_leaders_fc_s4_h14_seed2026071710.json": {
+      "fold": {
+        "samples": 37,
+        "mean": 486.18918918918916,
+        "median": -150.0,
+        "min": -4000.0,
+        "max": 4000.0,
+        "p10": -4000.0,
+        "p90": 4000.0
+      },
+      "call": {
+        "samples": 50,
+        "mean": 321.14,
+        "median": -97.0,
+        "min": -4000.0,
+        "max": 4000.0,
+        "p10": -730.0,
+        "p90": 4000.0
+      },
+      "raise_half": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      },
+      "raise_pot": {
+        "samples": 50,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "p10": 0.0,
+        "p90": 0.0
+      },
+      "raise_2pot": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      },
+      "allin": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      }
+    },
+    "bots/neural_national_lab/data/native_tcp_cf_shards_v085_profile_fc_top5_s8_h16_seed2026071510.json": {
+      "fold": {
+        "samples": 58,
+        "mean": -377.13793103448273,
+        "median": -150.0,
+        "min": -4000.0,
+        "max": 4000.0,
+        "p10": -4000.0,
+        "p90": 591.0
+      },
+      "call": {
+        "samples": 59,
+        "mean": -39.23728813559322,
+        "median": 0.0,
+        "min": -4000.0,
+        "max": 4000.0,
+        "p10": -209.0,
+        "p90": 415.0
+      },
+      "raise_half": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      },
+      "raise_pot": {
+        "samples": 30,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "p10": 0.0,
+        "p90": 0.0
+      },
+      "raise_2pot": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      },
+      "allin": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      }
+    },
+    "bots/neural_national_lab/data/native_tcp_cf_v085_profile_fc_vs_v17_h12_d4_seed2026071370.json": {
+      "fold": {
+        "samples": 4,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "p10": 0.0,
+        "p90": 0.0
+      },
+      "call": {
+        "samples": 4,
+        "mean": -223.75,
+        "median": -128.5,
+        "min": -588.0,
+        "max": -50.0,
+        "p10": -588.0,
+        "p90": -50.0
+      },
+      "raise_half": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      },
+      "raise_pot": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      },
+      "raise_2pot": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      },
+      "allin": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      }
+    },
+    "bots/neural_national_lab/data/native_tcp_cf_v085_profile_fc_vs_v18_h12_d4_seed2026071380.json": {
+      "fold": {
+        "samples": 4,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "p10": 0.0,
+        "p90": 0.0
+      },
+      "call": {
+        "samples": 4,
+        "mean": -228.0,
+        "median": -137.0,
+        "min": -588.0,
+        "max": -50.0,
+        "p10": -588.0,
+        "p90": -50.0
+      },
+      "raise_half": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      },
+      "raise_pot": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      },
+      "raise_2pot": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      },
+      "allin": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      }
+    },
+    "bots/neural_national_lab/data/native_tcp_cf_v085_profile_fc_vs_v3_h12_d4_seed2026071350.json": {
+      "fold": {
+        "samples": 4,
+        "mean": -300.25,
+        "median": -75.0,
+        "min": -1101.0,
+        "max": 50.0,
+        "p10": -1101.0,
+        "p90": 50.0
+      },
+      "call": {
+        "samples": 4,
+        "mean": -127.0,
+        "median": -25.0,
+        "min": -689.0,
+        "max": 231.0,
+        "p10": -689.0,
+        "p90": 231.0
+      },
+      "raise_half": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      },
+      "raise_pot": {
+        "samples": 2,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "p10": 0.0,
+        "p90": 0.0
+      },
+      "raise_2pot": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      },
+      "allin": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      }
+    },
+    "bots/neural_national_lab/data/native_tcp_cf_v085_profile_fc_vs_v9_h12_d4_seed2026071360.json": {
+      "fold": {
+        "samples": 4,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "p10": 0.0,
+        "p90": 0.0
+      },
+      "call": {
+        "samples": 4,
+        "mean": -229.0,
+        "median": -139.0,
+        "min": -588.0,
+        "max": -50.0,
+        "p10": -588.0,
+        "p90": -50.0
+      },
+      "raise_half": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      },
+      "raise_pot": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      },
+      "raise_2pot": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      },
+      "allin": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      }
+    },
+    "bots/neural_national_lab/data/native_tcp_cf_v085_profile_smoke_vs_v3_h6_seed2026071301.json": {
+      "fold": {
+        "samples": 1,
+        "mean": 292.0,
+        "median": 292.0,
+        "min": 292.0,
+        "max": 292.0,
+        "p10": 292.0,
+        "p90": 292.0
+      },
+      "call": {
+        "samples": 2,
+        "mean": 286.0,
+        "median": 286.0,
+        "min": 0.0,
+        "max": 572.0,
+        "p10": 0.0,
+        "p90": 572.0
+      },
+      "raise_half": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      },
+      "raise_pot": {
+        "samples": 2,
+        "mean": 100.0,
+        "median": 100.0,
+        "min": 0.0,
+        "max": 200.0,
+        "p10": 0.0,
+        "p90": 200.0
+      },
+      "raise_2pot": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      },
+      "allin": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      }
+    }
+  }
+}
