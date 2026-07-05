@@ -732,6 +732,29 @@ windows, label nearby neighborhoods around idx18/idx29, and then test whether
 those value patterns survive larger multi-opponent validation rather than
 raising thresholds blindly.
 
+That neighborhood harvest found a much clearer local signal. Expanding the
+first three v056 `claude_v279` template hits (idx10, idx18, idx29) with
+one-card rank-neighborhood mutations generated 151 variants and 54 template
+hits, a 35.76 percent hit rate. Full active labels for those 54 hit variants
+were strongly positive overall: 49 positive, 5 negative, mean `+3868.37` chips
+per 70 hands, 95 percent CI `[+3105.12, +4631.62]`. The important split is by
+source: idx18 was 14/14 positive at `+4166`, idx29 was 23/23 positive at
+`+6590`, while idx10 was mixed and net negative (`-58.94`, 5 negative of 17).
+This confirms that idx18/idx29 are real local value pockets, not one-card
+accidents; idx10 should not be treated as a clean positive pattern.
+
+`v057_v254_cf_candidate_value_p175_h16_t000` is a recorded failed attempt to
+make the value-head target semantics cleaner. It inverted the old p117 data to
+`candidate_minus_baseline`, added the 54 neighborhood rows plus the four exact
+v056 hit rows, and trained a CUDA h16 p175 value head (`val_sign_acc=0.80` for
+seed604). The runtime gate then required score `>= 0.0`. That was too blunt:
+targeted replay reintroduced idx6 `-92`, pair21 `-3243`, and idx3 `-83`,
+blocked pair48 to zero, and also blocked idx18's `+4166` positive action. Keep
+v057 as a failed sign-semantics artifact. The next version should not replace
+the proven v056 p117 ensemble wholesale; instead, add a secondary positive
+support model or source-specific confidence guard around idx18/idx29 while
+leaving the v056 repair gate in place.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass
