@@ -1,0 +1,88 @@
+{
+  "inputs": [
+    "bots/neural_national_lab/data/multiaction_value_v066_outlier_mix_p087_delta_adv_noallin_nonzero_clip1000_seed2026082200_2026091700.jsonl",
+    "bots/neural_national_lab/data/multiaction_value_v067_v279_new_first_p004_delta_adv_clip1000.jsonl"
+  ],
+  "rows": 91,
+  "input_dim": 70,
+  "label_count": 6,
+  "target_samples": 184,
+  "target_mean": 14.369565217391305,
+  "target_median": 100.0,
+  "positive_targets": 105,
+  "zero_targets": 0,
+  "negative_targets": 79,
+  "best_label_counts": {
+    "allin": 1,
+    "call": 47,
+    "fold": 1,
+    "raise_2pot": 1,
+    "raise_half": 40,
+    "raise_pot": 1
+  },
+  "stage_counts": {
+    "flop": 91
+  },
+  "source_counts": {
+    "bots/neural_national_lab/data/active_divergence_v066_vs_v064_v279_g032_nonzero_seed2026091300.json": 5,
+    "bots/neural_national_lab/data/active_divergence_v066_vs_v064_v283_g032_nonzero_seed2026091400.json": 2,
+    "bots/neural_national_lab/data/active_divergence_v066_vs_v064_v284_g032_nonzero_seed2026091500.json": 2,
+    "bots/neural_national_lab/data/active_divergence_v066_vs_v064_v285_g032_nonzero_seed2026091600.json": 2,
+    "bots/neural_national_lab/data/active_divergence_v066_vs_v064_v288_g032_nonzero_seed2026091700.json": 3,
+    "bots/neural_national_lab/data/active_divergence_v067_vs_v064_v279_new_nonzero_seed2026091300.json": 4,
+    "bots/neural_national_lab/data/multiaction_boundary_v064_vs_v279_conf088_092_inter065_seed2026090300.json": 8,
+    "bots/neural_national_lab/data/multiaction_boundary_v064_vs_v283_conf088_092_inter065_seed2026090400.json": 1,
+    "bots/neural_national_lab/data/multiaction_boundary_v064_vs_v284_conf088_092_inter065_seed2026090200.json": 3,
+    "bots/neural_national_lab/data/multiaction_boundary_v064_vs_v285_conf088_092_inter065_seed2026090500.json": 3,
+    "bots/neural_national_lab/data/multiaction_boundary_v064_vs_v288_conf088_092_inter065_seed2026090600.json": 1,
+    "bots/neural_national_lab/data/multiaction_lowint_v059_vs_v279_p012_seed2026082200.json": 12,
+    "bots/neural_national_lab/data/multiaction_lowint_v059_vs_v283_p012_seed2026082300.json": 11,
+    "bots/neural_national_lab/data/multiaction_lowint_v059_vs_v284_p012_seed2026082400.json": 11,
+    "bots/neural_national_lab/data/multiaction_lowint_v059_vs_v285_p012_seed2026082500.json": 12,
+    "bots/neural_national_lab/data/multiaction_lowint_v059_vs_v288_p012_seed2026082600.json": 11
+  },
+  "target_samples_by_label": {
+    "fold": {
+      "samples": 46,
+      "mean": -228.34782608695653,
+      "median": -200.0,
+      "min": -1000.0,
+      "max": 101.0
+    },
+    "call": {
+      "samples": 0,
+      "mean": 0.0,
+      "median": 0.0,
+      "min": null,
+      "max": null
+    },
+    "raise_half": {
+      "samples": 58,
+      "mean": 84.62068965517241,
+      "median": 200.0,
+      "min": -1000.0,
+      "max": 1000.0
+    },
+    "raise_pot": {
+      "samples": 40,
+      "mean": 103.0,
+      "median": 200.0,
+      "min": -1000.0,
+      "max": 816.0
+    },
+    "raise_2pot": {
+      "samples": 40,
+      "mean": 103.0,
+      "median": 200.0,
+      "min": -1000.0,
+      "max": 816.0
+    },
+    "allin": {
+      "samples": 0,
+      "mean": 0.0,
+      "median": 0.0,
+      "min": null,
+      "max": null
+    }
+  }
+}

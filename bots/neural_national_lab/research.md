@@ -153,6 +153,11 @@ Practical takeaways for this repo:
   window and still missed statistical significance. Keep iterating on
   divergence rows; do not interpret one repaired outlier set as distributional
   safety.
+- Threshold calibration can be a useful safety patch, but it is not a strategy
+  upgrade by itself. v068's `0.40` value floor removed the v279 `-796` window
+  and improved the worst-case profile, while also suppressing some known
+  positive interventions. The next repair should collect more rows and add
+  context, not keep ratcheting the threshold.
 - Build a lightweight actor-learner loop before reaching for Ray: actor workers
   scan divergence windows, enumerate abstract legal actions, run
   counterfactual branches, and append reservoir-style JSONL shards; the learner
