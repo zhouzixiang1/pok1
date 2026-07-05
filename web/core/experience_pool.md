@@ -41,9 +41,13 @@
 - Anti-lock trash gate must be tournament-safe: hands_left>3, my_chips>15BB, low fold_to_raise before suppressing trash jams.
 
 ## RECENT_LESSONS
+- **v296**: Importing v38's BB bluff-3bet constants does NOT transfer v38's strengths vs v285/v287 — v38 loses to both (0.28/0.32 WR). Next nemesis-fix attempt must profile v285's actual archetype (calling_station vs polarized_jammer) before tuning; do not treat v38 as a v285-counter template.
+- **v296**: DISCIPLINED_RIVER_MARGIN fire-rate was <1% pre-widening — telemetry must confirm ≥5% at ≥30g daemon eval or the 0.58→0.62 vpip ceiling lift is still too narrow to matter.
+- **v296 归档建议**: Next gen should profile v285's archetype directly (inspect its replay behavior on preflop facing raises and river facing bets) before tuning, since both v295 and v38 lose to v285 and blind calibration imports have failed to transfer nemesis-resistance.
 - **v295**: DISCIPLINED_RIVER_MARGIN stderr <1% during daemon eval ⇒ the tightness gate is too narrow; WIDEN it (vpip prior ceiling →0.62 or relax pfr_dev) BEFORE increasing the 0.035 delta — a too-narrow gate produces no behavioral signal.
 - **v295**: v294 leaks vs v287 at 0.40 WR (8W/12L/20g). Track v295 vs v287 over the next ≥30g paired net-chips; if WR stays <0.50, the fix is correct but UNDERSCOPED — widen the tier gate from 'thin' to include 'mid_weak' (middle_pair/underpair disciplined-barrel leaks extend beyond 'thin') before tuning the 0.035 magnitude.
 - **v294**: v293 confirmed a tight-disciplined cluster leak (20-40% WR vs v286/v287/v291/v284/v269 over 5-15g each) — valid exploitative target, but v294's fix needs ≥30g vs each member before treating the leak as closed. Prioritize daemon saturation vs v286/v291/v287 (was 0g post-commit for v294).
 - **v294**: Axis-stacking risk at strategy.py:1258 (+0.035 middle-pair turn branch) — future river-margin deltas must be gated against this branch on turn-continuation lines to avoid double-counting (cross-axis disagreement check per v287).
 - **v293**: POLARIZED_JAM_CALL_OVERRIDE fire-rate validation — at ≥30g vs polarized-jam opponents (v45/v288/v285), stderr <1% ⇒ texture predicate too narrow/inert; <5% ⇒ reconsider spr_commitment trigger conditions.
 - **v293**: `opponent_model.fold_to_jam_rate` is ABSENT — must be ADDED first or any opponent-aware polarized-jam gate silently no-ops; if WR vs v45/v288 stays <45% @≥30g, add per-opponent fold_to_jam_rate tracking to distinguish bluff-heavy vs value-heavy jamming.
+
