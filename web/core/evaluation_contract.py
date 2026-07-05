@@ -18,6 +18,7 @@ from typing import Any, Iterable
 from evolution_scope import (
     CRITICAL_EXACT,
     CRITICAL_PREFIXES,
+    NON_CONTRACT_PREFIXES,
     RUNTIME_PREFIXES,
     changed_paths_between_heads,
     normalize_repo_path,
@@ -127,6 +128,7 @@ def build_evaluation_contract(
         "path_exact": exact,
         "bot_versions": bot_versions,
         "runtime_prefixes": list(RUNTIME_PREFIXES),
+        "non_contract_prefixes": list(NON_CONTRACT_PREFIXES),
     }
     if include_hash:
         contract["hash"] = evaluation_contract_hash(root, contract)
@@ -141,6 +143,9 @@ def _is_runtime_path(path: str, runtime_prefixes: Iterable[str]) -> bool:
 def is_contract_path(path: str, contract: dict[str, Any]) -> bool:
     path = normalize_repo_path(path)
     if not path or _is_runtime_path(path, contract.get("runtime_prefixes") or RUNTIME_PREFIXES):
+        return False
+    non_contract_prefixes = contract.get("non_contract_prefixes") or NON_CONTRACT_PREFIXES
+    if any(path == prefix.rstrip("/") or path.startswith(prefix) for prefix in non_contract_prefixes):
         return False
     if path in set(contract.get("path_exact") or []):
         return True
@@ -187,7 +192,10 @@ def _git_ls_files(root: Path, pathspecs: list[str]) -> list[str]:
 
 def _iter_contract_files(root: Path, contract: dict[str, Any]) -> list[str]:
     pathspecs = list(contract.get("path_exact") or []) + list(contract.get("path_prefixes") or [])
-    files = set(_git_ls_files(root, pathspecs))
+    files = {
+        rel for rel in _git_ls_files(root, pathspecs)
+        if is_contract_path(rel, contract)
+    }
     for prefix in contract.get("path_prefixes") or []:
         if not prefix.startswith("bots/claude_v"):
             continue
@@ -207,7 +215,7 @@ def _iter_contract_files(root: Path, contract: dict[str, Any]) -> list[str]:
                     rel = normalize_repo_path(str(path.relative_to(root)))
                 except ValueError:
                     continue
-                if not _is_runtime_path(rel, contract.get("runtime_prefixes") or RUNTIME_PREFIXES):
+                if is_contract_path(rel, contract):
                     files.add(rel)
     return sorted(files)
 
