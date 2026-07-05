@@ -13,10 +13,9 @@ from typing import Any, Callable
 from claude_agent_sdk import tool as sdk_tool
 
 from evolution_infra import EVOLUTION_BRANCH, PROJECT_ROOT, read_pipeline_checkpoint
+from evaluation_contract import evaluate_head_drift
 from repo_state import get_last_snapshot, git_worktree_snapshot, is_generated_bot_dir_entry
 from evolution_scope import (
-    changed_paths_between_heads,
-    classify_paths,
     classify_status_entries,
 )
 
@@ -73,6 +72,18 @@ def _candidate_version(tool_name: str, args: dict[str, Any]) -> int | None:
             return int(compute_next_generation_v())
         except Exception:
             return None
+    return None
+
+
+def _source_version(args: dict[str, Any]) -> int | None:
+    value = args.get("source_v")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    checkpoint = read_pipeline_checkpoint()
+    if checkpoint and isinstance(checkpoint.get("source_v"), int):
+        return int(checkpoint["source_v"])
     return None
 
 
@@ -231,33 +242,39 @@ def _branch_alias_allowed_for_tool(tool_name: str, snapshot: dict[str, Any]) -> 
 def _unrelated_head_drift_allowed(
     *,
     candidate_v: int | None,
+    source_v: int | None = None,
     baseline_head: str,
     current_head: str,
 ) -> tuple[bool, dict[str, Any]]:
-    changed_paths = changed_paths_between_heads(PROJECT_ROOT, baseline_head, current_head)
-    if changed_paths is None:
-        return False, {"head_drift_paths_available": False}
-    path_scope = classify_paths(changed_paths, candidate_v)
-    blocking = list(path_scope.get("blocking_entries") or [])
-    candidate_entries = list(path_scope.get("candidate_entries") or [])
-    if blocking or candidate_entries:
-        return False, {
-            "head_drift_paths_available": True,
-            "head_changed_paths": changed_paths[:80],
-            "head_blocking_entries": blocking[:40],
-            "head_candidate_entries": candidate_entries[:40],
-        }
-    return True, {
-        "head_drift_paths_available": True,
-        "head_changed_paths": changed_paths[:80],
-        "head_ignored_entries": (path_scope.get("ignored_entries") or [])[:40],
-    }
+    checkpoint = read_pipeline_checkpoint()
+    allowed, payload = evaluate_head_drift(
+        PROJECT_ROOT,
+        baseline_head,
+        current_head,
+        candidate_v=candidate_v,
+        source_v=source_v,
+        checkpoint=checkpoint if isinstance(checkpoint, dict) else None,
+    )
+    contract_paths = list(payload.get("head_contract_paths") or [])
+    candidate_prefix = f"bots/claude_v{candidate_v}/" if candidate_v is not None else ""
+    candidate_entries = [
+        f"?? {path}" for path in contract_paths
+        if candidate_prefix and path.startswith(candidate_prefix)
+    ]
+    blocking_entries = [
+        f"?? {path}" for path in contract_paths
+        if not candidate_prefix or not path.startswith(candidate_prefix)
+    ]
+    payload["head_candidate_entries"] = candidate_entries[:40]
+    payload["head_blocking_entries"] = blocking_entries[:40]
+    return allowed, payload
 
 
 def _branch_head_drift_unrelated_allowed(
     *,
     tool_name: str,
     candidate_v: int | None,
+    source_v: int | None,
     snapshot: dict[str, Any],
 ) -> tuple[bool, dict[str, Any]]:
     if tool_name == "commit_bot":
@@ -271,6 +288,7 @@ def _branch_head_drift_unrelated_allowed(
         return False, {}
     allowed, payload = _unrelated_head_drift_allowed(
         candidate_v=candidate_v,
+        source_v=source_v,
         baseline_head=expected_head,
         current_head=current_head,
     )
@@ -279,6 +297,7 @@ def _branch_head_drift_unrelated_allowed(
     return True, {
         "tool": tool_name,
         "candidate_v": candidate_v,
+        "source_v": source_v,
         "branch": snapshot.get("branch"),
         "expected_branch": EVOLUTION_BRANCH,
         "runtime_expected_head": expected_head,
@@ -294,12 +313,14 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
         return True, {"guard": "disabled"}
 
     candidate_v = _candidate_version(tool_name, args)
+    source_v = _source_version(args)
     before = _snapshot()
     current_branch = _branch_name(str(before.get("branch") or ""))
     branch_alias_allowed = _branch_alias_allowed_for_tool(tool_name, before)
     branch_head_drift_unrelated_allowed, branch_head_drift_payload = _branch_head_drift_unrelated_allowed(
         tool_name=tool_name,
         candidate_v=candidate_v,
+        source_v=source_v,
         snapshot=before,
     )
 
@@ -402,6 +423,7 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
         _branch_head_drift_unrelated_allowed(
             tool_name=tool_name,
             candidate_v=candidate_v,
+            source_v=source_v,
             snapshot=snapshot,
         )
     )
@@ -459,6 +481,7 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
     ):
         unrelated_allowed, unrelated_payload = _unrelated_head_drift_allowed(
             candidate_v=candidate_v,
+            source_v=source_v,
             baseline_head=baseline_head,
             current_head=current_head,
         )

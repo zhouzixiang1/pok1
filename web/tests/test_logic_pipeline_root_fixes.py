@@ -1513,6 +1513,85 @@ def test_git_push_refs_reports_failure(monkeypatch):
     assert ("push", "origin", "bot-v999") in calls
 
 
+def test_git_push_refs_reconciles_unrelated_remote_main(monkeypatch):
+    import evaluation_contract
+    import evolution_infra
+
+    calls = []
+    first_main_push = {"done": False}
+
+    def fake_git(*args, **_kwargs):
+        calls.append(args)
+        if args == ("push", "origin", "main") and not first_main_push["done"]:
+            first_main_push["done"] = True
+            raise RuntimeError("fetch first")
+        if args[:3] == ("push", "origin", "main"):
+            return ""
+        if args[:3] == ("push", "origin", "bot-v999"):
+            return ""
+        if args == ("fetch", "origin", "--prune", "--tags"):
+            return ""
+        if args == ("rev-list", "--left-right", "--count", "HEAD...origin/main"):
+            return "1\t1\n"
+        if args == ("merge-base", "HEAD", "origin/main"):
+            return "base123\n"
+        if args == ("rev-parse", "--short=12", "origin/main"):
+            return "remote456\n"
+        if args == ("rev-parse", "--short=12", "HEAD"):
+            return "local123\n"
+        if args[:3] == ("merge", "--no-ff", "origin/main"):
+            return ""
+        raise AssertionError(args)
+
+    monkeypatch.setattr(evolution_infra, "_git", fake_git)
+    monkeypatch.setattr(evolution_infra, "read_pipeline_checkpoint", lambda: {"next_v": 999, "source_v": 998})
+    monkeypatch.setattr(
+        evaluation_contract,
+        "changed_paths_between_heads",
+        lambda *_args: ["docs/notes.md", "bots/neural_national_lab/data/run.json"],
+    )
+
+    assert evolution_infra.git_push_refs("main", "bot-v999") is True
+    assert any(call[:3] == ("merge", "--no-ff", "origin/main") for call in calls)
+    assert calls.count(("push", "origin", "main")) == 2
+
+
+def test_git_push_refs_blocks_remote_contract_change(monkeypatch):
+    import evaluation_contract
+    import evolution_infra
+
+    calls = []
+
+    def fake_git(*args, **_kwargs):
+        calls.append(args)
+        if args == ("push", "origin", "main"):
+            raise RuntimeError("fetch first")
+        if args == ("push", "origin", "bot-v999"):
+            return ""
+        if args == ("fetch", "origin", "--prune", "--tags"):
+            return ""
+        if args == ("rev-list", "--left-right", "--count", "HEAD...origin/main"):
+            return "1\t1\n"
+        if args == ("merge-base", "HEAD", "origin/main"):
+            return "base123\n"
+        if args == ("rev-parse", "--short=12", "origin/main"):
+            return "remote456\n"
+        if args == ("rev-parse", "--short=12", "HEAD"):
+            return "local123\n"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(evolution_infra, "_git", fake_git)
+    monkeypatch.setattr(evolution_infra, "read_pipeline_checkpoint", lambda: {"next_v": 999, "source_v": 998})
+    monkeypatch.setattr(
+        evaluation_contract,
+        "changed_paths_between_heads",
+        lambda *_args: ["web/core/orchestrator.py"],
+    )
+
+    assert evolution_infra.git_push_refs("main", "bot-v999") is False
+    assert not any(call[:1] == ("merge",) for call in calls)
+
+
 def test_git_commit_bot_refuses_preexisting_blocking_staged_files(monkeypatch):
     import evolution_infra
 

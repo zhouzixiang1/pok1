@@ -31,7 +31,9 @@ log = logging.getLogger("pok.infra")
 # Local module imports (same directory)
 from glicko2 import Glicko2Player, update_rating_period
 from experience_pool import trim_experience_pool
+from evaluation_contract import build_evaluation_contract
 from evolution_scope import classify_status_entries
+from publish_reconcile import reconcile_push_refs
 
 # ──────────────────────────────────────────────
 # Constants
@@ -276,11 +278,18 @@ def substitute_template(template, replacements):
 # Pipeline Checkpoint (Process Recovery)
 # ──────────────────────────────────────────────
 
-def _capture_repo_baseline(stage):
+def _capture_repo_baseline(stage, *, next_v=None, source_v=None, checkpoint=None):
     """Capture the git baseline persisted with an active generation checkpoint."""
     try:
         from repo_state import git_worktree_snapshot
         snapshot = git_worktree_snapshot()
+        contract = build_evaluation_contract(
+            PROJECT_ROOT,
+            candidate_v=next_v,
+            source_v=source_v,
+            checkpoint=checkpoint,
+            include_hash=True,
+        )
         return {
             "branch": snapshot.get("branch", ""),
             "head": snapshot.get("head", ""),
@@ -289,6 +298,7 @@ def _capture_repo_baseline(stage):
             "untracked_count": snapshot.get("untracked_count", 0),
             "entries": (snapshot.get("entries") or [])[:40],
             "truncated": bool(snapshot.get("truncated")),
+            "evaluation_contract": contract,
             "captured_stage": stage,
             "captured_ts": time.time(),
         }
@@ -301,6 +311,7 @@ def _capture_repo_baseline(stage):
             "untracked_count": 0,
             "entries": [],
             "truncated": False,
+            "evaluation_contract": {},
             "captured_stage": stage,
             "captured_ts": time.time(),
             "error": f"{type(exc).__name__}: {str(exc)[:200]}",
@@ -490,10 +501,34 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         if existing_precommit_rework_count is None:
             existing_precommit_rework_count = 0
         run_id = f"{next_v}#{existing_generation_attempt}"
+        _contract_checkpoint = {
+            "next_v": next_v,
+            "source_v": source_v,
+            "parent2_v": existing_parent2_v,
+            "gate_results": existing_gate_results,
+        }
         if refresh_repo_baseline:
-            existing_repo_baseline = _capture_repo_baseline(stage)
+            existing_repo_baseline = _capture_repo_baseline(
+                stage,
+                next_v=next_v,
+                source_v=source_v,
+                checkpoint=_contract_checkpoint,
+            )
         elif not existing_repo_baseline:
-            existing_repo_baseline = _capture_repo_baseline(stage)
+            existing_repo_baseline = _capture_repo_baseline(
+                stage,
+                next_v=next_v,
+                source_v=source_v,
+                checkpoint=_contract_checkpoint,
+            )
+        elif isinstance(existing_repo_baseline, dict):
+            existing_repo_baseline["evaluation_contract"] = build_evaluation_contract(
+                PROJECT_ROOT,
+                candidate_v=next_v,
+                source_v=source_v,
+                checkpoint=_contract_checkpoint,
+                include_hash=True,
+            )
 
         state = {
             "next_v": next_v, "source_v": source_v, "stage": stage,
@@ -1112,17 +1147,43 @@ def _git(*args, check=True):
 
 
 def git_push_refs(*refs: str) -> bool:
-    """Push refs to origin and return the real aggregate result."""
+    """Push refs to origin and return the real aggregate result.
+
+    If origin/main advanced with evaluation-contract-neutral changes, reconcile
+    by merging origin/main and retrying the push once.
+    """
     if not refs:
         return True
-    ok = True
-    errors = []
-    for ref in refs:
+    checkpoint = read_pipeline_checkpoint()
+    candidate_v = None
+    source_v = None
+    if isinstance(checkpoint, dict):
+        candidate_v = checkpoint.get("next_v")
+        source_v = checkpoint.get("source_v")
+    if candidate_v is None:
+        for ref in refs:
+            if isinstance(ref, str) and ref.startswith("bot-v") and ref[5:].isdigit():
+                candidate_v = int(ref[5:])
+                break
+
+    def _log_event(event_type, severity, message, data):
         try:
-            _git("push", "origin", ref)
-        except Exception as exc:
-            ok = False
-            errors.append({"ref": ref, "error": str(exc)[:500]})
+            from system_log import log_system_event
+            log_system_event(event_type, severity, message, data)
+        except Exception:
+            pass
+
+    result = reconcile_push_refs(
+        tuple(refs),
+        root=PROJECT_ROOT,
+        git=_git,
+        checkpoint=checkpoint if isinstance(checkpoint, dict) else None,
+        candidate_v=candidate_v,
+        source_v=source_v,
+        log_event=_log_event,
+    )
+    ok = bool(result.get("ok"))
+    errors = list(result.get("errors") or [])
     try:
         from system_log import log_system_event
         log_system_event(
@@ -1133,7 +1194,7 @@ def git_push_refs(*refs: str) -> bool:
                 if ok else
                 f"Git push failed for {', '.join(item['ref'] for item in errors)}"
             ),
-            {"refs": list(refs), "ok": ok, "errors": errors},
+            {"refs": list(refs), "ok": ok, **result},
         )
     except Exception:
         pass
