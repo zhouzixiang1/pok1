@@ -106,13 +106,18 @@ def _summary(
 ) -> dict[str, Any]:
     target_values: list[float] = []
     by_label: dict[str, list[float]] = {label: [] for label in LABELS}
+    by_source_label: dict[str, dict[str, list[float]]] = {}
     best_counts = Counter(str(row.get("best_label")) for row in rows if row.get("best_label"))
     stage_counts = Counter(str(row.get("stage")) for row in rows)
+    source_counts = Counter(str(row.get("source")) for row in rows)
     for row in rows:
+        source = str(row.get("source"))
+        by_source_label.setdefault(source, {label: [] for label in LABELS})
         for idx, value in enumerate(row["targets"]):
             if row["target_mask"][idx]:
                 target_values.append(float(value))
                 by_label[LABELS[idx]].append(float(value))
+                by_source_label[source][LABELS[idx]].append(float(value))
     dim = len(rows[0]["features"]) if rows else 0
     return {
         "inputs": [str(path) for path in inputs],
@@ -133,12 +138,23 @@ def _summary(
         "off_menu_rule_rows": sum(1 for row in rows if not row.get("rule_final_in_menu", True)),
         "best_label_counts": dict(sorted(best_counts.items())),
         "stage_counts": dict(sorted(stage_counts.items())),
+        "source_counts": dict(sorted(source_counts.items())),
         "target_samples_by_label": {
             label: {
                 "samples": len(values),
                 "mean": statistics.mean(values) if values else 0.0,
             }
             for label, values in by_label.items()
+        },
+        "target_samples_by_source_label": {
+            source: {
+                label: {
+                    "samples": len(values),
+                    "mean": statistics.mean(values) if values else 0.0,
+                }
+                for label, values in label_values.items()
+            }
+            for source, label_values in sorted(by_source_label.items())
         },
     }
 

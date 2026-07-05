@@ -887,6 +887,18 @@ not as runtime bot weights. The next v060 attempt needs larger multi-opponent
 vector shards before wiring a multi-action head into the already conservative
 v059 gate stack.
 
+The first multi-opponent vector shard confirms that caution. Adding p008 flop
+rows each against `claude_v283`, `claude_v284`, and `claude_v285` produced the
+p048 dataset
+`multiaction_value_v059_multiopponent_p048_delta_adv_seed2026080300_0600.jsonl`.
+All 48 rows were valid and 15 used off-menu rule baselines. The aggregate
+`raise_half` delta fell to only `+25.27`, with opponent splits of `+85.04`
+against v279, `-148.88` against v283, `-57.50` against v284, and `+102.88`
+against v285. The h16 CUDA head fit this mixed data better than h32
+(`val_mae=0.1267` versus `0.2456`), so capacity is not the next bottleneck.
+The next useful data step is broader active sampling by opponent and board
+texture; do not promote a v060 runtime multi-action head from this p048 shard.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass

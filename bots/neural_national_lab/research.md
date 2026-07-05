@@ -101,6 +101,10 @@ Practical takeaways for this repo:
   first p024 CUDA run was useful for validating the six-output target contract
   and showing a local `raise_half` signal, but it is too small and too
   single-opponent to justify a runtime bot change.
+- The p048 multi-opponent follow-up explains why: `raise_half` remained locally
+  positive against v279/v285 but flipped negative against v283/v284. A larger
+  model overfits this small mixed set; h16 outperformed h32 on validation MAE.
+  Expand active vector sampling before attempting v060 runtime integration.
 - Build a lightweight actor-learner loop before reaching for Ray: actor workers
   scan divergence windows, enumerate abstract legal actions, run
   counterfactual branches, and append reservoir-style JSONL shards; the learner
