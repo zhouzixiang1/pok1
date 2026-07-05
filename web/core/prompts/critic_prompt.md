@@ -10,6 +10,11 @@ You do NOT check code correctness, file size, or role boundaries (the Code Quali
 Your job is **purely strategic**: will this change make the bot play better poker?
 
 Use Bash for diff commands and Read for changed functions. Do not use webReader or web-search.
+For git history, use only bounded commands. Every `git log` command MUST include
+`--max-count=20` (or smaller) and an explicit revision range or path. Never use
+`--all`, `-S`, `-G`, or unbounded `git log`. If a Bash command is denied by the
+runtime cost guard, do not retry the same command; switch to `rg`, `Read`, or a
+bounded command such as `git log --oneline --max-count=20 national-bot-v{parent_version}..HEAD`.
 </instructions>
 
 <context>
@@ -91,7 +96,7 @@ Before scoring, verify the change against this checklist. Flag any item that fai
 1. List changed files: `diff -rq bots/national_v{parent_version}/ bots/national_v{version}/`
 2. Diff each changed file: `diff bots/national_v{parent_version}/FILE bots/national_v{version}/FILE`
 3. Read the most changed functions for strategic context
-4. Check recent history: `git log --oneline national-bot-v{parent_version}..HEAD`
+4. Check recent history: `git log --oneline --max-count=20 national-bot-v{parent_version}..HEAD`
 5. Read `web/core/experience_pool.md` for `[POSSIBLY EXHAUSTED]` tags
 6. Cite concrete evidence: weakest H2H matchups, experience-pool lessons, real diff
 </how_to_evaluate>

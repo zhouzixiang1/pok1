@@ -797,6 +797,53 @@ def test_subagent_cost_guard_blocks_unbounded_git_history():
     ) is None
 
 
+def test_subagent_cost_guard_denial_is_recoverable_warning(monkeypatch):
+    import system_log
+
+    events = []
+    monkeypatch.setattr(
+        system_log,
+        "log_system_event",
+        lambda category, severity, message, data=None: events.append(
+            (category, severity, message, data or {})
+        ),
+    )
+
+    hooks = llm_query._make_subagent_cost_guard("STRATEGY CRITIC")
+    handler = hooks["PreToolUse"][0].hooks[0]
+    output = asyncio.run(
+        handler(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "git log --oneline --all national-bot-v1..HEAD"},
+            },
+            "tool-use-1",
+            {},
+        )
+    )
+
+    decision = output["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "deny"
+    assert "runtime cost guard" in decision["permissionDecisionReason"]
+    assert events
+    category, severity, message, data = events[0]
+    assert category == "pipeline.subagent_cost_guard_block"
+    assert severity == "warn"
+    assert "STRATEGY CRITIC" in message
+    assert data["reason"] == "git_log_all_history"
+    assert data["recoverable"] is True
+    assert data["next_action"] == "retry_with_bounded_inspection"
+
+
+def test_critic_and_reviewer_prompts_require_bounded_git_history():
+    prompts_dir = Path(__file__).resolve().parents[1] / "core" / "prompts"
+    for name in ("critic_prompt.md", "reviewer_prompt.md"):
+        text = (prompts_dir / name).read_text(encoding="utf-8")
+        assert "--max-count=20" in text
+        assert "Never use" in text
+        assert "--all" in text
+
+
 def test_subagent_mutation_guard_allows_dev_null_in_command_substitution():
     command = """cd bots && for f in main.py strategy.py; do
   diff_lines=$(diff claude_v239/$f claude_v248/$f 2>/dev/null | wc -l)

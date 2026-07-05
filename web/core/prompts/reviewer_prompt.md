@@ -11,6 +11,11 @@ Your job is the code quality gate before the strategic Critic review.
 - Read source files
 - Bash for diff and git commands
 - Do not use webReader, web-search, file:// URLs, or GitHub URLs
+- For git history, use only bounded commands. Every `git log` command MUST
+  include `--max-count=20` (or smaller) and an explicit revision range or path.
+  Never use `--all`, `-S`, `-G`, or unbounded `git log`. If a Bash command is
+  denied by the runtime cost guard, do not retry it; switch to `Read`, `diff`,
+  `rg`, or a bounded `git log --oneline --max-count=20 <range>` command.
 </tools>
 
 <context>
