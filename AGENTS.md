@@ -74,6 +74,17 @@ Most production-style bots and the local battle engine should stay stdlib-only f
 
 `ref/DanLM` and `ref/neuron_poker` are gitlinks in the index, but this checkout currently has no `.gitmodules`; `git submodule status` may fail until that is repaired.
 
+## Dual-Checkout Evolution Runtime
+
+There are two intended local checkouts under `/home/zzx/project/pok`:
+
+- `/home/zzx/project/pok` is the operator/infrastructure checkout. Make normal code, prompt, test, and documentation changes here, or in a temporary ignored worktree under this directory.
+- `/home/zzx/project/pok/.evolution_pok` is a separate clone reserved for the autonomous evolution process. Long-running `web/main.py`, the rating daemon, active candidate bot directories, and runtime result files belong there.
+
+The two checkouts must be synchronized through `origin/main`; never copy files between them by hand. Infrastructure changes made from the outer checkout must be pushed, then fetched/merged into `.evolution_pok` at a safe point. Bot versions produced by `.evolution_pok` must be pushed with their `bot-v{N}` tags, then fetched/merged back into the outer checkout before related infrastructure or bot work continues. The detailed policy is in `docs/evolution-dual-checkout-sync-policy.md`.
+
+Do not switch branches, reset, or directly develop infrastructure inside `.evolution_pok` while a generation is running. If an incoming change touches `engine/`, `sever/`, `web/core/`, `web/tests/`, `web/main.py`, or the active candidate/source/opponent bot versions, stop/restart evolution from the new baseline instead of relying on automatic reconciliation. Contract-neutral changes such as docs may be reconciled by the existing `evaluation_contract`/`publish_reconcile` guard.
+
 ---
 
 ## Common Commands
@@ -369,6 +380,7 @@ Quality and regression gates may include:
 
 Important generated or runtime locations:
 
+- `.evolution_pok/`
 - `web/core/results/`
 - `web/logs/`
 - `web/frontend/dist/`

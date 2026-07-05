@@ -670,8 +670,20 @@ Algorithms: random baseline, equity-based threshold, genetic self-improvement (p
 
 ## Repository Hygiene
 
+### Dual-checkout sync rule
+
+The intended local layout has two checkouts under `/home/zzx/project/pok`:
+
+- `/home/zzx/project/pok` is the operator/infrastructure checkout. Make ordinary code, prompt, test, and documentation changes here, or in a temporary ignored worktree under this directory.
+- `/home/zzx/project/pok/.evolution_pok` is a separate clone reserved for the autonomous evolution process. Long-running `web/main.py`, the rating daemon, live candidate bot directories, and runtime result files belong there.
+
+Synchronize both checkouts only through `origin/main`; do not copy files between them. Infrastructure changes from the outer checkout must be pushed and then fetched/merged into `.evolution_pok` at a safe point. Completed evolution bots from `.evolution_pok` must be pushed with `bot-v{N}` tags and then fetched/merged into the outer checkout before related work continues. See `docs/evolution-dual-checkout-sync-policy.md` for the full policy and command checklist.
+
+Do not switch branches, reset, or do normal infrastructure development inside `.evolution_pok` while a generation is running. Contract-neutral changes may be tolerated by `web/core/evaluation_contract.py` and `web/core/publish_reconcile.py`; changes touching `engine/`, `sever/`, `web/core/`, `web/tests/`, `web/main.py`, or active bot versions require an explicit evolution restart/resume decision.
+
 Important generated or runtime locations:
 
+- `.evolution_pok/`
 - `web/core/results/`
 - `web/logs/`
 - `web/frontend/dist/`
