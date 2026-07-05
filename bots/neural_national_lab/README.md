@@ -215,18 +215,31 @@ Current native TCP evidence, using paired reports where available:
   / 4900 hands scored v097 `+41006`, v095 `+80486`, and v082 `+76977`, all
   with 0 illegal actions, 0 timeouts, and 0 adapter actions. The paired diffs
   were v097-v095 `-39480`, v097-v082 `-35971`, and v095-v082 `+3509`.
+- `v098_national_v17_currentpool_action_h64_call_t050_tcp` retrained the
+  78-feature action-context value head on a fresh current-pool native TCP
+  counterfactual set from `.evolution_pok` leaders `national_v3`,
+  `national_v2`, `national_v8`, `national_v14`, `national_v5`, `national_v9`,
+  `national_v15`, `national_v16`, and hard negative `national_v7`. The h64
+  CUDA run (`native_tcp_value_v085_current_top8_plus_v7_action_h64_seed3112`)
+  reached validation MAE `0.1122` and best-label accuracy `0.6842`; runtime
+  kept only a strict `raise_pot -> call` gate at threshold/margin `0.50`.
+  On seed block `2026073200`, v098 was only slightly better than v095
+  (`+2817` over 45 paired matches / 6300 hands) and v082 (`+6959`). On seed
+  block `2026073300`, it was `+209898` versus v095 by avoiding repeated
+  v095 losses, but v098 still scored `-333482` absolute and lost `-168524`
+  each to `national_v2` and `national_v3`. Both v098 reports had 0 illegal
+  actions, 0 timeouts, and 0 adapter actions.
 
-This is not a promotion-grade strength breakthrough. The current evidence says
-the old v254/Botzone-trained action advice does not transfer to native national
-opponents. The native TCP counterfactual path now works, GPU training works,
-and action-context features finally produced a clean positive neural increment
-over v082 on protocol opponents. It still does not meet the project strength
-bar of comprehensive rule-bot domination: the current-pool retest shows v095's
-increment is modest and concentrated on `national_v3`, while six of seven
-opponents are neutral in the paired report. The next scale step should collect
-much larger explicit action-value data from the `.evolution_pok` Glicko leaders
-and hard-negative buckets, then train with held-out opponent groups instead of
-trying to widen runtime gates around the same small dataset.
+This is not a promotion-grade strength breakthrough. The native TCP
+counterfactual path works, GPU training works, and action-context features can
+produce clean positive neural increments over earlier neural controls on
+protocol-native opponents. It still does not meet the project strength bar of
+comprehensive rule-bot domination: the newest v098 retest is still deeply
+negative in absolute terms against the current `.evolution_pok` leaders,
+especially `national_v2` and `national_v3`. The next scale step should collect
+larger explicit action-value data from those hard-negative buckets, train with
+held-out opponent groups, and avoid promoting another scalar threshold variant
+until the v2/v3 losses are directly reduced.
 
 ## Scale-Up Gate
 
