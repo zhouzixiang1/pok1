@@ -34,7 +34,9 @@ export default function PromptEditor() {
       const data = await api.listPrompts();
       data.sort((a, b) => PROMPT_ORDER.indexOf(a.name) - PROMPT_ORDER.indexOf(b.name));
       setPrompts(data);
-    } catch {}
+    } catch (e) {
+      setMessage({ text: String(e), type: "error" });
+    }
   }, []);
 
   const loadPromptContent = useCallback(async (name: string) => {

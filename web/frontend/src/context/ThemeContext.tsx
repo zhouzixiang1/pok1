@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- Context provider modules intentionally export typed hooks. */
 import type React from "react";
 import { createContext, useState, useContext, useEffect } from "react";
 

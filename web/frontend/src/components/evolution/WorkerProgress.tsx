@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- This component module also exports the parser used by EvolutionMonitor. */
 import { StatusDot, CheckIcon, CrossIcon } from "./icons";
 
 export type WorkerStatus = "running" | "done" | "failed";

@@ -4,6 +4,7 @@ import { api } from "../api/client";
 import PokerTable from "../components/PokerTable";
 import PageMeta from "../components/common/PageMeta";
 import { useRecentMatches } from "../context/DataProvider";
+import { compactBotName } from "../lib/utils";
 
 function extractFrames(game: GameReplay): DisplayFrame[] {
   const frames: DisplayFrame[] = [];
@@ -139,7 +140,7 @@ export default function MatchReplay() {
                   }`}
                 >
                   <div className="font-medium text-gray-800 dark:text-gray-200">
-                    {m.bot0.replace("claude_", "")} vs {m.bot1.replace("claude_", "")}
+                    {compactBotName(m.bot0)} vs {compactBotName(m.bot1)}
                   </div>
                   <div className="mt-1 flex items-center justify-between text-gray-500">
                     <span className={m.bot0_wins > m.bot1_wins ? "text-green-500 font-medium" : ""}>
@@ -188,7 +189,7 @@ export default function MatchReplay() {
                 >
                   {selectedMatch.games.map((g, i) => (
                     <option key={i} value={i}>
-                      手牌 {i + 1} — {g.winner === 0 ? selectedMatch.bot0.replace("claude_", "") : g.winner === 1 ? selectedMatch.bot1.replace("claude_", "") : "平局"} ({g.bot0_chips > 0 ? "+" : ""}{g.bot0_chips})
+                      手牌 {i + 1} — {g.winner === 0 ? compactBotName(selectedMatch.bot0) : g.winner === 1 ? compactBotName(selectedMatch.bot1) : "平局"} ({g.bot0_chips > 0 ? "+" : ""}{g.bot0_chips})
                     </option>
                   ))}
                 </select>
