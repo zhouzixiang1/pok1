@@ -20,6 +20,7 @@ Committed infrastructure state is synchronized only by git:
 1. A change made in `/home/zzx/project/pok` is committed, pushed to `origin/main`, then fetched/merged into `/home/zzx/project/pok/.evolution_pok` at a safe point.
 2. A bot version produced in `/home/zzx/project/pok/.evolution_pok` is complete only after `commit_bot` commits it, creates `bot-v{N}`, and pushes both `main` and the tag. The outer checkout must then fetch tags and merge or rebase `origin/main` before editing related bot/evaluation code.
 3. If either checkout is ahead of or behind `origin/main`, do not start new infrastructure work until the intended sync direction is explicit.
+4. Before starting any task, update remote state first. In a clean checkout on the branch you will edit, run `git pull --ff-only --tags`. If the checkout is dirty, on a user branch, or cannot be fast-forwarded safely, run `git fetch --tags origin` and create a temporary worktree from the updated `origin/main`; do not begin from a stale local HEAD.
 
 ## Directory Ownership
 
@@ -60,12 +61,12 @@ For infrastructure or documentation work:
 
 ```bash
 cd /home/zzx/project/pok
-git fetch --tags origin
+git pull --ff-only --tags
 git status --short --branch
 git diff --name-only HEAD..origin/main
 ```
 
-If the outer checkout is dirty, use a temporary worktree inside `/home/zzx/project/pok/.claude/worktrees/` or another ignored path under `/home/zzx/project/pok`; do not switch the user's dirty branch. Commit and push the task branch, merge it to `main`, then remove the temporary worktree.
+If the outer checkout is dirty, on a user branch, or cannot be fast-forwarded safely, do not force a pull over it. Run `git fetch --tags origin`, then use a temporary worktree inside `/home/zzx/project/pok/.claude/worktrees/` or another ignored path under `/home/zzx/project/pok`; do not switch the user's dirty branch. Commit and push the task branch, merge it to `main`, then remove the temporary worktree.
 
 For evolution output:
 
@@ -75,7 +76,7 @@ git status --short --branch
 git fetch --tags origin
 ```
 
-Do not switch branches or reset this checkout while the evolution service is running. If the incoming change touches the evaluation contract, stop the evolution service, merge/pull, restart from the new baseline, and observe the next generation. If the incoming change is contract-neutral, it may be merged at the next safe point or reconciled automatically when evolution publishes its next commit.
+Do not switch branches or reset this checkout while the evolution service is running. If the service is stopped and the checkout is clean, update it with `git pull --ff-only --tags` before restarting. If the incoming change touches the evaluation contract, stop the evolution service, merge/pull, restart from the new baseline, and observe the next generation. If the incoming change is contract-neutral, it may be merged at the next safe point or reconciled automatically when evolution publishes its next commit.
 
 After `.evolution_pok` publishes a bot:
 
