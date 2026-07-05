@@ -75,6 +75,8 @@ def _row_from_target(
     target: str,
     require_full_vector: bool,
     drop_label_ids: set[int],
+    drop_zero_targets: bool,
+    clip_target: float | None,
 ) -> dict[str, Any] | None:
     if row.get("status") != "ok":
         return None
@@ -87,7 +89,8 @@ def _row_from_target(
     target_mask = [1 if value is not None else 0 for value in targets]
     if require_full_vector and sum(target_mask) != len(LABELS):
         return None
-    filled = [float(value) if value is not None else 0.0 for value in targets]
+    raw_filled = [float(value) if value is not None else 0.0 for value in targets]
+    filled = list(raw_filled)
     legal_mask = row.get("legal_mask")
     if not isinstance(legal_mask, list) or len(legal_mask) != len(LABELS):
         legal_mask = target_mask
@@ -97,12 +100,20 @@ def _row_from_target(
             target_mask[label_id] = 0
             legal_mask[label_id] = 0
             filled[label_id] = 0.0
+    if drop_zero_targets:
+        for label_id, value in enumerate(filled):
+            if abs(value) <= 1e-9:
+                target_mask[label_id] = 0
+    if clip_target is not None:
+        limit = abs(float(clip_target))
+        filled = [max(-limit, min(limit, value)) if target_mask[idx] else 0.0 for idx, value in enumerate(filled)]
     if not any(target_mask):
         return None
     magnitude = max(abs(value) for value in filled) if filled else 0.0
     return {
         "features": features,
         "targets": filled,
+        "raw_targets": raw_filled,
         "target_mask": target_mask,
         "legal_mask": legal_mask,
         "weight": max(0.05, min(5.0, magnitude / 1000.0)),
@@ -134,6 +145,8 @@ def _summary(
     target: str,
     require_full_vector: bool,
     dropped_labels: list[str],
+    drop_zero_targets: bool,
+    clip_target: float | None,
 ) -> dict[str, Any]:
     target_values: list[float] = []
     by_label: dict[str, list[float]] = {label: [] for label in LABELS}
@@ -161,6 +174,8 @@ def _summary(
         "target": target,
         "require_full_vector": require_full_vector,
         "dropped_labels": dropped_labels,
+        "drop_zero_targets": drop_zero_targets,
+        "clip_target": clip_target,
         "scanned_rows": scanned,
         "skipped_rows": skipped,
         "rows": len(rows),
@@ -209,6 +224,16 @@ def main() -> None:
         default=[],
         help="Exclude a label from target loss and best-label metrics, e.g. --drop-label allin.",
     )
+    parser.add_argument(
+        "--drop-zero-targets",
+        action="store_true",
+        help="Mask zero-valued label targets out of the training loss.",
+    )
+    parser.add_argument(
+        "--clip-target",
+        type=float,
+        help="Clip target values to +/- this chip amount before writing JSONL.",
+    )
     args = parser.parse_args()
 
     inputs = _iter_inputs(args.input)
@@ -234,6 +259,8 @@ def main() -> None:
                 args.target,
                 require_full_vector=not args.allow_incomplete_vector,
                 drop_label_ids=drop_label_ids,
+                drop_zero_targets=args.drop_zero_targets,
+                clip_target=args.clip_target,
             )
             if out is None:
                 skipped += 1
@@ -256,6 +283,8 @@ def main() -> None:
         args.target,
         require_full_vector=not args.allow_incomplete_vector,
         dropped_labels=dropped_labels,
+        drop_zero_targets=args.drop_zero_targets,
+        clip_target=args.clip_target,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(

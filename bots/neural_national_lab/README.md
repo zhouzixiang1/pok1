@@ -912,6 +912,18 @@ h16 but still had weak best-label validation (`0.22` and `0.33`). This confirms
 the immediate next step: collect active, nonzero, noallin vector rows by
 opponent/board texture before creating v060.
 
+A follow-up active-target build used `--drop-label allin --drop-zero-targets
+--clip-target 1000`. It kept all 88 rows but masked training loss to 190
+nonzero noallin targets, with 96 positive, 94 negative, median `+125.5`, and no
+zero targets. The resulting masked-best distribution was still fold-heavy
+(`51` fold, `28` raise_half), so the data mostly teaches which candidate labels
+are bad rather than supplying enough positive action coverage. The trainer now
+computes best-label accuracy with `target_mask`, matching the dropped-target
+loss contract. On CUDA, h16 reached `val_mae=0.4169` and active-target
+`val_best_label_acc=0.67`; h32 overfit more (`val_mae=0.5095`,
+`val_best_label_acc=0.56`). Treat this as a target-processing validation
+artifact, not as v060 runtime weight evidence.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass
