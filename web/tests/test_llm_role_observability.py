@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 import pytest
 from claude_agent_sdk.types import (
@@ -833,6 +834,27 @@ def test_subagent_mutation_guard_still_blocks_real_redirect():
         llm_query._subagent_bash_mutation_detector("echo x > web/core/tmp.txt")
         == "write_redirect:web/core/tmp.txt"
     )
+
+
+def test_runtime_path_contract_warns_against_tmp_probe_logs(tmp_path):
+    target_dir = tmp_path / "bots" / "national_v21"
+    target_dir.mkdir(parents=True)
+
+    contract = llm_query._format_runtime_path_contract(tmp_path, target_dir)
+
+    assert str(target_dir) in contract
+    assert "/tmp" in contract
+    assert "/var/tmp" in contract
+    assert "2>&1 | grep" in contract
+
+
+def test_worker_and_crossover_prompts_ban_tmp_probe_logs():
+    prompt_dir = Path(__file__).resolve().parents[1] / "core" / "prompts"
+    for name in ("worker_prompt.md", "crossover_prompt.md"):
+        text = (prompt_dir / name).read_text(encoding="utf-8")
+        assert "`/tmp`" in text
+        assert "`/var/tmp`" in text
+        assert "2>&1 | grep" in text
 
 
 def test_run_claude_query_downgrades_success_error_result_to_info(monkeypatch, tmp_path):

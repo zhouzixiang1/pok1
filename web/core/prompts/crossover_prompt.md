@@ -5,6 +5,10 @@ Bash starts in the repository root. For bot-local cleanup or probes that use
 relative write targets such as `__pycache__`, first `cd bots/national_v{version}`
 in the same command, or use explicit `bots/national_v{version}/...` paths. Never
 mutate bare relative paths from the repo root.
+Do not redirect probe output, stderr captures, or temporary logs to `/tmp` or
+`/var/tmp`. Prefer inline pipes such as `2>&1 | grep ...`; if a probe truly
+needs a file, write it under `bots/national_v{version}/` and delete it in the
+same command before finishing.
 </instructions>
 
 <data_context>

@@ -1054,7 +1054,11 @@ def _make_subagent_write_guard(allowed_write_dir):
                     blocked = ("Bash mutation targets a path outside the allowed bot dir "
                                + _allowed_label + " (" + write_scope_violation + "). "
                                "Sub-agents may only edit their assigned target bot "
-                               "directory. Command: " + str(cmd)[:100])
+                               "directory. Do not use /tmp or /var/tmp for probe "
+                               "logs; use inline pipes such as `2>&1 | grep ...` "
+                               "or a temporary file inside the assigned target "
+                               "that is removed in the same command. Command: "
+                               + str(cmd)[:100])
             elif tool_name in ("Edit", "Write", "NotebookEdit"):
                 fp = tool_input.get("file_path", "") or tool_input.get("notebook_path", "")
                 if _subagent_is_outside_allowed(fp, _allowed_scope):
@@ -1178,6 +1182,8 @@ def _format_runtime_path_contract(project_root, allowed_write_dir=None):
         f"- The active repository root for this run is `{root}`.",
         "- Bash starts in that directory; prefer relative paths from this root.",
         "- Do not use sibling or parent checkout absolute paths as edit targets.",
+        "- Do not write probe output, stderr captures, or temporary logs to `/tmp` or `/var/tmp`.",
+        "- Prefer inline pipes such as `2>&1 | grep ...`; if a probe truly needs a file, place it inside the declared write scope and remove it in the same command.",
     ]
     if allowed_write_dir is not None:
         scope = _normalize_allowed_write_scope(allowed_write_dir)
