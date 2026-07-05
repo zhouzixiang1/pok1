@@ -1,0 +1,615 @@
+{
+  "eval_json": [
+    "bots/neural_national_lab/data/native_tcp_trace_v105_vs_v2v3v5v14_h70_m1_seed2026073700.json"
+  ],
+  "bot_paths": [
+    "bots/neural_national_lab/versions/v105_national_v17_v3_raise_t060_tcp"
+  ],
+  "summary": {
+    "sources": {
+      "files": 1,
+      "match_sources": 8,
+      "sources_without_trace": 0,
+      "trace_rows": 459
+    },
+    "decisions": {
+      "total": 459,
+      "neural_changed": 4,
+      "sanitizer_changed": 222,
+      "final_changed": 222,
+      "neural_change_rate": 0.00871,
+      "sanitizer_change_rate": 0.48366,
+      "final_change_rate": 0.48366
+    },
+    "counts": {
+      "by_opponent": {
+        "national_v14": 126,
+        "national_v5": 126,
+        "national_v3": 105,
+        "national_v2": 102
+      },
+      "by_stage": {
+        "preflop": 399,
+        "flop": 48,
+        "turn": 10,
+        "river": 2
+      },
+      "rule_to_advised": {
+        "raise_pot->raise_pot": 165,
+        "fold->fold": 160,
+        "raise_2pot->raise_2pot": 55,
+        "call->call": 41,
+        "raise_half->raise_half": 21,
+        "allin->allin": 13,
+        "call->raise_pot": 4
+      },
+      "rule_to_final": {
+        "fold->fold": 160,
+        "raise_pot->raise_pot": 103,
+        "raise_pot->raise_2pot": 62,
+        "raise_2pot->raise_2pot": 55,
+        "call->call": 41,
+        "raise_half->raise_half": 13,
+        "allin->allin": 12,
+        "raise_half->raise_pot": 8,
+        "call->raise_pot": 4,
+        "allin->call": 1
+      },
+      "advised_to_final": {
+        "fold->fold": 160,
+        "raise_pot->raise_pot": 107,
+        "raise_pot->raise_2pot": 62,
+        "raise_2pot->raise_2pot": 55,
+        "call->call": 41,
+        "raise_half->raise_half": 13,
+        "allin->allin": 12,
+        "raise_half->raise_pot": 8,
+        "allin->call": 1
+      },
+      "policy_top_label": {
+        "fold": 152,
+        "raise_2pot": 134,
+        "call": 75,
+        "raise_pot": 60,
+        "raise_half": 27,
+        "allin": 11
+      },
+      "multi_action_proposal_label": {
+        "raise_pot": 4
+      },
+      "neural_changed_by_opponent": {
+        "national_v14": 2,
+        "national_v5": 2
+      },
+      "neural_changed_by_stage": {
+        "preflop": 4
+      },
+      "final_changed_by_opponent": {
+        "national_v2": 69,
+        "national_v3": 69,
+        "national_v14": 42,
+        "national_v5": 42
+      },
+      "final_changed_by_stage": {
+        "preflop": 221,
+        "river": 1
+      },
+      "sanitizer_changed_by_stage": {
+        "preflop": 221,
+        "river": 1
+      }
+    },
+    "outcomes": {
+      "neural_changed": {
+        "count": 4,
+        "sum": -3898.0,
+        "mean": -974.5,
+        "median": -974.5,
+        "min": -2780.0,
+        "max": 831.0
+      },
+      "neural_unchanged": {
+        "count": 455,
+        "sum": -295035.0,
+        "mean": -648.429,
+        "median": 100.0,
+        "min": -20000.0,
+        "max": 20000.0
+      },
+      "final_changed": {
+        "count": 222,
+        "sum": -81645.0,
+        "mean": -367.77,
+        "median": 100.0,
+        "min": -20000.0,
+        "max": 20000.0
+      },
+      "final_unchanged": {
+        "count": 237,
+        "sum": -217288.0,
+        "mean": -916.827,
+        "median": -50.0,
+        "min": -20000.0,
+        "max": 20000.0
+      },
+      "by_opponent": {
+        "national_v14": {
+          "neural_changed": {
+            "count": 2,
+            "sum": -1949.0,
+            "mean": -974.5,
+            "median": -974.5,
+            "min": -2780.0,
+            "max": 831.0
+          },
+          "neural_unchanged": {
+            "count": 124,
+            "sum": 10895.0,
+            "mean": 87.863,
+            "median": -50.0,
+            "min": -20000.0,
+            "max": 20000.0
+          },
+          "final_changed": {
+            "count": 42,
+            "sum": 21178.0,
+            "mean": 504.238,
+            "median": 100.0,
+            "min": -20000.0,
+            "max": 20000.0
+          },
+          "final_unchanged": {
+            "count": 84,
+            "sum": -12232.0,
+            "mean": -145.619,
+            "median": -75.0,
+            "min": -20000.0,
+            "max": 20000.0
+          }
+        },
+        "national_v2": {
+          "neural_changed": {
+            "count": 0,
+            "sum": 0,
+            "mean": 0.0,
+            "median": 0.0
+          },
+          "neural_unchanged": {
+            "count": 102,
+            "sum": -190930.0,
+            "mean": -1871.863,
+            "median": 100.0,
+            "min": -20000.0,
+            "max": 1160.0
+          },
+          "final_changed": {
+            "count": 69,
+            "sum": -72948.0,
+            "mean": -1057.217,
+            "median": 100.0,
+            "min": -20000.0,
+            "max": 1160.0
+          },
+          "final_unchanged": {
+            "count": 33,
+            "sum": -117982.0,
+            "mean": -3575.212,
+            "median": -50.0,
+            "min": -20000.0,
+            "max": 1160.0
+          }
+        },
+        "national_v3": {
+          "neural_changed": {
+            "count": 0,
+            "sum": 0,
+            "mean": 0.0,
+            "median": 0.0
+          },
+          "neural_unchanged": {
+            "count": 105,
+            "sum": -125895.0,
+            "mean": -1199.0,
+            "median": 100.0,
+            "min": -20000.0,
+            "max": 1910.0
+          },
+          "final_changed": {
+            "count": 69,
+            "sum": -51053.0,
+            "mean": -739.899,
+            "median": 100.0,
+            "min": -20000.0,
+            "max": 1910.0
+          },
+          "final_unchanged": {
+            "count": 36,
+            "sum": -74842.0,
+            "mean": -2078.944,
+            "median": -75.0,
+            "min": -20000.0,
+            "max": 1910.0
+          }
+        },
+        "national_v5": {
+          "neural_changed": {
+            "count": 2,
+            "sum": -1949.0,
+            "mean": -974.5,
+            "median": -974.5,
+            "min": -2780.0,
+            "max": 831.0
+          },
+          "neural_unchanged": {
+            "count": 124,
+            "sum": 10895.0,
+            "mean": 87.863,
+            "median": -50.0,
+            "min": -20000.0,
+            "max": 20000.0
+          },
+          "final_changed": {
+            "count": 42,
+            "sum": 21178.0,
+            "mean": 504.238,
+            "median": 100.0,
+            "min": -20000.0,
+            "max": 20000.0
+          },
+          "final_unchanged": {
+            "count": 84,
+            "sum": -12232.0,
+            "mean": -145.619,
+            "median": -75.0,
+            "min": -20000.0,
+            "max": 20000.0
+          }
+        }
+      },
+      "by_stage": {
+        "flop": {
+          "neural_changed": {
+            "count": 0,
+            "sum": 0,
+            "mean": 0.0,
+            "median": 0.0
+          },
+          "neural_unchanged": {
+            "count": 48,
+            "sum": -68755.0,
+            "mean": -1432.396,
+            "median": -100.0,
+            "min": -20000.0,
+            "max": 1910.0
+          },
+          "final_changed": {
+            "count": 0,
+            "sum": 0,
+            "mean": 0.0,
+            "median": 0.0
+          },
+          "final_unchanged": {
+            "count": 48,
+            "sum": -68755.0,
+            "mean": -1432.396,
+            "median": -100.0,
+            "min": -20000.0,
+            "max": 1910.0
+          }
+        },
+        "preflop": {
+          "neural_changed": {
+            "count": 4,
+            "sum": -3898.0,
+            "mean": -974.5,
+            "median": -974.5,
+            "min": -2780.0,
+            "max": 831.0
+          },
+          "neural_unchanged": {
+            "count": 395,
+            "sum": -90295.0,
+            "mean": -228.595,
+            "median": 100.0,
+            "min": -20000.0,
+            "max": 20000.0
+          },
+          "final_changed": {
+            "count": 221,
+            "sum": -61645.0,
+            "mean": -278.937,
+            "median": 100.0,
+            "min": -20000.0,
+            "max": 20000.0
+          },
+          "final_unchanged": {
+            "count": 178,
+            "sum": -32548.0,
+            "mean": -182.854,
+            "median": -50.0,
+            "min": -20000.0,
+            "max": 20000.0
+          }
+        },
+        "river": {
+          "neural_changed": {
+            "count": 0,
+            "sum": 0,
+            "mean": 0.0,
+            "median": 0.0
+          },
+          "neural_unchanged": {
+            "count": 2,
+            "sum": -40000.0,
+            "mean": -20000.0,
+            "median": -20000.0,
+            "min": -20000.0,
+            "max": -20000.0
+          },
+          "final_changed": {
+            "count": 1,
+            "sum": -20000.0,
+            "mean": -20000.0,
+            "median": -20000.0,
+            "min": -20000.0,
+            "max": -20000.0
+          },
+          "final_unchanged": {
+            "count": 1,
+            "sum": -20000.0,
+            "mean": -20000.0,
+            "median": -20000.0,
+            "min": -20000.0,
+            "max": -20000.0
+          }
+        },
+        "turn": {
+          "neural_changed": {
+            "count": 0,
+            "sum": 0,
+            "mean": 0.0,
+            "median": 0.0
+          },
+          "neural_unchanged": {
+            "count": 10,
+            "sum": -95985.0,
+            "mean": -9598.5,
+            "median": -10050.0,
+            "min": -20000.0,
+            "max": 1910.0
+          },
+          "final_changed": {
+            "count": 0,
+            "sum": 0,
+            "mean": 0.0,
+            "median": 0.0
+          },
+          "final_unchanged": {
+            "count": 10,
+            "sum": -95985.0,
+            "mean": -9598.5,
+            "median": -10050.0,
+            "min": -20000.0,
+            "max": 1910.0
+          }
+        }
+      }
+    },
+    "neural_value_delta_vs_rule": {
+      "neural_changed": {
+        "count": 4,
+        "sum": 4.235,
+        "mean": 1.059,
+        "median": 1.059,
+        "min": 0.938,
+        "max": 1.179
+      },
+      "neural_unchanged": {
+        "count": 455,
+        "sum": -19.661,
+        "mean": -0.043,
+        "median": 0.0,
+        "min": -0.532,
+        "max": 0.478
+      }
+    }
+  },
+  "examples": {
+    "worst_neural_changed": [
+      {
+        "opponent": "national_v14",
+        "match_idx": 0,
+        "leg": "swapped",
+        "hand": 5,
+        "decision_serial": 8,
+        "stage": "preflop",
+        "is_small_blind": false,
+        "pot": 404,
+        "to_call": 204,
+        "rule_action": 0,
+        "advised_action": 812,
+        "final_action": 912,
+        "rule_label": "call",
+        "final_label": "raise_pot",
+        "hand_net_chips": -2780,
+        "policy_label": "fold",
+        "policy_conf": 0.97466,
+        "multi_action_proposal": 812,
+        "multi_action_proposal_label": "raise_pot",
+        "final_value_delta_vs_rule": 0.93809,
+        "best_value_label": "raise_half",
+        "best_value_delta_vs_rule": 1.12116
+      },
+      {
+        "opponent": "national_v5",
+        "match_idx": 0,
+        "leg": "swapped",
+        "hand": 5,
+        "decision_serial": 8,
+        "stage": "preflop",
+        "is_small_blind": false,
+        "pot": 404,
+        "to_call": 204,
+        "rule_action": 0,
+        "advised_action": 812,
+        "final_action": 912,
+        "rule_label": "call",
+        "final_label": "raise_pot",
+        "hand_net_chips": -2780,
+        "policy_label": "fold",
+        "policy_conf": 0.97466,
+        "multi_action_proposal": 812,
+        "multi_action_proposal_label": "raise_pot",
+        "final_value_delta_vs_rule": 0.93809,
+        "best_value_label": "raise_half",
+        "best_value_delta_vs_rule": 1.12116
+      },
+      {
+        "opponent": "national_v14",
+        "match_idx": 0,
+        "leg": "forward",
+        "hand": 2,
+        "decision_serial": 3,
+        "stage": "preflop",
+        "is_small_blind": false,
+        "pot": 377,
+        "to_call": 177,
+        "rule_action": 0,
+        "advised_action": 731,
+        "final_action": 831,
+        "rule_label": "call",
+        "final_label": "raise_pot",
+        "hand_net_chips": 831,
+        "policy_label": "fold",
+        "policy_conf": 0.98517,
+        "multi_action_proposal": 731,
+        "multi_action_proposal_label": "raise_pot",
+        "final_value_delta_vs_rule": 1.17921,
+        "best_value_label": "raise_pot",
+        "best_value_delta_vs_rule": 1.17921
+      },
+      {
+        "opponent": "national_v5",
+        "match_idx": 0,
+        "leg": "forward",
+        "hand": 2,
+        "decision_serial": 3,
+        "stage": "preflop",
+        "is_small_blind": false,
+        "pot": 377,
+        "to_call": 177,
+        "rule_action": 0,
+        "advised_action": 731,
+        "final_action": 831,
+        "rule_label": "call",
+        "final_label": "raise_pot",
+        "hand_net_chips": 831,
+        "policy_label": "fold",
+        "policy_conf": 0.98517,
+        "multi_action_proposal": 731,
+        "multi_action_proposal_label": "raise_pot",
+        "final_value_delta_vs_rule": 1.17921,
+        "best_value_label": "raise_pot",
+        "best_value_delta_vs_rule": 1.17921
+      }
+    ],
+    "best_neural_changed": [
+      {
+        "opponent": "national_v14",
+        "match_idx": 0,
+        "leg": "forward",
+        "hand": 2,
+        "decision_serial": 3,
+        "stage": "preflop",
+        "is_small_blind": false,
+        "pot": 377,
+        "to_call": 177,
+        "rule_action": 0,
+        "advised_action": 731,
+        "final_action": 831,
+        "rule_label": "call",
+        "final_label": "raise_pot",
+        "hand_net_chips": 831,
+        "policy_label": "fold",
+        "policy_conf": 0.98517,
+        "multi_action_proposal": 731,
+        "multi_action_proposal_label": "raise_pot",
+        "final_value_delta_vs_rule": 1.17921,
+        "best_value_label": "raise_pot",
+        "best_value_delta_vs_rule": 1.17921
+      },
+      {
+        "opponent": "national_v5",
+        "match_idx": 0,
+        "leg": "forward",
+        "hand": 2,
+        "decision_serial": 3,
+        "stage": "preflop",
+        "is_small_blind": false,
+        "pot": 377,
+        "to_call": 177,
+        "rule_action": 0,
+        "advised_action": 731,
+        "final_action": 831,
+        "rule_label": "call",
+        "final_label": "raise_pot",
+        "hand_net_chips": 831,
+        "policy_label": "fold",
+        "policy_conf": 0.98517,
+        "multi_action_proposal": 731,
+        "multi_action_proposal_label": "raise_pot",
+        "final_value_delta_vs_rule": 1.17921,
+        "best_value_label": "raise_pot",
+        "best_value_delta_vs_rule": 1.17921
+      },
+      {
+        "opponent": "national_v14",
+        "match_idx": 0,
+        "leg": "swapped",
+        "hand": 5,
+        "decision_serial": 8,
+        "stage": "preflop",
+        "is_small_blind": false,
+        "pot": 404,
+        "to_call": 204,
+        "rule_action": 0,
+        "advised_action": 812,
+        "final_action": 912,
+        "rule_label": "call",
+        "final_label": "raise_pot",
+        "hand_net_chips": -2780,
+        "policy_label": "fold",
+        "policy_conf": 0.97466,
+        "multi_action_proposal": 812,
+        "multi_action_proposal_label": "raise_pot",
+        "final_value_delta_vs_rule": 0.93809,
+        "best_value_label": "raise_half",
+        "best_value_delta_vs_rule": 1.12116
+      },
+      {
+        "opponent": "national_v5",
+        "match_idx": 0,
+        "leg": "swapped",
+        "hand": 5,
+        "decision_serial": 8,
+        "stage": "preflop",
+        "is_small_blind": false,
+        "pot": 404,
+        "to_call": 204,
+        "rule_action": 0,
+        "advised_action": 812,
+        "final_action": 912,
+        "rule_label": "call",
+        "final_label": "raise_pot",
+        "hand_net_chips": -2780,
+        "policy_label": "fold",
+        "policy_conf": 0.97466,
+        "multi_action_proposal": 812,
+        "multi_action_proposal_label": "raise_pot",
+        "final_value_delta_vs_rule": 0.93809,
+        "best_value_label": "raise_half",
+        "best_value_delta_vs_rule": 1.12116
+      }
+    ]
+  }
+}
