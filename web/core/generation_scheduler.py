@@ -1401,7 +1401,14 @@ def _cleanup_dirty_paths() -> set[str]:
 
 def _commit_post_cleanup_experience_change(version: int, preexisting_dirty: set[str]) -> dict:
     """Commit post-cleanup experience_pool consolidation as scoped housekeeping."""
-    from evolution_infra import EXPERIENCE_FILE, PROJECT_ROOT, _git, _git_ensure_main_branch, git_push_refs
+    from evolution_infra import (
+        EXPERIENCE_FILE,
+        PROJECT_ROOT,
+        _git,
+        _git_ensure_main_branch,
+        git_push_refs,
+        publish_runtime_expected_head,
+    )
 
     try:
         rel = str(EXPERIENCE_FILE.relative_to(PROJECT_ROOT))
@@ -1459,9 +1466,11 @@ def _commit_post_cleanup_experience_change(version: int, preexisting_dirty: set[
     )
     _git("commit", "-m", f"chore: consolidate v{version} experience pool", "--", rel)
     commit_hash = _git("rev-parse", "--short", "HEAD", check=False).strip()
+    publish_runtime_expected_head("post_cleanup_experience_commit", version=version)
     push_ok = False
     if os.environ.get("EVOLUTION_GIT_PUSH") == "1":
         push_ok = git_push_refs("main")
+        publish_runtime_expected_head("post_cleanup_experience_push", version=version)
     log_system_event(
         "pipeline.post_cleanup_experience_commit_done",
         "success" if push_ok or os.environ.get("EVOLUTION_GIT_PUSH") != "1" else "warn",
