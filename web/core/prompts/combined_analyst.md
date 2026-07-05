@@ -57,12 +57,12 @@ Output ONLY a JSON block:
   "diversity_needed": true/false,
   "diversity_reason": "why diversity is needed (or null if not needed)",
   "recommendation": "continue|branch|crossover",
-  "branch_from": "claude_vN" or null,
+  "branch_from": "national_vN" or null,
   "verified_improvements": ["list of things that actually helped recent gens"],
   "persistent_weaknesses": ["list of recurring problems not yet fixed"],
   "reason": "brief explanation combining stagnation assessment and performance trend",
   "suggestion": "one concrete high-priority suggestion for next gen",
-  "recommended_source": "claude_vN",
+  "recommended_source": "national_vN",
   "source_rationale": "why this bot is the best choice for evolution source",
   "causal_analysis": "For each key rating movement, explain what code change caused it and why, with evidence"
 }
@@ -74,5 +74,5 @@ Output ONLY a JSON block:
 - Treat `h2h_avg_wr` as matchup evidence, not the canonical skill metric. Low coverage can inflate or deflate it.
 - Use Glicko RD/conservative rating to discount uncertain bots; a high raw rating with high RD is not reliable.
 - If multiple bots have similar `leaderboard_score`, prefer the one with better active-pool H2H coverage and more games.
-- Example: prefer "claude_v6" if it has score=0.532, 95% coverage, and rd=80 over v8 with h2h_avg_wr=53% but only 10 games vs one opponent.
+- Example: prefer "national_v6" if it has score=0.532, 95% coverage, and rd=80 over v8 with h2h_avg_wr=53% but only 10 games vs one opponent.
 </output_format>

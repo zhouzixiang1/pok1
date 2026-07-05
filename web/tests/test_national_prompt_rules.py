@@ -34,6 +34,42 @@ def test_core_prompts_include_full_national_legality_rules():
         assert phrase in combined
 
 
+def test_active_generation_prompts_use_national_bot_namespace():
+    prompt_names = [
+        "initial_prompt.md",
+        "combined_analyst.md",
+        "stagnation_analyzer.md",
+        "orchestrator.md",
+        "master_plan_audit.md",
+        "crossover_prompt.md",
+        "reviewer_prompt.md",
+        "critic_prompt.md",
+    ]
+    combined = "\n".join(_prompt(name) for name in prompt_names)
+
+    forbidden_patterns = [
+        r"bots/claude_v",
+        r"\bclaude_vN\b",
+        r'"claude_v',
+        r"`bot-v",
+        r"\sbot-v",
+        r"(?<!national-)bot-vN",
+        r"(?<!national-)bot-v\{",
+    ]
+    for pattern in forbidden_patterns:
+        assert not re.search(pattern, combined), pattern
+
+    required_fragments = [
+        "bots/national_v",
+        "national_vN",
+        "national-bot-v",
+        "national_bot.py",
+        "sever/bot_adapter.py",
+    ]
+    for fragment in required_fragments:
+        assert fragment in combined
+
+
 def test_auxiliary_prompts_block_national_protocol_misleading_plans():
     assert "National rules safety" in _prompt("master_plan_audit.md")
     assert "national protocol legality assumptions" in _prompt("crossover_compatibility.md")

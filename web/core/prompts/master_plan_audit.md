@@ -10,9 +10,10 @@ Analyze the Master plan systematically:
 2. **Experience alignment**: Compare the plan against the experience pool. If the pool says "strategy X failed in v12-v15", the plan should not propose X again without a fundamentally different approach.
 3. **Direction novelty**: Compare against recent commit messages. If the last 3 commits all tried "postflop aggression tuning", a 4th attempt is unlikely to succeed.
 4. **Targeting quality**: Does the plan actually address the core issues identified by the combined analyst, or does it pursue tangential improvements?
-5. **National rules safety**: In adapter workflows, reject plans that ask JSON
-   bots to emit TCP text. In national_native, reject plans that leave the formal
-   entry as JSON-only or depend on `sever/bot_adapter.py`. In all workflows,
+5. **National rules safety**: New bots are national_native by default. Reject
+   plans that leave the formal entry as JSON-only or depend on
+   `sever/bot_adapter.py`. In legacy adapter regression contexts, also reject
+   plans that ask JSON bots to emit TCP text. In all workflows,
    reject wire-level `bet`, raise-by-increment instead of raise-to-total,
    positive-raise all-ins, postflop TCP `check-check`, BB calling after an SB
    limp/call preflop, or non-strict re-raise minimums. Full rules live in
@@ -37,9 +38,9 @@ Analyze the Master plan systematically:
 ## Branch-From Identity (read before flagging data staleness)
 - This generation's source (parent) version is **v{source_v}**, target is **v{next_v}**.
 - {branch_from_note}
-- The plan's tasks MUST target bots/claude_v{next_v}/, NOT bots/claude_v{source_v}/.
+- The plan's tasks MUST target bots/national_v{next_v}/, NOT bots/national_v{source_v}/.
 - If the plan states, implies, or hardcodes a different target version than v{next_v}, reject it.
-- If the plan targets the parent path `bots/claude_v{source_v}/` for worker edits, reject it.
+- If the plan targets the parent path `bots/national_v{source_v}/` for worker edits, reject it.
 - A plan that fixes correctness bugs present in v{source_v} is VALID even if a later lineage already fixed them — evolution branches from v{source_v}.
 - Only reject on grounds of data staleness if the analysis references a version OTHER than v{source_v}. Master plans must not contain `branch_from`; source selection is already decided before Master planning.
 </branch_from_semantics>
