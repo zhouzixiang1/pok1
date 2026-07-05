@@ -4,7 +4,14 @@ import subprocess
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+def _repo_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pokctl.sh").exists():
+            return parent
+    raise RuntimeError("Could not locate repository root")
+
+
+REPO_ROOT = _repo_root()
 
 
 def _init_git_repo(path: Path) -> None:
