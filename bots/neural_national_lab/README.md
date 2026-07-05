@@ -1138,6 +1138,33 @@ masks, public/range features, branch-level value or regret vectors, and an
 actor/learner data loop that can produce many more reproducible disputed-gate
 rows before another runtime bot is promoted.
 
+`multi_opponent_multi_action_scheduler.py` is the first actor-side step in that
+direction. It fans `multi_action_shard_runner.py` across multiple strong
+opponents, keeps the shard runner on a process executor, writes per-opponent
+raw counterfactual rows, and can optionally call
+`build_multi_action_value_data.py` to produce JSONL training rows. A plain
+g002x2x5 batch against v279/v283/v284/v285/v288 showed why target selection
+matters: without an active-positive filter it mostly captured trivial preflop
+call/fold geometry, and a short flop-only batch found no rows. The useful
+follow-up used `--active-min-positive-targets 1 --active-drop-label allin` over
+the same five opponents and produced 40 preflop fold-to-call rescue rows in
+`multi_opponent_v064_activepos_g004x4x5_seed2026100400.json`.
+
+`versions/v075_v254_activepos_call_rescue_p040_h16` is the first candidate from
+that scheduler. It starts from v064, adds a multi-action-value direct proposal
+path, and isolates the runtime to preflop `rule=fold -> call` rescue using
+`multi_action_value_activepos_p040_h16_seed1001.json`; old raise support gates
+are disabled in this version. CUDA training on
+`multiaction_value_v064_activepos_p040_delta_adv_noallin_clip1000.jsonl`
+produced an h16 head with validation MAE `0.0014`. The repaired process-worker
+g016x5 scan against v279/v283/v284/v285/v288 found 80/80 positive divergence
+pairs, mean `+4809.38` chips per 70 hands versus v064, 95 percent CI
+`[+4760.50, +4858.25]`, and no zero or negative samples. A direct five-game
+smoke battle against v279 finished 5-0 for v075. This is a real action-surface
+breakthrough, not another inactive support head; the next check should scale to
+larger and fresher seed ranges to rule out overfitting to this blind-defense
+window.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass
