@@ -1,0 +1,21 @@
+{
+  "inputs": [
+    "bots/neural_national_lab/data/divergence_v043_v056_vs_v279_hits10_18_29_neighborhood_p054_seed2026080100_botrng.json"
+  ],
+  "version": "/home/zzx/project/pok/bots/neural_national_lab/versions/v056_v254_cf_value_ensemble_p117_h8_h16_h32_m050_mm105",
+  "target_mode": "candidate_minus_baseline",
+  "rows": 54,
+  "input_dim": 70,
+  "positive": 49,
+  "zero": 0,
+  "negative": 5,
+  "mean_delta": 3868.3703703703704,
+  "median_delta": 4166.0,
+  "action_templates": {
+    "101->0|mirror": 40,
+    "101->0|normal": 14
+  },
+  "top_labels": {
+    "2": 54
+  }
+}
