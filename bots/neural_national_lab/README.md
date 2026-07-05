@@ -1034,6 +1034,23 @@ next data step should replay the v279 negative divergences and the v285/v288
 large positive divergences into targeted active counterfactual rows before
 spending on g064 or larger model families.
 
+`build_outlier_multi_action_value_data.py` converts those paired divergence
+windows back into runtime-compatible multi-action value rows. The first pass
+used the 14 nonzero v066-vs-v064 g032 samples, clipped them to `+/-1000`, and
+merged them with the p073 boundary set to create an 87-row p087 training file.
+CUDA h16/h32/h64 training selected the h32 head for replay: it blocked all five
+negative first-divergence targets in the local outlier score check while
+keeping the v285/v288 large positive windows. The resulting
+`versions/v067_v254_outlier_boundary_h32_p087_inter088` keeps v066's runtime
+gates and only replaces the multi-action value head. On the same g032x5
+paired evaluation versus v064, v067 improved the average to `+91.14` chips per
+70 hands with CI `[-12.34, +194.62]`, split 10 positive, 147 zero, and 3
+negative samples. It reduced the worst sample from `-1429` to `-796`, but the
+CI still crosses zero and v279 remains slightly negative (`-6.64`, CI
+`[-33.07, +19.79]`). Treat v067 as a better diagnostic candidate, not a
+promoted successor. The next active-learning row should target the new v279
+idx22 `-796` divergence before widening games or model size.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass
