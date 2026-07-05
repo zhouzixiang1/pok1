@@ -197,6 +197,155 @@ def test_native_tcp_pair_runs_without_adapter(tmp_path):
     )
 
 
+def _write_random_probe_native_bot(bot_dir: Path) -> None:
+    bot_dir.mkdir(parents=True, exist_ok=True)
+    (bot_dir / "main.py").write_text("# native-only seed probe\n", encoding="utf-8")
+    (bot_dir / "national_bot.py").write_text(
+        "import argparse\n"
+        "import random\n"
+        "import socket\n"
+        "import sys\n\n"
+        "print(f'RANDOM_PROBE {random.random():.12f}', file=sys.stderr, flush=True)\n\n"
+        "def main():\n"
+        "    parser = argparse.ArgumentParser()\n"
+        "    parser.add_argument('--host')\n"
+        "    parser.add_argument('--port', type=int)\n"
+        "    parser.add_argument('--name')\n"
+        "    args = parser.parse_args()\n"
+        "    with socket.create_connection((args.host, args.port), timeout=5) as sock:\n"
+        "        stream = sock.makefile('r', encoding='utf-8', newline='\\n')\n"
+        "        while True:\n"
+        "            line = stream.readline()\n"
+        "            if not line:\n"
+        "                return 0\n"
+        "            line = line.rstrip('\\r\\n')\n"
+        "            if line == 'name':\n"
+        "                sock.sendall((args.name + '\\n').encode('utf-8'))\n"
+        "            elif line.startswith('preflop|SMALLBLIND|'):\n"
+        "                sock.sendall(b'fold\\n')\n\n"
+        "if __name__ == '__main__':\n"
+        "    raise SystemExit(main())\n"
+        "# required wire tokens: raise fold call check allin\n",
+        encoding="utf-8",
+    )
+
+
+def _write_delay_connect_native_bot(bot_dir: Path, delay_sec: float) -> None:
+    bot_dir.mkdir(parents=True, exist_ok=True)
+    (bot_dir / "main.py").write_text("# native-only delay probe\n", encoding="utf-8")
+    (bot_dir / "national_bot.py").write_text(
+        "import argparse\n"
+        "import socket\n"
+        "import time\n\n"
+        f"DELAY_SEC = {float(delay_sec)!r}\n\n"
+        "def main():\n"
+        "    parser = argparse.ArgumentParser()\n"
+        "    parser.add_argument('--host')\n"
+        "    parser.add_argument('--port', type=int)\n"
+        "    parser.add_argument('--name')\n"
+        "    args = parser.parse_args()\n"
+        "    time.sleep(DELAY_SEC)\n"
+        "    with socket.create_connection((args.host, args.port), timeout=5) as sock:\n"
+        "        stream = sock.makefile('r', encoding='utf-8', newline='\\n')\n"
+        "        while True:\n"
+        "            line = stream.readline()\n"
+        "            if not line:\n"
+        "                return 0\n"
+        "            line = line.rstrip('\\r\\n')\n"
+        "            if line == 'name':\n"
+        "                sock.sendall((args.name + '\\n').encode('utf-8'))\n"
+        "            elif line.startswith('preflop|SMALLBLIND|'):\n"
+        "                sock.sendall(b'fold\\n')\n\n"
+        "if __name__ == '__main__':\n"
+        "    raise SystemExit(main())\n"
+        "# required wire tokens: raise fold call check allin\n",
+        encoding="utf-8",
+    )
+
+
+def test_native_tcp_pair_can_seed_bot_process_random(tmp_path):
+    bot_a = tmp_path / "BotA"
+    bot_b = tmp_path / "BotB"
+    _write_random_probe_native_bot(bot_a)
+    _write_random_probe_native_bot(bot_b)
+
+    first = asyncio.run(run_native_tcp_pair(
+        bot_a,
+        bot_b,
+        hands=2,
+        require_native_a=True,
+        require_native_b=True,
+        deck_seed_base=1234,
+        bot_seed_base=4321,
+        timeout_sec=30,
+    ))
+    second = asyncio.run(run_native_tcp_pair(
+        bot_a,
+        bot_b,
+        hands=2,
+        require_native_a=True,
+        require_native_b=True,
+        deck_seed_base=1234,
+        bot_seed_base=4321,
+        timeout_sec=30,
+    ))
+
+    assert first["bot_seed_base"] == 4321
+    assert first["per_player"]["BotA"]["native"]["bot_seed"] == 4321
+    assert first["per_player"]["BotB"]["native"]["bot_seed"] == 4322
+    assert first["per_player"]["BotA"]["native"]["stderr_tail"] == second["per_player"]["BotA"]["native"]["stderr_tail"]
+    assert first["per_player"]["BotB"]["native"]["stderr_tail"] == second["per_player"]["BotB"]["native"]["stderr_tail"]
+
+
+def test_native_tcp_pair_reorders_clients_by_bot_label(tmp_path):
+    bot_a = tmp_path / "BotA"
+    bot_b = tmp_path / "BotB"
+    _write_delay_connect_native_bot(bot_a, 0.5)
+    _write_delay_connect_native_bot(bot_b, 0.0)
+
+    result = asyncio.run(run_native_tcp_pair(
+        bot_a,
+        bot_b,
+        hands=1,
+        require_native_a=True,
+        require_native_b=True,
+        deck_seed_base=1234,
+        timeout_sec=30,
+    ))
+
+    assert result["passed_compliance"] is True
+    assert result["bot_a"] == "BotA"
+    assert result["bot_b"] == "BotB"
+    assert any(
+        event.get("type") == "client_order"
+        and event.get("order") == ["BotA", "BotB"]
+        and event.get("connection_order") == ["BotB", "BotA"]
+        for event in result["events_tail"]
+    )
+
+
+def test_native_tcp_pair_disambiguates_duplicate_labels(tmp_path):
+    bot_a = tmp_path / "A" / "Same"
+    bot_b = tmp_path / "B" / "Same"
+    _write_delay_connect_native_bot(bot_a, 0.0)
+    _write_delay_connect_native_bot(bot_b, 0.0)
+
+    result = asyncio.run(run_native_tcp_pair(
+        bot_a,
+        bot_b,
+        hands=1,
+        require_native_a=True,
+        require_native_b=True,
+        deck_seed_base=1234,
+        timeout_sec=30,
+    ))
+
+    assert result["bot_a"] == "Same_A"
+    assert result["bot_b"] == "Same_B"
+    assert sorted(result["per_player"]) == ["Same_A", "Same_B"]
+    assert result["passed_compliance"] is True
+
+
 def test_native_tcp_pair_refreshes_unsafe_legacy_opponent_entry(tmp_path):
     bot_a = tmp_path / "BotA"
     bot_b = tmp_path / "BotB"

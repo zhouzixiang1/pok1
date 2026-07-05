@@ -29,6 +29,15 @@ from pipeline_schema import NationalAcceptanceResult
 ROOT = Path(__file__).resolve().parents[2]
 SEVER_DIR = ROOT / "sever"
 NATIVE_ENTRY = "national_bot.py"
+SEEDED_NATIVE_LAUNCHER = (
+    "import os, random, runpy, sys\n"
+    "entry = os.environ['POK_NATIVE_ENTRY']\n"
+    "seed = os.environ.get('POK_NATIVE_BOT_SEED')\n"
+    "if seed not in (None, ''):\n"
+    "    random.seed(int(seed))\n"
+    "sys.argv = [entry] + sys.argv[1:]\n"
+    "runpy.run_path(entry, run_name='__main__')\n"
+)
 
 
 NATIVE_BOT_TEMPLATE = r'''#!/usr/bin/env python3
@@ -646,6 +655,12 @@ def _cleanup_specs(specs: list[NativeBotSpec]) -> None:
             shutil.rmtree(spec.temp_root, ignore_errors=True)
 
 
+def _native_bot_seed(bot_seed_base: int | None, player_idx: int) -> int | None:
+    if bot_seed_base is None:
+        return None
+    return int(bot_seed_base) + int(player_idx)
+
+
 async def _run_tcp_server_with_processes(
     bot_a: NativeBotSpec,
     bot_b: NativeBotSpec,
@@ -653,6 +668,7 @@ async def _run_tcp_server_with_processes(
     hands: int,
     timeout_sec: float,
     deck_seed_base: int | None,
+    bot_seed_base: int | None = None,
 ) -> dict[str, Any]:
     clients: list[_TCPClient] = []
     connected = asyncio.Event()
@@ -669,6 +685,9 @@ async def _run_tcp_server_with_processes(
 
     server = await asyncio.start_server(handle, "127.0.0.1", 0)
     host, port = server.sockets[0].getsockname()[:2]
+    run_labels = [bot_a.label, bot_b.label]
+    if run_labels[0] == run_labels[1]:
+        run_labels = [f"{run_labels[0]}_A", f"{run_labels[1]}_B"]
     procs: list[subprocess.Popen] = []
     stdout_stderr: dict[str, dict[str, str | int | None]] = {}
     engine = None
@@ -677,12 +696,41 @@ async def _run_tcp_server_with_processes(
     name_timeout = max(1.0, min(30.0, float(timeout_sec) / 3.0))
     action_timeout = max(1.0, min(60.0, float(timeout_sec)))
     process_drain_timeout = max(1.0, min(5.0, float(timeout_sec) / 6.0))
+    bot_seeds: dict[str, int | None] = {}
     try:
-        for spec in (bot_a, bot_b):
+        for idx, (spec, label) in enumerate(zip((bot_a, bot_b), run_labels)):
             env = os.environ.copy()
             env["PYTHONPATH"] = str(spec.path) + os.pathsep + env.get("PYTHONPATH", "")
+            seed = _native_bot_seed(bot_seed_base, idx)
+            bot_seeds[label] = seed
+            if seed is None:
+                cmd = [
+                    sys.executable,
+                    str(spec.entry),
+                    "--host",
+                    str(host),
+                    "--port",
+                    str(port),
+                    "--name",
+                    label,
+                ]
+            else:
+                env["POK_NATIVE_ENTRY"] = str(spec.entry)
+                env["POK_NATIVE_BOT_SEED"] = str(seed)
+                env["PYTHONHASHSEED"] = str(seed % 4_294_967_295)
+                cmd = [
+                    sys.executable,
+                    "-c",
+                    SEEDED_NATIVE_LAUNCHER,
+                    "--host",
+                    str(host),
+                    "--port",
+                    str(port),
+                    "--name",
+                    label,
+                ]
             procs.append(subprocess.Popen(
-                [sys.executable, str(spec.entry), "--host", str(host), "--port", str(port), "--name", spec.label],
+                cmd,
                 cwd=str(spec.path),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -699,8 +747,18 @@ async def _run_tcp_server_with_processes(
             raise RuntimeError("native TCP bot name handshake failed")
         clients[0].name = name0
         clients[1].name = name1
+        ordered_clients = clients
+        clients_by_name = {client.name: client for client in clients}
+        if run_labels[0] in clients_by_name and run_labels[1] in clients_by_name:
+            ordered_clients = [clients_by_name[run_labels[0]], clients_by_name[run_labels[1]]]
+            if ordered_clients != clients:
+                events.append({
+                    "type": "client_order",
+                    "order": list(run_labels),
+                    "connection_order": [name0, name1],
+                })
         engine = _LimitedTCPGameEngine(
-            clients,
+            ordered_clients,
             events,
             deck_seed_base=deck_seed_base,
             action_timeout_sec=action_timeout,
@@ -716,7 +774,7 @@ async def _run_tcp_server_with_processes(
             await asyncio.wait_for(server.wait_closed(), timeout=process_drain_timeout)
         except asyncio.TimeoutError:
             pass
-        for spec, proc in zip((bot_a, bot_b), procs):
+        for label, proc in zip(run_labels, procs):
             try:
                 out, err = proc.communicate(timeout=process_drain_timeout)
             except subprocess.TimeoutExpired:
@@ -725,7 +783,7 @@ async def _run_tcp_server_with_processes(
                     out, err = proc.communicate(timeout=process_drain_timeout)
                 except subprocess.TimeoutExpired:
                     out, err = "", "process did not exit after kill"
-            stdout_stderr[spec.label] = {
+            stdout_stderr[label] = {
                 "returncode": proc.returncode,
                 "stdout": out[-2000:] if out else "",
                 "stderr": err[-2000:] if err else "",
@@ -745,16 +803,17 @@ async def _run_tcp_server_with_processes(
     issues: list[str] = []
     if run_error:
         issues.append(f"native_tcp_match_error={run_error}")
-    for idx, spec in enumerate((bot_a, bot_b)):
-        proc_info = stdout_stderr.get(spec.label, {})
+    for idx, label in enumerate(run_labels):
+        proc_info = stdout_stderr.get(label, {})
         proc_failed = bool(proc_info.get("returncode") not in (0, None))
         stdout_text = str(proc_info.get("stdout") or "")
-        per_player[spec.label] = {
+        per_player[label] = {
             "earnings": int(earnings[idx]),
             "illegal_actions": illegal[idx],
             "timeouts": timeouts[idx],
             "native": {
                 "returncode": proc_info.get("returncode"),
+                "bot_seed": bot_seeds.get(label),
                 "stdout_tail": stdout_text,
                 "stderr_tail": proc_info.get("stderr") or "",
                 "process_failures": 1 if proc_failed else 0,
@@ -771,18 +830,18 @@ async def _run_tcp_server_with_processes(
             },
         }
         if illegal[idx]:
-            issues.append(f"{spec.label}: illegal_actions={illegal[idx]}")
+            issues.append(f"{label}: illegal_actions={illegal[idx]}")
         if timeouts[idx]:
-            issues.append(f"{spec.label}: timeouts={timeouts[idx]}")
+            issues.append(f"{label}: timeouts={timeouts[idx]}")
         if proc_failed:
-            issues.append(f"{spec.label}: native_process_returncode={proc_info.get('returncode')}")
-        if per_player[spec.label]["native"]["json_response_stdout"]:
-            issues.append(f"{spec.label}: json_response_stdout")
+            issues.append(f"{label}: native_process_returncode={proc_info.get('returncode')}")
+        if per_player[label]["native"]["json_response_stdout"]:
+            issues.append(f"{label}: json_response_stdout")
     if hands_played != hands:
         issues.append(f"hands_played={hands_played}, expected={hands}")
     return {
-        "bot_a": bot_a.label,
-        "bot_b": bot_b.label,
+        "bot_a": run_labels[0],
+        "bot_b": run_labels[1],
         "hands_requested": hands,
         "hands_played": hands_played,
         "per_player": per_player,
@@ -791,6 +850,7 @@ async def _run_tcp_server_with_processes(
         "net_chips_a_per_hand": round(int(earnings[0]) / max(1, hands_played), 3),
         "execution_mode": "native_tcp",
         "deck_seed_base": deck_seed_base,
+        "bot_seed_base": bot_seed_base,
         "passed_compliance": not issues,
         "issues": issues,
         "events_tail": events[-20:],
@@ -805,6 +865,7 @@ async def run_native_tcp_pair(
     require_native_a: bool = True,
     require_native_b: bool = False,
     deck_seed_base: int | None = None,
+    bot_seed_base: int | None = None,
     timeout_sec: float | None = None,
 ) -> dict[str, Any]:
     label_a, dir_a = resolve_bot(bot_a_token)
@@ -823,6 +884,7 @@ async def run_native_tcp_pair(
             hands=hands,
             timeout_sec=float(timeout_sec),
             deck_seed_base=deck_seed_base,
+            bot_seed_base=bot_seed_base,
         )
     finally:
         _cleanup_specs(specs)

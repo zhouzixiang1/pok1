@@ -12,6 +12,47 @@ Runtime bots stay stdlib-only. Training may use PyTorch/NumPy. The neural model
 acts after the rule strategy and before `sanitize_action`; native TCP output is
 still produced by the national entrypoint.
 
+## Native TCP Evaluation Update
+
+The national-native route is now evaluated with
+`tools/native_tcp_evaluate.py`, which runs real `national_bot.py` TCP clients
+against protocol-native opponents. The evaluator requires native opponent
+entries by default, records illegal actions/timeouts/adapter counts, supports
+parallel workers, and can seed both deck order and bot-process Python `random`.
+
+The native runner in `web/core/national_native.py` now also:
+
+- seeds bot subprocess `random` through a small launcher when `bot_seed_base`
+  is provided;
+- reorders connected clients by their name handshake so result ownership is
+  `bot_a`/`bot_b`, not TCP connection race order;
+- disambiguates duplicate labels with `_A`/`_B` suffixes for local eval.
+
+Current native TCP evidence:
+
+- `v076_v075_no_propose_native_tcp` is the repaired v075 fork on the old v254
+  base. It disables the risky preflop fold-to-call proposal and fixes native
+  showdown feature parsing, but the old base is not competitive under native
+  protocol evaluation: `native_tcp_v076_fixed_vs_v17_v18_h70_m5...json` is
+  `-113888` chips over 700 hands, with 0 illegal actions, 0 timeouts, and
+  0 adapter actions.
+- `v078_national_v17_neural_no_propose_tcp` moves the same conservative neural
+  layer onto the strong national v17 base. Against `bots/national_v17` and
+  `.evolution_pok/bots/national_v18`, the 100-match / 7000-hand report
+  `native_tcp_v078_vs_v17_v18_h70_m50...json` is `-54592` chips with full
+  compliance.
+- `v079_national_v17_neural_off_control_tcp` is the matching v17-base neural
+  ablation. The same 7000-hand report is `-55634` chips. Therefore v078 is
+  `+1042` chips versus its direct control on this fixed native TCP benchmark
+  (`+0.149` chips/hand), with the gain mostly from the `.evolution_pok`
+  `national_v18` opponent.
+
+This is a small reproducible neural-integration signal, not a promotion-grade
+strength breakthrough. The next scale step should use paired seat/deck swaps
+and native TCP counterfactual/action-value data; do not keep tuning the old
+v254/Botzone-trained model as if it were already validated for national
+opponents.
+
 ## Scale-Up Gate
 
 Do not move straight from whole-match outcome labels to large-scale training.
