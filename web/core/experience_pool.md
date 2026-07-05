@@ -39,6 +39,9 @@
 - Anti-lock trash gate must be tournament-safe: hands_left>3, my_chips>15BB, low fold_to_raise before suppressing trash jams.
 
 ## RECENT_LESSONS
+- **v295**: If DISCIPLINED_RIVER_MARGIN stderr telemetry fires <1% during daemon eval, WIDEN the tightness gate (raise vpip prior ceiling to 0.62 or relax pfr_dev coefficient) BEFORE increasing the 0.035 delta magnitude — a too-narrow gate produces no behavioral signal.
+- **v295**: v294 leaks vs v287 at 0.40 WR (8W/12L over 20g); if v295 vs v287 doesn't reach ≥50% WR over ≥30g paired net-chips, widen tier scope to include 'mid_weak' (currently only tier=='thin' qualifies) since middle_pair/underpair leaks vs disciplined barrels likely extend beyond the narrow 'thin' bucket.
+- **v295 归档建议 (improvement)**: Track v295 vs v287 specifically over the next 30 daemon games — if WR stays <0.50, the fix is correct but underscoped; widen the tier gate from 'thin' to include 'mid_weak' before tuning the 0.035 delta magnitude, since the disciplined-barrel value-cut problem extends to middle_pair/underpair hands on the river.
 - **v294**: v293 confirmed a tight-disciplined cluster leak: 20-40% WR vs v286/v287/v291/v284/v269 over 5-15g each — this cluster is a valid exploitative target for future river-call-margin work, but v294's fix needs ≥30g vs each member before treating the leak as closed.
 - **v294**: Axis-stacking risk flagged at strategy.py:1258 (+0.035 middle-pair turn branch) — future river-margin deltas must be gated against this branch on turn-continuation lines to avoid double-counting; consider cross-axis disagreement check per v287 precedent.
 - **v294 归档建议**: Before any further river-margin iteration, prioritize daemon battle-pair saturation vs v286/v291/v287 (currently 0g post-commit for v294) to confirm whether the DISCIPLINED_RIVER_MARGIN predicate fires at ≥5% as the critic warned — if it stays <1%, widen the vpip/pfr tightness gate before tuning the penalty magnitude.
@@ -48,4 +51,5 @@
 - **v292 归档建议**: After ≥30 v292-vs-v286/v288 games, verify the tptk_polarized_jam axis actually rescues folds on monotone/4-flush/4-straight-window boards (v291's failure mode vs v286); if fold-rate on polarized shoves doesn't rise, escalate to an explicit inline TPTK-vs-polarized-jam call/fold branch in postflop.py.
 - **v291**: New parameters must be wired into ALL live call sites before claiming effect — spr_commitment_gate(board_texture=...) was dormant because strategy.py:1300 passed 5 positional args; quality gates must grep call sites, not just self-tests. Forward board_texture=board_texture there (gate on flush_pressure>=1.0 OR straight_pressure>=1.0 @ factor 3, not 'dynamic' @ 2.5).
 - **v291**: Crossover source must beat the target's ACTIVE nemeses, not any nemesis — v43 helps vs v197/v36 but NOT vs v290's actual bleed cluster v286 (20% wr) / v288 (32% wr).
+
 
