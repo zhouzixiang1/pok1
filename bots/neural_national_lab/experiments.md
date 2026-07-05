@@ -906,3 +906,47 @@
   The next version should not be another global threshold tweak; it should
   collect larger v2/v3 hard-negative action-value data and train with held-out
   opponent groups.
+
+## Native TCP Round 6 Notes
+
+- Re-read the `.evolution_pok` completed native pool. The conservative-Glicko
+  top was led by `national_v2` and `national_v3`, so this round focused on
+  those hard negatives while still evaluating against protocol-native rule bots
+  only.
+- Collected v2/v3 native TCP counterfactual shards with
+  `v085_national_v17_profile_trace_tcp`. The long run was interrupted after
+  completed shard files landed, then merged with `--merge-only`:
+  120 rows, 119 ok rows, and 286 raw target samples. The hard-negative merge
+  showed significant positive `raise_pot` evidence and significant negative
+  fold evidence.
+- Built the mixed action-context dataset
+  `native_tcp_value_v085_current_plus_v2v3_hardneg_d307_context_action_clip4000_noallin.jsonl`
+  from the previous current-pool data plus the v2/v3 hard-negative merge:
+  307 rows, 933 clipped targets, 78 input dimensions, and no all-in target.
+  The selected h64 CUDA model was
+  `native_tcp_value_v085_current_plus_v2v3_hardneg_action_h64_seed3421.json`
+  with validation MAE `0.1333` and validation best-label accuracy `0.5323`.
+- `v099_national_v17_v2v3_raise_pot_pairgate_tcp` added version-local
+  pair-specific proposal thresholds and opened preflop `call/fold ->
+  raise_pot` at `0.15`. It improved seed block `2026073300` versus v098 by
+  `+40125`, but broad pool losses left the absolute score at `-293357`.
+- `v100_national_v17_v2v3_fold_raise_t025_tcp` kept only `fold -> raise_pot`
+  at `0.25`. It reduced pollution and scored `-195583`, a `+137899` diff
+  versus v098 and `+97774` versus v099, but still lost all 45 paired matches.
+- `v101_national_v17_v2v3_fold_raise_t015_tcp` lowered only the fold threshold
+  to `0.15`. It regressed to `-322408` and `-126825` versus v100, isolating
+  the lower fold threshold as the bad branch.
+- `v102_national_v17_v2v3_call_raise_t015_fold_t025_tcp` kept v100's
+  conservative fold threshold and re-enabled only `call -> raise_pot` at
+  `0.15`. On the tuned seed block `2026073300`, it scored `-165428`, improving
+  v100 by `+30155` and v098 by `+168054`. On holdout seed block `2026073200`,
+  it scored `+15685` absolute over 45 paired native TCP matches / 6300 hands,
+  while v098 scored `-195235`; the paired diff was `+210920`. All v099-v102
+  reports had 0 illegal actions, 0 timeouts, and 0 adapter actions.
+- Current status: v102 is the first current-pool neural artifact in this round
+  to show a positive held-out full-pool absolute score. It is not a final
+  strength solution: the holdout match split was `5/27/13`, `national_v3`
+  remained negative, and most non-v2 opponents had small losses. The next round
+  should keep v102 as the source and collect larger v3-specific hard-negative
+  data with held-out seed/opponent groups before widening any more raise
+  branches.
