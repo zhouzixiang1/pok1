@@ -1,0 +1,165 @@
+{
+  "mode": "template_window_sweep_v1",
+  "baseline": {
+    "label": "v043_v254_cf_handstrength_veto_p268_h32_t050",
+    "path": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050/main.py"
+  },
+  "candidate": {
+    "label": "v058_v254_cf_support_guard_p059_h16_s064",
+    "path": "bots/neural_national_lab/versions/v058_v254_cf_support_guard_p059_h16_s064/main.py"
+  },
+  "opponents": [
+    {
+      "label": "claude_v279",
+      "path": "bots/claude_v279/main.py"
+    }
+  ],
+  "parameters": {
+    "games": 32,
+    "workers_per_window": 12,
+    "parallel_windows": 1,
+    "executor": "process",
+    "seed_offset": 0,
+    "seed_stride": 1,
+    "opponent_seed_stride": 100000,
+    "bot_seed_base": 202614000000,
+    "bot_seed_window_stride": 1000000,
+    "bot_seed_stride": 10000,
+    "opponent_bot_seed_stride": 10000000,
+    "max_hands": 70,
+    "max_own_decisions_per_side": 0,
+    "baseline_action": 101,
+    "candidate_action": 0,
+    "stage": "flop",
+    "max_hits_per_side": 1,
+    "stop_after_hits": 0,
+    "stop_pair_after_first_side": false,
+    "resume": true,
+    "dry_run": false
+  },
+  "windows": [
+    {
+      "seed_base": 2026081000,
+      "output": "bots/neural_national_lab/data/template_sweeps/v058_v279_g032_seed2026081000_4w/template_v043_v254_cf_handstrength_veto_p268_h32_t050_vs_v058_v254_cf_support_guard_p059_h16_s064_101_to_0_flop_g32_seed2026081000.json",
+      "pairs": 32,
+      "hit_pairs": 2,
+      "hit_rate": 0.0625,
+      "side_hits": {
+        "normal": 1,
+        "mirror": 1
+      },
+      "by_opponent": {
+        "claude_v279": {
+          "pairs": 32,
+          "hit_pairs": 2
+        }
+      },
+      "tasks_submitted": 32,
+      "tasks_skipped": 0,
+      "early_stopped": false
+    },
+    {
+      "seed_base": 2026082000,
+      "output": "bots/neural_national_lab/data/template_sweeps/v058_v279_g032_seed2026081000_4w/template_v043_v254_cf_handstrength_veto_p268_h32_t050_vs_v058_v254_cf_support_guard_p059_h16_s064_101_to_0_flop_g32_seed2026082000.json",
+      "pairs": 32,
+      "hit_pairs": 2,
+      "hit_rate": 0.0625,
+      "side_hits": {
+        "normal": 1,
+        "mirror": 1
+      },
+      "by_opponent": {
+        "claude_v279": {
+          "pairs": 32,
+          "hit_pairs": 2
+        }
+      },
+      "tasks_submitted": 32,
+      "tasks_skipped": 0,
+      "early_stopped": false
+    },
+    {
+      "seed_base": 2026083000,
+      "output": "bots/neural_national_lab/data/template_sweeps/v058_v279_g032_seed2026081000_4w/template_v043_v254_cf_handstrength_veto_p268_h32_t050_vs_v058_v254_cf_support_guard_p059_h16_s064_101_to_0_flop_g32_seed2026083000.json",
+      "pairs": 32,
+      "hit_pairs": 2,
+      "hit_rate": 0.0625,
+      "side_hits": {
+        "normal": 2,
+        "mirror": 0
+      },
+      "by_opponent": {
+        "claude_v279": {
+          "pairs": 32,
+          "hit_pairs": 2
+        }
+      },
+      "tasks_submitted": 32,
+      "tasks_skipped": 0,
+      "early_stopped": false
+    },
+    {
+      "seed_base": 2026084000,
+      "output": "bots/neural_national_lab/data/template_sweeps/v058_v279_g032_seed2026081000_4w/template_v043_v254_cf_handstrength_veto_p268_h32_t050_vs_v058_v254_cf_support_guard_p059_h16_s064_101_to_0_flop_g32_seed2026084000.json",
+      "pairs": 32,
+      "hit_pairs": 0,
+      "hit_rate": 0.0,
+      "side_hits": {
+        "normal": 0,
+        "mirror": 0
+      },
+      "by_opponent": {
+        "claude_v279": {
+          "pairs": 32,
+          "hit_pairs": 0
+        }
+      },
+      "tasks_submitted": 32,
+      "tasks_skipped": 0,
+      "early_stopped": false
+    }
+  ],
+  "commands": [
+    "/home/zzx/anaconda3/envs/pytorch/bin/python /home/zzx/project/pok/bots/neural_national_lab/tools/template_action_prefilter.py --baseline bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050 --candidate bots/neural_national_lab/versions/v058_v254_cf_support_guard_p059_h16_s064 --games 32 --workers 12 --executor process --seed-base 2026081000 --seed-offset 0 --seed-stride 1 --opponent-seed-stride 100000 --bot-seed-stride 10000 --opponent-bot-seed-stride 10000000 --max-hands 70 --max-own-decisions-per-side 0 --baseline-action 101 --candidate-action 0 --max-hits-per-side 1 --stop-after-hits 0 --output /home/zzx/project/pok/bots/neural_national_lab/data/template_sweeps/v058_v279_g032_seed2026081000_4w/template_v043_v254_cf_handstrength_veto_p268_h32_t050_vs_v058_v254_cf_support_guard_p059_h16_s064_101_to_0_flop_g32_seed2026081000.json --opponent bots/claude_v279 --stage flop --bot-seed-base 202614000000 --resume",
+    "/home/zzx/anaconda3/envs/pytorch/bin/python /home/zzx/project/pok/bots/neural_national_lab/tools/template_action_prefilter.py --baseline bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050 --candidate bots/neural_national_lab/versions/v058_v254_cf_support_guard_p059_h16_s064 --games 32 --workers 12 --executor process --seed-base 2026082000 --seed-offset 0 --seed-stride 1 --opponent-seed-stride 100000 --bot-seed-stride 10000 --opponent-bot-seed-stride 10000000 --max-hands 70 --max-own-decisions-per-side 0 --baseline-action 101 --candidate-action 0 --max-hits-per-side 1 --stop-after-hits 0 --output /home/zzx/project/pok/bots/neural_national_lab/data/template_sweeps/v058_v279_g032_seed2026081000_4w/template_v043_v254_cf_handstrength_veto_p268_h32_t050_vs_v058_v254_cf_support_guard_p059_h16_s064_101_to_0_flop_g32_seed2026082000.json --opponent bots/claude_v279 --stage flop --bot-seed-base 202615000000 --resume",
+    "/home/zzx/anaconda3/envs/pytorch/bin/python /home/zzx/project/pok/bots/neural_national_lab/tools/template_action_prefilter.py --baseline bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050 --candidate bots/neural_national_lab/versions/v058_v254_cf_support_guard_p059_h16_s064 --games 32 --workers 12 --executor process --seed-base 2026083000 --seed-offset 0 --seed-stride 1 --opponent-seed-stride 100000 --bot-seed-stride 10000 --opponent-bot-seed-stride 10000000 --max-hands 70 --max-own-decisions-per-side 0 --baseline-action 101 --candidate-action 0 --max-hits-per-side 1 --stop-after-hits 0 --output /home/zzx/project/pok/bots/neural_national_lab/data/template_sweeps/v058_v279_g032_seed2026081000_4w/template_v043_v254_cf_handstrength_veto_p268_h32_t050_vs_v058_v254_cf_support_guard_p059_h16_s064_101_to_0_flop_g32_seed2026083000.json --opponent bots/claude_v279 --stage flop --bot-seed-base 202616000000 --resume",
+    "/home/zzx/anaconda3/envs/pytorch/bin/python /home/zzx/project/pok/bots/neural_national_lab/tools/template_action_prefilter.py --baseline bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050 --candidate bots/neural_national_lab/versions/v058_v254_cf_support_guard_p059_h16_s064 --games 32 --workers 12 --executor process --seed-base 2026084000 --seed-offset 0 --seed-stride 1 --opponent-seed-stride 100000 --bot-seed-stride 10000 --opponent-bot-seed-stride 10000000 --max-hands 70 --max-own-decisions-per-side 0 --baseline-action 101 --candidate-action 0 --max-hits-per-side 1 --stop-after-hits 0 --output /home/zzx/project/pok/bots/neural_national_lab/data/template_sweeps/v058_v279_g032_seed2026081000_4w/template_v043_v254_cf_handstrength_veto_p268_h32_t050_vs_v058_v254_cf_support_guard_p059_h16_s064_101_to_0_flop_g32_seed2026084000.json --opponent bots/claude_v279 --stage flop --bot-seed-base 202617000000 --resume"
+  ],
+  "summary": {
+    "windows": 4,
+    "pairs": 128,
+    "hit_pairs": 6,
+    "hit_rate": 0.046875,
+    "side_hits": {
+      "normal": 4,
+      "mirror": 2
+    },
+    "by_opponent": {
+      "claude_v279": {
+        "pairs": 128,
+        "hit_pairs": 6,
+        "hit_rate": 0.046875
+      }
+    },
+    "hit_windows": [
+      {
+        "seed_base": 2026081000,
+        "hit_pairs": 2,
+        "hit_rate": 0.0625,
+        "output": "bots/neural_national_lab/data/template_sweeps/v058_v279_g032_seed2026081000_4w/template_v043_v254_cf_handstrength_veto_p268_h32_t050_vs_v058_v254_cf_support_guard_p059_h16_s064_101_to_0_flop_g32_seed2026081000.json"
+      },
+      {
+        "seed_base": 2026082000,
+        "hit_pairs": 2,
+        "hit_rate": 0.0625,
+        "output": "bots/neural_national_lab/data/template_sweeps/v058_v279_g032_seed2026081000_4w/template_v043_v254_cf_handstrength_veto_p268_h32_t050_vs_v058_v254_cf_support_guard_p059_h16_s064_101_to_0_flop_g32_seed2026082000.json"
+      },
+      {
+        "seed_base": 2026083000,
+        "hit_pairs": 2,
+        "hit_rate": 0.0625,
+        "output": "bots/neural_national_lab/data/template_sweeps/v058_v279_g032_seed2026081000_4w/template_v043_v254_cf_handstrength_veto_p268_h32_t050_vs_v058_v254_cf_support_guard_p059_h16_s064_101_to_0_flop_g32_seed2026083000.json"
+      }
+    ]
+  }
+}
