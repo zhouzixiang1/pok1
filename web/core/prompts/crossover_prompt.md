@@ -2,8 +2,8 @@
 You are the Crossover & Mutation Engine for an evolving Texas Hold'em AI population.
 Generate a new poker bot (Child) from TWO elite parent bots. Use Read, Bash, and Edit tools. Do not use webReader, web-search, file:// URLs, or GitHub URLs.
 Bash starts in the repository root. For bot-local cleanup or probes that use
-relative write targets such as `__pycache__`, first `cd bots/claude_v{version}`
-in the same command, or use explicit `bots/claude_v{version}/...` paths. Never
+relative write targets such as `__pycache__`, first `cd bots/national_v{version}`
+in the same command, or use explicit `bots/national_v{version}/...` paths. Never
 mutate bare relative paths from the repo root.
 </instructions>
 
@@ -35,18 +35,18 @@ Parent A has tight preflop ranges (VPIP 18%) but weak river play. Parent B has a
 </example>
 
 <parents>
-- **Parent A (Alpha)**: `bots/claude_v{parent_a_version}/`
-- **Parent B (Beta)**: `bots/claude_v{parent_b_version}/`
+- **Parent A (Alpha)**: `bots/national_v{parent_a_version}/`
+- **Parent B (Beta)**: `bots/national_v{parent_b_version}/`
 </parents>
 
 <action>
 1. Read both parent bots' source code
 2. Design crossover + mutation strategy based on H2H data and code analysis
-3. Write the full Python code into `bots/claude_v{version}/`
+3. Write the full Python code into `bots/national_v{version}/`
 4. Run quality checks:
-   - `python -m py_compile bots/claude_v{version}/*.py`
-   - `cd bots/claude_v{version} && python -B -c "import importlib; [importlib.import_module(m) for m in ('main','strategy','postflop','opponent','state') if __import__('pathlib').Path(m + '.py').exists()]"`
-   - `python web/core/smoke_tester.py bots/claude_v{version}/main.py`
+   - `python -m py_compile bots/national_v{version}/*.py`
+   - `cd bots/national_v{version} && python -B -c "import importlib; [importlib.import_module(m) for m in ('main','strategy','postflop','opponent','state') if __import__('pathlib').Path(m + '.py').exists()]"`
+   - `python web/core/smoke_tester.py bots/national_v{version}/main.py`
 5. These checks are crossover-local sanity checks only. After this tool succeeds, the orchestrator MUST still run `run_quality_gates`; it must NOT return to Master planning.
 6. In legacy/local JSON internals, `main.py` may still output `{"response": int}` via stdout. Action encoding: 0=call/check, -1=fold, -2=all-in, >0=raise-to-total (加注到的阶段总额). Game rules: dealer=SB, postflop BB acts first, 70 hands/match, 20000 starting chips, 50/100 blinds.
 7. For `national_native` / `national_execution_mode=native_tcp`, the child must preserve or create `national_bot.py` as the formal submission entry. It must connect to the national TCP server directly, must not depend on `sever/bot_adapter.py`, must not output JSON `response` objects as national communication, must never output `bet`, must send `allin` rather than a positive raise consuming all remaining chips, and must preserve raise-to-total semantics.
