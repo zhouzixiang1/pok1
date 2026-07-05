@@ -129,3 +129,62 @@ def test_route_policy_for_explicit_rework_stage():
     assert route["next_tool"] == "execute_workers"
     assert route["intent"] == "quality_rework"
     assert "Rework" in route["directive"]
+
+
+def test_verified_native_precommit_routes_to_commit_without_quality_contract_flag(monkeypatch):
+    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_native")
+
+    route = route_policy({
+        "stage": "verified",
+        "next_v": 300,
+        "source_v": 299,
+        "gate_results": {
+            "quality": {
+                "all_passed": True,
+                "critical_scenarios_passed": True,
+                "workflow_profile_id": "national_native",
+                "national_execution_mode": "native_tcp",
+                "national_native_contract_ok": True,
+            },
+            "review": {"approved": True},
+            "critic": {"approved": True},
+            "precommit_eval": {
+                "passed": True,
+                "workflow_profile_id": "national_native",
+                "national_execution_mode": "native_tcp",
+                "evaluation_protocol": "national_native_tcp",
+            },
+        },
+    })
+
+    assert route["next_tool"] == "commit_bot"
+    assert route["intent"] == "pipeline"
+
+
+def test_verified_old_adapter_precommit_revalidates_under_native_profile(monkeypatch):
+    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_native")
+
+    route = route_policy({
+        "stage": "verified",
+        "next_v": 300,
+        "source_v": 299,
+        "gate_results": {
+            "quality": {
+                "all_passed": True,
+                "critical_scenarios_passed": True,
+                "workflow_profile_id": "national_native",
+                "national_execution_mode": "native_tcp",
+                "national_native_contract_ok": True,
+            },
+            "review": {"approved": True},
+            "critic": {"approved": True},
+            "precommit_eval": {
+                "passed": True,
+                "workflow_profile_id": "national_primary",
+                "national_execution_mode": "adapter",
+            },
+        },
+    })
+
+    assert route["next_tool"] == "run_precommit_eval"
+    assert route["intent"] == "precommit_profile_refresh"
