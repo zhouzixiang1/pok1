@@ -17,17 +17,72 @@ from typing import Any, Iterable
 
 from bot_namespace import ACTIVE_BOT_PREFIX, bot_relpath, parse_bot_version
 from evolution_scope import (
+    CRITICAL_ENGINE_EXACT,
+    CRITICAL_EVALUATION_GATE_EXACT,
     CRITICAL_EXACT,
+    CRITICAL_GENERATION_EXACT,
+    CRITICAL_NATIONAL_PLATFORM_EXACT,
     CRITICAL_PREFIXES,
+    CRITICAL_PROMPT_EXACT,
     NON_CONTRACT_PREFIXES,
     RUNTIME_PREFIXES,
     changed_paths_between_heads,
     normalize_repo_path,
 )
 
-CONTRACT_VERSION = 2
+CONTRACT_VERSION = 3
 _BOT_NAME_RE = re.compile(rf"^{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)$")
 _BOT_PATH_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)(?:/|$)")
+
+# Guarding the guard itself is non-negotiable: if these files changed on disk,
+# the running process may be making drift decisions with older in-memory code.
+ALWAYS_CRITICAL_EXACT = frozenset({
+    "web/core/bot_namespace.py",
+    "web/core/evaluation_contract.py",
+    "web/core/evolution_infra.py",
+    "web/core/evolution_scope.py",
+    "web/core/orchestrator.py",
+    "web/core/pipeline_recovery.py",
+    "web/core/pipeline_state.py",
+    "web/core/publish_reconcile.py",
+    "web/core/repo_state.py",
+    "web/core/tool_runtime_guard.py",
+    "web/core/workflow_profiles.py",
+})
+
+EVALUATION_RUNTIME_EXACT = frozenset().union(
+    ALWAYS_CRITICAL_EXACT,
+    CRITICAL_ENGINE_EXACT,
+    CRITICAL_NATIONAL_PLATFORM_EXACT,
+    CRITICAL_EVALUATION_GATE_EXACT,
+)
+
+FULL_PIPELINE_EXACT = frozenset().union(
+    EVALUATION_RUNTIME_EXACT,
+    CRITICAL_GENERATION_EXACT,
+    CRITICAL_PROMPT_EXACT,
+)
+
+_FULL_PIPELINE_STAGES = frozenset({
+    "selected",
+    "preparing",
+    "prepared",
+    "crossover_running",
+    "direction_audited",
+    "master_planned",
+    "quality_failed",
+    "precommit_failed",
+    "repair_planned",
+    "rework_running",
+})
+
+_EVALUATION_ONLY_STAGES = frozenset({
+    "workers_done",
+    "quality_passed",
+    "reviewed",
+    "critic_checked",
+    "verified",
+})
 
 
 def _as_int(value: Any) -> int | None:
@@ -105,6 +160,32 @@ def contract_bot_versions(
     return sorted(versions)
 
 
+def _contract_stage(checkpoint: dict[str, Any] | None, stage: str | None = None) -> str:
+    if stage:
+        return str(stage)
+    if isinstance(checkpoint, dict):
+        checkpoint_stage = checkpoint.get("stage")
+        if checkpoint_stage:
+            return str(checkpoint_stage)
+    return ""
+
+
+def critical_exact_for_stage(stage: str | None = None) -> frozenset[str]:
+    """Return exact files that can still affect the current checkpoint.
+
+    Without a checkpoint stage we keep the original conservative full-pipeline
+    contract. Once a candidate has passed worker generation, planning prompts
+    and worker-only modules no longer define the meaning of the hard gates that
+    remain for that same candidate.
+    """
+    stage = str(stage or "")
+    if stage in _EVALUATION_ONLY_STAGES:
+        return EVALUATION_RUNTIME_EXACT
+    if stage in _FULL_PIPELINE_STAGES:
+        return FULL_PIPELINE_EXACT
+    return frozenset(CRITICAL_EXACT)
+
+
 def build_evaluation_contract(
     root: str | Path,
     *,
@@ -112,9 +193,11 @@ def build_evaluation_contract(
     source_v: int | None = None,
     checkpoint: dict[str, Any] | None = None,
     extra_versions: Iterable[int | str] | None = None,
+    stage: str | None = None,
     include_hash: bool = False,
 ) -> dict[str, Any]:
     """Build a serializable description of evaluation-sensitive paths."""
+    contract_stage = _contract_stage(checkpoint, stage)
     bot_versions = contract_bot_versions(
         candidate_v=candidate_v,
         source_v=source_v,
@@ -122,9 +205,10 @@ def build_evaluation_contract(
         extra_versions=extra_versions,
     )
     prefixes = list(CRITICAL_PREFIXES) + [bot_relpath(version) + "/" for version in bot_versions]
-    exact = sorted(CRITICAL_EXACT)
+    exact = sorted(critical_exact_for_stage(contract_stage))
     contract = {
         "version": CONTRACT_VERSION,
+        "stage": contract_stage,
         "path_prefixes": sorted(set(prefixes)),
         "path_exact": exact,
         "bot_versions": bot_versions,
@@ -250,6 +334,7 @@ def evaluate_head_drift(
     source_v: int | None = None,
     checkpoint: dict[str, Any] | None = None,
     extra_versions: Iterable[int | str] | None = None,
+    stage: str | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """Return whether a HEAD change leaves the evaluation contract untouched."""
     if not baseline_head or not current_head or baseline_head == current_head:
@@ -266,6 +351,7 @@ def evaluate_head_drift(
         source_v=source_v,
         checkpoint=checkpoint,
         extra_versions=extra_versions,
+        stage=stage,
         include_hash=False,
     )
     scope = classify_contract_paths(changed_paths, contract)

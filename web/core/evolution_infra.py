@@ -325,6 +325,7 @@ def _capture_repo_baseline(stage, *, next_v=None, source_v=None, checkpoint=None
             candidate_v=next_v,
             source_v=source_v,
             checkpoint=checkpoint,
+            stage=stage,
             include_hash=True,
         )
         return {
@@ -577,6 +578,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "source_v": source_v,
             "parent2_v": existing_parent2_v,
             "gate_results": existing_gate_results,
+            "stage": stage,
         }
         if refresh_repo_baseline:
             existing_repo_baseline = _capture_repo_baseline(
@@ -598,6 +600,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 candidate_v=next_v,
                 source_v=source_v,
                 checkpoint=_contract_checkpoint,
+                stage=stage,
                 include_hash=True,
             )
 
