@@ -1,0 +1,1143 @@
+{
+  "mode": "action_divergence_prefilter_v1",
+  "baseline": {
+    "label": "v043_v254_cf_handstrength_veto_p268_h32_t050",
+    "path": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050/main.py"
+  },
+  "candidate": {
+    "label": "v052_v254_cf_value_veto_mix_p063_h32_bm050",
+    "path": "bots/neural_national_lab/versions/v052_v254_cf_value_veto_mix_p063_h32_bm050/main.py"
+  },
+  "opponents": [
+    {
+      "label": "claude_v285",
+      "path": "bots/claude_v285/main.py"
+    }
+  ],
+  "indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31
+  ],
+  "workers": 8,
+  "seed_base": 2026072700,
+  "seed_offset": 0,
+  "seed_stride": 1,
+  "opponent_seed_stride": 100000,
+  "bot_seed_base": 202611270000,
+  "bot_seed_stride": 10000,
+  "opponent_bot_seed_stride": 10000000,
+  "max_hands": 70,
+  "max_own_decisions_per_side": 40,
+  "stop_after_hits": 4,
+  "stop_pair_after_first_side": true,
+  "tasks_total": 32,
+  "tasks_submitted": 32,
+  "tasks_skipped": 0,
+  "early_stopped": false,
+  "pairs": [
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 0,
+      "seed": 2026072700,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202611270000,
+          202611270001
+        ],
+        "mirror": [
+          202611280000,
+          202611280001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 77,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 76,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 1,
+      "seed": 2026072701,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202611290000,
+          202611290001
+        ],
+        "mirror": [
+          202611300000,
+          202611300001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 80,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 69,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 2,
+      "seed": 2026072702,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202611310000,
+          202611310001
+        ],
+        "mirror": [
+          202611320000,
+          202611320001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 73,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 78,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 3,
+      "seed": 2026072703,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202611330000,
+          202611330001
+        ],
+        "mirror": [
+          202611340000,
+          202611340001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 79,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 72,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 4,
+      "seed": 2026072704,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202611350000,
+          202611350001
+        ],
+        "mirror": [
+          202611360000,
+          202611360001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 78,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 83,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 5,
+      "seed": 2026072705,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202611370000,
+          202611370001
+        ],
+        "mirror": [
+          202611380000,
+          202611380001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 82,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 68,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 6,
+      "seed": 2026072706,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202611390000,
+          202611390001
+        ],
+        "mirror": [
+          202611400000,
+          202611400001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 75,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 81,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 7,
+      "seed": 2026072707,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202611410000,
+          202611410001
+        ],
+        "mirror": [
+          202611420000,
+          202611420001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 78,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 78,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 8,
+      "seed": 2026072708,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202611430000,
+          202611430001
+        ],
+        "mirror": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 78,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 81,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 9,
+      "seed": 2026072709,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202611450000,
+          202611450001
+        ],
+        "mirror": [
+          202611460000,
+          202611460001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 77,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 76,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 10,
+      "seed": 2026072710,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202611470000,
+          202611470001
+        ],
+        "mirror": [
+          202611480000,
+          202611480001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 75,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 81,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 11,
+      "seed": 2026072711,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202611490000,
+          202611490001
+        ],
+        "mirror": [
+          202611500000,
+          202611500001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 75,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 80,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 12,
+      "seed": 2026072712,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202611510000,
+          202611510001
+        ],
+        "mirror": [
+          202611520000,
+          202611520001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 77,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 70,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 13,
+      "seed": 2026072713,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202611530000,
+          202611530001
+        ],
+        "mirror": [
+          202611540000,
+          202611540001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 83,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 81,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 14,
+      "seed": 2026072714,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202611550000,
+          202611550001
+        ],
+        "mirror": [
+          202611560000,
+          202611560001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 83,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 88,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 15,
+      "seed": 2026072715,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202611570000,
+          202611570001
+        ],
+        "mirror": [
+          202611580000,
+          202611580001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 67,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 69,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 16,
+      "seed": 2026072716,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202611590000,
+          202611590001
+        ],
+        "mirror": [
+          202611600000,
+          202611600001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 66,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 73,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 17,
+      "seed": 2026072717,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202611610000,
+          202611610001
+        ],
+        "mirror": [
+          202611620000,
+          202611620001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 80,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 87,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 18,
+      "seed": 2026072718,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202611630000,
+          202611630001
+        ],
+        "mirror": [
+          202611640000,
+          202611640001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 76,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 72,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 19,
+      "seed": 2026072719,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202611650000,
+          202611650001
+        ],
+        "mirror": [
+          202611660000,
+          202611660001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 77,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 76,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 20,
+      "seed": 2026072720,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202611670000,
+          202611670001
+        ],
+        "mirror": [
+          202611680000,
+          202611680001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 76,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 78,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 21,
+      "seed": 2026072721,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202611690000,
+          202611690001
+        ],
+        "mirror": [
+          202611700000,
+          202611700001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 79,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 74,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 22,
+      "seed": 2026072722,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202611710000,
+          202611710001
+        ],
+        "mirror": [
+          202611720000,
+          202611720001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 76,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 74,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 23,
+      "seed": 2026072723,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202611730000,
+          202611730001
+        ],
+        "mirror": [
+          202611740000,
+          202611740001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 75,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 63,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 24,
+      "seed": 2026072724,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202611750000,
+          202611750001
+        ],
+        "mirror": [
+          202611760000,
+          202611760001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 70,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 76,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 25,
+      "seed": 2026072725,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202611770000,
+          202611770001
+        ],
+        "mirror": [
+          202611780000,
+          202611780001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 79,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 68,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 26,
+      "seed": 2026072726,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202611790000,
+          202611790001
+        ],
+        "mirror": [
+          202611800000,
+          202611800001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 78,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 82,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 27,
+      "seed": 2026072727,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202611810000,
+          202611810001
+        ],
+        "mirror": [
+          202611820000,
+          202611820001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 74,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 76,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 28,
+      "seed": 2026072728,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202611830000,
+          202611830001
+        ],
+        "mirror": [
+          202611840000,
+          202611840001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 109,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 82,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 29,
+      "seed": 2026072729,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202611850000,
+          202611850001
+        ],
+        "mirror": [
+          202611860000,
+          202611860001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 83,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 77,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 30,
+      "seed": 2026072730,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202611870000,
+          202611870001
+        ],
+        "mirror": [
+          202611880000,
+          202611880001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 79,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 81,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    },
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v285",
+      "opponent": "bots/claude_v285/main.py",
+      "idx": 31,
+      "seed": 2026072731,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202611890000,
+          202611890001
+        ],
+        "mirror": [
+          202611900000,
+          202611900001
+        ]
+      },
+      "has_divergence": false,
+      "normal": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 86,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      },
+      "mirror": {
+        "status": "max_decisions",
+        "has_divergence": false,
+        "steps": 78,
+        "compared_own_decisions": 40,
+        "first_divergence": null
+      }
+    }
+  ],
+  "summary": {
+    "pairs": 32,
+    "divergence_pairs": 0,
+    "divergence_rate": 0.0,
+    "side_hits": {
+      "normal": 0,
+      "mirror": 0
+    },
+    "side_statuses": {
+      "max_decisions": 64
+    },
+    "by_opponent": {
+      "claude_v285": {
+        "pairs": 32,
+        "divergence_pairs": 0
+      }
+    }
+  }
+}

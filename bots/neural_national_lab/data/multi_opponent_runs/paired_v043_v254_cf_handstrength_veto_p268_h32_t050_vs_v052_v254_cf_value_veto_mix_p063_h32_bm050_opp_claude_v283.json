@@ -1,0 +1,174 @@
+{
+  "mode": "common_deck_mirror_pair",
+  "games": 2,
+  "workers": 2,
+  "seed_base": 2026072200,
+  "seed_offset": 100000,
+  "seed_stride": 1,
+  "bot_seed_base": 202621220000,
+  "bot_seed_stride": 10000,
+  "max_hands": 70,
+  "baseline_label": "v043_v254_cf_handstrength_veto_p268_h32_t050",
+  "entries": {
+    "v043_v254_cf_handstrength_veto_p268_h32_t050": {
+      "path": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050/main.py",
+      "opponent": "bots/claude_v283/main.py"
+    },
+    "v052_v254_cf_value_veto_mix_p063_h32_bm050": {
+      "path": "bots/neural_national_lab/versions/v052_v254_cf_value_veto_mix_p063_h32_bm050/main.py",
+      "opponent": "bots/claude_v283/main.py"
+    }
+  },
+  "pairs": [
+    {
+      "idx": 0,
+      "seed": 2026172200,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202621220000,
+          202621220001
+        ],
+        "mirror": [
+          202621230000,
+          202621230001
+        ]
+      },
+      "net_chips": {
+        "v043_v254_cf_handstrength_veto_p268_h32_t050": -9035.0,
+        "v052_v254_cf_value_veto_mix_p063_h32_bm050": -9035.0
+      },
+      "normal": {
+        "v043_v254_cf_handstrength_veto_p268_h32_t050": {
+          "winner": 1,
+          "bot0_chips": -14849.0,
+          "bot1_chips": 14849.0
+        },
+        "v052_v254_cf_value_veto_mix_p063_h32_bm050": {
+          "winner": 1,
+          "bot0_chips": -14849.0,
+          "bot1_chips": 14849.0
+        }
+      },
+      "mirror": {
+        "v043_v254_cf_handstrength_veto_p268_h32_t050": {
+          "winner": 0,
+          "bot0_chips": 5814.0,
+          "bot1_chips": -5814.0
+        },
+        "v052_v254_cf_value_veto_mix_p063_h32_bm050": {
+          "winner": 0,
+          "bot0_chips": 5814.0,
+          "bot1_chips": -5814.0
+        }
+      }
+    },
+    {
+      "idx": 1,
+      "seed": 2026172201,
+      "dealer": 0,
+      "bot_seeds": {
+        "normal": [
+          202621240000,
+          202621240001
+        ],
+        "mirror": [
+          202621250000,
+          202621250001
+        ]
+      },
+      "net_chips": {
+        "v043_v254_cf_handstrength_veto_p268_h32_t050": 733.0,
+        "v052_v254_cf_value_veto_mix_p063_h32_bm050": 733.0
+      },
+      "normal": {
+        "v043_v254_cf_handstrength_veto_p268_h32_t050": {
+          "winner": 0,
+          "bot0_chips": 11376.0,
+          "bot1_chips": -11376.0
+        },
+        "v052_v254_cf_value_veto_mix_p063_h32_bm050": {
+          "winner": 0,
+          "bot0_chips": 11376.0,
+          "bot1_chips": -11376.0
+        }
+      },
+      "mirror": {
+        "v043_v254_cf_handstrength_veto_p268_h32_t050": {
+          "winner": 1,
+          "bot0_chips": -10643.0,
+          "bot1_chips": 10643.0
+        },
+        "v052_v254_cf_value_veto_mix_p063_h32_bm050": {
+          "winner": 1,
+          "bot0_chips": -10643.0,
+          "bot1_chips": 10643.0
+        }
+      }
+    }
+  ],
+  "results": {
+    "v043_v254_cf_handstrength_veto_p268_h32_t050": {
+      "path": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050/main.py",
+      "opponent": "bots/claude_v283/main.py",
+      "net_chips": [
+        -9035.0,
+        733.0
+      ],
+      "samples": 2,
+      "mean_net": -4151.0,
+      "median_net": -4151.0,
+      "stddev_net": 6907.0190386301965,
+      "stderr_net": 4884.0,
+      "ci95_low": -13723.64,
+      "ci95_high": 5421.639999999999,
+      "mean_per_70_hands": -2075.5,
+      "ci95_low_per_70_hands": -6861.82,
+      "ci95_high_per_70_hands": 2710.8199999999997,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    },
+    "v052_v254_cf_value_veto_mix_p063_h32_bm050": {
+      "path": "bots/neural_national_lab/versions/v052_v254_cf_value_veto_mix_p063_h32_bm050/main.py",
+      "opponent": "bots/claude_v283/main.py",
+      "net_chips": [
+        -9035.0,
+        733.0
+      ],
+      "samples": 2,
+      "mean_net": -4151.0,
+      "median_net": -4151.0,
+      "stddev_net": 6907.0190386301965,
+      "stderr_net": 4884.0,
+      "ci95_low": -13723.64,
+      "ci95_high": 5421.639999999999,
+      "mean_per_70_hands": -2075.5,
+      "ci95_low_per_70_hands": -6861.82,
+      "ci95_high_per_70_hands": 2710.8199999999997,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  },
+  "paired_vs_baseline": {
+    "v052_v254_cf_value_veto_mix_p063_h32_bm050": {
+      "baseline": "v043_v254_cf_handstrength_veto_p268_h32_t050",
+      "candidate": "v052_v254_cf_value_veto_mix_p063_h32_bm050",
+      "delta_net_chips": [
+        0.0,
+        0.0
+      ],
+      "samples": 2,
+      "mean_net": 0.0,
+      "median_net": 0.0,
+      "stddev_net": 0.0,
+      "stderr_net": 0.0,
+      "ci95_low": 0.0,
+      "ci95_high": 0.0,
+      "mean_per_70_hands": 0.0,
+      "ci95_low_per_70_hands": 0.0,
+      "ci95_high_per_70_hands": 0.0,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    }
+  }
+}

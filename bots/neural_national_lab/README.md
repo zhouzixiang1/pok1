@@ -387,6 +387,20 @@ Deep-CFR/PokerRL/ReBeL implementations
 (`https://github.com/EricSteinberger/Deep-CFR`,
 `https://github.com/EricSteinberger/PokerRL`,
 `https://github.com/facebookresearch/REBEL`).
+The July 2026 follow-up scan also points to AutoCFR-style meta-search
+(`https://www.sciencedirect.com/science/article/abs/pii/S0004370224001681`)
+and Robust Deep MCCFR diagnostics
+(`https://arxiv.org/abs/2509.00923`) as useful constraints: do not trust one
+small neural gate unless it survives variance, target-shift, and action-support
+checks across opponents.
+Two newer directions sharpen that into an engineering rule for this repo:
+Real-Time Parallel CFR (`https://arxiv.org/abs/2605.19928`) uses CPU/GPU
+parallelism and batched neural leaf evaluation to get more solving iterations
+inside a fixed decision budget, while Deep Predictive Discounted CFR
+(`https://arxiv.org/abs/2511.08174`) fits variance-reduced sampled advantages
+with a value network and CFR-style discounting. The local analogue is active
+sampling of decision-changing seeds plus variance-aware value targets, not
+blind threshold tuning of a sparse gate.
 
 This machine has 32 CPU threads, so deterministic paired evaluation and
 counterfactual shards can use `--workers 12` to `--workers 16` for practical
@@ -400,6 +414,377 @@ For the current neural workflow, spend multicore budget on
 `counterfactual_rollout_probe.py --workers`; do not use the trace tool as the
 large-scale loop. Trace runs are for explaining exact outliers after the
 parallel paired/counterfactual samplers identify them.
+
+`multi_opponent_paired_evaluate.py` wraps `paired_evaluate.py` for the next
+scale step: it runs the same baseline/candidate comparison against multiple
+strong opponents, writes one resumable paired file per opponent, and writes an
+aggregate JSON with concatenated paired deltas plus per-opponent splits. Use it
+when a candidate looks neutral-positive against one bot but may be overfitted:
+
+```bash
+python bots/neural_national_lab/tools/multi_opponent_paired_evaluate.py \
+  --baseline bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050 \
+  --candidate bots/neural_national_lab/versions/v052_v254_cf_value_veto_mix_p063_h32_bm050 \
+  --opponent bots/claude_v279 \
+  --opponent bots/claude_v283 \
+  --opponent bots/claude_v284 \
+  --games 16 \
+  --workers 8 \
+  --seed-base 2026072200 \
+  --bot-seed-base 202611220000 \
+  --resume \
+  --summary-output bots/neural_national_lab/data/multiopponent_v043_v052_seed2026072200.json
+```
+
+A smoke run with two paired samples each against `claude_v279`, `claude_v283`,
+and `claude_v284` wrote
+`data/multiopponent_v043_v052_vs_v279_v283_v284_seed2026072200_smoke.json`.
+All six deltas were zero, which is useful tooling evidence: v052's conservative
+value veto is too sparse to be a reliable next search direction unless active
+sampling first finds states where it actually changes decisions.
+
+`active_divergence_scan.py` is the active-sampling companion for that problem.
+It replays a baseline and candidate against the same opponent, deck seed, and
+bot RNG seeds, then records the first action divergence for our bot in each
+normal/mirror side. Use explicit `--pair-index` values to reproduce known
+paired outliers without scanning all earlier seeds. For broader collection,
+use `--stop-after-divergence-pairs` so the sampler stops after enough
+decision-changing rows instead of exhausting every requested seed:
+
+```bash
+python bots/neural_national_lab/tools/active_divergence_scan.py \
+  --baseline bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050 \
+  --candidate bots/neural_national_lab/versions/v052_v254_cf_value_veto_mix_p063_h32_bm050 \
+  --opponent bots/claude_v279 \
+  --pair-index 21 \
+  --pair-index 48 \
+  --workers 2 \
+  --seed-base 2026071503 \
+  --bot-seed-base 202609190000 \
+  --output bots/neural_national_lab/data/divergence_v043_v052_vs_v279_pair21_48_seed2026071503_botrng.json
+```
+
+The early-stop path was smoke-tested on pair21/pair48 with target `1`; it
+submitted one task, found pair21's divergence, skipped pair48, and wrote
+`data/divergence_earlystop_v043_v052_vs_v279_pair21_48_target1_seed2026071503_botrng.json`.
+
+That scan found real v043-v052 action divergence on both known nonzero seeds:
+pair21 was `-3243` chips and pair48 was `+1727`. In both cases the first
+divergence was the mirror-side flop free action after check-through preflop:
+v043 raised to `101`, while v052 checked/called `0`. The same action template
+therefore has opposite outcomes depending on cards and board, so v053 should
+not be another global threshold move. It should collect active divergence rows
+around this template and train a local value/variance model that can separate
+the losing pair21 context from the winning pair48 context.
+
+The remaining nonzero v052-v043 paired seeds against `claude_v279` were also
+scanned: pair29 was `+150` and pair38 was `-102`, and both had the same first
+divergence template (`raise 101 -> 0`) on the flop after check-through preflop.
+`build_divergence_value_data.py` converts these active-divergence JSON files
+into a compact supervised JSONL format for the next value model:
+
+```bash
+python bots/neural_national_lab/tools/build_divergence_value_data.py \
+  --input bots/neural_national_lab/data/divergence_v043_v052_vs_v279_pair21_48_seed2026071503_botrng.json \
+  --input bots/neural_national_lab/data/divergence_v043_v052_vs_v279_pair29_38_seed2026071503_botrng.json \
+  --output bots/neural_national_lab/data/divergence_value_v043_v052_vs_v279_nonzero_p004_seed2026071503.jsonl \
+  --summary-output bots/neural_national_lab/data/divergence_value_v043_v052_vs_v279_nonzero_p004_seed2026071503.summary.json
+```
+
+The first dataset has only 4 rows, input dimension 48, and a balanced `2/2`
+positive/negative split. It is a data-contract artifact, not a training set.
+Before v053, expand this template to at least 40-60 decision-changing rows
+across `claude_v279`, `claude_v283`, and `claude_v284`, then train a local
+value head or nearest-neighbor veto and evaluate it with
+`multi_opponent_paired_evaluate.py`.
+
+The first cross-opponent expansion shows why this must be active rather than
+blind. Replaying the same pair indices (`21/29/38/48`) against `claude_v283`
+and `claude_v284` produced only one extra divergence row, `claude_v283` pair21,
+and its paired delta was exactly zero. The merged dataset
+`divergence_value_v043_v052_crossopponent_p005_seed2026071503.jsonl` therefore
+has only 5 rows: 2 positive, 1 zero, and 2 negative. A fresh `claude_v279`
+search over 8 new seeded pairs (`seed_base=2026072300`) found no divergences at
+all. The next scale step should not spend full match-delta scans on broad
+blind ranges; add or use a cheaper action-divergence prefilter to find seeds
+where v043 and v052 actually choose different actions, then run full delta
+labeling only on those hits.
+
+`action_divergence_prefilter.py` is that cheaper prefilter. It synchronously
+replays baseline and candidate only until our first action differs, then stops
+without computing final paired chip deltas. Use it to find candidate seed hits,
+then feed those hit indices into `active_divergence_scan.py` for full delta
+labels:
+
+```bash
+python bots/neural_national_lab/tools/action_divergence_prefilter.py \
+  --baseline bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050 \
+  --candidate bots/neural_national_lab/versions/v052_v254_cf_value_veto_mix_p063_h32_bm050 \
+  --opponent bots/claude_v279 \
+  --games 64 \
+  --workers 8 \
+  --stop-after-hits 16 \
+  --stop-pair-after-first-side \
+  --seed-base 2026072400 \
+  --bot-seed-base 202611240000 \
+  --output bots/neural_national_lab/data/action_prefilter_v043_v052_vs_v279_seed2026072400.json
+```
+
+A target-1 smoke on the known pair21/pair48 range submitted one task, skipped
+one, and found pair21's mirror-side divergence after only 8 compared own
+decisions on that side. This confirms the prefilter is suitable for locating
+decision-changing seeds before paying for full match-delta labels.
+
+The first real prefilter collection used `claude_v279`, `seed_base=2026072400`,
+32 requested pairs, `workers=4`, and a 40-own-decision cap per side. It
+submitted 29 tasks before early stopping, skipped 3, and found 4 hits
+(`idx18`, `idx19`, `idx25`, `idx28`) for a hit rate of about 13.8 percent.
+Full `active_divergence_scan.py` labels on those hits produced deltas
+`+39755`, `-6`, `+1621`, and `0`. The merged dataset
+`divergence_value_v043_v052_prefilter_p009_seed2026071503_2026072400.jsonl`
+therefore has 9 rows: 4 positive, 2 zero, and 3 negative. This is still below
+the v053 training threshold, but it validates the intended pipeline: prefilter
+for action hits first, then spend full match-delta labeling only on hits.
+
+A second `claude_v279` prefilter range (`seed_base=2026072500`) requested 64
+pairs with the same 40-own-decision cap and found only 2 hits (`idx11`,
+`idx23`), a lower 3.1 percent hit rate. Their full labels were `-19` and
+`+1546`, bringing the merged dataset
+`divergence_value_v043_v052_prefilter_p011_seed2026071503_2026072500.jsonl`
+to 11 rows: 5 positive, 2 zero, and 4 negative. Continue collecting, but do
+not assume hit density is stable; the next batch should test either a wider
+own-decision cap or additional opponents to avoid spending many full scans on
+empty windows.
+
+The follow-up tests showed that neither simple lever was sufficient by itself.
+With `claude_v279`, `seed_base=2026072600`, and a wider 80-own-decision cap,
+32 requested pairs produced zero hits. Switching opponent to `claude_v285`
+with `seed_base=2026072700` and the original 40-decision cap also produced
+zero hits across 32 pairs. The next collection step should therefore be more
+targeted than range scanning: use the known hit templates to search or generate
+flop free-action `raise 101 -> 0` contexts, then full-label those candidates.
+Blindly increasing cap, opponent count, or seed ranges is not currently an
+efficient path to the 40-60 row training threshold.
+
+`template_action_prefilter.py` is the narrower search tool for that template.
+It follows the baseline plus opponent trajectory, asks the candidate on each
+baseline decision state, then forces candidate history back to the baseline
+action so later comparisons stay on the same path. The default template is
+flop `baseline_action=101` and `candidate_action=0`. The tool now defaults to
+a process executor, so the local judge and scan loop can use multiple CPU
+cores instead of only relying on bot subprocess concurrency:
+
+```bash
+python bots/neural_national_lab/tools/template_action_prefilter.py \
+  --baseline bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050 \
+  --candidate bots/neural_national_lab/versions/v052_v254_cf_value_veto_mix_p063_h32_bm050 \
+  --opponent bots/claude_v279 \
+  --games 64 \
+  --workers 16 \
+  --executor process \
+  --stop-after-hits 6 \
+  --stop-pair-after-first-side \
+  --max-own-decisions-per-side 80 \
+  --seed-base 2026072800 \
+  --bot-seed-base 202611280000 \
+  --output bots/neural_national_lab/data/template_prefilter_v043_v052_vs_v279_seed2026072800.json
+```
+
+The process-pool smoke on the known `pair21/pair48` seed range found both
+mirror-side template hits. Because worker tasks are submitted in parallel,
+`--stop-after-hits` can overshoot by up to the active worker batch; use
+`--workers 1` only when strict minimum submission matters. A 64-pair
+`claude_v279` search at `seed_base=2026072800`, with an 80-own-decision cap,
+completed all pairs and found zero hits. That makes the next v053 data step
+clearer: do not spend the main CPU budget on blind exact-template ranges.
+Generate or replay neighborhoods around the known hit contexts, then run
+`active_divergence_scan.py` only on the candidates that actually reproduce a
+decision-changing state.
+
+That targeted path now has a first working loop. `template_neighborhood_prefilter.py`
+loads template hits, reconstructs the exact seeded side deck, mutates one
+hole/flop card at a time within a rank-neighborhood, and reuses the template
+scan to keep only variants that still reproduce `raise 101 -> 0`. On the
+known pair21/pair48 contexts it generated 103 variants before early stop and
+found 33 hits, a 33 percent hit rate versus zero hits in the prior blind
+64-seed search. `label_neighborhood_divergences.py` then full-labeled all 33
+hits as active-scan-compatible rows: pair21 contributed 14 negative examples
+at `-3243`, while pair48 contributed 19 positive examples at `+1727`.
+
+The 48-dimension divergence feature dataset
+`divergence_value_v043_v052_neighborhood_p044_seed2026071503_2026072500.jsonl`
+has 44 rows: 24 positive, 2 zero, and 18 negative. That file is useful for
+offline analysis, but it is not directly runtime-compatible with the current
+value veto, whose feature contract is the 70-dimension `_advantage_features`
+shape. `build_runtime_value_data_from_divergence.py` fixes that gap by loading
+the bot's neural policy, recomputing the actual top label/confidence, and
+training on `baseline_minus_candidate` value for the neural action. Merging
+the 33 runtime neighborhood rows with the earlier 63 matchscope rows produced
+`runtime_value_v043_v052_mix_p096_seed2026071503_2026072500.jsonl`.
+
+`v053_v254_cf_neighborhood_value_veto_p096_h32_b050` is the first runtime bot
+from that loop. It is a v052 copy with only `value_veto_weights.json` replaced
+by the CUDA-trained h32 p096 value model (`val_sign_acc=0.75`,
+`val_mae=0.51`). Targeted replay against `claude_v279` fixed the known bad
+pair21 path (`v043` vs `v053` had no divergence) while preserving the known
+good pair48 veto (`+1727`). A fresh 32-pair common-deck smoke against
+`claude_v279` was positive but not significant: `+73.48` chips per 70 hands,
+95 percent CI `[-65.91, 212.88]`, median `0`, with only two nonzero deltas
+(`+4554`, `+149`). This is meaningful progress from blind sparse sampling to a
+runtime-compatible local repair, but it is not a clear promotion. The next
+step is multi-opponent and larger-seed validation of v053, plus collecting
+more runtime-feature neighborhoods so the model is not dominated by two source
+contexts.
+
+The first multi-opponent validation confirmed that caution. Against
+`claude_v279`, `claude_v283`, `claude_v284`, and `claude_v285`, with 8 paired
+common-deck samples per opponent, v053 had 31 zero deltas and one small
+negative delta. The aggregate was `-1.30` chips per 70 hands with 95 percent
+CI `[-3.84, 1.24]`; only `claude_v279` changed at all, with idx3 producing
+`-83`. Active replay of that seed showed the same flop free-action template:
+v043 raised to `101`, while v053 checked `0`, but this context was a slight
+loss for the veto.
+
+`v054_v254_cf_neighborhood_regression_repair_p097_h32_b050` is the recorded
+attempt to add that one v053 regression as a runtime positive row and retrain
+the value head. It did not work: the p097 h32 model's validation sign accuracy
+dropped to `0.50`, and targeted replay of the exact idx3 seed still produced
+`-83`. Keep v054 as a failed boundary-repair artifact. The next useful move is
+not another one-row retrain; collect a larger set of true v043-v053 runtime
+divergences across opponents, then retrain only if the new rows cover multiple
+positive and negative contexts instead of a single seed.
+
+That larger collection now has a first targeted shard. A multi-opponent
+template prefilter for v043 versus v053 over `claude_v279`, `claude_v283`,
+`claude_v284`, and `claude_v285` used 16 process workers, 32 paired seeds per
+opponent, and stopped after sparse template hits. It completed 128 tasks and
+found only two hit pairs, a 1.56 percent hit rate: `claude_v279` idx6 on the
+mirror side and `claude_v285` idx3 on the normal side. Active labeling with 8
+workers showed that only the `claude_v279` idx6 hit was actually harmful
+(`-92` chips); the `claude_v285` idx3 hit changed the action but had zero net
+delta, and the same pair indexes did not reproduce divergences against
+`claude_v283` or `claude_v284`.
+
+`template_neighborhood_prefilter.py` now accepts `--source-opponent-label`, so
+a multi-opponent source file can feed a single-opponent neighborhood scan
+without accidentally expanding unrelated opponent hits. Using that filter on
+the `claude_v279` idx6 source generated 54 one-card neighborhood variants and
+20 template hits, a 37.04 percent hit rate. Full active labels for those 20
+hits were all negative for v053 versus v043: mean `-2561.15`, median `-92`,
+and three flop2 variants at `-16552`. Converted into runtime-compatible value
+rows, this shard became
+`runtime_value_v043_v053_idx6_neighborhood_p020_seed2026073100.jsonl`: 20
+positive `baseline_minus_candidate` rows, all with the `101->0|mirror`
+template.
+
+Merging that p020 shard with the earlier p097 set produced
+`runtime_value_v043_v053_mix_p117_seed2026071503_2026073100.jsonl`: 117
+runtime rows, 70 input features, 60 positive, 3 zero, 54 negative, and mean
+delta `435.19`. The value heads were trained on CUDA, then distilled back to
+the same JSON-only stdlib runtime format. The h16 seed581 model had the best
+validation sign accuracy (`0.7083`, versus h32 `0.6250` and h8 `0.6667`) and
+became `v055_v254_cf_runtime_divergence_repair_p117_h16_b050`.
+
+Targeted v055 replay fixed the newly collected `claude_v279` idx6 regression:
+v043 versus v055 had zero delta and no divergence on that seed. It also kept
+the older targeted behavior intact: pair21 stayed zero and pair48 still
+produced the known `+1727` delta. A 32-sample multi-opponent validation on the
+same v053 smoke range against `claude_v279`, `claude_v283`, `claude_v284`, and
+`claude_v285` produced 32 zero deltas, aggregate `0.00` chips per 70 hands
+with CI `[0.00, 0.00]`. Treat v055 as a safer repair candidate than v053/v054,
+not as a promoted strength improvement yet; the next promotion-quality step is
+more true runtime-divergence collection across opponents and larger
+multi-opponent paired validation.
+
+`v056_v254_cf_value_ensemble_p117_h8_h16_h32_m050_mm105` turns that repair into
+a small variance-aware runtime experiment. It copies v055, adds the h8, h16,
+and h32 p117 value heads, and changes only the value veto path: all three JSON
+MLPs are loaded at runtime and a neural action must pass both the ensemble mean
+threshold (`value_veto_mean_min=-0.5`) and the weakest-member floor
+(`value_veto_member_min=-1.05`). This follows the DeepStack/ReBeL/Deep-CFR
+lesson already noted above: trust compact neural value evidence only when it is
+robust across approximators, while still distilling back to stdlib-only JSON
+runtime artifacts.
+
+The first v056 checks preserved the v055 safety envelope. Targeted replay kept
+the `claude_v279` idx6 fix at zero delta and no divergence, preserved pair21 at
+zero, preserved pair48 at `+1727`, and kept the old idx3 regression seed at
+zero. The same four-opponent 8-pair validation window as v055 was also neutral:
+32 zero deltas across `claude_v279`, `claude_v283`, `claude_v284`, and
+`claude_v285`.
+
+A new multicore template prefilter at `seed_base=2026080100` is the first
+non-neutral v056 window. Over 48 paired seeds per opponent and four strong
+opponents, 16 process workers scanned 192 pair/opponent tasks and found four
+template hits, all against `claude_v279` (hit rate 2.08 percent). Active labels
+for idx10, idx18, idx29, and idx36 across all four opponents showed that only
+`claude_v279` changed: `+10`, `+4166`, `+6590`, and `-50`, for 3 positive and
+1 negative v279 deltas. The cross-opponent replays for the same indexes were
+all zero against `claude_v283`, `claude_v284`, and `claude_v285`.
+
+The full 48-pair common-deck evaluation against `claude_v279` on the same seed
+range confirmed the prefilter signal without proving promotion strength:
+`+111.63` chips per 70 hands with CI `[-46.04, 269.29]`. This is the first
+v056 window with a meaningful positive mean after the previous all-zero smoke,
+but the interval still crosses zero and the effect is concentrated in one
+opponent family. The next useful step is to harvest more v279-like positive
+windows, label nearby neighborhoods around idx18/idx29, and then test whether
+those value patterns survive larger multi-opponent validation rather than
+raising thresholds blindly.
+
+That neighborhood harvest found a much clearer local signal. Expanding the
+first three v056 `claude_v279` template hits (idx10, idx18, idx29) with
+one-card rank-neighborhood mutations generated 151 variants and 54 template
+hits, a 35.76 percent hit rate. Full active labels for those 54 hit variants
+were strongly positive overall: 49 positive, 5 negative, mean `+3868.37` chips
+per 70 hands, 95 percent CI `[+3105.12, +4631.62]`. The important split is by
+source: idx18 was 14/14 positive at `+4166`, idx29 was 23/23 positive at
+`+6590`, while idx10 was mixed and net negative (`-58.94`, 5 negative of 17).
+This confirms that idx18/idx29 are real local value pockets, not one-card
+accidents; idx10 should not be treated as a clean positive pattern.
+
+`v057_v254_cf_candidate_value_p175_h16_t000` is a recorded failed attempt to
+make the value-head target semantics cleaner. It inverted the old p117 data to
+`candidate_minus_baseline`, added the 54 neighborhood rows plus the four exact
+v056 hit rows, and trained a CUDA h16 p175 value head (`val_sign_acc=0.80` for
+seed604). The runtime gate then required score `>= 0.0`. That was too blunt:
+targeted replay reintroduced idx6 `-92`, pair21 `-3243`, and idx3 `-83`,
+blocked pair48 to zero, and also blocked idx18's `+4166` positive action. Keep
+v057 as a failed sign-semantics artifact. The next version should not replace
+the proven v056 p117 ensemble wholesale; instead, add a secondary positive
+support model or source-specific confidence guard around idx18/idx29 while
+leaving the v056 repair gate in place.
+
+`build_runtime_value_data_from_divergence.py` now has an explicit
+`--rule-action-source {baseline,candidate}` switch so runtime value rows can
+encode the action context intended for a gate instead of silently assuming the
+candidate's final action. Rebuilding the v056 positive-support rows with
+baseline/candidate-minus-baseline semantics produced
+`runtime_support_v043_v056_positive_guard_p059_rulebase_seed2026071503_2026080100.jsonl`:
+59 rows, 70 input features, 53 positive, 6 negative, mean delta `+3751.44`.
+The CUDA h16 support head (`support_gate_v043_v056_p059_rulebase_h16_seed621`)
+had validation MAE `0.1150` and sign accuracy `0.9167`; h8 was retained as a
+comparison artifact.
+
+`v058_v254_cf_support_guard_p059_h16_s064` keeps the v056 ensemble intact and
+adds only a narrow low-support override around value-vetoed flop free-action
+small raises. If the original v056 gates pass, v058 does nothing. If the v056
+value ensemble would block a `raise_half` candidate from a call/check rule
+action, v058 scores the p059 support head using the candidate raise context; a
+score below `0.64` allows the raise to recover, while supported blocks remain
+blocked. This is deliberately an override for the known `101->0` family, not a
+general replacement for the p117 ensemble.
+
+Targeted v058 replay repaired the known v056 negative without losing the
+positive pockets: idx6 stayed `0`, pair21 stayed `0`, pair48 stayed `+1727`,
+idx3 stayed `0`, and the v279 hit set became idx10 `+10`, idx18 `+4166`,
+idx29 `+6590`, idx36 `0`. The same 48-pair v279 window improved only
+microscopically versus v056 because the fix removes a single `-50` pair:
+`+112.15` chips per 70 hands with CI `[-45.49, +269.78]`. A four-opponent
+8-pair smoke against `claude_v279`, `claude_v283`, `claude_v284`, and
+`claude_v285` produced 32 zero deltas, so no cross-opponent regression was
+observed. Treat v058 as a cleaner/safely guarded v056-family artifact, not as
+a statistically promoted bot.
 
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops

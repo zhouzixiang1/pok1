@@ -1,0 +1,18 @@
+{
+  "samples": 59,
+  "input_dim": 70,
+  "hidden_dim": 8,
+  "target": "tanh_delta",
+  "target_scale": 1000.0,
+  "positive": 53,
+  "negative": 6,
+  "mean_delta": 3751.4406779661017,
+  "train_mae": 0.3254353106021881,
+  "val_mae": 0.16099491715431213,
+  "val_rmse": 0.37793850898742676,
+  "val_sign_acc": 0.9166666865348816,
+  "avg_pred": 0.9358641505241394,
+  "device": "cuda",
+  "batch_size": 47,
+  "contract": "blueprint_policy_v1"
+}

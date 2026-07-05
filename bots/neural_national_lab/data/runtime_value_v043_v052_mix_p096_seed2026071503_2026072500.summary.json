@@ -1,0 +1,13 @@
+{
+  "inputs": [
+    "bots/neural_national_lab/data/advantage_counterfactual_v043_matchscope_mix_p063_partial.jsonl",
+    "bots/neural_national_lab/data/runtime_value_v043_v052_template_neighborhood_p033_seed2026071503.jsonl"
+  ],
+  "rows": 96,
+  "input_dim": 70,
+  "positive": 39,
+  "zero": 3,
+  "negative": 54,
+  "mean_delta": -4.052083333333333,
+  "median_note": "not computed by jq summary"
+}

@@ -1,0 +1,158 @@
+{
+  "mode": "active_divergence_scan_v1",
+  "baseline": {
+    "label": "v043_v254_cf_handstrength_veto_p268_h32_t050",
+    "path": "bots/neural_national_lab/versions/v043_v254_cf_handstrength_veto_p268_h32_t050/main.py"
+  },
+  "candidate": {
+    "label": "v058_v254_cf_support_guard_p059_h16_s064",
+    "path": "bots/neural_national_lab/versions/v058_v254_cf_support_guard_p059_h16_s064/main.py"
+  },
+  "opponents": [
+    {
+      "label": "claude_v279",
+      "path": "bots/claude_v279/main.py"
+    }
+  ],
+  "indices": [
+    6
+  ],
+  "workers": 4,
+  "seed_base": 2026073100,
+  "seed_offset": 0,
+  "seed_stride": 1,
+  "opponent_seed_stride": 100000,
+  "bot_seed_base": 202611310000,
+  "bot_seed_stride": 10000,
+  "opponent_bot_seed_stride": 10000000,
+  "max_hands": 70,
+  "max_divergences_per_side": 3,
+  "stop_after_divergence_pairs": 0,
+  "parallel_early_stop": true,
+  "tasks_total": 1,
+  "tasks_submitted": 1,
+  "tasks_skipped": 0,
+  "early_stopped": false,
+  "pairs": [
+    {
+      "opponent_index": 0,
+      "opponent_label": "claude_v279",
+      "opponent": "bots/claude_v279/main.py",
+      "idx": 6,
+      "seed": 2026073106,
+      "dealer": 1,
+      "bot_seeds": {
+        "normal": [
+          202611430000,
+          202611430001
+        ],
+        "mirror": [
+          202611440000,
+          202611440001
+        ]
+      },
+      "baseline_net_chips": 20002.0,
+      "candidate_net_chips": 20002.0,
+      "delta_net_chips": 0.0,
+      "has_divergence": false,
+      "normal": {
+        "baseline": {
+          "winner": 1,
+          "bot0_chips": -12.0,
+          "bot1_chips": 12.0
+        },
+        "candidate": {
+          "winner": 1,
+          "bot0_chips": -12.0,
+          "bot1_chips": 12.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 140,
+          "candidate_decisions": 140,
+          "compared_decisions": 140,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      },
+      "mirror": {
+        "baseline": {
+          "winner": 0,
+          "bot0_chips": 20014.0,
+          "bot1_chips": -20014.0
+        },
+        "candidate": {
+          "winner": 0,
+          "bot0_chips": 20014.0,
+          "bot1_chips": -20014.0
+        },
+        "delta_chips": 0.0,
+        "action_compare": {
+          "baseline_decisions": 135,
+          "candidate_decisions": 135,
+          "compared_decisions": 135,
+          "divergence_count_capped": 0,
+          "has_divergence": false,
+          "length_mismatch": false,
+          "first_divergence": null,
+          "divergences": []
+        }
+      }
+    }
+  ],
+  "summary": {
+    "pairs": 1,
+    "divergence_pairs": 0,
+    "divergence_rate": 0.0,
+    "positive": 0,
+    "zero": 1,
+    "negative": 0,
+    "delta_stats": {
+      "samples": 1,
+      "mean_net": 0.0,
+      "median_net": 0.0,
+      "stddev_net": 0.0,
+      "stderr_net": 0.0,
+      "ci95_low": null,
+      "ci95_high": null,
+      "mean_per_70_hands": 0.0,
+      "ci95_low_per_70_hands": null,
+      "ci95_high_per_70_hands": null,
+      "significant_positive_95": false,
+      "significant_negative_95": false
+    },
+    "by_opponent": {
+      "claude_v279": {
+        "pairs": 1,
+        "positive": 0,
+        "zero": 1,
+        "negative": 0,
+        "delta_stats": {
+          "samples": 1,
+          "mean_net": 0.0,
+          "median_net": 0.0,
+          "stddev_net": 0.0,
+          "stderr_net": 0.0,
+          "ci95_low": null,
+          "ci95_high": null,
+          "mean_per_70_hands": 0.0,
+          "ci95_low_per_70_hands": null,
+          "ci95_high_per_70_hands": null,
+          "significant_positive_95": false,
+          "significant_negative_95": false
+        }
+      }
+    },
+    "largest_abs_deltas": [
+      {
+        "opponent": "claude_v279",
+        "idx": 6,
+        "delta_net_chips": 0.0,
+        "has_divergence": false
+      }
+    ]
+  }
+}
