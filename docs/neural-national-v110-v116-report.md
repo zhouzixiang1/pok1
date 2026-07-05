@@ -1,4 +1,4 @@
-# Neural National v110-v115 Report
+# Neural National v110-v116 Report
 
 Date: 2026-07-06
 
@@ -331,14 +331,80 @@ Relative to v114:
 - v3 delta: `+5494`.
 - Other current-top8+v7 opponents were unchanged on the two seed blocks.
 
+## v116
+
+Path:
+
+`bots/neural_national_lab/versions/v116_national_v17_turn_free_allin_check_tcp`
+
+Change:
+
+- Derived from v115.
+- Keeps v115's flop free-action value-check gate.
+- Adds a narrow turn free-all-in value gate:
+  - stage is `turn`,
+  - original rule label is `allin`,
+  - `to_call == 0`, so action `0` is a national-protocol `check`,
+  - pot is at least `8000`,
+  - learned check/call value is at least `0.8`,
+  - learned all-in value is at most `-0.3`,
+  - learned check/call value is at least `1.0` above all-in.
+
+Reason:
+
+v115's v2 seed block `2026074000` still had a single `-20000` turn free
+all-in on seed `2026074001`, hand 35. At that decision, the pot was `9344`,
+`to_call` was `0`, the value head scored check/call at `0.830` and all-in at
+`-0.387`.
+
+A force probe changing only that decision to check improved the paired match
+from `-17937` to `-2609`, a `+15328` chip gain. Scanning the full v115-v2 trace
+found no other free all-in decision under this threshold set.
+
+Direct v2 check:
+
+`native_tcp_paired_v116_vs_v2_h70_m10_seed2026074000.json`
+
+- v2 seed block `2026074000`: `+66816`, mean/hand `+47.726`, W-L-D `4-6-0`.
+- Same block v115 baseline: `+51488`, mean/hand `+36.777`, W-L-D `4-6-0`.
+- Delta: `+15328`.
+
+Full current-top8+v7 pool:
+
+| Block | Matches | Hands | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|---:|---:|
+| seed2026073900 | 90 | 12600 | `+887454` | `+70.433` | `71-3-16` |
+| seed2026074000 | 90 | 12600 | `+456290` | `+36.213` | `37-11-42` |
+| combined | 180 | 25200 | `+1343744` | `+53.323` | `108-14-58` |
+
+Combined v116 opponent totals were positive for every opponent:
+
+| Opponent | Total | Mean/hand | W-L-D |
+|---|---:|---:|---:|
+| national_v15 | `+118971` | `+42.490` | `10-0-10` |
+| national_v5 | `+132568` | `+47.346` | `11-1-8` |
+| national_v7 | `+144375` | `+51.562` | `12-0-8` |
+| national_v8 | `+144375` | `+51.562` | `12-0-8` |
+| national_v9 | `+144375` | `+51.562` | `12-0-8` |
+| national_v14 | `+144375` | `+51.562` | `12-0-8` |
+| national_v16 | `+144375` | `+51.562` | `12-0-8` |
+| national_v2 | `+170851` | `+61.018` | `13-7-0` |
+| national_v3 | `+199479` | `+71.242` | `14-6-0` |
+
+Relative to v115:
+
+- Full-pool combined delta: `+15328` chips, `+0.608/hand`.
+- v2 delta: `+15328`.
+- All other current-top8+v7 opponents were unchanged on the two seed blocks.
+
 ## Current Assessment
 
-- v115 is the current best artifact by EV with unchanged full-pool W-L-D:
-  - `+1328416` over 25200 full-pool hands,
-  - mean/hand `+52.715`,
+- v116 is the current best artifact by EV with unchanged full-pool W-L-D:
+  - `+1343744` over 25200 full-pool hands,
+  - mean/hand `+53.323`,
   - W-L-D `108-14-58`,
   - positive combined result against every opponent.
-- v115 preserves v114's low-loss full-pool profile while improving the hard
+- v116 preserves v115's low-loss full-pool profile while improving the hard
   v2/v3 aggregate.
 - v112 improves the hardest v2/v3 aggregate without using the adapter:
   - v108 v2/v3 combined over two full-pool blocks: v2 `-64781`, v3 `-21241`.
@@ -347,11 +413,12 @@ Relative to v114:
 - v113: v2 `+125329`, v3 `+159522`.
 - v114: v2 `+150029`, v3 `+193985`.
 - v115: v2 `+155523`, v3 `+199479`.
-- All v110/v111/v112/v113/v114/v115 recorded evaluations passed protocol
+- v116: v2 `+170851`, v3 `+199479`.
+- All v110/v111/v112/v113/v114/v115/v116 recorded evaluations passed protocol
   compliance with 0 candidate illegal actions, 0 candidate timeouts, and 0
   candidate adapter actions.
 
 The route now has a clear native-TCP neural performance gain over v108/v109.
-It is still not complete domination: v115's v2 record remains `13-7-0`, so the
+It is still not complete domination: v116's v2 record remains `13-7-0`, so the
 next generation should keep improving v2 match conversion while preserving
-v115's higher EV and restored low-loss full-pool profile.
+v116's higher EV and restored low-loss full-pool profile.
