@@ -43,6 +43,7 @@ from seeded_process import SeededPersistentBot, match_bot_seeds  # noqa: E402
 
 
 STATE_FEATURE_KEYS = ("pot", "to_call", "my_stage_bet", "opponent_stage_bet", "opponent_allin")
+TARGET_FIELDS = ("delta_vs_rule", "regret_vs_mean", "action_values")
 
 
 def _feature_request(req: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
@@ -301,6 +302,66 @@ def _complete_targets(menu: list[dict[str, Any]], rule_final: int, branch_values
     }
 
 
+def _active_drop_label_ids(args: argparse.Namespace) -> set[int]:
+    ids: set[int] = set()
+    for label in getattr(args, "active_drop_label", []) or []:
+        if label not in LABELS:
+            raise ValueError(f"unknown active drop label: {label}")
+        ids.add(LABELS.index(label))
+    return ids
+
+
+def _active_filter(row: dict[str, Any], args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
+    min_targets = int(getattr(args, "active_min_targets", 0) or 0)
+    min_positive = int(getattr(args, "active_min_positive_targets", 0) or 0)
+    if min_targets <= 0 and min_positive <= 0:
+        return True, {
+            "active_target": None,
+            "active_targets": 0,
+            "active_positive_targets": 0,
+            "active_negative_targets": 0,
+            "active_best_label": None,
+            "active_reject_reason": None,
+        }
+
+    target_name = str(getattr(args, "active_target", "delta_vs_rule"))
+    values = row.get(target_name)
+    if not isinstance(values, list) or len(values) != len(LABELS):
+        return False, {
+            "active_target": target_name,
+            "active_targets": 0,
+            "active_positive_targets": 0,
+            "active_negative_targets": 0,
+            "active_best_label": None,
+            "active_reject_reason": "missing_target",
+        }
+
+    drop_ids = _active_drop_label_ids(args)
+    min_abs = float(getattr(args, "active_min_abs_target", 1e-9) or 0.0)
+    active: list[tuple[int, float]] = []
+    for idx, value in enumerate(values):
+        if idx in drop_ids or value is None:
+            continue
+        value_f = float(value)
+        if abs(value_f) >= min_abs:
+            active.append((idx, value_f))
+    positive = [(idx, value) for idx, value in active if value > 0.0]
+    negative = [(idx, value) for idx, value in active if value < 0.0]
+    best = max(active, key=lambda item: item[1]) if active else None
+    accepted = len(active) >= min_targets and len(positive) >= min_positive
+    reason = None
+    if not accepted:
+        reason = "too_few_positive_targets" if len(active) >= min_targets else "too_few_active_targets"
+    return accepted, {
+        "active_target": target_name,
+        "active_targets": len(active),
+        "active_positive_targets": len(positive),
+        "active_negative_targets": len(negative),
+        "active_best_label": LABELS[best[0]] if best is not None else None,
+        "active_reject_reason": reason,
+    }
+
+
 def _final_action_breakdown(menu: list[dict[str, Any]]) -> tuple[list[int], dict[str, int], dict[str, list[str]]]:
     counts: dict[str, int] = {}
     labels: dict[str, list[str]] = {}
@@ -318,9 +379,12 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     by_label_delta: dict[str, list[float]] = {name: [] for name in LABELS}
     by_label_regret: dict[str, list[float]] = {name: [] for name in LABELS}
     best_counts: dict[str, int] = {}
+    active_best_counts: dict[str, int] = {}
     unique_counts: list[int] = []
     evaluated_branch_counts: list[int] = []
     legal_label_counts: list[int] = []
+    active_target_counts: list[int] = []
+    active_positive_counts: list[int] = []
     off_menu_rule_rows = 0
     ok_rows = 0
     for row in rows:
@@ -335,6 +399,11 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         best = row.get("best_label")
         if best:
             best_counts[str(best)] = best_counts.get(str(best), 0) + 1
+        active_best = row.get("active_best_label")
+        if active_best:
+            active_best_counts[str(active_best)] = active_best_counts.get(str(active_best), 0) + 1
+        active_target_counts.append(int(row.get("active_targets", 0) or 0))
+        active_positive_counts.append(int(row.get("active_positive_targets", 0) or 0))
         for idx, name in enumerate(LABELS):
             delta = row.get("delta_vs_rule", [None] * len(LABELS))[idx]
             regret = row.get("regret_vs_mean", [None] * len(LABELS))[idx]
@@ -351,8 +420,13 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if evaluated_branch_counts
         else 0.0,
         "mean_legal_label_count": sum(legal_label_counts) / len(legal_label_counts) if legal_label_counts else 0.0,
+        "mean_active_targets": sum(active_target_counts) / len(active_target_counts) if active_target_counts else 0.0,
+        "mean_active_positive_targets": (
+            sum(active_positive_counts) / len(active_positive_counts) if active_positive_counts else 0.0
+        ),
         "off_menu_rule_rows": off_menu_rule_rows,
         "best_label_counts": dict(sorted(best_counts.items())),
+        "active_best_label_counts": dict(sorted(active_best_counts.items())),
         "delta_vs_rule_by_label": {
             label: _stats(values) for label, values in by_label_delta.items() if values
         },
@@ -385,6 +459,8 @@ def _scan_side(
     analysis_requests: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
     decisions = 0
+    rejected_active = 0
+    active_reject_reasons: dict[str, int] = {}
     persistent = None
     if scan_bot_seeds is not None:
         persistent = [
@@ -485,12 +561,19 @@ def _scan_side(
                             "status": status,
                             **targets,
                         }
-                        rows.append(row)
-                        print(
-                            f"{side_name} row {row_index}: hand={row['hand']} {stage} "
-                            f"rule={row['rule_final']} best={row['best_label']} "
-                            f"rule_value={row['rule_value']}"
-                        )
+                        accepted, active_meta = _active_filter(row, args)
+                        row.update(active_meta)
+                        if accepted:
+                            rows.append(row)
+                            print(
+                                f"{side_name} row {row_index}: hand={row['hand']} {stage} "
+                                f"rule={row['rule_final']} best={row['best_label']} "
+                                f"active_best={row['active_best_label']} rule_value={row['rule_value']}"
+                            )
+                        else:
+                            rejected_active += 1
+                            reason = str(active_meta.get("active_reject_reason") or "filtered")
+                            active_reject_reasons[reason] = active_reject_reasons.get(reason, 0) + 1
 
             response, verdict, _ = _call_bot(
                 bot_paths,
@@ -517,6 +600,8 @@ def _scan_side(
         "bot0_chips": _final_bot0_chips(result),
         "version": _rel(version_dir),
         "bot_seeds": list(scan_bot_seeds) if scan_bot_seeds is not None else None,
+        "rejected_active_rows": rejected_active,
+        "active_reject_reasons": dict(sorted(active_reject_reasons.items())),
     }
 
 
@@ -531,6 +616,11 @@ def main() -> None:
     parser.add_argument("--branch-scope", choices=["hand", "match"], default="hand")
     parser.add_argument("--max-branch-steps", type=int, default=5000)
     parser.add_argument("--min-unique-actions", type=int, default=2)
+    parser.add_argument("--active-target", choices=TARGET_FIELDS, default="delta_vs_rule")
+    parser.add_argument("--active-drop-label", action="append", choices=LABELS, default=[])
+    parser.add_argument("--active-min-targets", type=int, default=0)
+    parser.add_argument("--active-min-positive-targets", type=int, default=0)
+    parser.add_argument("--active-min-abs-target", type=float, default=1e-9)
     parser.add_argument("--seed-base", type=int)
     parser.add_argument("--seed-offset", type=int, default=0)
     parser.add_argument("--seed-stride", type=int, default=1)
@@ -575,6 +665,11 @@ def main() -> None:
         "filters": {
             "stage": args.stage,
             "min_unique_actions": args.min_unique_actions,
+            "active_target": args.active_target,
+            "active_drop_label": list(args.active_drop_label),
+            "active_min_targets": args.active_min_targets,
+            "active_min_positive_targets": args.active_min_positive_targets,
+            "active_min_abs_target": args.active_min_abs_target,
         },
         "matches": [],
         "rows": [],

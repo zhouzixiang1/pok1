@@ -16,6 +16,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[3]
 PROBE = Path(__file__).resolve().with_name("multi_action_counterfactual_probe.py")
 LABELS = ("fold", "call", "raise_half", "raise_pot", "raise_2pot", "allin")
+TARGET_FIELDS = ("delta_vs_rule", "regret_vs_mean", "action_values")
 
 
 def _rel(path: Path) -> str:
@@ -55,9 +56,12 @@ def _summarize(rows: list[dict[str, Any]], labels: list[str] | tuple[str, ...] =
     by_label_regret: dict[str, list[float]] = {name: [] for name in labels}
     by_stage: dict[str, list[float]] = {}
     best_counts: dict[str, int] = {}
+    active_best_counts: dict[str, int] = {}
     unique_counts: list[int] = []
     evaluated_branch_counts: list[int] = []
     legal_label_counts: list[int] = []
+    active_target_counts: list[int] = []
+    active_positive_counts: list[int] = []
     off_menu_rule_rows = 0
     ok_rows = 0
     for row in rows:
@@ -72,6 +76,11 @@ def _summarize(rows: list[dict[str, Any]], labels: list[str] | tuple[str, ...] =
         best = row.get("best_label")
         if best:
             best_counts[str(best)] = best_counts.get(str(best), 0) + 1
+        active_best = row.get("active_best_label")
+        if active_best:
+            active_best_counts[str(active_best)] = active_best_counts.get(str(active_best), 0) + 1
+        active_target_counts.append(int(row.get("active_targets", 0) or 0))
+        active_positive_counts.append(int(row.get("active_positive_targets", 0) or 0))
         rule_value = row.get("rule_value")
         if rule_value is not None:
             by_stage.setdefault(str(row.get("stage")), []).append(float(rule_value))
@@ -93,8 +102,13 @@ def _summarize(rows: list[dict[str, Any]], labels: list[str] | tuple[str, ...] =
         if evaluated_branch_counts
         else 0.0,
         "mean_legal_label_count": sum(legal_label_counts) / len(legal_label_counts) if legal_label_counts else 0.0,
+        "mean_active_targets": sum(active_target_counts) / len(active_target_counts) if active_target_counts else 0.0,
+        "mean_active_positive_targets": (
+            sum(active_positive_counts) / len(active_positive_counts) if active_positive_counts else 0.0
+        ),
         "off_menu_rule_rows": off_menu_rule_rows,
         "best_label_counts": dict(sorted(best_counts.items())),
+        "active_best_label_counts": dict(sorted(active_best_counts.items())),
         "rule_value_by_stage": {label: _stats(values) for label, values in sorted(by_stage.items())},
         "delta_vs_rule_by_label": {
             label: _stats(values) for label, values in by_label_delta.items() if values
@@ -162,6 +176,16 @@ def _probe_cmd(args: argparse.Namespace, shard_idx: int, shard_output: Path) -> 
     bot_seed_base = _shard_bot_seed_base(args, shard_idx)
     if bot_seed_base is not None:
         cmd.extend(["--bot-seed-base", str(bot_seed_base), "--bot-seed-stride", str(args.bot_seed_stride)])
+    if args.active_min_targets:
+        cmd.extend(["--active-min-targets", str(args.active_min_targets)])
+    if args.active_min_positive_targets:
+        cmd.extend(["--active-min-positive-targets", str(args.active_min_positive_targets)])
+    if args.active_target != "delta_vs_rule":
+        cmd.extend(["--active-target", args.active_target])
+    if args.active_min_abs_target != 1e-9:
+        cmd.extend(["--active-min-abs-target", str(args.active_min_abs_target)])
+    for label in args.active_drop_label:
+        cmd.extend(["--active-drop-label", label])
     if args.no_mirror:
         cmd.append("--no-mirror")
     if args.no_scan_persistent:
@@ -251,6 +275,11 @@ def main() -> None:
     parser.add_argument("--branch-scope", choices=["hand", "match"], default="hand")
     parser.add_argument("--max-branch-steps", type=int, default=5000)
     parser.add_argument("--min-unique-actions", type=int, default=2)
+    parser.add_argument("--active-target", choices=TARGET_FIELDS, default="delta_vs_rule")
+    parser.add_argument("--active-drop-label", action="append", choices=LABELS, default=[])
+    parser.add_argument("--active-min-targets", type=int, default=0)
+    parser.add_argument("--active-min-positive-targets", type=int, default=0)
+    parser.add_argument("--active-min-abs-target", type=float, default=1e-9)
     parser.add_argument("--seed-base", type=int, default=20260801)
     parser.add_argument("--seed-offset", type=int, default=0)
     parser.add_argument("--seed-stride", type=int, default=1)
@@ -288,6 +317,11 @@ def main() -> None:
             "stage": args.stage,
             "branch_scope": args.branch_scope,
             "min_unique_actions": args.min_unique_actions,
+            "active_target": args.active_target,
+            "active_drop_label": list(args.active_drop_label),
+            "active_min_targets": args.active_min_targets,
+            "active_min_positive_targets": args.active_min_positive_targets,
+            "active_min_abs_target": args.active_min_abs_target,
         },
         "shard_results": [],
         "rows": [],
