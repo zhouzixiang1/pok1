@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import statistics
 import sys
 import time
@@ -233,6 +234,12 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "paired": bool(args.paired),
         "requires_native_opponents": not args.allow_generated_opponent_entry,
         "bot_seed_base": args.bot_seed_base,
+        "trace_decisions": bool(args.trace_decisions),
+        "force": {
+            "hand": args.force_hand,
+            "decision": args.force_decision,
+            "action": args.force_action,
+        },
         "elapsed_sec": round(time.time() - started, 3),
         "rows": sorted(rows, key=lambda row: (row["opponent"], row["match_idx"])),
     }
@@ -254,10 +261,24 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--timeout-sec", type=float, default=90.0)
     parser.add_argument("--paired", action="store_true", help="For each seed, run candidate/opponent and opponent/candidate, then sum candidate net chips.")
+    parser.add_argument("--trace-decisions", action="store_true", help="Set POK_TRACE_DECISIONS=1 for native bot subprocesses that support structured decision traces.")
+    parser.add_argument("--force-hand", type=int, default=None, help="Set POK_FORCE_HAND for native bot subprocesses that support force probes.")
+    parser.add_argument("--force-decision", type=int, default=None, help="Set POK_FORCE_DECISION for native bot subprocesses that support force probes.")
+    parser.add_argument("--force-action", type=int, default=None, help="Set POK_FORCE_ACTION for native bot subprocesses that support force probes.")
     parser.add_argument("--allow-generated-opponent-entry", action="store_true", help="Allow template native entry for legacy opponents. Off by default.")
     parser.add_argument("--print-rows", action="store_true")
     parser.add_argument("--output", default="", help="Optional JSON output path.")
     args = parser.parse_args()
+
+    if args.trace_decisions:
+        os.environ["POK_TRACE_DECISIONS"] = "1"
+    for env_name, value in (
+        ("POK_FORCE_HAND", args.force_hand),
+        ("POK_FORCE_DECISION", args.force_decision),
+        ("POK_FORCE_ACTION", args.force_action),
+    ):
+        if value is not None:
+            os.environ[env_name] = str(int(value))
 
     payload = asyncio.run(_run(args))
     print(json.dumps(payload, ensure_ascii=False, indent=2))

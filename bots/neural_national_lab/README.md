@@ -34,6 +34,10 @@ The native runner in `web/core/national_native.py` now also:
 - Native reports now include `hand_net_chips`, and
   `tools/native_tcp_report_diff.py` compares neural/control reports by
   `(opponent, match_idx)` to expose per-seed and per-hand deltas.
+- `tools/native_tcp_counterfactual_probe.py` runs a trace-capable native TCP
+  bot once, then replays the same deck/bot seed with one forced final action.
+  Its rows are hand-scoped action-value labels and can be fed through
+  `build_multi_action_value_data.py --feature-set state`.
 
 Current native TCP evidence, using paired reports where available:
 
@@ -67,12 +71,36 @@ Current native TCP evidence, using paired reports where available:
   contains a single-hand `-600` delta, while seed `2026071100` contains a
   `+1932` hand. Those hands should become the first native TCP
   counterfactual probes for a new action-value model.
+- `v082_national_v17_trace_force_tcp` is the native TCP data-contract fork.
+  It keeps v17/v079 rule behavior by default, but `POK_TRACE_DECISIONS=1`
+  emits decision rows and `POK_FORCE_HAND` / `POK_FORCE_DECISION` /
+  `POK_FORCE_ACTION` allow same-seed single-decision counterfactual probes.
+- The first native TCP counterfactual seed set covers `national_v3`,
+  `national_v9`, `national_v17`, and `national_v18`:
+  `native_tcp_value_v082_top_rules_d16_state_clip2000.jsonl` has 16 preflop
+  decision rows and 47 masked action targets. The h16 state-value model
+  `native_tcp_value_v082_top_rules_d16_state_h16_seed1201.json` trained on CUDA
+  but had weak validation accuracy (`0.25` best-label accuracy), so it is only
+  an integration probe.
+- `v083_national_v17_native_state_value_tcp` loads that state-value head with
+  conservative fold-to-call thresholds. On the 20-row paired top-rule check
+  (`v3`, `v9`, `v17`, `v18`, 5 seeds each) it was exactly identical to v082:
+  `native_tcp_diff_v083_minus_v082_top_rules_h70_m5_seed2026071250.json` has
+  `sum=0`, all 20 rows zero. This confirms safe integration but no strength.
+- `v084_national_v17_native_state_value_call_probe_tcp` lowers the call-probe
+  threshold so the model actually fires. It improved the same seed set versus
+  v082 by `+35109` chips total, but the median row was `-449`, 17 of 20 rows
+  were negative, and all non-v3 opponents regressed. It is not a strength
+  breakthrough; it shows the next model needs opponent/style-conditioned gates
+  rather than a global preflop fold-to-call rescue.
 
 This is not a promotion-grade strength breakthrough. The current evidence says
 the old v254/Botzone-trained action advice does not transfer to native national
-opponents. The next scale step should collect paired native TCP
-counterfactual/action-value data and train a new gate or policy head from that
-data, instead of continuing threshold tweaks on the old model.
+opponents. The native TCP counterfactual path now works, but the first state
+value model is too small and too poorly conditioned. The next scale step should
+expand native action-value data with opponent/style context and train a gate
+that can avoid v9/v17/v18 regressions while preserving the v3-positive bucket,
+instead of continuing global threshold tweaks.
 
 ## Scale-Up Gate
 

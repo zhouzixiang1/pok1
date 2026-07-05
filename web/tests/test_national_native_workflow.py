@@ -232,6 +232,42 @@ def _write_random_probe_native_bot(bot_dir: Path) -> None:
     )
 
 
+def _write_trace_probe_native_bot(bot_dir: Path) -> None:
+    bot_dir.mkdir(parents=True, exist_ok=True)
+    (bot_dir / "main.py").write_text("# native-only trace probe\n", encoding="utf-8")
+    (bot_dir / "national_bot.py").write_text(
+        "import argparse\n"
+        "import json\n"
+        "import os\n"
+        "import socket\n"
+        "import sys\n\n"
+        "def main():\n"
+        "    parser = argparse.ArgumentParser()\n"
+        "    parser.add_argument('--host')\n"
+        "    parser.add_argument('--port', type=int)\n"
+        "    parser.add_argument('--name')\n"
+        "    args = parser.parse_args()\n"
+        "    with socket.create_connection((args.host, args.port), timeout=5) as sock:\n"
+        "        stream = sock.makefile('r', encoding='utf-8', newline='\\n')\n"
+        "        while True:\n"
+        "            line = stream.readline()\n"
+        "            if not line:\n"
+        "                return 0\n"
+        "            line = line.rstrip('\\r\\n')\n"
+        "            if line == 'name':\n"
+        "                sock.sendall((args.name + '\\n').encode('utf-8'))\n"
+        "            elif line.startswith('preflop|SMALLBLIND|'):\n"
+        "                if os.environ.get('POK_TRACE_DECISIONS') == '1':\n"
+        "                    row = {'type': 'decision', 'hand': 1, 'final_action': -1}\n"
+        "                    print('POK_TRACE_DECISION ' + json.dumps(row), file=sys.stderr, flush=True)\n"
+        "                sock.sendall(b'fold\\n')\n\n"
+        "if __name__ == '__main__':\n"
+        "    raise SystemExit(main())\n"
+        "# required wire tokens: raise fold call check allin\n",
+        encoding="utf-8",
+    )
+
+
 def _write_delay_connect_native_bot(bot_dir: Path, delay_sec: float) -> None:
     bot_dir.mkdir(parents=True, exist_ok=True)
     (bot_dir / "main.py").write_text("# native-only delay probe\n", encoding="utf-8")
@@ -297,6 +333,29 @@ def test_native_tcp_pair_can_seed_bot_process_random(tmp_path):
     assert first["per_player"]["BotB"]["native"]["bot_seed"] == 4322
     assert first["per_player"]["BotA"]["native"]["stderr_tail"] == second["per_player"]["BotA"]["native"]["stderr_tail"]
     assert first["per_player"]["BotB"]["native"]["stderr_tail"] == second["per_player"]["BotB"]["native"]["stderr_tail"]
+
+
+def test_native_tcp_pair_parses_decision_trace(monkeypatch, tmp_path):
+    bot_a = tmp_path / "BotA"
+    bot_b = tmp_path / "BotB"
+    _write_trace_probe_native_bot(bot_a)
+    _write_minimal_strategy_bot(bot_b)
+    ensure_native_entry(bot_b)
+    monkeypatch.setenv("POK_TRACE_DECISIONS", "1")
+
+    result = asyncio.run(run_native_tcp_pair(
+        bot_a,
+        bot_b,
+        hands=1,
+        require_native_a=True,
+        require_native_b=True,
+        deck_seed_base=1234,
+        timeout_sec=30,
+    ))
+
+    trace = result["per_player"]["BotA"]["native"]["decision_trace"]
+    assert trace == [{"type": "decision", "hand": 1, "final_action": -1}]
+    assert result["passed_compliance"] is True
 
 
 def test_native_tcp_pair_reorders_clients_by_bot_label(tmp_path):
