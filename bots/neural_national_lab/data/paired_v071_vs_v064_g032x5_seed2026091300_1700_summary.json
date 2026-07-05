@@ -1,0 +1,104 @@
+{
+  "mode": "manual_multiopponent_g032_summary_v1",
+  "baseline": "v064_v254_lowint_h16_min020_inter088",
+  "candidate": "v071_v254_opponent_context_support_p125_h64",
+  "games_per_opponent": 32,
+  "opponents": [
+    {
+      "opponent": "claude_v279",
+      "output": "bots/neural_national_lab/data/paired_v071_vs_v064_v279_g032_seed2026091300.json",
+      "samples": 32,
+      "mean_per_70_hands": 5.046875,
+      "ci95_low_per_70_hands": -4.623280153514568,
+      "ci95_high_per_70_hands": 14.717030153514568,
+      "split": {
+        "positive": 3,
+        "zero": 28,
+        "negative": 1
+      },
+      "min_delta": -80.0,
+      "max_delta": 290.0
+    },
+    {
+      "opponent": "claude_v283",
+      "output": "bots/neural_national_lab/data/paired_v071_vs_v064_v283_g032_seed2026091400.json",
+      "samples": 32,
+      "mean_per_70_hands": 7.40625,
+      "ci95_low_per_70_hands": -2.821790104784524,
+      "ci95_high_per_70_hands": 17.634290104784526,
+      "split": {
+        "positive": 2,
+        "zero": 30,
+        "negative": 0
+      },
+      "min_delta": 0.0,
+      "max_delta": 274.0
+    },
+    {
+      "opponent": "claude_v284",
+      "output": "bots/neural_national_lab/data/paired_v071_vs_v064_v284_g032_seed2026091500.json",
+      "samples": 32,
+      "mean_per_70_hands": 3.0,
+      "ci95_low_per_70_hands": -1.1017589657247324,
+      "ci95_high_per_70_hands": 7.101758965724732,
+      "split": {
+        "positive": 2,
+        "zero": 30,
+        "negative": 0
+      },
+      "min_delta": 0.0,
+      "max_delta": 103.0
+    },
+    {
+      "opponent": "claude_v285",
+      "output": "bots/neural_national_lab/data/paired_v071_vs_v064_v285_g032_seed2026091600.json",
+      "samples": 32,
+      "mean_per_70_hands": 252.609375,
+      "ci95_low_per_70_hands": -93.12628062952297,
+      "ci95_high_per_70_hands": 598.345030629523,
+      "split": {
+        "positive": 2,
+        "zero": 30,
+        "negative": 0
+      },
+      "min_delta": 0.0,
+      "max_delta": 8772.0
+    },
+    {
+      "opponent": "claude_v288",
+      "output": "bots/neural_national_lab/data/paired_v071_vs_v064_v288_g032_seed2026091700.json",
+      "samples": 32,
+      "mean_per_70_hands": 199.3125,
+      "ci95_low_per_70_hands": -183.52912322767986,
+      "ci95_high_per_70_hands": 582.1541232276799,
+      "split": {
+        "positive": 2,
+        "zero": 29,
+        "negative": 1
+      },
+      "min_delta": -90.0,
+      "max_delta": 12504.0
+    }
+  ],
+  "aggregate": {
+    "samples": 160,
+    "split": {
+      "positive": 11,
+      "zero": 147,
+      "negative": 2
+    },
+    "min_delta": -90.0,
+    "max_delta": 12504.0,
+    "mean_net": 186.95,
+    "median_net": 0.0,
+    "stddev_net": 1333.531028425505,
+    "stderr_net": 105.42488450828345,
+    "ci95_low": -19.682773636235567,
+    "ci95_high": 393.5827736362355,
+    "mean_per_70_hands": 93.475,
+    "ci95_low_per_70_hands": -9.841386818117783,
+    "ci95_high_per_70_hands": 196.79138681811776,
+    "significant_positive_95": false,
+    "significant_negative_95": false
+  }
+}

@@ -1098,7 +1098,21 @@ v284 `+3.00`, v285 `+252.61`, v288 `+199.31`, all with intervals that are too
 wide or driven by rare outliers. v070 is therefore a recorded safety/support
 repair, not a significant successor.
 
-This v066-v070 sequence is a local-tuning plateau. The best artifacts reduce
+`active_divergence_scan.py` can now optionally record full request histories
+for each changed decision, and `build_outlier_multi_action_value_data.py` can
+append an `opponent_context_v1` feature block derived from the runtime
+`opponent.py` model. The 2026-07-05 follow-up used that path to build a
+103-dimensional p125 context mix: 112 older p112 rows with neutral opponent
+priors plus 13 full-request rows from v070-vs-v064 target windows. CUDA trained
+h16/h32/h64 heads; the h64 head was installed in
+`versions/v071_v254_opponent_context_support_p125_h64` as a support-only
+fallback while keeping v070's primary p087 head unchanged. Target replay and
+the full g032x5 run reproduced v070's action surface and score almost exactly:
+aggregate `+93.48` chips per 70 hands versus v064, CI `[-9.84, +196.79]`,
+split 11 positive, 147 zero, and 2 negative samples. v071 is therefore a
+successful context/plumbing artifact, not a significant strength improvement.
+
+This v066-v071 sequence is a local-tuning plateau. The best artifacts reduce
 known bad windows and preserve some large positive outliers, but none clear the
 paired promotion bar and the aggregate mean is dominated by rare v285/v288
 samples. Do not keep spending cycles on scalar threshold sweeps in this family.
