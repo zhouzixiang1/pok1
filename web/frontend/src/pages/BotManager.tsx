@@ -51,7 +51,9 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
       const d = await api.botDetail(bot.version);
       setDetail(d);
       if (d.files.length > 0) setSelectedFile(d.files[0]);
-    } catch {}
+    } catch (e) {
+      console.error("[BotManager] bot detail load failed:", e);
+    }
   }, [bot.version, detail]);
 
   const loadCode = useCallback(async (filename: string) => {
@@ -98,7 +100,9 @@ function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<
       try {
         const ckpt = await api.pipelineCheckpoint();
         if (ckpt && ckpt.next_v === bot.version) sourceV = ckpt.source_v;
-      } catch {}
+      } catch (e) {
+        console.error("[BotManager] pipeline checkpoint load failed:", e);
+      }
       const r = await controlApi.callTool("commit_bot", { version: bot.version, source_v: sourceV, strategy: "", review_approved: true });
       onAction(r.result || r.error || "完成");
     } catch (e) {
@@ -304,7 +308,9 @@ export default function BotManager() {
     try {
       const bots = await api.listBots(true);
       updateData({ bots });
-    } catch {}
+    } catch (e) {
+      console.error("[BotManager] bot list refresh failed:", e);
+    }
   }, [updateData]);
 
   const handleReapWeakest = async () => {

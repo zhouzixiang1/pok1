@@ -1,3 +1,5 @@
+import { useCallback, useEffect, useRef } from "react";
+
 export type StreamType = "prompt" | "claude" | "thinking" | "tool" | "tool_result" | "error" | "default";
 
 export type EvolutionEventType =
@@ -52,32 +54,40 @@ export interface IOLine {
 
 const BASE = "/api";
 
+type EvolutionHandlers = {
+  onHistory?: (msg: string, status: string) => void;
+  onStatus?: (msg: string, isWorking: boolean) => void;
+  onIO?: (line: IOLine) => void;
+  onClearIO?: () => void;
+  onEvalTable?: (rows: EvolutionState["ratings"]) => void;
+  onDaemonStats?: (data: { total_matches: number; total_periods: number; total_games: number; n_bots: number }) => void;
+  onHeader?: (msg: string) => void;
+  onCost?: (data: {
+    role: string;
+    cost_usd: number;
+    input_tokens: number;
+    output_tokens: number;
+    gen_total: number;
+    grand_total: number;
+  }) => void;
+  onMetrics?: (metrics: Record<string, number>) => void;
+  onToolCall?: (data: { tool_name: string; args: Record<string, unknown>; ts: number; role?: string }) => void;
+  onLogEvent?: (data: { level: string; logger: string; msg: string; ts: number }) => void;
+  onSystemEvent?: (data: { ts: number; type: string; severity: string; message: string; data?: Record<string, unknown> }) => void;
+  onConnect?: () => void;
+};
+
 export function useEvolutionSSE(
-  handlers: {
-    onHistory?: (msg: string, status: string) => void;
-    onStatus?: (msg: string, isWorking: boolean) => void;
-    onIO?: (line: IOLine) => void;
-    onClearIO?: () => void;
-    onEvalTable?: (rows: EvolutionState["ratings"]) => void;
-    onDaemonStats?: (data: { total_matches: number; total_periods: number; total_games: number; n_bots: number }) => void;
-    onHeader?: (msg: string) => void;
-    onCost?: (data: {
-      role: string;
-      cost_usd: number;
-      input_tokens: number;
-      output_tokens: number;
-      gen_total: number;
-      grand_total: number;
-    }) => void;
-    onMetrics?: (metrics: Record<string, number>) => void;
-    onToolCall?: (data: { tool_name: string; args: Record<string, unknown>; ts: number; role?: string }) => void;
-    onLogEvent?: (data: { level: string; logger: string; msg: string; ts: number }) => void;
-    onSystemEvent?: (data: { ts: number; type: string; severity: string; message: string; data?: Record<string, unknown> }) => void;
-    onConnect?: () => void;
-  },
+  handlers: EvolutionHandlers,
   enabled = true
 ) {
-  const connect = () => {
+  const handlersRef = useRef(handlers);
+
+  useEffect(() => {
+    handlersRef.current = handlers;
+  }, [handlers]);
+
+  const connect = useCallback(() => {
     if (!enabled) return () => {};
 
     let currentSource: EventSource | null = null;
@@ -86,7 +96,7 @@ export function useEvolutionSSE(
     const doConnect = () => {
       currentSource = new EventSource(`${BASE}/evolution/stream`);
       currentSource.onopen = () => {
-        handlers.onConnect?.();
+        handlersRef.current.onConnect?.();
       };
 
       const eventTypes: EvolutionEventType[] = [
@@ -99,42 +109,43 @@ export function useEvolutionSSE(
         currentSource!.addEventListener(eventType, (e: MessageEvent) => {
           try {
             const data = JSON.parse(e.data);
+            const activeHandlers = handlersRef.current;
             switch (eventType) {
               case "history":
-                handlers.onHistory?.(data.msg, data.status);
+                activeHandlers.onHistory?.(data.msg, data.status);
                 break;
               case "status":
-                handlers.onStatus?.(data.msg, data.is_working);
+                activeHandlers.onStatus?.(data.msg, data.is_working);
                 break;
               case "io":
-                handlers.onIO?.({ text: data.msg, streamType: data.stream_type, ts: data.ts, role: data.role });
+                activeHandlers.onIO?.({ text: data.msg, streamType: data.stream_type, ts: data.ts, role: data.role });
                 break;
               case "clear_io":
-                handlers.onClearIO?.();
+                activeHandlers.onClearIO?.();
                 break;
               case "eval_table":
-                handlers.onEvalTable?.(data.rows);
+                activeHandlers.onEvalTable?.(data.rows);
                 break;
               case "daemon_stats":
-                handlers.onDaemonStats?.(data);
+                activeHandlers.onDaemonStats?.(data);
                 break;
               case "header":
-                handlers.onHeader?.(data.msg);
+                activeHandlers.onHeader?.(data.msg);
                 break;
               case "cost":
-                handlers.onCost?.(data);
+                activeHandlers.onCost?.(data);
                 break;
               case "metrics":
-                handlers.onMetrics?.(data);
+                activeHandlers.onMetrics?.(data);
                 break;
               case "tool_call":
-                handlers.onToolCall?.(data);
+                activeHandlers.onToolCall?.(data);
                 break;
               case "log_event":
-                handlers.onLogEvent?.(data);
+                activeHandlers.onLogEvent?.(data);
                 break;
               case "system_event":
-                handlers.onSystemEvent?.(data);
+                activeHandlers.onSystemEvent?.(data);
                 break;
             }
           } catch { /* ignore parse errors */ }
@@ -155,7 +166,7 @@ export function useEvolutionSSE(
       currentSource?.close();
       currentSource = null;
     };
-  };
+  }, [enabled]);
 
   return connect;
 }

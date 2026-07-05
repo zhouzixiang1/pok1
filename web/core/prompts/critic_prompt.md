@@ -16,8 +16,8 @@ Use Bash for diff commands and Read for changed functions. Do not use webReader 
 ## Master's Plan:
 {master_plan}
 
-Bot directory: `bots/claude_v{version}/`
-Parent version tag: `bot-v{parent_version}`
+Bot directory: `bots/national_v{version}/`
+Parent version tag: `national-bot-v{parent_version}`
 
 ## Head-to-Head Context
 Read `web/core/results/head_to_head.json` and find the current bot's weakest opponent matchups (win rate < 40%) only when the matchup has enough games. Cross-check `web/core/results/match_history.jsonl` if the H2H matrix looks sparse. Also check `web/core/results/glicko_ratings.json` for RD uncertainty and `web/core/results/bot_stats.json` for overall win rate and game count.
@@ -32,7 +32,7 @@ You evaluate ONLY these strategic dimensions:
 2. **Expected behavior change** — Will this actually alter bot behavior in a meaningful way? Or is it a cosmetic/constant-tweak that won't move the needle?
 3. **EV basis** — Are decisions based on equity/pot-odds/fold-equity reasoning rather than arbitrary threshold adjustment?
 4. **Local optima risk** — Is this the same type of change that failed in recent generations? Are we stuck in a cycle?
-5. **Measurability** — Can we verify improvement through the active workflow precommit backend (`national_primary` adapter national matches or `national_native` direct TCP national matches)? Is there a clear hypothesis being tested?
+5. **Measurability** — Can we verify improvement through the active national_native precommit backend using direct TCP national matches? Is there a clear hypothesis being tested?
 </your_scope>
 
 <not_your_scope>
@@ -88,10 +88,10 @@ Before scoring, verify the change against this checklist. Flag any item that fai
 </poker_quality_checklist>
 
 <how_to_evaluate>
-1. List changed files: `diff -rq bots/claude_v{parent_version}/ bots/claude_v{version}/`
-2. Diff each changed file: `diff bots/claude_v{parent_version}/FILE bots/claude_v{version}/FILE`
+1. List changed files: `diff -rq bots/national_v{parent_version}/ bots/national_v{version}/`
+2. Diff each changed file: `diff bots/national_v{parent_version}/FILE bots/national_v{version}/FILE`
 3. Read the most changed functions for strategic context
-4. Check recent history: `git log --oneline bot-v{parent_version}..HEAD`
+4. Check recent history: `git log --oneline national-bot-v{parent_version}..HEAD`
 5. Read `web/core/experience_pool.md` for `[POSSIBLY EXHAUSTED]` tags
 6. Cite concrete evidence: weakest H2H matchups, experience-pool lessons, real diff
 </how_to_evaluate>

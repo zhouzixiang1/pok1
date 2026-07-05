@@ -17,7 +17,9 @@ async function extractError(res: Response): Promise<never> {
   try {
     const b = await res.json();
     if (b.detail) msg += `: ${b.detail}`;
-  } catch {}
+  } catch {
+    // Keep the status-only message when the error body is not JSON.
+  }
   throw new Error(msg);
 }
 
@@ -160,7 +162,12 @@ export const api = {
     const res = await fetch(`${BASE}/bots/${version}/download`, { signal: AbortSignal.timeout(120_000) });
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;
-      try { const b = await res.json(); if (b.detail) msg += `: ${b.detail}`; } catch {}
+      try {
+        const b = await res.json();
+        if (b.detail) msg += `: ${b.detail}`;
+      } catch {
+        // Keep the status-only message when the error body is not JSON.
+      }
       throw new Error(msg);
     }
     const blob = await res.blob();

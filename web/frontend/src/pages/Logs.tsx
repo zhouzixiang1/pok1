@@ -260,7 +260,7 @@ export default function Logs() {
         setSelectedFile(gen.files[0]);
       }
     }
-  }, [selectedVersion, generations]);
+  }, [selectedVersion, selectedFile, generations]);
 
   useEffect(() => {
     if (selectedVersion && selectedFile) {
@@ -277,7 +277,9 @@ export default function Logs() {
       if (files.length > 0) {
         setSelectedOrch(prev => prev || files[0].filename);
       }
-    } catch {}
+    } catch (e) {
+      console.error("[Logs] orchestrator log list failed:", e);
+    }
   }, []);
 
   useEffect(() => {
@@ -291,6 +293,7 @@ export default function Logs() {
       setOrchLoading(true);
       api.orchestratorLogContent(selectedOrch, 500)
         .then(setOrchContent)
+        .catch(() => setOrchContent("加载编排器日志出错"))
         .finally(() => setOrchLoading(false));
     }
   }, [selectedOrch, tab]);
@@ -304,6 +307,9 @@ export default function Logs() {
     try {
       const raw = await api.orchestratorLogContent(filename);
       setConvParts(parseConversation(raw));
+    } catch (e) {
+      console.error("[Logs] conversation log load failed:", e);
+      setConvParts([]);
     } finally {
       setConvLoading(false);
     }

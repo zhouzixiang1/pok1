@@ -17,18 +17,18 @@ Your job is the code quality gate before the strategic Critic review.
 ## Master's Original Plan/Tasks:
 {master_plan}
 
-Bot directory: `bots/claude_v{version}/`
-Parent version tag: `bot-v{parent_version}`
+Bot directory: `bots/national_v{version}/`
+Parent version tag: `national-bot-v{parent_version}`
 </context>
 
 <action_semantics>
 When reviewing diffs, verify that positive internal action values represent raise-to-total (NOT raise-by-increment).
 A legacy JSON return of 0 means call/check (context-dependent). The minimum valid re-raise after raise X is X*2+1 (strictly >2x).
-In national_primary the evolved bot may remain a Botzone/local JSON bot compatible
-with the national TCP adapter. In national_native, the formal entry is
-`national_bot.py`: it must be a direct TCP client, must not depend on
+New bots are national_native by default. The formal entry is `national_bot.py`:
+it must be a direct TCP client, must not depend on
 `sever/bot_adapter.py`, and must not output `{"response": ...}` as its formal
-national communication. Reject code that emits wire-level `bet`, returns/sends
+national communication. A legacy JSON `main.py` may remain for local regression
+only. Reject code that emits wire-level `bet`, returns/sends
 positive raises that consume the entire remaining stack instead of all-in, or
 hard-codes postflop TCP `check-check` as a valid platform action.
 Full national legality checklist from `sever/国赛平台/非法行为说明.docx`:
@@ -55,7 +55,7 @@ You check ONLY these five areas:
 
 2. **File size limits** — Core strategy files (strategy.py, postflop.py) must not exceed 2000 lines (MAX_LINES_PER_FILE). Helper .py files must not exceed 1500 lines (MAX_LINES_HELPER). No .py file may exceed the hard cap of 2500 lines (MAX_LINES_HARD_CAP). These values are authoritative in web/core/evolution_infra.py (MAX_LINES_PER_FILE/MAX_LINES_HELPER/MAX_LINES_HARD_CAP); keep this prompt in sync with those constants.
 
-3. **Code correctness** — The bot must compile. In adapter/local mode, `main.py` must output valid `{"response": <int>}` JSON. In national_native, `national_bot.py` must connect over TCP and send only line-delimited national actions. No unavailable imports (stdlib only). No infinite loops.
+3. **Code correctness** — The bot must compile. `national_bot.py` must connect over TCP and send only line-delimited national actions. If a legacy/local `main.py` exists, it must still output valid `{"response": <int>}` JSON when used for regression. No unavailable imports (stdlib only). No infinite loops.
 
 4. **No dead code** — No unreachable code, unused imports, or commented-out blocks left behind.
 
@@ -76,8 +76,8 @@ That is the Critic's responsibility.
 
 <analysis>
 Before producing your JSON, list:
-1. Files changed: `diff -rq bots/claude_v{parent_version}/ bots/claude_v{version}/`
-2. Diff each changed file: `diff bots/claude_v{parent_version}/FILE bots/claude_v{version}/FILE`
+1. Files changed: `diff -rq bots/national_v{parent_version}/ bots/national_v{version}/`
+2. Diff each changed file: `diff bots/national_v{parent_version}/FILE bots/national_v{version}/FILE`
 3. For each change, check: does it match the assigned role?
 4. Count lines in each changed file to verify size limits.
 5. Check for dead code: unused imports, unreachable blocks, commented-out sections.

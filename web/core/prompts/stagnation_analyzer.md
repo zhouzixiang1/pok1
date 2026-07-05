@@ -37,7 +37,7 @@ Output ONLY a JSON block:
 ```json
 {"is_stagnant": true/false, "confidence": "high/medium/low",
  "recommendation": "continue|branch|crossover",
- "branch_from": "claude_vN" or null,
+ "branch_from": "national_vN" or null,
  "reason": "brief explanation"}
 ```
 </output_format>
