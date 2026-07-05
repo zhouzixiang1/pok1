@@ -381,24 +381,31 @@ def checkpoint_recovery_diagnostics(
             repo_diag["baseline_head_contract_paths"] = contract_diag.get("head_contract_paths", [])[:40]
             repo_diag["baseline_head_external_paths"] = contract_diag.get("head_external_paths", [])[:40]
         target_dir = root / bot_relpath(next_v) if next_v is not None else None
+        policy = _resume_policy(stage) or {}
+        requires_contract_unchanged = bool(policy.get("requires_contract_unchanged", True))
         branch_compatible = (
             current_branch == EVOLUTION_BRANCH
             and (not baseline_branch or baseline_branch == current_branch or baseline_branch_alias_allowed)
         ) or current_branch_unrelated_head_allowed
         can_resume = (
-            _resume_policy(stage) is not None
+            policy
             and branch_compatible
             and not worktree_scope.get("blocking_entries")
             and target_dir is not None
             and target_available
-            and (not contract_baseline_present or contract_unchanged or current_branch_unrelated_head_allowed)
+            and (
+                not contract_baseline_present
+                or contract_unchanged
+                or current_branch_unrelated_head_allowed
+                or not requires_contract_unchanged
+            )
         )
         if can_resume:
-            policy = _resume_policy(stage) or {}
             warnings.append(_resume_warning(stage))
             repo_diag["baseline_head_mismatch_allowed"] = True
             repo_diag["head_drift_resume_kind"] = policy.get("resume_kind", "checkpoint")
             repo_diag["head_drift_allowed_tools"] = list(policy.get("allowed_tools") or [])
+            repo_diag["head_drift_requires_contract_unchanged"] = requires_contract_unchanged
         else:
             issues.append("repo_baseline_head_mismatch")
 

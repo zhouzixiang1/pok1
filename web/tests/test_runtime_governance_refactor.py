@@ -1849,6 +1849,46 @@ def test_checkpoint_recovery_diagnostics_allows_crossover_running_head_mismatch(
     assert diag["target"]["exists"] is True
 
 
+def test_checkpoint_recovery_diagnostics_allows_reentrant_crossover_after_contract_head_drift(
+    tmp_path,
+    monkeypatch,
+):
+    import evaluation_contract
+    import pipeline_recovery
+
+    monkeypatch.setattr(
+        evaluation_contract,
+        "changed_paths_between_heads",
+        lambda *_args, **_kwargs: ["web/core/pipeline_state.py"],
+    )
+    (tmp_path / "bots" / "national_v257").mkdir(parents=True)
+    checkpoint = {
+        "next_v": 257,
+        "source_v": 197,
+        "stage": "crossover_running",
+        "parent2_v": 188,
+        "repo_baseline": {
+            "branch": "main",
+            "head": "old123",
+            "evaluation_contract": {"version": 2, "hash": "old"},
+        },
+    }
+    snapshot = {"ok": True, "branch": "main", "head": "new456"}
+
+    diag = pipeline_recovery.checkpoint_recovery_diagnostics(
+        checkpoint,
+        snapshot=snapshot,
+        project_root=tmp_path,
+    )
+
+    assert diag["recoverable"] is True
+    assert "repo_baseline_head_mismatch" not in diag["issues"]
+    assert "web/core/pipeline_state.py" in diag["repo"]["baseline_head_contract_paths"]
+    assert diag["repo"]["baseline_evaluation_contract_unchanged"] is False
+    assert diag["repo"]["head_drift_requires_contract_unchanged"] is False
+    assert diag["repo"]["head_drift_resume_kind"] == "crossover"
+
+
 def test_checkpoint_recovery_diagnostics_allows_pre_master_head_mismatch(tmp_path):
     import pipeline_recovery
 

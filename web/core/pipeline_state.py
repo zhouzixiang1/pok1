@@ -76,6 +76,7 @@ HEAD_DRIFT_RESUME_POLICY = {
         "resume_kind": "selected",
         "warning_suffix": "selected",
         "requires_target": False,
+        "requires_contract_unchanged": False,
         "branch_alias_allowed": True,
     },
     "prepared": {
@@ -83,6 +84,7 @@ HEAD_DRIFT_RESUME_POLICY = {
         "resume_kind": "pre_master",
         "warning_suffix": "pre_master",
         "requires_target": True,
+        "requires_contract_unchanged": False,
         "branch_alias_allowed": True,
     },
     "crossover_running": {
@@ -90,6 +92,7 @@ HEAD_DRIFT_RESUME_POLICY = {
         "resume_kind": "crossover",
         "warning_suffix": "crossover",
         "requires_target": True,
+        "requires_contract_unchanged": False,
         "branch_alias_allowed": True,
     },
     "direction_audited": {
@@ -97,6 +100,7 @@ HEAD_DRIFT_RESUME_POLICY = {
         "resume_kind": "pre_master",
         "warning_suffix": "pre_master",
         "requires_target": True,
+        "requires_contract_unchanged": True,
         "branch_alias_allowed": True,
     },
     "master_planned": {
@@ -104,6 +108,7 @@ HEAD_DRIFT_RESUME_POLICY = {
         "resume_kind": "initial_workers",
         "warning_suffix": "initial_workers",
         "requires_target": True,
+        "requires_contract_unchanged": True,
         "branch_alias_allowed": True,
     },
     "workers_done": {
@@ -111,6 +116,7 @@ HEAD_DRIFT_RESUME_POLICY = {
         "resume_kind": "gate",
         "warning_suffix": "gate",
         "requires_target": True,
+        "requires_contract_unchanged": False,
         "branch_alias_allowed": True,
     },
     "quality_failed": {
@@ -118,6 +124,7 @@ HEAD_DRIFT_RESUME_POLICY = {
         "resume_kind": "repair",
         "warning_suffix": "repair",
         "requires_target": True,
+        "requires_contract_unchanged": True,
         "branch_alias_allowed": True,
     },
     "quality_passed": {
@@ -125,6 +132,7 @@ HEAD_DRIFT_RESUME_POLICY = {
         "resume_kind": "post_quality",
         "warning_suffix": "post_quality",
         "requires_target": True,
+        "requires_contract_unchanged": True,
         "branch_alias_allowed": True,
     },
     "reviewed": {
@@ -132,6 +140,7 @@ HEAD_DRIFT_RESUME_POLICY = {
         "resume_kind": "post_quality",
         "warning_suffix": "post_quality",
         "requires_target": True,
+        "requires_contract_unchanged": True,
         "branch_alias_allowed": True,
     },
     "critic_checked": {
@@ -139,6 +148,7 @@ HEAD_DRIFT_RESUME_POLICY = {
         "resume_kind": "post_quality",
         "warning_suffix": "post_quality",
         "requires_target": True,
+        "requires_contract_unchanged": True,
         "branch_alias_allowed": True,
     },
     "precommit_failed": {
@@ -146,6 +156,7 @@ HEAD_DRIFT_RESUME_POLICY = {
         "resume_kind": "repair",
         "warning_suffix": "repair",
         "requires_target": True,
+        "requires_contract_unchanged": True,
         "branch_alias_allowed": True,
     },
     "repair_planned": {
@@ -153,6 +164,7 @@ HEAD_DRIFT_RESUME_POLICY = {
         "resume_kind": "repair",
         "warning_suffix": "repair",
         "requires_target": True,
+        "requires_contract_unchanged": True,
         "branch_alias_allowed": True,
     },
     "rework_running": {
@@ -160,6 +172,7 @@ HEAD_DRIFT_RESUME_POLICY = {
         "resume_kind": "repair",
         "warning_suffix": "repair",
         "requires_target": True,
+        "requires_contract_unchanged": True,
         "branch_alias_allowed": True,
     },
     "verified": {
@@ -167,6 +180,7 @@ HEAD_DRIFT_RESUME_POLICY = {
         "resume_kind": "post_quality",
         "warning_suffix": "post_quality",
         "requires_target": True,
+        "requires_contract_unchanged": True,
         "branch_alias_allowed": False,
     },
 }
