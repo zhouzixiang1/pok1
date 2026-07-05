@@ -42,6 +42,9 @@
 - Anti-lock trash gate must be tournament-safe: hands_left>3, my_chips>15BB, low fold_to_raise before suppressing trash jams.
 
 ## RECENT_LESSONS
+- **v18**: Master MUST cite head_to_head.json verbatim before targeting a 'nemesis cluster' — fabricated H2H framings (e.g. v14 framed as v17 underdog when actual is 28W/17L dominant) lead to anti-targeted tuning; require the Master prompt to embed the actual win/loss counts and reject planning if the cited numbers don't match the file.
+- **v18**: Population/read-confidence carve-outs need a minimum-sample floor: confidence>=0.20 means n=4 hands where one early raise flips pfr to 0.25+, misfiring the NEMESIS_TIGHT_OPEN_PFR gate; future read-based carve-outs should require n>=5 and confidence>=0.40, and ship with a stderr-trigger-rate probe to confirm they fire >=5% of eligible spots.
+- **v18 归档建议**: If v10 (the only real underdog at 17W/23L) is the true target, profile v10 specifically across preflop bb_vs_raise spots to derive the +0.030 call-threshold shift from BB's conditional equity distribution vs v10's actual opening range, rather than averaging v10/v6/v14 into one contaminated 'tight-opponent cluster'.
 - **v17**: PARAMETER_TUNING: 1pp slack changes in _preflop_jam_call_decision are sub-measurable (<10pp window per pool rule). When paired with a structural main.py edit, do NOT attribute WR gains to the slack tweak — if v17 wins v14/v15 matchups, revert slack to 0.05 to keep the wide-jammer call band intact and avoid double-counting.
 - **v17**: Falsification gate: if v17 LOSES the v14 matchup, the single sanitize branch is not v6's edge source — v6's edge likely comes from overall tighter preflop ranges / simpler postflop. In that case do NOT keep tightening slack; pivot to profiling v14's jam composition (bluff vs value split) via _preflop_jam_call_decision stderr before any further threshold tuning.
 - **v17 归档建议**: Once ≥30g of v17-vs-v14 data accumulates, verify via _preflop_jam_call_decision stderr telemetry that the new sanitize fold path actually fires ≥5% of jam spots — otherwise the structural change is a runtime no-op and v14's nemesis edge must be hunted in v6's overall tighter preflop ranges rather than this all-in-call branch.
@@ -51,4 +54,5 @@
 - **v295**: v294 leaks vs v287 at 0.40 WR (8W/12L/20g). Track v295 vs v287 over ≥30g paired net-chips; if WR stays <0.50, the fix is correct but UNDERSCOPED — widen the tier gate from 'thin' to include 'mid_weak' (middle_pair/underpair disciplined-barrel leaks) before tuning magnitude.
 - **v294**: v293 confirmed a tight-disciplined cluster leak (20-40% WR vs v286/v287/v291/v284/v269 over 5-15g each) — valid exploitative target, but the fix needs ≥30g vs each member before treating the leak as closed. Prioritize daemon saturation vs v286/v291/v287 (was 0g post-commit for v294).
 - **v294**: Axis-stacking risk at the middle-pair turn-continuation branch — future river-margin deltas must be gated against turn-continuation lines to avoid double-counting (cross-axis disagreement check per v287).
+
 
