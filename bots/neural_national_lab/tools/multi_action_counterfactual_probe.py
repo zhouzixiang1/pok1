@@ -170,6 +170,7 @@ def _evaluate_menu(
     hand: int,
     args: argparse.Namespace,
     row_index: int,
+    baseline_final_actions: list[int] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]]]:
     branch_requests = copy.deepcopy(bot_requests)
     branch_requests[0].append(copy.deepcopy(request_data))
@@ -206,6 +207,32 @@ def _evaluate_menu(
             "branch_bot_seeds": list(seeds) if seeds is not None else None,
         }
 
+    for final_action in baseline_final_actions or []:
+        final_action = int(final_action)
+        if final_action in by_action:
+            continue
+        branch = _forced_branch(
+            prefix_log,
+            initdata,
+            bot_paths,
+            branch_requests,
+            branch_responses,
+            branch_data,
+            final_action,
+            args.max_branch_steps,
+            stop_after_hand,
+            seeds,
+        )
+        by_action[final_action] = {
+            "final_action": final_action,
+            "status": branch.get("status"),
+            "value": _branch_value(branch, hand, args.branch_scope),
+            "bot0_chips": branch.get("bot0_chips"),
+            "hand_delta": _hand_delta(branch.get("log", []), hand),
+            "branch_bot_seeds": list(seeds) if seeds is not None else None,
+            "baseline_only": True,
+        }
+
     evaluated: list[dict[str, Any]] = []
     for item in menu:
         row = dict(item)
@@ -217,7 +244,7 @@ def _evaluate_menu(
     return evaluated, by_action
 
 
-def _complete_targets(menu: list[dict[str, Any]], rule_final: int) -> dict[str, Any]:
+def _complete_targets(menu: list[dict[str, Any]], rule_final: int, branch_values: dict[int, dict[str, Any]]) -> dict[str, Any]:
     legal_label_values = [
         float(item["value"])
         for item in menu
@@ -232,10 +259,14 @@ def _complete_targets(menu: list[dict[str, Any]], rule_final: int) -> dict[str, 
     mean_label_value = sum(legal_label_values) / len(legal_label_values) if legal_label_values else None
     mean_unique_value = sum(unique_values) / len(unique_values) if unique_values else None
     rule_value = None
-    for item in menu:
-        if item.get("legal") and int(item.get("final_action", 0)) == int(rule_final) and item.get("value") is not None:
-            rule_value = float(item["value"])
-            break
+    rule_branch = branch_values.get(int(rule_final))
+    if rule_branch is not None and rule_branch.get("value") is not None:
+        rule_value = float(rule_branch["value"])
+    else:
+        for item in menu:
+            if item.get("legal") and int(item.get("final_action", 0)) == int(rule_final) and item.get("value") is not None:
+                rule_value = float(item["value"])
+                break
 
     action_values: list[float | None] = []
     delta_vs_rule: list[float | None] = []
@@ -288,14 +319,19 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     by_label_regret: dict[str, list[float]] = {name: [] for name in LABELS}
     best_counts: dict[str, int] = {}
     unique_counts: list[int] = []
+    evaluated_branch_counts: list[int] = []
     legal_label_counts: list[int] = []
+    off_menu_rule_rows = 0
     ok_rows = 0
     for row in rows:
         if row.get("status") != "ok":
             continue
         ok_rows += 1
         unique_counts.append(int(row.get("unique_final_action_count", 0) or 0))
+        evaluated_branch_counts.append(int(row.get("evaluated_branch_count", 0) or 0))
         legal_label_counts.append(sum(int(value) for value in row.get("legal_mask", [])))
+        if not row.get("rule_final_in_menu", False):
+            off_menu_rule_rows += 1
         best = row.get("best_label")
         if best:
             best_counts[str(best)] = best_counts.get(str(best), 0) + 1
@@ -311,7 +347,11 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "ok_rows": ok_rows,
         "failed_rows": len(rows) - ok_rows,
         "mean_unique_final_action_count": sum(unique_counts) / len(unique_counts) if unique_counts else 0.0,
+        "mean_evaluated_branch_count": sum(evaluated_branch_counts) / len(evaluated_branch_counts)
+        if evaluated_branch_counts
+        else 0.0,
         "mean_legal_label_count": sum(legal_label_counts) / len(legal_label_counts) if legal_label_counts else 0.0,
+        "off_menu_rule_rows": off_menu_rule_rows,
         "best_label_counts": dict(sorted(best_counts.items())),
         "delta_vs_rule_by_label": {
             label: _stats(values) for label, values in by_label_delta.items() if values
@@ -396,8 +436,9 @@ def _scan_side(
                             int(req.get("hand", -1)),
                             args,
                             row_index,
+                            [rule_final],
                         )
-                        targets = _complete_targets(evaluated, rule_final)
+                        targets = _complete_targets(evaluated, rule_final, _by_action)
                         status = "ok" if targets["rule_value"] is not None else "missing_rule_branch"
                         unique_actions, final_action_counts, final_action_labels = _final_action_breakdown(evaluated)
                         rule_label_id = label_action(rule_final, _feature_request(req, state), None)
@@ -434,7 +475,10 @@ def _scan_side(
                             "advantage_features": advantage_features,
                             "legal_mask": [1 if item["legal"] else 0 for item in evaluated],
                             "unique_final_actions": unique_actions,
-                            "unique_final_action_count": len(_by_action),
+                            "unique_final_action_count": len(unique_actions),
+                            "evaluated_branch_count": len(_by_action),
+                            "rule_final_in_menu": int(rule_final) in set(unique_actions),
+                            "rule_branch": _by_action.get(int(rule_final)),
                             "final_action_counts": final_action_counts,
                             "final_action_labels": final_action_labels,
                             "actions": evaluated,
@@ -512,6 +556,7 @@ def main() -> None:
             "delta_vs_rule uses the sanitized rule action as the baseline value.",
             "regret_vs_mean subtracts the mean value over successfully evaluated unique final actions.",
             "Duplicate label-to-final-action mappings are recorded in final_action_counts and share a branch value.",
+            "If the rule baseline uses an off-menu raise size, it is evaluated as rule_branch but not added to the fixed action vector.",
         ],
         "version": _rel(bot0),
         "opponent": _rel(bot1),

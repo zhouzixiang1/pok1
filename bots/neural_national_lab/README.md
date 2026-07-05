@@ -847,6 +847,30 @@ actions. The v059 versus `claude_v279` smoke at `seed_base=2026080100` wrote
 two ok flop rows with six legal labels and six unique final actions per row.
 This validates the data contract only; it is not a performance claim.
 
+`multi_action_shard_runner.py` is the multicore actor wrapper for that probe:
+
+```bash
+python bots/neural_national_lab/tools/multi_action_shard_runner.py \
+  --version bots/neural_national_lab/versions/v059_v254_cf_support_guard_hs_negbal_h32_s040 \
+  --opponent bots/claude_v279 \
+  --shards 8 \
+  --workers 8 \
+  --games-per-shard 2 \
+  --max-rows-per-shard 8 \
+  --stage flop \
+  --branch-scope hand \
+  --seed-base 2026080200 \
+  --bot-seed-base 202650020000 \
+  --output bots/neural_national_lab/data/multiaction_shards_v059_vs_v279_seed2026080200.json
+```
+
+The first 2-shard/2-worker smoke wrote
+`data/multiaction_shards_v059_vs_v279_smoke_s002_seed2026080200.json`: 2 ok
+rows, 6 fixed legal labels per row, mean 6.5 evaluated branches, and one
+off-menu rule baseline (`raise 107`). Off-menu rule raises are evaluated as
+`rule_branch` for a correct `delta_vs_rule` baseline, but they are not added to
+the fixed six-label training vector.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass
