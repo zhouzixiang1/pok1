@@ -1023,6 +1023,54 @@ with CI `[-71.37, +235.26]`, split 4 positive, 73 zero, 3 negative, worst
 sample `-224`, and best sample `+12504`. This is not statistically clear, but
 it is a safer boundary-data successor candidate than v065.
 
+Extending that same five-opponent paired evaluation to g032x5 did not clear
+the promotion bar. Across v279/v283/v284/v285/v288, v066 averaged `+58.52`
+chips per 70 hands versus v064 with CI `[-30.91, +147.96]`, split 8 positive,
+146 zero, and 6 negative paired deltas. The best sample remained a large v288
+gain (`+12504`), while v279 moved negative overall (`-23.38`, CI
+`[-74.72, +27.97]`) and added a `-1429` worst sample. Keep v066 as the safer
+p073 boundary candidate, but do not treat it as a significant upgrade; the
+next data step should replay the v279 negative divergences and the v285/v288
+large positive divergences into targeted active counterfactual rows before
+spending on g064 or larger model families.
+
+`build_outlier_multi_action_value_data.py` converts those paired divergence
+windows back into runtime-compatible multi-action value rows. The first pass
+used the 14 nonzero v066-vs-v064 g032 samples, clipped them to `+/-1000`, and
+merged them with the p073 boundary set to create an 87-row p087 training file.
+CUDA h16/h32/h64 training selected the h32 head for replay: it blocked all five
+negative first-divergence targets in the local outlier score check while
+keeping the v285/v288 large positive windows. The resulting
+`versions/v067_v254_outlier_boundary_h32_p087_inter088` keeps v066's runtime
+gates and only replaces the multi-action value head. On the same g032x5
+paired evaluation versus v064, v067 improved the average to `+91.14` chips per
+70 hands with CI `[-12.34, +194.62]`, split 10 positive, 147 zero, and 3
+negative samples. It reduced the worst sample from `-1429` to `-796`, but the
+CI still crosses zero and v279 remains slightly negative (`-6.64`, CI
+`[-33.07, +19.79]`). Treat v067 as a better diagnostic candidate, not a
+promoted successor. The next active-learning row should target the new v279
+idx22 `-796` divergence before widening games or model size.
+
+The v279 idx22 repair pass replayed the four new nonzero v067-vs-v064 v279
+windows and converted their first divergences into four more clipped
+multi-action rows. Mixing those with p087 produced p091. CUDA h16/h32/h64
+training did not yield a cleaner runtime head: h16 blocked everything, h32 was
+too conservative, and h64 reopened older large negatives. The accepted
+artifact is therefore the threshold-calibrated
+`versions/v068_v254_outlier_boundary_h32_p087_min040`, which keeps the v067
+p087 h32 weights but raises `multi_action_value_min` from `0.20` to `0.40`.
+Targeted replay closed the new v279 idx12 `-14` and idx22 `-796` windows,
+kept idx20 `+290` and idx23 `+95`, preserved the old v279 idx18/idx29 fixes,
+but lost the old idx6 `+564` and reopened only a small idx13 `-80`.
+On the same g032x5 five-opponent evaluation, v068 averaged `+93.20` chips per
+70 hands versus v064 with CI `[-10.12, +196.52]`, split 10 positive, 148 zero,
+and 2 negative samples. v279 moved slightly positive (`+5.05`, CI
+`[-4.62, +14.72]`) with worst sample `-80`; the global worst sample was now
+`-90` instead of v067's `-796`. Keep v068 as a safer calibration artifact, not
+a statistically clear successor. The next useful work is to add richer active
+rows or context features that recover suppressed positives without reopening
+the large v279/v284 negative windows.
+
 `counterfactual_rollout_probe.py` now uses bounded parallel submission. With
 `--workers > 1`, it only keeps one batch of worker tasks in flight and stops
 submitting new game/side tasks once merged probes reach `--max-probes`; pass

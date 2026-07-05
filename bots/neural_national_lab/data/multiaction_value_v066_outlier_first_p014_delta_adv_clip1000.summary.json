@@ -1,0 +1,68 @@
+{
+  "inputs": [
+    "bots/neural_national_lab/data/active_divergence_v066_vs_v064_v279_g032_nonzero_seed2026091300.json",
+    "bots/neural_national_lab/data/active_divergence_v066_vs_v064_v283_g032_nonzero_seed2026091400.json",
+    "bots/neural_national_lab/data/active_divergence_v066_vs_v064_v284_g032_nonzero_seed2026091500.json",
+    "bots/neural_national_lab/data/active_divergence_v066_vs_v064_v285_g032_nonzero_seed2026091600.json",
+    "bots/neural_national_lab/data/active_divergence_v066_vs_v064_v288_g032_nonzero_seed2026091700.json"
+  ],
+  "version": "/home/zzx/project/pok/bots/neural_national_lab/versions/v066_v254_lowint_boundary_h64_p073_inter088",
+  "rows": 14,
+  "input_dim": 70,
+  "label": "raise_half",
+  "positive": 9,
+  "zero": 0,
+  "negative": 5,
+  "mean_target": 100.5,
+  "median_target": 84.5,
+  "min_target": -1000.0,
+  "max_target": 1000.0,
+  "action_templates": {
+    "0->101|mirror": 5,
+    "0->101|normal": 6,
+    "101->0|mirror": 2,
+    "101->0|normal": 1
+  },
+  "by_opponent": {
+    "claude_v279": {
+      "rows": 5,
+      "positive": 2,
+      "negative": 3,
+      "mean_target": -219.4,
+      "min_target": -1000.0,
+      "max_target": 564.0
+    },
+    "claude_v283": {
+      "rows": 2,
+      "positive": 2,
+      "negative": 0,
+      "mean_target": 287.5,
+      "min_target": 274.0,
+      "max_target": 301.0
+    },
+    "claude_v284": {
+      "rows": 2,
+      "positive": 1,
+      "negative": 1,
+      "mean_target": 23.0,
+      "min_target": -43.0,
+      "max_target": 89.0
+    },
+    "claude_v285": {
+      "rows": 2,
+      "positive": 2,
+      "negative": 0,
+      "mean_target": 508.5,
+      "min_target": 17.0,
+      "max_target": 1000.0
+    },
+    "claude_v288": {
+      "rows": 3,
+      "positive": 2,
+      "negative": 1,
+      "mean_target": 288.6666666666667,
+      "min_target": -224.0,
+      "max_target": 1000.0
+    }
+  }
+}

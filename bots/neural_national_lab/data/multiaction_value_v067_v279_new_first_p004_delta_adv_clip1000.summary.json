@@ -1,0 +1,31 @@
+{
+  "inputs": [
+    "bots/neural_national_lab/data/active_divergence_v067_vs_v064_v279_new_nonzero_seed2026091300.json"
+  ],
+  "version": "/home/zzx/project/pok/bots/neural_national_lab/versions/v067_v254_outlier_boundary_h32_p087_inter088",
+  "rows": 4,
+  "input_dim": 70,
+  "label": "raise_half",
+  "positive": 1,
+  "zero": 0,
+  "negative": 3,
+  "mean_target": -153.75,
+  "median_target": -54.5,
+  "min_target": -796.0,
+  "max_target": 290.0,
+  "action_templates": {
+    "0->101|mirror": 2,
+    "0->101|normal": 1,
+    "101->0|normal": 1
+  },
+  "by_opponent": {
+    "claude_v279": {
+      "rows": 4,
+      "positive": 1,
+      "negative": 3,
+      "mean_target": -153.75,
+      "min_target": -796.0,
+      "max_target": 290.0
+    }
+  }
+}
