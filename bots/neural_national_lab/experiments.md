@@ -864,3 +864,45 @@
   larger current-leader action-value shards with held-out opponent groups and
   explicit hard-negative labels instead of adding broader runtime gates around
   the same small dataset.
+
+## Native TCP Round 5 Notes
+
+- Re-read the active `.evolution_pok` conservative-Glicko pool before this
+  round. The current completed leaders were `national_v3`, `national_v2`,
+  `national_v8`, `national_v14`, `national_v5`, `national_v9`,
+  `national_v15`, and `national_v16`; `national_v7` remained an important hard
+  negative. Unfinished `national_v27` was ignored.
+- Collected fresh protocol-native counterfactual shards with
+  `v085_national_v17_profile_trace_tcp` against that pool. The smoke run
+  landed 56 rows / 116 target samples from 7 successful shards; the larger run
+  landed 144 rows / 317 target samples from 18 successful shards. Slow leader
+  shards timed out often, so future collection should split slow opponents
+  instead of mixing them into one broad batch.
+- Built
+  `native_tcp_value_v085_current_top8_plus_v7_d188_context_action_clip4000_noallin.jsonl`:
+  188 ok preflop rows, 575 clipped action targets, 78 input dimensions, and no
+  all-in target. The best model was h64 seed 3112, trained on CUDA with
+  validation MAE `0.1122`, RMSE `0.1944`, and validation best-label accuracy
+  `0.6842`.
+- Offline gate scanning showed the h64 head had a clean high-threshold
+  `raise_pot -> call` slice: threshold `0.50` selected 9 training samples with
+  mean target `+3609.3`, 9 positive, 0 negative. Neural raises also had
+  positive-looking offline pockets, but runtime kept raises disabled because
+  those pockets had too little protocol evidence.
+- `v098_national_v17_currentpool_action_h64_call_t050_tcp` is the runtime fork.
+  It remains native national TCP, keeps neural fold/raise/all-in disabled, and
+  only allows the h64 action-value head to downgrade preflop `raise_pot` to
+  `call` when both absolute and rule-margin thresholds are at least `0.50`.
+- Paired native TCP results were positive versus v095 but not strong in
+  absolute terms. On seed block `2026073200`, 45 paired matches / 6300 hands,
+  v098 scored `-195235`, v095 scored `-198052`, and v082 scored `-202194`;
+  diffs were v098-v095 `+2817` and v098-v082 `+6959`. On seed block
+  `2026073300`, v098 scored `-333482` while v095 scored `-543380`; the diff
+  was `+209898`, with 17 positive, 0 negative, and 28 zero rows.
+- The current strength verdict is still negative. Across the two tested seed
+  blocks, v098 is a real incremental improvement over v095's action gate, but
+  it still loses heavily to the current rule leaders, especially
+  `national_v2` and `national_v3` (`-168524` each in the second seed block).
+  The next version should not be another global threshold tweak; it should
+  collect larger v2/v3 hard-negative action-value data and train with held-out
+  opponent groups.

@@ -1,0 +1,210 @@
+{
+  "inputs": [
+    "bots/neural_national_lab/data/native_tcp_cf_shards_v085_current_top8_plus_v7_smoke_s1_h12_seed2026073000.json",
+    "bots/neural_national_lab/data/native_tcp_cf_shards_v085_current_top8_plus_v7_s3_h12_seed2026073100.json"
+  ],
+  "feature_set": "native_context_action",
+  "target": "delta_vs_rule",
+  "require_full_vector": false,
+  "dropped_labels": [
+    "allin"
+  ],
+  "drop_zero_targets": false,
+  "clip_target": 4000.0,
+  "scanned_rows": 200,
+  "skipped_rows": 12,
+  "rows": 188,
+  "input_dim": 78,
+  "label_count": 6,
+  "target_samples": 575,
+  "target_mean": -151.96347826086958,
+  "target_median": 0.0,
+  "positive_targets": 122,
+  "zero_targets": 265,
+  "negative_targets": 188,
+  "off_menu_rule_rows": 0,
+  "best_label_counts": {},
+  "masked_best_label_counts": {
+    "call": 71,
+    "fold": 62,
+    "raise_half": 9,
+    "raise_pot": 46
+  },
+  "stage_counts": {
+    "preflop": 188
+  },
+  "source_counts": {
+    "bots/neural_national_lab/data/native_tcp_cf_shards_v085_current_top8_plus_v7_s3_h12_seed2026073100.json": 137,
+    "bots/neural_national_lab/data/native_tcp_cf_shards_v085_current_top8_plus_v7_smoke_s1_h12_seed2026073000.json": 51
+  },
+  "target_samples_by_label": {
+    "fold": {
+      "samples": 169,
+      "mean": -374.5621301775148,
+      "median": -150.0,
+      "min": -4000.0,
+      "max": 4000.0,
+      "p10": -4000.0,
+      "p90": 4000.0
+    },
+    "call": {
+      "samples": 188,
+      "mean": -131.6755319148936,
+      "median": 0.0,
+      "min": -4000.0,
+      "max": 4000.0,
+      "p10": -588.0,
+      "p90": 251.0
+    },
+    "raise_half": {
+      "samples": 19,
+      "mean": -25.68421052631579,
+      "median": 0.0,
+      "min": -1474.0,
+      "max": 200.0,
+      "p10": 0.0,
+      "p90": 200.0
+    },
+    "raise_pot": {
+      "samples": 175,
+      "mean": 6.6571428571428575,
+      "median": 0.0,
+      "min": -2214.0,
+      "max": 4000.0,
+      "p10": -151.0,
+      "p90": 200.0
+    },
+    "raise_2pot": {
+      "samples": 24,
+      "mean": 0.0,
+      "median": 0.0,
+      "min": 0.0,
+      "max": 0.0,
+      "p10": 0.0,
+      "p90": 0.0
+    },
+    "allin": {
+      "samples": 0,
+      "mean": 0.0,
+      "median": 0.0,
+      "min": null,
+      "max": null,
+      "p10": null,
+      "p90": null
+    }
+  },
+  "target_samples_by_source_label": {
+    "bots/neural_national_lab/data/native_tcp_cf_shards_v085_current_top8_plus_v7_s3_h12_seed2026073100.json": {
+      "fold": {
+        "samples": 124,
+        "mean": -623.2258064516129,
+        "median": -150.0,
+        "min": -4000.0,
+        "max": 4000.0,
+        "p10": -4000.0,
+        "p90": 618.0
+      },
+      "call": {
+        "samples": 137,
+        "mean": -132.22627737226279,
+        "median": 0.0,
+        "min": -4000.0,
+        "max": 4000.0,
+        "p10": -588.0,
+        "p90": 251.0
+      },
+      "raise_half": {
+        "samples": 13,
+        "mean": 109.3076923076923,
+        "median": 150.0,
+        "min": 0.0,
+        "max": 200.0,
+        "p10": 0.0,
+        "p90": 200.0
+      },
+      "raise_pot": {
+        "samples": 127,
+        "mean": 52.59055118110236,
+        "median": 0.0,
+        "min": -1277.0,
+        "max": 4000.0,
+        "p10": -151.0,
+        "p90": 200.0
+      },
+      "raise_2pot": {
+        "samples": 14,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "p10": 0.0,
+        "p90": 0.0
+      },
+      "allin": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      }
+    },
+    "bots/neural_national_lab/data/native_tcp_cf_shards_v085_current_top8_plus_v7_smoke_s1_h12_seed2026073000.json": {
+      "fold": {
+        "samples": 45,
+        "mean": 310.64444444444445,
+        "median": -150.0,
+        "min": -4000.0,
+        "max": 4000.0,
+        "p10": -3541.0,
+        "p90": 4000.0
+      },
+      "call": {
+        "samples": 51,
+        "mean": -130.19607843137254,
+        "median": 0.0,
+        "min": -4000.0,
+        "max": 4000.0,
+        "p10": -588.0,
+        "p90": 1.0
+      },
+      "raise_half": {
+        "samples": 6,
+        "mean": -318.1666666666667,
+        "median": 0.0,
+        "min": -1474.0,
+        "max": 0.0,
+        "p10": -1474.0,
+        "p90": 0.0
+      },
+      "raise_pot": {
+        "samples": 48,
+        "mean": -114.875,
+        "median": 0.0,
+        "min": -2214.0,
+        "max": 524.0,
+        "p10": -151.0,
+        "p90": 0.0
+      },
+      "raise_2pot": {
+        "samples": 10,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "p10": 0.0,
+        "p90": 0.0
+      },
+      "allin": {
+        "samples": 0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": null,
+        "max": null,
+        "p10": null,
+        "p90": null
+      }
+    }
+  }
+}
