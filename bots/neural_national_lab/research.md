@@ -92,6 +92,10 @@ Practical takeaways for this repo:
   and records both fixed-label vectors and unique final-action branch counts.
   Use it to build small verified vector-target shards before committing to a
   larger actor/learner rewrite.
+- `tools/multi_action_shard_runner.py` turns that into the first parallel actor
+  path. It preserves the fixed six-label target contract while separately
+  evaluating off-menu rule raises as the `delta_vs_rule` baseline, which avoids
+  confusing action abstraction with protocol or rule-strategy raise sizing.
 - Build a lightweight actor-learner loop before reaching for Ray: actor workers
   scan divergence windows, enumerate abstract legal actions, run
   counterfactual branches, and append reservoir-style JSONL shards; the learner
